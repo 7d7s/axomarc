@@ -1,0 +1,44 @@
+# Sovereign Application Runtime — default config.
+# Lives at /etc/sovereign/sovereign.toml. Schema: docs/architecture.md §4.
+
+# Control plane bind address.
+bind = "0.0.0.0:7878"
+
+# Where state lives. Must be on a filesystem that supports flock(2).
+data_dir = "/var/lib/sovereign"
+
+# Where audit logs and structured app logs are written.
+log_dir = "/var/log/sovereign"
+
+# Default log level (RUST_LOG syntax).
+log_level = "info,sovereign=debug"
+
+# Auto-update channel: stable | minor | pro | enterprise
+# Pro and enterprise require a license at /etc/sovereign/license.json.
+update_channel = "stable"
+
+# Doctor cadence (the 5 morning commands). See docs/operations-runbook.md §1.
+[morning]
+bind_to_tmux_key = "Ctrl+B m"
+doctor_level = "basic"
+
+# Container runtime. docker (V0) | podman (V1.5).
+[runtime]
+backend = "docker"
+socket = "unix:///var/run/docker.sock"
+
+# Reverse proxy. caddy (V0) | nginx (V1.1).
+[proxy]
+backend = "caddy"
+admin_url = "http://127.0.0.1:2019"
+
+# Encrypted secret store (F7).
+[secrets]
+backend = "age"
+master_key_path = "/var/lib/sovereign/master.key"
+
+# Backup (F8).
+[backup]
+backend = "sqlite"
+offsite = "s3"
+retention_days = 7

@@ -1,0 +1,45 @@
+[package]
+name = "sovereign"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Sovereign Application Runtime — the single-binary, self-hosted, CLI-first deployment runtime."
+
+[[bin]]
+name = "sovereign"
+path = "src/main.rs"
+
+[dependencies]
+# Locked per docs/tech-stack.md §1
+clap = { workspace = true }
+clap_complete = { workspace = true }
+clap_mangen = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+mimalloc = { workspace = true, optional = true }
+jemallocator = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+sovereign-core = { path = "../sovereign-core" }
+sovereign-observability = { path = "../sovereign-observability" }
+sovereign-storage-sqlite = { path = "../sovereign-storage-sqlite" }
+sovereign-runtime-docker = { path = "../sovereign-runtime-docker" }
+
+[features]
+# F1: mimalloc is the default allocator across all targets. The jemalloc-on-glibc
+# split (docs/tech-stack.md §3) is wired but not on by default until F8, when
+# the production CI matrix builds the binary on a real Linux glibc host.
+default = ["mimalloc-musl"]
+# Allocator split per docs/tech-stack.md §3:
+#   musl target -> mimalloc
+#   glibc target -> jemalloc (V1+: the long-running service uses jemalloc for
+#   its better long-lived-allocation behavior)
+mimalloc-musl = ["dep:mimalloc"]
+jemalloc-gnu = ["dep:jemallocator"]

@@ -14,9 +14,9 @@ sovereign deploy                                   # 5 minutes to a live URL
 | Feature | Status |
 |---|---|
 | F1 — Single Rust static binary (10-25 MB) | ✅ scaffolded (F1 §) |
-| F2 — CLI skeleton (clap 4.6, `--json`, `--dry-run`) | 🔜 next |
-| F3 — SQLite + 7 core tables + append-only audit | ✅ (45 tests, see `crates/sovereign-storage-sqlite/`) |
-| F4 — `sovereign deploy` (git push to live URL) | ⏳ |
+| F2 — CLI skeleton (clap 4.6, `--json`, `--dry-run`) | ✅ (10 subcommands, completions, man, exit codes 0-5) |
+| F3 — SQLite + 7 core tables + append-only audit | ✅ (50 tests, see `crates/sovereign-storage-sqlite/`) |
+| F4 — `sovereign deploy` (git push to live URL) | ✅ (RuntimePort + DockerRuntime + deploy use case + CLI wired) |
 | F5 — One-command rollback | ⏳ |
 | F6 — Caddy auto-TLS (HTTP-01 ACME, auto-renew) | ⏳ |
 | F7 — Encrypted secret store (age + Argon2) | ⏳ |

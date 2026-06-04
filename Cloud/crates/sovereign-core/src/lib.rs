@@ -9,6 +9,8 @@
 pub mod domain;
 pub mod error;
 pub mod ports;
+pub mod state;
+pub mod use_cases;
 
 /// Crate version (matches Cargo.toml).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

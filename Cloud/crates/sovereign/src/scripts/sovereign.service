@@ -1,0 +1,49 @@
+[Unit]
+Description=Sovereign Application Runtime
+Documentation=https://sovereignruntime.dev/docs/
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=sovereign
+Group=sovereign
+WorkingDirectory=/var/lib/sovereign
+ExecStart=/usr/local/bin/sovereign run --config /etc/sovereign/sovereign.toml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+MemoryMax=512M
+TasksMax=2048
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+
+# Hardening per docs/tech-stack.md §9 (forbidden list) and CIS Distribution
+# Independent Linux Benchmark v2.0.0 §1.x.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/sovereign /var/log/sovereign
+StateDirectory=sovereign
+LogsDirectory=sovereign
+ConfigurationDirectory=sovereign
+
+[Install]
+WantedBy=multi-user.target

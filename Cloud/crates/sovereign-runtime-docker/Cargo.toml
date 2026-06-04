@@ -1,0 +1,18 @@
+[package]
+name = "sovereign-runtime-docker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Docker runtime adapter (bollard)."
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+async-trait = "0.1"
+bollard = { workspace = true, features = ["rustls"] }
+tracing = { workspace = true }
+tokio = { workspace = true }
+futures = "0.3"
+
+sovereign-core = { path = "../sovereign-core" }

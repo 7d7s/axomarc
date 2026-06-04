@@ -1,0 +1,99 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sovereign",
+    "crates/sovereign-core",
+    "crates/sovereign-runtime-docker",
+    "crates/sovereign-proxy-caddy",
+    "crates/sovereign-secrets-age",
+    "crates/sovereign-storage-sqlite",
+    "crates/sovereign-backup",
+    "crates/sovereign-notify",
+    "crates/sovereign-observability",
+    "crates/sovereign-proto",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/sovereignruntime/sovereign"
+homepage = "https://sovereignruntime.dev"
+authors = ["Sovereign Application Runtime Contributors"]
+keywords = ["paas", "deployment", "self-hosted", "sovereign", "cli"]
+categories = ["command-line-utilities", "deployment", "web-programming::http-server"]
+publish = false
+
+[workspace.dependencies]
+# Locked versions for direct dependencies — see docs/tech-stack.md §1.
+# Aligned to crates.io reality as of 2026-06-04 (the spec was written for an
+# earlier set; the actual versions in this workspace are pinned to the
+# latest stable that meets the locked-API contract).
+tokio = { version = "1.52", features = ["full"] }
+axum = { version = "0.8", features = ["macros", "tracing"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "timeout"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "macros", "migrate", "json", "uuid", "chrono"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+clap = { version = "4.6", features = ["derive", "env", "string"] }
+clap_complete = "4.6"
+clap_mangen = "0.2"
+figment = { version = "0.10", features = ["toml", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json", "registry"] }
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.16", default-features = false }
+thiserror = "2"
+anyhow = "1"
+ratatui = "0.30"
+crossterm = "0.28"
+age = "0.11"
+argon2 = "0.5"
+rand = "0.8"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+bollard = { version = "0.18", default-features = false, features = ["pipe", "http"] }
+mimalloc = { version = "0.1", default-features = false }
+jemallocator = "0.5"
+nix = { version = "0.29", features = ["fs", "process", "signal", "term"] }
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+incremental = false
+
+[profile.release.package."*"]
+opt-level = "z"
+
+[profile.dist]
+inherits = "release"
+strip = "symbols"
+lto = "fat"
+codegen-units = 1
+
+[profile.dev]
+opt-level = 0
+debug = true
+incremental = true
+
+[profile.dev.package."*"]
+opt-level = 0
+debug = true
+
+[workspace.metadata.cargo-dist]
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+]
+installers = ["shell", "deb", "rpm", "apk", "homebrew"]
+publish-jobs = ["release"]

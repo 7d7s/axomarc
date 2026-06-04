@@ -16,3 +16,4 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 async-trait = "0.1"
 sqlx = { workspace = true }
+tokio = { workspace = true }
