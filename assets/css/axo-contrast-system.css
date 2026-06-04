@@ -1,0 +1,1035 @@
+/* ╔══════════════════════════════════════════════════════════╗ */
+/* ║   AXOMARC DYNAMIC CINEMATIC CONTRAST SYSTEM              ║ */
+/* ║   Awwwards-grade visual rhythm, transitions & mesh       ║ */
+/* ╚══════════════════════════════════════════════════════════╝ */
+
+/* ── 1. GLOBAL BODY & SECTIONS SETUP ── */
+body {
+    background-color: #050505 !important;
+    color: #ffffff;
+    transition: background 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+    overflow-x: hidden;
+}
+
+/* Base transparent resets for sections to allow absolute gradients to render */
+.axo-about-section,
+.ori-service-section-6,
+.axo-clients-section,
+.axo-manifesto-section,
+.axo-projects-section,
+.axo-testi-section,
+.axo-faq-section,
+.axo-footer-cinematic {
+    position: relative !important;
+    overflow: hidden !important;
+    isolation: isolate !important;
+}
+
+/* Remove default template background color overlays */
+.ori-about-section-6::before,
+.ori-service-section-6::before,
+.ori-case-study-section::before,
+.axo-faq-section::before,
+.axo-faq-bg,
+.axo-about-bg,
+.axo-services-bg,
+.axo-testi-bg,
+.axo-projects-bg,
+.axo-clients-bg,
+.axo-man-bg {
+    background: transparent !important;
+    background-color: transparent !important;
+    display: none !important;
+}
+
+/* ── 2. SEAMLESS TEXTURE & NOISE SYSTEM ── */
+.axo-about-section::after,
+.axo-clients-section::after,
+.axo-projects-section::after {
+    content: '' !important;
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    opacity: 0.015 !important;
+    pointer-events: none !important;
+    z-index: 1 !important;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E") !important;
+}
+
+/* ── 3. DETAILED SECTION FLOW & BACKGROUND GRADIENTS ── */
+
+/* ==========================================
+   A. HERO SECTION (#home) — DEEP BLACK
+   ========================================== */
+#home,
+.ori-digital-studio {
+    background-color: #050505 !important;
+}
+
+/* ==========================================
+   B. ABOUT SECTION (#about) — WARM WHITE / OFF-WHITE
+   ========================================== */
+.axo-about-section {
+    background: #F8F9FB !important;
+    background-image: 
+        radial-gradient(at 10% 20%, rgba(30, 136, 229, 0.04) 0px, transparent 50%),
+        radial-gradient(at 90% 80%, rgba(43, 110, 255, 0.04) 0px, transparent 50%),
+        radial-gradient(at 50% 50%, rgba(14, 44, 84, 0.02) 0px, transparent 75%) !important;
+    padding-top: 180px !important;
+}
+
+/* Transition: Black fading into warm white with soft glow */
+.axo-about-section::before {
+    content: '' !important;
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    height: 350px !important;
+    background: linear-gradient(to bottom, #050505 0%, #0d121c 30%, #ebedf5 75%, #F8F9FB 100%) !important;
+    pointer-events: none !important;
+    z-index: 2 !important;
+}
+
+/* White radial glow overlay */
+.axo-about-section::after {
+    content: '' !important;
+    position: absolute !important;
+    top: -100px !important;
+    left: 50% !important;
+    transform: translateX(-50%) !important;
+    width: 80vw !important;
+    height: 400px !important;
+    background: radial-gradient(circle, rgba(255, 255, 255, 0.15) 0%, transparent 70%) !important;
+    filter: blur(80px) !important;
+    pointer-events: none !important;
+    z-index: 3 !important;
+}
+
+/* ==========================================
+   C. SERVICES SECTION (#services) — DARK NAVY
+   ========================================== */
+.ori-service-section-6 {
+    background: #07111A !important;
+    background-image: radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.04) 0%, transparent 60%) !important;
+    padding-top: 180px !important;
+}
+
+/* Transition: White blending into blue-tinted gradient */
+.ori-service-section-6::before {
+    content: '' !important;
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    height: 350px !important;
+    background: linear-gradient(to bottom, #F8F9FB 0%, #c4cbd9 35%, #0e1e2d 75%, #07111A 100%) !important;
+    pointer-events: none !important;
+    z-index: 2 !important;
+}
+
+/* ==========================================
+   D. CLIENTS SECTION (#clients) — PRISTINE WHITE
+   ========================================== */
+.axo-clients-section {
+    background: #FFFFFF !important;
+    background-image: 
+        radial-gradient(at 20% 80%, rgba(30, 136, 229, 0.04) 0px, transparent 40%),
+        radial-gradient(at 80% 20%, rgba(43, 110, 255, 0.03) 0px, transparent 40%) !important;
+    padding-top: 180px !important;
+}
+
+/* Transition: Dark Navy into White */
+.axo-clients-section::before {
+    content: '' !important;
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    height: 350px !important;
+    background: linear-gradient(to bottom, #07111A 0%, #0c1826 30%, #e0e6f0 75%, #FFFFFF 100%) !important;
+    pointer-events: none !important;
+    z-index: 2 !important;
+}
+
+/* ==========================================
+   E. MANIFESTO / IMMERSIVE QUOTE — PURE DARK
+   ========================================== */
+.axo-manifesto-section {
+    background: #050505 !important;
+    padding-top: 180px !important;
+}
+
+/* Transition: White into Pure Dark */
+.axo-manifesto-section::before {
+    content: '' !important;
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    height: 350px !important;
+    background: linear-gradient(to bottom, #FFFFFF 0%, #d8dfea 30%, #0d121c 75%, #050505 100%) !important;
+    pointer-events: none !important;
+    z-index: 2 !important;
+}
+
+/* ==========================================
+   F. PROJECTS SECTION (#projects) — WHITE / SILVER
+   ========================================== */
+.axo-projects-section {
+    background: #F4F7FA !important;
+    background-image: 
+        radial-gradient(at 10% 30%, rgba(30, 136, 229, 0.04) 0px, transparent 50%),
+        radial-gradient(at 90% 70%, rgba(43, 110, 255, 0.03) 0px, transparent 50%) !important;
+    padding-top: 180px !important;
+}
+
+/* Transition: Dark into Light with animated light beam */
+.axo-projects-section::before {
+    content: '' !important;
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    height: 350px !important;
+    background: linear-gradient(to bottom, #050505 0%, #0d121c 30%, #e0e6f0 75%, #F4F7FA 100%) !important;
+    pointer-events: none !important;
+    z-index: 2 !important;
+}
+
+/* Premium Light Beam sweep */
+.axo-projects-section::after {
+    content: '' !important;
+    position: absolute !important;
+    top: 0 !important;
+    left: 45% !important;
+    width: 150px !important;
+    height: 350px !important;
+    background: linear-gradient(to bottom, rgba(43, 110, 255, 0.08), transparent) !important;
+    filter: blur(30px) !important;
+    animation: axoLightBeam 9s infinite alternate ease-in-out !important;
+    pointer-events: none !important;
+    z-index: 3 !important;
+}
+
+@keyframes axoLightBeam {
+    0% { transform: translateX(-80px) skewX(-15deg); opacity: 0.3; }
+    100% { transform: translateX(80px) skewX(15deg); opacity: 0.9; }
+}
+
+/* ==========================================
+   G. TESTIMONIALS SECTION — DARK NAVY
+   ========================================== */
+.axo-testi-section {
+    background: #08131f !important;
+    background-image: radial-gradient(circle at 50% 50%, rgba(30, 136, 229, 0.03) 0%, transparent 70%) !important;
+    padding-top: 180px !important;
+}
+
+/* Transition: White to Dark Navy */
+.axo-testi-section::before {
+    content: '' !important;
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    height: 350px !important;
+    background: linear-gradient(to bottom, #F4F7FA 0%, #cfd7e6 30%, #0d1a29 70%, #08131f 100%) !important;
+    pointer-events: none !important;
+    z-index: 2 !important;
+}
+
+/* ==========================================
+   H. FAQ SECTION — DEEP BLACK
+   ========================================== */
+.axo-faq-section {
+    background: #050505 !important;
+    padding-top: 180px !important;
+}
+
+/* Transition: Dark Navy to Deep Black */
+.axo-faq-section::before {
+    content: '' !important;
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    height: 350px !important;
+    background: linear-gradient(to bottom, #08131f 0%, #060e17 40%, #050505 100%) !important;
+    pointer-events: none !important;
+    z-index: 2 !important;
+}
+
+/* ==========================================
+   I. CTA / CONTACT & FOOTER — DEEP BLACK
+   ========================================== */
+.ori-case-study-section {
+    background: #050505 !important;
+}
+
+
+/* ── 4. PREMIUM CORPORATE FLOATING HEADER ── */
+
+/* Transparent State (Top of page) */
+.axo-floating-nav {
+	position: fixed;
+	top: 0;
+	left: 0;
+	width: 100%;
+	z-index: 1000;
+	padding: 1.2rem 0;
+	transition: all 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+	background: #ffffff;
+	backdrop-filter: blur(20px);
+	-webkit-backdrop-filter: blur(20px);
+	border-bottom: 1px solid rgba(14, 44, 84, 0.08);
+	box-shadow: 0 10px 40px rgba(14, 44, 84, 0.035);
+}
+
+.axo-nav-container {
+	max-width: 1400px;
+	margin: 0 auto;
+	padding: 0 4vw;
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+}
+
+/* Logo Lockup */
+.axo-nav-logo a {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	text-decoration: none;
+	transition: transform 0.4s ease;
+}
+
+.axo-nav-logo img {
+	height: 32px;
+	width: auto;
+	object-fit: contain;
+	transition: all 0.4s ease;
+    background: #000;
+    border-radius: 20px;
+}
+
+.axo-nav-brand {
+	font-family: 'Oswald', sans-serif;
+	font-size: 1.15rem;
+	font-weight: 700;
+	letter-spacing: 0.1em;
+	color: #111111;
+	margin-top: 2px;
+	transition: color 0.4s ease;
+}
+
+.axo-reg {
+	font-size: 0.5em;
+	vertical-align: super;
+	opacity: 0.6;
+}
+
+/* Right Side Navigation + Socials */
+.axo-nav-right {
+	display: flex;
+	align-items: center;
+	gap: 3rem;
+}
+
+.axo-nav-links {
+	display: flex;
+	gap: 2.2rem;
+	align-items: center;
+}
+
+.axo-nav-links a {
+	color: #111111;
+	text-decoration: none;
+	font-family: 'Inter', sans-serif;
+	font-size: 0.9rem;
+	font-weight: 600;
+	letter-spacing: 0.03em;
+	transition: all 0.3s ease;
+	position: relative;
+	padding: 0.4rem 0;
+	opacity: 0.85;
+}
+
+.axo-nav-links a::after {
+	content: '';
+	position: absolute;
+	bottom: 0;
+	left: 50%;
+	width: 0;
+	height: 1.5px;
+	background: #1E88E5;
+	transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+	transform: translateX(-50%);
+	opacity: 0;
+}
+
+.axo-nav-links a:hover {
+	opacity: 1;
+	color: #1E88E5;
+	transform: translateY(-2px);
+}
+
+.axo-nav-links a:hover::after {
+	width: 100%;
+	opacity: 1;
+}
+
+.axo-nav-item {
+	position: relative;
+}
+
+.axo-services-toggle {
+	align-items: center;
+	display: inline-flex !important;
+	gap: 7px;
+}
+
+.axo-services-toggle i {
+	color: #00D4FF;
+	font-size: 0.66rem;
+	transition: transform 0.28s ease;
+}
+
+.axo-nav-item:hover .axo-services-toggle i,
+.axo-nav-item:focus-within .axo-services-toggle i {
+	transform: rotate(180deg);
+}
+
+.axo-services-dropdown {
+	background: rgba(255, 255, 255, 0.98);
+	backdrop-filter: blur(18px);
+	-webkit-backdrop-filter: blur(18px);
+	border: 1px solid rgba(14, 44, 84, 0.08);
+	border-radius: 22px;
+	box-shadow: 0 28px 80px rgba(14, 44, 84, 0.14);
+	display: grid;
+	gap: 6px;
+	left: 50%;
+	min-width: 390px;
+	opacity: 0;
+	padding: 12px;
+	pointer-events: none;
+	position: absolute;
+	top: calc(100% + 18px);
+	transform: translate(-50%, 12px);
+	transition: opacity 0.28s ease, transform 0.28s ease, visibility 0.28s ease;
+	visibility: hidden;
+	z-index: 40;
+}
+
+.axo-services-dropdown::before {
+	background: transparent;
+	content: "";
+	height: 20px;
+	left: 0;
+	position: absolute;
+	right: 0;
+	top: -20px;
+}
+
+.axo-services-dropdown a {
+	align-items: center;
+	border: 1px solid transparent;
+	border-radius: 16px;
+	color: #111111 !important;
+	display: grid;
+	gap: 12px;
+	grid-template-columns: 38px 1fr auto;
+	letter-spacing: 0 !important;
+	opacity: 1 !important;
+	padding: 12px !important;
+	text-decoration: none;
+	transform: none !important;
+	transition: background 0.25s ease, border-color 0.25s ease, transform 0.25s ease;
+}
+
+.axo-services-dropdown a::after {
+	display: none;
+}
+
+.axo-services-dropdown a::before {
+	background: #00D4FF;
+	border-radius: 999px;
+	content: "";
+	height: 0;
+	left: 0;
+	position: absolute;
+	top: 50%;
+	transform: translateY(-50%);
+	transition: height 0.25s ease;
+	width: 3px;
+}
+
+.axo-services-dropdown a > i {
+	align-items: center;
+	background: rgba(0, 212, 255, 0.1);
+	border: 1px solid rgba(0, 212, 255, 0.18);
+	border-radius: 12px;
+	color: #00D4FF;
+	display: inline-flex;
+	height: 38px;
+	justify-content: center;
+	width: 38px;
+}
+
+.axo-services-dropdown strong {
+	color: #111111;
+	display: block;
+	font-size: 0.82rem;
+	font-weight: 900;
+	letter-spacing: 0.04em;
+	line-height: 1.2;
+	text-transform: uppercase;
+}
+
+.axo-services-dropdown small {
+	color: #666666;
+	display: block;
+	font-size: 0.74rem;
+	font-weight: 650;
+	line-height: 1.35;
+	margin-top: 3px;
+}
+
+.axo-services-dropdown em {
+	color: #00D4FF;
+	font-style: normal;
+	font-weight: 900;
+	transition: transform 0.25s ease;
+}
+
+.axo-services-dropdown a:hover {
+	background: #F8F9FB;
+	border-color: rgba(0, 212, 255, 0.22);
+	transform: translateX(3px) !important;
+}
+
+.axo-services-dropdown a:hover::before {
+	height: 28px;
+}
+
+.axo-services-dropdown a:hover em {
+	transform: translateX(4px);
+}
+
+.axo-nav-item:hover .axo-services-dropdown,
+.axo-nav-item:focus-within .axo-services-dropdown {
+	opacity: 1;
+	pointer-events: auto;
+	transform: translate(-50%, 0);
+	visibility: visible;
+}
+
+/* Social Icons */
+.axo-nav-social {
+	display: flex;
+	gap: 0.8rem;
+	align-items: center;
+	border-left: 1px solid rgba(14, 44, 84, 0.1);
+	padding-left: 1.5rem;
+	height: 24px;
+	transition: border-color 0.4s ease;
+}
+
+.axo-nav-social a {
+	color: #fff;
+	font-size: 0.95rem;
+	width: 34px;
+	height: 34px;
+	border-radius: 50%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border: 1px solid rgba(14, 44, 84, 0.15);
+	background: transparent;
+	text-decoration: none;
+	transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+	opacity: 0.85;
+    background: #000;
+}
+
+.axo-nav-social a:hover {
+	opacity: 1;
+	color: #1E88E5;
+	border-color: #1E88E5;
+	transform: translateY(-3px);
+	background: rgba(30, 136, 229, 0.05);
+}
+
+/* SCROLLED STATE (Premium White Glassmorphism - Shrunk Padding) */
+.axo-floating-nav.is-scrolled {
+	padding: 0.8rem 0 !important;
+	background: #ffffff;
+	box-shadow: 0 14px 46px rgba(14, 44, 84, 0.08);
+}
+
+/* Mobile Toggle Hamburger */
+.axo-mobile-toggle {
+	display: none;
+	flex-direction: column;
+	justify-content: space-between;
+	width: 28px;
+	height: 20px;
+	background: transparent;
+	border: none;
+	cursor: pointer;
+	padding: 0;
+	z-index: 1001;
+}
+
+.axo-mobile-toggle span {
+	width: 100%;
+	height: 2px;
+	background-color: #111111;
+	border-radius: 2px;
+	transition: all 0.3s ease;
+}
+
+/* Mobile Slide Drawer Styling */
+.axo-mobile-menu {
+	position: fixed;
+	inset: 0;
+	z-index: 2000;
+	pointer-events: none;
+	display: flex;
+	justify-content: flex-end;
+}
+
+.axo-mobile-menu.is-active {
+	pointer-events: auto;
+}
+
+.axo-mobile-menu-backdrop {
+	position: absolute;
+	inset: 0;
+	background: rgba(5, 5, 5, 0.4);
+	opacity: 0;
+	transition: opacity 0.5s ease;
+}
+
+.axo-mobile-menu.is-active .axo-mobile-menu-backdrop {
+	opacity: 1;
+}
+
+.axo-mobile-menu-inner {
+	position: relative;
+	width: 100%;
+	max-width: 400px;
+	height: 100vh;
+	background: rgba(248, 249, 251, 0.95);
+	backdrop-filter: blur(25px);
+	-webkit-backdrop-filter: blur(25px);
+	padding: 2rem;
+	display: flex;
+	flex-direction: column;
+	transform: translateX(100%);
+	transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+	box-shadow: -10px 0 40px rgba(14, 44, 84, 0.1);
+}
+
+.axo-mobile-menu.is-active .axo-mobile-menu-inner {
+	transform: translateX(0);
+}
+
+.axo-mobile-menu-header {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	margin-bottom: 3rem;
+	border-bottom: 1px solid rgba(14, 44, 84, 0.08);
+	padding-bottom: 1.5rem;
+}
+
+.axo-mobile-brand {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+
+.axo-mobile-logo {
+	height: 32px;
+	width: auto;
+}
+
+.axo-mobile-brand span {
+	font-family: 'Oswald', sans-serif;
+	font-size: 1.15rem;
+	font-weight: 700;
+	color: #111111;
+	letter-spacing: 0.1em;
+}
+
+.axo-mobile-close {
+	background: rgba(14, 44, 84, 0.05);
+	border: 1px solid rgba(14, 44, 84, 0.1);
+	width: 36px;
+	height: 36px;
+	border-radius: 50%;
+	color: #111111;
+	font-size: 1rem;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	transition: all 0.3s ease;
+}
+
+.axo-mobile-close:hover {
+	background: #111111;
+	color: #ffffff;
+	transform: rotate(90deg);
+}
+
+.axo-mobile-nav-links {
+	display: flex;
+	flex-direction: column;
+	gap: 1.5rem;
+	flex: 1;
+}
+
+.axo-mobile-nav-links a {
+	font-family: 'Inter', sans-serif;
+	font-size: 1.5rem;
+	font-weight: 500;
+	color: #111111;
+	text-decoration: none;
+	transition: all 0.3s ease;
+	letter-spacing: -0.02em;
+}
+
+.axo-mobile-nav-links a:hover {
+	color: #1E88E5;
+	transform: translateX(8px);
+}
+
+.axo-mobile-service-list {
+	border-left: 2px solid rgba(0, 212, 255, 0.28);
+	display: grid;
+	gap: 10px;
+	margin: -0.6rem 0 0.2rem 0.2rem;
+	padding-left: 1rem;
+}
+
+.axo-mobile-service-list a {
+	align-items: center;
+	color: #333333;
+	display: flex;
+	font-size: 0.96rem;
+	font-weight: 750;
+	gap: 10px;
+	letter-spacing: 0;
+}
+
+.axo-mobile-service-list a span {
+	color: #00D4FF;
+	font-size: 0.72rem;
+	font-weight: 900;
+	min-width: 24px;
+}
+
+.axo-mobile-menu-footer {
+	margin-top: auto;
+	padding-top: 2rem;
+	border-top: 1px solid rgba(14, 44, 84, 0.08);
+}
+
+.axo-mobile-socials {
+	display: flex;
+	gap: 1rem;
+}
+
+.axo-mobile-socials a {
+	color: #111111;
+	font-size: 1.1rem;
+	width: 40px;
+	height: 40px;
+	border-radius: 50%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border: 1px solid rgba(14, 44, 84, 0.15);
+	text-decoration: none;
+	transition: all 0.3s ease;
+}
+
+.axo-mobile-socials a:hover {
+	color: #ffffff;
+	background: #1E88E5;
+	border-color: #1E88E5;
+	transform: translateY(-3px);
+}
+
+/* Responsive Overrides */
+@media (max-width: 991px) {
+	.axo-nav-links,
+	.axo-nav-social {
+		display: none;
+	}
+	.axo-mobile-toggle {
+		display: flex;
+	}
+}
+
+
+/* ── 5. LIGHT SECTIONS: CONTRAST COLOR SYSTEM OVERRIDES ── */
+
+/* Typography Adaptations (About, Clients, Projects) */
+.axo-about-section .axo-ab-eyebrow,
+.axo-clients-section .axo-clients-eyebrow,
+.axo-projects-section .axo-proj-eyebrow {
+    color: #1E88E5 !important;
+    font-weight: 700 !important;
+    text-shadow: none !important;
+}
+
+.axo-about-section .axo-ab-eyebrow-line,
+.axo-clients-section .axo-clients-eyebrow::after,
+.axo-projects-section .axo-proj-eyebrow::after {
+    background: linear-gradient(90deg, #1E88E5, transparent) !important;
+}
+
+/* Deep charcoal headings */
+.axo-about-section .axo-ab-heading,
+.axo-clients-section .axo-clients-title,
+.axo-projects-section .axo-proj-title,
+.axo-projects-section .axo-proj-name,
+.axo-about-section .axo-ab-hl-bold {
+    color: #111111 !important;
+    text-shadow: none !important;
+}
+
+.axo-about-section .axo-ab-hl-muted {
+    color: #4b5563 !important;
+}
+
+.axo-about-section .axo-ab-hl-cyan {
+    color: #2B6EFF !important;
+    text-shadow: none !important;
+}
+
+/* Elegant body text */
+.axo-about-section .axo-ab-body p,
+.axo-clients-section .axo-clients-desc,
+.axo-projects-section .axo-proj-desc {
+    color: #222222 !important;
+    opacity: 0.85 !important;
+}
+
+.axo-about-section .axo-ab-impact {
+    color: #0E2C54 !important;
+    font-weight: 700 !important;
+}
+
+/* Light Glass Cards */
+.axo-about-section .axo-ab-card {
+    background: rgba(255, 255, 255, 0.78) !important;
+    border: 1px solid rgba(14, 44, 84, 0.08) !important;
+    box-shadow: 0 30px 60px rgba(14, 44, 84, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.8) !important;
+}
+
+.axo-about-section .axo-ab-card-glow {
+    background: radial-gradient(circle at top, rgba(43, 110, 255, 0.03) 0%, transparent 60%) !important;
+}
+
+.axo-about-section .axo-ab-card-shimmer {
+    background: linear-gradient(90deg, transparent, rgba(43, 110, 255, 0.05), transparent) !important;
+}
+
+/* Floating words outlines in light section */
+.axo-about-section .axo-ab-word span {
+    color: rgba(14, 44, 84, 0.03) !important;
+    -webkit-text-stroke: 1px rgba(14, 44, 84, 0.08) !important;
+}
+
+.axo-about-section .axo-ab-word::before {
+    background: rgba(30, 136, 229, 0.3) !important;
+}
+
+.axo-about-section .axo-ab-word-trail {
+    background: linear-gradient(to bottom, transparent, rgba(30, 136, 229, 0.15), transparent) !important;
+}
+
+/* Attribute Pills */
+.axo-about-section .axo-ab-pill {
+    background: rgba(255, 255, 255, 0.8) !important;
+    border: 1px solid rgba(14, 44, 84, 0.12) !important;
+    color: #222222 !important;
+    box-shadow: 0 4px 10px rgba(14, 44, 84, 0.02) !important;
+}
+
+.axo-about-section .axo-ab-pill i {
+    color: #1E88E5 !important;
+}
+
+.axo-about-section .axo-ab-pill:hover {
+    background: #FFFFFF !important;
+    border-color: #2B6EFF !important;
+    color: #111111 !important;
+    box-shadow: 0 10px 20px rgba(43, 110, 255, 0.08) !important;
+}
+
+/* Stat Chips */
+.axo-about-section .axo-ab-chip {
+    background: rgba(255, 255, 255, 0.8) !important;
+    border: 1px solid rgba(14, 44, 84, 0.1) !important;
+    box-shadow: 0 10px 25px rgba(14, 44, 84, 0.02) !important;
+}
+
+.axo-about-section .axo-ab-chip-num {
+    color: #0E2C54 !important;
+    text-shadow: none !important;
+}
+
+.axo-about-section .axo-ab-chip-label {
+    color: #4b5563 !important;
+}
+
+/* Growth Chart Light Mode Calibration */
+.axo-about-section .axo-ab-growth-chart {
+    background: rgba(255, 255, 255, 0.85) !important;
+    border-color: rgba(14, 44, 84, 0.1) !important;
+    box-shadow: 0 20px 45px rgba(14, 44, 84, 0.03), inset 0 1px 0 rgba(255, 255, 255, 0.8) !important;
+}
+
+.axo-about-section .axo-ab-shape-svg rect[fill="url(#gridBackdrop)"] {
+    fill: rgba(255, 255, 255, 0.6) !important;
+}
+
+.axo-about-section .axo-ab-shape-svg rect[stroke="rgba(0,212,255,0.06)"] {
+    stroke: rgba(14, 44, 84, 0.06) !important;
+}
+
+.axo-about-section .axo-ab-shape-svg line[stroke="rgba(255,255,255,0.08)"] {
+    stroke: rgba(14, 44, 84, 0.08) !important;
+}
+
+.axo-about-section .axo-ab-shape-svg line[stroke="rgba(0, 212, 255, 0.12)"] {
+    stroke: rgba(30, 136, 229, 0.2) !important;
+}
+
+.axo-about-section .axo-ab-shape-svg text {
+    fill: rgba(14, 44, 84, 0.4) !important;
+}
+
+.axo-about-section .axo-ab-shape-svg text[fill="rgba(0, 212, 255, 0.35)"] {
+    fill: rgba(1E88E5, 0.6) !important;
+}
+
+.axo-about-section .axo-ab-shape-svg linearGradient#growthLineGrad stop[stop-color="#00D4FF"] {
+    stop-color: #2B6EFF !important;
+}
+
+.axo-about-section .axo-ab-shape-svg linearGradient#growthLineGrad stop[stop-color="#00b4ff"] {
+    stop-color: #1E88E5 !important;
+}
+
+.axo-about-section .axo-ab-shape-svg linearGradient#growthFillGrad stop[stop-color="#00D4FF"] {
+    stop-color: #2B6EFF !important;
+}
+
+.axo-about-section .axo-ab-shape-svg circle.axo-growth-peak-glow {
+    stroke: #2B6EFF !important;
+}
+
+/* Collaborations (Clients) Light Cards */
+.axo-clients-section .axo-client-card {
+    background: rgba(255, 255, 255, 0.8) !important;
+    border: 1px solid rgba(14, 44, 84, 0.08) !important;
+    color: rgba(14, 44, 84, 0.6) !important;
+    box-shadow: 0 10px 30px rgba(14, 44, 84, 0.02) !important;
+}
+
+.axo-clients-section .axo-client-card:hover {
+    background: #FFFFFF !important;
+    border-color: #2B6EFF !important;
+    color: #2B6EFF !important;
+    box-shadow: 0 20px 45px rgba(43, 110, 255, 0.1) !important;
+}
+
+/* Projects Rows & Info */
+.axo-projects-section .axo-proj-row {
+    border-bottom: 1px solid rgba(14, 44, 84, 0.08) !important;
+}
+
+.axo-projects-section .axo-proj-num {
+    color: rgba(14, 44, 84, 0.3) !important;
+}
+
+.axo-projects-section .axo-proj-name {
+    color: rgba(14, 44, 84, 0.4) !important;
+}
+
+.axo-projects-section .axo-proj-desc {
+    color: #4b5563 !important;
+}
+
+.axo-projects-section .axo-proj-row:hover {
+    border-color: rgba(43, 110, 255, 0.4) !important;
+}
+
+.axo-projects-section .axo-proj-row:hover .axo-proj-name {
+    color: #111111 !important;
+    text-shadow: none !important;
+    transform: translateX(12px) !important;
+}
+
+.axo-projects-section .axo-proj-row:hover .axo-proj-num {
+    color: #2B6EFF !important;
+}
+
+.axo-projects-section .axo-proj-overlay {
+    background: radial-gradient(circle at 0% 50%, #F4F7FA 0%, transparent 80%) !important;
+}
+
+
+/* ── 6. DARK & NAVY SECTIONS COMPONENT BEAUTIFICATION ── */
+
+/* Services Cards (Dark Navy Section) */
+.ori-service-section-6 .axo-svc-card {
+    background: rgba(255, 255, 255, 0.02) !important;
+    border: 1px solid rgba(255, 255, 255, 0.05) !important;
+}
+
+.ori-service-section-6 .axo-svc-card.axo-svc-card--active {
+    background: rgba(255, 255, 255, 0.04) !important;
+    border-color: #00D4FF !important;
+    box-shadow: 0 30px 60px rgba(0, 212, 255, 0.12) !important;
+}
+
+/* Immersive Quote Section Word stagger glow */
+.axo-man-word.axo-man-highlight {
+    color: #00D4FF !important;
+    text-shadow: 0 0 25px rgba(0, 212, 255, 0.35) !important;
+}
+
+.axo-man-word.axo-man-feeling {
+    background: linear-gradient(135deg, #ffffff 40%, #00D4FF 100%) !important;
+    -webkit-background-clip: text !important;
+    -webkit-text-fill-color: transparent !important;
+}
+
+/* FAQ Cards in Dark Theme */
+.axo-faq-item {
+    background: rgba(255, 255, 255, 0.02) !important;
+    border: 1px solid rgba(255, 255, 255, 0.05) !important;
+}
+
+.axo-faq-item:hover,
+.axo-faq-item.active {
+    background: rgba(255, 255, 255, 0.04) !important;
+    border-color: #00D4FF !important;
+    box-shadow: 0 15px 35px rgba(0, 212, 255, 0.1) !important;
+}
+
+/* Footer Bottom Marquee details */
+.axo-bottom-marquee-item {
+    color: rgba(255, 255, 255, 0.02) !important;
+    -webkit-text-stroke: 1px rgba(255, 255, 255, 0.06) !important;
+    text-shadow: none !important;
+}

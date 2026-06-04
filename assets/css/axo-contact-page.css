@@ -1,0 +1,756 @@
+/* AXOMARC premium contact page */
+
+body.axo-contact-page {
+  background: #050505;
+  color: #111111;
+  font-family: 'Inter', sans-serif;
+}
+
+body.axo-contact-page main {
+  overflow: hidden;
+}
+
+body.axo-contact-page #preloader {
+  opacity: 1;
+  transition: opacity 0.45s ease, visibility 0.45s ease;
+}
+
+body.axo-contact-page.is-loaded #preloader {
+  opacity: 0;
+  visibility: hidden;
+}
+
+.axo-contact-page .axo-nav-links a.is-active,
+.axo-contact-page .axo-mobile-nav-links a.is-active {
+  color: #00D4FF;
+}
+
+.axo-contact-container {
+  margin: 0 auto;
+  max-width: 1220px;
+  padding: 0 24px;
+  position: relative;
+  width: 100%;
+  z-index: 2;
+}
+
+.axo-contact-section {
+  isolation: isolate;
+  overflow: hidden;
+  padding: clamp(82px, 8vw, 126px) 0;
+  position: relative;
+}
+
+.axo-contact-kicker {
+  align-items: center;
+  color: #00D4FF;
+  display: inline-flex;
+  font-size: 0.76rem;
+  font-weight: 900;
+  gap: 12px;
+  letter-spacing: 0.24em;
+  margin-bottom: 22px;
+  text-transform: uppercase;
+}
+
+.axo-contact-kicker::before {
+  background: #00D4FF;
+  border-radius: 99px;
+  content: "";
+  height: 2px;
+  width: 34px;
+}
+
+.axo-contact-reveal {
+  opacity: 0;
+  transform: translateY(26px);
+  transition:
+    opacity 0.72s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.72s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.axo-contact-reveal.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.axo-contact-page h1,
+.axo-contact-page h2,
+.axo-contact-page h3,
+.axo-contact-page p {
+  margin: 0;
+}
+
+.axo-contact-page p {
+  line-height: 1.72;
+}
+
+/* Hero */
+.axo-contact-hero {
+  align-items: center;
+  background:
+    radial-gradient(circle at 76% 24%, rgba(0, 212, 255, 0.13), transparent 32%),
+    radial-gradient(circle at 12% 78%, rgba(74, 190, 255, 0.07), transparent 28%),
+    linear-gradient(135deg, #050505 0%, #0B1220 100%);
+  color: #ffffff;
+  display: flex;
+  min-height: min(860px, 100svh);
+  padding-top: clamp(130px, 15vh, 176px);
+}
+
+.axo-contact-hero::before {
+  background-image:
+    radial-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.034) 0 1px, transparent 1px 112px);
+  background-size: 34px 34px, auto;
+  content: "";
+  inset: 0;
+  opacity: 0.46;
+  pointer-events: none;
+  position: absolute;
+  z-index: 0;
+}
+
+.axo-contact-hero-glow {
+  background: rgba(0, 212, 255, 0.14);
+  border-radius: 50%;
+  filter: blur(80px);
+  height: 440px;
+  pointer-events: none;
+  position: absolute;
+  right: -140px;
+  top: 120px;
+  width: 440px;
+  z-index: 0;
+}
+
+.axo-contact-hero-grid {
+  align-items: center;
+  display: grid;
+  gap: clamp(42px, 6vw, 86px);
+  grid-template-columns: minmax(0, 1.04fr) minmax(360px, 0.96fr);
+}
+
+.axo-contact-hero h1 {
+  color: #ffffff;
+  font-size: clamp(3.2rem, 5vw, 7rem);
+  font-weight: 900;
+  letter-spacing: 0;
+  line-height: 0.95;
+  max-width: 780px;
+}
+
+.axo-contact-hero h1 span {
+  color: #00D4FF;
+  display: inline-block;
+}
+
+.axo-contact-hero p {
+  color: #d5d5d5;
+  font-size: clamp(1rem, 1.2vw, 1.14rem);
+  margin-top: 28px;
+  max-width: 640px;
+}
+
+.axo-contact-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 34px;
+}
+
+.axo-contact-btn {
+  align-items: center;
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 0.86rem;
+  font-weight: 900;
+  gap: 10px;
+  letter-spacing: 0.12em;
+  padding: 16px 22px;
+  text-decoration: none;
+  text-transform: uppercase;
+  transition: transform 0.28s ease, border-color 0.28s ease, background 0.28s ease, color 0.28s ease, box-shadow 0.28s ease;
+}
+
+.axo-contact-btn-primary {
+  background: #00D4FF;
+  border: 1px solid #00D4FF;
+  box-shadow: 0 18px 44px rgba(0, 212, 255, 0.18);
+  color: #050505;
+}
+
+.axo-contact-btn-secondary {
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+}
+
+.axo-contact-btn:hover {
+  transform: translateY(-4px);
+}
+
+.axo-contact-btn-primary:hover {
+  background: #4ABEFF;
+  color: #050505;
+}
+
+.axo-contact-btn-secondary:hover {
+  border-color: rgba(0, 212, 255, 0.42);
+  color: #00D4FF;
+}
+
+.axo-contact-hero-cards {
+  display: grid;
+  gap: 16px;
+  position: relative;
+}
+
+.axo-contact-floating-card {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 22px;
+  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.22);
+  color: #ffffff;
+  display: flex;
+  font-size: clamp(1rem, 1.3vw, 1.18rem);
+  font-weight: 900;
+  gap: 14px;
+  padding: 24px;
+  transition: transform 0.3s ease, border-color 0.3s ease;
+}
+
+.axo-contact-floating-card:hover {
+  border-color: rgba(0, 212, 255, 0.34);
+  transform: translateY(-5px);
+}
+
+.axo-contact-floating-card i {
+  align-items: center;
+  background: rgba(0, 212, 255, 0.1);
+  border: 1px solid rgba(0, 212, 255, 0.18);
+  border-radius: 14px;
+  color: #00D4FF;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 42px;
+  justify-content: center;
+  width: 42px;
+}
+
+/* Contact form section */
+.axo-contact-form-section {
+  background: #222426;
+}
+
+.axo-contact-form-section::before {
+  background-image: linear-gradient(90deg, rgba(17, 17, 17, 0.035) 1px, transparent 1px);
+  background-size: 112px 100%;
+  content: "";
+  inset: 0;
+  opacity: 0.55;
+  pointer-events: none;
+  position: absolute;
+}
+
+.axo-contact-split {
+  align-items: start;
+  display: grid;
+  gap: clamp(42px, 6vw, 82px);
+  grid-template-columns: minmax(300px, 0.86fr) minmax(0, 1.14fr);
+}
+
+.axo-contact-info h2,
+.axo-contact-form-card h2,
+.axo-contact-why h2,
+.axo-contact-faq h2,
+.axo-contact-cta h2 {
+  font-size: clamp(2.35rem, 5vw, 5rem);
+  font-weight: 900;
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+.axo-contact-info h2,
+.axo-contact-form-card h2,
+.axo-contact-faq h2 {
+  color: #fff;
+}
+
+.axo-contact-info p {
+  color: #fff;
+  font-size: clamp(1rem, 1.2vw, 1.1rem);
+  margin-top: 22px;
+  max-width: 500px;
+}
+
+.axo-contact-info-grid {
+  display: grid;
+  gap: 14px;
+  margin-top: 34px;
+}
+
+.axo-contact-info-card {
+  align-items: flex-start;
+  background: #050505;
+  border: 1px solid #009CB5;
+  border-radius: 20px;
+  box-shadow: 0 18px 48px rgba(17, 17, 17, 0.055);
+  display: grid;
+  gap: 14px;
+  grid-template-columns: 44px 1fr;
+  padding: 20px;
+  transition: transform 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.axo-contact-info-card:hover {
+  border-color: rgba(0, 212, 255, 0.38);
+  box-shadow: 0 24px 62px rgba(17, 17, 17, 0.08);
+  transform: translateY(-5px);
+}
+
+.axo-contact-info-card i {
+  align-items: center;
+  background: rgba(0, 212, 255, 0.1);
+  border: 1px solid rgba(0, 212, 255, 0.18);
+  border-radius: 14px;
+  color: #00D4FF;
+  display: inline-flex;
+  height: 44px;
+  justify-content: center;
+  width: 44px;
+}
+
+.axo-contact-info-card h3 {
+  color: #fff;
+  font-size: 0.95rem;
+  font-weight: 900;
+  margin-bottom: 5px;
+}
+
+.axo-contact-info-card a,
+.axo-contact-info-card span {
+  color: #fff;
+  display: block;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  text-decoration: none;
+}
+
+.axo-contact-info-card a:hover {
+  color: #00D4FF;
+}
+
+.axo-contact-form-card {
+  background: #050505;
+  border-radius: 30px;
+  box-shadow: 0 28px 80px rgba(17, 17, 17, 0.1);
+  padding: clamp(24px, 3vw, 36px);
+}
+
+.axo-contact-form-card h2 {
+  font-size: clamp(1.9rem, 3vw, 2.8rem);
+  margin-bottom: 24px;
+}
+
+.axo-contact-form {
+  display: grid;
+  gap: 16px;
+}
+
+.axo-contact-form-row {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.axo-contact-field {
+  display: grid;
+  gap: 8px;
+}
+
+.axo-contact-field label {
+  color: #009CB5;
+  font-size: 0.76rem;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.axo-contact-field input,
+.axo-contact-field select,
+.axo-contact-field textarea {
+  background: #F8F9FB;
+  border: 1px solid #E5E7EB;
+  border-radius: 16px;
+  color: #111111;
+  font: inherit;
+  min-height: 54px;
+  outline: none;
+  padding: 14px 16px;
+  transition: border-color 0.25s ease, box-shadow 0.25s ease, background 0.25s ease;
+  width: 100%;
+}
+
+.axo-contact-field textarea {
+  min-height: 150px;
+  resize: vertical;
+}
+
+.axo-contact-field input:focus,
+.axo-contact-field select:focus,
+.axo-contact-field textarea:focus {
+  background: #ffffff;
+  border-color: rgba(0, 212, 255, 0.72);
+  box-shadow: 0 0 0 4px rgba(0, 212, 255, 0.12);
+}
+
+.axo-contact-consent {
+  align-items: flex-start;
+  background: #F8F9FB;
+  border: 1px solid #E5E7EB;
+  border-radius: 16px;
+  color: #666666;
+  cursor: pointer;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 18px 1fr;
+  line-height: 1.55;
+  margin: 0;
+  padding: 14px 16px;
+}
+
+.axo-contact-consent input {
+  accent-color: #00D4FF;
+  height: 18px;
+  margin: 3px 0 0;
+  width: 18px;
+}
+
+.axo-contact-consent span {
+  color: #666666;
+  font-size: 0.86rem;
+}
+
+.axo-contact-legal-note {
+  color: #ffffff;
+  font-size: 0.86rem;
+}
+
+.axo-contact-consent a,
+.axo-contact-legal-note a {
+  color: #009CB5;
+  font-weight: 900;
+  text-decoration: none;
+  transition: color 0.25s ease;
+}
+
+.axo-contact-consent a:hover,
+.axo-contact-legal-note a:hover {
+  color: #00D4FF;
+}
+
+.axo-contact-submit {
+  justify-content: center;
+  margin-top: 8px;
+  width: 100%;
+}
+
+.axo-contact-legal-note {
+  line-height: 1.55;
+  margin: -2px 0 0;
+  text-align: center;
+}
+
+.axo-contact-form-status {
+  color: #666666;
+  font-size: 0.9rem;
+  margin-top: 12px;
+  min-height: 22px;
+}
+
+/* Why */
+.axo-contact-why {
+  background:radial-gradient(ellipse 58% 34% at 78% 18%, rgba(0, 212, 255, 0.12), transparent 58%),    radial-gradient(ellipse 42% 34% at 12% 82%, rgba(0, 212, 255, 0.07), transparent 62%),    linear-gradient(180deg, #050505 0%, #07101b 54%, #050505 100%);
+  color: #ffffff;
+}
+
+.axo-contact-why h2,
+.axo-contact-cta h2 {
+  color: #ffffff;
+}
+
+.axo-contact-why-head {
+  align-items: end;
+  display: flex;
+  gap: 28px;
+  justify-content: space-between;
+  margin-bottom: clamp(34px, 5vw, 58px);
+}
+
+.axo-contact-why-head p {
+  color: #d5d5d5;
+  max-width: 470px;
+}
+
+.axo-contact-why-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.axo-contact-why-card {
+  background: #050505;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 22px;
+  min-height: 210px;
+  padding: 26px;
+  transition: transform 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.axo-contact-why-card:hover {
+  border-color: rgba(0, 212, 255, 0.28);
+  box-shadow: 0 24px 58px rgba(0, 0, 0, 0.22);
+  transform: translateY(-6px);
+}
+
+.axo-contact-why-card i {
+  align-items: center;
+  background: rgba(0, 212, 255, 0.1);
+  border: 1px solid rgba(0, 212, 255, 0.18);
+  border-radius: 14px;
+  color: #00D4FF;
+  display: inline-flex;
+  height: 42px;
+  justify-content: center;
+  margin-bottom: 24px;
+  width: 42px;
+}
+
+.axo-contact-why-card h3 {
+  color: #ffffff;
+  font-size: 1.04rem;
+  font-weight: 900;
+  line-height: 1.25;
+  margin-bottom: 12px;
+}
+
+.axo-contact-why-card p {
+  color: #d5d5d5;
+  font-size: 0.93rem;
+}
+
+/* FAQ */
+.axo-contact-faq {
+  background: #222426;
+}
+
+.axo-contact-faq-grid {
+  align-items: start;
+  display: grid;
+  gap: clamp(36px, 6vw, 84px);
+  grid-template-columns: minmax(280px, 0.72fr) minmax(0, 1.28fr);
+}
+
+.axo-contact-faq-intro p {
+  color: #fff;
+  margin-top: 20px;
+  max-width: 440px;
+}
+
+.axo-contact-faq-list {
+  display: grid;
+  gap: 14px;
+}
+
+.axo-contact-faq-item {
+  background: #F8F9FB;
+  border: 1px solid #E5E7EB;
+  border-radius: 20px;
+  box-shadow: 0 18px 48px rgba(17, 17, 17, 0.045);
+  overflow: hidden;
+  transition: border-color 0.28s ease, box-shadow 0.28s ease, transform 0.28s ease;
+}
+
+.axo-contact-faq-item:hover {
+  border-color: rgba(0, 212, 255, 0.34);
+  transform: translateY(-3px);
+}
+
+.axo-contact-faq-item.is-open {
+  background: #ffffff;
+  border-color: rgba(0, 212, 255, 0.42);
+  box-shadow: 0 24px 62px rgba(17, 17, 17, 0.08);
+}
+
+.axo-contact-faq-btn {
+  align-items: center;
+  background: #050505;
+  border: 0;
+  color: #fff;
+  display: flex;
+  font: inherit;
+  font-weight: 900;
+  justify-content: space-between;
+  padding: 22px 24px;
+  text-align: left;
+  width: 100%;
+}
+
+.axo-contact-faq-icon {
+  border: 1px solid rgba(0, 212, 255, 0.24);
+  border-radius: 999px;
+  flex: 0 0 auto;
+  height: 32px;
+  margin-left: 18px;
+  position: relative;
+  width: 32px;
+}
+
+.axo-contact-faq-icon::before,
+.axo-contact-faq-icon::after {
+  background: #00D4FF;
+  border-radius: 99px;
+  content: "";
+  left: 50%;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.axo-contact-faq-icon::before {
+  height: 2px;
+  width: 13px;
+}
+
+.axo-contact-faq-icon::after {
+  height: 13px;
+  width: 2px;
+}
+
+.axo-contact-faq-item.is-open .axo-contact-faq-icon::after {
+  opacity: 0;
+  transform: translate(-50%, -50%) scaleY(0);
+}
+
+.axo-contact-faq-answer {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.36s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.axo-contact-faq-item.is-open .axo-contact-faq-answer {
+  grid-template-rows: 1fr;
+}
+
+.axo-contact-faq-answer > div {
+  overflow: hidden;
+}
+
+.axo-contact-faq-answer p {
+  border-top: 1px solid #E5E7EB;
+  color: #fff;
+  padding: 18px 24px 24px;
+  background: #000
+}
+
+/* CTA */
+.axo-contact-cta {
+  background:
+    radial-gradient(circle at 50% 0%, rgba(0, 212, 255, 0.14), transparent 36%),
+    linear-gradient(135deg, #050505 0%, #0B1220 100%);
+  color: #ffffff;
+  text-align: center;
+}
+
+.axo-contact-cta h2 {
+  margin: 0 auto 22px;
+  max-width: 880px;
+}
+
+.axo-contact-cta h2 span {
+  color: #00D4FF;
+}
+
+.axo-contact-cta p {
+  color: #d5d5d5;
+  margin: 0 auto 34px;
+  max-width: 620px;
+}
+
+@media (max-width: 1040px) {
+  .axo-contact-hero-grid,
+  .axo-contact-split,
+  .axo-contact-faq-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .axo-contact-hero-cards,
+  .axo-contact-form-card {
+    max-width: 760px;
+  }
+
+  .axo-contact-why-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 680px) {
+  .axo-contact-section {
+    padding: 72px 0;
+  }
+
+  .axo-contact-container {
+    padding: 0 18px;
+  }
+
+  .axo-contact-hero {
+    min-height: auto;
+    padding-top: 122px;
+  }
+
+  .axo-contact-hero h1 {
+    font-size: clamp(2.55rem, 12vw, 4.2rem);
+  }
+
+  .axo-contact-btn {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .axo-contact-form-row,
+  .axo-contact-why-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .axo-contact-why-head {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .axo-contact-form-card {
+    border-radius: 24px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .axo-contact-reveal,
+  .axo-contact-btn,
+  .axo-contact-floating-card,
+  .axo-contact-info-card,
+  .axo-contact-why-card,
+  .axo-contact-faq-item,
+  .axo-contact-faq-answer,
+  .axo-contact-faq-icon::before,
+  .axo-contact-faq-icon::after {
+    transition: none !important;
+  }
+
+  .axo-contact-reveal {
+    opacity: 1;
+    transform: none;
+  }
+}

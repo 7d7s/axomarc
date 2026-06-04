@@ -1,0 +1,451 @@
+/* ==========================================================================
+   AXOMARC PREMIUM COLLABORATIONS SECTION STYLES
+   ========================================================================== */
+
+:root {
+  --collab-bg: #393E46;
+  --collab-card: #454B55;
+  --collab-card-soft: rgba(69, 75, 85, 0.72);
+  --collab-card-hover: rgba(69, 75, 85, 0.92);
+  --collab-accent: #00D4FF;
+  --collab-accent-sec: #6FE6FF;
+  --collab-text-head: #FFFFFF;
+  --collab-text-body: #D6D6D6;
+  --collab-border: rgba(255, 255, 255, 0.08);
+  --collab-border-hover: rgba(0, 212, 255, 0.25);
+  --collab-glow-shadow: rgba(0, 212, 255, 0.15);
+}
+
+.axo-collab-section {
+  position: relative;
+  background: #222426;
+  padding: clamp(4.75rem, 8vw, 7rem) 0;
+  overflow: hidden;
+  isolation: isolate;
+  color: var(--collab-text-head);
+  font-family: 'Inter', sans-serif;
+}
+
+/* --- Atmospheric Background Effects --- */
+.axo-collab-bg-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Soft radial cyan glows */
+.axo-collab-glow-1 {
+  position: absolute;
+  width: 500px;
+  height: 500px;
+  background: radial-gradient(circle, rgba(0, 212, 255, 0.06) 0%, transparent 70%);
+  top: -10%;
+  right: -5%;
+  filter: blur(60px);
+}
+
+.axo-collab-glow-2 {
+  position: absolute;
+  width: 400px;
+  height: 400px;
+  background: radial-gradient(circle, rgba(0, 212, 255, 0.04) 0%, transparent 70%);
+  bottom: -10%;
+  left: -5%;
+  filter: blur(50px);
+}
+
+/* Subtle pattern and noise */
+.axo-collab-pattern {
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+  background-size: 32px 32px;
+  opacity: 0.8;
+  z-index: 1;
+}
+
+.axo-collab-noise {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 50% 50%, rgba(255,255,255,0.005) 1px, transparent 0);
+  background-size: 8px 8px;
+  opacity: 0.3;
+  z-index: 1;
+}
+
+/* --- Main Layout Grid --- */
+.axo-collab-container {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: clamp(3rem, 6vw, 5rem);
+  align-items: center;
+  max-width: 1220px;
+}
+
+@media (min-width: 1024px) {
+  .axo-collab-container {
+    grid-template-columns: minmax(390px, 0.9fr) minmax(0, 1.2fr);
+  }
+}
+
+/* --- Left Column: Section Content --- */
+.axo-collab-content {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+}
+
+/* Eyebrow styling */
+.axo-collab-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-size: clamp(0.7rem, 0.8vw, 0.8rem);
+  font-weight: 700;
+  letter-spacing: 0.4em;
+  color: var(--collab-accent);
+  text-transform: uppercase;
+  margin-bottom: 1.5rem;
+}
+
+.axo-collab-eyebrow::before {
+  content: '';
+  display: inline-block;
+  width: 16px;
+  height: 2px;
+  background-color: #009CB5;
+  border-radius: 2px;
+}
+
+/* Heading styling */
+.axo-collab-title {
+  font-family: 'Inter', sans-serif;
+  font-size: clamp(2.35rem, 4.7vw, 4.25rem);
+  font-weight: 800;
+  line-height: 1.02;
+  color: var(--collab-text-head);
+  margin-bottom: 1.8rem;
+  max-width: 500px;
+  letter-spacing: 0;
+}
+
+.axo-collab-title span.accent-highlight {
+  color: #009CB5;
+  position: relative;
+  display: inline-block;
+  text-shadow: 0 0 28px rgba(0, 212, 255, 0.22);
+}
+
+/* Paragraph styling */
+.axo-collab-desc {
+  font-size: clamp(0.95rem, 1.1vw, 1.1rem);
+  line-height: 1.7;
+  color: var(--collab-text-body);
+  max-width: 550px;
+  margin-bottom: 2.2rem;
+}
+
+/* Trust checklist */
+.axo-collab-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  margin-top: 0.5rem;
+}
+
+.axo-collab-check-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: clamp(0.9rem, 1vw, 1.05rem);
+  font-weight: 600;
+  color: #FFFFFF;
+}
+
+.axo-collab-check-item i {
+  color: #009CB5;
+  font-size: 1.1rem;
+}
+
+/* --- Right Column: Showcase Panel --- */
+.axo-collab-showcase-wrapper {
+  position: relative;
+  min-width: 0;
+  width: 100%;
+}
+
+/* Minimal background decorations around logo area */
+.axo-collab-deco-dot {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  background-color: var(--collab-accent-sec);
+  border-radius: 50%;
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.axo-collab-deco-dot-1 { top: -20px; left: 10%; animation: axoCollabFloatDeco 6s ease-in-out infinite alternate; }
+.axo-collab-deco-dot-2 { bottom: -25px; right: 8%; animation: axoCollabFloatDeco 8s ease-in-out infinite alternate; }
+
+.axo-collab-deco-circle {
+  position: absolute;
+  width: 120px;
+  height: 120px;
+  border: 1px dashed rgba(0, 212, 255, 0.15);
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.axo-collab-deco-circle-1 { top: -45px; right: -30px; animation: axoCollabRotateDeco 24s linear infinite; }
+
+.axo-collab-deco-line {
+  position: absolute;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(0, 212, 255, 0.2), transparent);
+  width: 150px;
+  pointer-events: none;
+}
+
+.axo-collab-deco-line-1 { bottom: -15px; left: 15%; }
+
+@keyframes axoCollabFloatDeco {
+  0% { transform: translateY(0) scale(1); }
+  100% { transform: translateY(-10px) scale(1.2); }
+}
+
+@keyframes axoCollabRotateDeco {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Glass panel */
+.axo-collab-glass-panel {
+  position: relative;
+  z-index: 2;
+  background: #050505;
+  border: 1px solid var(--collab-border);
+  border-radius: 18px;
+  padding: 2.5rem 1.5rem;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.25);
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Glass panel title */
+.axo-collab-panel-title {
+  text-align: center;
+  font-size: clamp(0.7rem, 0.8vw, 0.8rem);
+  font-weight: 700;
+  letter-spacing: 0.25em;
+  color: rgba(255, 255, 255, 0.5);
+  text-transform: uppercase;
+  margin-bottom: 2rem;
+  display: block;
+}
+
+/* Double Marquee System */
+.axo-collab-marquee-system {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  min-width: 0;
+  position: relative;
+}
+
+/* Marquee Row Container with Masking Fade Edges */
+.axo-collab-marquee-row {
+  position: relative;
+  display: flex;
+  overflow: hidden;
+  user-select: none;
+  min-width: 0;
+  width: 100%;
+  padding: 0.5rem 0;
+  mask-image: linear-gradient(to right, transparent, black 15%, black 85%, transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, black 15%, black 85%, transparent);
+}
+
+.axo-collab-marquee-track {
+  display: flex;
+  gap: 1.5rem;
+  white-space: nowrap;
+  animation: axoCollabMarquee 35s linear infinite;
+  width: max-content;
+}
+
+.axo-collab-marquee-track-rev {
+  display: flex;
+  gap: 1.5rem;
+  white-space: nowrap;
+  animation: axoCollabMarqueeRev 35s linear infinite;
+  width: max-content;
+}
+
+/* Pause scroll when hovering the row */
+.axo-collab-marquee-row:hover .axo-collab-marquee-track,
+.axo-collab-marquee-row:hover .axo-collab-marquee-track-rev {
+  animation-play-state: paused;
+}
+
+@keyframes axoCollabMarquee {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(calc(-50% - 0.75rem)); }
+}
+
+@keyframes axoCollabMarqueeRev {
+  0% { transform: translateX(calc(-50% - 0.75rem)); }
+  100% { transform: translateX(0); }
+}
+
+/* Glass card logos */
+.axo-collab-logo-card {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: clamp(140px, 12vw, 180px);
+  height: clamp(75px, 7vh, 90px);
+  background: linear-gradient(135deg, #009CB5 0%, #FFFFFF 100%);;
+  border: 1px solid var(--collab-border);
+  border-radius: 14px;
+  padding: 1.25rem;
+  transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+}
+
+.axo-collab-logo-word {
+  color: #000;
+  display: inline-block;
+  filter: grayscale(100%);
+  font-size: clamp(0.84rem, 1vw, 1rem);
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  line-height: 1;
+  text-transform: uppercase;
+  transition: color 0.4s ease, filter 0.4s ease, opacity 0.4s ease, text-shadow 0.4s ease, transform 0.4s ease;
+}
+
+/* Logo image/svg defaults */
+.axo-collab-logo-card svg.axo-svg-logo {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: clamp(90px, 9vw, 120px) !important;
+  max-height: clamp(20px, 2vh, 25px) !important;
+  display: block;
+  color: rgba(255, 255, 255, 0.3); /* Grayscale, low opacity default */
+  filter: grayscale(100%);
+  opacity: 0.6;
+  transition: all 0.4s ease;
+}
+
+/* Card Hover effect */
+.axo-collab-logo-card:hover {
+  background: var(--collab-card-hover);
+  border-color: var(--collab-border-hover);
+  transform: translateY(-4px) scale(1.035);
+  box-shadow: 0 15px 30px rgba(0, 0, 0, 0.3), 0 0 15px var(--collab-glow-shadow);
+}
+
+.axo-collab-logo-card:hover .axo-collab-logo-word {
+  color: var(--collab-accent-sec);
+  filter: grayscale(0%);
+  opacity: 1;
+  text-shadow: 0 0 14px rgba(0, 212, 255, 0.42);
+  transform: scale(1.025);
+}
+
+.axo-collab-logo-card:hover svg.axo-svg-logo {
+  color: var(--collab-accent-sec);
+  filter: grayscale(0%) drop-shadow(0 0 8px rgba(0, 212, 255, 0.4));
+  opacity: 1;
+}
+
+/* --- Reveal scroll animations --- */
+.axo-collab-reveal {
+  opacity: 0;
+  transform: translateY(35px);
+  transition: opacity 0.8s cubic-bezier(0.16, 1, 0.3, 1), transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.axo-collab-reveal.axo-collab-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.axo-collab-delay-1 { transition-delay: 0.1s; }
+.axo-collab-delay-2 { transition-delay: 0.2s; }
+.axo-collab-delay-3 { transition-delay: 0.3s; }
+.axo-collab-delay-4 { transition-delay: 0.4s; }
+
+/* --- Responsive Adjustments --- */
+@media (max-width: 1023px) {
+  .axo-collab-section {
+    padding: clamp(4rem, 8vh, 6rem) 0;
+  }
+  
+  .axo-collab-content {
+    align-items: center;
+    text-align: center;
+    margin-bottom: 2rem;
+  }
+  
+  .axo-collab-title {
+    max-width: 100%;
+  }
+  
+  .axo-collab-desc {
+    max-width: 600px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .axo-collab-checklist {
+    align-items: center;
+  }
+}
+
+@media (max-width: 576px) {
+  .axo-collab-glass-panel {
+    padding: 1.5rem 0.75rem;
+    border-radius: 16px;
+  }
+  
+  .axo-collab-marquee-system {
+    gap: 1rem;
+  }
+  
+  .axo-collab-logo-card {
+    width: 120px;
+    height: 65px;
+    padding: 0.8rem;
+    border-radius: 8px;
+  }
+
+  .axo-collab-logo-word {
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .axo-collab-deco-dot,
+  .axo-collab-deco-circle,
+  .axo-collab-marquee-track,
+  .axo-collab-marquee-track-rev {
+    animation: none !important;
+  }
+
+  .axo-collab-reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+}

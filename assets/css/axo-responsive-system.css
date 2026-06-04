@@ -1,0 +1,651 @@
+/* AXOMARC responsive refinement layer */
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-padding-top: clamp(82px, 9vw, 112px);
+}
+
+body {
+  overflow-x: clip;
+}
+
+img,
+svg,
+video,
+canvas,
+iframe {
+  max-width: 100%;
+}
+
+button,
+a,
+input,
+select,
+textarea {
+  touch-action: manipulation;
+}
+
+.axo-floating-nav {
+  width: 100%;
+}
+
+.axo-nav-container,
+.axo-hero-container,
+.axo-about-new-container,
+.axo-svc2-wrap,
+.axo-collab-container,
+.axo-work-inner,
+.axo-review-inner,
+.axo-faq-inner,
+.axo-about-page-container,
+.axo-service-container,
+.axo-contact-container,
+.axo-legal-container,
+.axo-footer-content {
+  max-width: min(1220px, calc(100% - 48px));
+}
+
+.axo-nav-container {
+  max-width: min(1400px, calc(100% - 40px));
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.axo-nav-right {
+  gap: clamp(1.2rem, 2.5vw, 3rem);
+}
+
+.axo-nav-links {
+  gap: clamp(1rem, 2vw, 2.2rem);
+}
+
+.axo-services-dropdown {
+  max-width: min(430px, calc(100vw - 32px));
+  min-width: min(390px, calc(100vw - 32px));
+}
+
+.axo-hero-title,
+.axo-about-opening-title,
+.axo-service-hero h1,
+.axo-contact-hero h1,
+.axo-legal-hero h1,
+.axo-about-banner h1 {
+  overflow-wrap: anywhere;
+}
+
+.axo-hero-title-row {
+  max-width: 100%;
+  overflow: visible;
+}
+
+.axo-hero-left,
+.axo-hero-actions {
+  position: relative;
+  z-index: 4;
+}
+
+.axo-hero-right {
+  position: relative;
+  z-index: 2;
+}
+
+.axo-hero-visual,
+.axo-hero-showcase,
+.axo-about-visual-card,
+.axo-service-about-grid,
+.axo-contact-hero-grid,
+.axo-contact-split,
+.axo-contact-faq-grid,
+.axo-about-story-grid,
+.axo-about-banner-grid,
+.axo-about-believe-grid,
+.axo-service-about-grid,
+.axo-service-why-grid {
+  min-width: 0;
+}
+
+.axo-service-btn,
+.axo-contact-btn,
+.axo-about-opening-button,
+.axo-about-cta-btn,
+.axo-service-cta-btn,
+.axo-legal-button,
+.axo-about-new-btn,
+.axo-contact-submit,
+.axo-footer-backtop {
+  min-height: 44px;
+}
+
+.axo-hero-actions .axo-btn {
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  padding: 0.95rem 1.45rem;
+}
+
+.axo-hero-actions .axo-btn-primary {
+  background: #00D4FF;
+  border-color: #00D4FF;
+  box-shadow: 0 16px 38px rgba(0, 212, 255, 0.22);
+  color: #050505;
+}
+
+.axo-hero-actions .axo-btn-secondary {
+  background: rgba(255, 255, 255, 0.045);
+  border-color: rgba(255, 255, 255, 0.22);
+  color: #ffffff;
+}
+
+.axo-hero-actions .axo-btn:hover {
+  transform: translateY(-2px);
+}
+
+.axo-contact-form input,
+.axo-contact-form select,
+.axo-contact-form textarea {
+  font-size: 16px;
+}
+
+@media (max-width: 1180px) {
+  .axo-nav-social {
+    display: none;
+  }
+
+  .axo-svc2-grid,
+  .axo-service-offer-grid,
+  .axo-contact-why-grid,
+  .axo-about-do-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .axo-work-grid,
+  .axo-review-inner,
+  .axo-contact-hero-grid,
+  .axo-contact-split,
+  .axo-contact-faq-grid,
+  .axo-about-story-grid,
+  .axo-about-banner-grid,
+  .axo-about-believe-grid,
+  .axo-service-about-grid,
+  .axo-service-why-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .axo-work-preview,
+  .axo-review-card-wrap,
+  .axo-contact-hero-cards,
+  .axo-contact-form-card,
+  .axo-about-visual-card {
+    max-width: 760px;
+    width: 100%;
+  }
+
+  .axo-service-related-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    overflow-x: visible !important;
+  }
+}
+
+@media (max-width: 991px) {
+  .axo-floating-nav {
+    padding: 0.86rem 0 !important;
+  }
+
+  .axo-nav-container {
+    max-width: calc(100% - 32px);
+  }
+
+  .axo-nav-logo img,
+  .axo-mobile-logo {
+    height: 30px;
+  }
+
+  .axo-nav-brand,
+  .axo-mobile-brand span {
+    font-size: 1rem;
+  }
+
+  .axo-mobile-menu-inner {
+    height: 100dvh;
+    max-width: min(400px, 92vw);
+    overflow-y: auto;
+    padding: clamp(1.2rem, 4vw, 2rem);
+  }
+
+  .axo-mobile-menu-header {
+    margin-bottom: clamp(1.6rem, 5vw, 2.6rem);
+  }
+
+  .axo-mobile-nav-links {
+    gap: clamp(1rem, 3.5vw, 1.45rem);
+  }
+
+  .axo-mobile-nav-links a {
+    font-size: clamp(1.12rem, 5vw, 1.45rem);
+    line-height: 1.18;
+  }
+
+  .axo-mobile-service-list {
+    gap: 8px;
+    max-width: 100%;
+  }
+
+  .axo-hero-cinematic {
+    height: auto;
+    min-height: 100svh;
+    padding: 112px 18px 72px !important;
+  }
+
+  .axo-hero-container {
+    gap: clamp(24px, 5vw, 42px);
+    max-width: min(760px, 100%);
+  }
+
+  .axo-hero-left {
+    align-items: center;
+    text-align: center;
+  }
+
+  .axo-hero-title-row {
+    white-space: normal;
+  }
+
+  .axo-hero-label {
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    letter-spacing: 0.16em;
+    max-width: min(100%, 560px);
+    text-align: center;
+  }
+
+  .axo-hero-actions,
+  .axo-service-hero-actions,
+  .axo-contact-hero-actions {
+    justify-content: center;
+  }
+
+  .axo-hero-right {
+    margin-inline: auto;
+    max-width: min(560px, 100%);
+  }
+
+  .axo-hero-ticker,
+  .axo-about-expertise-strip,
+  .axo-collab-marquee-row,
+  .axo-svc2-logo-marquee {
+    contain: layout paint;
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  .axo-about-expertise-strip {
+    padding-left: 24px;
+    padding-right: 24px;
+  }
+
+  .axo-about-expertise-strip::before,
+  .axo-about-expertise-strip::after {
+    display: none;
+  }
+
+  .axo-about-expertise-track {
+    animation: none !important;
+    display: flex !important;
+    flex-wrap: wrap !important;
+    justify-content: center !important;
+    max-width: 100% !important;
+    transform: none !important;
+    width: 100% !important;
+  }
+
+  .axo-about-expertise-group {
+    display: grid !important;
+    flex: 0 1 100% !important;
+    gap: 12px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    justify-content: center !important;
+    max-width: 100% !important;
+    padding-right: 0;
+    width: 100%;
+  }
+
+  .axo-about-expertise-group:nth-child(2) {
+    display: none !important;
+  }
+
+  .axo-about-expertise-group span {
+    justify-content: center;
+    min-width: 0;
+    text-align: center;
+    white-space: normal;
+  }
+
+  .axo-about-opening,
+  .axo-service-hero,
+  .axo-contact-hero,
+  .axo-legal-hero {
+    min-height: auto;
+    padding-top: clamp(118px, 16vw, 150px) !important;
+  }
+
+  .axo-about-opening {
+    padding-top: 0 !important;
+  }
+
+  .axo-about-page-section,
+  .axo-service-section,
+  .axo-contact-section,
+  .axo-legal-section,
+  .axo-about-new,
+  .axo-svc2-section,
+  .axo-collab-section,
+  .axo-work-section,
+  .axo-review-section,
+  .axo-faq-section {
+    padding-top: clamp(68px, 9vw, 92px) !important;
+    padding-bottom: clamp(68px, 9vw, 92px) !important;
+  }
+
+  .axo-service-process-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .axo-footer-top,
+  .axo-footer-legal-bar {
+    grid-template-columns: 1fr !important;
+  }
+
+  .axo-footer-legal-bar {
+    gap: 18px;
+    text-align: left;
+  }
+}
+
+@media (max-width: 760px) {
+  .axo-nav-container,
+  .axo-hero-container,
+  .axo-about-new-container,
+  .axo-svc2-wrap,
+  .axo-collab-container,
+  .axo-work-inner,
+  .axo-review-inner,
+  .axo-faq-inner,
+  .axo-about-page-container,
+  .axo-service-container,
+  .axo-contact-container,
+  .axo-legal-container,
+  .axo-footer-content {
+    max-width: calc(100% - 32px);
+  }
+
+  .axo-about-expertise-strip {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .axo-about-expertise-group {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .axo-hero-title,
+  .axo-about-opening-title,
+  .axo-about-banner h1,
+  .axo-service-hero h1,
+  .axo-contact-hero h1,
+  .axo-legal-hero h1 {
+    font-size: clamp(2.25rem, 13vw, 4rem) !important;
+    line-height: 1.02 !important;
+  }
+
+  .axo-about-new-heading,
+  .axo-svc2-title,
+  .axo-collab-title,
+  .axo-work-title,
+  .axo-review-title,
+  .axo-faq-title,
+  .axo-about-page-section h2,
+  .axo-service-section h2,
+  .axo-contact-section h2,
+  .axo-legal-section h2 {
+    font-size: clamp(2rem, 10vw, 3.65rem) !important;
+    line-height: 1.04 !important;
+  }
+
+  .axo-hero-actions,
+  .axo-service-hero-actions,
+  .axo-contact-hero-actions,
+  .axo-hero-trust,
+  .axo-service-cta-legal,
+  .axo-footer-legal-links {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .axo-hero-actions a,
+  .axo-service-hero-actions a,
+  .axo-contact-hero-actions a,
+  .axo-about-opening-button,
+  .axo-about-cta-btn,
+  .axo-service-cta-btn,
+  .axo-legal-button,
+  .axo-about-new-btn,
+  .axo-contact-submit {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .axo-svc2-grid,
+  .axo-service-offer-grid,
+  .axo-service-process-row,
+  .axo-service-related-grid,
+  .axo-contact-why-grid,
+  .axo-about-do-grid,
+  .axo-about-card-grid,
+  .axo-about-belief-grid,
+  .axo-about-vmo-list,
+  .axo-legal-card-list,
+  .axo-legal-accordion-list {
+    grid-template-columns: 1fr !important;
+  }
+
+  .axo-svc2-card,
+  .axo-service-offer-card,
+  .axo-service-process-card,
+  .axo-related-card,
+  .axo-contact-why-card,
+  .axo-contact-info-card,
+  .axo-contact-form-card,
+  .axo-contact-faq-item,
+  .axo-about-belief-card,
+  .axo-about-do-card,
+  .axo-legal-card,
+  .axo-legal-accordion-item {
+    min-height: auto !important;
+    padding: clamp(20px, 6vw, 26px) !important;
+  }
+
+  .axo-work-row,
+  .axo-contact-info-card {
+    grid-template-columns: 1fr auto !important;
+  }
+
+  .axo-work-copy,
+  .axo-work-row small {
+    grid-column: 1 / -1;
+  }
+
+  .axo-review-card {
+    min-height: auto;
+    padding: clamp(24px, 7vw, 34px);
+  }
+
+  .axo-review-slides {
+    min-height: clamp(260px, 66vw, 360px);
+  }
+
+  .axo-footer-brand-word {
+    white-space: normal;
+    word-break: break-word;
+  }
+}
+
+@media (max-width: 480px) {
+  .axo-nav-container,
+  .axo-hero-container,
+  .axo-about-new-container,
+  .axo-svc2-wrap,
+  .axo-collab-container,
+  .axo-work-inner,
+  .axo-review-inner,
+  .axo-faq-inner,
+  .axo-about-page-container,
+  .axo-service-container,
+  .axo-contact-container,
+  .axo-legal-container,
+  .axo-footer-content {
+    max-width: calc(100% - 28px);
+  }
+
+  .axo-floating-nav {
+    padding: 0.74rem 0 !important;
+  }
+
+  .axo-nav-logo a,
+  .axo-mobile-brand {
+    gap: 8px;
+  }
+
+  .axo-nav-brand {
+    font-size: 0.92rem;
+    letter-spacing: 0.07em;
+  }
+
+  .axo-mobile-menu-inner {
+    max-width: 100vw;
+  }
+
+  .axo-hero-cinematic {
+    padding: 98px 14px 58px !important;
+  }
+
+  .axo-hero-desc,
+  .axo-about-opening-text,
+  .axo-service-hero p,
+  .axo-contact-hero p,
+  .axo-legal-hero p,
+  .axo-about-new-paragraph,
+  .axo-svc2-subtitle,
+  .axo-collab-desc,
+  .axo-review-content p,
+  .axo-faq-intro p {
+    font-size: 0.96rem !important;
+    line-height: 1.66 !important;
+  }
+
+  .axo-hero-label {
+    border-radius: 24px;
+    font-size: 0.66rem;
+    letter-spacing: 0.14em;
+    padding: 9px 14px;
+  }
+
+  .axo-about-banner {
+    min-height: clamp(390px, 58svh, 500px) !important;
+    padding-top: 74px !important;
+    padding-bottom: 74px !important;
+  }
+
+  .axo-about-opening-label {
+    font-size: 0.68rem !important;
+    gap: 10px;
+    letter-spacing: 0.22em;
+    margin-bottom: 24px;
+  }
+
+  .axo-about-opening-label::before,
+  .axo-about-opening-label::after {
+    width: 28px;
+  }
+
+  .axo-hero-title,
+  .axo-about-opening-title,
+  .axo-service-hero h1,
+  .axo-contact-hero h1,
+  .axo-legal-hero h1 {
+    font-size: clamp(2rem, 12.8vw, 3.25rem) !important;
+  }
+
+  .axo-about-page-section,
+  .axo-service-section,
+  .axo-contact-section,
+  .axo-legal-section,
+  .axo-about-new,
+  .axo-svc2-section,
+  .axo-collab-section,
+  .axo-work-section,
+  .axo-review-section,
+  .axo-faq-section {
+    padding-top: 58px !important;
+    padding-bottom: 58px !important;
+  }
+
+  .axo-about-expertise-group {
+    gap: 10px;
+  }
+
+  .axo-about-expertise-group span {
+    font-size: 0.78rem !important;
+    gap: 8px;
+    padding: 10px 12px !important;
+  }
+
+  .axo-service-about h2,
+  .axo-service-why h2,
+  .axo-contact-form-section h2,
+  .axo-about-intro-copy h2 {
+    font-size: clamp(1.9rem, 10vw, 2.8rem) !important;
+  }
+
+  .axo-hero-visual,
+  .axo-hero-dashboard,
+  .axo-about-visual-card,
+  .axo-work-preview {
+    max-width: 100% !important;
+  }
+
+  .axo-collab-glass-panel,
+  .axo-work-preview,
+  .axo-contact-form-card,
+  .axo-legal-summary {
+    border-radius: 20px !important;
+  }
+
+  .axo-contact-form-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .axo-footer-content {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+}
+
+@media (max-height: 720px) and (min-width: 992px) {
+  .axo-hero-cinematic,
+  .axo-service-hero,
+  .axo-contact-hero,
+  .axo-legal-hero {
+    min-height: auto;
+    padding-top: 118px !important;
+    padding-bottom: 70px !important;
+  }
+
+  .axo-about-opening {
+    padding-bottom: 0 !important;
+    padding-top: 0 !important;
+  }
+
+  .axo-about-banner {
+    min-height: auto;
+    padding-bottom: 70px !important;
+    padding-top: 118px !important;
+  }
+}

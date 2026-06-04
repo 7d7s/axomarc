@@ -1,0 +1,150 @@
+/* ═══════════════════════════════════════════
+   CINEMATIC MANIFESTO SECTION
+═══════════════════════════════════════════ */
+.axo-manifesto-section {
+  position: relative;
+  width: 100%;
+  min-height: 100vh;
+  background: #02060a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: visible;
+  isolation: isolate;
+  padding: 15vh 2rem;
+  z-index: 10;
+}
+
+/* ── Background ── */
+.axo-man-bg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  overflow: hidden;
+}
+.axo-man-glow {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 100%; height: 100%;
+  background: radial-gradient(circle at 50% 50%, rgba(0, 212, 255, 0.05) 0%, transparent 60%);
+  opacity: 0;
+  transition: opacity 2s ease;
+}
+.axo-man-glow.active { opacity: 1; }
+
+.axo-man-particles {
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle, rgba(255,255,255,0.05) 1px, transparent 1px);
+  background-size: 50px 50px;
+  mask-image: radial-gradient(circle at center, black, transparent 80%);
+  opacity: 0.3;
+}
+
+.axo-man-fog {
+  position: absolute;
+  inset: -50%;
+  width: 200%; height: 200%;
+  background: radial-gradient(ellipse at center, rgba(0,212,255,0.02) 0%, transparent 70%);
+  animation: axoManFogMove 20s linear infinite;
+  filter: blur(80px);
+}
+@keyframes axoManFogMove {
+  0% { transform: translate(0, 0) rotate(0deg); }
+  100% { transform: translate(5%, 5%) rotate(5deg); }
+}
+
+/* ── Typography ── */
+.axo-man-content {
+  position: relative;
+  z-index: 2;
+  text-align: center;
+  max-width: 1200px;
+}
+
+.axo-man-text {
+  margin: 0;
+  font-family: 'Oswald', sans-serif;
+  font-size: clamp(2.5rem, 8vw, 7.5rem);
+  font-weight: 800;
+  line-height: 1.1;
+  text-transform: uppercase;
+  letter-spacing: -0.02em;
+  color: #fff;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.2em 0.5em;
+}
+
+.axo-man-word {
+  display: inline-block;
+  opacity: 0;
+  filter: blur(20px);
+  transform: translateY(30px) scale(0.9);
+  transition: all 1.2s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform, opacity, filter;
+}
+
+.axo-man-word.visible {
+  opacity: 1;
+  filter: blur(0);
+  transform: translateY(0) scale(1);
+}
+
+/* Keywords */
+.axo-man-highlight {
+  color: #00D4FF;
+  text-shadow: 0 0 30px rgba(0, 212, 255, 0.3);
+}
+
+.axo-man-feeling {
+  position: relative;
+  background: linear-gradient(135deg, #00D4FF, #fff);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  transition: all 1.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.axo-man-feeling.climax {
+  filter: drop-shadow(0 0 40px rgba(0, 212, 255, 0.8));
+  transform: scale(1.1);
+}
+
+/* ── Interaction ── */
+.axo-man-mouse-glow {
+  position: absolute;
+  width: 600px; height: 600px;
+  background: radial-gradient(circle, rgba(0, 212, 255, 0.08) 0%, transparent 70%);
+  pointer-events: none;
+  z-index: 1;
+  transform: translate(-50%, -50%);
+  mix-blend-mode: screen;
+}
+
+/* ── Climax Effect ── */
+.axo-man-climax-wave {
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 10px; height: 10px;
+  border: 2px solid rgba(0, 212, 255, 0.5);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  opacity: 0;
+  z-index: 3;
+}
+.axo-man-climax-wave.active {
+  animation: axoManWave 2s ease-out forwards;
+}
+@keyframes axoManWave {
+  0% { width: 0; height: 0; opacity: 1; border-width: 4px; }
+  100% { width: 200vw; height: 200vw; opacity: 0; border-width: 1px; }
+}
+
+@media (max-width: 768px) {
+  .axo-man-text { font-size: clamp(2rem, 12vw, 4rem); }
+}

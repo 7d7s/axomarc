@@ -1,0 +1,583 @@
+/* ╔══════════════════════════════════════════════════════════╗ */
+/* ║   AXOMARC DYNAMIC LIGHT/DARK ALTERNATING THEME OVERRIDES ║ */
+/* ║   Awwwards-grade light theme visual balance overlays      ║ */
+/* ╚══════════════════════════════════════════════════════════╝ */
+
+/* ── 1. GLOBAL BODY BACKDROP GRADIENT ── */
+body {
+    background: linear-gradient(
+        to bottom, 
+        #01040a 0%, 
+        #01040a 12%, 
+        #ffffff 22%, 
+        #ffffff 88%, 
+        #01040a 96%, 
+        #01040a 100%
+    ) !important;
+    color: #15181e;
+    transition: background 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Force middle section wrappers to have transparent backgrounds to show the gradient */
+.ori-about-section-6,
+.ori-service-section-6,
+.ori-case-study-section,
+.ori-sponsor-section-line,
+.axo-faq-section,
+.axo-projects-section,
+.axo-testi-section {
+    background: transparent !important;
+    background-color: transparent !important;
+    color: #15181e !important;
+}
+
+/* Ensure no dark background overlays block the gradient */
+.ori-about-section-6::before,
+.ori-service-section-6::before,
+.ori-case-study-section::before,
+.axo-faq-section::before,
+.axo-faq-bg,
+.axo-about-bg,
+.axo-services-bg,
+.axo-testi-bg,
+.axo-projects-bg {
+    background: transparent !important;
+    background-color: transparent !important;
+    display: none !important;
+}
+
+/* ── 2. STICKY HEADER LIGHT THEME OVERRIDES ── */
+.axo-floating-nav.is-scrolled {
+    background: #ffffff !important;
+    backdrop-filter: blur(20px) !important;
+    -webkit-backdrop-filter: blur(20px) !important;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.05) !important;
+    border-bottom: 1px solid rgba(0, 212, 255, 0.15) !important;
+}
+
+.axo-floating-nav.is-scrolled::after {
+    background: linear-gradient(90deg, transparent, rgba(0, 212, 255, 0.4), transparent) !important;
+}
+
+/* Navbar links over light theme */
+.axo-floating-nav.is-scrolled .axo-nav-center a {
+    color: #15181e !important;
+}
+
+.axo-floating-nav.is-scrolled .axo-nav-center a:hover {
+    color: #00a3cc !important;
+    text-shadow: 0 0 8px rgba(0, 163, 204, 0.2) !important;
+}
+
+.axo-floating-nav.is-scrolled .axo-nav-social a {
+    color: #15181e !important;
+}
+
+.axo-floating-nav.is-scrolled .axo-nav-social a:hover {
+    color: #00a3cc !important;
+}
+
+/* Mobile Toggle Hamburger over light theme */
+.axo-floating-nav.is-scrolled .axo-mobile-toggle span {
+    background-color: #15181e !important;
+}
+
+/* ── 3. MIDDLE SECTIONS TEXT & CARD LIGHT THEMES ── */
+
+/* ==========================================
+   A. ABOUT SECTION OVERRIDES
+   ========================================== */
+.axo-ab-eyebrow {
+    color: #00a3cc !important;
+}
+
+.axo-ab-eyebrow-line {
+    background: linear-gradient(90deg, #00a3cc, transparent) !important;
+}
+
+.axo-ab-card {
+    background: rgba(0, 0, 0, 0.02) !important;
+    border: 1px solid rgba(0, 212, 255, 0.25) !important;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.03), inset 0 1px 0 rgba(255, 255, 255, 0.8) !important;
+}
+
+.axo-ab-hl-muted {
+    color: #4b5563 !important;
+}
+
+.axo-ab-hl-bold {
+    color: #15181e !important;
+}
+
+.axo-ab-hl-cyan {
+    color: #00a3cc !important;
+}
+
+.axo-ab-hdivider-line {
+    background: linear-gradient(90deg, rgba(0, 212, 255, 0.4), transparent) !important;
+}
+
+.axo-ab-hdivider-dot {
+    background: #00D4FF !important;
+    box-shadow: 0 0 10px rgba(0, 212, 255, 0.8) !important;
+}
+
+.axo-ab-body p {
+    color: #4b5563 !important;
+}
+
+.axo-ab-impact {
+    color: #15181e !important;
+}
+
+.axo-ab-pill {
+    background: rgba(0, 0, 0, 0.02) !important;
+    border: 1px solid rgba(0, 0, 0, 0.06) !important;
+    color: #4b5563 !important;
+}
+
+.axo-ab-pill i {
+    color: #00a3cc !important;
+}
+
+.axo-ab-pill:hover {
+    background: #ffffff !important;
+    border-color: #00D4FF !important;
+    color: #15181e !important;
+    box-shadow: 0 8px 20px rgba(0, 212, 255, 0.08) !important;
+}
+
+/* Floating Vertical Words */
+.axo-ab-word span {
+    color: rgba(21, 24, 30, 0.1) !important;
+    -webkit-text-stroke: 1px rgba(21, 24, 30, 0.15) !important;
+}
+
+.axo-ab-word::before {
+    background: rgba(0, 212, 255, 0.3) !important;
+}
+
+.axo-ab-word-trail {
+    background: linear-gradient(to bottom, transparent, rgba(0, 212, 255, 0.2), transparent) !important;
+}
+
+/* Holographic Growth Chart Light Mode adaptation */
+.axo-ab-growth-chart {
+    background: rgba(255, 255, 255, 0.5) !important;
+    border-color: rgba(0, 212, 255, 0.25) !important;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.8) !important;
+}
+
+.axo-ab-shape-svg rect[fill="url(#gridBackdrop)"] {
+    fill: rgba(255, 255, 255, 0.65) !important;
+}
+
+.axo-ab-shape-svg rect[stroke="rgba(0,212,255,0.06)"] {
+    stroke: rgba(0, 212, 255, 0.15) !important;
+}
+
+.axo-ab-shape-svg line[stroke="rgba(255,255,255,0.08)"] {
+    stroke: rgba(0, 0, 0, 0.06) !important;
+}
+
+.axo-ab-shape-svg line[stroke="rgba(0, 212, 255, 0.12)"] {
+    stroke: rgba(0, 163, 204, 0.25) !important;
+}
+
+.axo-ab-shape-svg text {
+    fill: rgba(21, 24, 30, 0.5) !important;
+}
+
+.axo-ab-shape-svg text[fill="rgba(0, 212, 255, 0.35)"] {
+    fill: rgba(0, 163, 204, 0.65) !important;
+}
+
+/* ==========================================
+   B. SERVICES SECTION OVERRIDES
+   ========================================== */
+.axo-svc-eyebrow {
+    color: #00a3cc !important;
+}
+
+.axo-svc-eyebrow-line {
+    background: linear-gradient(90deg, #00a3cc, transparent) !important;
+}
+
+.axo-svc-h-muted {
+    color: #4b5563 !important;
+}
+
+.axo-svc-h-bold {
+    color: #15181e !important;
+}
+
+.axo-svc-h-cyan {
+    color: #00a3cc !important;
+}
+
+.axo-svc-subtext {
+    color: #4b5563 !important;
+}
+
+.axo-svc-scroll-hint span {
+    color: #4b5563 !important;
+}
+
+.axo-svc-hint-track {
+    background: rgba(0, 0, 0, 0.08) !important;
+}
+
+.axo-svc-hint-ball {
+    background: #00a3cc !important;
+}
+
+/* Services Cards */
+.axo-svc-card {
+    background: rgba(0, 0, 0, 0.015) !important;
+    border: 1px solid rgba(0, 0, 0, 0.05) !important;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.01) !important;
+}
+
+.axo-svc-card-num {
+    color: rgba(21, 24, 30, 0.2) !important;
+}
+
+.axo-svc-card-arrow {
+    color: rgba(21, 24, 30, 0.3) !important;
+}
+
+.axo-svc-card-title {
+    color: #15181e !important;
+}
+
+.axo-svc-card-desc {
+    color: #4b5563 !important;
+}
+
+.axo-svc-card-tag {
+    color: #00a3cc !important;
+    background: rgba(0, 163, 204, 0.05) !important;
+    border: 1px solid rgba(0, 163, 204, 0.1) !important;
+}
+
+/* Mock UI Elements */
+.axo-sv-social-panel,
+.axo-sv-brand-book,
+.axo-sv-video-editor,
+.axo-sv-rd-panel,
+.axo-sv-ui-panel,
+.axo-sv-network {
+    background: rgba(255, 255, 255, 0.7) !important;
+    border: 1px solid rgba(0, 0, 0, 0.05) !important;
+    color: #15181e !important;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.03) !important;
+}
+
+.axo-sv-social-panel span,
+.axo-sv-rd-stat strong,
+.axo-sv-rd-stat span,
+.axo-sv-sp-row span {
+    color: #15181e !important;
+}
+
+.axo-sv-sp-bar {
+    background: rgba(0, 0, 0, 0.05) !important;
+}
+
+.axo-sv-ui-url {
+    background: rgba(0, 0, 0, 0.04) !important;
+    color: #4b5563 !important;
+}
+
+/* Active Service Card */
+.axo-svc-card.axo-svc-card--active {
+    background: #ffffff !important;
+    border-color: #00D4FF !important;
+    box-shadow: 0 30px 60px rgba(0, 212, 255, 0.1) !important;
+}
+
+.axo-svc-card.axo-svc-card--active .axo-svc-card-num {
+    color: #00D4FF !important;
+}
+
+.axo-svc-card.axo-svc-card--active .axo-svc-card-arrow {
+    color: #00D4FF !important;
+}
+
+/* ==========================================
+   C. PORTFOLIO / PROJECTS SECTION OVERRIDES
+   ========================================== */
+.axo-projects-left {
+    background: transparent !important;
+}
+
+.axo-proj-eyebrow {
+    color: #00a3cc !important;
+}
+
+.axo-proj-title {
+    color: #15181e !important;
+}
+
+.axo-proj-row {
+    border-bottom: 1px solid rgba(0, 0, 0, 0.06) !important;
+}
+
+.axo-proj-num {
+    color: rgba(21, 24, 30, 0.2) !important;
+}
+
+.axo-proj-name {
+    color: rgba(21, 24, 30, 0.4) !important;
+}
+
+.axo-proj-desc {
+    color: #4b5563 !important;
+}
+
+.axo-proj-overlay {
+    background: radial-gradient(circle at 0% 50%, #ffffff 0%, transparent 80%) !important;
+}
+
+/* Hover States */
+.axo-proj-row:hover {
+    border-color: rgba(0, 212, 255, 0.4) !important;
+}
+
+.axo-proj-row:hover .axo-proj-name {
+    color: #15181e !important;
+    text-shadow: none !important;
+}
+
+.axo-proj-row:hover .axo-proj-num {
+    color: #00D4FF !important;
+}
+
+.axo-proj-row:hover .axo-proj-desc {
+    color: #15181e !important;
+}
+
+/* ==========================================
+   D. COLLABORATIONS / CLIENTS SECTION OVERRIDES
+   ========================================== */
+.ori-sponsor-section-line .ori-section-title span {
+    color: #00a3cc !important;
+}
+
+.axo-client-card {
+    background: rgba(255, 255, 255, 0.6) !important;
+    border: 1px solid rgba(0, 0, 0, 0.05) !important;
+    color: rgba(21, 24, 30, 0.4) !important;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.01) !important;
+}
+
+.axo-client-card:hover {
+    background: #ffffff !important;
+    border-color: #00D4FF !important;
+    color: #15181e !important;
+    box-shadow: 0 15px 30px rgba(0, 212, 255, 0.1) !important;
+}
+
+/* ==========================================
+   E. TESTIMONIALS SECTION OVERRIDES
+   ========================================== */
+.axo-testi-eyebrow {
+    color: #00a3cc !important;
+}
+
+.axo-testi-quote {
+    color: #15181e !important;
+}
+
+.axo-testi-identity .axo-testi-quote {
+    background: linear-gradient(135deg, #15181e 40%, #0088cc 100%) !important;
+    -webkit-background-clip: text !important;
+    -webkit-text-fill-color: transparent !important;
+}
+
+.axo-testi-dot {
+    background: rgba(0, 0, 0, 0.1) !important;
+}
+
+.axo-testi-dot.active {
+    background: #00D4FF !important;
+    box-shadow: 0 0 15px rgba(0, 212, 255, 0.8) !important;
+}
+
+.axo-testi-progress {
+    background: rgba(0, 0, 0, 0.05) !important;
+}
+
+/* ==========================================
+   F. FAQ SECTION OVERRIDES
+   ========================================== */
+.axo-faq-section .axo-faq-eyebrow {
+    color: #00a3cc !important;
+}
+
+.axo-faq-section .axo-faq-header h2 {
+    color: #15181e !important;
+}
+
+.axo-faq-item {
+    background: rgba(255, 255, 255, 0.5) !important;
+    border: 1px solid rgba(0, 0, 0, 0.06) !important;
+    color: #15181e !important;
+}
+
+.axo-faq-item:hover,
+.axo-faq-item.active {
+    background: #ffffff !important;
+    border-color: #00D4FF !important;
+    box-shadow: 0 15px 35px rgba(0, 212, 255, 0.06) !important;
+}
+
+.axo-faq-question {
+    color: #15181e !important;
+}
+
+.axo-faq-answer {
+    color: #4b5563 !important;
+}
+
+.axo-faq-icon::before,
+.axo-faq-icon::after {
+    background-color: #15181e !important;
+}
+
+.axo-faq-item.active .axo-faq-icon::before,
+.axo-faq-item.active .axo-faq-icon::after {
+    background-color: #00D4FF !important;
+}
+
+/* ── 4. FOOTER LIGHT THEME OVERRIDES ── */
+.axo-footer-cinematic {
+    background: #ffffff !important;
+    border-top: 1px solid rgba(0, 212, 255, 0.15) !important;
+    color: #15181e !important;
+}
+
+/* Footer Background Atmos Hide (keep only canvas particles) */
+.axo-footer-glow,
+.axo-footer-beams {
+    display: none !important;
+}
+
+.axo-footer-top-signature .axo-footer-category {
+    color: #00a3cc !important;
+    text-shadow: none !important;
+}
+
+.axo-footer-top-signature .axo-footer-brand-name {
+    color: #15181e !important;
+    text-shadow: none !important;
+}
+
+.axo-footer-top-signature .axo-footer-brand-name::before {
+    color: #00a3cc !important;
+}
+
+.axo-footer-desc {
+    color: #4b5563 !important;
+}
+
+.axo-footer-grid {
+    border-top: 1px solid rgba(0, 0, 0, 0.06) !important;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.06) !important;
+}
+
+.axo-col-title {
+    color: #00a3cc !important;
+    text-shadow: none !important;
+}
+
+/* Links */
+.axo-col-link {
+    color: #4b5563 !important;
+}
+
+.axo-col-link:hover {
+    color: #15181e !important;
+    text-shadow: none !important;
+}
+
+.axo-col-link-arrow {
+    color: #4b5563 !important;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.04) !important;
+}
+
+.axo-col-link-arrow:hover {
+    color: #00a3cc !important;
+    border-bottom-color: #00D4FF !important;
+}
+
+/* Office address glass card */
+.axo-office-card {
+    background: rgba(255, 255, 255, 0.5) !important;
+    border: 1px solid rgba(0, 212, 255, 0.25) !important;
+    box-shadow: 0 15px 35px rgba(0, 0, 0, 0.03), inset 0 1px 0 rgba(255, 255, 255, 0.8) !important;
+}
+
+.axo-office-card:hover {
+    background: #ffffff !important;
+    border-color: #00D4FF !important;
+    box-shadow: 0 25px 50px rgba(0, 212, 255, 0.1) !important;
+}
+
+.axo-office-details p,
+.axo-office-link {
+    color: #4b5563 !important;
+}
+
+.axo-office-link:hover {
+    color: #00a3cc !important;
+}
+
+.axo-studio-tag {
+    color: #15181e !important;
+}
+
+/* Circular Social Icons */
+.axo-social-circle {
+    background: rgba(0, 0, 0, 0.015) !important;
+    border: 1px solid rgba(0, 0, 0, 0.08) !important;
+    color: #15181e !important;
+}
+
+.axo-social-circle:hover {
+    background: #ffffff !important;
+    border-color: #00D4FF !important;
+    color: #00a3cc !important;
+    box-shadow: 0 10px 20px rgba(0, 212, 255, 0.15) !important;
+}
+
+/* Bottom Bar */
+.axo-bottom-left {
+    color: #4b5563 !important;
+}
+
+.axo-bottom-marquee-item {
+    color: rgba(21, 24, 30, 0.06) !important;
+    -webkit-text-stroke: 1px rgba(21, 24, 30, 0.12) !important;
+    text-shadow: none !important;
+}
+
+/* Back to Top button */
+.axo-back-to-top {
+    background: rgba(0, 0, 0, 0.015) !important;
+    border: 1px solid rgba(0, 0, 0, 0.08) !important;
+}
+
+.axo-back-to-top:hover {
+    background: #ffffff !important;
+    border-color: #00D4FF !important;
+    box-shadow: 0 10px 25px rgba(0, 212, 255, 0.15) !important;
+}
+
+.axo-back-to-top i {
+    color: #15181e !important;
+}
+
+.axo-back-to-top:hover i {
+    color: #00a3cc !important;
+}
