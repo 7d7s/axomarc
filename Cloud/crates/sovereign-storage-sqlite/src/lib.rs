@@ -1,0 +1,440 @@
+// SQLite storage adapter.
+// Implements `StoragePort` against a single SQLite file. See
+// `docs/architecture.md` §2 and `docs/phase-00-mvp.md` F3 for the
+// full spec.
+//
+// Quick reference:
+//   - 7 core tables (migrations/0001_init.sql)
+//   - 1 append-only audit table + 2 triggers (migrations/0002_audit.sql)
+//   - WAL journal mode, synchronous=NORMAL (safe with WAL)
+//   - Forward-only migrations via `sqlx::migrate!()`
+//   - Single writer, multiple readers (sqlx pool with max_connections=1
+//     in the WAL-friendly config; V1 may revisit)
+
+#![deny(unsafe_code)]
+#![allow(missing_docs)]
+
+use std::path::Path;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
+};
+use sqlx::{Pool, Row, Sqlite};
+use tracing::{info, instrument};
+
+use sovereign_core::domain::{
+    App, AppId, AppUpdate, AuditEvent, AuditQuery, Backup, BackupId, BackupStatus, Deployment,
+    DeploymentEvent, DeploymentId, Domain, DomainId, NewApp, NewBackup, NewDeployment,
+    NewDomain, NewSecret, NewServer, NewUser, Secret, SecretId, SecretStatus, Server,
+    ServerId, ServerStatus, Timestamp, User, UserId, UserRole,
+};
+use sovereign_core::error::AppError;
+use sovereign_core::ports::StoragePort;
+
+mod app;
+mod audit;
+mod backup;
+mod deployment;
+mod domain;
+mod row;
+mod secret;
+mod server;
+mod user;
+
+/// Re-exports of the migration SQL for use in tests and the doctor check.
+pub mod migrations {
+    /// The 7-table initial schema (`migrations/0001_init.sql`).
+    pub const INIT_SQL: &str = include_str!("../migrations/0001_init.sql");
+    /// The append-only audit schema (`migrations/0002_audit.sql`).
+    pub const AUDIT_SQL: &str = include_str!("../migrations/0002_audit.sql");
+}
+
+/// The single state-mutation adapter. Owns the `sqlx::Pool<Sqlite>`
+/// and runs migrations on first open.
+#[derive(Debug, Clone)]
+pub struct SqliteState {
+    pool: Pool<Sqlite>,
+}
+
+impl SqliteState {
+    /// Open (and migrate) a SQLite file at `path`. Creates the parent
+    /// directory if it does not exist. Returns `AppError::Storage` on
+    /// any failure.
+    #[instrument(skip_all, fields(path = %path.as_ref().display()))]
+    pub async fn open(path: impl AsRef<Path>) -> Result<Self, AppError> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    AppError::Storage(format!(
+                        "cannot create data dir {}: {e}",
+                        parent.display()
+                    ))
+                })?;
+            }
+        }
+
+        let connect = SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal)
+            .busy_timeout(Duration::from_secs(5))
+            .foreign_keys(true);
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1) // SQLite single-writer
+            .min_connections(1)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect_with(connect)
+            .await
+            .map_err(|e| AppError::Storage(format!("connect: {e}")))?;
+
+        Self::from_pool(pool).await
+    }
+
+    /// Open an in-memory database (`:memory:` with a shared cache so
+    /// the pool can open multiple connections to the same DB). Used by
+    /// tests and the `sovereign doctor` Level 1 sanity check.
+    #[instrument(skip_all)]
+    pub async fn open_in_memory() -> Result<Self, AppError> {
+        // `file::memory:?cache=shared` is the URI form required for an
+        // in-memory DB to be visible to multiple connections. Plain
+        // `:memory:` is private to the first connection that opens it.
+        let connect = SqliteConnectOptions::new()
+            .filename("file::memory:?cache=shared")
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal)
+            .foreign_keys(true);
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(4)
+            .min_connections(1)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect_with(connect)
+            .await
+            .map_err(|e| AppError::Storage(format!("connect (memory): {e}")))?;
+
+        Self::from_pool(pool).await
+    }
+
+    /// Open a uniquely-named in-memory database. The `name` is included
+    /// in the SQLite shared-cache key, so two calls with different
+    /// names get completely independent databases. Used by tests that
+    /// need full isolation.
+    #[instrument(skip_all, fields(name = %name))]
+    pub async fn open_in_memory_named(name: &str) -> Result<Self, AppError> {
+        let filename = format!("file:{name}:?mode=memory&cache=shared");
+        let connect = SqliteConnectOptions::new()
+            .filename(&filename)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal)
+            .foreign_keys(true);
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(4)
+            .min_connections(1)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect_with(connect)
+            .await
+            .map_err(|e| AppError::Storage(format!("connect (memory:{name}): {e}")))?;
+
+        Self::from_pool(pool).await
+    }
+
+    /// Adopt an already-constructed pool and run migrations. Useful for
+    /// tests that want to seed data first.
+    pub async fn from_pool(pool: Pool<Sqlite>) -> Result<Self, AppError> {
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .map_err(|e| AppError::Storage(format!("migrate: {e}")))?;
+        info!("sqlite state opened and migrated");
+        Ok(Self { pool })
+    }
+
+    /// Borrow the underlying pool. For tests and the doctor check only.
+    pub fn pool(&self) -> &Pool<Sqlite> {
+        &self.pool
+    }
+
+    /// Returns `true` iff WAL mode is currently active on the connection.
+    pub async fn is_wal(&self) -> Result<bool, AppError> {
+        let row: (String,) = sqlx::query_as("PRAGMA journal_mode")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(AppError::from)?;
+        Ok(row.0.eq_ignore_ascii_case("wal"))
+    }
+}
+
+#[async_trait]
+impl StoragePort for SqliteState {
+    #[instrument(skip(self))]
+    async fn schema_version(&self) -> Result<Option<i64>, AppError> {
+        // `sqlx::migrate!` tracks applied migrations in its own
+        // `_sqlx_migrations` table — it does not bump `PRAGMA
+        // user_version`. Read the max version from the bookkeeping
+        // table; return `None` if migrations have not run yet (the
+        // table does not exist before the first migrate).
+        let exists: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type = 'table' AND name = '_sqlx_migrations'",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(AppError::from)?;
+        if exists.0 == 0 {
+            return Ok(None);
+        }
+        let row: (i64,) = sqlx::query_as(
+            "SELECT COALESCE(MAX(version), 0) FROM _sqlx_migrations",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(AppError::from)?;
+        Ok(Some(row.0))
+    }
+
+    #[instrument(skip(self))]
+    async fn core_tables(&self) -> Result<Vec<String>, AppError> {
+        // Exclude the `_sqlx_migrations` bookkeeping table; that one
+        // belongs to sqlx, not to our domain schema.
+        let rows = sqlx::query(
+            "SELECT name FROM sqlite_master \
+             WHERE type = 'table' AND name NOT LIKE 'sqlite_%' \
+               AND name != '_sqlx_migrations' \
+             ORDER BY name",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AppError::from)?;
+        Ok(rows
+            .into_iter()
+            .map(|r| r.get::<String, _>(0))
+            .collect())
+    }
+
+    async fn get_app(&self, id: AppId) -> Result<Option<App>, AppError> {
+        row::select_app_by_id(&self.pool, id).await
+    }
+
+    async fn get_app_by_name(&self, name: &str) -> Result<Option<App>, AppError> {
+        row::select_app_by_name(&self.pool, name).await
+    }
+
+    async fn list_apps(&self, owner: Option<&str>) -> Result<Vec<App>, AppError> {
+        match owner {
+            Some(o) => row::select_apps_by_owner(&self.pool, o).await,
+            None => row::select_all_apps(&self.pool).await,
+        }
+    }
+
+    async fn create_app(&self, new: NewApp, actor: &str) -> Result<App, AppError> {
+        app::create(&self.pool, new, actor).await
+    }
+
+    async fn update_app(
+        &self,
+        id: AppId,
+        update: AppUpdate,
+        expected_version: i64,
+        actor: &str,
+    ) -> Result<App, AppError> {
+        app::update(&self.pool, id, update, expected_version, actor).await
+    }
+
+    async fn archive_app(
+        &self,
+        id: AppId,
+        expected_version: i64,
+        actor: &str,
+    ) -> Result<App, AppError> {
+        app::archive(&self.pool, id, expected_version, actor).await
+    }
+
+    async fn begin_deployment(
+        &self,
+        new: NewDeployment,
+        actor: &str,
+    ) -> Result<Deployment, AppError> {
+        deployment::begin(&self.pool, new, actor).await
+    }
+
+    async fn transition_deployment(
+        &self,
+        id: DeploymentId,
+        event: DeploymentEvent,
+        actor: &str,
+    ) -> Result<Deployment, AppError> {
+        deployment::transition(&self.pool, id, event, actor).await
+    }
+
+    async fn get_deployment(&self, id: DeploymentId) -> Result<Option<Deployment>, AppError> {
+        row::select_deployment_by_id(&self.pool, id).await
+    }
+
+    async fn list_deployments(
+        &self,
+        app: AppId,
+        limit: u32,
+    ) -> Result<Vec<Deployment>, AppError> {
+        row::select_deployments_by_app(&self.pool, app, limit.max(1) as i64).await
+    }
+
+    async fn add_domain(&self, new: NewDomain, actor: &str) -> Result<Domain, AppError> {
+        domain::add(&self.pool, new, actor).await
+    }
+
+    async fn remove_domain(&self, id: DomainId, actor: &str) -> Result<(), AppError> {
+        domain::remove(&self.pool, id, actor).await
+    }
+
+    async fn list_domains(&self, app: AppId) -> Result<Vec<Domain>, AppError> {
+        row::select_domains_by_app(&self.pool, app).await
+    }
+
+    async fn put_secret(&self, new: NewSecret, actor: &str) -> Result<Secret, AppError> {
+        secret::put(&self.pool, new, actor).await
+    }
+
+    async fn get_secret(&self, id: SecretId) -> Result<Option<Secret>, AppError> {
+        row::select_secret_by_id(&self.pool, id).await
+    }
+
+    async fn list_secrets(&self, app: AppId) -> Result<Vec<Secret>, AppError> {
+        row::select_secrets_by_app(&self.pool, app).await
+    }
+
+    async fn delete_secret(&self, id: SecretId, actor: &str) -> Result<(), AppError> {
+        secret::delete(&self.pool, id, actor).await
+    }
+
+    async fn rotate_secret(
+        &self,
+        id: SecretId,
+        new_ciphertext: Vec<u8>,
+        actor: &str,
+    ) -> Result<Secret, AppError> {
+        secret::rotate(&self.pool, id, new_ciphertext, actor).await
+    }
+
+    async fn set_secret_status(
+        &self,
+        id: SecretId,
+        status: SecretStatus,
+        actor: &str,
+    ) -> Result<Secret, AppError> {
+        secret::set_status(&self.pool, id, status, actor).await
+    }
+
+    async fn add_server(&self, new: NewServer) -> Result<Server, AppError> {
+        server::add(&self.pool, new).await
+    }
+
+    async fn get_server(&self, id: ServerId) -> Result<Option<Server>, AppError> {
+        row::select_server_by_id(&self.pool, id).await
+    }
+
+    async fn list_servers(&self) -> Result<Vec<Server>, AppError> {
+        row::select_all_servers(&self.pool).await
+    }
+
+    async fn set_server_status(
+        &self,
+        id: ServerId,
+        status: ServerStatus,
+        actor: &str,
+    ) -> Result<Server, AppError> {
+        server::set_status(&self.pool, id, status, actor).await
+    }
+
+    async fn touch_server(&self, id: ServerId, at: Timestamp) -> Result<(), AppError> {
+        server::touch(&self.pool, id, at).await
+    }
+
+    async fn remove_server(&self, id: ServerId, actor: &str) -> Result<(), AppError> {
+        server::remove(&self.pool, id, actor).await
+    }
+
+    async fn begin_backup(&self, new: NewBackup, actor: &str) -> Result<Backup, AppError> {
+        backup::begin(&self.pool, new, actor).await
+    }
+
+    async fn complete_backup(
+        &self,
+        id: BackupId,
+        status: BackupStatus,
+        size_bytes: Option<i64>,
+        location: Option<String>,
+        error: Option<String>,
+        actor: &str,
+    ) -> Result<Backup, AppError> {
+        backup::complete(&self.pool, id, status, size_bytes, location, error, actor).await
+    }
+
+    async fn verify_backup(
+        &self,
+        id: BackupId,
+        verify_result: serde_json::Value,
+        actor: &str,
+    ) -> Result<Backup, AppError> {
+        backup::verify(&self.pool, id, verify_result, actor).await
+    }
+
+    async fn get_backup(&self, id: BackupId) -> Result<Option<Backup>, AppError> {
+        row::select_backup_by_id(&self.pool, id).await
+    }
+
+    async fn list_backups(&self, limit: u32) -> Result<Vec<Backup>, AppError> {
+        row::select_recent_backups(&self.pool, limit.max(1) as i64).await
+    }
+
+    async fn create_user(&self, new: NewUser) -> Result<User, AppError> {
+        user::create(&self.pool, new).await
+    }
+
+    async fn get_user(&self, id: UserId) -> Result<Option<User>, AppError> {
+        row::select_user_by_id(&self.pool, id).await
+    }
+
+    async fn get_user_by_email(&self, email: &str) -> Result<Option<User>, AppError> {
+        row::select_user_by_email(&self.pool, email).await
+    }
+
+    async fn list_users(&self) -> Result<Vec<User>, AppError> {
+        row::select_all_users(&self.pool).await
+    }
+
+    async fn set_user_role(
+        &self,
+        id: UserId,
+        role: UserRole,
+        actor: &str,
+    ) -> Result<User, AppError> {
+        user::set_role(&self.pool, id, role, actor).await
+    }
+
+    async fn touch_user(&self, id: UserId, at: Timestamp) -> Result<(), AppError> {
+        user::touch(&self.pool, id, at).await
+    }
+
+    async fn append_audit(&self, event: AuditEvent) -> Result<(), AppError> {
+        audit::append(&self.pool, event).await
+    }
+
+    async fn query_audit(&self, q: AuditQuery) -> Result<Vec<AuditEvent>, AppError> {
+        audit::query(&self.pool, &q).await
+    }
+
+    async fn count_audit(&self) -> Result<i64, AppError> {
+        audit::count(&self.pool).await
+    }
+}
+
+/// Crate version.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
