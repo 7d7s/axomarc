@@ -18,11 +18,12 @@ use std::sync::Arc;
 use anyhow::Context;
 use sovereign_core::domain::Strategy;
 use sovereign_core::error::AppError;
-use sovereign_core::ports::{ProxyPort, RuntimePort, StoragePort};
+use sovereign_core::ports::{ProxyPort, RuntimePort, SecretsPort, StoragePort};
 use sovereign_core::state::AppState;
 use sovereign_core::use_cases::deploy::{self, DeployRequest};
 use sovereign_proxy_caddy::CaddyProxy;
 use sovereign_runtime_docker::DockerRuntime;
+use sovereign_secrets_age::AgeSecrets;
 use sovereign_storage_sqlite::SqliteState;
 use tracing::instrument;
 
@@ -129,6 +130,7 @@ pub async fn run(cmd: &Cmd, out: &Output) -> Dispatch {
         storage,
         runtime,
         proxy: connect_proxy().await,
+        secrets: connect_secrets(),
     };
     let req = DeployRequest {
         app_id: app.id,
@@ -267,6 +269,29 @@ pub(crate) async fn connect_proxy() -> Option<Arc<dyn ProxyPort>> {
             tracing::warn!(
                 error = %e,
                 "caddy admin API not reachable; deploy URL will be the loopback placeholder. Run `sovereign domain add` once Caddy is up."
+            );
+            None
+        }
+    }
+}
+
+/// Open (or create) the age master key. Returns `None` if the
+/// master-key dir is not yet provisioned — in that case, the deploy
+/// continues with no env injection (the use case returns an empty
+/// env list). The CLI prints a one-time hint to run `sovereign
+/// secret set` (which auto-creates the key).
+pub(crate) fn connect_secrets() -> Option<Arc<dyn SecretsPort>> {
+    let secrets = AgeSecrets::with_default_path();
+    // Probe: try a no-op encrypt of an empty buffer. If the master
+    // key is reachable, this returns Ok; if not (parent dir
+    // missing, perms wrong, etc.), it returns Err. We do NOT want
+    // to fail the deploy — just opt out of secret injection.
+    match secrets.encrypt(b"") {
+        Ok(_) => Some(Arc::new(secrets) as Arc<dyn SecretsPort>),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "master key not available; secrets will NOT be injected into the container. Run `sovereign secret set <KEY> --app <APP>` to bootstrap."
             );
             None
         }

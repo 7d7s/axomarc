@@ -1,0 +1,18 @@
+[package]
+name = "sovereign-observability"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Observability: structured JSON logs, Prometheus /metrics, OTel SDK (opt-in)."
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+tokio = { workspace = true }
+
+sovereign-storage-sqlite = { path = "../sovereign-storage-sqlite" }

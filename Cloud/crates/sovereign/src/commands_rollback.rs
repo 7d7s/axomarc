@@ -26,7 +26,7 @@ use tracing::instrument;
 
 use crate::cli::Cmd;
 use crate::commands::Dispatch;
-use crate::commands_deploy::{connect_proxy, default_db_path};
+use crate::commands_deploy::{connect_proxy, connect_secrets, default_db_path};
 use crate::exit::AppExit;
 use crate::output::{Envelope, Output};
 
@@ -102,6 +102,7 @@ pub async fn run(cmd: &Cmd, out: &Output) -> Dispatch {
         storage,
         runtime,
         proxy: connect_proxy().await,
+        secrets: connect_secrets(),
     };
 
     let req = RollbackRequest {

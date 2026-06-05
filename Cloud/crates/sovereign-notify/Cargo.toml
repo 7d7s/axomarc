@@ -1,0 +1,15 @@
+[package]
+name = "sovereign-notify"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Notification adapter: 10 alert channels, on-call paging, incident toolkit."
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+async-trait = "0.1"

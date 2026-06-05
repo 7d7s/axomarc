@@ -1,0 +1,22 @@
+[package]
+name = "sovereign-secrets-age"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Encrypted secret store (age + Argon2 envelope encryption)."
+
+[dependencies]
+sovereign-core = { path = "../sovereign-core", version = "0.1.0" }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+futures = "0.3"
+age = { workspace = true }
+argon2 = { workspace = true }
+rand = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
