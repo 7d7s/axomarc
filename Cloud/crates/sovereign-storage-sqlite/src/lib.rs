@@ -442,6 +442,26 @@ impl StoragePort for SqliteState {
     async fn count_audit(&self) -> Result<i64, AppError> {
         audit::count(&self.pool).await
     }
+
+    #[instrument(skip(self))]
+    async fn vacuum_into(&self, target_path: &Path) -> Result<u64, AppError> {
+        // SQLite's `VACUUM INTO` (3.27+) writes a clean, defragmented
+        // copy of the database to the given path. The argument is a
+        // string literal expression, so bind it as TEXT. We then
+        // stat() the file to learn its size.
+        let path_str = target_path.to_string_lossy().into_owned();
+        sqlx::query(&format!("VACUUM INTO '{}'", path_str.replace('\'', "''")))
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AppError::Storage(format!("VACUUM INTO: {e}")))?;
+        let meta = std::fs::metadata(target_path).map_err(|e| {
+            AppError::Storage(format!(
+                "stat {} after VACUUM INTO: {e}",
+                target_path.display()
+            ))
+        })?;
+        Ok(meta.len())
+    }
 }
 
 /// Crate version.

@@ -250,10 +250,18 @@ pub enum BackupCmd {
     },
     /// List all backups
     List,
-    /// Verify a backup (restore to a scratch directory, assert row counts)
+    /// Verify a backup (open the snapshot, run integrity_check, count rows)
     Verify {
         /// Backup ID to verify
         backup_id: String,
+    },
+    /// Restore a backup to a target path (live-restore is rejected in V0)
+    Restore {
+        /// Backup ID to restore
+        backup_id: String,
+        /// Destination path for the restored SQLite file
+        #[arg(long)]
+        to: String,
     },
 }
 

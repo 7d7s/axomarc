@@ -16,9 +16,10 @@
 use std::sync::Arc;
 
 use anyhow::Context;
+use sovereign_backup::FileBackupSink;
 use sovereign_core::domain::Strategy;
 use sovereign_core::error::AppError;
-use sovereign_core::ports::{ProxyPort, RuntimePort, SecretsPort, StoragePort};
+use sovereign_core::ports::{BackupSink, ProxyPort, RuntimePort, SecretsPort, StoragePort};
 use sovereign_core::state::AppState;
 use sovereign_core::use_cases::deploy::{self, DeployRequest};
 use sovereign_proxy_caddy::CaddyProxy;
@@ -131,6 +132,8 @@ pub async fn run(cmd: &Cmd, out: &Output) -> Dispatch {
         runtime,
         proxy: connect_proxy().await,
         secrets: connect_secrets(),
+        backup: connect_backup(&db_path),
+        db_path,
     };
     let req = DeployRequest {
         app_id: app.id,
@@ -224,6 +227,28 @@ pub(crate) fn default_db_path() -> std::path::PathBuf {
     } else {
         std::path::PathBuf::from("./sovereign.db")
     }
+}
+
+/// Default backup directory. Sits next to the data dir; the on-disk
+/// layout mirrors `/var/lib/sovereign/backups/` on Linux production
+/// installs.
+pub(crate) fn default_backup_dir() -> std::path::PathBuf {
+    let db = default_db_path();
+    db.parent()
+        .map(|p| p.join("backups"))
+        .unwrap_or_else(|| std::path::PathBuf::from("./backups"))
+}
+
+/// Connect the filesystem backup sink. Always succeeds — the sink is
+/// a thin wrapper around a directory. A missing/unwritable directory
+/// becomes a runtime error the first time the operator tries to
+/// `sovereign backup create`.
+pub(crate) fn connect_backup(db_path: &std::path::Path) -> Option<Arc<dyn BackupSink>> {
+    let dir = db_path
+        .parent()
+        .map(|p| p.join("backups"))
+        .unwrap_or_else(default_backup_dir);
+    Some(Arc::new(FileBackupSink::new(dir)))
 }
 
 #[cfg(unix)]

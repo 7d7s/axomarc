@@ -258,6 +258,8 @@ fn build_state(
         runtime: sovereign_core::state::no_runtime(),
         proxy: None,
         secrets: Some(secrets),
+        backup: None,
+        db_path: std::path::PathBuf::from("(secret-cli-no-db)"),
     }
 }
 

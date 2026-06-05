@@ -4,6 +4,8 @@
 // append — flows through this trait. Concrete adapters (SQLite V0,
 // rqlite V2) implement it.
 
+use std::path::Path;
+
 use async_trait::async_trait;
 
 use crate::domain::{
@@ -209,4 +211,15 @@ pub trait StoragePort: Send + Sync {
     /// The number of audit events currently stored. Used by `sovereign
     /// doctor` and the dashboard.
     async fn count_audit(&self) -> Result<i64, AppError>;
+
+    // --- backup --------------------------------------------------------------
+
+    /// Write a clean, defragmented snapshot of the database to
+    /// `target_path` using SQLite's `VACUUM INTO`. The returned value is
+    /// the on-disk size of the snapshot in bytes.
+    ///
+    /// V0 only supports SQLite snapshots. Postgres (and the rest of the
+    /// V0 stack) is V1+; the storage-port trait can grow a Postgres
+    /// variant then. See `docs/phase-00-mvp.md` F8a.
+    async fn vacuum_into(&self, target_path: &Path) -> Result<u64, AppError>;
 }

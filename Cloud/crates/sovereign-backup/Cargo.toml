@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Backup adapter: SQLite snapshots, encrypted S3 offsite, restore drill."
+description = "Backup adapter: filesystem snapshots, integrity verify, restore drill."
 
 [dependencies]
 anyhow = { workspace = true }
@@ -12,4 +12,8 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 async-trait = "0.1"
-flate2 = "1"
+uuid = { workspace = true }
+sovereign-core = { path = "../sovereign-core", version = "0.1.0" }
+
+[dev-dependencies]
+tempfile = "3"

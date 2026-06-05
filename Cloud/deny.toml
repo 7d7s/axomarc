@@ -43,6 +43,8 @@ skip = [
     "sovereign-runtime-docker",
     "sovereign-storage-sqlite",
     "sovereign-observability",
+    "sovereign-secrets-age",
+    "sovereign-backup",
 ]
 
 # Forbidden per docs/tech-stack.md §9.

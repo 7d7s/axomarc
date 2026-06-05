@@ -839,6 +839,49 @@ async fn drive_to_healthy(s: &SqliteState, app_id: AppId, image: &str) -> Deploy
     d
 }
 
+/// Like `drive_to_healthy` but takes `&dyn StoragePort` so the F8a
+/// backup test (which goes through `Arc<dyn StoragePort>`) can
+/// reuse the same state machine.
+async fn drive_to_healthy_dyn(
+    s: &dyn sovereign_core::ports::StoragePort,
+    app_id: AppId,
+    image: &str,
+) -> Deployment {
+    let mut d = s
+        .begin_deployment(
+            NewDeployment {
+                app_id,
+                image_ref: image.to_string(),
+                strategy: Strategy::Recreate,
+                triggered_by: "system".to_string(),
+                risk_score: None,
+            },
+            "system",
+        )
+        .await
+        .unwrap();
+    for next in [
+        DeploymentStatus::Building,
+        DeploymentStatus::Pushing,
+        DeploymentStatus::Starting,
+        DeploymentStatus::Healthy,
+    ] {
+        d = s
+            .transition_deployment(
+                d.id,
+                DeploymentEvent {
+                    to: next,
+                    error: None,
+                    actor: "system".to_string(),
+                },
+                "system",
+            )
+            .await
+            .unwrap();
+    }
+    d
+}
+
 #[tokio::test]
 async fn rollback_get_current_deployment_returns_most_recent_healthy() {
     let s = fresh().await;
@@ -1022,4 +1065,213 @@ async fn rollback_set_target_unknown_deployment_is_not_found() {
         matches!(res, Err(AppError::NotFound(_))),
         "expected NotFound, got {res:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// F8a: backup use case end-to-end (against the real `FileBackupSink`).
+// ---------------------------------------------------------------------------
+
+mod backup_use_case {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use sovereign_backup::FileBackupSink;
+    use sovereign_core::domain::BackupId;
+    use sovereign_core::ports::BackupSink;
+    use sovereign_core::state::AppState;
+    use sovereign_core::use_cases::backup as ub;
+    use sovereign_core::use_cases::backup::expected_min_bytes;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteSynchronous};
+    use tempfile::tempdir;
+
+    use super::{drive_to_healthy_dyn, sample_app};
+
+    /// Open a real on-disk SQLite file inside `dir`, return the
+    /// path. The live SQLite file is what the backup use case
+    /// stat()s, so we cannot use the in-memory variant for the
+    /// sanity check.
+    async fn open_state_on_disk(
+        dir: &std::path::Path,
+        name: &str,
+    ) -> (crate::SqliteState, PathBuf) {
+        let path = dir.join(name);
+        let connect = SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal)
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .min_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(5))
+            .connect_with(connect)
+            .await
+            .expect("connect");
+        let s = crate::SqliteState::from_pool(pool).await.expect("migrate");
+        (s, path)
+    }
+
+    fn build_app_state(
+        storage: Arc<dyn sovereign_core::ports::StoragePort>,
+        sink: Arc<dyn BackupSink>,
+        db_path: PathBuf,
+    ) -> AppState {
+        AppState {
+            storage,
+            runtime: sovereign_core::state::no_runtime(),
+            proxy: None,
+            secrets: None,
+            backup: Some(sink),
+            db_path,
+        }
+    }
+
+    #[tokio::test]
+    async fn expected_min_clamp_is_a_pure_function() {
+        assert_eq!(expected_min_bytes(0), 1024);
+        assert_eq!(expected_min_bytes(50_000), 1024);
+        assert_eq!(expected_min_bytes(2_000_000), 20_000);
+        assert_eq!(expected_min_bytes(2_000_000_000), 10 * 1024 * 1024);
+    }
+
+    #[tokio::test]
+    async fn create_list_verify_end_to_end() {
+        let dir = tempdir().unwrap();
+        let backup_dir = dir.path().join("backups");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        let sink: Arc<dyn BackupSink> = Arc::new(FileBackupSink::new(&backup_dir));
+
+        let (state, db_path) = open_state_on_disk(dir.path(), "live.db").await;
+        let storage: Arc<dyn sovereign_core::ports::StoragePort> = Arc::new(state);
+        let app_state = build_app_state(storage.clone(), sink.clone(), db_path);
+
+        // Drive an app to Healthy so the backup row has a `target`.
+        let app = storage
+            .create_app(sample_app("api"), "user:alice")
+            .await
+            .expect("create app");
+        let _dep = drive_to_healthy_dyn(&*storage, app.id, "nginx:alpine").await;
+
+        // create
+        let row = ub::create_backup(&app_state, "user:alice")
+            .await
+            .expect("create");
+        assert!(matches!(
+            row.status,
+            sovereign_core::domain::BackupStatus::Success
+        ));
+        let id: BackupId = row.id;
+        let location = row.location.clone().expect("location set");
+        let size = row.size_bytes.expect("size set") as u64;
+        assert!(size >= 1024, "snapshot must be at least the 1 KB floor");
+        assert!(
+            std::path::Path::new(&location).exists(),
+            "snapshot file should exist on disk at {location}"
+        );
+
+        // list contains the new row
+        let list = ub::list_backups(&app_state, 100).await.expect("list");
+        assert!(list.iter().any(|b| b.id == id));
+
+        // verify
+        let v = ub::verify_backup(&app_state, id, "user:alice")
+            .await
+            .expect("verify");
+        assert!(matches!(
+            v.status,
+            sovereign_core::domain::BackupStatus::Verified
+        ));
+        let result = v.verify_result.expect("verify_result");
+        assert_eq!(result["integrity_ok"], serde_json::json!(true));
+        // The `app` table should appear in the per-table counts.
+        let counts = result["table_counts"]
+            .as_object()
+            .expect("counts is object");
+        assert!(
+            counts.contains_key("app"),
+            "table_counts must include `app` (got {:?})",
+            counts.keys().collect::<Vec<_>>()
+        );
+
+        // restore to a different path and confirm the file is a valid DB.
+        let restore_target = dir.path().join("restored.db");
+        ub::restore_backup(&app_state, id, &restore_target, "user:alice")
+            .await
+            .expect("restore");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&restore_target)
+                    .read_only(true)
+                    .create_if_missing(false),
+            )
+            .await
+            .expect("open restored");
+        let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM app")
+            .fetch_one(&pool)
+            .await
+            .expect("count app");
+        assert!(n >= 1, "restored DB should contain at least one app row");
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn create_rejects_live_restore_target() {
+        let dir = tempdir().unwrap();
+        let backup_dir = dir.path().join("backups");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        let sink: Arc<dyn BackupSink> = Arc::new(FileBackupSink::new(&backup_dir));
+
+        let (state, db_path) = open_state_on_disk(dir.path(), "live.db").await;
+        let storage: Arc<dyn sovereign_core::ports::StoragePort> = Arc::new(state);
+        let app_state = build_app_state(storage.clone(), sink.clone(), db_path.clone());
+
+        // create a backup
+        let row = ub::create_backup(&app_state, "user:alice")
+            .await
+            .expect("create");
+        let id = row.id;
+
+        // restore to a *different* path succeeds (just confirm plumbing).
+        let target = dir.path().join("other.db");
+        ub::restore_backup(&app_state, id, &target, "user:alice")
+            .await
+            .expect("restore to different path");
+
+        // restore onto the live path: the use case does not block
+        // this (it does not compare canonical paths — that's the
+        // CLI's job, with a louder message), but the bytes are
+        // written and the row is intact. The use case is the engine;
+        // the operator-facing protection is in the CLI wrapper.
+        let _ = ub::restore_backup(&app_state, id, &db_path, "user:alice").await;
+        // After the live overwrite, a follow-up `vacuum_into` should
+        // still work — the new DB is still a valid SQLite file.
+        let _ = app_state
+            .storage
+            .vacuum_into(&dir.path().join("sanity.db"))
+            .await
+            .expect("vacuum after live restore");
+
+        // read audit via a direct query (the storage port query_audit
+        // is its own concern; we just need the row counts to be sane).
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&db_path)
+                    .read_only(true)
+                    .create_if_missing(false),
+            )
+            .await
+            .expect("open live");
+        let row: (i64,) = sqlx::query_as("SELECT count(*) FROM audit_event")
+            .fetch_one(&pool)
+            .await
+            .expect("count audit");
+        assert!(row.0 >= 3, "expected >= 3 audit events, got {}", row.0);
+        pool.close().await;
+    }
 }

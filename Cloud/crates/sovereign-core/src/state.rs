@@ -6,10 +6,11 @@
 // copying state. Use cases call `state.storage.<method>(...)` and
 // `state.runtime.<method>(...)` — never the concrete types directly.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::error::AppError;
-use crate::ports::{ProxyPort, RuntimePort, SecretsPort, StoragePort};
+use crate::ports::{BackupSink, ProxyPort, RuntimePort, SecretsPort, StoragePort};
 
 /// The shared application state. Cheap to clone (`Arc`s inside).
 #[derive(Clone)]
@@ -30,6 +31,16 @@ pub struct AppState {
     /// `sovereign init`). Use cases MUST tolerate `None` and
     /// surface a "run sovereign init first" error.
     pub secrets: Option<Arc<dyn SecretsPort>>,
+    /// The backup sink adapter (filesystem in V0). `None` in test
+    /// environments that do not care about the snapshot side-effects.
+    /// Use cases MUST tolerate `None` and return a "no backup sink"
+    /// error.
+    pub backup: Option<Arc<dyn BackupSink>>,
+    /// Absolute path to the live SQLite database file. Needed by the
+    /// backup use case to stat() the source size for the sanity check
+    /// (the storage port deliberately does not expose the on-disk
+    /// path of its underlying file).
+    pub db_path: PathBuf,
 }
 
 impl std::fmt::Debug for AppState {

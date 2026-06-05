@@ -145,14 +145,44 @@ pub async fn dispatch(cli: &Cli, out: &Output) -> Dispatch {
             }
         },
         Cmd::Backup { cmd } => match cmd {
-            BackupCmd::Create { app } => stub(cli, out, "backup create", &format!("app={}", app)),
-            BackupCmd::List => stub(cli, out, "backup list", ""),
-            BackupCmd::Verify { backup_id } => stub(
-                cli,
-                out,
-                "backup verify",
-                &format!("backup_id={}", backup_id),
-            ),
+            BackupCmd::Create { app } => {
+                if cli.dry_run {
+                    stub(cli, out, "backup create", &format!("app={}", app))
+                } else {
+                    return crate::commands_backup::run(cmd, out).await;
+                }
+            }
+            BackupCmd::List => {
+                if cli.dry_run {
+                    stub(cli, out, "backup list", "")
+                } else {
+                    return crate::commands_backup::run(cmd, out).await;
+                }
+            }
+            BackupCmd::Verify { backup_id } => {
+                if cli.dry_run {
+                    stub(
+                        cli,
+                        out,
+                        "backup verify",
+                        &format!("backup_id={}", backup_id),
+                    )
+                } else {
+                    return crate::commands_backup::run(cmd, out).await;
+                }
+            }
+            BackupCmd::Restore { backup_id, to } => {
+                if cli.dry_run {
+                    stub(
+                        cli,
+                        out,
+                        "backup restore",
+                        &format!("backup_id={} to={}", backup_id, to),
+                    )
+                } else {
+                    return crate::commands_backup::run(cmd, out).await;
+                }
+            }
         },
         Cmd::Completions { shell } => {
             use clap::CommandFactory;
@@ -227,7 +257,7 @@ fn stub_phase(name: &str) -> &'static str {
         "status" => "2",                     // F2 itself (the stub prints the state)
         "domain add" | "domain list" => "6", // F6 (Caddy auto-TLS)
         "secret set" | "secret list" | "secret rotate" => "7", // F7 (encrypted secret store) — done
-        "backup create" | "backup list" | "backup verify" => "8", // F8 (backup)
+        "backup create" | "backup list" | "backup verify" | "backup restore" => "8", // F8 (backup) — done
         _ => "??",
     }
 }
