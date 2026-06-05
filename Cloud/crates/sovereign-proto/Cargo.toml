@@ -1,0 +1,11 @@
+[package]
+name = "sovereign-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Wire types: REST/JSON request/response DTOs shared between the binary and the API."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

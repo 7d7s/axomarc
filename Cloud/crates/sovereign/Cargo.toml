@@ -32,6 +32,7 @@ sovereign-observability = { path = "../sovereign-observability" }
 sovereign-storage-sqlite = { path = "../sovereign-storage-sqlite" }
 sovereign-runtime-docker = { path = "../sovereign-runtime-docker" }
 sovereign-proxy-caddy = { path = "../sovereign-proxy-caddy" }
+sovereign-secrets-age = { path = "../sovereign-secrets-age" }
 
 [features]
 # F1: mimalloc is the default allocator across all targets. The jemalloc-on-glibc

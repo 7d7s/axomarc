@@ -118,15 +118,31 @@ pub async fn dispatch(cli: &Cli, out: &Output) -> Dispatch {
         },
         Cmd::Secret { cmd } => match cmd {
             SecretCmd::Set { key, app } => {
-                stub(cli, out, "secret set", &format!("key={} app={}", key, app))
+                if cli.dry_run {
+                    stub(cli, out, "secret set", &format!("key={} app={}", key, app))
+                } else {
+                    return crate::commands_secret::run(cmd, out).await;
+                }
             }
-            SecretCmd::List { app } => stub(cli, out, "secret list", &format!("app={}", app)),
-            SecretCmd::Rotate { key, app } => stub(
-                cli,
-                out,
-                "secret rotate",
-                &format!("key={} app={}", key, app),
-            ),
+            SecretCmd::List { app } => {
+                if cli.dry_run {
+                    stub(cli, out, "secret list", &format!("app={}", app))
+                } else {
+                    return crate::commands_secret::run(cmd, out).await;
+                }
+            }
+            SecretCmd::Rotate { key, app } => {
+                if cli.dry_run {
+                    stub(
+                        cli,
+                        out,
+                        "secret rotate",
+                        &format!("key={} app={}", key, app),
+                    )
+                } else {
+                    return crate::commands_secret::run(cmd, out).await;
+                }
+            }
         },
         Cmd::Backup { cmd } => match cmd {
             BackupCmd::Create { app } => stub(cli, out, "backup create", &format!("app={}", app)),
@@ -210,7 +226,7 @@ fn stub_phase(name: &str) -> &'static str {
         "logs" => "4",                       // F4 includes the log stream
         "status" => "2",                     // F2 itself (the stub prints the state)
         "domain add" | "domain list" => "6", // F6 (Caddy auto-TLS)
-        "secret set" | "secret list" | "secret rotate" => "7", // F7 (encrypted secret store)
+        "secret set" | "secret list" | "secret rotate" => "7", // F7 (encrypted secret store) — done
         "backup create" | "backup list" | "backup verify" => "8", // F8 (backup)
         _ => "??",
     }

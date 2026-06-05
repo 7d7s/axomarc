@@ -110,11 +110,20 @@ pub async fn start_deploy(state: &AppState, req: DeployRequest) -> Result<Deploy
     //    deployment so concurrent deploys of the same app don't
     //    collide on the daemon.
     let container_name = format!("sovereign-{}-{}", dep.app_id, dep.id);
+
+    // 4a. Resolve secrets: decrypt every active secret for the app
+    //     and pass it as an env var. The plaintext is held in
+    //     memory only for the duration of `create_container`; the
+    //     runtime adapter hands it to the container as part of
+    //     `docker create -e KEY=VALUE`, and the container's process
+    //     is the only place the value ever lives.
+    let env = super::secret::env_for_deploy(state, dep.app_id).await?;
+
     let spec = crate::ports::ContainerSpec {
         image: image.clone(),
         name: container_name.clone(),
         port: 8080,
-        env: Vec::new(),
+        env,
         mounts: Vec::new(),
     };
     let container_id = match state.runtime.create_container(spec).await {

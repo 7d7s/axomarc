@@ -6,8 +6,10 @@
 
 pub mod proxy;
 pub mod runtime;
+pub mod secrets;
 pub mod storage;
 
 pub use proxy::{default_v0_host, ProxyPort, V0_DEFAULT_HOST_SUFFIX};
 pub use runtime::{ContainerSpec, HealthResult, MountSpec, RuntimeEndpoint, RuntimePort};
+pub use secrets::SecretsPort;
 pub use storage::StoragePort;

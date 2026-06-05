@@ -6,6 +6,7 @@ mod commands;
 mod commands_deploy;
 mod commands_domain;
 mod commands_rollback;
+mod commands_secret;
 mod exit;
 mod lock;
 mod output;
