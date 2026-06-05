@@ -1,4 +1,4 @@
-// The use cases. V0 ships the deploy + health use cases; rollback,
+// The use cases. V0 ships the deploy + health + rollback use cases;
 // backup, secrets, etc. land in their respective feature phases.
 //
 // Every use case takes `&AppState` (the DI container from
@@ -7,3 +7,4 @@
 
 pub mod deploy;
 pub mod health;
+pub mod rollback;

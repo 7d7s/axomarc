@@ -92,7 +92,7 @@ where
 {
     let row = sqlx::query_as::<_, Deployment>(
         "SELECT id, app_id, image_ref, strategy, status, started_at, finished_at, \
-         triggered_by, risk_score, policy_decision, error, version \
+         triggered_by, risk_score, policy_decision, error, target_deployment_id, version \
          FROM deployment WHERE id = ?",
     )
     .bind(id.as_uuid())
@@ -111,12 +111,63 @@ where
 {
     let rows = sqlx::query_as::<_, Deployment>(
         "SELECT id, app_id, image_ref, strategy, status, started_at, finished_at, \
-         triggered_by, risk_score, policy_decision, error, version \
+         triggered_by, risk_score, policy_decision, error, target_deployment_id, version \
          FROM deployment WHERE app_id = ? \
          ORDER BY started_at DESC, id DESC \
          LIMIT ?",
     )
     .bind(app_id.as_uuid())
+    .bind(limit)
+    .fetch_all(exec)
+    .await?;
+    Ok(rows)
+}
+
+/// Most recent `Healthy` deployment for the app, if any. This is
+/// "what is currently serving" (F5's `get_current_deployment`).
+pub(crate) async fn select_current_deployment<'e, E>(
+    exec: E,
+    app_id: AppId,
+) -> Result<Option<Deployment>, AppError>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row = sqlx::query_as::<_, Deployment>(
+        "SELECT id, app_id, image_ref, strategy, status, started_at, finished_at, \
+         triggered_by, risk_score, policy_decision, error, target_deployment_id, version \
+         FROM deployment \
+         WHERE app_id = ? AND status = 'healthy' \
+         ORDER BY started_at DESC, id DESC \
+         LIMIT 1",
+    )
+    .bind(app_id.as_uuid())
+    .fetch_optional(exec)
+    .await?;
+    Ok(row)
+}
+
+/// `Healthy` deployments for the app that started strictly before
+/// `before_ts`, newest first, capped at `limit`. Used by rollback to
+/// find the previous version.
+pub(crate) async fn select_healthy_before<'e, E>(
+    exec: E,
+    app_id: AppId,
+    before_ts: i64,
+    limit: i64,
+) -> Result<Vec<Deployment>, AppError>
+where
+    E: Executor<'e, Database = Sqlite> + Copy,
+{
+    let rows = sqlx::query_as::<_, Deployment>(
+        "SELECT id, app_id, image_ref, strategy, status, started_at, finished_at, \
+         triggered_by, risk_score, policy_decision, error, target_deployment_id, version \
+         FROM deployment \
+         WHERE app_id = ? AND status = 'healthy' AND started_at < ? \
+         ORDER BY started_at DESC, id DESC \
+         LIMIT ?",
+    )
+    .bind(app_id.as_uuid())
+    .bind(before_ts)
     .bind(limit)
     .fetch_all(exec)
     .await?;

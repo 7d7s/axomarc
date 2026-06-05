@@ -105,6 +105,9 @@ pub enum Cmd {
         /// Wait for the deploy to be healthy before exiting
         #[arg(long)]
         wait: bool,
+        /// Don't write `sovereign.lock` in the repo (F5 sub-task 5)
+        #[arg(long)]
+        no_lock: bool,
     },
 
     /// Roll back an app to a previous deployment
@@ -117,6 +120,9 @@ pub enum Cmd {
         /// List all deployments of the app
         #[arg(long)]
         list: bool,
+        /// Max deployments to show in --list
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
     },
 
     /// Stream logs from a running app

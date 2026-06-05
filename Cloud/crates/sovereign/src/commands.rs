@@ -52,7 +52,7 @@ pub async fn dispatch(cli: &Cli, out: &Output) -> Dispatch {
         }
         Cmd::Init { framework } => stub(cli, out, "init", &format!("framework={framework:?}")),
         Cmd::Login => stub(cli, out, "login", "(device-code flow)"),
-        Cmd::Deploy { app, image, strategy, wait } => {
+        Cmd::Deploy { app, image, strategy, wait, no_lock } => {
             // F4: actually call the use case. Falls back to a stub on
             // --dry-run (the spec says subcommands should "print what
             // would be done and exit 0").
@@ -70,12 +70,18 @@ pub async fn dispatch(cli: &Cli, out: &Output) -> Dispatch {
                 return crate::commands_deploy::run(cmd, out).await;
             }
         }
-        Cmd::Rollback { app, to, list } => stub(
-            cli,
-            out,
-            "rollback",
-            &format!("app={} to={:?} list={}", app, to, list),
-        ),
+        Cmd::Rollback { app, to, list, .. } => {
+            if cli.dry_run {
+                stub(
+                    cli,
+                    out,
+                    "rollback",
+                    &format!("app={} to={:?} list={}", app, to, list),
+                )
+            } else {
+                return crate::commands_rollback::run(cmd, out).await;
+            }
+        }
         Cmd::Logs { app, tail, follow } => stub(
             cli,
             out,

@@ -139,6 +139,10 @@ pub struct Deployment {
     /// JSON `{allow, deny, requires_approval, reason}`. `None` in V0.
     pub policy_decision: Option<serde_json::Value>,
     pub error: Option<String>,
+    /// Set on rollback-marker deployments (F5). Points to the
+    /// deployment that was current at the time of the rollback (the
+    /// version we replaced). `None` for normal deploys.
+    pub target_deployment_id: Option<DeploymentId>,
     /// Optimistic-concurrency token.
     pub version: i64,
 }

@@ -286,6 +286,32 @@ impl StoragePort for SqliteState {
         row::select_deployments_by_app(&self.pool, app, limit.max(1) as i64).await
     }
 
+    async fn get_current_deployment(
+        &self,
+        app: AppId,
+    ) -> Result<Option<Deployment>, AppError> {
+        row::select_current_deployment(&self.pool, app).await
+    }
+
+    async fn list_healthy_deployments_before(
+        &self,
+        app: AppId,
+        before: Timestamp,
+        limit: u32,
+    ) -> Result<Vec<Deployment>, AppError> {
+        row::select_healthy_before(&self.pool, app, before.as_secs(), limit.max(1) as i64)
+            .await
+    }
+
+    async fn set_rollback_target(
+        &self,
+        id: DeploymentId,
+        target: DeploymentId,
+        actor: &str,
+    ) -> Result<Deployment, AppError> {
+        deployment::set_rollback_target(&self.pool, id, target, actor).await
+    }
+
     async fn add_domain(&self, new: NewDomain, actor: &str) -> Result<Domain, AppError> {
         domain::add(&self.pool, new, actor).await
     }

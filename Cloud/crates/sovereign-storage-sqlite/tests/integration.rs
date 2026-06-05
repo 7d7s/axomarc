@@ -19,7 +19,7 @@
 use std::path::PathBuf;
 
 use sovereign_core::domain::{
-    AppEnv, AppId, AppUpdate, AuditEvent, AuditKind, AuditQuery, DeploymentEvent,
+    AppEnv, AppId, AppUpdate, AuditEvent, AuditKind, AuditQuery, Deployment, DeploymentEvent,
     DeploymentStatus, NewApp, NewBackup, NewDeployment, NewDomain, NewSecret, NewServer,
     NewUser, ServerRole, Strategy, Timestamp, UserRole,
 };
@@ -778,4 +778,215 @@ async fn audit_delete_is_rejected_by_trigger() {
         msg.contains("append-only") || msg.contains("ABORT"),
         "expected append-only abort, got: {msg}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// F5: rollback primitives
+// ---------------------------------------------------------------------------
+//
+// Three new `StoragePort` methods power the `sovereign rollback` flow:
+//
+//   - `get_current_deployment(app_id)` — the *most recent* `Healthy` row
+//     for the app (what's running right now).
+//   - `list_healthy_deployments_before(app_id, before, limit)` — every
+//     `Healthy` row with `started_at < before`, DESC, capped at `limit`.
+//   - `set_rollback_target(deployment_id, target_id, actor)` —
+//     stamps `target_deployment_id` on a deployment and bumps its
+//     version (OCC).
+
+/// Helper: drive a deployment to `Healthy` and return it.
+async fn drive_to_healthy(s: &SqliteState, app_id: AppId, image: &str) -> Deployment {
+    let mut d = s
+        .begin_deployment(
+            NewDeployment {
+                app_id,
+                image_ref: image.to_string(),
+                strategy: Strategy::Recreate,
+                triggered_by: "system".to_string(),
+                risk_score: None,
+            },
+            "system",
+        )
+        .await
+        .unwrap();
+    for next in [
+        DeploymentStatus::Building,
+        DeploymentStatus::Pushing,
+        DeploymentStatus::Starting,
+        DeploymentStatus::Healthy,
+    ] {
+        d = s
+            .transition_deployment(
+                d.id,
+                DeploymentEvent {
+                    to: next,
+                    error: None,
+                    actor: "system".to_string(),
+                },
+                "system",
+            )
+            .await
+            .unwrap();
+    }
+    d
+}
+
+#[tokio::test]
+async fn rollback_get_current_deployment_returns_most_recent_healthy() {
+    let s = fresh().await;
+    let app = s.create_app(sample_app("api"), "user:alice").await.unwrap();
+
+    // No deploys yet — must be `None`, not a panic.
+    assert!(s.get_current_deployment(app.id).await.unwrap().is_none());
+
+    // Two healthy deploys; the second one is "current". A full
+    // second of sleep is needed because `started_at` is unix-second
+    // precision — sub-second sleeps would tie and the secondary
+    // `id DESC` tiebreak would be meaningless for random UUIDs.
+    let _older = drive_to_healthy(&s, app.id, "x:v1").await;
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let newer = drive_to_healthy(&s, app.id, "x:v2").await;
+
+    let current = s.get_current_deployment(app.id).await.unwrap().expect("current");
+    assert_eq!(current.id, newer.id);
+    assert_eq!(current.image_ref, "x:v2");
+    assert_eq!(current.status, DeploymentStatus::Healthy);
+}
+
+#[tokio::test]
+async fn rollback_list_healthy_deployments_before_excludes_current_and_failed() {
+    let s = fresh().await;
+    let app = s.create_app(sample_app("api"), "user:alice").await.unwrap();
+
+    let old = drive_to_healthy(&s, app.id, "x:v1").await;
+    // Force a distinct `started_at` second so DESC ordering is
+    // deterministic. Sub-second gaps rely on `id DESC` tiebreak,
+    // which is meaningless for random UUIDs.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let middle = drive_to_healthy(&s, app.id, "x:v2").await;
+    // A `Failed` deploy after `middle` should be filtered out by the
+    // `status = 'healthy'` clause.
+    let failed = s
+        .begin_deployment(
+            NewDeployment {
+                app_id: app.id,
+                image_ref: "x:v3-bad".to_string(),
+                strategy: Strategy::Recreate,
+                triggered_by: "system".to_string(),
+                risk_score: None,
+            },
+            "system",
+        )
+        .await
+        .unwrap();
+    s.transition_deployment(
+        failed.id,
+        DeploymentEvent {
+            to: DeploymentStatus::Building,
+            error: None,
+            actor: "system".to_string(),
+        },
+        "system",
+    )
+    .await
+    .unwrap();
+    s.transition_deployment(
+        failed.id,
+        DeploymentEvent {
+            to: DeploymentStatus::Failed,
+            error: Some("boom".into()),
+            actor: "system".to_string(),
+        },
+        "system",
+    )
+    .await
+    .unwrap();
+
+    // The boundary is "started_at < now+1s" — v1 and v2 are *before* failed.
+    let before = Timestamp(failed.started_at.as_secs() + 1);
+    let history = s
+        .list_healthy_deployments_before(app.id, before, 10)
+        .await
+        .unwrap();
+    let ids: Vec<_> = history.iter().map(|d| d.id).collect();
+
+    assert!(ids.contains(&old.id), "v1 should be in the rollback history");
+    assert!(ids.contains(&middle.id), "v2 should be in the rollback history");
+    assert!(!ids.contains(&failed.id), "Failed deploy is excluded by status filter");
+    assert!(
+        ids.iter().position(|id| *id == middle.id).unwrap()
+            < ids.iter().position(|id| *id == old.id).unwrap(),
+        "DESC order: v2 (newer) should come before v1 (older)"
+    );
+    assert!(history.iter().all(|d| d.status == DeploymentStatus::Healthy));
+    assert_eq!(history.len(), 2, "expected v1+v2, got {history:?}");
+}
+
+#[tokio::test]
+async fn rollback_list_healthy_deployments_before_respects_limit() {
+    let s = fresh().await;
+    let app = s.create_app(sample_app("api"), "user:alice").await.unwrap();
+    for v in 0..5 {
+        let img = format!("x:v{v}");
+        drive_to_healthy(&s, app.id, &img).await;
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    }
+    let now = Timestamp::now();
+    let h2 = s.list_healthy_deployments_before(app.id, Timestamp(now.as_secs() + 1), 2).await.unwrap();
+    let h5 = s.list_healthy_deployments_before(app.id, Timestamp(now.as_secs() + 1), 5).await.unwrap();
+    assert_eq!(h2.len(), 2, "limit=2 should cap to 2");
+    assert_eq!(h5.len(), 5, "limit=5 should return all 5");
+}
+
+#[tokio::test]
+async fn rollback_set_target_stamps_and_audits() {
+    let s = fresh().await;
+    let app = s.create_app(sample_app("api"), "user:alice").await.unwrap();
+    let target = drive_to_healthy(&s, app.id, "x:v1").await;
+    let mut current = drive_to_healthy(&s, app.id, "x:v2").await;
+    assert!(current.target_deployment_id.is_none(), "no target on a fresh deploy");
+
+    current = s
+        .set_rollback_target(current.id, target.id, "user:alice")
+        .await
+        .unwrap();
+    assert_eq!(current.target_deployment_id, Some(target.id));
+    assert!(
+        current.version >= 2,
+        "version should bump on OCC update, got {}",
+        current.version
+    );
+
+    // The audit log records the rollback decision. The writer
+    // formats the `target` column as `"deployment:<uuid>"`, so we
+    // search by the prefixed form (the `query_audit` filter is
+    // exact-match).
+    let aud = s
+        .query_audit(AuditQuery {
+            target: Some(format!("deployment:{}", current.id)),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(!aud.is_empty(), "rollback should append an audit event");
+    let payloads: Vec<&serde_json::Value> = aud.iter().map(|a| &a.payload).collect();
+    assert!(
+        payloads.iter().any(|p| {
+            p.get("rollback").and_then(|v| v.as_str()) == Some("set_target")
+                && p.get("target_deployment_id").is_some()
+        }),
+        "expected an audit event with rollback=set_target, got {payloads:?}"
+    );
+}
+
+#[tokio::test]
+async fn rollback_set_target_unknown_deployment_is_not_found() {
+    let s = fresh().await;
+    let app = s.create_app(sample_app("api"), "user:alice").await.unwrap();
+    let _d = drive_to_healthy(&s, app.id, "x:v1").await;
+    let bogus = sovereign_core::domain::DeploymentId::generate();
+    let res = s
+        .set_rollback_target(bogus, bogus, "user:alice")
+        .await;
+    assert!(matches!(res, Err(AppError::NotFound(_))), "expected NotFound, got {res:?}");
 }

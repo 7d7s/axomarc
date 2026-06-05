@@ -17,7 +17,7 @@ sovereign deploy                                   # 5 minutes to a live URL
 | F2 — CLI skeleton (clap 4.6, `--json`, `--dry-run`) | ✅ (10 subcommands, completions, man, exit codes 0-5) |
 | F3 — SQLite + 7 core tables + append-only audit | ✅ (50 tests, see `crates/sovereign-storage-sqlite/`) |
 | F4 — `sovereign deploy` (git push to live URL) | ✅ (RuntimePort + DockerRuntime + deploy use case + CLI wired) |
-| F5 — One-command rollback | ⏳ |
+| F5 — One-command rollback | ✅ (`sovereign rollback <app> [--to=<id>] [--list] [--limit=N] [--json]`; writes `sovereign.lock` receipt on every healthy deploy; `--no-lock` opt-out) |
 | F6 — Caddy auto-TLS (HTTP-01 ACME, auto-renew) | ⏳ |
 | F7 — Encrypted secret store (age + Argon2) | ⏳ |
 | F8 — Backup + health check + auto-rollback | ⏳ |

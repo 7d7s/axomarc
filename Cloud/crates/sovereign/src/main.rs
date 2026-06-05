@@ -4,7 +4,9 @@
 mod cli;
 mod commands;
 mod commands_deploy;
+mod commands_rollback;
 mod exit;
+mod lock;
 mod output;
 
 use anyhow::Result;

@@ -17,7 +17,7 @@ use crate::row;
 
 const DEPLOYMENT_COLUMNS: &str = "id, app_id, image_ref, strategy, status, started_at, \
                                    finished_at, triggered_by, risk_score, policy_decision, \
-                                   error, version";
+                                   error, target_deployment_id, version";
 
 pub(crate) async fn begin(
     pool: &Pool<Sqlite>,
@@ -32,7 +32,7 @@ pub(crate) async fn begin(
     let mut tx = pool.begin().await?;
 
     sqlx::query(&format!(
-        "INSERT INTO deployment ({DEPLOYMENT_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL, NULL, 1)"
+        "INSERT INTO deployment ({DEPLOYMENT_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL, NULL, NULL, 1)"
     ))
     .bind(id.as_uuid())
     .bind(new.app_id.as_uuid())
@@ -173,4 +173,57 @@ pub(crate) async fn transition(
     row::select_deployment_by_id(pool, id)
         .await?
         .ok_or_else(|| AppError::internal("deployment vanished after transition"))
+}
+
+/// Set the `target_deployment_id` on an existing deployment row. Used
+/// by the F5 rollback use case to mark "this rollback replaced
+/// deployment X" without a separate join table. The caller's actor is
+/// recorded in the audit trail.
+pub(crate) async fn set_rollback_target(
+    pool: &Pool<Sqlite>,
+    id: DeploymentId,
+    target: DeploymentId,
+    actor: &str,
+) -> Result<Deployment, AppError> {
+    let mut tx = pool.begin().await?;
+    let now = Timestamp::now();
+
+    let current = row::select_deployment_by_id(&mut *tx, id).await?;
+    let current = current.ok_or(AppError::not_found("deployment"))?;
+
+    let updated = sqlx::query(
+        "UPDATE deployment SET target_deployment_id = ?, version = version + 1 \
+         WHERE id = ? AND version = ?",
+    )
+    .bind(target.as_uuid())
+    .bind(id.as_uuid())
+    .bind(current.version)
+    .execute(&mut *tx)
+    .await?;
+    if updated.rows_affected() == 0 {
+        return Err(AppError::Conflict("deployment", current.version));
+    }
+
+    append_audit(
+        &mut tx,
+        AuditEvent {
+            id: None,
+            ts: now,
+            actor: actor.to_string(),
+            kind: kind::ROLLBACK, // re-use the existing rollback kind
+            target: Some(format!("deployment:{id}")),
+            payload: serde_json::json!({
+                "rollback": "set_target",
+                "deployment_id": id,
+                "target_deployment_id": target,
+            }),
+            policy_decision: None,
+        },
+    )
+    .await?;
+
+    tx.commit().await?;
+    row::select_deployment_by_id(pool, id)
+        .await?
+        .ok_or_else(|| AppError::internal("deployment vanished after set_rollback_target"))
 }

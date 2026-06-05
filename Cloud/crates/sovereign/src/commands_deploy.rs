@@ -34,17 +34,19 @@ use crate::output::{Envelope, Output};
 /// directly so this is easy to test.
 #[instrument(skip(out))]
 pub async fn run(cmd: &Cmd, out: &Output) -> Dispatch {
-    let (app_name, image, strategy, wait, actor) = match cmd {
+    let (app_name, image, strategy, wait, no_lock, actor) = match cmd {
         Cmd::Deploy {
             app,
             image,
             strategy,
             wait,
+            no_lock,
         } => (
             app.clone().unwrap_or_default(),
             image.clone(),
             *strategy,
             *wait,
+            *no_lock,
             "cli".to_string(),
         ),
         _ => return Dispatch::Err(AppExit::Generic),
@@ -124,7 +126,7 @@ pub async fn run(cmd: &Cmd, out: &Output) -> Dispatch {
         image_ref: Some(image_ref),
         strategy: cli_strategy_to_core(strategy),
         wait,
-        actor,
+        actor: actor.clone(),
     };
 
     if out.format() == crate::output::Format::Text {
@@ -136,15 +138,53 @@ pub async fn run(cmd: &Cmd, out: &Output) -> Dispatch {
 
     match deploy::start_deploy(&state, req).await {
         Ok(result) => {
-            if out.format() == crate::output::Format::Text {
-                let _ = out.text(&format!("{} is live at {}", app.name, result.url));
+            // F5 sub-task 5: write the `sovereign.lock` receipt for
+            // healthy deploys. Best-effort — a failure to write the
+            // lock or to `git push` is a warning, not a deploy fail
+            // (the audit log + DB row are the source of truth).
+            let lock_outcome = if !no_lock
+                && result.deployment.status == sovereign_core::domain::DeploymentStatus::Healthy
+            {
+                crate::lock::write(
+                    &app.name,
+                    &result.deployment,
+                    &actor,
+                    app.git_repo.as_deref(),
+                )
+                .ok()
             } else {
-                let env = Envelope::<serde_json::Value>::ok(serde_json::json!({
+                None
+            };
+
+            if out.format() == crate::output::Format::Text {
+                if let Some(o) = &lock_outcome {
+                    let _ = out.text(&format!(
+                        "{} is live at {} (wrote {})",
+                        app.name,
+                        result.url,
+                        o.path.display()
+                    ));
+                } else {
+                    let _ = out.text(&format!("{} is live at {}", app.name, result.url));
+                }
+            } else {
+                let mut body = serde_json::json!({
                     "app": app.name,
                     "deployment_id": result.deployment.id,
                     "status": result.deployment.status,
                     "url": result.url,
-                }));
+                    "lock": lock_outcome.as_ref().map(|o| serde_json::json!({
+                        "path": o.path,
+                        "committed": o.committed,
+                        "pushed": o.pushed,
+                    })),
+                });
+                if !no_lock && lock_outcome.is_none() {
+                    body["lock_warning"] = serde_json::json!(
+                        "deploy is healthy but sovereign.lock was not written"
+                    );
+                }
+                let env = Envelope::<serde_json::Value>::ok(body);
                 let _ = out.success(&env);
             }
             Dispatch::Ok
@@ -168,7 +208,7 @@ fn cli_strategy_to_core(s: crate::cli::Strategy) -> Strategy {
 /// Resolve the default data dir. Linux: `~/.local/share/sovereign/sovereign.db`.
 /// macOS: `~/Library/Application Support/sovereign/sovereign.db`.
 /// Windows: `%APPDATA%\sovereign\sovereign.db`. Falls back to `./sovereign.db`.
-fn default_db_path() -> std::path::PathBuf {
+pub(crate) fn default_db_path() -> std::path::PathBuf {
     if let Some(dir) = dirs_data() {
         dir.join("sovereign").join("sovereign.db")
     } else {

@@ -92,6 +92,35 @@ pub trait StoragePort: Send + Sync {
         limit: u32,
     ) -> Result<Vec<Deployment>, AppError>;
 
+    /// The most recent `Healthy` deployment for the app — i.e. what's
+    /// currently serving. `None` if the app has never had a healthy
+    /// deploy. F5's `get_current_deployment`.
+    async fn get_current_deployment(
+        &self,
+        app: AppId,
+    ) -> Result<Option<Deployment>, AppError>;
+
+    /// `Healthy` deployments that started strictly before `before`,
+    /// newest first, capped at `limit`. F5 rollback uses this to find
+    /// the "previous version" to roll back to.
+    async fn list_healthy_deployments_before(
+        &self,
+        app: AppId,
+        before: Timestamp,
+        limit: u32,
+    ) -> Result<Vec<Deployment>, AppError>;
+
+    /// Set the `target_deployment_id` on an existing deployment. F5
+    /// rollback uses this to record "this rollback replaced
+    /// deployment X". Bumps the version. The audit append is in the
+    /// same transaction.
+    async fn set_rollback_target(
+        &self,
+        id: DeploymentId,
+        target: DeploymentId,
+        actor: &str,
+    ) -> Result<Deployment, AppError>;
+
     // --- domain --------------------------------------------------------------
 
     async fn add_domain(&self, new: NewDomain, actor: &str) -> Result<Domain, AppError>;
