@@ -21,7 +21,7 @@ sovereign deploy                                   # 5 minutes to a live URL
 | F6 — Caddy auto-TLS (HTTP-01 ACME, auto-renew) | ✅ (`CaddyProxy` adapter; `tls internal` in V0; `sovereign deploy` and `rollback` push routes; `sovereign domain add <host> --app <app>` for custom hostnames) |
 | F7 — Encrypted secret store (age + Argon2) | ✅ |
 | F8 — Backup + health check + auto-rollback | ✅ |
-| F9 — `sovereign doctor` — basic diagnostic | ⏳ |
+| F9 — `sovereign doctor` — basic diagnostic | ✅ |
 | F10 — `sovereign update` — self-update with rollback | ⏳ |
 
 ## Quickstart
