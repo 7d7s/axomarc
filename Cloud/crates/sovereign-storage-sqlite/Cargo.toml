@@ -15,8 +15,10 @@ sqlx = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 async-trait = "0.1"
-sovereign-core = { path = "../sovereign-core" }
+sovereign-core = { path = "../sovereign-core", version = "0.1.0" }
 
 [dev-dependencies]
 tempfile = "3"
+uuid = { workspace = true }
+async-trait = { workspace = true }
 sovereign-backup = { path = "../sovereign-backup" }
