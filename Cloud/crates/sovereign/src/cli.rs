@@ -163,6 +163,29 @@ pub enum Cmd {
         cmd: BackupCmd,
     },
 
+    /// Run the diagnostic checks (F9). The V0 binary ships the
+    /// `basic` level only; higher levels return a clear "V1+"
+    /// error so the operator knows what to upgrade to.
+    Doctor {
+        /// Diagnostic level (V0 supports `basic` only)
+        #[arg(long, value_enum, default_value_t = DoctorLevelArg::Basic)]
+        level: DoctorLevelArg,
+        /// Print a longer description for every check, not just the
+        /// short status glyph.
+        #[arg(long)]
+        explain: bool,
+        /// Run any available auto-fix for failing checks (basic only)
+        #[arg(long)]
+        fix: bool,
+        /// Write a markdown report to the given path (default:
+        /// `/var/log/sovereign/doctor-<timestamp>.md` on Linux)
+        #[arg(long)]
+        report: Option<std::path::PathBuf>,
+        /// Emit the full report as JSON on stdout
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Generate shell completions (bash, zsh, fish, nushell, powershell)
     Completions {
         /// Shell to generate completions for
@@ -263,6 +286,31 @@ pub enum BackupCmd {
         #[arg(long)]
         to: String,
     },
+}
+
+/// The diagnostic level argument for the CLI. Mirrors
+/// `sovereign_doctor::DoctorLevel` but uses a local `ValueEnum`
+/// so the CLI binary does not have to depend on the doctor crate's
+/// clap feature surface.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DoctorLevelArg {
+    Basic,
+    Standard,
+    Full,
+    Paranoid,
+    Custom,
+}
+
+impl DoctorLevelArg {
+    pub fn to_doctor_level(self) -> sovereign_doctor::DoctorLevel {
+        match self {
+            DoctorLevelArg::Basic => sovereign_doctor::DoctorLevel::Basic,
+            DoctorLevelArg::Standard => sovereign_doctor::DoctorLevel::Standard,
+            DoctorLevelArg::Full => sovereign_doctor::DoctorLevel::Full,
+            DoctorLevelArg::Paranoid => sovereign_doctor::DoctorLevel::Paranoid,
+            DoctorLevelArg::Custom => sovereign_doctor::DoctorLevel::Custom,
+        }
+    }
 }
 
 /// The domain subcommand tree (F6). V0 implements `add` and `list`;

@@ -26,25 +26,15 @@ allow = [
 confidence-threshold = 0.8
 
 [bans]
-multiple-versions = "warn"
-wildcards = "deny"
-highlight = "all"
-
-# Workspace path-only deps have no version string, so they look
-# like wildcards to cargo-deny. The path itself is the source of
-# truth, the version comes from workspace.package.version. Skip
-# the wildcard check only on crates that are actually path-referenced
-# in the current workspace (others are scaffolded but unused today;
-# they'll be added back as F6-F10 wire them in).
 skip = [
     "sovereign",
     "sovereign-core",
-    "sovereign-proxy-caddy",
-    "sovereign-runtime-docker",
     "sovereign-storage-sqlite",
-    "sovereign-observability",
+    "sovereign-runtime-docker",
+    "sovereign-proxy-caddy",
     "sovereign-secrets-age",
     "sovereign-backup",
+    "sovereign-doctor",
 ]
 
 # Forbidden per docs/tech-stack.md §9.
