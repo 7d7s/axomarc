@@ -111,7 +111,10 @@ impl From<sqlx::Error> for AppError {
                 // and `audit_no_delete` triggers surface. Map it explicitly
                 // so the use case can react (the mutation is rolled back).
                 let msg = db_err.message();
-                eprintln!("[storage] sqlx database error: {msg} (code: {:?})", db_err.code());
+                eprintln!(
+                    "[storage] sqlx database error: {msg} (code: {:?})",
+                    db_err.code()
+                );
                 if msg.contains("append-only") {
                     Self::Audit(msg.to_string())
                 } else if msg.contains("UNIQUE") {
@@ -158,7 +161,10 @@ mod tests {
         );
         assert_eq!(AppError::validation("bad").http_status(), Some(400));
         assert_eq!(AppError::Unauthorized("x".into()).http_status(), Some(403));
-        assert_eq!(AppError::Unauthenticated("x".into()).http_status(), Some(401));
+        assert_eq!(
+            AppError::Unauthenticated("x".into()).http_status(),
+            Some(401)
+        );
         assert_eq!(AppError::upstream("x").http_status(), Some(502));
     }
 

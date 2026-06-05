@@ -7,8 +7,8 @@
 use sqlx::{Pool, Sqlite};
 
 use sovereign_core::domain::{
-    kind, AuditEvent, Deployment, DeploymentEvent, DeploymentId, DeploymentStatus,
-    NewDeployment, Timestamp,
+    kind, AuditEvent, Deployment, DeploymentEvent, DeploymentId, DeploymentStatus, NewDeployment,
+    Timestamp,
 };
 use sovereign_core::error::AppError;
 
@@ -25,7 +25,9 @@ pub(crate) async fn begin(
     actor: &str,
 ) -> Result<Deployment, AppError> {
     if new.image_ref.trim().is_empty() {
-        return Err(AppError::validation("deployment image_ref must not be empty"));
+        return Err(AppError::validation(
+            "deployment image_ref must not be empty",
+        ));
     }
     let id = DeploymentId::generate();
     let now = Timestamp::now();
@@ -105,9 +107,7 @@ pub(crate) async fn transition(
     // RolledBack) all set it.
     let finished_at = if matches!(
         event.to,
-        DeploymentStatus::Healthy
-            | DeploymentStatus::Failed
-            | DeploymentStatus::RolledBack
+        DeploymentStatus::Healthy | DeploymentStatus::Failed | DeploymentStatus::RolledBack
     ) {
         Some(now)
     } else {
@@ -136,13 +136,15 @@ pub(crate) async fn transition(
     // last successfully deployed image." This is the only place
     // `app.image_ref` is mutated from a deployment.
     if event.to == DeploymentStatus::Healthy {
-        sqlx::query("UPDATE app SET image_ref = ?, updated_at = ?, version = version + 1 \
-                     WHERE id = ?")
-            .bind(&current.image_ref)
-            .bind(now.as_secs())
-            .bind(current.app_id.as_uuid())
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "UPDATE app SET image_ref = ?, updated_at = ?, version = version + 1 \
+                     WHERE id = ?",
+        )
+        .bind(&current.image_ref)
+        .bind(now.as_secs())
+        .bind(current.app_id.as_uuid())
+        .execute(&mut *tx)
+        .await?;
     }
 
     let audit_kind = if event.to == DeploymentStatus::RolledBack {

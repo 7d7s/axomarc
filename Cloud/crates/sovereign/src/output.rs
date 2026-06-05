@@ -198,6 +198,9 @@ impl Output {
 /// message, so the output is correct on any terminal that supports the
 /// 16-color ANSI palette.
 #[derive(Debug, Clone, Copy)]
+// `Blue`, `Cyan`, `Gray` are reserved for V0.5+ status indicators (info /
+// link / muted). The enum is part of the public formatter contract.
+#[allow(dead_code)]
 pub enum Color {
     Green,
     Yellow,

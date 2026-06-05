@@ -88,11 +88,7 @@ pub(crate) async fn put(
         .ok_or_else(|| AppError::internal("secret vanished after insert"))
 }
 
-pub(crate) async fn delete(
-    pool: &Pool<Sqlite>,
-    id: SecretId,
-    actor: &str,
-) -> Result<(), AppError> {
+pub(crate) async fn delete(pool: &Pool<Sqlite>, id: SecretId, actor: &str) -> Result<(), AppError> {
     let mut tx = pool.begin().await?;
     let now = Timestamp::now();
 
@@ -142,14 +138,16 @@ pub(crate) async fn rotate(
     let mut tx = pool.begin().await?;
     let now = Timestamp::now();
 
-    let rows = sqlx::query("UPDATE secret SET ciphertext = ?, rotated_at = ?, \
-                            version = version + 1 WHERE id = ?")
-        .bind(&new_ciphertext)
-        .bind(now.as_secs())
-        .bind(id.as_uuid())
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
+    let rows = sqlx::query(
+        "UPDATE secret SET ciphertext = ?, rotated_at = ?, \
+                            version = version + 1 WHERE id = ?",
+    )
+    .bind(&new_ciphertext)
+    .bind(now.as_secs())
+    .bind(id.as_uuid())
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
 
     if rows == 0 {
         return Err(AppError::not_found("secret"));

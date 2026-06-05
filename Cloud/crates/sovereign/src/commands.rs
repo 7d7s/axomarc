@@ -52,7 +52,13 @@ pub async fn dispatch(cli: &Cli, out: &Output) -> Dispatch {
         }
         Cmd::Init { framework } => stub(cli, out, "init", &format!("framework={framework:?}")),
         Cmd::Login => stub(cli, out, "login", "(device-code flow)"),
-        Cmd::Deploy { app, image, strategy, wait, no_lock } => {
+        Cmd::Deploy {
+            app,
+            image,
+            strategy,
+            wait,
+            no_lock: _,
+        } => {
             // F4: actually call the use case. Falls back to a stub on
             // --dry-run (the spec says subcommands should "print what
             // would be done and exit 0").
@@ -90,14 +96,26 @@ pub async fn dispatch(cli: &Cli, out: &Output) -> Dispatch {
         ),
         Cmd::Status { app } => stub(cli, out, "status", &format!("app={:?}", app)),
         Cmd::Secret { cmd } => match cmd {
-            SecretCmd::Set { key, app } => stub(cli, out, "secret set", &format!("key={} app={}", key, app)),
+            SecretCmd::Set { key, app } => {
+                stub(cli, out, "secret set", &format!("key={} app={}", key, app))
+            }
             SecretCmd::List { app } => stub(cli, out, "secret list", &format!("app={}", app)),
-            SecretCmd::Rotate { key, app } => stub(cli, out, "secret rotate", &format!("key={} app={}", key, app)),
+            SecretCmd::Rotate { key, app } => stub(
+                cli,
+                out,
+                "secret rotate",
+                &format!("key={} app={}", key, app),
+            ),
         },
         Cmd::Backup { cmd } => match cmd {
             BackupCmd::Create { app } => stub(cli, out, "backup create", &format!("app={}", app)),
             BackupCmd::List => stub(cli, out, "backup list", ""),
-            BackupCmd::Verify { backup_id } => stub(cli, out, "backup verify", &format!("backup_id={}", backup_id)),
+            BackupCmd::Verify { backup_id } => stub(
+                cli,
+                out,
+                "backup verify",
+                &format!("backup_id={}", backup_id),
+            ),
         },
         Cmd::Completions { shell } => {
             use clap::CommandFactory;
@@ -166,10 +184,10 @@ fn stub(cli: &Cli, out: &Output, name: &str, args: &str) -> Dispatch {
 /// so the operator knows when to expect the real thing.
 fn stub_phase(name: &str) -> &'static str {
     match name {
-        "init" | "login" => "2",    // F2 itself (these are stubs for now)
+        "init" | "login" => "2",        // F2 itself (these are stubs for now)
         "deploy" | "rollback" => "4-5", // F4 (deploy) + F5 (rollback)
-        "logs" => "4",              // F4 includes the log stream
-        "status" => "2",            // F2 itself (the stub prints the state)
+        "logs" => "4",                  // F4 includes the log stream
+        "status" => "2",                // F2 itself (the stub prints the state)
         "secret set" | "secret list" | "secret rotate" => "7", // F7 (encrypted secret store)
         "backup create" | "backup list" | "backup verify" => "8", // F8 (backup)
         _ => "??",

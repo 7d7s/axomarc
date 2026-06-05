@@ -146,11 +146,20 @@ mod tests {
 
     #[test]
     fn query_effective_limit_clamps() {
-        let q = AuditQuery { limit: 0, ..Default::default() };
+        let q = AuditQuery {
+            limit: 0,
+            ..Default::default()
+        };
         assert_eq!(q.effective_limit(), 100);
-        let q = AuditQuery { limit: 5_000, ..Default::default() };
+        let q = AuditQuery {
+            limit: 5_000,
+            ..Default::default()
+        };
         assert_eq!(q.effective_limit(), 1000);
-        let q = AuditQuery { limit: 50, ..Default::default() };
+        let q = AuditQuery {
+            limit: 50,
+            ..Default::default()
+        };
         assert_eq!(q.effective_limit(), 50);
     }
 }

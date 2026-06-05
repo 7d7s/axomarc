@@ -18,17 +18,15 @@ use std::path::Path;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use sqlx::sqlite::{
-    SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
-};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{Pool, Row, Sqlite};
 use tracing::{info, instrument};
 
 use sovereign_core::domain::{
     App, AppId, AppUpdate, AuditEvent, AuditQuery, Backup, BackupId, BackupStatus, Deployment,
-    DeploymentEvent, DeploymentId, Domain, DomainId, NewApp, NewBackup, NewDeployment,
-    NewDomain, NewSecret, NewServer, NewUser, Secret, SecretId, SecretStatus, Server,
-    ServerId, ServerStatus, Timestamp, User, UserId, UserRole,
+    DeploymentEvent, DeploymentId, Domain, DomainId, NewApp, NewBackup, NewDeployment, NewDomain,
+    NewSecret, NewServer, NewUser, Secret, SecretId, SecretStatus, Server, ServerId, ServerStatus,
+    Timestamp, User, UserId, UserRole,
 };
 use sovereign_core::error::AppError;
 use sovereign_core::ports::StoragePort;
@@ -68,10 +66,7 @@ impl SqliteState {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent).map_err(|e| {
-                    AppError::Storage(format!(
-                        "cannot create data dir {}: {e}",
-                        parent.display()
-                    ))
+                    AppError::Storage(format!("cannot create data dir {}: {e}", parent.display()))
                 })?;
             }
         }
@@ -191,12 +186,10 @@ impl StoragePort for SqliteState {
         if exists.0 == 0 {
             return Ok(None);
         }
-        let row: (i64,) = sqlx::query_as(
-            "SELECT COALESCE(MAX(version), 0) FROM _sqlx_migrations",
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(AppError::from)?;
+        let row: (i64,) = sqlx::query_as("SELECT COALESCE(MAX(version), 0) FROM _sqlx_migrations")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(AppError::from)?;
         Ok(Some(row.0))
     }
 
@@ -213,10 +206,7 @@ impl StoragePort for SqliteState {
         .fetch_all(&self.pool)
         .await
         .map_err(AppError::from)?;
-        Ok(rows
-            .into_iter()
-            .map(|r| r.get::<String, _>(0))
-            .collect())
+        Ok(rows.into_iter().map(|r| r.get::<String, _>(0)).collect())
     }
 
     async fn get_app(&self, id: AppId) -> Result<Option<App>, AppError> {
@@ -278,18 +268,11 @@ impl StoragePort for SqliteState {
         row::select_deployment_by_id(&self.pool, id).await
     }
 
-    async fn list_deployments(
-        &self,
-        app: AppId,
-        limit: u32,
-    ) -> Result<Vec<Deployment>, AppError> {
+    async fn list_deployments(&self, app: AppId, limit: u32) -> Result<Vec<Deployment>, AppError> {
         row::select_deployments_by_app(&self.pool, app, limit.max(1) as i64).await
     }
 
-    async fn get_current_deployment(
-        &self,
-        app: AppId,
-    ) -> Result<Option<Deployment>, AppError> {
+    async fn get_current_deployment(&self, app: AppId) -> Result<Option<Deployment>, AppError> {
         row::select_current_deployment(&self.pool, app).await
     }
 
@@ -299,8 +282,7 @@ impl StoragePort for SqliteState {
         before: Timestamp,
         limit: u32,
     ) -> Result<Vec<Deployment>, AppError> {
-        row::select_healthy_before(&self.pool, app, before.as_secs(), limit.max(1) as i64)
-            .await
+        row::select_healthy_before(&self.pool, app, before.as_secs(), limit.max(1) as i64).await
     }
 
     async fn set_rollback_target(

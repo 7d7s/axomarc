@@ -66,26 +66,16 @@ pub struct DeployResult {
 /// captured in the same transaction as a transition to `Failed` with
 /// the error message. The use case still returns `Err` so the CLI
 /// can print the failure; the audit log records what happened.
-pub async fn start_deploy(
-    state: &AppState,
-    req: DeployRequest,
-) -> Result<DeployResult, AppError> {
+pub async fn start_deploy(state: &AppState, req: DeployRequest) -> Result<DeployResult, AppError> {
     // 1. Resolve the image. The CLI guarantees `req.image_ref` is
     //    Some, but be defensive in case this is called from a future
-    //    use case (e.g. auto-rollback in F5).
+    //    use case (e.g. auto-rollback in F5) that may fall back to
+    //    `app.image_ref` from storage. V0 just errors out when
+    //    `image_ref` is missing; V1.5 will add the storage lookup.
     let image = req
         .image_ref
         .clone()
-        .or_else(|| {
-            // The CLI passes Some for direct image deploys. If the
-            // caller left it None, look up the app's pinned image.
-            // This is a sync read of the storage; for V0 we just
-            // error out — V1.5 will add git-repo-driven build.
-            None
-        })
-        .ok_or_else(|| {
-            AppError::validation("either --image or app.image_ref must be set")
-        })?;
+        .ok_or_else(|| AppError::validation("either --image or app.image_ref must be set"))?;
 
     // 2. Begin the deployment (Pending).
     let dep = state
@@ -98,7 +88,7 @@ pub async fn start_deploy(
                 triggered_by: format!("user:{}", &req.actor),
                 risk_score: None,
             },
-            &&req.actor,
+            &req.actor,
         )
         .await?;
     let deployment_id = dep.id;
@@ -107,9 +97,14 @@ pub async fn start_deploy(
     if let Err(e) = state.runtime.pull_image(&image).await {
         return record_failure(state, deployment_id, &e.to_string(), &req.actor).await;
     }
-    if let Err(e) = transition(state, deployment_id, DeploymentStatus::Building, None, &&req.actor).await {
-        return Err(e);
-    }
+    transition(
+        state,
+        deployment_id,
+        DeploymentStatus::Building,
+        None,
+        &req.actor,
+    )
+    .await?;
 
     // 4. Create + start the container. The name is unique per
     //    deployment so concurrent deploys of the same app don't
@@ -128,9 +123,14 @@ pub async fn start_deploy(
             return record_failure(state, deployment_id, &e.to_string(), &req.actor).await;
         }
     };
-    if let Err(e) = transition(state, deployment_id, DeploymentStatus::Pushing, None, &&req.actor).await {
-        return Err(e);
-    }
+    transition(
+        state,
+        deployment_id,
+        DeploymentStatus::Pushing,
+        None,
+        &req.actor,
+    )
+    .await?;
 
     if let Err(e) = state.runtime.start_container(&container_id).await {
         let _ = state
@@ -138,11 +138,16 @@ pub async fn start_deploy(
             .stop_container(&container_id, Duration::from_secs(5))
             .await;
         let _ = state.runtime.remove_container(&container_id).await;
-        return record_failure(state, deployment_id, &e.to_string(), &&req.actor).await;
+        return record_failure(state, deployment_id, &e.to_string(), &req.actor).await;
     }
-    if let Err(e) = transition(state, deployment_id, DeploymentStatus::Starting, None, &&req.actor).await {
-        return Err(e);
-    }
+    transition(
+        state,
+        deployment_id,
+        DeploymentStatus::Starting,
+        None,
+        &req.actor,
+    )
+    .await?;
 
     // 5. If the caller asked for fire-and-forget, return now. The
     //    "is it healthy" decision is theirs to poll.
@@ -160,13 +165,7 @@ pub async fn start_deploy(
     }
 
     // 6. Health probe loop. Cap the total wall-clock budget.
-    let probe = super::health::probe_http(
-        "127.0.0.1",
-        8080,
-        "/",
-        DEFAULT_PROBE_TIMEOUT,
-    )
-    .await;
+    let probe = super::health::probe_http("127.0.0.1", 8080, "/", DEFAULT_PROBE_TIMEOUT).await;
     let healthy = probe.ok;
     if !healthy {
         // Auto-rollback: stop + remove the bad container. The
@@ -176,13 +175,21 @@ pub async fn start_deploy(
             .stop_container(&container_id, Duration::from_secs(5))
             .await;
         let _ = state.runtime.remove_container(&container_id).await;
-        let err = probe.error.clone().unwrap_or_else(|| "healthcheck failed".to_string());
+        let err = probe
+            .error
+            .clone()
+            .unwrap_or_else(|| "healthcheck failed".to_string());
         return record_failure(state, deployment_id, &err, &req.actor).await;
     }
 
-    if let Err(e) = transition(state, deployment_id, DeploymentStatus::Healthy, None, &&req.actor).await {
-        return Err(e);
-    }
+    transition(
+        state,
+        deployment_id,
+        DeploymentStatus::Healthy,
+        None,
+        &req.actor,
+    )
+    .await?;
     let final_dep = state
         .storage
         .get_deployment(deployment_id)
@@ -277,4 +284,3 @@ mod tests {
         assert!(DEFAULT_HEALTH_TIMEOUT <= std::time::Duration::from_secs(300));
     }
 }
-

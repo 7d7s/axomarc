@@ -15,10 +15,7 @@ use sovereign_core::domain::{
 };
 use sovereign_core::error::AppError;
 
-pub(crate) async fn select_app_by_id<'e, E>(
-    exec: E,
-    id: AppId,
-) -> Result<Option<App>, AppError>
+pub(crate) async fn select_app_by_id<'e, E>(exec: E, id: AppId) -> Result<Option<App>, AppError>
 where
     E: Executor<'e, Database = Sqlite>,
 {
@@ -33,10 +30,7 @@ where
     Ok(row)
 }
 
-pub(crate) async fn select_app_by_name<'e, E>(
-    exec: E,
-    name: &str,
-) -> Result<Option<App>, AppError>
+pub(crate) async fn select_app_by_name<'e, E>(exec: E, name: &str) -> Result<Option<App>, AppError>
 where
     E: Executor<'e, Database = Sqlite>,
 {
@@ -65,10 +59,7 @@ where
     Ok(rows)
 }
 
-pub(crate) async fn select_apps_by_owner<'e, E>(
-    exec: E,
-    owner: &str,
-) -> Result<Vec<App>, AppError>
+pub(crate) async fn select_apps_by_owner<'e, E>(exec: E, owner: &str) -> Result<Vec<App>, AppError>
 where
     E: Executor<'e, Database = Sqlite> + Copy,
 {
@@ -293,10 +284,7 @@ where
     Ok(rows)
 }
 
-pub(crate) async fn select_user_by_id<'e, E>(
-    exec: E,
-    id: UserId,
-) -> Result<Option<User>, AppError>
+pub(crate) async fn select_user_by_id<'e, E>(exec: E, id: UserId) -> Result<Option<User>, AppError>
 where
     E: Executor<'e, Database = Sqlite>,
 {

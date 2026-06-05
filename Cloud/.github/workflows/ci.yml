@@ -1,0 +1,178 @@
+# Sovereign Application Runtime — CI workflow.
+# Locked per docs/tech-stack.md §1, §6, §7. The CI matrix is the same
+# on every release.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+          shared-key: lint
+
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny
+
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo deny
+        run: cargo deny check
+
+      - name: cargo audit
+        run: cargo audit
+
+  test:
+    name: test (stable, ${{ matrix.os }})
+    needs: lint
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+          shared-key: ${{ matrix.os }}
+
+      - name: Install cargo-llvm-cov
+        run: cargo install --locked cargo-llvm-cov
+
+      - name: cargo test
+        run: cargo test --workspace
+
+      - name: cargo llvm-cov
+        # The 80% line-coverage target on the storage adapter (F3 DoD).
+        # The threshold is enforced via `--fail-under-lines` once the
+        # adapter coverage stabilises; today we just emit the LCOV
+        # report as a build artifact.
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+        continue-on-error: true
+
+      - name: Upload coverage
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lcov.info
+          path: lcov.info
+          if-no-files-found: warn
+
+  build-musl:
+    name: build (musl, ${{ matrix.target }})
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+          shared-key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} --bin sovereign
+
+      - name: Verify static linking + size budget
+        run: |
+          file target/${{ matrix.target }}/release/sovereign
+          ldd target/${{ matrix.target }}/release/sovereign 2>&1 || true
+          SIZE=$(stat -c %s target/${{ matrix.target }}/release/sovereign)
+          echo "binary size: $SIZE bytes"
+          # F1 DoD: binary must be ≤ 25 MB.
+          if [ "$SIZE" -gt 26214400 ]; then
+            echo "::error::binary exceeds 25 MB target"
+            exit 1
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sovereign-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/sovereign
+          if-no-files-found: error
+
+  # F1 DoD: the musl binary must run on Ubuntu 22.04, Debian 12, and
+  # Alpine 3.20 with zero additional dependencies. This job spins up
+  # each distro in a stock container, copies the built binary in, and
+  # asserts `--version` and `--help` work without any install step.
+  verify-distros:
+    name: verify (distro, ${{ matrix.image }})
+    needs: build-musl
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ubuntu:22.04
+            label: "Ubuntu 22.04"
+          - image: debian:12
+            label: "Debian 12"
+          - image: alpine:3.20
+            label: "Alpine 3.20"
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: sovereign-x86_64-unknown-linux-musl
+          path: dist
+
+      - name: Run --version and --help on ${{ matrix.label }}
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}/dist/sovereign:/sovereign:ro" \
+            "${{ matrix.image }}" \
+            /bin/sh -c '
+              set -e
+              /sovereign --version
+              /sovereign --help | head -20
+            '

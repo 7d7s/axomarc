@@ -188,17 +188,12 @@ pub enum Framework {
 }
 
 /// The deploy strategy. V0 ships BlueGreen; Rolling and Recreate are V1+.
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Strategy {
+    #[default]
     BlueGreen,
     Rolling,
     Recreate,
-}
-
-impl Default for Strategy {
-    fn default() -> Self {
-        Strategy::BlueGreen
-    }
 }
 
 /// The supported shells for completion generation.

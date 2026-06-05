@@ -20,8 +20,8 @@ use std::path::PathBuf;
 
 use sovereign_core::domain::{
     AppEnv, AppId, AppUpdate, AuditEvent, AuditKind, AuditQuery, Deployment, DeploymentEvent,
-    DeploymentStatus, NewApp, NewBackup, NewDeployment, NewDomain, NewSecret, NewServer,
-    NewUser, ServerRole, Strategy, Timestamp, UserRole,
+    DeploymentStatus, NewApp, NewBackup, NewDeployment, NewDomain, NewSecret, NewServer, NewUser,
+    ServerRole, Strategy, Timestamp, UserRole,
 };
 use sovereign_core::error::AppError;
 use sovereign_core::ports::StoragePort;
@@ -48,10 +48,20 @@ async fn open_runs_migrations_and_creates_7_core_tables() {
     let s = fresh().await;
     let tables = s.core_tables().await.expect("core_tables");
     let expected: Vec<&str> = vec![
-        "app", "audit_event", "backup", "deployment", "domain", "secret", "server", "user",
+        "app",
+        "audit_event",
+        "backup",
+        "deployment",
+        "domain",
+        "secret",
+        "server",
+        "user",
     ];
     for t in &expected {
-        assert!(tables.contains(&t.to_string()), "missing table `{t}` in {tables:?}");
+        assert!(
+            tables.contains(&t.to_string()),
+            "missing table `{t}` in {tables:?}"
+        );
     }
     // We expect 8 (7 core + audit_event), not 7.
     assert_eq!(
@@ -77,14 +87,19 @@ async fn open_enables_wal() {
     let dir = tempdir();
     let path = dir.join("wal.db");
     let s = SqliteState::open(&path).await.expect("open on-disk");
-    assert!(s.is_wal().await.unwrap(), "WAL mode should be active on disk");
+    assert!(
+        s.is_wal().await.unwrap(),
+        "WAL mode should be active on disk"
+    );
 }
 
 #[tokio::test]
 async fn open_creates_parent_dir() {
     let dir = tempdir();
     let path: PathBuf = dir.join("nested/sub/sovereign.db");
-    let s = SqliteState::open(&path).await.expect("open with nested dirs");
+    let s = SqliteState::open(&path)
+        .await
+        .expect("open with nested dirs");
     assert!(path.exists(), "db file should be created");
     let tables = s.core_tables().await.unwrap();
     assert!(tables.contains(&"app".to_string()));
@@ -223,12 +238,7 @@ async fn app_archive_is_soft_delete() {
 async fn app_update_nonexistent_is_not_found() {
     let s = fresh().await;
     let err = s
-        .update_app(
-            AppId::generate(),
-            AppUpdate::default(),
-            1,
-            "user:alice",
-        )
+        .update_app(AppId::generate(), AppUpdate::default(), 1, "user:alice")
         .await
         .expect_err("missing app should be NotFound");
     assert!(matches!(err, AppError::NotFound("app")));
@@ -569,8 +579,13 @@ async fn server_add_touch_set_status() {
         )
         .await
         .expect("set_status");
-    assert_eq!(drained.status, sovereign_core::domain::ServerStatus::Drained);
-    s.touch_server(srv.id, Timestamp::now()).await.expect("touch");
+    assert_eq!(
+        drained.status,
+        sovereign_core::domain::ServerStatus::Drained
+    );
+    s.touch_server(srv.id, Timestamp::now())
+        .await
+        .expect("touch");
 }
 
 #[tokio::test]
@@ -661,10 +676,7 @@ async fn audit_appends_and_queries() {
     let count = s.count_audit().await.expect("count");
     assert_eq!(count, 1);
 
-    let events = s
-        .query_audit(AuditQuery::default())
-        .await
-        .expect("query");
+    let events = s.query_audit(AuditQuery::default()).await.expect("query");
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].actor, "user:alice");
     assert!(events[0].id.is_some(), "id is populated after insert");
@@ -711,13 +723,9 @@ async fn audit_mutation_writes_a_corresponding_event() {
     assert_eq!(s.count_audit().await.unwrap(), 0);
     s.create_app(sample_app("api"), "user:alice").await.unwrap();
     assert_eq!(s.count_audit().await.unwrap(), 1);
-    s.archive_app(
-        s.list_apps(None).await.unwrap()[0].id,
-        1,
-        "user:alice",
-    )
-    .await
-    .unwrap();
+    s.archive_app(s.list_apps(None).await.unwrap()[0].id, 1, "user:alice")
+        .await
+        .unwrap();
     assert_eq!(s.count_audit().await.unwrap(), 2);
 }
 
@@ -847,7 +855,11 @@ async fn rollback_get_current_deployment_returns_most_recent_healthy() {
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let newer = drive_to_healthy(&s, app.id, "x:v2").await;
 
-    let current = s.get_current_deployment(app.id).await.unwrap().expect("current");
+    let current = s
+        .get_current_deployment(app.id)
+        .await
+        .unwrap()
+        .expect("current");
     assert_eq!(current.id, newer.id);
     assert_eq!(current.image_ref, "x:v2");
     assert_eq!(current.status, DeploymentStatus::Healthy);
@@ -910,15 +922,26 @@ async fn rollback_list_healthy_deployments_before_excludes_current_and_failed() 
         .unwrap();
     let ids: Vec<_> = history.iter().map(|d| d.id).collect();
 
-    assert!(ids.contains(&old.id), "v1 should be in the rollback history");
-    assert!(ids.contains(&middle.id), "v2 should be in the rollback history");
-    assert!(!ids.contains(&failed.id), "Failed deploy is excluded by status filter");
+    assert!(
+        ids.contains(&old.id),
+        "v1 should be in the rollback history"
+    );
+    assert!(
+        ids.contains(&middle.id),
+        "v2 should be in the rollback history"
+    );
+    assert!(
+        !ids.contains(&failed.id),
+        "Failed deploy is excluded by status filter"
+    );
     assert!(
         ids.iter().position(|id| *id == middle.id).unwrap()
             < ids.iter().position(|id| *id == old.id).unwrap(),
         "DESC order: v2 (newer) should come before v1 (older)"
     );
-    assert!(history.iter().all(|d| d.status == DeploymentStatus::Healthy));
+    assert!(history
+        .iter()
+        .all(|d| d.status == DeploymentStatus::Healthy));
     assert_eq!(history.len(), 2, "expected v1+v2, got {history:?}");
 }
 
@@ -932,8 +955,14 @@ async fn rollback_list_healthy_deployments_before_respects_limit() {
         tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     }
     let now = Timestamp::now();
-    let h2 = s.list_healthy_deployments_before(app.id, Timestamp(now.as_secs() + 1), 2).await.unwrap();
-    let h5 = s.list_healthy_deployments_before(app.id, Timestamp(now.as_secs() + 1), 5).await.unwrap();
+    let h2 = s
+        .list_healthy_deployments_before(app.id, Timestamp(now.as_secs() + 1), 2)
+        .await
+        .unwrap();
+    let h5 = s
+        .list_healthy_deployments_before(app.id, Timestamp(now.as_secs() + 1), 5)
+        .await
+        .unwrap();
     assert_eq!(h2.len(), 2, "limit=2 should cap to 2");
     assert_eq!(h5.len(), 5, "limit=5 should return all 5");
 }
@@ -944,7 +973,10 @@ async fn rollback_set_target_stamps_and_audits() {
     let app = s.create_app(sample_app("api"), "user:alice").await.unwrap();
     let target = drive_to_healthy(&s, app.id, "x:v1").await;
     let mut current = drive_to_healthy(&s, app.id, "x:v2").await;
-    assert!(current.target_deployment_id.is_none(), "no target on a fresh deploy");
+    assert!(
+        current.target_deployment_id.is_none(),
+        "no target on a fresh deploy"
+    );
 
     current = s
         .set_rollback_target(current.id, target.id, "user:alice")
@@ -985,8 +1017,9 @@ async fn rollback_set_target_unknown_deployment_is_not_found() {
     let app = s.create_app(sample_app("api"), "user:alice").await.unwrap();
     let _d = drive_to_healthy(&s, app.id, "x:v1").await;
     let bogus = sovereign_core::domain::DeploymentId::generate();
-    let res = s
-        .set_rollback_target(bogus, bogus, "user:alice")
-        .await;
-    assert!(matches!(res, Err(AppError::NotFound(_))), "expected NotFound, got {res:?}");
+    let res = s.set_rollback_target(bogus, bogus, "user:alice").await;
+    assert!(
+        matches!(res, Err(AppError::NotFound(_))),
+        "expected NotFound, got {res:?}"
+    );
 }

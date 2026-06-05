@@ -1,0 +1,64 @@
+# Sovereign — dependency policy.
+# Per docs/tech-stack.md §4.
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "MPL-2.0",
+    "OpenSSL",
+    "NTP",
+    "CDLA-Permissive-2.0",     # transitive: wit-bindgen (wasi)
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+
+# Workspace path-only deps have no version string, so they look
+# like wildcards to cargo-deny. The path itself is the source of
+# truth, the version comes from workspace.package.version. Skip
+# the wildcard check only on crates that are actually path-referenced
+# in the current workspace (others are scaffolded but unused today;
+# they'll be added back as F6-F10 wire them in).
+skip = [
+    "sovereign",
+    "sovereign-core",
+    "sovereign-runtime-docker",
+    "sovereign-storage-sqlite",
+    "sovereign-observability",
+]
+
+# Forbidden per docs/tech-stack.md §9.
+deny = [
+    { name = "openssl" },       # we use rustls
+    { name = "openssl-sys" },
+    { name = "async-std" },     # discontinued
+    { name = "actix-web" },     # fights tokio
+    { name = "diesel" },        # sync, macro-heavy
+    { name = "sea-orm" },       # ORM tax
+    { name = "git2" },          # libgit2 C dep; we use gix
+    { name = "kube" },          # K8s is forbidden
+    { name = "kube-rs" },
+    { name = "tonic" },         # gRPC is forbidden
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

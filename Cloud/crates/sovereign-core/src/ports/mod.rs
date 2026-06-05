@@ -7,7 +7,5 @@
 pub mod runtime;
 pub mod storage;
 
-pub use runtime::{
-    ContainerSpec, HealthResult, MountSpec, RuntimeEndpoint, RuntimePort,
-};
+pub use runtime::{ContainerSpec, HealthResult, MountSpec, RuntimeEndpoint, RuntimePort};
 pub use storage::StoragePort;
