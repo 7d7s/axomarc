@@ -4,6 +4,7 @@
 mod cli;
 mod commands;
 mod commands_deploy;
+mod commands_domain;
 mod commands_rollback;
 mod exit;
 mod lock;

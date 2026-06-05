@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use crate::ports::{RuntimePort, StoragePort};
+use crate::ports::{ProxyPort, RuntimePort, StoragePort};
 
 /// The shared application state. Cheap to clone (`Arc`s inside).
 #[derive(Clone)]
@@ -17,6 +17,12 @@ pub struct AppState {
     pub storage: Arc<dyn StoragePort>,
     /// The container runtime adapter (Docker in V0).
     pub runtime: Arc<dyn RuntimePort>,
+    /// The reverse-proxy adapter (Caddy in V0). `None` when the host
+    /// has no proxy configured (test environments, `--no-proxy` on
+    /// the CLI, or a Caddy install that the binary cannot reach).
+    /// Use cases MUST tolerate `None` and fall back to the
+    /// container-only URL.
+    pub proxy: Option<Arc<dyn ProxyPort>>,
 }
 
 impl std::fmt::Debug for AppState {

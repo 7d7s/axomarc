@@ -39,6 +39,7 @@ highlight = "all"
 skip = [
     "sovereign",
     "sovereign-core",
+    "sovereign-proxy-caddy",
     "sovereign-runtime-docker",
     "sovereign-storage-sqlite",
     "sovereign-observability",

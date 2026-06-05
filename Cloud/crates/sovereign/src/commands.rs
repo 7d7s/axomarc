@@ -4,7 +4,7 @@
 // `--dry-run` "would do X" line and return). F3+ replaces each stub with
 // the real implementation.
 
-use crate::cli::{BackupCmd, Cli, Cmd, SecretCmd};
+use crate::cli::{BackupCmd, Cli, Cmd, DomainCmd, SecretCmd};
 use crate::exit::AppExit;
 use crate::output::{Envelope, Output};
 use serde::Serialize;
@@ -95,6 +95,27 @@ pub async fn dispatch(cli: &Cli, out: &Output) -> Dispatch {
             &format!("app={} tail={} follow={}", app, tail, follow),
         ),
         Cmd::Status { app } => stub(cli, out, "status", &format!("app={:?}", app)),
+        Cmd::Domain { cmd } => match cmd {
+            DomainCmd::Add { hostname, app } => {
+                if cli.dry_run {
+                    stub(
+                        cli,
+                        out,
+                        "domain add",
+                        &format!("hostname={} app={}", hostname, app),
+                    )
+                } else {
+                    return crate::commands_domain::run(cmd, out).await;
+                }
+            }
+            DomainCmd::List { app } => {
+                if cli.dry_run {
+                    stub(cli, out, "domain list", &format!("app={}", app))
+                } else {
+                    return crate::commands_domain::run(cmd, out).await;
+                }
+            }
+        },
         Cmd::Secret { cmd } => match cmd {
             SecretCmd::Set { key, app } => {
                 stub(cli, out, "secret set", &format!("key={} app={}", key, app))
@@ -184,10 +205,11 @@ fn stub(cli: &Cli, out: &Output, name: &str, args: &str) -> Dispatch {
 /// so the operator knows when to expect the real thing.
 fn stub_phase(name: &str) -> &'static str {
     match name {
-        "init" | "login" => "2",        // F2 itself (these are stubs for now)
-        "deploy" | "rollback" => "4-5", // F4 (deploy) + F5 (rollback)
-        "logs" => "4",                  // F4 includes the log stream
-        "status" => "2",                // F2 itself (the stub prints the state)
+        "init" | "login" => "2",             // F2 itself (these are stubs for now)
+        "deploy" | "rollback" => "4-5",      // F4 (deploy) + F5 (rollback)
+        "logs" => "4",                       // F4 includes the log stream
+        "status" => "2",                     // F2 itself (the stub prints the state)
+        "domain add" | "domain list" => "6", // F6 (Caddy auto-TLS)
         "secret set" | "secret list" | "secret rotate" => "7", // F7 (encrypted secret store)
         "backup create" | "backup list" | "backup verify" => "8", // F8 (backup)
         _ => "??",

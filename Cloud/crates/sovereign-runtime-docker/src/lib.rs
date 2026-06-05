@@ -109,11 +109,18 @@ impl RuntimePort for DockerRuntime {
             name: spec.name.clone(),
             platform: None,
         };
-        // Map container port <spec.port>/tcp to a random host port.
+        // V0 design: pin the host port to `spec.port` (we expect apps
+        // to listen on 8080; the proxy reverse-proxies to that port).
+        // Letting Docker pick a random port would force every consumer
+        // of the port (the proxy, the healthcheck, the CLI log) to
+        // re-inspect the container. V0's UX is "one port, no surprises".
+        //
+        // V0.5 will lift this restriction via `ContainerSpec::host_port`
+        // (None = Docker picks, Some = fixed).
         let port_key = format!("{}/tcp", spec.port);
         let host_binding = bollard::models::PortBinding {
-            host_ip: Some("0.0.0.0".into()),
-            host_port: None, // ask Docker to assign
+            host_ip: Some("127.0.0.1".into()),
+            host_port: Some(spec.port.to_string()),
         };
         let port_bindings: bollard::models::PortMap =
             [(port_key.clone(), Some(vec![host_binding]))]

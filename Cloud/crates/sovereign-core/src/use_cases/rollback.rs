@@ -31,7 +31,7 @@ use crate::domain::{
     Timestamp,
 };
 use crate::error::AppError;
-use crate::ports::HealthResult;
+use crate::ports::{default_v0_host, HealthResult};
 use crate::state::AppState;
 
 /// Hard cap on the rollback health-probe budget.
@@ -228,6 +228,11 @@ pub async fn start_rollback(
         .await?;
     let _ = now; // reserved for future audit timestamp
 
+    // Refresh the proxy route. The new container is on the same host
+    // port (V0 pins port 8080), so the existing route's upstream is
+    // now stale. Idempotent: Caddy's `add_route` PUT replaces.
+    refresh_proxy_route(state, req.app_id).await;
+
     Ok(RollbackResult {
         deployment: state
             .storage
@@ -236,6 +241,23 @@ pub async fn start_rollback(
             .ok_or_else(|| AppError::internal("rollback marker vanished"))?,
         target_image: target.image_ref,
     })
+}
+
+/// Refresh the proxy route for an app's default V0 hostname. Best-
+/// effort: a Caddy error is a warning, not a rollback failure — the
+/// audit log + storage row are the source of truth.
+async fn refresh_proxy_route(state: &AppState, app_id: AppId) {
+    let Some(proxy) = state.proxy.as_ref() else {
+        return;
+    };
+    let host = default_v0_host(&app_id.to_string());
+    if let Err(e) = proxy.add_route(&host, 8080).await {
+        tracing::warn!(
+            host = %host,
+            error = %e,
+            "rollback: proxy route refresh failed; the new container is serving on the loopback port, but the public URL is not wired. Run `sovereign domain add` to repair."
+        );
+    }
 }
 
 /// Best-effort: bring the original current container back. Used when

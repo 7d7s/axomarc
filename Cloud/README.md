@@ -18,7 +18,7 @@ sovereign deploy                                   # 5 minutes to a live URL
 | F3 — SQLite + 7 core tables + append-only audit | ✅ (50 tests, see `crates/sovereign-storage-sqlite/`) |
 | F4 — `sovereign deploy` (git push to live URL) | ✅ (RuntimePort + DockerRuntime + deploy use case + CLI wired) |
 | F5 — One-command rollback | ✅ (`sovereign rollback <app> [--to=<id>] [--list] [--limit=N] [--json]`; writes `sovereign.lock` receipt on every healthy deploy; `--no-lock` opt-out) |
-| F6 — Caddy auto-TLS (HTTP-01 ACME, auto-renew) | ⏳ |
+| F6 — Caddy auto-TLS (HTTP-01 ACME, auto-renew) | ✅ (`CaddyProxy` adapter; `tls internal` in V0; `sovereign deploy` and `rollback` push routes; `sovereign domain add <host> --app <app>` for custom hostnames) |
 | F7 — Encrypted secret store (age + Argon2) | ⏳ |
 | F8 — Backup + health check + auto-rollback | ⏳ |
 | F9 — `sovereign doctor` — basic diagnostic | ⏳ |
