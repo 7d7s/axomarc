@@ -140,11 +140,7 @@ pub(crate) async fn touch(
     Ok(())
 }
 
-pub(crate) async fn remove(
-    pool: &Pool<Sqlite>,
-    id: ServerId,
-    actor: &str,
-) -> Result<(), AppError> {
+pub(crate) async fn remove(pool: &Pool<Sqlite>, id: ServerId, actor: &str) -> Result<(), AppError> {
     let mut tx = pool.begin().await?;
     let now = Timestamp::now();
 

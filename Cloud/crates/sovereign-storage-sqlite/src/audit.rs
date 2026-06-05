@@ -3,7 +3,7 @@
 // non-INSERT statement (the `append_audit` helper in `app.rs` is the
 // only writer; the queries here are read-only).
 
-use sqlx::{Pool, Sqlite, Row};
+use sqlx::{Pool, Row, Sqlite};
 use tracing::instrument;
 
 use sovereign_core::domain::{AuditEvent, AuditKind, AuditQuery, Timestamp};
@@ -38,7 +38,10 @@ pub(crate) async fn append(pool: &Pool<Sqlite>, event: AuditEvent) -> Result<(),
 }
 
 #[instrument(skip(pool, q), fields(kind = ?q.kind, actor = ?q.actor, target = ?q.target))]
-pub(crate) async fn query(pool: &Pool<Sqlite>, q: &AuditQuery) -> Result<Vec<AuditEvent>, AppError> {
+pub(crate) async fn query(
+    pool: &Pool<Sqlite>,
+    q: &AuditQuery,
+) -> Result<Vec<AuditEvent>, AppError> {
     // Build the dynamic WHERE clause from the non-None filters.
     let mut where_clauses: Vec<String> = Vec::new();
     if q.since.is_some() {
@@ -100,14 +103,13 @@ pub(crate) async fn query(pool: &Pool<Sqlite>, q: &AuditQuery) -> Result<Vec<Aud
         let policy_str: Option<String> = row.get(6);
 
         let kind = kind_from_str(&kind_str);
-        let payload: serde_json::Value =
-            serde_json::from_str(&payload_str).map_err(|e| AppError::internal(
-                format!("audit payload deserialize: {e}"),
-            ))?;
+        let payload: serde_json::Value = serde_json::from_str(&payload_str)
+            .map_err(|e| AppError::internal(format!("audit payload deserialize: {e}")))?;
         let policy_decision = match policy_str {
-            Some(s) => Some(serde_json::from_str(&s).map_err(|e| {
-                AppError::internal(format!("audit policy deserialize: {e}"))
-            })?),
+            Some(s) => Some(
+                serde_json::from_str(&s)
+                    .map_err(|e| AppError::internal(format!("audit policy deserialize: {e}")))?,
+            ),
             None => None,
         };
 

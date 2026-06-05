@@ -7,10 +7,10 @@
 use async_trait::async_trait;
 
 use crate::domain::{
-    App, AppId, AppUpdate, AuditEvent, AuditQuery, Backup, BackupId, BackupStatus,
-    Deployment, DeploymentEvent, DeploymentId, Domain, DomainId, NewApp, NewBackup,
-    NewDeployment, NewDomain, NewSecret, NewServer, NewUser, Secret, SecretId, SecretStatus,
-    Server, ServerId, ServerStatus, Timestamp, User, UserId, UserRole,
+    App, AppId, AppUpdate, AuditEvent, AuditQuery, Backup, BackupId, BackupStatus, Deployment,
+    DeploymentEvent, DeploymentId, Domain, DomainId, NewApp, NewBackup, NewDeployment, NewDomain,
+    NewSecret, NewServer, NewUser, Secret, SecretId, SecretStatus, Server, ServerId, ServerStatus,
+    Timestamp, User, UserId, UserRole,
 };
 use crate::error::AppError;
 
@@ -60,7 +60,12 @@ pub trait StoragePort: Send + Sync {
 
     /// Soft-delete: sets `status = Archived` and bumps `version`. The
     /// row is **never** physically removed (audit trail integrity).
-    async fn archive_app(&self, id: AppId, expected_version: i64, actor: &str) -> Result<App, AppError>;
+    async fn archive_app(
+        &self,
+        id: AppId,
+        expected_version: i64,
+        actor: &str,
+    ) -> Result<App, AppError>;
 
     // --- deployment ----------------------------------------------------------
 
@@ -86,19 +91,12 @@ pub trait StoragePort: Send + Sync {
     async fn get_deployment(&self, id: DeploymentId) -> Result<Option<Deployment>, AppError>;
 
     /// Most recent first, capped at `limit`.
-    async fn list_deployments(
-        &self,
-        app: AppId,
-        limit: u32,
-    ) -> Result<Vec<Deployment>, AppError>;
+    async fn list_deployments(&self, app: AppId, limit: u32) -> Result<Vec<Deployment>, AppError>;
 
     /// The most recent `Healthy` deployment for the app — i.e. what's
     /// currently serving. `None` if the app has never had a healthy
     /// deploy. F5's `get_current_deployment`.
-    async fn get_current_deployment(
-        &self,
-        app: AppId,
-    ) -> Result<Option<Deployment>, AppError>;
+    async fn get_current_deployment(&self, app: AppId) -> Result<Option<Deployment>, AppError>;
 
     /// `Healthy` deployments that started strictly before `before`,
     /// newest first, capped at `limit`. F5 rollback uses this to find
@@ -189,7 +187,12 @@ pub trait StoragePort: Send + Sync {
     async fn get_user(&self, id: UserId) -> Result<Option<User>, AppError>;
     async fn get_user_by_email(&self, email: &str) -> Result<Option<User>, AppError>;
     async fn list_users(&self) -> Result<Vec<User>, AppError>;
-    async fn set_user_role(&self, id: UserId, role: UserRole, actor: &str) -> Result<User, AppError>;
+    async fn set_user_role(
+        &self,
+        id: UserId,
+        role: UserRole,
+        actor: &str,
+    ) -> Result<User, AppError>;
     async fn touch_user(&self, id: UserId, at: Timestamp) -> Result<(), AppError>;
 
     // --- audit ---------------------------------------------------------------

@@ -30,10 +30,7 @@ pub const RETRIES: u32 = 3;
 /// Probe a TCP port. `host:port` is resolved via the OS resolver.
 /// Returns `HealthResult` with `ok=true` iff at least one connect
 /// succeeded within the retry budget.
-pub async fn probe_tcp<A: ToSocketAddrs + Clone>(
-    addr: A,
-    per_attempt: Duration,
-) -> HealthResult {
+pub async fn probe_tcp<A: ToSocketAddrs + Clone>(addr: A, per_attempt: Duration) -> HealthResult {
     let start = Instant::now();
     let mut last_err = String::from("unreachable");
     for attempt in 0..RETRIES {
@@ -63,12 +60,7 @@ pub async fn probe_tcp<A: ToSocketAddrs + Clone>(
 
 /// Probe an HTTP endpoint. `host` is the bare hostname (no scheme).
 /// Issues a `GET path`; success = 2xx.
-pub async fn probe_http(
-    host: &str,
-    port: u16,
-    path: &str,
-    per_attempt: Duration,
-) -> HealthResult {
+pub async fn probe_http(host: &str, port: u16, path: &str, per_attempt: Duration) -> HealthResult {
     let start = Instant::now();
     let mut last_err = String::from("no response");
     for attempt in 0..RETRIES {
@@ -178,14 +170,18 @@ mod tests {
                 let mut buf = [0u8; 1024];
                 let _ = s.read(&mut buf).await;
                 let _ = s
-                    .write_all(
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                    )
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                     .await;
                 let _ = s.shutdown().await;
             }
         });
-        let r = probe_http(&addr.ip().to_string(), addr.port(), "/", Duration::from_millis(500)).await;
+        let r = probe_http(
+            &addr.ip().to_string(),
+            addr.port(),
+            "/",
+            Duration::from_millis(500),
+        )
+        .await;
         assert!(r.ok, "expected ok, got error {:?}", r.error);
     }
 }

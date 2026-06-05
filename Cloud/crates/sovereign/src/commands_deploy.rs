@@ -53,7 +53,11 @@ pub async fn run(cmd: &Cmd, out: &Output) -> Dispatch {
     };
 
     if app_name.is_empty() {
-        return err(out, AppExit::Usage, "deploy requires --app <NAME> (or run `sovereign init` first)");
+        return err(
+            out,
+            AppExit::Usage,
+            "deploy requires --app <NAME> (or run `sovereign init` first)",
+        );
     }
 
     // 1. Open storage. The DB lives in the data dir; for V0 we just
@@ -180,9 +184,8 @@ pub async fn run(cmd: &Cmd, out: &Output) -> Dispatch {
                     })),
                 });
                 if !no_lock && lock_outcome.is_none() {
-                    body["lock_warning"] = serde_json::json!(
-                        "deploy is healthy but sovereign.lock was not written"
-                    );
+                    body["lock_warning"] =
+                        serde_json::json!("deploy is healthy but sovereign.lock was not written");
                 }
                 let env = Envelope::<serde_json::Value>::ok(body);
                 let _ = out.success(&env);

@@ -35,12 +35,12 @@ use crate::output::{Envelope, Output};
 #[instrument(skip(out))]
 pub async fn run(cmd: &Cmd, out: &Output) -> Dispatch {
     let (app_name, to, list, limit) = match cmd {
-        Cmd::Rollback { app, to, list, limit } => (
-            app.clone(),
-            to.clone(),
-            *list,
-            *limit,
-        ),
+        Cmd::Rollback {
+            app,
+            to,
+            list,
+            limit,
+        } => (app.clone(), to.clone(), *list, *limit),
         _ => return Dispatch::Err(AppExit::Generic),
     };
 
@@ -67,14 +67,14 @@ pub async fn run(cmd: &Cmd, out: &Output) -> Dispatch {
         }
     };
 
-    let app = match storage.get_app_by_name(&app_name).await.context("lookup app") {
+    let app = match storage
+        .get_app_by_name(&app_name)
+        .await
+        .context("lookup app")
+    {
         Ok(Some(a)) => a,
         Ok(None) => {
-            return err(
-                out,
-                AppExit::Usage,
-                &format!("no app named `{app_name}`."),
-            );
+            return err(out, AppExit::Usage, &format!("no app named `{app_name}`."));
         }
         Err(e) => return err(out, AppExit::Generic, &format!("storage error: {e}")),
     };
@@ -127,9 +127,7 @@ pub async fn run(cmd: &Cmd, out: &Output) -> Dispatch {
             if out.format() == crate::output::Format::Text {
                 let _ = out.text(&format!(
                     "{} rolled back; serving {} (deployment {})",
-                    app.name,
-                    r.target_image,
-                    r.deployment.id
+                    app.name, r.target_image, r.deployment.id
                 ));
             } else {
                 let env = Envelope::<serde_json::Value>::ok(serde_json::json!({
@@ -181,7 +179,8 @@ async fn run_list(
 
     if out.format() == crate::output::Format::Text {
         // Text table. The columns mirror the F5 spec example.
-        let _ = out.text("ID        IMAGE                       STARTED              AGE     CURRENT");
+        let _ =
+            out.text("ID        IMAGE                       STARTED              AGE     CURRENT");
         for d in &dep {
             let id_short = format!("{}", d.id).chars().take(8).collect::<String>();
             let started = format_timestamp(d.started_at);
@@ -218,9 +217,7 @@ fn parse_deployment_id(s: &str) -> Result<sovereign_core::domain::DeploymentId, 
 fn format_timestamp(ts: Timestamp) -> String {
     let secs = ts.as_secs();
     let (year, month, day, hour, min, sec) = epoch_to_ymdhms(secs);
-    format!(
-        "{year:04}-{month:02}-{day:02} {hour:02}:{min:02}:{sec:02}"
-    )
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{min:02}:{sec:02}")
 }
 
 /// Howard Hinnant's date.h algorithm (public domain). Same as the

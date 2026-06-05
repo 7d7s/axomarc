@@ -7,6 +7,10 @@ use std::process::ExitCode;
 /// scripts and CI pipelines can rely on these values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+// `Partial` (batch deploys) and `Doctor` (F9) are reserved for V0.5+; the
+// variants are part of the public contract that scripts and CI rely on, so
+// we keep them even when no caller in V0.1 produces them.
+#[allow(dead_code)]
 pub enum AppExit {
     /// Command succeeded.
     Success = 0,

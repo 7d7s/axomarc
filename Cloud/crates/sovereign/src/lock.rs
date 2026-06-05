@@ -171,10 +171,7 @@ fn git_commit(repo: &str, dep: &Deployment) -> bool {
 }
 
 fn git_push(repo: &str) -> bool {
-    match Command::new("git")
-        .args(["-C", repo, "push"])
-        .status()
-    {
+    match Command::new("git").args(["-C", repo, "push"]).status() {
         Ok(s) if s.success() => true,
         Ok(_) => {
             warn!("git push failed in {repo} (no upstream? auth?)");
@@ -191,6 +188,7 @@ fn git_push(repo: &str) -> bool {
 /// `sovereign doctor` in a later feature. We expose it now so the
 /// public shape is stable. Returns `None` if the file doesn't exist
 /// or isn't valid JSON; never panics.
+#[allow(dead_code)] // F9 will use this in the G16 doctor check.
 pub(crate) fn read(path: &Path) -> Option<serde_json::Value> {
     let body = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&body).ok()
@@ -224,7 +222,10 @@ mod tests {
         assert_eq!(parsed["image"], "ghcr.io/me/api:v1");
         assert_eq!(parsed["deployed_at"], "2026-06-04T14:22:00Z");
         assert_eq!(parsed["actor"], "user:alice");
-        assert!(parsed["deployment_id"].as_str().unwrap().starts_with("api/"));
+        assert!(parsed["deployment_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("api/"));
         assert!(parsed["sovereign_version"].is_string());
     }
 

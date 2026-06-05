@@ -2,9 +2,7 @@
 
 use sqlx::{Pool, Row, Sqlite};
 
-use sovereign_core::domain::{
-    kind, AuditEvent, Domain, DomainId, NewDomain, Timestamp, TlsStatus,
-};
+use sovereign_core::domain::{kind, AuditEvent, Domain, DomainId, NewDomain, Timestamp, TlsStatus};
 use sovereign_core::error::AppError;
 
 use crate::app::append_audit;
@@ -71,11 +69,7 @@ pub(crate) async fn add(
         .ok_or_else(|| AppError::internal("domain vanished after insert"))
 }
 
-pub(crate) async fn remove(
-    pool: &Pool<Sqlite>,
-    id: DomainId,
-    actor: &str,
-) -> Result<(), AppError> {
+pub(crate) async fn remove(pool: &Pool<Sqlite>, id: DomainId, actor: &str) -> Result<(), AppError> {
     let mut tx = pool.begin().await?;
     let now = Timestamp::now();
 

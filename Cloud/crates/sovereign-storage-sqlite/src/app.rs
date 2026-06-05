@@ -13,11 +13,7 @@ use crate::row;
 const APP_COLUMNS: &str = "id, name, owner, env, git_repo, image_ref, config_yaml, \
                             health_path, status, created_at, updated_at, version";
 
-pub(crate) async fn create(
-    pool: &Pool<Sqlite>,
-    new: NewApp,
-    actor: &str,
-) -> Result<App, AppError> {
+pub(crate) async fn create(pool: &Pool<Sqlite>, new: NewApp, actor: &str) -> Result<App, AppError> {
     if new.name.trim().is_empty() {
         return Err(AppError::validation("app name must not be empty"));
     }

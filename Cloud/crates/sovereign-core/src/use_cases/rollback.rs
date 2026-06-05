@@ -93,11 +93,7 @@ pub async fn start_rollback(
         None => {
             let history = state
                 .storage
-                .list_healthy_deployments_before(
-                    req.app_id,
-                    current.started_at,
-                    1,
-                )
+                .list_healthy_deployments_before(req.app_id, current.started_at, 1)
                 .await?;
             history
                 .into_iter()
@@ -159,9 +155,7 @@ pub async fn start_rollback(
         .healthcheck(
             &new_container_id,
             8080,
-            target
-                .image_ref
-                .as_str(),
+            target.image_ref.as_str(),
             ROLLBACK_HEALTH_TIMEOUT,
         )
         .await
@@ -246,10 +240,7 @@ pub async fn start_rollback(
 
 /// Best-effort: bring the original current container back. Used when
 /// the rollback healthcheck fails.
-async fn restore_current(
-    state: &AppState,
-    current: &Deployment,
-) -> Result<(), AppError> {
+async fn restore_current(state: &AppState, current: &Deployment) -> Result<(), AppError> {
     let name = format!("sovereign-{}-{}", current.app_id, current.id);
     let spec = crate::ports::ContainerSpec {
         image: current.image_ref.clone(),

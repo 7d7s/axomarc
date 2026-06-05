@@ -4,9 +4,7 @@
 
 use sqlx::{Pool, Sqlite};
 
-use sovereign_core::domain::{
-    kind, AuditEvent, NewUser, Timestamp, User, UserId, UserRole,
-};
+use sovereign_core::domain::{kind, AuditEvent, NewUser, Timestamp, User, UserId, UserRole};
 use sovereign_core::error::AppError;
 
 use crate::app::append_audit;
@@ -107,11 +105,7 @@ pub(crate) async fn set_role(
         .ok_or_else(|| AppError::internal("user vanished after set_role"))
 }
 
-pub(crate) async fn touch(
-    pool: &Pool<Sqlite>,
-    id: UserId,
-    at: Timestamp,
-) -> Result<(), AppError> {
+pub(crate) async fn touch(pool: &Pool<Sqlite>, id: UserId, at: Timestamp) -> Result<(), AppError> {
     let rows = sqlx::query("UPDATE user SET last_seen = ? WHERE id = ?")
         .bind(at.as_secs())
         .bind(id.as_uuid())

@@ -9,10 +9,7 @@ use serde::{Deserialize, Serialize};
 /// The deployment lifecycle. Every transition must be allowed by
 /// [`DeploymentStatus::can_transition_to`]; the storage layer is the
 /// single point of enforcement.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash,
-    Serialize, Deserialize, sqlx::Type,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type)]
 #[serde(rename_all = "snake_case")]
 #[sqlx(rename_all = "snake_case")]
 pub enum DeploymentStatus {
@@ -74,10 +71,7 @@ impl std::fmt::Display for DeploymentStatus {
 
 /// Deploy strategy. `BlueGreen` is the default in V0; rolling is
 /// available for stateful apps; `Recreate` drops the old container first.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash,
-    Serialize, Deserialize, sqlx::Type,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type)]
 #[serde(rename_all = "lowercase")]
 #[sqlx(rename_all = "lowercase")]
 pub enum Strategy {

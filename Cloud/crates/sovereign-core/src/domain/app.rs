@@ -10,10 +10,7 @@ use serde::{Deserialize, Serialize};
 /// The environment an [`App`] is deployed into. Encoded in the
 /// `app.env` column with a `CHECK (env IN ('dev','staging','prod'))`
 /// constraint, so the SQL and Rust representations must stay in sync.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash,
-    Serialize, Deserialize, sqlx::Type,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type)]
 #[serde(rename_all = "lowercase")]
 #[sqlx(rename_all = "lowercase")]
 pub enum AppEnv {
@@ -61,10 +58,7 @@ impl std::fmt::Display for AppEnv {
 }
 
 /// Lifecycle status of an [`App`]. See `docs/architecture.md` §3.2.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash,
-    Serialize, Deserialize, sqlx::Type,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type)]
 #[serde(rename_all = "snake_case")]
 #[sqlx(rename_all = "snake_case")]
 pub enum AppStatus {

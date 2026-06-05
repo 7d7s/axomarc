@@ -1,10 +1,15 @@
-// Docker runtime adapter — implements `RuntimePort` against the local
-// Docker daemon (or a remote one via `DOCKER_HOST`).
-//
-// The runtime owns the bollard `Docker` handle. Bollard 0.18 uses
-// `connect_with_*_defaults` constructors and the container config
-// types are in `bollard::container`; the model types (PortBinding,
-// HostConfig) are re-exported from `bollard::models`.
+//! Docker runtime adapter — implements [`RuntimePort`] against the local
+//! Docker daemon (or a remote one via `DOCKER_HOST`).
+//!
+//! The runtime owns the bollard [`Docker`] handle. Bollard 0.18 uses
+//! `connect_with_*_defaults` constructors and the container config
+//! types are in `bollard::container`; the model types (`PortBinding`,
+//! `HostConfig`) are re-exported from `bollard::models`.
+//!
+//! The V0 health-probe convention is to bridge the container port to
+//! `127.0.0.1:0` (kernel-assigned), then HTTP-probe `127.0.0.1:<port>`.
+//! F6 (`sovereign-proxy-caddy`) replaces this with Caddy-backed health
+//! checks once the proxy is wired in.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,9 +25,7 @@ use futures::StreamExt;
 use tracing::{debug, info, instrument};
 
 use sovereign_core::error::AppError;
-use sovereign_core::ports::{
-    ContainerSpec, HealthResult, RuntimeEndpoint, RuntimePort,
-};
+use sovereign_core::ports::{ContainerSpec, HealthResult, RuntimeEndpoint, RuntimePort};
 
 /// The Docker-backed runtime. Cheap to clone (`Arc` inside).
 #[derive(Clone)]
@@ -43,17 +46,17 @@ impl DockerRuntime {
         let docker = match endpoint {
             RuntimeEndpoint::UnixSocket(path) => {
                 let clean = path.trim_start_matches("unix://");
-                Docker::connect_with_socket(clean, 120, &bollard::API_DEFAULT_VERSION)
+                Docker::connect_with_socket(clean, 120, bollard::API_DEFAULT_VERSION)
                     .map_err(|e| AppError::Upstream(format!("docker connect (unix): {e}")))?
             }
             RuntimeEndpoint::Tcp(addr) => {
                 let clean = addr.trim_start_matches("tcp://");
-                Docker::connect_with_http(clean, 120, &bollard::API_DEFAULT_VERSION)
+                Docker::connect_with_http(clean, 120, bollard::API_DEFAULT_VERSION)
                     .map_err(|e| AppError::Upstream(format!("docker connect (tcp): {e}")))?
             }
             RuntimeEndpoint::NamedPipe(path) => {
                 let clean = path.trim_start_matches("npipe://");
-                Docker::connect_with_named_pipe(clean, 120, &bollard::API_DEFAULT_VERSION)
+                Docker::connect_with_named_pipe(clean, 120, bollard::API_DEFAULT_VERSION)
                     .map_err(|e| AppError::Upstream(format!("docker connect (npipe): {e}")))?
             }
         };
@@ -112,12 +115,10 @@ impl RuntimePort for DockerRuntime {
             host_ip: Some("0.0.0.0".into()),
             host_port: None, // ask Docker to assign
         };
-        let port_bindings: bollard::models::PortMap = [(
-            port_key.clone(),
-            Some(vec![host_binding]),
-        )]
-        .into_iter()
-        .collect();
+        let port_bindings: bollard::models::PortMap =
+            [(port_key.clone(), Some(vec![host_binding]))]
+                .into_iter()
+                .collect();
         let host_config = HostConfig {
             port_bindings: Some(port_bindings),
             ..Default::default()
@@ -204,8 +205,7 @@ impl RuntimePort for DockerRuntime {
                 AppError::Upstream(format!("no IP for container {id} on bridge network"))
             })?;
         let probe_timeout = timeout / 3; // 3 retries
-        let r = sovereign_core::use_cases::health::probe_http(&ip, port, path, probe_timeout)
-            .await;
+        let r = sovereign_core::use_cases::health::probe_http(&ip, port, path, probe_timeout).await;
         Ok(r)
     }
 }

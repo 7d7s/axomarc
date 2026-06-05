@@ -10,8 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// (1970-01-01T00:00:00Z). This matches the schema in
 /// `migrations/0001_init.sql` (`INTEGER NOT NULL`).
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash,
-    Serialize, Deserialize, sqlx::Type,
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, sqlx::Type,
 )]
 #[serde(transparent)]
 #[sqlx(transparent)]
