@@ -1,13 +1,14 @@
-// Wire types (REST/JSON DTOs) shared between the binary and the control plane.
-// Per docs/architecture.md §4, all API traffic is REST + JSON, URL-prefix
-// `/v1`, cursor-paginated. The DTOs live here so the binary and the control
-// plane can never drift.
-//
-// F1 only stubs the version endpoint. F2 will add the full endpoint catalog
-// per docs/architecture.md §4.1.
+//! Wire types (REST/JSON DTOs) shared between the binary and the control plane.
+//!
+//! Per `docs/architecture.md` §4, all API traffic is REST + JSON, URL-prefix
+//! `/v1`, cursor-paginated. The DTOs live here so the binary and the control
+//! plane can never drift.
+//!
+//! F1 only stubs the version endpoint. F2 will add the full endpoint catalog
+//! per `docs/architecture.md` §4.1.
 
 #![deny(unsafe_code)]
-#![warn(missing_docs)]
+#![allow(missing_docs)]
 
 use serde::{Deserialize, Serialize};
 
@@ -33,7 +34,11 @@ impl VersionResponse {
             version: env!("CARGO_PKG_VERSION"),
             commit: option_env!("GIT_COMMIT"),
             target: option_env!("VERGEN_BUILD_TARGET"),
-            profile: if cfg!(debug_assertions) { "dev" } else { "release" },
+            profile: if cfg!(debug_assertions) {
+                "dev"
+            } else {
+                "release"
+            },
         }
     }
 }

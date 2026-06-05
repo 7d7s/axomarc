@@ -125,6 +125,19 @@ else
     info "(systemd not available; run 'sovereign run' to start the control plane)"
 fi
 
+# 7b. Install the Caddy config (best-effort). The sovereign binary
+#     talks to the Caddy admin API at localhost:2019 to mutate the
+#     route table at deploy time; this file is the static shell.
+if [ "$PLATFORM_OS" = "linux" ] && command -v caddy >/dev/null 2>&1; then
+    if [ -d /etc/caddy ]; then
+        info "Installing Caddy config..."
+        sudo install -m 0644 "$WORKDIR/Caddyfile" /etc/caddy/Caddyfile.sovereign
+        info "Caddy config installed at /etc/caddy/Caddyfile.sovereign. Merge it into /etc/caddy/Caddyfile or 'sudo systemctl reload caddy' after editing."
+    fi
+else
+    info "(caddy not installed; skipping Caddy config install. 'sovereign deploy' requires Caddy — see docs/operations-runbook.md §3.)"
+fi
+
 # 8. Wait for ready
 if command -v systemctl >/dev/null 2>&1; then
     info "Waiting for the service to be ready..."

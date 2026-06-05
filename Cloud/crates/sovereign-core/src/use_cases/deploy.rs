@@ -15,7 +15,7 @@ use crate::domain::{
     AppId, Deployment, DeploymentEvent, DeploymentStatus, NewDeployment, Strategy,
 };
 use crate::error::AppError;
-use crate::ports::HealthResult;
+use crate::ports::{default_v0_host, HealthResult};
 use crate::state::AppState;
 
 /// Hard cap on the total health-probe budget. The use case returns
@@ -195,11 +195,36 @@ pub async fn start_deploy(state: &AppState, req: DeployRequest) -> Result<Deploy
         .get_deployment(deployment_id)
         .await?
         .ok_or_else(|| AppError::internal("deployment vanished after healthy"))?;
+    let url = post_healthy_url(state, final_dep.app_id).await;
     Ok(DeployResult {
         deployment: final_dep,
-        url: format!("sovereign://{}", container_id),
+        url,
         health: Some(probe),
     })
+}
+
+/// Compute the public URL for a freshly-healthy deploy. If the proxy
+/// port is configured, push a Caddy route for `<host>` ->
+/// `127.0.0.1:8080` and return the HTTPS URL. A proxy failure is a
+/// warning, not a deploy failure — the container is serving on the
+/// loopback port either way; the operator can run `sovereign domain
+/// add` later to repair the route.
+async fn post_healthy_url(state: &AppState, app_id: crate::domain::AppId) -> String {
+    let host = default_v0_host(&app_id.to_string());
+    match state.proxy.as_ref() {
+        Some(proxy) => match proxy.add_route(&host, 8080).await {
+            Ok(()) => format!("https://{host}"),
+            Err(e) => {
+                tracing::warn!(
+                    host = %host,
+                    error = %e,
+                    "proxy.add_route failed; deployment is healthy but the public URL is not wired. Run `sovereign domain add` to repair."
+                );
+                format!("sovereign://{host} (proxy: {e})")
+            }
+        },
+        None => format!("sovereign://{host} (no proxy configured)"),
+    }
 }
 
 /// Record a failure transition + append the audit. Best-effort: if

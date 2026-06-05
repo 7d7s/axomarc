@@ -144,6 +144,13 @@ pub enum Cmd {
         app: Option<String>,
     },
 
+    /// Manage hostname -> app routing (F6). On `add`, a Caddy route
+    /// is pushed to the admin API so the hostname serves the app.
+    Domain {
+        #[command(subcommand)]
+        cmd: DomainCmd,
+    },
+
     /// Manage secrets (zero-disk injection; values never touch the box)
     Secret {
         #[command(subcommand)]
@@ -247,6 +254,27 @@ pub enum BackupCmd {
     Verify {
         /// Backup ID to verify
         backup_id: String,
+    },
+}
+
+/// The domain subcommand tree (F6). V0 implements `add` and `list`;
+/// `remove` and `inspect` (TLS state) are V1.
+#[derive(Subcommand, Debug)]
+pub enum DomainCmd {
+    /// Add a hostname that points to the current app. Pushes a Caddy
+    /// route and writes a row in the `domain` table.
+    Add {
+        /// Hostname to add (e.g. `api.example.com`)
+        hostname: String,
+        /// App the hostname points to
+        #[arg(long)]
+        app: String,
+    },
+    /// List hostnames registered for an app
+    List {
+        /// App to list hostnames for
+        #[arg(long)]
+        app: String,
     },
 }
 

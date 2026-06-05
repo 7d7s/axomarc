@@ -1,0 +1,44 @@
+# Sovereign Application Runtime — Caddy reverse-proxy config (V0).
+#
+# Installed by the operator (not the install.sh) at /etc/caddy/Caddyfile
+# or wherever their distro's Caddy package expects it. The sovereign
+# binary mutates the route table at runtime via the admin API on
+# localhost:2019; this file is the static shell.
+#
+# V0 design:
+#   * `tls internal` — Caddy issues a self-signed CA on first run
+#     and serves HTTPS without contacting Let's Encrypt. Browsers
+#     will warn; `curl -k` works. This is intentional: we do not own
+#     a public DNS zone in V0, so the `.sovereign.local` hostnames
+#     cannot be ACME-validated. V1 swaps this for DNS-01 once we
+#     have the wildcard zone.
+#   * `admin localhost:2019` — the admin API is loopback-only. The
+#     sovereign binary connects to it over plain HTTP.
+#   * `auto_https on` — Caddy's default. Even with `tls internal`,
+#     Caddy still serves HTTPS on :443 because the listener catches
+#     all Host headers and there's no other server block to handle
+#     them.
+#   * No static `routes` here — the sovereign binary injects them
+#     via the admin API at deploy time.
+
+{
+    # Loopback-only admin API. The sovereign binary uses this to
+    # add/remove routes as deployments come and go.
+    admin localhost:2019
+
+    # Caddy's default. Required for `tls internal` to be effective.
+    auto_https on
+}
+
+# Catch-all listener. Routes are pushed dynamically via the admin API
+# (PUT /config/apps/http/servers/srv0/routes/<id>). The TLS cert is
+# the Caddy internal CA, which is generated on first request and
+# persisted in /var/lib/caddy/.local/share/caddy/ (Caddy's default
+# data dir).
+:443 {
+    tls internal
+    # No `reverse_proxy` here on purpose — every route added via the
+    # admin API is `terminal: true`, so it short-circuits this block.
+    # If a request arrives for a host we do not know, it gets a 404
+    # from Caddy, which is the correct V0 behaviour.
+}

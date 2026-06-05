@@ -1,0 +1,33 @@
+[package]
+name = "sovereign-proxy-caddy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Caddy reverse-proxy adapter (auto-TLS, ACME, hot reload)."
+
+[dependencies]
+sovereign-core = { path = "../sovereign-core" }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+# The Caddy integration test shells out to the `docker` CLI instead
+# of using the `testcontainers` crate. testcontainers (any version)
+# pulls in its own `bollard`, which conflicts with the workspace's
+# pinned `bollard` 0.18 (the runtime adapter's version). Forcing
+# both would inflate the binary; shelling out is simpler and still
+# exercises a real Caddy container in CI.
+#
+# The test is `#[ignore]`'d so the default `cargo test` does not
+# require Docker. Run with:
+#   cargo test -p sovereign-proxy-caddy --test caddy_integration -- --ignored
+# CI does this in a job that has the docker CLI installed.
+tokio = { workspace = true, features = ["macros", "process", "rt-multi-thread", "time"] }
+serde_json = { workspace = true }

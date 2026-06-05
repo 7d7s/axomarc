@@ -18,9 +18,10 @@ use std::sync::Arc;
 use anyhow::Context;
 use sovereign_core::domain::Strategy;
 use sovereign_core::error::AppError;
-use sovereign_core::ports::{RuntimePort, StoragePort};
+use sovereign_core::ports::{ProxyPort, RuntimePort, StoragePort};
 use sovereign_core::state::AppState;
 use sovereign_core::use_cases::deploy::{self, DeployRequest};
+use sovereign_proxy_caddy::CaddyProxy;
 use sovereign_runtime_docker::DockerRuntime;
 use sovereign_storage_sqlite::SqliteState;
 use tracing::instrument;
@@ -124,7 +125,11 @@ pub async fn run(cmd: &Cmd, out: &Output) -> Dispatch {
         }
     };
 
-    let state = AppState { storage, runtime };
+    let state = AppState {
+        storage,
+        runtime,
+        proxy: connect_proxy().await,
+    };
     let req = DeployRequest {
         app_id: app.id,
         image_ref: Some(image_ref),
@@ -245,4 +250,25 @@ fn err(out: &Output, code: AppExit, msg: &str) -> Dispatch {
         let _ = out.error(&env);
     }
     Dispatch::Err(code)
+}
+
+/// Connect to the local Caddy admin API. Returns `None` if Caddy is
+/// not reachable — deploy/rollback fall back to the
+/// `sovereign://<host>` URL in that case, which is correct for a
+/// test environment. The operator sees a clear "no proxy
+/// configured" message on the deploy receipt.
+pub(crate) async fn connect_proxy() -> Option<Arc<dyn ProxyPort>> {
+    match CaddyProxy::connect_from_env().await {
+        Ok(p) => {
+            tracing::info!("caddy admin API reachable; routes will be wired");
+            Some(Arc::new(p) as Arc<dyn ProxyPort>)
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "caddy admin API not reachable; deploy URL will be the loopback placeholder. Run `sovereign domain add` once Caddy is up."
+            );
+            None
+        }
+    }
 }
