@@ -5,6 +5,7 @@ mod cli;
 mod commands;
 mod commands_backup;
 mod commands_deploy;
+mod commands_doctor;
 mod commands_domain;
 mod commands_rollback;
 mod commands_secret;

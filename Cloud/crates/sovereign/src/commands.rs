@@ -184,6 +184,35 @@ pub async fn dispatch(cli: &Cli, out: &Output) -> Dispatch {
                 }
             }
         },
+        Cmd::Doctor {
+            level,
+            explain,
+            fix,
+            report,
+            json,
+        } => {
+            if cli.dry_run {
+                stub(
+                    cli,
+                    out,
+                    "doctor",
+                    &format!(
+                        "level={:?} explain={} fix={} report={:?} json={}",
+                        level, explain, fix, report, json
+                    ),
+                )
+            } else {
+                return crate::commands_doctor::run(
+                    out,
+                    *level,
+                    *explain,
+                    *fix,
+                    report.clone(),
+                    *json,
+                )
+                .await;
+            }
+        }
         Cmd::Completions { shell } => {
             use clap::CommandFactory;
             let mut cmd = Cli::command();

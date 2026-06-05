@@ -1,0 +1,32 @@
+[package]
+name = "sovereign-doctor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+description = "Diagnostic checks for the Sovereign runtime (basic level, V0)."
+
+[dependencies]
+sovereign-core = { path = "../sovereign-core", version = "0.1.0" }
+async-trait = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+sqlx = { workspace = true }
+# age is only used in the master_key_decrypts check; pinned to the
+# version the secrets crate already uses.
+age = { version = "0.11", default-features = false, features = ["cli-common"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true }
