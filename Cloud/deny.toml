@@ -35,6 +35,7 @@ skip = [
     "sovereign-secrets-age",
     "sovereign-backup",
     "sovereign-doctor",
+    "sovereign-update",
 ]
 
 # Forbidden per docs/tech-stack.md §9.
