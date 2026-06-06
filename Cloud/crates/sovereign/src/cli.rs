@@ -234,19 +234,26 @@ pub enum Cmd {
 }
 
 /// The framework to detect / generate. Auto-detects by reading package.json,
-/// requirements.txt, go.mod, Gemfile, composer.json, etc.
+/// requirements.txt, go.mod, Gemfile, composer.json, mix.exs, etc.
 #[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub enum Framework {
     #[default]
     Auto,
     Fastapi,
+    Flask,
+    Django,
     Nextjs,
+    Nuxt,
+    Sveltekit,
+    Remix,
     Laravel,
     Go,
     Rails,
     Astro,
     Static,
     Express,
+    Phoenix,
+    Deno,
     Generic,
 }
 
