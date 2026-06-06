@@ -96,6 +96,11 @@ pub enum Cmd {
         /// App name (defaults to the current directory name)
         #[arg(long)]
         name: Option<String>,
+        /// Print the framework registry (all supported frameworks
+        /// with their default port, health_path, and run command)
+        /// and exit. Does not scan the current directory.
+        #[arg(long)]
+        print_frameworks: bool,
     },
 
     /// Log in to the control plane (V0: generates / unlocks the local
@@ -221,6 +226,15 @@ pub enum Cmd {
     Completions {
         /// Shell to generate completions for
         shell: Shell,
+    },
+
+    /// Validate an `app.yaml` against the V0 schema. Useful for
+    /// catching typos (`prot` instead of `port`, `Dockerfile`
+    /// instead of `image`, etc.) before `sovereign deploy`.
+    Validate {
+        /// Path to the app.yaml to validate (defaults to `./app.yaml`)
+        #[arg(default_value = "app.yaml")]
+        path: std::path::PathBuf,
     },
 
     /// Generate the man page (writes sovereign.1 to the given directory)

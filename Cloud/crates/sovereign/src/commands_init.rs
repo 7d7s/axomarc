@@ -13,7 +13,7 @@
 
 use std::path::Path;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::cli::Framework;
@@ -39,7 +39,10 @@ pub struct InitResult {
 /// Run `sovereign init`. `framework_override` is the clap
 /// `--framework` value (None means auto-detect). `force` lets us
 /// overwrite an existing `app.yaml`. `output` is the path to write
-/// to (defaults to `./app.yaml` upstream).
+/// to (defaults to `./app.yaml` upstream). `name` overrides the
+/// app name (defaults to the cwd basename). `print_frameworks`
+/// dumps the framework registry and returns before touching the
+/// filesystem.
 pub async fn run(
     out: &Output,
     cwd: &Path,
@@ -47,7 +50,25 @@ pub async fn run(
     force: bool,
     output: &Path,
     name: Option<String>,
+    print_frameworks: bool,
 ) -> Dispatch {
+    if print_frameworks {
+        if matches!(out.format(), crate::output::Format::Text) {
+            let mut buf = Vec::new();
+            if let Err(e) = print_frameworks_text(&mut buf, "") {
+                return err(out, AppExit::Upstream, &format!("print_frameworks: {e}"));
+            }
+            let s = String::from_utf8(buf).unwrap_or_default();
+            for line in s.lines() {
+                let _ = out.ok(line);
+            }
+        } else {
+            let rows = collect_framework_rows();
+            let env = Envelope::<Vec<FrameworkRow>>::ok(rows);
+            let _ = out.success(&env);
+        }
+        return Dispatch::Ok;
+    }
     if output.exists() && !force {
         return err(
             out,
@@ -63,17 +84,34 @@ pub async fn run(
         Framework::Auto => detect(cwd),
         f => f,
     };
+    if detected == Framework::Generic && framework_override == Framework::Auto {
+        warn!("no framework detected; emitting a Generic app.yaml — fill in build_cmd and run_cmd before deploy");
+    }
     info!(framework = ?detected, cwd = %cwd.display(), "framework chosen");
 
     let app_name = name.unwrap_or_else(|| {
         cwd.file_name()
             .and_then(|s| s.to_str())
-            .map(|s| s.to_string())
+            .map(|s| s.to_ascii_lowercase().replace(['_', ' '], "-"))
+            .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "app".into())
     });
 
     let spec = build_app_spec(detected, &app_name);
     let yaml = render_app_yaml(&spec, &app_name);
+
+    // Self-validation: init should never write invalid YAML. If
+    // `app_yaml::validate` rejects what we just rendered, that's a
+    // bug in either the renderer or the validator — surface it as
+    // a hard error so we catch the regression in tests, not at
+    // deploy time. We use `expect` (panic) rather than `?` because
+    // there's no graceful recovery path here.
+    crate::app_yaml::validate(&yaml).unwrap_or_else(|errs| {
+        panic!(
+            "init: rendered yaml failed validation (this is a bug):\n{}",
+            errs.join("\n")
+        )
+    });
 
     if let Err(e) = std::fs::write(output, &yaml) {
         return err(
@@ -294,7 +332,10 @@ fn build_app_spec(framework: Framework, _app_name: &str) -> AppSpec {
             extra: vec![("deno_version".into(), "1.45".into())],
         },
         Framework::Generic => {
-            warn!("no framework detected; emitting a Generic app.yaml — fill in build_cmd and run_cmd before deploy");
+            // Warn is emitted by the caller (`run`), not here.
+            // We don't want `--print-frameworks` to log a "no
+            // framework detected" warning just because `Generic`
+            // is in the registry.
             AppSpec {
                 framework,
                 port: 8080,
@@ -813,4 +854,161 @@ end
         assert!(yaml.contains("# build_cmd:"));
         assert!(yaml.contains("# run_cmd:"));
     }
+
+    #[test]
+    fn print_frameworks_text_includes_fastapi() {
+        let mut buf = Vec::new();
+        print_frameworks_text(&mut buf, "").expect("text");
+        let s = String::from_utf8(buf).expect("utf8");
+        assert!(s.contains("FastAPI"), "expected FastAPI row in: {s}");
+        assert!(s.contains("Next.js"), "expected Next.js row in: {s}");
+        assert!(s.contains("Deno"), "expected Deno row in: {s}");
+    }
+
+    #[test]
+    fn print_frameworks_text_filter_is_case_insensitive() {
+        let mut buf = Vec::new();
+        print_frameworks_text(&mut buf, "DE").expect("text");
+        let s = String::from_utf8(buf).expect("utf8");
+        // "de" matches "Deno" (contains "de"). We test the
+        // case-insensitive path by uppercasing the filter; the
+        // "Deno" row should still appear.
+        assert!(s.contains("Deno"), "expected Deno row in: {s}");
+        // And an empty filter prints all rows.
+        let mut buf = Vec::new();
+        print_frameworks_text(&mut buf, "").expect("text");
+        let s = String::from_utf8(buf).expect("utf8");
+        assert!(s.contains("Django"), "expected Django in full list: {s}");
+    }
+
+    #[test]
+    fn print_frameworks_json_round_trips() {
+        let rows = collect_framework_rows();
+        let json = serde_json::to_string(&rows).expect("serialize");
+        let back: Vec<FrameworkRow> = serde_json::from_str(&json).expect("parse");
+        assert_eq!(rows.len(), back.len());
+        assert!(back.iter().any(|r| r.name == "FastAPI"));
+        assert!(back.iter().any(|r| r.name == "Deno"));
+    }
+}
+
+/// One row in the framework registry, used by `--print-frameworks`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FrameworkRow {
+    pub name: String,
+    pub port: u16,
+    pub health_path: String,
+    pub image: String,
+    pub run_cmd: String,
+}
+
+/// Walk the same `Framework` enum the CLI uses and produce one
+/// `FrameworkRow` per concrete framework. We deliberately call
+/// `build_app_spec(Framework::X, "x")` for each so the values stay
+/// in sync with the YAML generator — there's no separate registry
+/// to drift out of date.
+pub fn collect_framework_rows() -> Vec<FrameworkRow> {
+    let all = [
+        Framework::Fastapi,
+        Framework::Flask,
+        Framework::Django,
+        Framework::Nextjs,
+        Framework::Nuxt,
+        Framework::Sveltekit,
+        Framework::Remix,
+        Framework::Express,
+        Framework::Go,
+        Framework::Rails,
+        Framework::Laravel,
+        Framework::Astro,
+        Framework::Static,
+        Framework::Phoenix,
+        Framework::Deno,
+        Framework::Generic,
+    ];
+    all.iter()
+        .map(|f| {
+            let spec = build_app_spec(*f, "x");
+            // `name` is what the YAML emits (`framework: <name>`) —
+            // the user-facing label. The clap display name is the
+            // pretty form ("FastAPI" vs "Fastapi").
+            let label = match f {
+                Framework::Fastapi => "FastAPI",
+                Framework::Flask => "Flask",
+                Framework::Django => "Django",
+                Framework::Nextjs => "Next.js",
+                Framework::Nuxt => "Nuxt",
+                Framework::Sveltekit => "SvelteKit",
+                Framework::Remix => "Remix",
+                Framework::Express => "Express",
+                Framework::Go => "Go",
+                Framework::Rails => "Rails",
+                Framework::Laravel => "Laravel",
+                Framework::Astro => "Astro",
+                Framework::Static => "Static",
+                Framework::Phoenix => "Phoenix",
+                Framework::Deno => "Deno",
+                Framework::Generic => "Generic",
+                Framework::Auto => "Auto",
+            };
+            FrameworkRow {
+                name: label.into(),
+                port: spec.port,
+                health_path: spec.health_path,
+                image: spec.image.unwrap_or_default(),
+                run_cmd: spec.run_cmd.unwrap_or_default(),
+            }
+        })
+        .collect()
+}
+
+/// Print the framework registry as a human-readable text table.
+/// `filter` is a case-insensitive substring matched against the
+/// framework name. Empty filter prints all rows.
+pub fn print_frameworks_text<W: std::io::Write>(w: &mut W, filter: &str) -> std::io::Result<()> {
+    let filter = filter.to_ascii_lowercase();
+    let rows = collect_framework_rows();
+    let rows: Vec<&FrameworkRow> = rows
+        .iter()
+        .filter(|r| filter.is_empty() || r.name.to_ascii_lowercase().contains(&filter))
+        .collect();
+    if rows.is_empty() {
+        writeln!(w, "(no frameworks match {filter:?})")?;
+        return Ok(());
+    }
+    // Compute column widths.
+    let name_w = rows.iter().map(|r| r.name.len()).max().unwrap_or(0).max(8);
+    let port_w = "port".len().max(
+        rows.iter()
+            .map(|r| r.port.to_string().len())
+            .max()
+            .unwrap_or(0),
+    );
+    let health_w = "health_path"
+        .len()
+        .max(rows.iter().map(|r| r.health_path.len()).max().unwrap_or(0));
+    writeln!(
+        w,
+        "{:<name_w$}  {:>port_w$}  {:<health_w$}  image",
+        "framework",
+        "port",
+        "health_path",
+        name_w = name_w,
+        port_w = port_w,
+        health_w = health_w,
+    )?;
+    for r in &rows {
+        writeln!(
+            w,
+            "{:<name_w$}  {:>port_w$}  {:<health_w$}  {}",
+            r.name,
+            r.port,
+            r.health_path,
+            r.image,
+            name_w = name_w,
+            port_w = port_w,
+            health_w = health_w,
+        )?;
+    }
+    Ok(())
 }

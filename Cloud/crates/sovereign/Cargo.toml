@@ -25,6 +25,7 @@ mimalloc = { workspace = true, optional = true }
 jemallocator = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
 # F4.6 (sovereign login): re-use the same X25519 identity type the
@@ -41,6 +42,9 @@ sovereign-secrets-age = { path = "../sovereign-secrets-age" }
 sovereign-backup = { path = "../sovereign-backup" }
 sovereign-doctor = { path = "../sovereign-doctor" }
 sovereign-update = { path = "../sovereign-update" }
+
+[dev-dependencies]
+tempfile = "3"
 
 [features]
 # F1: mimalloc is the default allocator across all targets. The jemalloc-on-glibc
