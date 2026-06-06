@@ -89,7 +89,14 @@ deny.toml                     # the dep policy
 3. **Sovereign by construction.** EU-only defaults, no US sub-processors, vendor-disappear-safe.
 4. **The CLI is the product.** TUI is the daily-driver. Web UI is V2 opt-in.
 
-Full spec: [`docs/README.md`](./docs/README.md). Decision log: [`docs/decision-records.md`](./docs/decision-records.md). Anti-patterns: [`docs/negative-prompt.md`](./docs/negative-prompt.md).
+## Phase 0 close-out scripts
+
+Two operator-runnable scripts ship in `scripts/`:
+
+- `scripts/cx22-quickstart.sh` — the 5-command paste-and-run for a Hetzner CX22. The recipe lives in [`docs/operations/cx22-verify.md`](./docs/operations/cx22-verify.md); the script is the headlinable form. Time budget: 90s on a CX22, 5min for a first-time operator.
+- `scripts/verify-distros.sh` — local equivalent of the CI `verify-distros` job. Runs the musl binary in `ubuntu:22.04`, `debian:12`, `alpine:3.20` Docker images and asserts `--version` + `--help` work without any install step.
+
+Full spec: [`docs/README.md`](./docs/README.md). Decision log: [`docs/decision-records.md`](./docs/decision-records.md). Anti-patterns: [`docs/negative-prompt.md`](./docs/negative-prompt.md). CX22 verification recipe: [`docs/operations/cx22-verify.md`](./docs/operations/cx22-verify.md).
 
 ## License
 
