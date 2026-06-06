@@ -7,6 +7,8 @@ mod commands_backup;
 mod commands_deploy;
 mod commands_doctor;
 mod commands_domain;
+mod commands_init;
+mod commands_login;
 mod commands_rollback;
 mod commands_secret;
 mod commands_update;
