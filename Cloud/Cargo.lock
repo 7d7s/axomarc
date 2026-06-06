@@ -2710,6 +2710,7 @@ dependencies = [
  "sovereign-runtime-docker",
  "sovereign-secrets-age",
  "sovereign-storage-sqlite",
+ "sovereign-update",
  "tokio",
  "tracing",
  "tracing-subscriber",

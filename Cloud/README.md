@@ -22,7 +22,7 @@ sovereign deploy                                   # 5 minutes to a live URL
 | F7 — Encrypted secret store (age + Argon2) | ✅ |
 | F8 — Backup + health check + auto-rollback | ✅ |
 | F9 — `sovereign doctor` — basic diagnostic | ✅ |
-| F10 — `sovereign update` — self-update with rollback | ⏳ |
+| F10 — `sovereign update` — self-update with rollback | ✅ (`sovereign update check/apply/rollback/history`; manifest at `https://releases.sovereignruntime.dev`; `update_history` table; SHA-256 verified; atomic swap) |
 
 ## Quickstart
 
