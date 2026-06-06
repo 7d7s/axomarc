@@ -96,7 +96,11 @@ Two operator-runnable scripts ship in `scripts/`:
 - `scripts/cx22-quickstart.sh` — the 5-command paste-and-run for a Hetzner CX22. The recipe lives in [`docs/operations/cx22-verify.md`](./docs/operations/cx22-verify.md); the script is the headlinable form. Time budget: 90s on a CX22, 5min for a first-time operator.
 - `scripts/verify-distros.sh` — local equivalent of the CI `verify-distros` job. Runs the musl binary in `ubuntu:22.04`, `debian:12`, `alpine:3.20` Docker images and asserts `--version` + `--help` work without any install step.
 
-Full spec: [`docs/README.md`](./docs/README.md). Decision log: [`docs/decision-records.md`](./docs/decision-records.md). Anti-patterns: [`docs/negative-prompt.md`](./docs/negative-prompt.md). CX22 verification recipe: [`docs/operations/cx22-verify.md`](./docs/operations/cx22-verify.md).
+## Release pipeline
+
+Tag-driven GitHub Actions workflow at [`.github/workflows/release.yml`](./.github/workflows/release.yml): tag push → musl build (x86_64 + aarch64) → cosign keyless signing → CycloneDX SBOM → manifest.json → GitHub release → CDN mirror (Hetzner Storage Box). The install script and `sovereign update check` consume the same artifact layout. Full recipe: [`docs/operations/release-process.md`](./docs/operations/release-process.md). Changelog: [`CHANGELOG.md`](./CHANGELOG.md).
+
+Full spec: [`docs/README.md`](./docs/README.md). Decision log: [`docs/decision-records.md`](./docs/decision-records.md). Anti-patterns: [`docs/negative-prompt.md`](./docs/negative-prompt.md). CX22 verification recipe: [`docs/operations/cx22-verify.md`](./docs/operations/cx22-verify.md). Release process: [`docs/operations/release-process.md`](./docs/operations/release-process.md).
 
 ## License
 
