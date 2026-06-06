@@ -1,6 +1,7 @@
 // Sovereign Application Runtime — F1 + F2 binary entry point.
 // See docs/phase-00-mvp.md §F1 and §F2, and docs/tech-stack.md §3.
 
+mod app_yaml;
 mod cli;
 mod commands;
 mod commands_backup;
@@ -12,6 +13,7 @@ mod commands_login;
 mod commands_rollback;
 mod commands_secret;
 mod commands_update;
+mod commands_validate;
 mod exit;
 mod lock;
 mod output;

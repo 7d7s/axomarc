@@ -58,9 +58,19 @@ pub async fn dispatch(cli: &Cli, out: &Output) -> Dispatch {
             force,
             output,
             name,
+            print_frameworks,
         } => {
             let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            commands_init::run(out, &cwd, *framework, *force, output, name.clone()).await
+            commands_init::run(
+                out,
+                &cwd,
+                *framework,
+                *force,
+                output,
+                name.clone(),
+                *print_frameworks,
+            )
+            .await
         }
         Cmd::Login {
             no_input,
@@ -308,6 +318,12 @@ pub async fn dispatch(cli: &Cli, out: &Output) -> Dispatch {
             };
             clap_complete::generate(shell, &mut cmd, bin, &mut std::io::stdout());
             Dispatch::Ok
+        }
+        Cmd::Validate { path } => {
+            // Forward to the dedicated `commands_validate` module.
+            // The path is moved into validate_path which is owned
+            // by `app_yaml`; we just pass the &Path here.
+            crate::commands_validate::run(out, path).await
         }
         Cmd::Man { dir } => {
             use clap::CommandFactory;
