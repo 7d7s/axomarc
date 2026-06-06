@@ -9,6 +9,9 @@ use crate::exit::AppExit;
 use crate::output::{Envelope, Output};
 use serde::Serialize;
 
+use crate::commands_init;
+use crate::commands_login;
+
 /// The result of dispatching a subcommand. The exit code is set by the
 /// top-level `main`, not by the handler.
 pub enum Dispatch {
@@ -50,8 +53,19 @@ pub async fn dispatch(cli: &Cli, out: &Output) -> Dispatch {
             }
             Dispatch::Ok
         }
-        Cmd::Init { framework } => stub(cli, out, "init", &format!("framework={framework:?}")),
-        Cmd::Login => stub(cli, out, "login", "(device-code flow)"),
+        Cmd::Init {
+            framework,
+            force,
+            output,
+            name,
+        } => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            commands_init::run(out, &cwd, *framework, *force, output, name.clone()).await
+        }
+        Cmd::Login {
+            no_input,
+            master_key,
+        } => commands_login::run(out, *no_input, master_key.as_deref()).await,
         Cmd::Deploy {
             app,
             image,

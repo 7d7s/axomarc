@@ -23,6 +23,7 @@ sovereign deploy                                   # 5 minutes to a live URL
 | F8 — Backup + health check + auto-rollback | ✅ |
 | F9 — `sovereign doctor` — basic diagnostic | ✅ |
 | F10 — `sovereign update` — self-update with rollback | ✅ (`sovereign update check/apply/rollback/history`; manifest at `https://releases.sovereignruntime.dev`; `update_history` table; SHA-256 verified; atomic swap) |
+| F4.6 — `sovereign init` + `sovereign login` (V0 single-tenant) | ✅ (`init` auto-detects FastAPI / Next.js / Express / Go / Rails / Laravel / Astro / Static / Generic, writes `app.yaml`; `login` provisions / loads the local age master key, prints the Bech32 public key; passphrase read from `SOVEREIGN_PASSPHRASE` or stdin) |
 
 ## Quickstart
 
@@ -36,8 +37,16 @@ file target/x86_64-unknown-linux-musl/release/sovereign
 target/x86_64-unknown-linux-musl/release/sovereign --version
 # → sovereign 0.1.0
 
-target/x86_64-unknown-linux-musl/release/sovereign --help
-# → full clap-derived help, the 5 subcommands (none yet wired)
+# V0 single-tenant bootstrap (no daemon, no OIDC)
+cd /srv/myapp
+sovereign init                              # auto-detect framework, write app.yaml
+sovereign login                             # generate the age master key, print public key
+sovereign deploy                            # build, run, route, emit sovereign.lock
+
+# Or in one shot on a fresh Hetzner CX22 (Step 9 demo, F1)
+curl -sSf https://install.sovereignruntime.dev | sh
+cd myapp
+sovereign init && sovereign login && sovereign deploy
 ```
 
 On Windows (this dev box):
@@ -45,6 +54,8 @@ On Windows (this dev box):
 ```bash
 cargo build --release
 target\release\sovereign.exe --version
+target\release\sovereign.exe init
+target\release\sovereign.exe login --no-input  # requires SOVEREIGN_PASSPHRASE
 ```
 
 ## Workspace layout

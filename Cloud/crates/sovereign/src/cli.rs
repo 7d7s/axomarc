@@ -8,6 +8,7 @@
 // OpenAPI spec from this one definition.
 
 use clap::{Parser, Subcommand, ValueEnum};
+use serde::Serialize;
 
 /// The top-level CLI. The global flags are available on every subcommand.
 #[derive(Parser, Debug)]
@@ -86,10 +87,32 @@ pub enum Cmd {
         /// Framework to detect (auto-detect by default)
         #[arg(long, value_enum, default_value_t = Framework::Auto)]
         framework: Framework,
+        /// Overwrite an existing `app.yaml` without prompting
+        #[arg(long)]
+        force: bool,
+        /// Path to write `app.yaml` (defaults to `./app.yaml`)
+        #[arg(long, default_value = "app.yaml")]
+        output: std::path::PathBuf,
+        /// App name (defaults to the current directory name)
+        #[arg(long)]
+        name: Option<String>,
     },
 
-    /// Log in to the control plane (opens the system browser, device-code flow)
-    Login,
+    /// Log in to the control plane (V0: generates / unlocks the local
+    /// age master key; real OIDC is V2). Reads the passphrase from
+    /// `SOVEREIGN_PASSPHRASE` or stdin.
+    Login {
+        /// Skip the interactive prompt; require `SOVEREIGN_PASSPHRASE`
+        /// to be set. Useful for CI / scripted `init` flows.
+        #[arg(long)]
+        no_input: bool,
+        /// Master-key path override (defaults to
+        /// `/var/lib/sovereign/master.key` on Linux, the
+        /// `directorie data` dir on macOS, `%APPDATA%\sovereign\`
+        /// on Windows)
+        #[arg(long)]
+        master_key: Option<std::path::PathBuf>,
+    },
 
     /// Deploy an app
     Deploy {
@@ -212,7 +235,7 @@ pub enum Cmd {
 
 /// The framework to detect / generate. Auto-detects by reading package.json,
 /// requirements.txt, go.mod, Gemfile, composer.json, etc.
-#[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub enum Framework {
     #[default]
     Auto,
@@ -223,6 +246,8 @@ pub enum Framework {
     Rails,
     Astro,
     Static,
+    Express,
+    Generic,
 }
 
 /// The deploy strategy. V0 ships BlueGreen; Rolling and Recreate are V1+.

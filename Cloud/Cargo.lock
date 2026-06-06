@@ -2694,6 +2694,7 @@ dependencies = [
 name = "sovereign"
 version = "0.1.0"
 dependencies = [
+ "age",
  "anyhow",
  "clap",
  "clap_complete",
