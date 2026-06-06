@@ -155,7 +155,9 @@ fi
 cat <<'EOF'
 
 ✓ sovereign is installed. Next, you probably want to:
+  → cd /srv/myapp                          # or wherever your app source lives
   → sovereign init                          # detect your framework, write app.yaml
+  → sovereign login                         # provision the age master key (V0 single-tenant)
   → sovereign deploy                        # build + ship your app
   → sovereign doctor                        # diagnose the host
   → sovereign --help                        # full command tree
