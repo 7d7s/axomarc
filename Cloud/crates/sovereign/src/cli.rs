@@ -186,6 +186,14 @@ pub enum Cmd {
         json: bool,
     },
 
+    /// Manage self-updates (F10). The V0 binary supports
+    /// `check`, `apply`, `rollback`, and `history` against a
+    /// release manifest endpoint.
+    Update {
+        #[command(subcommand)]
+        cmd: UpdateCmd,
+    },
+
     /// Generate shell completions (bash, zsh, fish, nushell, powershell)
     Completions {
         /// Shell to generate completions for
@@ -332,6 +340,72 @@ pub enum DomainCmd {
         #[arg(long)]
         app: String,
     },
+}
+
+/// The update subcommand tree (F10). V0 implements `check`, `apply`,
+/// `rollback`, and `history`. Manifest base URL defaults to
+/// `https://releases.sovereignruntime.dev`.
+#[derive(Subcommand, Debug)]
+pub enum UpdateCmd {
+    /// Check for a newer version (no download, no install)
+    Check {
+        /// Release channel (V0 supports `stable` only)
+        #[arg(long, value_enum, default_value_t = UpdateChannelArg::Stable)]
+        channel: UpdateChannelArg,
+        /// Manifest base URL (env: SOVEREIGN_UPDATE_MANIFEST)
+        #[arg(long, env = "SOVEREIGN_UPDATE_MANIFEST")]
+        manifest: Option<String>,
+    },
+    /// Download and apply a new version (atomic swap, previous binary is kept
+    /// in the backup dir so `update rollback` can restore it)
+    Apply {
+        /// Release channel (V0 supports `stable` only)
+        #[arg(long, value_enum, default_value_t = UpdateChannelArg::Stable)]
+        channel: UpdateChannelArg,
+        /// Target triple (e.g. x86_64-unknown-linux-musl); defaults to the
+        /// current binary's triple
+        #[arg(long)]
+        target: Option<String>,
+        /// Manifest base URL (env: SOVEREIGN_UPDATE_MANIFEST)
+        #[arg(long, env = "SOVEREIGN_UPDATE_MANIFEST")]
+        manifest: Option<String>,
+        /// Don't actually swap; download + verify only
+        #[arg(long)]
+        no_swap: bool,
+    },
+    /// Roll back to the previous version (looks up the last update record
+    /// in `update_history`)
+    Rollback {
+        /// Manifest base URL (env: SOVEREIGN_UPDATE_MANIFEST)
+        #[arg(long, env = "SOVEREIGN_UPDATE_MANIFEST")]
+        manifest: Option<String>,
+    },
+    /// List recent update history (newest first)
+    History {
+        /// Maximum records to show
+        #[arg(long, default_value_t = 10)]
+        limit: u32,
+    },
+}
+
+/// The update channel argument for the CLI. Mirrors
+/// `sovereign_core::ports::update::UpdateChannel`.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpdateChannelArg {
+    Stable,
+    Rc,
+    Nightly,
+}
+
+impl UpdateChannelArg {
+    pub fn to_update_channel(self) -> sovereign_core::ports::update::UpdateChannel {
+        use sovereign_core::ports::update::UpdateChannel;
+        match self {
+            UpdateChannelArg::Stable => UpdateChannel::Stable,
+            UpdateChannelArg::Rc => UpdateChannel::Rc,
+            UpdateChannelArg::Nightly => UpdateChannel::Nightly,
+        }
+    }
 }
 
 impl Cli {

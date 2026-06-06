@@ -4,7 +4,7 @@
 // `--dry-run` "would do X" line and return). F3+ replaces each stub with
 // the real implementation.
 
-use crate::cli::{BackupCmd, Cli, Cmd, DomainCmd, SecretCmd};
+use crate::cli::{BackupCmd, Cli, Cmd, DomainCmd, SecretCmd, UpdateCmd};
 use crate::exit::AppExit;
 use crate::output::{Envelope, Output};
 use serde::Serialize;
@@ -213,6 +213,71 @@ pub async fn dispatch(cli: &Cli, out: &Output) -> Dispatch {
                 .await;
             }
         }
+        Cmd::Update { cmd } => match cmd {
+            UpdateCmd::Check { channel, manifest } => {
+                if cli.dry_run {
+                    stub(
+                        cli,
+                        out,
+                        "update check",
+                        &format!("channel={:?} manifest={:?}", channel, manifest),
+                    )
+                } else {
+                    return crate::commands_update::run_check(
+                        out,
+                        channel.to_update_channel(),
+                        manifest.as_deref(),
+                    )
+                    .await;
+                }
+            }
+            UpdateCmd::Apply {
+                channel,
+                target,
+                manifest,
+                no_swap,
+            } => {
+                if cli.dry_run {
+                    stub(
+                        cli,
+                        out,
+                        "update apply",
+                        &format!(
+                            "channel={:?} target={:?} manifest={:?} no_swap={}",
+                            channel, target, manifest, no_swap
+                        ),
+                    )
+                } else {
+                    return crate::commands_update::run_apply(
+                        out,
+                        channel.to_update_channel(),
+                        target.as_deref(),
+                        manifest.as_deref(),
+                        *no_swap,
+                    )
+                    .await;
+                }
+            }
+            UpdateCmd::Rollback { manifest } => {
+                if cli.dry_run {
+                    stub(
+                        cli,
+                        out,
+                        "update rollback",
+                        &format!("manifest={:?}", manifest),
+                    )
+                } else {
+                    return crate::commands_update::run_rollback(out, manifest.as_deref()).await;
+                }
+            }
+            UpdateCmd::History { limit } => {
+                if cli.dry_run {
+                    stub(cli, out, "update history", &format!("limit={}", limit))
+                } else {
+                    return crate::commands_update::run_history(out, *limit).await;
+                }
+            }
+        },
         Cmd::Completions { shell } => {
             use clap::CommandFactory;
             let mut cmd = Cli::command();

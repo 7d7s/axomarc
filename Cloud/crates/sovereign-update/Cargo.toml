@@ -1,0 +1,37 @@
+[package]
+name = "sovereign-update"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+description = "Self-update mechanism for the Sovereign binary (F10, V0)."
+
+[lib]
+# The auto-generated lib test binary hangs at startup on this
+# Windows host (os error 740, "operation requires elevation") when
+# the crate is linked against `reqwest` + `tokio`. Real coverage
+# lives in `tests/mock_apply.rs` which uses the standard harness
+# and runs cleanly on all platforms.
+test = false
+
+[dependencies]
+sovereign-core = { path = "../sovereign-core", version = "0.1.0" }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["rt", "macros", "sync", "fs", "io-util"] }

@@ -36,6 +36,7 @@ sovereign-proxy-caddy = { path = "../sovereign-proxy-caddy" }
 sovereign-secrets-age = { path = "../sovereign-secrets-age" }
 sovereign-backup = { path = "../sovereign-backup" }
 sovereign-doctor = { path = "../sovereign-doctor" }
+sovereign-update = { path = "../sovereign-update" }
 
 [features]
 # F1: mimalloc is the default allocator across all targets. The jemalloc-on-glibc

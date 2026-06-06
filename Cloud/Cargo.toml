@@ -12,6 +12,7 @@ members = [
     "crates/sovereign-observability",
     "crates/sovereign-proto",
     "crates/sovereign-doctor",
+    "crates/sovereign-update",
 ]
 
 [workspace.package]

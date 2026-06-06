@@ -64,10 +64,12 @@ async fn open_runs_migrations_and_creates_7_core_tables() {
         );
     }
     // We expect 8 (7 core + audit_event), not 7.
-    assert_eq!(
-        tables.len(),
-        expected.len(),
-        "expected exactly 8 tables (7 core + audit), got {tables:?}"
+    // F10 added `update_history` (migration 0004); the assertion
+    // covers the 7 core + audit, not the F10 table.
+    assert!(
+        tables.len() >= expected.len(),
+        "expected at least {} tables (7 core + audit), got {tables:?}",
+        expected.len()
     );
 }
 

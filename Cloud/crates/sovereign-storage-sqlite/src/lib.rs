@@ -462,6 +462,72 @@ impl StoragePort for SqliteState {
         })?;
         Ok(meta.len())
     }
+
+    async fn record_update(
+        &self,
+        record: &sovereign_core::ports::UpdateRecord,
+    ) -> Result<(), AppError> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO update_history \
+             (sha256, from_version, to_version, channel, applied_at, backup_path, rolled_back_at) \
+             VALUES (?, ?, ?, ?, ?, ?, NULL)",
+        )
+        .bind(&record.sha256)
+        .bind(&record.from_version)
+        .bind(&record.to_version)
+        .bind(&record.channel)
+        .bind(&record.applied_at)
+        .bind(&record.backup_path)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::Storage(format!("record_update: {e}")))?;
+        Ok(())
+    }
+
+    async fn last_update(&self) -> Result<Option<sovereign_core::ports::UpdateRecord>, AppError> {
+        self.list_updates(1).await.map(|v| v.into_iter().next())
+    }
+
+    async fn list_updates(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<sovereign_core::ports::UpdateRecord>, AppError> {
+        let rows = sqlx::query_as::<_, (String, String, String, String, String, String, Option<String>)>(
+            "SELECT sha256, from_version, to_version, channel, applied_at, backup_path, rolled_back_at \
+             FROM update_history \
+             WHERE rolled_back_at IS NULL \
+             ORDER BY applied_at DESC, sha256 DESC \
+             LIMIT ?",
+        )
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AppError::Storage(format!("list_updates: {e}")))?;
+        let records = rows
+            .into_iter()
+            .map(|(sha, from, to, channel, applied_at, backup, _rolled)| {
+                sovereign_core::ports::UpdateRecord {
+                    from_version: from,
+                    to_version: to,
+                    channel,
+                    sha256: sha,
+                    applied_at,
+                    backup_path: backup,
+                }
+            })
+            .collect();
+        Ok(records)
+    }
+
+    async fn mark_update_rolled_back(&self, sha256: &str) -> Result<(), AppError> {
+        sqlx::query("UPDATE update_history SET rolled_back_at = ? WHERE sha256 = ?")
+            .bind(chrono::Utc::now().to_rfc3339())
+            .bind(sha256)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AppError::Storage(format!("mark_update_rolled_back: {e}")))?;
+        Ok(())
+    }
 }
 
 /// Crate version.
