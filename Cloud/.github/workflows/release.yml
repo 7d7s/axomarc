@@ -1,0 +1,384 @@
+# Sovereign Application Runtime — release pipeline.
+#
+# Triggered on `v*` tag push. Builds the musl binary for x86_64
+# and aarch64, packages the binary + install.sh + Caddyfile into
+# a tarball, generates a SHA-256 checksum file, signs each artifact
+# with cosign (keyless, sigstore OIDC), generates a CycloneDX SBOM,
+# writes a manifest.json (consumed by `sovereign update check`),
+# and creates the GitHub release with all of the above attached.
+#
+# The install.sh reads the artifacts from the same shape this
+# workflow produces, so a tagged release is automatically
+# installable with `curl | sh`.
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.1.0). Defaults to the most recent v* tag."
+        required: false
+        default: ""
+
+# The same env as the CI lint/test jobs.
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write  # create the GitHub release
+  id-token: write  # cosign keyless OIDC
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          # Strip leading 'v' for the VERSION env (sovereign's
+          # version-comparison parser expects "0.1.0", not "v0.1.0").
+          VERSION="${TAG#v}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+          shared-key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} --bin sovereign
+
+      - name: Strip
+        # The .cargo/config.toml has `strip=symbols`; the explicit
+        # strip here is a belt-and-braces second pass to shave
+        # any debug info that snuck through.
+        run: |
+          strip "target/${{ matrix.target }}/release/sovereign" \
+              -o "target/${{ matrix.target }}/release/sovereign.stripped"
+          mv "target/${{ matrix.target }}/release/sovereign.stripped" \
+             "target/${{ matrix.target }}/release/sovereign"
+
+      - name: Verify static linking + size budget
+        run: |
+          file target/${{ matrix.target }}/release/sovereign
+          ldd target/${{ matrix.target }}/release/sovereign 2>&1 || true
+          SIZE=$(stat -c %s "target/${{ matrix.target }}/release/sovereign")
+          echo "binary size: $SIZE bytes"
+          # F1 DoD: ≤ 25 MB.
+          if [ "$SIZE" -gt 26214400 ]; then
+            echo "::error::binary exceeds 25 MB target"
+            exit 1
+          fi
+
+      - name: Package
+        working-directory: target/${{ matrix.target }}/release
+        run: |
+          mkdir -p staging
+          cp sovereign staging/
+          cp "$GITHUB_WORKSPACE/crates/sovereign/src/scripts/install.sh" staging/
+          cp "$GITHUB_WORKSPACE/crates/sovereign/src/scripts/Caddyfile" staging/
+          tar -cJf "sovereign-${{ steps.tag.outputs.version }}-${{ matrix.target }}.tar.xz" -C staging .
+          ls -la "sovereign-${{ steps.tag.outputs.version }}-${{ matrix.target }}.tar.xz"
+          sha256sum "sovereign-${{ steps.tag.outputs.version }}-${{ matrix.target }}.tar.xz" \
+              | tee -a sha256sums.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sovereign-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/sovereign-${{ steps.tag.outputs.version }}-${{ matrix.target }}.tar.xz
+            target/${{ matrix.target }}/release/sha256sums.txt
+          if-no-files-found: error
+
+      - name: Persist binaries
+        # We re-attach the unsigned binary as a workflow artifact
+        # so the 'sign' job can download it without rebuilding.
+        uses: actions/upload-artifact@v4
+        with:
+          name: sovereign-binary-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/sovereign
+          if-no-files-found: error
+
+  sign:
+    name: sign (${{ matrix.target }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          VERSION="${TAG#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Download tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: sovereign-${{ matrix.target }}
+          path: dist
+
+      - name: Sign tarball (keyless OIDC)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          TARBALL="dist/sovereign-${{ steps.tag.outputs.version }}-${{ matrix.target }}.tar.xz"
+          cosign sign-blob --yes \
+              --output-signature "${TARBALL}.sig" \
+              --bundle "${TARBALL}.bundle" \
+              "$TARBALL"
+
+      - name: Re-upload signed artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sovereign-signed-${{ matrix.target }}
+          path: |
+            dist/sovereign-${{ steps.tag.outputs.version }}-${{ matrix.target }}.tar.xz
+            dist/sovereign-${{ steps.tag.outputs.version }}-${{ matrix.target }}.tar.xz.sig
+            dist/sovereign-${{ steps.tag.outputs.version }}-${{ matrix.target }}.tar.xz.bundle
+          if-no-files-found: error
+
+  sbom:
+    name: SBOM (CycloneDX)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85
+
+      - name: Install cargo-cyclonedx
+        run: cargo install --locked cargo-cyclonedx --version "^0.5"
+
+      - name: Generate SBOM
+        # CycloneDX for the released `sovereign` binary. The SBOM
+        # lists every Rust crate in the dependency tree with
+        # version + license + checksum.
+        run: |
+          cargo cyclonedx --format json --override-filename "sovereign.cdx.json" \
+              -p sovereign --target x86_64-unknown-linux-musl
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sovereign-sbom
+          path: target/cyclonedx/sovereign.cdx.json
+          if-no-files-found: error
+
+  manifest:
+    name: manifest
+    needs: [build, sign, sbom]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Build manifest.json
+        run: |
+          python3 - <<'PY' > dist/manifest.json
+          import hashlib, json, os, sys
+          base = "dist"
+          version = "${{ steps.tag.outputs.version }}"
+          targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"]
+          channels = ["stable", "beta"]
+          artifacts = []
+          for target in targets:
+              tarball = f"sovereign-{version}-{target}.tar.xz"
+              path = os.path.join(base, tarball)
+              if not os.path.exists(path):
+                  print(f"::warning::missing {path}", file=sys.stderr)
+                  continue
+              with open(path, "rb") as f:
+                  sha256 = hashlib.sha256(f.read()).hexdigest()
+              size = os.path.getsize(path)
+              artifacts.append({
+                  "name": tarball,
+                  "target": target,
+                  "format": "tar.xz",
+                  "sha256": sha256,
+                  "size_bytes": size,
+                  "url": f"https://releases.sovereignruntime.dev/{version}/{tarball}",
+                  "sig_url": f"https://releases.sovereignruntime.dev/{version}/{tarball}.sig",
+                  "bundle_url": f"https://releases.sovereignruntime.dev/{version}/{tarball}.bundle",
+              })
+          out = {
+              "manifest_version": 1,
+              "version": version,
+              "released_at": "${{ github.event.repository.updated_at }}",
+              "channel": "stable",
+              "min_upgrade_from": None,
+              "notes_url": f"https://github.com/${{ github.repository }}/releases/tag/v{version}",
+              "artifacts": artifacts,
+              "sbom_url": f"https://releases.sovereignruntime.dev/{version}/sovereign.cdx.json",
+          }
+          print(json.dumps(out, indent=2))
+          PY
+          cat dist/manifest.json
+
+      - name: Upload manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: sovereign-manifest
+          path: dist/manifest.json
+          if-no-files-found: error
+
+  release:
+    name: release
+    needs: [build, sign, sbom, manifest]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate release notes
+        # Pull from CHANGELOG.md (or a stub if missing) so the
+        # release body is human-readable without manual editing.
+        run: |
+          if [ -f CHANGELOG.md ]; then
+            awk -v v="${{ steps.tag.outputs.version }}" '
+              /^## / { if (p) exit; if ($0 ~ ("\\[v?" v "\\]")) p=1 }
+              p
+            ' CHANGELOG.md > dist/RELEASE_NOTES.md
+          fi
+          if [ ! -s dist/RELEASE_NOTES.md ]; then
+            printf "## v%s\n\nSee the [CHANGELOG](https://github.com/%s/blob/main/CHANGELOG.md).\n" \
+                "${{ steps.tag.outputs.version }}" \
+                "${{ github.repository }}" > dist/RELEASE_NOTES.md
+          fi
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "v${{ steps.tag.outputs.version }}"
+          draft: false
+          prerelease: ${{ contains(steps.tag.outputs.version, '-') }}
+          body_path: dist/RELEASE_NOTES.md
+          files: |
+            dist/sovereign-${{ steps.tag.outputs.version }}-x86_64-unknown-linux-musl.tar.xz
+            dist/sovereign-${{ steps.tag.outputs.version }}-x86_64-unknown-linux-musl.tar.xz.sig
+            dist/sovereign-${{ steps.tag.outputs.version }}-x86_64-unknown-linux-musl.tar.xz.bundle
+            dist/sovereign-${{ steps.tag.outputs.version }}-aarch64-unknown-linux-musl.tar.xz
+            dist/sovereign-${{ steps.tag.outputs.version }}-aarch64-unknown-linux-musl.tar.xz.sig
+            dist/sovereign-${{ steps.tag.outputs.version }}-aarch64-unknown-linux-musl.tar.xz.bundle
+            dist/manifest.json
+            dist/sovereign.cdx.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  mirror:
+    # Once the GitHub release is published, mirror the artifacts
+    # to the sovereignruntime.dev CDN bucket (S3-compatible,
+    # EU-only, Hetzner Storage Box). The install.sh reads from
+    # this CDN; the GitHub release is the immutable audit log.
+    name: mirror to CDN
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Upload to CDN
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SOVEREIGN_CDN_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SOVEREIGN_CDN_SECRET_ACCESS_KEY }}
+          AWS_ENDPOINT_URL: ${{ secrets.SOVEREIGN_CDN_ENDPOINT }}
+        run: |
+          aws s3 sync dist/ \
+              "s3://sovereignruntime-releases/${{ steps.tag.outputs.tag }}/" \
+              --endpoint-url "$AWS_ENDPOINT_URL" \
+              --exclude "RELEASE_NOTES.md"
+          # Stable channel: alias the latest stable release.
+          aws s3 cp "dist/manifest.json" \
+              "s3://sovereignruntime-releases/stable.json" \
+              --endpoint-url "$AWS_ENDPOINT_URL" \
+              --cache-control "max-age=300"
