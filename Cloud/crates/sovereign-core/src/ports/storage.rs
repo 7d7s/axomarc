@@ -222,4 +222,17 @@ pub trait StoragePort: Send + Sync {
     /// V0 stack) is V1+; the storage-port trait can grow a Postgres
     /// variant then. See `docs/phase-00-mvp.md` F8a.
     async fn vacuum_into(&self, target_path: &Path) -> Result<u64, AppError>;
+
+    /// Record a successful update in the `update_history` table.
+    async fn record_update(&self, record: &crate::ports::UpdateRecord) -> Result<(), AppError>;
+
+    /// The most recent update record, or `None` if no updates have
+    /// been applied yet.
+    async fn last_update(&self) -> Result<Option<crate::ports::UpdateRecord>, AppError>;
+
+    /// The last `limit` update records, newest first.
+    async fn list_updates(&self, limit: u32) -> Result<Vec<crate::ports::UpdateRecord>, AppError>;
+
+    /// Mark a record as rolled back (sets `rolled_back_at`).
+    async fn mark_update_rolled_back(&self, sha256: &str) -> Result<(), AppError>;
 }
