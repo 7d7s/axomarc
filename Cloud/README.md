@@ -23,7 +23,7 @@ sovereign deploy                                   # 5 minutes to a live URL
 | F8 — Backup + health check + auto-rollback | ✅ |
 | F9 — `sovereign doctor` — basic diagnostic | ✅ |
 | F10 — `sovereign update` — self-update with rollback | ✅ (`sovereign update check/apply/rollback/history`; manifest at `https://releases.sovereignruntime.dev`; `update_history` table; SHA-256 verified; atomic swap) |
-| F4.6 — `sovereign init` + `sovereign login` (V0 single-tenant) | ✅ (`init` auto-detects FastAPI / Next.js / Express / Go / Rails / Laravel / Astro / Static / Generic, writes `app.yaml`; `login` provisions / loads the local age master key, prints the Bech32 public key; passphrase read from `SOVEREIGN_PASSPHRASE` or stdin) |
+| F4.6 — `sovereign init` + `sovereign login` (V0 single-tenant) | ✅ (`init` auto-detects FastAPI / Flask / Django / Next.js / Nuxt / SvelteKit / Remix / Express / Go / Rails / Laravel / Astro / Phoenix / Deno / Static / Generic, writes `app.yaml`; `login` provisions / loads the local age master key, prints the Bech32 public key; passphrase read from `SOVEREIGN_PASSPHRASE` or stdin) |
 
 ## Quickstart
 

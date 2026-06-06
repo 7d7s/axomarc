@@ -141,12 +141,75 @@ fn build_app_spec(framework: Framework, _app_name: &str) -> AppSpec {
             image: Some("python:3.12-slim".into()),
             extra: vec![("python_version".into(), "3.12".into())],
         },
+        Framework::Flask => AppSpec {
+            framework,
+            port: 5000,
+            health_path: "/health".into(),
+            build_cmd: Some("pip install -r requirements.txt".into()),
+            // Flask 2.3+ ships `flask run`; the --host/--port flags
+            // are stable across 2.x and 3.x. The legacy `flask run`
+            // honours the FLASK_RUN_PORT env var; we set both for
+            // belt-and-braces.
+            run_cmd: Some(
+                "flask --app app run --host 0.0.0.0 --port 5000".into(),
+            ),
+            image: Some("python:3.12-slim".into()),
+            extra: vec![("python_version".into(), "3.12".into())],
+        },
+        Framework::Django => AppSpec {
+            framework,
+            port: 8000,
+            health_path: "/healthz".into(),
+            // Django doesn't ship a `manage.py runserver` for
+            // production; the default we ship is `gunicorn` since
+            // it's the canonical V0 pick. If the operator prefers
+            // `daphne` (ASGI) or `uvicorn`, they edit `app.yaml`.
+            build_cmd: Some("pip install -r requirements.txt".into()),
+            run_cmd: Some(
+                "python manage.py migrate --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:8000".into(),
+            ),
+            image: Some("python:3.12-slim".into()),
+            extra: vec![("python_version".into(), "3.12".into())],
+        },
         Framework::Nextjs => AppSpec {
             framework,
             port: 3000,
             health_path: "/api/health".into(),
             build_cmd: Some("npm ci && npm run build".into()),
             run_cmd: Some("npm start -- -p 3000".into()),
+            image: Some("node:20-alpine".into()),
+            extra: vec![("node_version".into(), "20".into())],
+        },
+        Framework::Nuxt => AppSpec {
+            framework,
+            port: 3000,
+            health_path: "/api/health".into(),
+            // Nuxt 3+ runs via `node .output/server/index.mjs` by
+            // default. The `build` step is `nuxt build`.
+            build_cmd: Some("npm ci && npm run build".into()),
+            run_cmd: Some("node .output/server/index.mjs".into()),
+            image: Some("node:20-alpine".into()),
+            extra: vec![("node_version".into(), "20".into())],
+        },
+        Framework::Sveltekit => AppSpec {
+            framework,
+            port: 3000,
+            health_path: "/".into(),
+            // SvelteKit's `node` adapter produces a `build/` dir;
+            // the run cmd is `node build`.
+            build_cmd: Some("npm ci && npm run build".into()),
+            run_cmd: Some("HOST=0.0.0.0 PORT=3000 node build".into()),
+            image: Some("node:20-alpine".into()),
+            extra: vec![("node_version".into(), "20".into())],
+        },
+        Framework::Remix => AppSpec {
+            framework,
+            port: 3000,
+            health_path: "/healthz".into(),
+            // Remix v2 with the Vite build: output is `build/server/index.js`.
+            // The `@remix-run/serve` package is the official V0 pick.
+            build_cmd: Some("npm ci && npm run build".into()),
+            run_cmd: Some("npm run start".into()),
             image: Some("node:20-alpine".into()),
             extra: vec![("node_version".into(), "20".into())],
         },
@@ -204,6 +267,32 @@ fn build_app_spec(framework: Framework, _app_name: &str) -> AppSpec {
             image: Some("node:20-alpine".into()),
             extra: vec![("static_dir".into(), ".".into())],
         },
+        Framework::Phoenix => AppSpec {
+            framework,
+            port: 4000,
+            health_path: "/health".into(),
+            // Phoenix 1.7+ default port is 4000; `mix phx.server`
+            // binds to 127.0.0.1 by default, we override to 0.0.0.0
+            // for the container. `mix assets.deploy` is the V0
+            // prod build step.
+            build_cmd: Some("mix local.hex --force && mix local.rebar --force && mix deps.get && mix assets.deploy && mix compile".into()),
+            run_cmd: Some("mix phx.server".into()),
+            image: Some("elixir:1.16-otp-26-slim".into()),
+            extra: vec![("phoenix_version".into(), "1.7".into())],
+        },
+        Framework::Deno => AppSpec {
+            framework,
+            port: 8000,
+            health_path: "/health".into(),
+            // Deno Fresh's default port is 8000; `deno task start`
+            // is the canonical V0 run command. The build step is a
+            // no-op (Deno caches on demand) but we run a `deno
+            // cache` to warm the dep graph.
+            build_cmd: Some("deno cache main.ts".into()),
+            run_cmd: Some("deno run --allow-net --allow-read --allow-env main.ts".into()),
+            image: Some("denoland/deno:1.45".into()),
+            extra: vec![("deno_version".into(), "1.45".into())],
+        },
         Framework::Generic => {
             warn!("no framework detected; emitting a Generic app.yaml — fill in build_cmd and run_cmd before deploy");
             AppSpec {
@@ -256,13 +345,20 @@ fn framework_str(f: Framework) -> &'static str {
     match f {
         Framework::Auto => "auto",
         Framework::Fastapi => "fastapi",
+        Framework::Flask => "flask",
+        Framework::Django => "django",
         Framework::Nextjs => "nextjs",
+        Framework::Nuxt => "nuxt",
+        Framework::Sveltekit => "sveltekit",
+        Framework::Remix => "remix",
         Framework::Express => "express",
         Framework::Go => "go",
         Framework::Rails => "rails",
         Framework::Laravel => "laravel",
         Framework::Astro => "astro",
         Framework::Static => "static",
+        Framework::Phoenix => "phoenix",
+        Framework::Deno => "deno",
         Framework::Generic => "generic",
     }
 }
@@ -272,6 +368,9 @@ fn framework_str(f: Framework) -> &'static str {
 /// `next` as a dep) win over less-specific ones (just a
 /// `package.json`). The first match wins.
 fn detect(cwd: &Path) -> Framework {
+    if let Some(fw) = detect_deno(cwd) {
+        return fw;
+    }
     if let Some(fw) = detect_python(cwd) {
         return fw;
     }
@@ -284,6 +383,9 @@ fn detect(cwd: &Path) -> Framework {
     if let Some(fw) = detect_ruby(cwd) {
         return fw;
     }
+    if let Some(fw) = detect_elixir(cwd) {
+        return fw;
+    }
     if let Some(fw) = detect_php(cwd) {
         return fw;
     }
@@ -293,12 +395,36 @@ fn detect(cwd: &Path) -> Framework {
     Framework::Generic
 }
 
+fn detect_deno(cwd: &Path) -> Option<Framework> {
+    if cwd.join("deno.json").is_file() || cwd.join("deno.jsonc").is_file() {
+        Some(Framework::Deno)
+    } else {
+        None
+    }
+}
+
 fn detect_python(cwd: &Path) -> Option<Framework> {
+    // Django is the easiest: the presence of `manage.py` is a
+    // very strong signal. We check it first so a Django project
+    // with a pyproject.toml that mentions both django and flask
+    // picks Django.
+    if cwd.join("manage.py").is_file() {
+        return Some(Framework::Django);
+    }
     let pyproject = std::fs::read_to_string(cwd.join("pyproject.toml")).ok()?;
-    // Cheap-and-cheerful: if the file mentions `fastapi` somewhere,
-    // assume FastAPI. The full dependency-parser is V0.5.
-    if pyproject.to_lowercase().contains("fastapi") {
+    let lower = pyproject.to_lowercase();
+    // Order: FastAPI > Flask > Django (the latter two share the
+    // pyproject path). If multiple are present, FastAPI wins
+    // because its runtime model is most different from the other
+    // two.
+    if lower.contains("fastapi") {
         return Some(Framework::Fastapi);
+    }
+    if lower.contains("flask") {
+        return Some(Framework::Flask);
+    }
+    if lower.contains("django") {
+        return Some(Framework::Django);
     }
     None
 }
@@ -307,12 +433,22 @@ fn detect_node(cwd: &Path) -> Option<Framework> {
     let pkg = std::fs::read_to_string(cwd.join("package.json")).ok()?;
     let v: serde_json::Value = serde_json::from_str(&pkg).ok()?;
     let deps = node_deps(&v);
-    if deps.iter().any(|d| d == "next") {
+    // Order matters: SvelteKit/Nuxt/Remix are wrapper meta-frameworks
+    // that pull in Express transitively, so we test the wrapper
+    // first. Astro is a sibling; Next.js pulls in React but is
+    // itself the dominant signal.
+    if deps.iter().any(|d| d == "@sveltejs/kit") {
+        Some(Framework::Sveltekit)
+    } else if deps.iter().any(|d| d == "next") {
         Some(Framework::Nextjs)
-    } else if deps.iter().any(|d| d == "express") {
-        Some(Framework::Express)
+    } else if deps.iter().any(|d| d == "nuxt") {
+        Some(Framework::Nuxt)
+    } else if deps.iter().any(|d| d.starts_with("@remix-run/")) {
+        Some(Framework::Remix)
     } else if deps.iter().any(|d| d == "astro") {
         Some(Framework::Astro)
+    } else if deps.iter().any(|d| d == "express") {
+        Some(Framework::Express)
     } else {
         None
     }
@@ -345,6 +481,15 @@ fn detect_ruby(cwd: &Path) -> Option<Framework> {
     let gemfile = std::fs::read_to_string(cwd.join("Gemfile")).ok()?;
     if gemfile.to_lowercase().contains("rails") {
         Some(Framework::Rails)
+    } else {
+        None
+    }
+}
+
+fn detect_elixir(cwd: &Path) -> Option<Framework> {
+    let mix = std::fs::read_to_string(cwd.join("mix.exs")).ok()?;
+    if mix.to_lowercase().contains("phoenix") {
+        Some(Framework::Phoenix)
     } else {
         None
     }
@@ -408,6 +553,53 @@ mod tests {
     }
 
     #[test]
+    fn detects_flask_via_pyproject() {
+        let dir = fresh_dir();
+        std::fs::write(
+            dir.join("pyproject.toml"),
+            "[project]\nname = \"x\"\ndependencies = [\"flask\"]\n",
+        )
+        .unwrap();
+        assert_eq!(detect(&dir), Framework::Flask);
+    }
+
+    #[test]
+    fn detects_django_via_pyproject() {
+        let dir = fresh_dir();
+        std::fs::write(
+            dir.join("pyproject.toml"),
+            "[project]\nname = \"x\"\ndependencies = [\"django\"]\n",
+        )
+        .unwrap();
+        assert_eq!(detect(&dir), Framework::Django);
+    }
+
+    #[test]
+    fn detects_django_via_manage_py() {
+        // A Django project without a pyproject.toml (just a
+        // requirements.txt + manage.py) still detects Django.
+        let dir = fresh_dir();
+        std::fs::write(dir.join("requirements.txt"), "django==5.0\n").unwrap();
+        std::fs::write(dir.join("manage.py"), "#!/usr/bin/env python\n").unwrap();
+        assert_eq!(detect(&dir), Framework::Django);
+    }
+
+    #[test]
+    fn detects_django_wins_over_flask_when_both_present() {
+        // The detect_python order is FastAPI > Flask > Django.
+        // When FastAPI and Flask are absent, Django via manage.py
+        // is the strongest signal.
+        let dir = fresh_dir();
+        std::fs::write(dir.join("manage.py"), "#!/usr/bin/env python\n").unwrap();
+        std::fs::write(
+            dir.join("pyproject.toml"),
+            "[project]\nname = \"x\"\ndependencies = [\"django\", \"flask\"]\n",
+        )
+        .unwrap();
+        assert_eq!(detect(&dir), Framework::Django);
+    }
+
+    #[test]
     fn detects_nextjs_via_package_json() {
         let dir = fresh_dir();
         std::fs::write(
@@ -416,6 +608,53 @@ mod tests {
         )
         .unwrap();
         assert_eq!(detect(&dir), Framework::Nextjs);
+    }
+
+    #[test]
+    fn detects_nuxt_via_package_json() {
+        let dir = fresh_dir();
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"name":"x","dependencies":{"nuxt":"3.10.0"}}"#,
+        )
+        .unwrap();
+        assert_eq!(detect(&dir), Framework::Nuxt);
+    }
+
+    #[test]
+    fn detects_sveltekit_via_package_json() {
+        let dir = fresh_dir();
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"name":"x","devDependencies":{"@sveltejs/kit":"2.0.0"}}"#,
+        )
+        .unwrap();
+        assert_eq!(detect(&dir), Framework::Sveltekit);
+    }
+
+    #[test]
+    fn detects_remix_via_package_json() {
+        let dir = fresh_dir();
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"name":"x","dependencies":{"@remix-run/node":"2.5.0"}}"#,
+        )
+        .unwrap();
+        assert_eq!(detect(&dir), Framework::Remix);
+    }
+
+    #[test]
+    fn detects_sveltekit_wins_over_express() {
+        // SvelteKit projects don't typically pull in Express, but
+        // if they do (e.g. a hybrid adapter), SvelteKit should win
+        // because it's the more specific signal.
+        let dir = fresh_dir();
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"name":"x","dependencies":{"@sveltejs/kit":"2.0.0","express":"4.18.0"}}"#,
+        )
+        .unwrap();
+        assert_eq!(detect(&dir), Framework::Sveltekit);
     }
 
     #[test]
@@ -448,6 +687,45 @@ mod tests {
     }
 
     #[test]
+    fn detects_phoenix_via_mix_exs() {
+        let dir = fresh_dir();
+        std::fs::write(
+            dir.join("mix.exs"),
+            r#"defmodule X do
+  use Mix.Project
+  defp deps do
+    [{:phoenix, "~> 1.7"}]
+  end
+end
+"#,
+        )
+        .unwrap();
+        assert_eq!(detect(&dir), Framework::Phoenix);
+    }
+
+    #[test]
+    fn detects_deno_via_deno_json() {
+        let dir = fresh_dir();
+        std::fs::write(
+            dir.join("deno.json"),
+            r#"{"tasks":{"start":"deno run --allow-net main.ts"}}"#,
+        )
+        .unwrap();
+        assert_eq!(detect(&dir), Framework::Deno);
+    }
+
+    #[test]
+    fn detects_deno_via_deno_jsonc() {
+        let dir = fresh_dir();
+        std::fs::write(
+            dir.join("deno.jsonc"),
+            r#"{"tasks":{"start":"deno run --allow-net main.ts"}}"#,
+        )
+        .unwrap();
+        assert_eq!(detect(&dir), Framework::Deno);
+    }
+
+    #[test]
     fn detects_static_via_index_html() {
         let dir = fresh_dir();
         std::fs::write(dir.join("index.html"), "<html></html>").unwrap();
@@ -471,6 +749,60 @@ mod tests {
         assert!(yaml.contains("health_path: /health"));
         assert!(yaml.contains("build_cmd:"));
         assert!(yaml.contains("run_cmd:"));
+    }
+
+    #[test]
+    fn flask_spec_uses_port_5000() {
+        let spec = build_app_spec(Framework::Flask, "x");
+        let yaml = render_app_yaml(&spec, "x");
+        assert!(yaml.contains("port: 5000"));
+        assert!(yaml.contains("framework: flask"));
+        assert!(yaml.contains("flask --app app run"));
+    }
+
+    #[test]
+    fn django_spec_uses_gunicorn() {
+        let spec = build_app_spec(Framework::Django, "x");
+        let yaml = render_app_yaml(&spec, "x");
+        assert!(yaml.contains("port: 8000"));
+        assert!(yaml.contains("framework: django"));
+        assert!(yaml.contains("gunicorn"));
+    }
+
+    #[test]
+    fn phoenix_spec_uses_port_4000() {
+        let spec = build_app_spec(Framework::Phoenix, "x");
+        let yaml = render_app_yaml(&spec, "x");
+        assert!(yaml.contains("port: 4000"));
+        assert!(yaml.contains("framework: phoenix"));
+        assert!(yaml.contains("mix phx.server"));
+    }
+
+    #[test]
+    fn nuxt_spec_runs_node_output_server() {
+        let spec = build_app_spec(Framework::Nuxt, "x");
+        let yaml = render_app_yaml(&spec, "x");
+        assert!(yaml.contains("port: 3000"));
+        assert!(yaml.contains("framework: nuxt"));
+        assert!(yaml.contains(".output/server/index.mjs"));
+    }
+
+    #[test]
+    fn sveltekit_spec_runs_node_build() {
+        let spec = build_app_spec(Framework::Sveltekit, "x");
+        let yaml = render_app_yaml(&spec, "x");
+        assert!(yaml.contains("port: 3000"));
+        assert!(yaml.contains("framework: sveltekit"));
+        assert!(yaml.contains("node build"));
+    }
+
+    #[test]
+    fn deno_spec_uses_deno_run() {
+        let spec = build_app_spec(Framework::Deno, "x");
+        let yaml = render_app_yaml(&spec, "x");
+        assert!(yaml.contains("port: 8000"));
+        assert!(yaml.contains("framework: deno"));
+        assert!(yaml.contains("deno run --allow-net"));
     }
 
     #[test]
