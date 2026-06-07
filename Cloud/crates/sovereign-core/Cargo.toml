@@ -22,3 +22,10 @@ tokio-util = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+# Integration tests for the migrate use case (V0.1.0 → V0.5
+# master-key migration) need both adapters; they're dev-only
+# so the sovereign-core library stays adapter-agnostic.
+sovereign-storage-sqlite = { path = "../sovereign-storage-sqlite" }
+sovereign-secrets-age = { path = "../sovereign-secrets-age" }
+secrecy = { workspace = true }
+age = { workspace = true }

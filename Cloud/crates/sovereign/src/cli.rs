@@ -117,6 +117,12 @@ pub enum Cmd {
         /// on Windows)
         #[arg(long)]
         master_key: Option<std::path::PathBuf>,
+        /// Migrate an existing V0.1.0 bare-Bech32 master key
+        /// to the V0.5 Argon2id-wrapped format and re-encrypt
+        /// every secret under the new identity. Requires
+        /// `SOVEREIGN_PASSPHRASE` (the new passphrase).
+        #[arg(long)]
+        migrate: bool,
     },
 
     /// Deploy an app

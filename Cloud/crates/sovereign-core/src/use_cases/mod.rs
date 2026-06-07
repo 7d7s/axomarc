@@ -9,6 +9,7 @@ pub mod auto_rollback;
 pub mod backup;
 pub mod deploy;
 pub mod health;
+pub mod migrate;
 pub mod rollback;
 pub mod secret;
 pub mod update;

@@ -18,10 +18,12 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use age::x25519::Identity;
 use secrecy::SecretString;
 use serde::Serialize;
+use sovereign_core::ports::{SecretsPort, StoragePort};
 use sovereign_secrets_age::AgeSecrets;
 use tracing::info;
 
@@ -154,7 +156,16 @@ fn ensure_parent_dir(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn run(out: &Output, no_input: bool, master_key_override: Option<&Path>) -> Dispatch {
+pub async fn run(
+    out: &Output,
+    no_input: bool,
+    master_key_override: Option<&Path>,
+    migrate: bool,
+) -> Dispatch {
+    if migrate {
+        return run_migrate(out, no_input, master_key_override).await;
+    }
+
     let passphrase = match read_passphrase(no_input) {
         Ok(p) => p,
         Err(e) => return err(out, AppExit::Usage, &e),
@@ -216,6 +227,189 @@ pub async fn run(out: &Output, no_input: bool, master_key_override: Option<&Path
         }
     } else {
         let env = Envelope::<LoginResult>::ok(result);
+        let _ = out.success(&env);
+    }
+    Dispatch::Ok
+}
+
+/// V0.1.0 → V0.5 master-key migration. Re-encrypts every
+/// active secret under a fresh Argon2id-wrapped identity
+/// and atomically replaces the bare-Bech32 master key file
+/// with the new wrapped file.
+///
+/// Pre-conditions:
+/// - The file at `master_key_path` exists and is a V0.1.0
+///   bare-Bech32 file (NOT already V0.5-wrapped).
+/// - `SOVEREIGN_PASSPHRASE` is set (the NEW passphrase for
+///   the wrapped file). The V0.1.0 file needs no passphrase.
+/// - A SQLite database exists at the platform default
+///   path (`commands_deploy::default_db_path`).
+async fn run_migrate(out: &Output, no_input: bool, master_key_override: Option<&Path>) -> Dispatch {
+    let master_key_path = master_key_override
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(default_master_key_path);
+    if !master_key_path.exists() {
+        return err(
+            out,
+            AppExit::Usage,
+            &format!(
+                "no master key file at {}; nothing to migrate",
+                master_key_path.display()
+            ),
+        );
+    }
+    let bytes = match std::fs::read(&master_key_path) {
+        Ok(b) => b,
+        Err(e) => {
+            return err(
+                out,
+                AppExit::Upstream,
+                &format!("read master key file: {e}"),
+            );
+        }
+    };
+    if sovereign_secrets_age::wrapped::is_wrapped_v1(&bytes) {
+        return err(
+            out,
+            AppExit::Usage,
+            "master key is already V0.5 wrapped; nothing to migrate. \
+             Run plain `sovereign login` to unlock.",
+        );
+    }
+    let passphrase = match read_passphrase(no_input) {
+        Ok(p) => p,
+        Err(e) => return err(out, AppExit::Usage, &e),
+    };
+
+    // 1. Load the V0.1.0 identity (no passphrase needed).
+    let old_identity =
+        match sovereign_secrets_age::read_bare_bech32_identity(&master_key_path).await {
+            Ok(id) => id,
+            Err(e) => {
+                return err(
+                    out,
+                    AppExit::Upstream,
+                    &format!("load V0.1.0 identity: {e:#}"),
+                );
+            }
+        };
+    let old_public = old_identity.to_public().to_string();
+
+    // 2. Generate the V0.5 wrapped file at a temp path next
+    //    to the real one (so the atomic_replace rename can
+    //    stay on the same filesystem).
+    let temp_path = master_key_path.with_extension("key.v05.tmp");
+    if temp_path.exists() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    let new_identity =
+        match sovereign_secrets_age::generate_wrapped_master_key(&temp_path, &passphrase).await {
+            Ok(id) => id,
+            Err(e) => {
+                return err(
+                    out,
+                    AppExit::Upstream,
+                    &format!("generate V0.5 master key: {e:#}"),
+                );
+            }
+        };
+    let new_public = new_identity.to_public().to_string();
+
+    // 3. Construct the two SecretsPort adapters:
+    //    - `old_secrets` decrypts V0.1.0 ciphertexts
+    //    - `new_secrets` encrypts with V0.5 identity
+    let old_secrets: Arc<dyn SecretsPort> = Arc::new(AgeSecrets::with_identity(
+        master_key_path.clone(),
+        Arc::new(old_identity),
+    ));
+    let new_secrets: Arc<dyn SecretsPort> = Arc::new(AgeSecrets::with_identity(
+        temp_path.clone(),
+        Arc::new(new_identity),
+    ));
+
+    // 4. Open the sqlite storage.
+    let db_path = crate::commands_deploy::default_db_path();
+    let storage = match sovereign_storage_sqlite::SqliteState::open(&db_path).await {
+        Ok(s) => s,
+        Err(e) => {
+            // Best-effort cleanup of the temp wrapped file
+            // (we don't want to leave a half-built V0.5 key
+            // on disk if the storage is broken).
+            let _ = std::fs::remove_file(&temp_path);
+            return err(
+                out,
+                AppExit::Upstream,
+                &format!("open sqlite storage at {}: {e}", db_path.display()),
+            );
+        }
+    };
+    let storage: Arc<dyn StoragePort> = Arc::new(storage);
+
+    // 5. Re-encrypt every active secret.
+    let report = match sovereign_core::use_cases::migrate::re_encrypt_all_secrets(
+        storage,
+        old_secrets,
+        new_secrets,
+        "operator",
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            // Storage is fine; we just need to clean up
+            // the temp V0.5 file (the V0.1.0 master key
+            // is untouched, so the operator can re-run).
+            let _ = std::fs::remove_file(&temp_path);
+            return err(
+                out,
+                AppExit::Upstream,
+                &format!("re-encrypt secrets: {e:#}"),
+            );
+        }
+    };
+
+    // 6. Atomic swap: rename temp wrapped file over the
+    //    V0.1.0 file. `atomic_replace` falls back to
+    //    copy+remove on Windows where cross-filesystem /
+    //    locked-file renames can fail.
+    if let Err(e) = sovereign_secrets_age::atomic_replace(&temp_path, &master_key_path).await {
+        return err(
+            out,
+            AppExit::Upstream,
+            &format!(
+                "secrets were re-encrypted, but atomic replace of master key failed: {e}. \
+                 Re-run `sovereign login --migrate` to retry the swap; secrets are idempotent."
+            ),
+        );
+    }
+
+    let json = serde_json::json!({
+        "old_public_key": old_public,
+        "new_public_key": new_public,
+        "secrets_re_encrypted": report.secrets_re_encrypted,
+        "apps_touched": report.apps_touched,
+        "master_key_path": master_key_path.display().to_string(),
+        "kdf": {
+            "algorithm": report.kdf_algorithm,
+            "memory_kib": report.kdf_memory_kib,
+            "iterations": report.kdf_iterations,
+            "parallelism": report.kdf_parallelism,
+        },
+    });
+
+    if out.format() == crate::output::Format::Text {
+        let _ = out.ok(&format!(
+            "migrated {} secret(s) across {} app(s) from V0.1.0 to V0.5",
+            report.secrets_re_encrypted, report.apps_touched
+        ));
+        let _ = out.ok(&format!("old public key: {old_public}"));
+        let _ = out.ok(&format!("new public key: {new_public}"));
+        let _ = out.ok(&format!(
+            "master key file: {} (Argon2id m=64MiB t=3 p=1)",
+            master_key_path.display()
+        ));
+    } else {
+        let env = Envelope::<serde_json::Value>::ok(json);
         let _ = out.success(&env);
     }
     Dispatch::Ok
