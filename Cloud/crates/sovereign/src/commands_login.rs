@@ -442,6 +442,25 @@ fn err(out: &Output, code: AppExit, msg: &str) -> Dispatch {
 mod tests {
     use super::*;
     use secrecy::ExposeSecret;
+    use std::sync::Mutex;
+    use tokio::sync::Mutex as AsyncMutex;
+
+    /// Process-global lock for the small set of tests that
+    /// touch `SOVEREIGN_PASSPHRASE`. Cargo runs tests on
+    /// multiple worker threads in parallel; the env var is
+    /// process-global, so two env-mutating tests racing each
+    /// other will produce flaky failures. Take this lock
+    /// before reading or writing the env var in a test.
+    ///
+    /// Two flavors:
+    /// - `ENV_LOCK` (sync `std::sync::Mutex`) for the sync
+    ///   tests that don't await while holding the guard.
+    /// - `ASYNC_ENV_LOCK` (`tokio::sync::Mutex`) for the
+    ///   async smoke test, so the guard can cross await
+    ///   points without tripping the
+    ///   `clippy::await_holding_lock` lint.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    static ASYNC_ENV_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
 
     #[test]
     fn default_master_key_path_is_nonempty() {
@@ -453,7 +472,8 @@ mod tests {
 
     #[test]
     fn read_passphrase_honors_env_var() {
-        // SAFETY: not concurrent; test-only
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: holding ENV_LOCK, no other env-mutating test can run.
         unsafe { std::env::set_var("SOVEREIGN_PASSPHRASE", "from-env") };
         let p = read_passphrase(true).unwrap();
         unsafe { std::env::remove_var("SOVEREIGN_PASSPHRASE") };
@@ -462,6 +482,7 @@ mod tests {
 
     #[test]
     fn read_passphrase_rejects_empty_env() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::set_var("SOVEREIGN_PASSPHRASE", "") };
         let r = read_passphrase(true);
         unsafe { std::env::remove_var("SOVEREIGN_PASSPHRASE") };
@@ -470,8 +491,9 @@ mod tests {
 
     #[test]
     fn read_passphrase_no_input_requires_env() {
-        // SAFETY: not concurrent; test-only. We must clear the env
-        // var to assert the "no env, no_input=true" failure.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // We must clear the env var to assert the
+        // "no env, no_input=true" failure.
         let saved = std::env::var("SOVEREIGN_PASSPHRASE").ok();
         unsafe { std::env::remove_var("SOVEREIGN_PASSPHRASE") };
         let r = read_passphrase(true);
@@ -520,6 +542,13 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_migrate_smoke_replaces_v0_with_v5() {
         use std::io::Write;
+        // Hold ASYNC_ENV_LOCK for the whole test so we
+        // can't race the other env-mutating tests on
+        // SOVEREIGN_PASSPHRASE. The `tokio::sync::Mutex`
+        // guard is safe to hold across await points (the
+        // `std::sync::Mutex` guard is not — it would trip
+        // `clippy::await_holding_lock`).
+        let _env = ASYNC_ENV_LOCK.lock().await;
         let dir =
             std::env::temp_dir().join(format!("sovereign-migrate-smoke-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("dir");
@@ -534,13 +563,12 @@ mod tests {
 
         // 2. Save the env var for the new passphrase.
         let passphrase = "smoke-migrate-test-passphrase-correct-horse";
-        // SAFETY: not concurrent in this test.
+        // SAFETY: holding ENV_LOCK, no other env-mutating test can run.
         unsafe { std::env::set_var("SOVEREIGN_PASSPHRASE", passphrase) };
 
         // 3. Run the migrate path.
         let out = crate::output::Output::new(crate::output::Format::Text, true);
         let dispatch = run_migrate(&out, true, Some(&key_path), &db_path).await;
-        unsafe { std::env::remove_var("SOVEREIGN_PASSPHRASE") };
         let _ = std::io::stdout().flush();
         assert!(matches!(dispatch, Dispatch::Ok), "migrate dispatch failed");
 
@@ -565,16 +593,15 @@ mod tests {
         // 6. Plain `sovereign login` should now succeed
         //    against the V0.5 file.
         let out2 = crate::output::Output::new(crate::output::Format::Json, true);
-        // SAFETY: not concurrent in this test.
-        unsafe { std::env::set_var("SOVEREIGN_PASSPHRASE", passphrase) };
+        // SAFETY: holding ENV_LOCK.
         let dispatch2 = run(&out2, true, Some(&key_path), false).await;
-        unsafe { std::env::remove_var("SOVEREIGN_PASSPHRASE") };
         assert!(
             matches!(dispatch2, Dispatch::Ok),
             "plain login dispatch failed"
         );
 
         // Cleanup.
+        unsafe { std::env::remove_var("SOVEREIGN_PASSPHRASE") };
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
