@@ -31,6 +31,8 @@
 #![deny(unsafe_code)]
 #![allow(missing_docs)]
 
+pub mod wrapped;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -39,6 +41,7 @@ use age::{
     x25519::Recipient,
 };
 use anyhow::Context;
+use secrecy::SecretString;
 use sovereign_core::error::AppError;
 use sovereign_core::ports::SecretsPort;
 use tokio::sync::OnceCell;
@@ -71,6 +74,13 @@ pub struct AgeSecrets {
     /// Lazily-loaded master identity. `OnceCell` so `open` is cheap
     /// and the I/O happens at most once per process.
     identity: Arc<OnceCell<Arc<Identity>>>,
+    /// The passphrase used to derive the AEAD key that wraps the
+    /// on-disk age secret key. V0.5+: the master key is NEVER
+    /// stored in plaintext on disk. V0 (pre-0.5) used a bare
+    /// `AGE-SECRET-KEY-1...` Bech32 file; V0.5 refuses to load
+    /// those (see `load_or_generate_wrapped` for the migration
+    /// error message).
+    passphrase: SecretString,
 }
 
 impl std::fmt::Debug for AgeSecrets {
@@ -82,29 +92,32 @@ impl std::fmt::Debug for AgeSecrets {
 }
 
 impl AgeSecrets {
-    /// Build an `AgeSecrets` that will load (or generate) the master
-    /// key at `master_key_path`. The file is created if missing; the
-    /// dir is NOT created (caller's responsibility).
-    pub fn new(master_key_path: impl Into<PathBuf>) -> Self {
+    /// Build an `AgeSecrets` that will load (or generate) the
+    /// passphrase-wrapped master key at `master_key_path`. The
+    /// file is created if missing; the dir is NOT created
+    /// (caller's responsibility).
+    pub fn new(master_key_path: impl Into<PathBuf>, passphrase: SecretString) -> Self {
         Self {
             master_key_path: master_key_path.into(),
             identity: Arc::new(OnceCell::new()),
+            passphrase,
         }
     }
 
     /// Build an `AgeSecrets` with the canonical V0 default path
     /// (`/var/lib/sovereign/master.key`).
-    pub fn with_default_path() -> Self {
-        Self::new(DEFAULT_MASTER_KEY_PATH)
+    pub fn with_default_path(passphrase: SecretString) -> Self {
+        Self::new(DEFAULT_MASTER_KEY_PATH, passphrase)
     }
 
     /// Force-load (or generate) the master key now, returning the
-    /// in-memory identity. The first caller does the file I/O;
-    /// concurrent callers get the same `Arc<Identity>`.
+    /// in-memory identity. The first caller does the file I/O +
+    /// Argon2id KDF (~300 ms on a CX22); concurrent callers get
+    /// the same `Arc<Identity>` from the cache.
     pub async fn ensure_loaded(&self) -> Result<Arc<Identity>, AppError> {
         self.identity
             .get_or_try_init(|| async {
-                let id = load_or_generate(&self.master_key_path)
+                let id = load_or_generate_wrapped(&self.master_key_path, &self.passphrase)
                     .await
                     .map_err(|e| AppError::upstream(format!("{e:#}")))?;
                 Ok::<Arc<Identity>, AppError>(Arc::new(id))
@@ -144,52 +157,69 @@ impl SecretsPort for AgeSecrets {
     }
 }
 
-/// Load the master identity from `path`, or generate + save a new
-/// one if the file is missing. On a present-but-corrupt file,
-/// returns an error (we do NOT silently overwrite a key the
+/// Load the wrapped master identity from `path`, or generate +
+/// save a new one if the file is missing. On a present file in
+/// the pre-V0.5 bare Bech32 format, returns a clear migration
+/// error (we do NOT silently overwrite or upgrade a key the
 /// operator may have planted).
-async fn load_or_generate(path: &Path) -> anyhow::Result<Identity> {
+async fn load_or_generate_wrapped(
+    path: &Path,
+    passphrase: &SecretString,
+) -> anyhow::Result<Identity> {
     if path.exists() {
-        load_existing(path).await
+        load_existing_wrapped(path, passphrase).await
     } else {
-        generate_and_save(path).await
+        generate_and_save_wrapped(path, passphrase).await
     }
 }
 
-/// Read the file and parse the Bech32 identity.
-async fn load_existing(path: &Path) -> anyhow::Result<Identity> {
-    let s = tokio::fs::read_to_string(path)
+/// Read a V1 wrapped key file, derive the AEAD key from
+/// `passphrase`, decrypt, and parse the Bech32 identity. On
+/// pre-V0.5 bare Bech32 format, return a clear migration error.
+async fn load_existing_wrapped(path: &Path, passphrase: &SecretString) -> anyhow::Result<Identity> {
+    let bytes = tokio::fs::read(path)
         .await
         .with_context(|| format!("read master key at {}", path.display()))?;
-    // The `age` CLI allows a passphrase-protected identity (scrypt
-    // or age-plugin-se). V0 only handles the unprotected X25519
-    // case; if the line doesn't start with `AGE-SECRET-KEY-1`, we
-    // bail with a clear error so the operator can either remove the
-    // passphrase (V0) or wait for V1 to add Argon2id protection.
-    let s = s.trim();
-    let identity = s.parse::<Identity>().map_err(|e| {
+    if !wrapped::is_wrapped_v1(&bytes) {
+        anyhow::bail!(
+            "master key at {} is in the pre-V0.5 (bare Bech32) format. V0.5+ \
+             refuses to read it because the key is stored without a passphrase. \
+             To migrate, run V0.5 once with `sovereign login --migrate` (which \
+             re-encrypts every existing secret under a new wrapped key) OR \
+             keep using a V0.1.0 binary until you're ready to re-encrypt.",
+            path.display()
+        );
+    }
+    let plaintext = wrapped::unwrap(passphrase, &bytes)
+        .map_err(|e| anyhow::anyhow!("cannot unwrap master key at {}: {e}", path.display()))?;
+    let identity: Identity = plaintext.trim().parse().map_err(|e| {
         anyhow::anyhow!(
-            "master key at {} is not an unprotected age X25519 identity \
-             (parse error: {e}). V0 does not support passphrase-protected \
-             master keys; regenerate with `age-keygen -o {}` (unprotected) \
-             or wait for V1.",
-            path.display(),
+            "unwrapped master key at {} is not a valid age X25519 identity (parse error: {e}; corrupt file or wrong passphrase)",
             path.display()
         )
     })?;
-    info!(path = %path.display(), "master key loaded");
+    info!(path = %path.display(), "master key unwrapped (V1, Argon2id)");
     Ok(identity)
 }
 
-/// Generate a new X25519 identity, save it to `path` with 0600
-/// permissions, and return it.
-async fn generate_and_save(path: &Path) -> anyhow::Result<Identity> {
+/// Generate a new X25519 identity, wrap it with Argon2id +
+/// XChaCha20-Poly1305 under `passphrase`, and save to `path`
+/// with 0600 permissions.
+async fn generate_and_save_wrapped(
+    path: &Path,
+    passphrase: &SecretString,
+) -> anyhow::Result<Identity> {
     let identity = Identity::generate();
     let bech32 = identity.to_string();
-    write_secret(path, bech32.expose_secret().as_bytes()).await?;
+    let plaintext = format!("{}\n", bech32.expose_secret());
+    let wrapped_bytes = wrapped::wrap(passphrase, &plaintext)
+        .map_err(|e| anyhow::anyhow!("wrap master key with Argon2id: {e}"))?;
+    write_secret(path, &wrapped_bytes).await?;
     info!(
         path = %path.display(),
-        "master key generated (mode 0600). KEEP THIS FILE SAFE — losing it means losing all secrets."
+        "master key generated (V1 wrapped, mode 0600). \
+         KEEP THIS FILE AND REMEMBER THE PASSPHRASE — \
+         losing either means losing all secrets."
     );
     Ok(identity)
 }
@@ -231,6 +261,14 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn test_passphrase() -> SecretString {
+        SecretString::new(
+            "test-passphrase-please-do-not-use-in-prod"
+                .to_string()
+                .into(),
+        )
+    }
+
     fn temp_master_key() -> (TempDir, PathBuf) {
         let dir = TempDir::new().expect("tempdir");
         let path = dir.path().join("master.key");
@@ -243,7 +281,7 @@ mod tests {
         assert!(!path.exists(), "precondition: file does not exist");
 
         // First call: generate.
-        let s1 = AgeSecrets::new(path.clone());
+        let s1 = AgeSecrets::new(path.clone(), test_passphrase());
         let id1 = s1.ensure_loaded().await.expect("load 1");
         let pub1 = id1.to_public().to_string();
         assert!(
@@ -264,16 +302,59 @@ mod tests {
         }
 
         // Second call: reload from the same file -> same public key.
-        let s2 = AgeSecrets::new(path.clone());
+        let s2 = AgeSecrets::new(path.clone(), test_passphrase());
         let id2 = s2.ensure_loaded().await.expect("load 2");
         let pub2 = id2.to_public().to_string();
         assert_eq!(pub1, pub2, "master key must be stable across reloads");
     }
 
     #[tokio::test]
+    async fn wrong_passphrase_fails_to_unwrap_existing_key() {
+        let (_dir, path) = temp_master_key();
+        // Generate with passphrase A.
+        let s1 = AgeSecrets::new(path.clone(), test_passphrase());
+        s1.ensure_loaded().await.expect("gen A");
+        // Try to load with passphrase B.
+        let wrong = SecretString::new("different-passphrase".to_string().into());
+        let s2 = AgeSecrets::new(path.clone(), wrong);
+        let result = s2.ensure_loaded().await;
+        let msg = match result {
+            Ok(_) => panic!("wrong passphrase must fail; got Ok"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("wrong passphrase")
+                || msg.contains("cannot unwrap")
+                || msg.contains("age X25519"),
+            "expected clear error, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_pre_v05_bare_bech32_format() {
+        // Write a V0 bare Bech32 file directly to the path, then
+        // try to load with V0.5. The migration error should fire.
+        let (_dir, path) = temp_master_key();
+        // A throwaway (but valid) V0 Bech32 identity.
+        let bare = Identity::generate().to_string();
+        let bech32 = bare.expose_secret();
+        std::fs::write(&path, format!("{bech32}\n").as_bytes()).expect("write");
+        let s = AgeSecrets::new(path.clone(), test_passphrase());
+        let result = s.ensure_loaded().await;
+        let msg = match result {
+            Ok(_) => panic!("expected V0-format rejection"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("pre-V0.5") || msg.contains("bare Bech32"),
+            "expected V0 migration error, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
     async fn encrypt_decrypt_roundtrip() {
         let (_dir, path) = temp_master_key();
-        let secrets = AgeSecrets::new(path);
+        let secrets = AgeSecrets::new(path, test_passphrase());
         let plaintext = b"postgres://user:hunter2@db:5432/api";
         let ct = secrets.encrypt(plaintext).expect("encrypt");
         assert_ne!(&ct[..], plaintext, "ciphertext must differ from plaintext");
@@ -286,7 +367,7 @@ mod tests {
         // age uses a fresh ephemeral X25519 key per encryption, so
         // this is the contract — not just a property.
         let (_dir, path) = temp_master_key();
-        let secrets = AgeSecrets::new(path);
+        let secrets = AgeSecrets::new(path, test_passphrase());
         let plaintext = b"same input";
         let a = secrets.encrypt(plaintext).expect("a");
         let b = secrets.encrypt(plaintext).expect("b");
@@ -301,15 +382,18 @@ mod tests {
     #[tokio::test]
     async fn rejects_corrupt_master_key() {
         let (_dir, path) = temp_master_key();
-        std::fs::write(&path, b"not a bech32 age identity\n").expect("write garbage");
-        let secrets = AgeSecrets::new(path);
+        // Garbage that IS long enough to look like a wrapped key
+        // header (so the bare-Bech32 error doesn't fire) but
+        // fails the magic check.
+        std::fs::write(&path, b"not a bech32 age identity\nGARBAGE").expect("write garbage");
+        let secrets = AgeSecrets::new(path, test_passphrase());
         let result = secrets.ensure_loaded().await;
         let msg = match result {
             Ok(_) => panic!("expected an error, got Ok"),
             Err(e) => e.to_string(),
         };
         assert!(
-            msg.contains("master key") || msg.contains("age X25519"),
+            msg.contains("master key") || msg.contains("V1"),
             "expected a clear error about the master key, got: {msg}"
         );
     }
@@ -319,7 +403,7 @@ mod tests {
         // Write to a path whose parent does not exist.
         let dir = TempDir::new().expect("tempdir");
         let path = dir.path().join("nope").join("master.key");
-        let secrets = AgeSecrets::new(path);
+        let secrets = AgeSecrets::new(path, test_passphrase());
         let result = secrets.ensure_loaded().await;
         let msg = match result {
             Ok(_) => panic!("expected an error, got Ok"),
@@ -337,7 +421,7 @@ mod tests {
         // (env-var limit is generous; we test with a 2 MB blob to
         // exercise the streaming path).
         let (_dir, path) = temp_master_key();
-        let secrets = AgeSecrets::new(path);
+        let secrets = AgeSecrets::new(path, test_passphrase());
         let mut plaintext = Vec::with_capacity(2 * 1024 * 1024);
         for i in 0..2 * 1024 * 1024 {
             plaintext.push((i % 251) as u8);
@@ -349,7 +433,7 @@ mod tests {
 
     #[test]
     fn master_key_path_is_returned() {
-        let secrets = AgeSecrets::new("/some/path/master.key");
+        let secrets = AgeSecrets::new("/some/path/master.key", test_passphrase());
         assert_eq!(
             secrets.master_key_path(),
             PathBuf::from("/some/path/master.key")

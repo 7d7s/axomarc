@@ -13,6 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Argon2id KDF for the master key** (V0.5): the on-disk master
+  key is now wrapped with Argon2id (m=64 MiB, t=3, p=1) +
+  XChaCha20-Poly1305. Every command that touches the master key
+  (`sovereign login`, `sovereign deploy`, `sovereign secret`,
+  `sovereign backup`, etc.) reads the passphrase from
+  `SOVEREIGN_PASSPHRASE` or prompts via stdin. The `LoginResult`
+  JSON envelope echoes the KDF parameters so operators can audit
+  what their unlock-time cost is. **Breaking change for V0.1.0
+  bare-Bech32 master keys**: V0.5 refuses to read them with a
+  clear migration error pointing at `sovereign login --migrate`.
 - `sovereign init` (F4.6): framework detector + `app.yaml` writer
   for FastAPI / Next.js / Express / Go / Rails / Laravel / Astro
   / Static / Generic. Supports `--force`, `--output`, `--name`.

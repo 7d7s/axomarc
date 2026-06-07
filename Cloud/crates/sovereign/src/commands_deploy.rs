@@ -301,12 +301,28 @@ pub(crate) async fn connect_proxy() -> Option<Arc<dyn ProxyPort>> {
 }
 
 /// Open (or create) the age master key. Returns `None` if the
-/// master-key dir is not yet provisioned — in that case, the deploy
-/// continues with no env injection (the use case returns an empty
-/// env list). The CLI prints a one-time hint to run `sovereign
-/// secret set` (which auto-creates the key).
+/// master-key dir is not yet provisioned OR the passphrase is
+/// missing — in either case, the deploy continues with no env
+/// injection (the use case returns an empty env list). The CLI
+/// prints a one-time hint to run `sovereign secret set` (which
+/// auto-creates the key).
 pub(crate) fn connect_secrets() -> Option<Arc<dyn SecretsPort>> {
-    let secrets = AgeSecrets::with_default_path();
+    // V0.5+: every command that touches the master key needs the
+    // passphrase. We read it from the env var or prompt. If neither
+    // is available (e.g., a non-interactive deploy in CI with no
+    // SOVEREIGN_PASSPHRASE set), we opt out silently and let the
+    // use case return an empty env list.
+    let passphrase = match crate::commands_login::read_passphrase_or_prompt() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "no passphrase available; secrets will NOT be injected. Set SOVEREIGN_PASSPHRASE or run `sovereign login` first."
+            );
+            return None;
+        }
+    };
+    let secrets = AgeSecrets::with_default_path(passphrase);
     // Probe: try a no-op encrypt of an empty buffer. If the master
     // key is reachable, this returns Ok; if not (parent dir
     // missing, perms wrong, etc.), it returns Err. We do NOT want
@@ -316,7 +332,7 @@ pub(crate) fn connect_secrets() -> Option<Arc<dyn SecretsPort>> {
         Err(e) => {
             tracing::warn!(
                 error = %e,
-                "master key not available; secrets will NOT be injected into the container. Run `sovereign secret set <KEY> --app <APP>` to bootstrap."
+                "master key not available; secrets will NOT be injected into the container. Run `sovereign login` to bootstrap."
             );
             None
         }
