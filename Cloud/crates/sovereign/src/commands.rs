@@ -75,7 +75,8 @@ pub async fn dispatch(cli: &Cli, out: &Output) -> Dispatch {
         Cmd::Login {
             no_input,
             master_key,
-        } => commands_login::run(out, *no_input, master_key.as_deref()).await,
+            migrate,
+        } => commands_login::run(out, *no_input, master_key.as_deref(), *migrate).await,
         Cmd::Deploy {
             app,
             image,

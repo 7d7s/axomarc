@@ -2753,12 +2753,16 @@ dependencies = [
 name = "sovereign-core"
 version = "0.1.0"
 dependencies = [
+ "age",
  "anyhow",
  "async-trait",
  "chrono",
+ "secrecy",
  "serde",
  "serde_json",
  "sha2",
+ "sovereign-secrets-age",
+ "sovereign-storage-sqlite",
  "sqlx",
  "tempfile",
  "thiserror 2.0.18",

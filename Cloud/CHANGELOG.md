@@ -23,6 +23,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   what their unlock-time cost is. **Breaking change for V0.1.0
   bare-Bech32 master keys**: V0.5 refuses to read them with a
   clear migration error pointing at `sovereign login --migrate`.
+- **`sovereign login --migrate` (V0.5)**: one-shot upgrade path
+  for V0.1.0 bare-Bech32 master keys. Loads the V0.1.0 identity
+  (no passphrase), generates a fresh V0.5 wrapped key with the
+  new passphrase, re-encrypts every active secret under the new
+  identity, and atomically swaps the master key file. Migration
+  is safe to re-run: a partial migration leaves the V0.1.0 file
+  intact and the half-re-encrypted secrets are picked up on the
+  next run. The `secret` table's full-table `UNIQUE (app_id, key)`
+  constraint is replaced with a partial unique index over the
+  `active`/`rotating` statuses, so retired rows can repeat
+  `(app_id, key)` and the migration can keep the audit trail.
 - `sovereign init` (F4.6): framework detector + `app.yaml` writer
   for FastAPI / Next.js / Express / Go / Rails / Laravel / Astro
   / Static / Generic. Supports `--force`, `--output`, `--name`.
