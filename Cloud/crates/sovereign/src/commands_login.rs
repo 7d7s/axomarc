@@ -163,7 +163,8 @@ pub async fn run(
     migrate: bool,
 ) -> Dispatch {
     if migrate {
-        return run_migrate(out, no_input, master_key_override).await;
+        let db_path = crate::commands_deploy::default_db_path();
+        return run_migrate(out, no_input, master_key_override, &db_path).await;
     }
 
     let passphrase = match read_passphrase(no_input) {
@@ -242,9 +243,13 @@ pub async fn run(
 ///   bare-Bech32 file (NOT already V0.5-wrapped).
 /// - `SOVEREIGN_PASSPHRASE` is set (the NEW passphrase for
 ///   the wrapped file). The V0.1.0 file needs no passphrase.
-/// - A SQLite database exists at the platform default
-///   path (`commands_deploy::default_db_path`).
-async fn run_migrate(out: &Output, no_input: bool, master_key_override: Option<&Path>) -> Dispatch {
+/// - A SQLite database exists at `db_path`.
+async fn run_migrate(
+    out: &Output,
+    no_input: bool,
+    master_key_override: Option<&Path>,
+    db_path: &Path,
+) -> Dispatch {
     let master_key_path = master_key_override
         .map(|p| p.to_path_buf())
         .unwrap_or_else(default_master_key_path);
@@ -328,8 +333,7 @@ async fn run_migrate(out: &Output, no_input: bool, master_key_override: Option<&
     ));
 
     // 4. Open the sqlite storage.
-    let db_path = crate::commands_deploy::default_db_path();
-    let storage = match sovereign_storage_sqlite::SqliteState::open(&db_path).await {
+    let storage = match sovereign_storage_sqlite::SqliteState::open(db_path).await {
         Ok(s) => s,
         Err(e) => {
             // Best-effort cleanup of the temp wrapped file
@@ -505,5 +509,72 @@ mod tests {
             pk.starts_with("age1"),
             "public key must be Bech32 age1..., got {pk}"
         );
+    }
+
+    /// End-to-end smoke: generate a V0.1.0 file, run
+    /// `sovereign login --migrate`, verify the file is V0.5
+    /// wrapped and the new identity is unwrappable with the
+    /// passphrase we passed in. This is the operator-flow
+    /// smoke; the per-component tests cover the storage and
+    /// secrets adapters in isolation.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_migrate_smoke_replaces_v0_with_v5() {
+        use std::io::Write;
+        let dir =
+            std::env::temp_dir().join(format!("sovereign-migrate-smoke-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let key_path = dir.join("master.key");
+        let db_path = dir.join("sovereign.db");
+
+        // 1. Generate a real V0.1.0 file.
+        let v0_id = age::x25519::Identity::generate();
+        let v0_pub = v0_id.to_public().to_string();
+        let v0_str: String = v0_id.to_string().expose_secret().to_string();
+        std::fs::write(&key_path, format!("{}\n", v0_str).as_bytes()).expect("write v0");
+
+        // 2. Save the env var for the new passphrase.
+        let passphrase = "smoke-migrate-test-passphrase-correct-horse";
+        // SAFETY: not concurrent in this test.
+        unsafe { std::env::set_var("SOVEREIGN_PASSPHRASE", passphrase) };
+
+        // 3. Run the migrate path.
+        let out = crate::output::Output::new(crate::output::Format::Text, true);
+        let dispatch = run_migrate(&out, true, Some(&key_path), &db_path).await;
+        unsafe { std::env::remove_var("SOVEREIGN_PASSPHRASE") };
+        let _ = std::io::stdout().flush();
+        assert!(matches!(dispatch, Dispatch::Ok), "migrate dispatch failed");
+
+        // 4. The file should now be V0.5 wrapped.
+        let bytes = std::fs::read(&key_path).expect("read after migrate");
+        const MAGIC: &[u8; 25] = b"AGE-SOVEREIGN-WRAPPED-V1\n";
+        assert!(
+            bytes.starts_with(MAGIC),
+            "file is not V0.5 wrapped; first 25 bytes: {:?}",
+            &bytes[..25.min(bytes.len())]
+        );
+
+        // 5. The new identity should be unwrappable with the
+        //    passphrase and the public key should differ.
+        let pp = SecretString::new(passphrase.to_string().into_boxed_str());
+        let unwrapped =
+            sovereign_secrets_age::wrapped::unwrap(&pp, &bytes).expect("unwrap with right pp");
+        let parsed: age::x25519::Identity = unwrapped.trim().parse().expect("parse unwrapped");
+        let new_pub = parsed.to_public().to_string();
+        assert_ne!(v0_pub, new_pub, "new public key must differ from V0.1.0");
+
+        // 6. Plain `sovereign login` should now succeed
+        //    against the V0.5 file.
+        let out2 = crate::output::Output::new(crate::output::Format::Json, true);
+        // SAFETY: not concurrent in this test.
+        unsafe { std::env::set_var("SOVEREIGN_PASSPHRASE", passphrase) };
+        let dispatch2 = run(&out2, true, Some(&key_path), false).await;
+        unsafe { std::env::remove_var("SOVEREIGN_PASSPHRASE") };
+        assert!(
+            matches!(dispatch2, Dispatch::Ok),
+            "plain login dispatch failed"
+        );
+
+        // Cleanup.
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
