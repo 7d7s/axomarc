@@ -32,6 +32,7 @@ uuid = { workspace = true }
 # secrets crate exposes, so the public-key formatter shares the
 # canonical Bech32 representation.
 age = { workspace = true }
+secrecy = { workspace = true }
 
 sovereign-core = { path = "../sovereign-core" }
 sovereign-observability = { path = "../sovereign-observability" }
