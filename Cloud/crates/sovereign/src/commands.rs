@@ -326,6 +326,9 @@ pub async fn dispatch(cli: &Cli, out: &Output) -> Dispatch {
             // by `app_yaml`; we just pass the &Path here.
             crate::commands_validate::run(out, path).await
         }
+        Cmd::Service { cmd } => {
+            return crate::commands_service::run(cmd, out).await;
+        }
         Cmd::Man { dir } => {
             use clap::CommandFactory;
             use clap_mangen::Man;

@@ -43,6 +43,7 @@ sovereign-secrets-age = { path = "../sovereign-secrets-age" }
 sovereign-backup = { path = "../sovereign-backup" }
 sovereign-doctor = { path = "../sovereign-doctor" }
 sovereign-update = { path = "../sovereign-update" }
+sovereign-systemd = { path = "../sovereign-systemd" }
 
 [dev-dependencies]
 tempfile = "3"

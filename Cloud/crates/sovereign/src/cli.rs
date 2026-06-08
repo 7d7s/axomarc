@@ -243,6 +243,14 @@ pub enum Cmd {
         path: std::path::PathBuf,
     },
 
+    /// Manage system services (V0.6). Install, remove, check status,
+    /// and restart managed services (nginx, mysql, mariadb, redis,
+    /// vsftpd, letsencrypt, phpmyadmin).
+    Service {
+        #[command(subcommand)]
+        cmd: ServiceCmd,
+    },
+
     /// Generate the man page (writes sovereign.1 to the given directory)
     Man {
         /// Output directory (must exist)
@@ -346,6 +354,48 @@ pub enum BackupCmd {
         #[arg(long)]
         to: String,
     },
+}
+
+/// The service subcommand tree (V0.6). Install, remove, check status,
+/// and restart managed system services.
+#[derive(Subcommand, Clone, Debug)]
+pub enum ServiceCmd {
+    /// Install a system service (apt + systemd)
+    Install {
+        /// Service to install (nginx, mysql, mariadb, redis, vsftpd, letsencrypt, phpmyadmin)
+        kind: String,
+        /// Pinned version (e.g. "1.24.0-0ubuntu3"). If omitted, installs the latest.
+        #[arg(long)]
+        version: Option<String>,
+        /// Skip `systemctl enable --now` after install
+        #[arg(long)]
+        no_start: bool,
+    },
+    /// Remove (purge) a system service
+    Remove {
+        /// Service to remove
+        kind: String,
+        /// Remove config files too (apt purge vs remove)
+        #[arg(long)]
+        purge: bool,
+    },
+    /// Check the status of a system service
+    Status {
+        /// Service to check (or "all" for every managed service)
+        kind: String,
+    },
+    /// Restart a system service (systemctl restart)
+    Restart {
+        /// Service to restart
+        kind: String,
+    },
+    /// Validate configuration for a system service (e.g. `nginx -t`)
+    Validate {
+        /// Service to validate
+        kind: String,
+    },
+    /// List all managed system services with their current status
+    List,
 }
 
 /// The diagnostic level argument for the CLI. Mirrors

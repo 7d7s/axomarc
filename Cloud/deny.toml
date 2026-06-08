@@ -5,6 +5,9 @@
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
+ignore = [
+    "RUSTSEC-2026-0173",  # proc-macro-error2: unmaintained, transitive via age::i18n-embed-fl; no safe upgrade
+]
 
 [licenses]
 allow = [

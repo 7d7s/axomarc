@@ -1,0 +1,24 @@
+[package]
+name = "sovereign-systemd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+description = "System service adapter for Sovereign (Ubuntu/Debian apt + systemd). Part of the V0.6 hosting control plane."
+
+[dependencies]
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+sha2 = "0.10"
+chrono.workspace = true
+
+sovereign-core = { path = "../sovereign-core" }
+
+[dev-dependencies]
+tokio = { workspace = true }

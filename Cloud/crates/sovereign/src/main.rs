@@ -12,6 +12,7 @@ mod commands_init;
 mod commands_login;
 mod commands_rollback;
 mod commands_secret;
+mod commands_service;
 mod commands_update;
 mod commands_validate;
 mod exit;

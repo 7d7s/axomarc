@@ -2727,6 +2727,7 @@ dependencies = [
  "sovereign-runtime-docker",
  "sovereign-secrets-age",
  "sovereign-storage-sqlite",
+ "sovereign-systemd",
  "sovereign-update",
  "tempfile",
  "tokio",
@@ -2890,6 +2891,21 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "sovereign-systemd"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sovereign-core",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

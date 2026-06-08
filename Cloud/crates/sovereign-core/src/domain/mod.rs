@@ -15,6 +15,7 @@ pub mod hostname;
 pub mod id;
 pub mod secret;
 pub mod server;
+pub mod service;
 pub mod timestamp;
 pub mod user;
 
@@ -26,5 +27,9 @@ pub use hostname::{Domain, NewDomain, TlsStatus};
 pub use id::{AppId, BackupId, DeploymentId, DomainId, SecretId, ServerId, UserId};
 pub use secret::{NewSecret, Secret, SecretStatus};
 pub use server::{NewServer, Server, ServerRole, ServerStatus};
+pub use service::{
+    ServiceAuditPayload, ServiceConfig, ServiceInstallResult, ServiceInstallSpec, ServiceKind,
+    ServiceRemoveSpec, ServiceStatus,
+};
 pub use timestamp::Timestamp;
 pub use user::{NewUser, User, UserRole};
