@@ -51,8 +51,8 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 /// `Arc`'d); the canonical instance lives in the composition root.
 #[derive(Debug, Clone)]
 pub struct CaddyProxy {
-    client: Client,
-    admin_url: String,
+    pub(crate) client: Client,
+    pub(crate) admin_url: String,
 }
 
 impl CaddyProxy {

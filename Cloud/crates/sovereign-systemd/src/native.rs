@@ -14,6 +14,17 @@ use sovereign_core::error::AppError;
 use tracing::{debug, instrument};
 
 /// Default base directory for native app installations.
+/// Override at runtime with `SOVEREIGN_APP_BASE_DIR` for containerized
+/// or air-gapped installs that cannot write to `/opt/sovereign`.
+pub fn app_base_dir() -> std::path::PathBuf {
+    if let Some(p) = std::env::var_os("SOVEREIGN_APP_BASE_DIR") {
+        return std::path::PathBuf::from(p);
+    }
+    std::path::PathBuf::from("/opt/sovereign/apps")
+}
+
+/// The V0 hardcoded default for back-compat with code that referenced
+/// the `const` directly. New code should call `app_base_dir()`.
 pub const APP_BASE_DIR: &str = "/opt/sovereign/apps";
 
 /// Ephemeral port range (IANA).
@@ -21,6 +32,15 @@ pub const PORT_RANGE_MIN: u16 = 49152;
 pub const PORT_RANGE_MAX: u16 = 65535;
 
 /// Path to the port allocation lock file.
+/// Override at runtime with `SOVEREIGN_PORT_LOCK_FILE`.
+pub fn port_lock_file() -> std::path::PathBuf {
+    if let Some(p) = std::env::var_os("SOVEREIGN_PORT_LOCK_FILE") {
+        return std::path::PathBuf::from(p);
+    }
+    std::path::PathBuf::from("/var/lib/sovereign/ports.lock")
+}
+
+/// The V0 hardcoded default for back-compat.
 pub const PORT_LOCK_FILE: &str = "/var/lib/sovereign/ports.lock";
 
 // ---------------------------------------------------------------------------

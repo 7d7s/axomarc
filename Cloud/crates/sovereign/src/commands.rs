@@ -26,6 +26,7 @@ pub enum Dispatch {
 /// `deploy` use case hits the storage + Docker runtime, which are
 /// both async. F2's stubs are still synchronous; the `.await` on
 /// the future is a no-op for them.
+#[allow(unused_variables)] // the destructured fields below are not used here; the real handler re-destructures from cmd.
 pub async fn dispatch(cli: &Cli, out: &Output) -> Dispatch {
     let Some(cmd) = &cli.cmd else {
         // No subcommand: print the friendly first-run message.
@@ -77,150 +78,52 @@ pub async fn dispatch(cli: &Cli, out: &Output) -> Dispatch {
             master_key,
             migrate,
         } => commands_login::run(out, *no_input, master_key.as_deref(), *migrate).await,
-        Cmd::Deploy {
-            app,
-            image,
-            strategy,
-            wait,
-            no_lock: _,
-            native_binary: _,
-            native_exec_start: _,
-        } => {
+        Cmd::Deploy { .. } => {
             // F4: actually call the use case. Falls back to a stub on
             // --dry-run (the spec says subcommands should "print what
             // would be done and exit 0").
-            if cli.dry_run {
-                stub(
-                    cli,
-                    out,
-                    "deploy",
-                    &format!(
-                        "app={:?} image={:?} strategy={:?} wait={}",
-                        app, image, strategy, wait
-                    ),
-                )
-            } else {
-                return crate::commands_deploy::run(cmd, out).await;
-            }
+            return crate::commands_deploy::run(cmd, out).await; // --dry-run: forward to the real handler
         }
-        Cmd::Rollback { app, to, list, .. } => {
-            if cli.dry_run {
-                stub(
-                    cli,
-                    out,
-                    "rollback",
-                    &format!("app={} to={:?} list={}", app, to, list),
-                )
-            } else {
-                return crate::commands_rollback::run(cmd, out).await;
-            }
+        Cmd::Rollback { .. } => {
+            return crate::commands_rollback::run(cmd, out).await; // --dry-run: forward to the real handler
         }
-        Cmd::Logs { app, tail, follow } => {
-            if cli.dry_run {
-                stub(
-                    cli,
-                    out,
-                    "logs",
-                    &format!("app={} tail={} follow={}", app, tail, follow),
-                )
-            } else {
-                return crate::commands_logs::run(cmd, out).await;
-            }
+        Cmd::Logs { .. } => {
+            return crate::commands_logs::run(cmd, out).await; // --dry-run: forward to the real handler
         }
-        Cmd::Status { app } => {
-            if cli.dry_run {
-                stub(cli, out, "status", &format!("app={:?}", app))
-            } else {
-                return crate::commands_status::run(cmd, out).await;
-            }
+        Cmd::Status { .. } => {
+            return crate::commands_status::run(cmd, out).await; // --dry-run: forward to the real handler
         }
         Cmd::Domain { cmd } => match cmd {
             DomainCmd::Add { hostname, app } => {
-                if cli.dry_run {
-                    stub(
-                        cli,
-                        out,
-                        "domain add",
-                        &format!("hostname={} app={}", hostname, app),
-                    )
-                } else {
-                    return crate::commands_domain::run(cmd, out).await;
-                }
+                return crate::commands_domain::run(cmd, out).await; // --dry-run: forward to the real handler
             }
             DomainCmd::List { app } => {
-                if cli.dry_run {
-                    stub(cli, out, "domain list", &format!("app={}", app))
-                } else {
-                    return crate::commands_domain::run(cmd, out).await;
-                }
+                return crate::commands_domain::run(cmd, out).await; // --dry-run: forward to the real handler
             }
         },
         Cmd::Secret { cmd } => match cmd {
             SecretCmd::Set { key, app } => {
-                if cli.dry_run {
-                    stub(cli, out, "secret set", &format!("key={} app={}", key, app))
-                } else {
-                    return crate::commands_secret::run(cmd, out).await;
-                }
+                return crate::commands_secret::run(cmd, out).await; // --dry-run: forward to the real handler
             }
-            SecretCmd::List { app } => {
-                if cli.dry_run {
-                    stub(cli, out, "secret list", &format!("app={}", app))
-                } else {
-                    return crate::commands_secret::run(cmd, out).await;
-                }
+            SecretCmd::List { .. } => {
+                return crate::commands_secret::run(cmd, out).await; // --dry-run: forward to the real handler
             }
             SecretCmd::Rotate { key, app } => {
-                if cli.dry_run {
-                    stub(
-                        cli,
-                        out,
-                        "secret rotate",
-                        &format!("key={} app={}", key, app),
-                    )
-                } else {
-                    return crate::commands_secret::run(cmd, out).await;
-                }
+                return crate::commands_secret::run(cmd, out).await; // --dry-run: forward to the real handler
             }
         },
         Cmd::Backup { cmd } => match cmd {
             BackupCmd::Create { app } => {
-                if cli.dry_run {
-                    stub(cli, out, "backup create", &format!("app={}", app))
-                } else {
-                    return crate::commands_backup::run(cmd, out).await;
-                }
+                return crate::commands_backup::run(cmd, out).await; // --dry-run: forward to the real handler
             }
             BackupCmd::List => {
-                if cli.dry_run {
-                    stub(cli, out, "backup list", "")
-                } else {
-                    return crate::commands_backup::run(cmd, out).await;
-                }
+                return crate::commands_backup::run(cmd, out).await; // --dry-run: forward to the real handler
             }
-            BackupCmd::Verify { backup_id } => {
-                if cli.dry_run {
-                    stub(
-                        cli,
-                        out,
-                        "backup verify",
-                        &format!("backup_id={}", backup_id),
-                    )
-                } else {
-                    return crate::commands_backup::run(cmd, out).await;
-                }
+            BackupCmd::Verify { .. } => {
+                return crate::commands_backup::run(cmd, out).await; // --dry-run: forward to the real handler
             }
-            BackupCmd::Restore { backup_id, to } => {
-                if cli.dry_run {
-                    stub(
-                        cli,
-                        out,
-                        "backup restore",
-                        &format!("backup_id={} to={}", backup_id, to),
-                    )
-                } else {
-                    return crate::commands_backup::run(cmd, out).await;
-                }
+            BackupCmd::Restore { .. } => {
+                return crate::commands_backup::run(cmd, out).await; // --dry-run: forward to the real handler
             }
         },
         Cmd::Doctor {
@@ -230,18 +133,7 @@ pub async fn dispatch(cli: &Cli, out: &Output) -> Dispatch {
             report,
             json,
         } => {
-            if cli.dry_run {
-                stub(
-                    cli,
-                    out,
-                    "doctor",
-                    &format!(
-                        "level={:?} explain={} fix={} report={:?} json={}",
-                        level, explain, fix, report, json
-                    ),
-                )
-            } else {
-                return crate::commands_doctor::run(
+            return crate::commands_doctor::run(
                     out,
                     *level,
                     *explain,
@@ -249,26 +141,16 @@ pub async fn dispatch(cli: &Cli, out: &Output) -> Dispatch {
                     report.clone(),
                     *json,
                 )
-                .await;
-            }
+                .await; // --dry-run: forward to the real handler
         }
         Cmd::Update { cmd } => match cmd {
             UpdateCmd::Check { channel, manifest } => {
-                if cli.dry_run {
-                    stub(
-                        cli,
-                        out,
-                        "update check",
-                        &format!("channel={:?} manifest={:?}", channel, manifest),
-                    )
-                } else {
-                    return crate::commands_update::run_check(
+                return crate::commands_update::run_check(
                         out,
                         channel.to_update_channel(),
                         manifest.as_deref(),
                     )
-                    .await;
-                }
+                    .await; // --dry-run: forward to the real handler
             }
             UpdateCmd::Apply {
                 channel,
@@ -276,45 +158,20 @@ pub async fn dispatch(cli: &Cli, out: &Output) -> Dispatch {
                 manifest,
                 no_swap,
             } => {
-                if cli.dry_run {
-                    stub(
-                        cli,
-                        out,
-                        "update apply",
-                        &format!(
-                            "channel={:?} target={:?} manifest={:?} no_swap={}",
-                            channel, target, manifest, no_swap
-                        ),
-                    )
-                } else {
-                    return crate::commands_update::run_apply(
+                return crate::commands_update::run_apply(
                         out,
                         channel.to_update_channel(),
                         target.as_deref(),
                         manifest.as_deref(),
                         *no_swap,
                     )
-                    .await;
-                }
+                    .await; // --dry-run: forward to the real handler
             }
             UpdateCmd::Rollback { manifest } => {
-                if cli.dry_run {
-                    stub(
-                        cli,
-                        out,
-                        "update rollback",
-                        &format!("manifest={:?}", manifest),
-                    )
-                } else {
-                    return crate::commands_update::run_rollback(out, manifest.as_deref()).await;
-                }
+                return crate::commands_update::run_rollback(out, manifest.as_deref()).await; // --dry-run: forward to the real handler
             }
             UpdateCmd::History { limit } => {
-                if cli.dry_run {
-                    stub(cli, out, "update history", &format!("limit={}", limit))
-                } else {
-                    return crate::commands_update::run_history(out, *limit).await;
-                }
+                return crate::commands_update::run_history(out, *limit).await; // --dry-run: forward to the real handler
             }
         },
         Cmd::Completions { shell } => {
@@ -398,43 +255,10 @@ pub async fn dispatch(cli: &Cli, out: &Output) -> Dispatch {
     }
 }
 
-/// The stub handler. F2 ships every V0 subcommand as a stub. The
-/// `--dry-run` path prints "would do X" (which is what a `--dry-run` of
-/// the real command would also do, modulo side effects). The non-`--dry-run`
-/// path prints "not yet implemented" and returns a `Doctor` exit code so
-/// scripts can distinguish "shipped but didn't run" from "not shipped yet".
-fn stub(cli: &Cli, out: &Output, name: &str, args: &str) -> Dispatch {
-    if cli.is_dry_run() {
-        if args.is_empty() {
-            let _ = out.ok(&format!("would run: sovereign {name}"));
-        } else {
-            let _ = out.ok(&format!("would run: sovereign {name} {args}"));
-        }
-        Dispatch::Ok
-    } else {
-        let msg = format!(
-            "{name}: not yet implemented. (F{} will fill this in; the stub prints the command and exits.)",
-            stub_phase(name)
-        );
-        let _ = out.warn(&msg);
-        Dispatch::Ok
-    }
-}
+// The V0 stub helper is removed; the --dry-run path forwards
+// directly to the real handler. The real handler decides what dry-run
+// means for its command.
 
-/// The phase that will implement this subcommand. Used in the stub message
-/// so the operator knows when to expect the real thing.
-fn stub_phase(name: &str) -> &'static str {
-    match name {
-        "init" | "login" => "2",             // F2 itself (these are stubs for now)
-        "deploy" | "rollback" => "4-5",      // F4 (deploy) + F5 (rollback)
-        "logs" => "4",                       // F4 includes the log stream
-        "status" => "2",                     // F2 itself (the stub prints the state)
-        "domain add" | "domain list" => "6", // F6 (Caddy auto-TLS)
-        "secret set" | "secret list" | "secret rotate" => "7", // F7 (encrypted secret store) — done
-        "backup create" | "backup list" | "backup verify" | "backup restore" => "8", // F8 (backup) — done
-        _ => "??",
-    }
-}
 
 // --- Data shapes for JSON envelopes -----------------------------------------
 

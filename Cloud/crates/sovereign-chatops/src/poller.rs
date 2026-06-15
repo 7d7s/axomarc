@@ -93,12 +93,32 @@ pub async fn run_poller(
                     }
                 }
             }
-            // Receive auto-notifications and forward to bound chats
+            // Receive auto-notifications and forward to every bound chat.
             Ok(text) = notification_rx.recv() => {
                 info!("broadcast received, forwarding to bound chats");
-                // V0: log only. Production would iterate bound chat_ids
-                // and send to each.
-                debug!("notification: {text}");
+                let client = client.clone();
+                let bindings = bindings.clone();
+                tokio::spawn(async move {
+                    match bindings.list_bindings().await {
+                        Ok(rows) => {
+                            let mut sent = 0usize;
+                            let mut failed = 0usize;
+                            for (chat_id, _user_id) in rows {
+                                match client.send_message(chat_id, &text).await {
+                                    Ok(_) => sent += 1,
+                                    Err(e) => {
+                                        failed += 1;
+                                        warn!(chat_id, error = %e, "broadcast send failed");
+                                    }
+                                }
+                            }
+                            debug!(sent, failed, "broadcast complete");
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "broadcast failed to list bindings");
+                        }
+                    }
+                });
             }
         }
     }

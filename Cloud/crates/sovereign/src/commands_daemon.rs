@@ -215,8 +215,18 @@ fn run_status(out: &Output) -> Dispatch {
     }
 }
 
-/// Show recent daemon logs via journalctl.
+/// Show recent daemon logs via journalctl. Linux only; on macOS
+/// and Windows we emit a clear "not supported on this OS" error so
+/// the operator knows why the command did nothing instead of seeing
+/// a "no such file" from the missing journalctl binary.
 fn run_logs(lines: u32, out: &Output) -> Dispatch {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (lines, out.err("sovereign daemon logs requires Linux (uses journalctl)"));
+        return Dispatch::Err(AppExit::Upstream);
+    }
+    #[cfg(target_os = "linux")]
+    {
     let output = Command::new("journalctl")
         .args([
             "-u",
@@ -246,6 +256,7 @@ fn run_logs(lines: u32, out: &Output) -> Dispatch {
             let _ = out.err(&format!("failed to run journalctl: {e}"));
             Dispatch::Err(AppExit::Upstream)
         }
+    }
     }
 }
 

@@ -662,6 +662,7 @@ impl Cli {
     /// Returns true if the user passed `--dry-run` (either globally or on
     /// the subcommand). F2 only has the global flag; F3+ subcommands may
     /// also accept it locally.
+    #[allow(dead_code)]
     pub fn is_dry_run(&self) -> bool {
         self.dry_run
     }
