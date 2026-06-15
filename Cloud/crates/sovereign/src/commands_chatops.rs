@@ -1,4 +1,4 @@
-// P7: Chatops CLI handlers — `sovereign chatops init|start|revoke|bindings`.
+﻿// P7: Chatops CLI handlers — `sovereign chatops init|start|revoke|bindings`.
 //
 // These subcommands manage the Telegram bot lifecycle:
 //   - `init` generates a 6-digit binding code + deeplink
@@ -24,8 +24,13 @@ pub async fn run(cmd: &ChatopsCmd, out: &Output) -> crate::commands::Dispatch {
 /// `sovereign chatops init --user <email>` — generate a 6-digit code.
 fn run_init(user: &str, out: &Output) -> crate::commands::Dispatch {
     let code = sovereign_chatops::types::generate_binding_code();
-    // V0: hardcoded bot name. Production reads from sovereign.toml.
-    let bot_name = "sovereign_bot";
+    // The bot name is read from SOVEREIGN_CHATOPS_BOT (env) first,
+    // then falls back to the V0 default sovereign_bot. Operators
+    // on Telegram with their own bot can override without rebuilding.
+    let bot_name = std::env::var("SOVEREIGN_CHATOPS_BOT")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "sovereign_bot".to_string());
     let deeplink = format!("https://t.me/{bot_name}?start={code}");
 
     match out.format() {
@@ -153,7 +158,8 @@ async fn run_revoke(user: &str, out: &Output) -> crate::commands::Dispatch {
             }
         }
         None => {
-            let _ = out.ok(&format!("Revoked Telegram binding for {user} (V0 stub — no DB)"));
+            let _ = out.err("cannot open chatops binding store; run sovereign init first");
+            return crate::commands::Dispatch::Err(AppExit::Upstream);
         }
     }
     crate::commands::Dispatch::Ok
@@ -194,15 +200,14 @@ async fn run_bindings(out: &Output) -> crate::commands::Dispatch {
             }
         }
         None => {
-            match out.format() {
-                crate::output::Format::Text => {
-                    let _ = out.ok("Active Telegram bindings:\n  (V0 stub — no DB configured)");
-                }
-                _ => {
-                    let env = Envelope::ok(BindingListData { bindings: vec![] });
-                    let _ = out.success(&env);
-                }
-            }
+            let payload = BindingListData { bindings: vec![] };
+            let env = Envelope::err(
+                AppExit::Upstream,
+                payload,
+                "cannot open chatops binding store; run `sovereign init` first",
+            );
+            let _ = out.error(&env);
+            return crate::commands::Dispatch::Err(AppExit::Upstream);
         }
     }
     crate::commands::Dispatch::Ok

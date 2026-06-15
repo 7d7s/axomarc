@@ -144,6 +144,7 @@ impl UpdatePort for HttpUpdate {
         new_binary: &Path,
         current_binary: &Path,
         backup_dir: &Path,
+        release: &Release,
     ) -> Result<UpdateRecord, UpdateError> {
         let storage = self
             .storage
@@ -153,6 +154,8 @@ impl UpdatePort for HttpUpdate {
             new_binary,
             current_binary,
             backup_dir,
+            &release.version,
+            &release.channel,
             storage.clone(),
         )
         .await

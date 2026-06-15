@@ -345,11 +345,12 @@ impl Command for MonitorCmd {
     fn name(&self) -> &'static str { "monitor" }
 
     async fn run(&self, _ctx: &CommandContext, _args: &[String]) -> Result<CommandResponse, ChatopsError> {
-        // V0: host-level stats stub. Production reads /proc/stat, /proc/meminfo,
-        // and `df` output; per-app stats would come from cgroup or systemd.
-        Ok(CommandResponse::text(
-            "Host monitor (V0 stub):\n  CPU: —%\n  RAM: —MB / —MB\n  Disk: —GB / —GB",
-        ))
+        // Host-level stats. On Linux we read /proc/stat + /proc/meminfo
+        // synchronously (one-shot is fine). On macOS/Windows we report
+        // a clean "not supported on this OS" line. Per-app stats would
+        // come from cgroup/systemd and are out of scope for /monitor.
+        let stats = read_host_stats().await;
+        Ok(CommandResponse::text(stats))
     }
 }
 
@@ -449,7 +450,7 @@ pub struct NotifyCmd;
 impl Command for NotifyCmd {
     fn name(&self) -> &'static str { "notify" }
 
-    async fn run(&self, _ctx: &CommandContext, args: &[String]) -> Result<CommandResponse, ChatopsError> {
+    async fn run(&self, ctx: &CommandContext, args: &[String]) -> Result<CommandResponse, ChatopsError> {
         if args.is_empty() {
             return Ok(CommandResponse::text(
                 "Usage: /notify <app|all> <events>\n\
@@ -457,14 +458,144 @@ impl Command for NotifyCmd {
                  Example: /notify all deploys,failures"
             ));
         }
-        // V0: stub — stores per-user notification preferences
+        // Per-user notification preferences. The preferences are
+        // recorded as an audit event so the operator has a paper
+        // trail of who set what. A persistent notify_preference table
+        // is the V1 add once the sovereign-notify crate ships (Stream
+        // B of the MNC plan); until then the audit log is the source
+        // of truth.
         let target = &args[0];
         let events = if args.len() > 1 { &args[1] } else { "failures" };
+        let event = sovereign_core::domain::audit::AuditEvent {
+            id: None,
+            ts: sovereign_core::domain::timestamp::Timestamp::now(),
+            actor: ctx.user_id.clone(),
+            kind: sovereign_core::domain::audit::kind::DOCTOR_RUN,
+            target: Some(format!("notify:{target}")),
+            payload: serde_json::json!({
+                "target": target,
+                "events": events,
+                "kind": "notify_pref_set",
+            }),
+            policy_decision: None,
+        };
+        if let Err(e) = ctx.storage.append_audit(event).await {
+            return Err(ChatopsError::Storage(e.to_string()));
+        }
+        tracing::info!(target, events, user = %ctx.user_id, "notify preference recorded");
         Ok(CommandResponse::text(format!(
-            "Notification preferences set for `{target}`: {events}\n(V0 stub — preferences not persisted)"
+            "Notification preferences recorded for `{target}`: {events}"
         )))
     }
 }
+
+// ---------------------------------------------------------------------------
+// Helper: format age from timestamp
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Helper: read host-level CPU/RAM/disk stats
+// ---------------------------------------------------------------------------
+
+async fn read_host_stats() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        let cpu = read_cpu_pct().await;
+        let (ram_used_mb, ram_total_mb) = read_meminfo().await;
+        let (disk_used_gb, disk_total_gb) = read_df_root().await;
+        return format!(
+            "Host monitor (live):\n  CPU: {cpu}%\n  RAM: {ram_used_mb}MB / {ram_total_mb}MB\n  Disk: {disk_used_gb}GB / {disk_total_gb}GB"
+        );
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        "Host monitor: not supported on this OS (Linux only).".to_string()
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn read_cpu_pct() -> String {
+    let s1 = match tokio::fs::read_to_string("/proc/stat").await {
+        Ok(s) => s,
+        Err(_) => return "—".into(),
+    };
+    let total1: u64 = s1
+        .lines()
+        .find(|l| l.starts_with("cpu "))
+        .map(|l| l.split_whitespace().skip(1).filter_map(|x| x.parse::<u64>().ok()).sum())
+        .unwrap_or(0);
+    let idle1: u64 = s1
+        .lines()
+        .find(|l| l.starts_with("cpu "))
+        .and_then(|l| l.split_whitespace().nth(4))
+        .and_then(|x| x.parse::<u64>().ok())
+        .unwrap_or(0);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let s2 = match tokio::fs::read_to_string("/proc/stat").await {
+        Ok(s) => s,
+        Err(_) => return "—".into(),
+    };
+    let total2: u64 = s2
+        .lines()
+        .find(|l| l.starts_with("cpu "))
+        .map(|l| l.split_whitespace().skip(1).filter_map(|x| x.parse::<u64>().ok()).sum())
+        .unwrap_or(0);
+    let idle2: u64 = s2
+        .lines()
+        .find(|l| l.starts_with("cpu "))
+        .and_then(|l| l.split_whitespace().nth(4))
+        .and_then(|x| x.parse::<u64>().ok())
+        .unwrap_or(0);
+    let dtotal = total2.saturating_sub(total1);
+    let didle = idle2.saturating_sub(idle1);
+    if dtotal == 0 { return "0.0".into(); }
+    let pct = 100.0 * (dtotal.saturating_sub(didle)) as f64 / dtotal as f64;
+    format!("{pct:.1}")
+}
+
+#[cfg(target_os = "linux")]
+async fn read_meminfo() -> (String, String) {
+    let s = match tokio::fs::read_to_string("/proc/meminfo").await {
+        Ok(s) => s,
+        Err(_) => return ("—".into(), "—".into()),
+    };
+    let total_kb = parse_kb(&s, "MemTotal");
+    let avail_kb = parse_kb(&s, "MemAvailable");
+    match (total_kb, avail_kb) {
+        (Some(t), Some(a)) if t > 0 => {
+            let used = t.saturating_sub(a);
+            ((used / 1024).to_string(), (t / 1024).to_string())
+        }
+        _ => ("—".into(), "—".into()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn parse_kb(s: &str, key: &str) -> Option<u64> {
+    s.lines()
+        .find(|l| l.starts_with(key))
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|x| x.parse::<u64>().ok())
+}
+
+#[cfg(target_os = "linux")]
+async fn read_df_root() -> (String, String) {
+    let out = match tokio::process::Command::new("df")
+        .args(["-BG", "--output=used,size", "/"])
+        .output()
+        .await
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return ("—".into(), "—".into()),
+    };
+    let s = String::from_utf8_lossy(&out.stdout);
+    let line = s.lines().nth(1).unwrap_or("");
+    let mut it = line.split_whitespace();
+    let used = it.next().unwrap_or("—").trim_end_matches('G').to_string();
+    let total = it.next().unwrap_or("—").trim_end_matches('G').to_string();
+    (used, total)
+}
+
 
 // ---------------------------------------------------------------------------
 // Helper: format age from timestamp

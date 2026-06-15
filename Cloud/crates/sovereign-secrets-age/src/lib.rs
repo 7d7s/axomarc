@@ -105,9 +105,16 @@ impl AgeSecrets {
     }
 
     /// Build an `AgeSecrets` with the canonical V0 default path
-    /// (`/var/lib/sovereign/master.key`).
+    /// (`/var/lib/sovereign/master.key`), unless the operator has
+    /// set `SOVEREIGN_MASTER_KEY_PATH` in the environment. The env
+    /// override is what `sovereign init`/`sovereign login`/`sovereign
+    /// deploy` all consult; the hardcoded path remains the default
+    /// for V0 back-compat.
     pub fn with_default_path(passphrase: SecretString) -> Self {
-        Self::new(DEFAULT_MASTER_KEY_PATH, passphrase)
+        let path = std::env::var_os("SOVEREIGN_MASTER_KEY_PATH")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_MASTER_KEY_PATH));
+        Self::new(path, passphrase)
     }
 
     /// Build an `AgeSecrets` from a pre-loaded identity. No file

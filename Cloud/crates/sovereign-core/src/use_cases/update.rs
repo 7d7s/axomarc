@@ -18,6 +18,8 @@ pub async fn apply_update(
     new_binary: &Path,
     current_binary: &Path,
     backup_dir: &Path,
+    target_version: &str,
+    channel: &str,
     storage: Arc<dyn crate::ports::StoragePort>,
 ) -> Result<UpdateRecord, UpdateError> {
     if !fs::metadata(new_binary)
@@ -74,8 +76,8 @@ pub async fn apply_update(
 
     let record = UpdateRecord {
         from_version: current_version.clone(),
-        to_version: new_sha.to_string().chars().take(7).collect::<String>(), // placeholder
-        channel: "stable".into(),
+        to_version: target_version.to_string(),
+        channel: channel.to_string(),
         sha256: new_sha.to_string(),
         applied_at: Utc::now().to_rfc3339(),
         backup_path: backup_path.to_string_lossy().to_string(),

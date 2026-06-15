@@ -13,7 +13,15 @@ use sovereign_storage_sqlite::SqliteState;
 /// Default data-dir path. Linux: `~/.local/share/sovereign/`,
 /// macOS: `~/Library/Application Support/sovereign/`,
 /// Windows: `%APPDATA%\sovereign\`.
+///
+/// The `SOVEREIGN_DATA_DIR` env var overrides the platform default;
+/// the hardcoded path is preserved for V0 back-compat. Operators on
+/// read-only filesystems, air-gapped networks, or container installs
+/// can point the binary at a writable mount without rebuilding.
 pub fn default_data_dir() -> std::path::PathBuf {
+    if let Some(dir) = std::env::var_os("SOVEREIGN_DATA_DIR") {
+        return std::path::PathBuf::from(dir);
+    }
     if let Some(dir) = dirs_data() {
         dir.join("sovereign")
     } else {

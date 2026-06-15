@@ -151,6 +151,8 @@ pub async fn run_apply(
         &dest,
         &current,
         &backup_dir,
+        &latest.version,
+        &latest.channel,
         storage,
     )
     .await

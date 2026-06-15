@@ -180,6 +180,7 @@ pub trait UpdatePort: Send + Sync {
         new_binary: &Path,
         current_binary: &Path,
         backup_dir: &Path,
+        release: &Release,
     ) -> Result<UpdateRecord, UpdateError>;
 
     /// Roll back to the previous binary per the given `UpdateRecord`.

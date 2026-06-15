@@ -83,10 +83,20 @@ async fn apply_then_rollback_round_trip() {
     let new = dir.path().join("sovereign-new");
     tokio::fs::write(&new, b"NEW-BINARY-BYTES").await.unwrap();
     let m = MockUpdate::new(Version(0, 1, 0));
-    let record = m.apply(&new, &current, &backup).await.unwrap();
+    let release = Release {
+        version: "0.1.1".into(),
+        channel: "stable".into(),
+        released_at: "2026-01-01T00:00:00Z".into(),
+        binaries: std::collections::BTreeMap::new(),
+    };
+    let record = m.apply(&new, &current, &backup, &release).await.unwrap();
     let bytes_after_apply = tokio::fs::read(&current).await.unwrap();
     assert_eq!(bytes_after_apply, b"NEW-BINARY-BYTES");
     assert!(tokio::fs::metadata(&record.backup_path).await.is_ok());
+    // Regression: the to_version field must be the real semver
+    // from the release, not a SHA-256 prefix placeholder.
+    assert_eq!(record.to_version, "0.1.1", "to_version must come from release.version, not sha256");
+    assert_eq!(record.channel, "stable", "channel must come from release.channel");
     // The mock's rollback reads the backup file we just wrote, so
     // it should restore the OLD bytes.
     m.rollback(&record).await.unwrap();

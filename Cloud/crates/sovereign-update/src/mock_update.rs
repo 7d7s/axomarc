@@ -86,6 +86,7 @@ impl UpdatePort for MockUpdate {
         new_binary: &Path,
         current_binary: &Path,
         backup_dir: &Path,
+        _release: &Release,
     ) -> Result<UpdateRecord, UpdateError> {
         // Mirror the real `apply` but without a storage impl. The
         // caller (the use case) writes the record; here we just do
