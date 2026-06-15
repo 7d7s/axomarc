@@ -9,10 +9,10 @@ use std::path::Path;
 use async_trait::async_trait;
 
 use crate::domain::{
-    App, AppId, AppUpdate, AuditEvent, AuditQuery, Backup, BackupId, BackupStatus, Deployment,
-    DeploymentEvent, DeploymentId, Domain, DomainId, NewApp, NewBackup, NewDeployment, NewDomain,
-    NewSecret, NewServer, NewUser, Secret, SecretId, SecretStatus, Server, ServerId, ServerStatus,
-    Timestamp, User, UserId, UserRole,
+    ApiToken, App, AppId, AppUpdate, AuditEvent, AuditQuery, Backup, BackupId, BackupStatus,
+    Deployment, DeploymentEvent, DeploymentId, Domain, DomainId, NewApp, NewBackup, NewDeployment,
+    NewDomain, NewSecret, NewServer, NewUser, Secret, SecretId, SecretStatus, Server, ServerId,
+    ServerStatus, Timestamp, User, UserId, UserRole,
 };
 use crate::error::AppError;
 
@@ -196,6 +196,63 @@ pub trait StoragePort: Send + Sync {
         actor: &str,
     ) -> Result<User, AppError>;
     async fn touch_user(&self, id: UserId, at: Timestamp) -> Result<(), AppError>;
+
+    /// Set the password hash for a user. `None` clears the hash (OIDC-only user).
+    async fn set_user_password_hash(
+        &self,
+        id: UserId,
+        hash: Option<&str>,
+    ) -> Result<(), AppError>;
+
+    /// Get the password hash for a user.
+    async fn get_user_password_hash(&self, id: UserId) -> Result<Option<String>, AppError>;
+
+    /// Set the display name for a user.
+    async fn set_user_display_name(
+        &self,
+        id: UserId,
+        display_name: &str,
+    ) -> Result<(), AppError>;
+
+    /// Soft-disable a user (sets `disabled_at`).
+    async fn disable_user(&self, id: UserId, at: Timestamp) -> Result<(), AppError>;
+
+    /// Soft-enable a user (clears `disabled_at`).
+    async fn enable_user(&self, id: UserId) -> Result<(), AppError>;
+
+    // --- API tokens -----------------------------------------------------------
+
+    /// Create a new API token record.
+    async fn create_api_token(
+        &self,
+        user_id: UserId,
+        name: &str,
+        hash: &str,
+        scopes: &str,
+        created_at: Timestamp,
+        expires_at: Option<Timestamp>,
+    ) -> Result<ApiToken, AppError>;
+
+    /// List all API tokens for a user.
+    async fn list_api_tokens(&self, user_id: UserId) -> Result<Vec<ApiToken>, AppError>;
+
+    /// Get an API token by user_id and name.
+    async fn get_api_token(
+        &self,
+        user_id: UserId,
+        name: &str,
+    ) -> Result<Option<ApiToken>, AppError>;
+
+    /// Delete an API token by user_id and name.
+    async fn delete_api_token(&self, user_id: UserId, name: &str) -> Result<(), AppError>;
+
+    // --- bootstrap state ------------------------------------------------------
+
+    /// Get the bootstrap admin user_id, if set.
+    async fn get_bootstrap_admin(&self) -> Result<Option<UserId>, AppError>;
+
+    /// Set the bootstrap admin user_id.
+    async fn set_bootstrap_admin(&self, user_id: UserId) -> Result<(), AppError>;
 
     // --- audit ---------------------------------------------------------------
 

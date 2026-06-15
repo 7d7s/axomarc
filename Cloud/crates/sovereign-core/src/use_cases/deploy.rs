@@ -16,6 +16,7 @@ use crate::domain::{
 };
 use crate::error::AppError;
 use crate::ports::{default_v0_host, HealthResult};
+use crate::rbac::{self, Action, Actor};
 use crate::state::AppState;
 
 /// Hard cap on the total health-probe budget. The use case returns
@@ -67,6 +68,11 @@ pub struct DeployResult {
 /// the error message. The use case still returns `Err` so the CLI
 /// can print the failure; the audit log records what happened.
 pub async fn start_deploy(state: &AppState, req: DeployRequest) -> Result<DeployResult, AppError> {
+    // RBAC: verify the actor is allowed to deploy.
+    let actor = Actor::from_str_loose(&req.actor);
+    rbac::check(&actor, Action::AppDeploy)
+        .map_err(|e| AppError::Unauthorized(e.to_string()))?;
+
     // 1. Resolve the image. The CLI guarantees `req.image_ref` is
     //    Some, but be defensive in case this is called from a future
     //    use case (e.g. auto-rollback in F5) that may fall back to

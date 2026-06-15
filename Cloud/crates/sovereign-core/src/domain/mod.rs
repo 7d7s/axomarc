@@ -19,7 +19,7 @@ pub mod service;
 pub mod timestamp;
 pub mod user;
 
-pub use app::{App, AppEnv, AppStatus, AppUpdate, NewApp};
+pub use app::{App, AppEnv, AppStatus, AppUpdate, DeployMode, NewApp, SourceConfig};
 pub use audit::{kind, AuditEvent, AuditKind, AuditQuery};
 pub use backup::{Backup, BackupStatus, NewBackup};
 pub use deployment::{Deployment, DeploymentEvent, DeploymentStatus, NewDeployment, Strategy};
@@ -32,4 +32,4 @@ pub use service::{
     ServiceRemoveSpec, ServiceStatus,
 };
 pub use timestamp::Timestamp;
-pub use user::{NewUser, User, UserRole};
+pub use user::{ApiToken, NewUser, User, UserRole};

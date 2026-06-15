@@ -58,6 +58,18 @@ pub struct NewUser {
     pub role: UserRole,
 }
 
+/// An API token record (never stores the plaintext token).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, sqlx::FromRow)]
+pub struct ApiToken {
+    pub id: Vec<u8>,         // BLOB (16 bytes)
+    pub user_id: Vec<u8>,    // BLOB (16 bytes)
+    pub name: String,
+    pub hash: String,        // sha256(token), never plaintext
+    pub scopes: String,      // CSV
+    pub created_at: Timestamp,
+    pub expires_at: Option<Timestamp>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

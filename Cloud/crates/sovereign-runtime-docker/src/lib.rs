@@ -1,15 +1,43 @@
-//! Docker runtime adapter — implements [`RuntimePort`] against the local
-//! Docker daemon (or a remote one via `DOCKER_HOST`).
+//! # sovereign-runtime-docker
 //!
-//! The runtime owns the bollard [`Docker`] handle. Bollard 0.18 uses
-//! `connect_with_*_defaults` constructors and the container config
-//! types are in `bollard::container`; the model types (`PortBinding`,
-//! `HostConfig`) are re-exported from `bollard::models`.
+//! **Docker runtime adapter for Sovereign.**
 //!
-//! The V0 health-probe convention is to bridge the container port to
-//! `127.0.0.1:0` (kernel-assigned), then HTTP-probe `127.0.0.1:<port>`.
-//! F6 (`sovereign-proxy-caddy`) replaces this with Caddy-backed health
-//! checks once the proxy is wired in.
+//! Implements [`RuntimePort`] against the local Docker daemon (or a remote
+//! one via `DOCKER_HOST`). Uses bollard for the Docker REST API.
+//!
+//! ## Features
+//!
+//! - **Image pull** — Pull images from any registry
+//! - **Container lifecycle** — Create, start, stop, remove
+//! - **Port mapping** — Bind to 127.0.0.1:$PORT
+//! - **Health checks** — HTTP probe against container IP
+//! - **Log streaming** — Stream stdout/stderr with follow mode
+//!
+//! ## Connection
+//!
+//! ```rust,no_run
+//! use sovereign_runtime_docker::DockerRuntime;
+//!
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! // Connect from DOCKER_HOST env or platform default
+//! let runtime = DockerRuntime::connect_from_env().await?;
+//!
+//! // Or connect to a specific endpoint
+//! use sovereign_core::ports::RuntimeEndpoint;
+//! let runtime = DockerRuntime::connect(RuntimeEndpoint::UnixSocket("/var/run/docker.sock".into())).await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ## Container Naming
+//!
+//! Containers are named `sovereign-{app_id}-{deployment_id}` to avoid
+//! collisions during concurrent deploys of the same app.
+//!
+//! ## Port Binding
+//!
+//! V0 binds container ports to `127.0.0.1:$PORT` (loopback only).
+//! The Caddy reverse proxy handles external traffic.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -75,6 +103,40 @@ impl DockerRuntime {
     /// Connect using `DOCKER_HOST` (or the platform default).
     pub async fn connect_from_env() -> Result<Self, AppError> {
         Self::connect(RuntimeEndpoint::from_env()).await
+    }
+
+    /// Access the inner bollard `Docker` handle for operations not
+    /// covered by `RuntimePort` (e.g. log streaming).
+    pub fn inner_handle(&self) -> &Docker {
+        &self.inner
+    }
+
+    /// Stream container logs. Returns a pinned stream of log lines.
+    /// Each line is a `(is_stderr, message_bytes)` tuple.
+    pub fn logs(
+        &self,
+        container_name: &str,
+        tail: &str,
+        follow: bool,
+    ) -> impl futures::Stream<Item = Result<(bool, Vec<u8>), AppError>> {
+        let opts = bollard::container::LogsOptions::<String> {
+            stdout: true,
+            stderr: true,
+            tail: tail.to_string(),
+            follow,
+            ..Default::default()
+        };
+        let stream = self.inner.logs(container_name, Some(opts));
+        stream.map(|chunk| {
+            chunk
+                .map(|output| match output {
+                    bollard::container::LogOutput::StdOut { message } => (false, message.to_vec()),
+                    bollard::container::LogOutput::StdErr { message } => (true, message.to_vec()),
+                    bollard::container::LogOutput::Console { message } => (false, message.to_vec()),
+                    _ => (false, Vec::new()),
+                })
+                .map_err(|e| AppError::Upstream(format!("log stream: {e}")))
+        })
     }
 }
 

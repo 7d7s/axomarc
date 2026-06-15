@@ -21,7 +21,7 @@ use tracing::instrument;
 
 use crate::cli::DomainCmd;
 use crate::commands::Dispatch;
-use crate::commands_deploy::{connect_proxy, default_db_path};
+use crate::connect;
 use crate::exit::AppExit;
 use crate::output::{Envelope, Output};
 
@@ -42,7 +42,7 @@ pub async fn run(cmd: &DomainCmd, out: &Output) -> Dispatch {
         );
     }
 
-    let db_path = default_db_path();
+    let db_path = connect::default_db_path();
     let storage = match SqliteState::open(&db_path).await {
         Ok(s) => Arc::new(s) as Arc<dyn StoragePort>,
         Err(e) => {
@@ -93,7 +93,7 @@ async fn run_add(
     // 1. Push the Caddy route. We do this BEFORE the storage write so
     //    a Caddy failure does not leave a half-registered domain.
     //    The route targets 127.0.0.1:8080 (the V0 pinned host port).
-    let proxy = connect_proxy().await;
+    let proxy = connect::connect_proxy().await;
     let Some(proxy) = proxy else {
         return err(
             out,

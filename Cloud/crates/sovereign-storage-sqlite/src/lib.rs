@@ -1,15 +1,42 @@
-// SQLite storage adapter.
-// Implements `StoragePort` against a single SQLite file. See
-// `docs/architecture.md` §2 and `docs/phase-00-mvp.md` F3 for the
-// full spec.
+// # sovereign-storage-sqlite
 //
-// Quick reference:
-//   - 7 core tables (migrations/0001_init.sql)
-//   - 1 append-only audit table + 2 triggers (migrations/0002_audit.sql)
-//   - WAL journal mode, synchronous=NORMAL (safe with WAL)
-//   - Forward-only migrations via `sqlx::migrate!()`
-//   - Single writer, multiple readers (sqlx pool with max_connections=1
-//     in the WAL-friendly config; V1 may revisit)
+// **SQLite storage adapter for Sovereign.**
+//
+// Implements `StoragePort` against a single SQLite file. This is the
+// default (and only V0) storage backend.
+//
+// ## Features
+//
+// - **7 core tables** — app, deployment, audit_event, secret, backup, domain, server
+// - **Append-only audit** — UPDATE/DELETE rejected by SQLite triggers
+// - **WAL mode** — concurrent reads during writes
+// - **Forward-only migrations** — `sqlx::migrate!()` at startup
+// - **Optimistic concurrency** — version column on mutable rows
+//
+// ## Quick Reference
+//
+// ```rust,no_run
+// use sovereign_storage_sqlite::SqliteState;
+//
+// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+// let state = SqliteState::open(std::path::Path::new("/var/lib/sovereign/sovereign.db")).await?;
+// # Ok(())
+// # }
+// ```
+//
+// ## Migrations
+//
+// | Migration | Description |
+// |-----------|-------------|
+// | 0001 | Core tables (app, deployment, audit_event, secret, backup, domain, server) |
+// | 0002 | Audit triggers (reject_audit_mutation) |
+// | 0003 | Service table |
+// | 0004 | Auto-deploy fields |
+// | 0005 | Partial unique index |
+// | 0006 | Deploy mode |
+// | 0007 | Source config |
+// | 0008 | Native deploy mode |
+// | 0009 | Auth credentials (password_hash, api_token, bootstrap_state) |
 
 #![deny(unsafe_code)]
 #![allow(missing_docs)]
@@ -23,10 +50,10 @@ use sqlx::{Pool, Row, Sqlite};
 use tracing::{info, instrument};
 
 use sovereign_core::domain::{
-    App, AppId, AppUpdate, AuditEvent, AuditQuery, Backup, BackupId, BackupStatus, Deployment,
-    DeploymentEvent, DeploymentId, Domain, DomainId, NewApp, NewBackup, NewDeployment, NewDomain,
-    NewSecret, NewServer, NewUser, Secret, SecretId, SecretStatus, Server, ServerId, ServerStatus,
-    Timestamp, User, UserId, UserRole,
+    ApiToken, App, AppId, AppUpdate, AuditEvent, AuditQuery, Backup, BackupId, BackupStatus,
+    Deployment, DeploymentEvent, DeploymentId, Domain, DomainId, NewApp, NewBackup, NewDeployment,
+    NewDomain, NewSecret, NewServer, NewUser, Secret, SecretId, SecretStatus, Server, ServerId,
+    ServerStatus, Timestamp, User, UserId, UserRole,
 };
 use sovereign_core::error::AppError;
 use sovereign_core::ports::StoragePort;
@@ -431,6 +458,70 @@ impl StoragePort for SqliteState {
         user::touch(&self.pool, id, at).await
     }
 
+    async fn set_user_password_hash(
+        &self,
+        id: UserId,
+        hash: Option<&str>,
+    ) -> Result<(), AppError> {
+        user::set_password_hash(&self.pool, id, hash).await
+    }
+
+    async fn get_user_password_hash(&self, id: UserId) -> Result<Option<String>, AppError> {
+        user::get_password_hash(&self.pool, id).await
+    }
+
+    async fn set_user_display_name(
+        &self,
+        id: UserId,
+        display_name: &str,
+    ) -> Result<(), AppError> {
+        user::set_display_name(&self.pool, id, display_name).await
+    }
+
+    async fn disable_user(&self, id: UserId, at: Timestamp) -> Result<(), AppError> {
+        user::disable(&self.pool, id, at).await
+    }
+
+    async fn enable_user(&self, id: UserId) -> Result<(), AppError> {
+        user::enable(&self.pool, id).await
+    }
+
+    async fn create_api_token(
+        &self,
+        user_id: UserId,
+        name: &str,
+        hash: &str,
+        scopes: &str,
+        created_at: Timestamp,
+        expires_at: Option<Timestamp>,
+    ) -> Result<ApiToken, AppError> {
+        user::create_api_token(&self.pool, user_id, name, hash, scopes, created_at, expires_at).await
+    }
+
+    async fn list_api_tokens(&self, user_id: UserId) -> Result<Vec<ApiToken>, AppError> {
+        user::list_api_tokens(&self.pool, user_id).await
+    }
+
+    async fn get_api_token(
+        &self,
+        user_id: UserId,
+        name: &str,
+    ) -> Result<Option<ApiToken>, AppError> {
+        user::get_api_token(&self.pool, user_id, name).await
+    }
+
+    async fn delete_api_token(&self, user_id: UserId, name: &str) -> Result<(), AppError> {
+        user::delete_api_token(&self.pool, user_id, name).await
+    }
+
+    async fn get_bootstrap_admin(&self) -> Result<Option<UserId>, AppError> {
+        user::get_bootstrap_admin(&self.pool).await
+    }
+
+    async fn set_bootstrap_admin(&self, user_id: UserId) -> Result<(), AppError> {
+        user::set_bootstrap_admin(&self.pool, user_id).await
+    }
+
     async fn append_audit(&self, event: AuditEvent) -> Result<(), AppError> {
         audit::append(&self.pool, event).await
     }
@@ -532,3 +623,208 @@ impl StoragePort for SqliteState {
 
 /// Crate version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sovereign_core::domain::{NewUser, Timestamp, UserRole};
+    use sovereign_core::ports::StoragePort;
+
+    static TEST_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    async fn test_store() -> SqliteState {
+        let n = TEST_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let pid = std::process::id();
+        let name = format!("auth-test-{pid}-{n}");
+        SqliteState::open_in_memory_named(&name).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn bootstrap_first_user_becomes_owner() {
+        let store = test_store().await;
+
+        // No users yet.
+        let users = store.list_users().await.unwrap();
+        assert!(users.is_empty());
+
+        // No bootstrap admin yet.
+        assert!(store.get_bootstrap_admin().await.unwrap().is_none());
+
+        // Create first user with Owner role (CLI promotes first user to Owner).
+        let user = store
+            .create_user(NewUser {
+                email: "admin@example.com".into(),
+                role: UserRole::Owner,
+            })
+            .await
+            .unwrap();
+        assert_eq!(user.role, UserRole::Owner);
+
+        // Set bootstrap state.
+        store.set_bootstrap_admin(user.id).await.unwrap();
+
+        // Bootstrap admin is set.
+        let bootstrap_id = store.get_bootstrap_admin().await.unwrap();
+        assert!(bootstrap_id.is_some());
+        assert_eq!(bootstrap_id.unwrap(), user.id);
+    }
+
+    #[tokio::test]
+    async fn second_user_gets_specified_role() {
+        let store = test_store().await;
+
+        // First user = Owner (CLI promotes).
+        let admin = store
+            .create_user(NewUser {
+                email: "admin@example.com".into(),
+                role: UserRole::Owner,
+            })
+            .await
+            .unwrap();
+        assert_eq!(admin.role, UserRole::Owner);
+
+        // Second user = Developer (as requested).
+        let dev = store
+            .create_user(NewUser {
+                email: "dev@example.com".into(),
+                role: UserRole::Developer,
+            })
+            .await
+            .unwrap();
+        assert_eq!(dev.role, UserRole::Developer);
+
+        // Third user = Readonly.
+        let viewer = store
+            .create_user(NewUser {
+                email: "viewer@example.com".into(),
+                role: UserRole::Readonly,
+            })
+            .await
+            .unwrap();
+        assert_eq!(viewer.role, UserRole::Readonly);
+    }
+
+    #[tokio::test]
+    async fn password_hash_roundtrip() {
+        let store = test_store().await;
+
+        let user = store
+            .create_user(NewUser {
+                email: "alice@example.com".into(),
+                role: UserRole::Admin,
+            })
+            .await
+            .unwrap();
+
+        // No password yet.
+        assert!(store.get_user_password_hash(user.id).await.unwrap().is_none());
+
+        // Set password hash.
+        let hash = sovereign_auth::password::hash_password("hunter2").unwrap();
+        store.set_user_password_hash(user.id, Some(&hash)).await.unwrap();
+
+        // Verify it's stored.
+        let stored = store.get_user_password_hash(user.id).await.unwrap();
+        assert!(stored.is_some());
+        assert!(sovereign_auth::password::verify_password("hunter2", stored.as_ref().unwrap()).unwrap());
+        assert!(!sovereign_auth::password::verify_password("wrong", stored.as_ref().unwrap()).unwrap());
+
+        // Clear password.
+        store.set_user_password_hash(user.id, None).await.unwrap();
+        assert!(store.get_user_password_hash(user.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn user_disable_enable() {
+        let store = test_store().await;
+
+        let user = store
+            .create_user(NewUser {
+                email: "bob@example.com".into(),
+                role: UserRole::Developer,
+            })
+            .await
+            .unwrap();
+
+        // Disable.
+        store.disable_user(user.id, Timestamp::now()).await.unwrap();
+
+        // Enable.
+        store.enable_user(user.id).await.unwrap();
+
+        // Disable again.
+        store.disable_user(user.id, Timestamp::now()).await.unwrap();
+
+        // Double-disable fails.
+        let result = store.disable_user(user.id, Timestamp::now()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn api_token_crud() {
+        let store = test_store().await;
+
+        let user = store
+            .create_user(NewUser {
+                email: "ci@example.com".into(),
+                role: UserRole::Admin,
+            })
+            .await
+            .unwrap();
+
+        let now = Timestamp::now();
+
+        // Create token.
+        let tok = store
+            .create_api_token(user.id, "deploy-key", "abc123hash", "app.deploy,secret.read", now, None)
+            .await
+            .unwrap();
+        assert_eq!(tok.name, "deploy-key");
+        assert_eq!(tok.scopes, "app.deploy,secret.read");
+
+        // List tokens.
+        let tokens = store.list_api_tokens(user.id).await.unwrap();
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].name, "deploy-key");
+
+        // Get by name.
+        let found = store.get_api_token(user.id, "deploy-key").await.unwrap();
+        assert!(found.is_some());
+
+        // Duplicate name fails.
+        let dup = store
+            .create_api_token(user.id, "deploy-key", "otherhash", "app.deploy", now, None)
+            .await;
+        assert!(dup.is_err());
+
+        // Delete.
+        store.delete_api_token(user.id, "deploy-key").await.unwrap();
+        let tokens = store.list_api_tokens(user.id).await.unwrap();
+        assert!(tokens.is_empty());
+
+        // Delete nonexistent fails.
+        let result = store.delete_api_token(user.id, "nonexistent").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn duplicate_email_rejected() {
+        let store = test_store().await;
+
+        store
+            .create_user(NewUser {
+                email: "dup@example.com".into(),
+                role: UserRole::Admin,
+            })
+            .await
+            .unwrap();
+
+        let result = store
+            .create_user(NewUser {
+                email: "dup@example.com".into(),
+                role: UserRole::Readonly,
+            })
+            .await;
+        assert!(result.is_err());
+    }
+}

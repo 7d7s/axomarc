@@ -11,7 +11,7 @@
 // `https://releases.sovereignruntime.dev`; the operator can override it
 // with `--manifest` or `SOVEREIGN_UPDATE_MANIFEST`. The storage backing
 // is the same `SqliteState` the other commands use; the path is the
-// `default_db_path()` shared with `commands_deploy`.
+// `default_db_path()` shared with the connect module.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,7 +25,7 @@ use sovereign_update::{HttpUpdate, UpdatePort};
 use tracing::warn;
 
 use crate::commands::Dispatch;
-use crate::commands_deploy::{default_backup_dir, default_db_path};
+use crate::connect;
 use crate::exit::AppExit;
 use crate::output::{Envelope, Output};
 
@@ -138,7 +138,7 @@ pub async fn run_apply(
         Ok(s) => s,
         Err(e) => return err(out, &e),
     };
-    let backup_dir: PathBuf = default_backup_dir();
+    let backup_dir: PathBuf = connect::default_backup_dir();
     if tokio::fs::metadata(&backup_dir).await.is_err() {
         if let Err(e) = tokio::fs::create_dir_all(&backup_dir).await {
             return err(
@@ -257,7 +257,7 @@ pub async fn run_history(out: &Output, limit: u32) -> Dispatch {
 /// Open the storage impl at `default_db_path()`. Returns a `String` error
 /// so the caller can `format!` it into the user-facing message.
 async fn build_storage() -> Result<Arc<dyn StoragePort>, String> {
-    let db_path = default_db_path();
+    let db_path = connect::default_db_path();
     SqliteState::open(&db_path)
         .await
         .map(|s| Arc::new(s) as Arc<dyn StoragePort>)

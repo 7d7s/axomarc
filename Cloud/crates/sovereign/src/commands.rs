@@ -83,6 +83,8 @@ pub async fn dispatch(cli: &Cli, out: &Output) -> Dispatch {
             strategy,
             wait,
             no_lock: _,
+            native_binary: _,
+            native_exec_start: _,
         } => {
             // F4: actually call the use case. Falls back to a stub on
             // --dry-run (the spec says subcommands should "print what
@@ -113,13 +115,25 @@ pub async fn dispatch(cli: &Cli, out: &Output) -> Dispatch {
                 return crate::commands_rollback::run(cmd, out).await;
             }
         }
-        Cmd::Logs { app, tail, follow } => stub(
-            cli,
-            out,
-            "logs",
-            &format!("app={} tail={} follow={}", app, tail, follow),
-        ),
-        Cmd::Status { app } => stub(cli, out, "status", &format!("app={:?}", app)),
+        Cmd::Logs { app, tail, follow } => {
+            if cli.dry_run {
+                stub(
+                    cli,
+                    out,
+                    "logs",
+                    &format!("app={} tail={} follow={}", app, tail, follow),
+                )
+            } else {
+                return crate::commands_logs::run(cmd, out).await;
+            }
+        }
+        Cmd::Status { app } => {
+            if cli.dry_run {
+                stub(cli, out, "status", &format!("app={:?}", app))
+            } else {
+                return crate::commands_status::run(cmd, out).await;
+            }
+        }
         Cmd::Domain { cmd } => match cmd {
             DomainCmd::Add { hostname, app } => {
                 if cli.dry_run {
@@ -328,6 +342,38 @@ pub async fn dispatch(cli: &Cli, out: &Output) -> Dispatch {
         }
         Cmd::Service { cmd } => {
             return crate::commands_service::run(cmd, out).await;
+        }
+        Cmd::Daemon { .. } => {
+            return crate::commands_daemon::run(cmd, out).await;
+        }
+        Cmd::Chatops { cmd } => {
+            return crate::commands_chatops::run(cmd, out).await;
+        }
+        Cmd::User { cmd } => {
+            let store = crate::commands_daemon::build_store().await;
+            let store = match store {
+                Some(s) => s,
+                None => return Dispatch::Err(AppExit::Generic),
+            };
+            let token = cli.token.as_deref();
+            if let Err(e) = crate::commands_user::dispatch(cmd.clone(), store.as_ref(), token, out).await {
+                let _ = out.err(&e.to_string());
+                return Dispatch::Err(AppExit::Generic);
+            }
+            Dispatch::Ok
+        }
+        Cmd::Token { cmd } => {
+            let store = crate::commands_daemon::build_store().await;
+            let store = match store {
+                Some(s) => s,
+                None => return Dispatch::Err(AppExit::Generic),
+            };
+            let token = cli.token.as_deref();
+            if let Err(e) = crate::commands_token::dispatch(cmd.clone(), store.as_ref(), token, out).await {
+                let _ = out.err(&e.to_string());
+                return Dispatch::Err(AppExit::Generic);
+            }
+            Dispatch::Ok
         }
         Cmd::Man { dir } => {
             use clap::CommandFactory;

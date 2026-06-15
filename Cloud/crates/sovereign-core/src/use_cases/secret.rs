@@ -15,6 +15,7 @@
 use crate::domain::{AppId, NewSecret, Secret, SecretStatus};
 use crate::error::AppError;
 use crate::ports::SecretsPort;
+use crate::rbac::{self, Action, Actor};
 use crate::state::AppState;
 
 /// Set (or overwrite) a secret. The value is encrypted with the
@@ -29,6 +30,11 @@ pub async fn set_secret(
     value: Vec<u8>,
     actor: &str,
 ) -> Result<Secret, AppError> {
+    // RBAC: verify the actor is allowed to set secrets.
+    let actor_obj = Actor::from_str_loose(actor);
+    rbac::check(&actor_obj, Action::SecretSet)
+        .map_err(|e| AppError::Unauthorized(e.to_string()))?;
+
     validate_key(&key)?;
     let secrets = require_secrets(state)?;
 
@@ -91,6 +97,11 @@ pub async fn delete_secret(
     key: String,
     actor: &str,
 ) -> Result<(), AppError> {
+    // RBAC: verify the actor is allowed to modify secrets.
+    let actor_obj = Actor::from_str_loose(actor);
+    rbac::check(&actor_obj, Action::SecretSet)
+        .map_err(|e| AppError::Unauthorized(e.to_string()))?;
+
     let existing = state.storage.list_secrets(app_id).await?;
     let row = existing
         .into_iter()

@@ -11,7 +11,9 @@ use sovereign_core::error::AppError;
 use crate::row;
 
 const APP_COLUMNS: &str = "id, name, owner, env, git_repo, image_ref, config_yaml, \
-                            health_path, status, created_at, updated_at, version";
+                            health_path, status, created_at, updated_at, version, \
+                            deploy_mode, source_repo, source_branch, auto_deploy, \
+                            auto_deploy_window, max_auto_deploys_per_hour";
 
 pub(crate) async fn create(pool: &Pool<Sqlite>, new: NewApp, actor: &str) -> Result<App, AppError> {
     if new.name.trim().is_empty() {
@@ -26,7 +28,7 @@ pub(crate) async fn create(pool: &Pool<Sqlite>, new: NewApp, actor: &str) -> Res
     let mut tx = pool.begin().await?;
 
     let result = sqlx::query(&format!(
-        "INSERT INTO app ({APP_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO app ({APP_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     ))
     .bind(id.as_uuid())
     .bind(&new.name)
@@ -40,6 +42,12 @@ pub(crate) async fn create(pool: &Pool<Sqlite>, new: NewApp, actor: &str) -> Res
     .bind(now.as_secs())
     .bind(now.as_secs())
     .bind(1_i64)
+    .bind(new.deploy_mode.as_str())
+    .bind(new.source_repo.as_deref())
+    .bind(new.source_branch.as_deref())
+    .bind(new.auto_deploy as i64)
+    .bind(new.auto_deploy_window.as_deref())
+    .bind(new.max_auto_deploys_per_hour as i64)
     .execute(&mut *tx)
     .await;
 
@@ -106,6 +114,24 @@ pub(crate) async fn update(
     if update.status.is_some() {
         sets.push("status = ?");
     }
+    if update.deploy_mode.is_some() {
+        sets.push("deploy_mode = ?");
+    }
+    if update.source_repo.is_some() {
+        sets.push("source_repo = ?");
+    }
+    if update.source_branch.is_some() {
+        sets.push("source_branch = ?");
+    }
+    if update.auto_deploy.is_some() {
+        sets.push("auto_deploy = ?");
+    }
+    if update.auto_deploy_window.is_some() {
+        sets.push("auto_deploy_window = ?");
+    }
+    if update.max_auto_deploys_per_hour.is_some() {
+        sets.push("max_auto_deploys_per_hour = ?");
+    }
     sets.push("updated_at = ?");
     sets.push("version = version + 1");
 
@@ -135,6 +161,24 @@ pub(crate) async fn update(
     }
     if let Some(v) = update.status {
         q = q.bind(v.to_string());
+    }
+    if let Some(v) = &update.deploy_mode {
+        q = q.bind(v.as_str());
+    }
+    if let Some(v) = &update.source_repo {
+        q = q.bind(v.as_deref());
+    }
+    if let Some(v) = &update.source_branch {
+        q = q.bind(v.as_deref());
+    }
+    if let Some(v) = &update.auto_deploy {
+        q = q.bind(*v as i64);
+    }
+    if let Some(v) = &update.auto_deploy_window {
+        q = q.bind(v.as_deref());
+    }
+    if let Some(v) = &update.max_auto_deploys_per_hour {
+        q = q.bind(*v as i64);
     }
     q = q.bind(now.as_secs());
     q = q.bind(id.as_uuid());

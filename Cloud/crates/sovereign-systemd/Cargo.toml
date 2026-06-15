@@ -17,8 +17,10 @@ thiserror.workspace = true
 tokio.workspace = true
 sha2 = "0.10"
 chrono.workspace = true
+tempfile = "3"
 
 sovereign-core = { path = "../sovereign-core" }
+sovereign-pack = { path = "../sovereign-pack" }
 
 [dev-dependencies]
 tokio = { workspace = true }

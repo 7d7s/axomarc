@@ -42,3 +42,13 @@ master_key_path = "/var/lib/sovereign/master.key"
 backend = "sqlite"
 offsite = "s3"
 retention_days = 7
+
+# Authentication and RBAC (S3).
+[auth]
+# The first user created becomes admin. Set this to auto-bootstrap.
+bootstrap_admin_email = ""
+# OIDC providers (V2 — currently ignored).
+# oidc_google_client_id  = ""
+# oidc_google_secret     = ""
+# oidc_github_client_id  = ""
+# oidc_github_secret     = ""

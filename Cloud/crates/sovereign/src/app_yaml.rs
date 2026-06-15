@@ -85,6 +85,50 @@ pub struct AppConfig {
     /// default ENTRYPOINT is used.
     #[serde(default)]
     pub run_cmd: Option<String>,
+
+    /// Source configuration for git-based deploy. When present,
+    /// enables deploy modes: pull (CI builds image), build
+    /// (VPS clones + builds), pack (CI ships .sov archive).
+    #[serde(default)]
+    pub source: Option<SourceYaml>,
+}
+
+/// Source configuration block in `app.yaml`. Controls how the app's
+/// code is fetched and deployed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SourceYaml {
+    /// Git repository URL (SSH or HTTPS).
+    pub repo: Option<String>,
+
+    /// Branch or tag to deploy. Defaults to "main".
+    #[serde(default = "default_branch")]
+    pub branch: String,
+
+    /// Deploy mode: "pull" (CI builds image), "build" (VPS clones + builds),
+    /// "pack" (CI ships .sov archive). Defaults to "pull".
+    #[serde(default = "default_deploy_mode")]
+    pub deploy_mode: String,
+
+    /// Key in the secrets store for the webhook HMAC secret.
+    pub webhook_secret_ref: Option<String>,
+
+    /// Whether to auto-deploy on webhook push.
+    #[serde(default)]
+    pub auto_deploy: bool,
+
+    /// Time window for auto-deploys (e.g. "09:00-17:00 UTC").
+    pub auto_deploy_window: Option<String>,
+
+    /// Max auto-deploys per hour. 0 = no limit.
+    #[serde(default)]
+    pub max_auto_deploys_per_hour: u32,
+}
+
+fn default_branch() -> String {
+    "main".into()
+}
+fn default_deploy_mode() -> String {
+    "pull".into()
 }
 
 fn default_strategy() -> String {
@@ -106,6 +150,7 @@ impl Default for AppConfig {
             image: None,
             build_cmd: None,
             run_cmd: None,
+            source: None,
         }
     }
 }
@@ -203,6 +248,27 @@ pub fn validate(yaml: &str) -> Result<AppConfig, Vec<String>> {
             ));
         }
     }
+    // Validate source block if present
+    if let Some(ref source) = cfg.source {
+        let valid_modes = ["pull", "build", "pack", "native"];
+        if !valid_modes.contains(&source.deploy_mode.as_str()) {
+            errors.push(format!(
+                "`source.deploy_mode` must be one of {:?}; got `{}`",
+                valid_modes, source.deploy_mode
+            ));
+        }
+        if source.repo.is_some() && source.deploy_mode != "pull" {
+            // For build/pack modes, repo is recommended but not required
+            // (pack can get the .sov from URL)
+        }
+        if source.auto_deploy {
+            if let Some(ref window) = source.auto_deploy_window {
+                if let Err(e) = parse_deploy_window(window) {
+                    errors.push(format!("`source.auto_deploy_window`: {e}"));
+                }
+            }
+        }
+    }
     if errors.is_empty() {
         Ok(cfg)
     } else {
@@ -258,6 +324,58 @@ fn parse_grace_period(s: &str) -> Result<(), String> {
         "s" | "m" | "h" => Ok(()),
         other => Err(format!("unknown unit `{other}`; expected `s`, `m`, or `h`")),
     }
+}
+
+/// Parse a deploy window string of the form `"HH:MM-HH:MM TZ"`.
+/// Examples: `"09:00-17:00 UTC"`, `"08:30-18:30 America/New_York"`.
+fn parse_deploy_window(s: &str) -> Result<(), String> {
+    // Split on space to get time range and timezone
+    let parts: Vec<&str> = s.splitn(2, ' ').collect();
+    if parts.len() != 2 {
+        return Err("must be `HH:MM-HH:MM TZ` (e.g. `09:00-17:00 UTC`)".into());
+    }
+    let time_range = parts[0];
+    let tz = parts[1];
+
+    // Parse time range
+    let range_parts: Vec<&str> = time_range.splitn(2, '-').collect();
+    if range_parts.len() != 2 {
+        return Err("time range must be `HH:MM-HH:MM`".into());
+    }
+    let start = parse_time(range_parts[0])?;
+    let end = parse_time(range_parts[1])?;
+
+    if start >= end {
+        return Err("start time must be before end time".into());
+    }
+
+    // Validate timezone (basic check)
+    if tz.is_empty() {
+        return Err("timezone must not be empty".into());
+    }
+
+    Ok(())
+}
+
+/// Parse a time string of the form `"HH:MM"`.
+fn parse_time(s: &str) -> Result<u32, String> {
+    let parts: Vec<&str> = s.splitn(2, ':').collect();
+    if parts.len() != 2 {
+        return Err(format!("time must be `HH:MM`; got `{s}`"));
+    }
+    let hour: u32 = parts[0]
+        .parse()
+        .map_err(|_| format!("invalid hour in `{s}`"))?;
+    let min: u32 = parts[1]
+        .parse()
+        .map_err(|_| format!("invalid minute in `{s}`"))?;
+    if hour > 23 {
+        return Err(format!("hour must be 0-23; got {hour}"));
+    }
+    if min > 59 {
+        return Err(format!("minute must be 0-59; got {min}"));
+    }
+    Ok(hour * 60 + min)
 }
 
 /// True iff `s` looks like a Docker image reference:

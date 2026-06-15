@@ -1,0 +1,37 @@
+# Build artifacts
+/target/
+*.pdb
+
+# Backup files
+*.bak
+*~
+*.swp
+Cargo.lock.bak
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config
+.env
+.env.local
+*.local.toml
+
+# CI
+/coverage/
+/lcov.info
+/tarpaulin-report.html
+
+# Secrets (never commit)
+/etc/sovereign/
+/var/lib/sovereign/
+
+# Distribution
+/dist/
+*.tar.xz
+*.tar.gz

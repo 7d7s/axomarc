@@ -143,6 +143,7 @@ fn kind_from_str(s: &str) -> AuditKind {
         "domain" => AuditKind::Domain,
         "server" => AuditKind::Server,
         "user" => AuditKind::User,
+        "webhook" => AuditKind::Webhook,
         _ => AuditKind::System,
     }
 }

@@ -1,0 +1,24 @@
+[package]
+name = "sovereign-chatops"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Telegram chatops adapter: long-polling bot, command dispatch, 6-digit binding."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+async-trait = "0.1"
+rand = { workspace = true }
+thiserror = "2"
+chrono = { workspace = true }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite"] }
+
+sovereign-core = { path = "../sovereign-core" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

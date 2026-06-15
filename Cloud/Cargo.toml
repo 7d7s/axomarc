@@ -14,6 +14,10 @@ members = [
     "crates/sovereign-doctor",
     "crates/sovereign-update",
     "crates/sovereign-systemd",
+    "crates/sovereign-pack",
+    "crates/sovereign-git",
+    "crates/sovereign-chatops",
+    "crates/sovereign-auth",
 ]
 
 [workspace.package]
@@ -68,6 +72,11 @@ bollard = { version = "0.18", default-features = false, features = ["pipe", "htt
 mimalloc = { version = "0.1", default-features = false }
 jemallocator = "0.5"
 nix = { version = "0.29", features = ["fs", "process", "signal", "term"] }
+tar = "0.4"
+zstd = { version = "0.13", default-features = false, features = [] }
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
 
 [profile.release]
 opt-level = "z"

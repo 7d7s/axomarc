@@ -28,7 +28,7 @@ use tracing::instrument;
 
 use crate::cli::SecretCmd;
 use crate::commands::Dispatch;
-use crate::commands_deploy::{connect_secrets, default_db_path};
+use crate::connect;
 use crate::exit::AppExit;
 use crate::output::{Envelope, Output};
 
@@ -53,7 +53,7 @@ pub async fn run(cmd: &SecretCmd, out: &Output) -> Dispatch {
     // Open storage. The secrets port is opened later (only for the
     // set / rotate paths that actually need the master key), so
     // `list` works even if the master key is not yet provisioned.
-    let db_path = default_db_path();
+    let db_path = connect::default_db_path();
     let storage = match SqliteState::open(&db_path).await {
         Ok(s) => Arc::new(s) as Arc<dyn StoragePort>,
         Err(e) => {
@@ -93,7 +93,7 @@ pub async fn run(cmd: &SecretCmd, out: &Output) -> Dispatch {
             // the master key. `connect_secrets` will bootstrap a
             // master.key on disk if the operator has never run
             // `sovereign init` — first set is a no-config bootstrap.
-            let Some(secrets) = connect_secrets() else {
+            let Some(secrets) = connect::connect_secrets() else {
                 return err(
                     out,
                     AppExit::Upstream,

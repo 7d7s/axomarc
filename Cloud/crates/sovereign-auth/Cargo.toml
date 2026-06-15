@@ -1,0 +1,22 @@
+[package]
+name = "sovereign-auth"
+version = "0.6.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Authentication, RBAC, and token management for Sovereign."
+
+[dependencies]
+argon2 = { workspace = true }
+rand = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+base64 = "0.22"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = "2"
+uuid = { workspace = true }
+
+sovereign-core = { path = "../sovereign-core" }
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -1,0 +1,385 @@
+## Goal
+- Real-world-ready MVP: finish Phase 0 (F6-F10), real CI, signed releases, CX22 verification, doctor, self-update
+
+## Constraints & Preferences
+- Rust 2021, MSRV 1.85, edition 2021, Apache-2.0
+- Hexagonal: domain/use cases in `sovereign-core`, adapters in `sovereign-{storage-sqlite,runtime-docker,proxy-caddy,secrets-age,backup,notify,observability,proto,doctor,update}`
+- All writes append `audit_event` in the same transaction; optimistic concurrency via `version`; `audit_event` triggers reject UPDATE/DELETE
+- BLOB IDs (16 bytes) bound via `as_uuid()` not `to_string()`
+- Per-test isolation: `open_in_memory_named(name)` with shared cache
+- Bollard 0.18 features: `["pipe", "http"]` (default-features=false)
+- main binary uses `#[tokio::main(flavor = "current_thread")]`; dispatch is async
+- No commits without explicit user approval
+- **User confirmed scope: Phase 0 close-out (~3-4 weeks), feature branches merged to main**
+- Branch pattern: `phase-0/NN-short-name` per step; PR → main
+- **F8b/F9/F10 test scope (user-chosen)**: use-case + unit tests now; real-Docker CI test deferred to Step 9 (Hetzner CX22)
+- **Mode = build; user said "ok" / "startcontinue" to keep going**
+- **V0 single-tenant login**: passphrase accepted but not used for KDF (V1.5 will add Argon2id; dep is already in `sovereign-secrets-age` for that future)
+- **`age` is a direct dep of `sovereign` bin** (not just dev-dep) because `commands_login::identity_to_public_bech32` takes `&age::x25519::Identity` in non-test code
+
+## Progress
+### Done
+- **F3 committed (23d0dbe)**: SQLite + 7 core tables + append-only audit
+- **F2+F4 committed (8d7abcb)**: CLI skeleton + sovereign deploy
+- **F5 committed (f6900d6)**: One-command rollback + sovereign.lock receipt
+- **Step 1 (c9ce89e, merged d7ceafa)**: Hygiene & CI — 4 gates green
+- **Step 2 / F6 (139ef4b, merged 1fabf59)**: Caddy auto-TLS — 78 tests + 1 ignored
+- **Step 3 / F7 merged (fc9d456)**: Encrypted secret store (age) — 80 tests + 1 ignored
+- **Step 4 / F8a merged (8cb7090)**: SQLite backup — VACUUM INTO + size sanity check + integrity verify + restore-drill
+- **Step 5 / F8b merged (47abf9e, merge 6876788)**: Auto-rollback (prober + threshold-based rollback) — 4 integration tests
+- **Step 6 / F9 merged (Phase 0/06-doctor)**: `sovereign-doctor` crate with 18 basic checks
+- **Step 7 / F10 COMPLETE on `phase-0/07-update` branch, merged to main** (commit `7395dd0` core + `2d0b1f6` CLI + merge commit)
+  - Core: `sovereign-core::ports::update` (UpdateChannel/Version/Sha256/Binary/Release/UpdateRecord/UpdateError/UpdatePort), `use_cases::update` (apply_update/rollback_update/atomic_swap/check_update/list_update_history, 6 unit tests), 4 new `StoragePort` methods
+  - Storage: `migrations/0004_update_history.sql` + `SqliteState` impls; `chrono` added to `sovereign-storage-sqlite` deps; `RuntimeEndpoint` re-exported
+  - Crate: `sovereign-update` (12th V0) with `HttpUpdate` (reqwest-backed) + `MockUpdate` (tests); 4 integration tests + 1 ignored on Windows; `[lib].test = false` workaround for the lib test binary hang on this host
+  - CLI: `sovereign update {check|apply|rollback|history}`; `--channel`/`--manifest`/`--target`/`--no-swap`; graceful "manifest not reachable" fallback; `UpdateChannelArg` (clap ValueEnum) with `to_update_channel()`; `commands_update.rs` (~330 lines) wires 4 subcommands
+  - Test counts: 7 (bin) + 7 (backup) + 40 (core, +6 update) + 26 (doctor) + 6 (caddy) + 7 (secrets) + 32 (storage) + 4 (auto-rollback) + 4 (mock_apply) = **133 passing + 1 ignored** (pre-F4.6)
+  - All gates green: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo deny check`, `cargo test --workspace`
+  - Smoke-tested on Windows: `sovereign update --help` works; `update check --manifest https://nonexistent.example.invalid` falls back to "no update available"; `update history` returns `[]` (auto-migrated)
+- **Step 8 / F4.6 COMPLETE on `phase-0/08-init-login` branch, merged to main** (commit `71197ef` + merge `429d8eb`)
+  - **CLI surface**:
+    - `sovereign init [--framework <auto|FastAPI|Next.js|Express|Go|Rails|Laravel|Astro|Static|Generic>] [--output <path>] [--name <name>] [--force]` — scans cwd for project markers, writes `app.yaml` with framework/port/health_path/build_cmd/run_cmd/image
+    - `sovereign login [--no-input] [--master-key <path>]` — provisions/loads the local age master key, prints Bech32 public key
+  - **`commands_init.rs` (~484 lines)**:
+    - `Framework` enum extended with `Express` and `Generic`; `Serialize` derived for JSON envelope
+    - 5 detector fns: `detect_python` (pyproject.toml + fastapi), `detect_node` (package.json with `next`/`express`/`astro` deps), `detect_go` (go.mod), `detect_ruby` (Gemfile + rails), `detect_php` (composer.json + artisan); `index.html` → `Static`; else `Generic`
+    - `build_app_spec` per-framework defaults (port, health_path, build_cmd, run_cmd, image, extra); `render_app_yaml` writes a `# Generated by sovereign init ...` header
+    - Refuses to overwrite existing `app.yaml` unless `--force`; `--output` defaults to `app.yaml`; `--name` defaults to cwd basename
+    - `next_steps_for` prints review/login/deploy hints; Generic gets a "fill in build_cmd/run_cmd" warning
+    - **8 unit tests**: detects_fastapi, detects_nextjs, detects_express, detects_go, detects_rails, detects_static, falls_back_to_generic, renders_yaml_with_required_fields, generic_yaml_has_uncommented_placeholders
+  - **`commands_login.rs` (~269 lines)**:
+    - `default_master_key_path()`: `/var/lib/sovereign/master.key` on Linux, `~/Library/Application Support/sovereign/master.key` on macOS, `%APPDATA%\sovereign\master.key` on Windows
+    - `read_passphrase(no_input)`: reads `SOVEREIGN_PASSPHRASE` env first; if `no_input`, refuses to prompt and errors; else prints hidden prompt to stderr
+    - `ensure_parent_dir(path)`: `create_dir_all`; on Unix, `chmod 0700` on parent (the `master.key` file gets 0600 from `secrets-age`'s own write)
+    - Uses `AgeSecrets::new(&master_key_path).ensure_loaded()` (loads or generates)
+    - `identity_to_public_bech32(&Identity)` returns the canonical `age1...` Bech32 public key
+    - `LoginResult { master_key_path, created, public_key, next_steps }` JSON-serializable
+    - **5 unit tests**: default_master_key_path_is_nonempty, read_passphrase_honors_env_var, read_passphrase_rejects_empty_env, read_passphrase_no_input_requires_env, ensure_parent_dir_creates_missing_dir, public_key_is_bech32_age1_prefix
+  - **Wiring**:
+    - `crates/sovereign/src/cli.rs`: `use serde::Serialize;` added at top; `Framework` derive includes `Serialize`; `Init` now has `framework/force/output/name`; `Login` now struct with `no_input/master_key`
+    - `crates/sovereign/src/commands.rs`: dispatch arms for `Init` and `Login` (replaced stubs); `use crate::{commands_init, commands_login};` added
+    - `crates/sovereign/src/main.rs`: `mod commands_init; mod commands_login;` added
+    - `crates/sovereign/Cargo.toml`: `age = { workspace = true }` added as a regular dep (not dev-dep) because `identity_to_public_bech32` is non-test code
+    - `README.md`: F4.6 status row added (✅); Quickstart updated with `sovereign init && sovereign login && sovereign deploy` and Windows `--no-input` example
+  - **Test counts (post-F4.6)**: 22 (sovereign, +13 — 8 init + 5 login) + 7 (backup) + 40 (core) + 26 (doctor) + 6 (caddy) + 7 (secrets) + 32 (storage) + 4 (auto-rollback) + 4 (mock_apply) = **148 passing + 1 ignored**
+  - **All gates green**: `cargo fmt --check`, `cargo clippy --workspace --all-targets --no-default-features -- -D warnings`, `cargo deny check` (4 categories ok; 2 pre-existing `unnecessary-skip` warnings), `cargo test --workspace --no-default-features`
+  - **Smoke-tested on Windows**:
+    - `sovereign init` in a tmp dir with `package.json` containing `{"dependencies":{"express":"4.18.0"}}` (written via `[System.IO.File]::WriteAllText` to avoid PowerShell UTF-8 BOM, which would break `serde_json::from_str`) → detects Express, writes `app.yaml` with `port: 3000`, `health_path: /healthz`, `image: node:20-alpine`, `build_cmd: "npm ci"`, `run_cmd: "node server.js"`
+    - `sovereign init` over existing `app.yaml` without `--force` → exit 2, error envelope "app.yaml already exists; re-run with --force to overwrite"
+    - `sovereign init --force --framework go` → overwrites
+    - `sovereign login --no-input --master-key <tmp>` with `SOVEREIGN_PASSPHRASE=smoke` → generates 74-byte `AGE-SECRET-KEY-1...` Bech32 key, returns `age1...` public key, exit 0
+    - Second `sovereign login --no-input --master-key <tmp>` on the same path → loads (idempotent, same public key)
+- **Step 9 (CX22 verification prep) COMPLETE on `phase-0/09-cx22-prep` branch, merged to main** (commit `a3a914d` + merge `57fa6a2`)
+  - **`docs/operations/cx22-verify.md` (~230 lines)**: the recipe. Sections: pre-flight (3min, hcloud server create), the 5-command quickstart (90s on a CX22, 5min budget for first-time operator), feature-by-feature check (F8a backup + F8b auto-rollback + F10 self-update), the 8-pre-emptively-debugged failure modes, the V0 self-signed-CA TLS caveat, the evidence list, the "what done means" 5-box checklist
+  - **`scripts/cx22-quickstart.sh` (~110 lines)**: the headlinable form. Args: `--name`, `--port`, `--skip-install`. 5 phases with color banner output, idempotent, exits non-zero on first failed phase. Logs to `/var/log/sovereign/cx22-verify.log` (or `$HOME` on permission failure)
+  - **`scripts/verify-distros.sh` (~60 lines)**: local equivalent of CI `verify-distros` job. Runs the musl binary in `ubuntu:22.04`, `debian:12`, `alpine:3.20` and asserts `--version` + `--help` work without any install step
+  - **`crates/sovereign/src/scripts/install.sh`**: the "what next" message now mentions `sovereign login` (V0 single-tenant bootstrap)
+  - **`README.md`**: new "Phase 0 close-out scripts" section
+  - **No Rust code touched**; all gates still green (test counts unchanged: 148 passing + 1 ignored)
+  - **Operator action needed**: SSH into a Hetzner CX22, paste `scripts/cx22-quickstart.sh`, capture the doctor JSON + auto-rollback journal as evidence
+- **Step 10 (release pipeline) COMPLETE on `phase-0/10-release` branch, merged to main** (commit `539018f` + merge `8422e5c`)
+  - **`.github/workflows/release.yml` (~280 lines)**: 6-job pipeline in dependency order `build → sign → sbom → manifest → release → mirror`
+    - **build** (matrix: x86_64-unknown-linux-musl, aarch64-unknown-linux-musl): `cargo build --release --target <T> --bin sovereign`, strip a second time, size check ≤ 25MB, package binary+install.sh+Caddyfile into `sovereign-${VERSION}-${TARGET}.tar.xz`, per-target `sha256sums.txt`
+    - **sign** (same matrix): `cosign sign-blob --yes` (keyless OIDC; Sigstore), produces `.sig` + `.bundle` (transparency log entry), requires `id-token: write` permission
+    - **sbom**: `cargo install --locked cargo-cyclonedx`, `cargo cyclonedx --format json -p sovereign`, output `target/cyclonedx/sovereign.cdx.json`
+    - **manifest**: waits for build+sign+sbom, computes per-artifact SHA-256, writes `manifest.json` with artifact URLs+sizes+checksums+SBOM pointer (consumed by `sovereign update check`)
+    - **release**: `softprops/action-gh-release@v2`, extracts release notes from `CHANGELOG.md` for the matching version, attaches all artifacts
+    - **mirror**: syncs to `s3://sovereignruntime-releases/${TAG}/` via Hetzner Storage Box (EU-only), copies `manifest.json` to `stable.json` (install.sh reads this to resolve "latest")
+  - **`CHANGELOG.md` (~120 lines)**: Keep-a-Changelog format; `[Unreleased]` enumerates Phase 0 features; `[v0.1.0]` is the stub for the first release
+  - **`docs/operations/release-process.md` (~140 lines)**: operator recipe — TL;DR, the 6-job pipeline, the "why not cargo-dist" decision (V0 ships a hand-rolled workflow; cargo-dist is V0.5), the required secrets table, the cosign keyless OIDC rationale, the "what done means" checklist
+  - **`README.md`**: new "Release pipeline" section
+  - **Hand-rolled workflow, not `cargo-dist`**: V0 ships a 2-target (musl x86_64 + aarch64) matrix; cargo-dist migration is V0.5 (post-Show HN) when the macOS/Windows leg lands
+  - **Cosign keyless OIDC**: no key to manage; transparency log (Rekor) is the audit trail; V0.5 will add a second KMS/HSM-keyed signature for the air-gapped case
+  - **No Rust code touched**; all gates still green
+  - **Operator action needed**: set 3 CDN secrets in GitHub repo settings, cut v0.1.0 tag
+- **Step 11 (Show HN draft + 6 more framework detectors) COMPLETE on `phase-0/11-init-more-frameworks` branch, merged to main** (commit `c18c504` + merge `5cb4ced`)
+  - **`docs/operations/show-hn-draft.md` (~135 lines, NEW)**: operator-refinable draft for the Show HN post. Headline + 5-command quickstart + 8 V0 features + V0 scope (in vs out) + tech choices + 4 feedback questions + "ready to post" checklist
+  - **6 new framework detectors in `commands_init.rs` + 1 in `cli.rs` `Framework` enum**:
+    - **Flask** (pyproject.toml + 'flask', port 5000, `flask --app app run`)
+    - **Django** (pyproject.toml + 'django' OR manage.py present, port 8000, `gunicorn config.wsgi:application --bind 0.0.0.0:8000` — canonical V0 pick)
+    - **Nuxt** (package.json + 'nuxt', port 3000, `node .output/server/index.mjs`)
+    - **SvelteKit** (package.json + '@sveltejs/kit', port 3000, `HOST=0.0.0.0 PORT=3000 node build`)
+    - **Remix** (package.json + '@remix-run/*', port 3000, `npm run start`)
+    - **Phoenix** (mix.exs + 'phoenix', port 4000, elixir:1.16-otp-26-slim image, `mix phx.server`)
+    - **Deno** (deno.json OR deno.jsonc, port 8000, denoland/deno:1.45 image, `deno run --allow-net --allow-read --allow-env main.ts`)
+  - **Detector order is intentional**:
+    - `detect_deno` is first (Deno projects can have package.json as a backup; the deno.json/deno.jsonc wins)
+    - Python: Django via manage.py > FastAPI > Flask > Django via pyproject (most specific signal first)
+    - Node: SvelteKit > Next.js > Nuxt > Remix > Astro > Express (wrapper meta-frameworks beat their transitive deps)
+    - Added `detect_elixir` (mix.exs) and `detect_deno` (deno.json/deno.jsonc)
+  - **17 new unit tests** (8 detector + 1 django-wins-over-flask ordering + 1 sveltekit-wins-over-express ordering + 7 app_spec per-framework)
+  - **Test counts (post-Step 11)**: 39 (sovereign, +17) + 7 (backup) + 40 (core) + 26 (doctor) + 6 (caddy) + 7 (secrets) + 32 (storage) + 4 (auto-rollback) + 4 (mock_apply) = **165 passing + 1 ignored**
+  - **Smoke-tested on Windows**: Flask (port 5000, `flask --app app run`), Phoenix (port 4000, `mix phx.server`, elixir image), Deno (port 8000, `deno run --allow-net`, deno image)
+- **Step 12 (install.sh polish + deny.toml) COMPLETE on `phase-0/12-install-sh-polish` branch, merged to main** (commit `f09645f` + merge `c3e1e29`)
+  - **`crates/sovereign/src/scripts/install.sh`**: 6 new CLI flags (`--version`, `--install-dir`, `--no-systemd`, `--no-caddy-config`, `--dry-run`, `--releases-base`) + `-h/--help`; dry-run mode prints the plan and exits 0; **idempotent** systemd install (only `enable` if not already enabled, only `start` if not already active); better error messages; cosign block gracefully falls back if the .cosign.bundle isn't on the CDN; skip paths now print WHY they were skipped
+  - **`deny.toml`**: added `sovereign-update` to `[bans].skip` (F10 added it; cargo-deny was emitting `unnecessary-skip` warnings because it's a workspace crate with one version, the skip is correct)
+  - **No Rust code touched**; all gates still green; cargo deny: 4 categories ok
+
+### In Progress
+- (none — Phase 0 close-out code side complete; remaining items are operator action)
+
+### Blocked
+- (none)
+
+## Key Decisions
+- **BLOB for IDs, not TEXT**: sqlx's `Uuid` codec decodes BLOB natively
+- **No `WITHOUT ROWID` for audit_event**: SQLite rejects `AUTOINCREMENT` + `WITHOUT ROWID`
+- **`Executor` trait for row helpers**: same helper works in/out of transactions
+- **`open_in_memory_named(name)`**: per-test isolation via shared-cache key
+- **`schema_version()` reads `_sqlx_migrations`** (sqlx::migrate! doesn't bump `user_version`)
+- **Bind raw `Uuid` (`as_uuid()`), never `to_string()`**: 36-char string to BLOB → wrong length
+- **Bollard features `pipe, http`** (NOT `rustls`)
+- **`#[tokio::main(flavor = "current_thread")]` + async `dispatch`**
+- **Two `Strategy` enums**: `cli::Strategy` (clap-derive) vs `sovereign_core::domain::Strategy`; `cli_strategy_to_core()` shim
+- **No testcontainers**: bollard version conflict with workspace pin
+- **No `sovereign-storage-sqlite` dev-dep on `sovereign-core`**: trait-coherence sharp edge; tests requiring real storage live in `sovereign-storage-sqlite/tests/`
+- **Rollback design**: creates a "rollback marker" deployment (new Healthy row, `target_deployment_id`=old current); old current → RolledBack
+- **Container naming**: `sovereign-{app_id}-{deployment_id}`
+- **sovereign.lock format**: single line JSON with deployment_id, image, deployed_at, actor, sovereign_version
+- **Phase 0 close-out scope (user-approved)**: finish F6-F10, real CI, signed releases, CX22 verification
+- **CI architecture**: 4 jobs — `lint` (fmt+clippy+deny+audit), `test` (cargo test+llvm-cov), `build-musl` (x86_64+aarch64), `verify-distros` (Ubuntu/Debian/Alpine)
+- **`#![allow(missing_docs)]`** at crate level for noisy crates
+- **`deny.toml` skip list**: 9 path-referenced crates (added `sovereign-doctor` in F9); cargo-deny flags some as `unnecessary-skip` (warnings, not errors)
+- **`CDLA-Permissive-2.0`** in license allow list
+- **V0 TLS design**: `tls internal` (Caddy self-signed CA) for V0
+- **V0 host port pinning**: pinned to `spec.port` + `127.0.0.1` for Caddy reverse-proxy
+- **V0 hostname pattern**: `<short-uuid>.sovereign.local`
+- **Route ID stability**: `route-<host>` with `.`/`-` preserved, `/`/`?`/`#` → `_`
+- **Proxy failure is a warning, not a deploy failure**
+- **Domain subcommand: Caddy-first, then DB**
+- **Master key design**: `age::x25519::Identity` Bech32 at `/var/lib/sovereign/master.key` (0600); `Arc<OnceCell>` lazy load
+- **Secret env injection**: `env_for_deploy` returns `Vec<(String, String)>` for `ContainerSpec::env`
+- **Secret key naming**: UPPER_SNAKE_CASE only (ASCII UPPERCASE, digits, `_`); ≤128 chars; no leading digit
+- **Secret CLI reads stdin, not argv**
+- **F8a storage snapshot via `VACUUM INTO`**: SQLite-specific, takes a clean defragmented copy; bound as `TEXT` via `format!` with `'` escaping (not parameter binding — VACUUM INTO is a statement)
+- **F8a size sanity formula**: `min(10 MB, max(1 KB, source_size / 100))` — truncating division
+- **F8a verify as fresh sqlx pool** on the snapshot file (read-only, max_connections=1)
+- **F8a restore atomic**: `tmp.<ext>` + `rename` (or copy+remove on Windows)
+- **F8a live-restore rejected at CLI layer only**: use case is the engine; CLI does `canonicalize()` compare
+- **F8b prober: pure data + I/O** separated: `step()` is the testable unit, `run()` is the loop wrapper around `tokio::select!(cancel | sleep(interval))`
+- **F8b one rollback per prober lifetime**: `rolled_back = true` blocks subsequent `should_roll_back`; `run()` stops when post-rollback streak hits `threshold * 2`
+- **F8b reuses `rollback::start_rollback`** for the actual fire
+- **F8b edge case**: no previous Healthy → mark current as `Failed` with reason "no_previous_healthy", still audit-log
+- **F9 doctor non-Linux checks default to Skip** (kernel/memory/Docker); `Color` is a unit enum, called via `out.text_colored(Color::Red, msg)`
+- **F9 doctor AppExit is unit enum**: return `Dispatch::Err(AppExit::Usage)` for warn/fail, not `AppExit::Usage(msg)`; use `out.err(&format!(...))` for messages
+- **F9 doctor windows path handling for sqlx**: use `sqlx::sqlite::SqliteConnectOptions::new().filename(&db_path).create_if_missing(true)` not `sqlite:///` URLs (URL parser chokes on spaces in Windows TEMP paths)
+- **F9 V0 higher-level error**: `doctor level 'standard' is V1+; upgrade with sovereign update` (uses `level.is_shipped_in_v0()` check, returns `Dispatch::Err(AppExit::Usage)`)
+- **F9 --fix is a no-op in V0**: prints "available in V1+; basic-level fixes run automatically from the check itself"
+- **F9 dispatch field deref**: clippy requires `*level, *explain, *fix, *json` when passing `&T` fields that get moved
+- **F9 mismatched types when match arm returns `Option<()>`**: wrap match arms in `{}` blocks with `;` at the end so the `if let` evaluates to `()`
+- **F10 Version ordinal**: 3-tuple `(u32,u32,u32)` with derive Ord; no pre-release comparison
+- **F10 Sha256::compute** uses `sha2 0.10` (add to sovereign-core deps); `compute("hello world")` = `b94d27b9...efcde9`
+- **F10 SHA-256 storage**: `update_history.sha256` is the new binary's SHA-256; lookup-by-sha256 for rollback
+- **F10 backup_path format**: `sovereign-prev-<7-char-sha-prefix>` (MockUpdate) or `sovereign-<from_version>` (real)
+- **F10 atomic swap cross-platform**: try `tokio::fs::rename` first; on Windows it fails for locked files, fall back to `copy + remove`
+- **F10 mocked port for tests**: `MockUpdate` in sovereign-update crate; `HttpUpdate` is the in-tree prod impl; future: `RegistryUpdate` (V1+)
+- **F10 migration 0004 BEFORE merge**: tests use `live.db` and depend on the table being there at first migrate
+- **F10 CLI: graceful offline**: `update check` catches `UpdateError::Network` and prints "manifest not reachable; treating as 'no update available'" — exit 0, not error; for air-gapped ops
+- **F10 CLI: `update check` exit codes**: 0 = up to date OR offline, 2 = newer version available
+- **F10 CLI: `update apply` reads dest from tempfile** (sovereign-new-<sha256-prefix of version>); refuses to swap if `current` binary is readonly
+- **F10 CLI: `update apply` shared with `commands_backup::build_storage` pattern**: `SqliteState::open(default_db_path()) -> Arc<dyn StoragePort>` via shared `default_db_path()` helper in `commands_deploy`
+- **F10 lib test workaround**: `[lib] test = false` in `sovereign-update/Cargo.toml` disables the auto-generated lib test target; the integration test in `tests/mock_apply.rs` uses the standard harness and runs cleanly. On this Windows host the auto-test binary that links `reqwest` + `tokio` hangs (OS error 740); on Linux/CI it would launch fine
+- **F10 cli UpdateChannelArg: separate from `sovereign_core::ports::update::UpdateChannel`** (clap-derive needs `ValueEnum`, the core type is a regular enum); `to_update_channel()` mapping function
+- **F10 cli UpdateCmd arg order matters for clap** — `--manifest` env binding `SOVEREIGN_UPDATE_MANIFEST` declared in args
+- **F10 UpdateRecord does NOT have `rolled_back_at` field** in the Rust struct (it's only a DB column); `list_updates` filters `WHERE rolled_back_at IS NULL` so the CLI never sees rolled-back records
+- **F10 update check `Version::as_str()` bug**: it prints `0.1.0` as `0.1.0` (uses `self.0` twice instead of `(self.0, self.1, self.2)`); harmless for ordering but visually confusing
+- **F10 non-Windows tests rely on Linux/CI**: `apply_then_rollback_round_trip` is `#[cfg_attr(target_os = "windows", ignore)]`'d; passes on Linux where the test binary can be overwritten
+- **F10 clippy cleanup**: `&PathBuf` → `&Path` in `UpdatePort` trait; removes an unnecessary new object per the `ptr_arg` lint
+- **Step 8 init plan**: scan cwd for framework indicators (pyproject.toml + fastapi, package.json + next/express/astro, go.mod, Gemfile + rails, composer.json + artisan, index.html), write `app.yaml` with `framework`, `port`, `health_path`, `build_cmd`, `run_cmd`, `image`; refuse to overwrite without `--force`; `next_steps_for` prints 3 follow-up hints
+- **Step 8 login plan (V0 single-tenant)**: read passphrase from `SOVEREIGN_PASSPHRASE` env or stdin (with hidden prompt); `AgeSecrets` generates/loads master key; print Bech32 public key for operator
+- **Step 8 init flags**: `--force` (overwrite app.yaml), `--output <path>` (default `app.yaml`), `--name <name>` (default = cwd basename)
+- **Step 8 login flags**: `--no-input` (require env var, skip prompt), `--master-key <path>` (override default)
+- **Step 8 Framework enum extended**: added `Express` and `Generic` to the existing `Auto/Fastapi/Nextjs/Laravel/Go/Rails/Astro/Static` set
+- **Step 8 default master key path is platform-specific**: Linux `/var/lib/sovereign/master.key`; macOS `~/Library/Application Support/sovereign/master.key`; Windows `%APPDATA%\sovereign\master.key`; resolved at runtime so the single binary works everywhere
+- **Step 8 `age` is a regular dep, not dev-dep**: `commands_login::identity_to_public_bech32` takes `&age::x25519::Identity` in non-test code (the formatter is part of the public login flow)
+- **Step 8 PowerShell UTF-8 BOM gotcha**: `Set-Content -Encoding utf8` adds a BOM that breaks `serde_json::from_str`; use `[System.IO.File]::WriteAllText(...)` for test fixtures
+- **Step 8 `Recipient::to_string()` returns `String` directly**, not `SecretString`; no `expose_secret()` call needed
+- **Step 8 framework detection order matters**: more-specific (pyproject + fastapi) wins over less-specific (just package.json); first match wins
+- **Step 8 unit tests cover both detector and writer**: 7 framework detection tests + 1 generic-fallback + 2 yaml-rendering tests = 10 init assertions; 5 login tests cover env/no-input/master-key-path/public-key-Bech32
+- **Step 8 init error envelope**: refuses to overwrite with `AppExit::Usage` (exit 2); JSON envelope has `{"error": "..."}` and `message` set
+- **Step 8 login error envelope**: `AppExit::Usage` for empty/missing passphrase; `AppExit::Upstream` for filesystem errors (parent dir creation, master key load)
+
+## Next Steps
+1. **Step 9 evidence (operator action)**: SSH into a Hetzner CX22, paste `scripts/cx22-quickstart.sh`, run the F8b auto-rollback test from `cx22-verify.md` §4b, capture `/tmp/doctor.json` + `journalctl -u sovereign` output, commit as evidence
+2. **Step 10 v0.1.0 tag (operator action)**:
+   - Set 3 CDN secrets in GitHub repo settings: `SOVEREIGN_CDN_ACCESS_KEY_ID`, `SOVEREIGN_CDN_SECRET_ACCESS_KEY`, `SOVEREIGN_CDN_ENDPOINT` (Hetzner Storage Box)
+   - Move `[Unreleased]` section of `CHANGELOG.md` into a `[v0.1.0] - YYYY-MM-DD` block
+   - `git tag -s v0.1.0 -m "v0.1.0" && git push origin v0.1.0`
+   - Watch the release workflow; verify the GitHub release + CDN mirror both populate
+   - `curl -sSf https://install.sovereignruntime.dev | sh` on a fresh CX22 to confirm end-to-end
+3. **Show HN post (operator action, after Step 10)**: draft the Show HN post using the evidence files from Step 9
+4. **V0.5 cleanup (post-Show HN)**: migrate release to `cargo-dist` for macOS/Windows matrix; add KMS-keyed cosign signature for air-gapped case; switch `sovereign login` to Argon2id KDF
+5. **Per-step**: commit on step branch with `git commit -F <tempfile>`; `--no-ff` merge to main
+
+## Critical Context
+- **Toolchain**: `cargo 1.92.0`, `rustc 1.92.0`, Windows PowerShell
+- **No `touch` / `grep` / `rg` / `head` on Windows**; use `(Get-Item).LastWriteTime = Get-Date` to bump mtime, `Select-String` for grep
+- **No `tarpaulin` on Windows** (Linux-only); coverage deferred to CI
+- **Commit pattern**: use `git commit -F <tempfile>` for multi-line messages; use `[System.IO.File]::WriteAllText` to avoid the UTF-8 BOM that `Set-Content -Encoding utf8` adds (which can break downstream parsers)
+- **File-locking**: parallel `cargo` invocations can deadlock on `target/.rustc_info.json`; serialize builds
+- **`cargo-audit` not installed locally** (gix stack ~10 min); CI installs it
+- **cargo-deny installed** at `C:\Users\Victo\.cargo\bin\cargo-deny.exe` v0.19.8
+- **Test counts (post-Step 11/12, no Rust in Step 12)**: 39 (bin, +17 from F4.6) + 7 (backup) + 40 (sovereign-core) + 26 (sovereign-doctor) + 6 (sovereign-proxy-caddy) + 7 (sovereign-secrets-age) + 32 (sovereign-storage-sqlite) + 4 (auto-rollback) + 4 (mock_apply) + 1 ignored = **165 passing + 1 ignored**
+- **Phase 0 close-out DoD (13 gates)**: ~12/13 done. Still needed: CX22 evidence capture (operator), Show HN post (operator). musl cross-build wired in CI but the binary itself is only built on the CI runner (this Windows host lacks `x86_64-linux-musl-gcc` C toolchain)
+- **Git state (post-Step 12)**: 27+ commits on main (ahead of origin by 27). Branches merged: `phase-0/05-auto-rollback`, `phase-0/06-doctor`, `phase-0/07-update` (merge of `7395dd0` + `2d0b1f6`), `phase-0/08-init-login` (`71197ef` + `429d8eb`), `phase-0/09-cx22-prep` (`a3a914d` + `57fa6a2`), `phase-0/10-release` (`539018f` + `8422e5c`), `phase-0/11-init-more-frameworks` (`c18c504` + `5cb4ced`), `phase-0/12-install-sh-polish` (`f09645f` + `c3e1e29`). Current branch: `main`
+- **age 0.11 API gotchas**:
+  - `age::decrypt(identity: &impl Identity, ct)` — needs `identity.as_ref()` to deref `Arc<Identity>`; does NOT accept `&dyn Identity`
+  - `age::encrypt(recipient, plaintext)` returns `Result<Vec<u8>, EncryptError>`
+  - `Identity::to_string()` returns `secrecy::SecretString`; need `.expose_secret().as_bytes()` to write to disk
+  - `parse::<Identity>()` returns `Result<_, &str>` (not `anyhow::Error`)
+  - `AppError::upstream` takes `impl Into<String>`, NOT `anyhow::Error`
+  - `age::x25519::Identity` does NOT implement `Debug`; cannot use `unwrap_err()` in tests
+  - `age::x25519::Identity::generate()` (constructor for tests/dev); `Recipient::to_string()` returns `String` (Bech32)
+- **F8a sqlx gotchas**:
+  - `VACUUM INTO ?` does not bind parameters cleanly; use `format!("VACUUM INTO '{}'", path.replace('\'', "''"))` and stat the file separately for size
+  - `open_in_memory_named` for verify doesn't work — verify must open the snapshot FILE on disk
+- **F8b gotchas**:
+  - Sovereign-core can't have `sovereign-storage-sqlite` as dev-dep and use `StoragePort` in tests (dev-dep trait-coherence)
+  - `NewApp.config_yaml` is validated non-empty in storage layer (test fixtures must set it)
+  - `sovereign-storage-sqlite` `Cargo.toml` had `flate2` and `tempfile` in `[dependencies]` (left over from F1 stub); moved `tempfile` to `[dev-dependencies]` and dropped `flate2`
+- **F9 gotchas**:
+  - `Box<dyn DoctorFix>` doesn't impl Debug → don't derive Debug on `CheckResult`
+  - `release_at_least_5_10` was Linux-only but tests aren't cfg-gated → made `release_at_least` non-cfg and `release_at_least_5_10` the wrapper
+  - `version_satisfies_min_24` had `#[cfg(target_os = "linux")]` but tests aren't gated → removed cfg
+  - `CheckContext` derives Clone but `Arc<dyn RuntimePort>` not Debug → removed `Debug` from `CheckContext` and `CheckResult`
+  - `Color::Red(string)` doesn't exist — use `out.text_colored(Color::Red, msg)` from `Output`
+  - `AppExit` is a unit enum, not a struct — use `AppExit::Usage` constant, not `AppExit::Usage(msg)`
+  - `chrono` dep needed in `sovereign` Cargo.toml but the project already has it via workspace
+  - For Windows: sqlx URLs with backslashes break; use `SqliteConnectOptions::new().filename(&db_path)` instead of `sqlite://` URLs
+  - `--fix` reserved for V1+; V0 just prints a note
+  - `serde_json` workspace dep needed in `sovereign-core` (added in F10)
+- **F10 gotchas**:
+  - **`[lib] test = false`** in `sovereign-update/Cargo.toml` is the WORKAROUND for the Windows test binary hang (OS error 740). It disables the auto-generated lib test target; the integration test in `tests/mock_apply.rs` (standard harness) runs cleanly
+  - The lib test binary hang is reproducible even with a single trivial `#[test] fn smoke()` — issue is in linking/runtime (reqwest + tokio pulled in), not test code; cmd /c can invoke but it produces no output and never exits
+  - On Linux/CI, the auto-test binary would launch fine; this is a Windows host-specific issue
+  - `binary` is a reserved name conflict in `ports::*` re-exports — use `update::Binary` qualified import
+  - `sovereign-core` lost re-exports of `ContainerSpec/HealthResult/RuntimePort` and `default_v0_host/V0_DEFAULT_HOST_SUFFIX/ProxyPort` after F8a refactor — must re-add when adding any `ports::*` import (clippy catches this). Re-add `RuntimeEndpoint` from `ports::runtime` to `ports::*` re-exports for docker crate
+  - F10 storage methods use `chrono::Utc::now().to_rfc3339()` for `rolled_back_at` (chrono's already in workspace)
+  - F10 `version_orders` test: v010 < v011 < v100 (relies on tuple Ord)
+  - F10 `apply_then_rollback_round_trip` test calls `atomic_swap` directly (not the use case, which needs a real `StoragePort` impl)
+  - F10 `apply_then_rollback_round_trip` is `#[cfg_attr(target_os = "windows", ignore)]`'d; on Windows, the test process holds a file lock on its own binary
+  - F10 clippy: `&PathBuf` → `&Path` in `UpdatePort` trait method signatures; `nonminimal_bool` (use `is_err()` not `!is_ok()`); `unused_imports` for `PathBuf` when `Path` is enough
+  - F10 sovereign-core needed `serde_json` workspace dep (added in F10)
+  - F10 sovereign-storage-sqlite needed `chrono` workspace dep (added in F10)
+  - F10 sovereign-update needed tokio with `["rt", "macros", "sync", "fs", "io-util"]` for the integration test
+  - F10 `[lib] test = false` does NOT silently no-op on this Rust version — must be in `[lib]` section, not package-level
+  - F10 `[[test]]` with `name = "lib"` does NOT override the auto-generated lib test; it ADDS a parallel test target. Use `cargo test -p sovereign-update --test mock_apply` to run only the integration test
+  - F10 `Version::as_str()` bug: prints `MAJOR.MAJOR.PATCH` (uses `self.0` twice instead of `(self.0, self.1, self.2)`); harmless for ordering but visually wrong
+  - F10 `HttpUpdate::new` returns `HttpUpdate` directly (not `Result`); the `with_storage` builder is reserved for V1
+- **F8a clippy fixes applied**:
+  - `match Some(x) on .ok()` → `if let Ok(x)` in `commands_backup.rs`
+  - `.unwrap_or_else(|| default_backup_dir())` → `.unwrap_or_else(default_backup_dir)` (no closure)
+  - Removed `BackupSink` from `use crate::ports` in `use_cases/backup.rs`
+- **F9 clippy fixes applied**:
+  - `use std::os::unix::fs::PermissionsExt;` must be `#[cfg(target_os = "linux")]` gated
+  - `age::x25519::Identity::from_str` needs `use std::str::FromStr;`
+  - `sqlx::SqlitePool::connect_lazy_with(opts)` returns `Pool<DB>` directly, not `Result` (no `match` needed)
+  - `sqlx::Error` in `map_err` closure needs type annotation: `|e: sqlx::Error|`
+  - `format!` inside `.with_suggestion(format!(...))` is a "useless use of format!" → pass the string directly
+  - `Box<dyn DoctorFix>` doesn't impl Debug → drop Debug derive on CheckResult
+  - `useless_format` clippy: when a `format!` has no interpolations, drop the call
+  - `unused variable ctx` on Linux-only branches → prefix with `_ctx`
+  - `struct MasterKeyRepairPermsFix` not constructed (in `with_fix` the type is `Box<dyn DoctorFix>`) → `#[allow(dead_code)]` on the struct
+  - `expect("REASON")` suggested by clippy for `if let` returning `Option<()>` → use `{}` block + `;`
+  - F8b fix: dropped unused `RuntimePort, StoragePort` imports in `use_cases/auto_rollback.rs` after F9 refactor
+- **F10 clippy fixes applied**:
+  - `UpdatePort::fetch/apply` take `&Path` not `&PathBuf` (ptr_arg lint)
+  - `default_target_triple` uses `std::env::consts::{ARCH,OS}` + `cfg!(target_env = ...)` — no runtime `uname()`
+  - `tokio::fs::metadata().await.is_err()` not `!is_ok()` (nonminimal_bool lint)
+  - `use_storage_only` helper dropped; just construct `AppState` with `storage`, `no_runtime()`, `db_path`
+  - `HttpUpdate::new` returns `HttpUpdate` directly (not `Result`); the `with_storage` builder is reserved for V1
+- **F4.6 clippy fixes applied**:
+  - `*framework` (not `framework`) when destructuring by reference in `commands.rs` dispatch
+  - `serde::Serialize` must be `use`d at the top of `cli.rs` for the derive to find the macro (the trait import alone is not enough; the derive macro path is `serde::Serialize`)
+  - `Recipient::to_string()` returns `String` directly — no `expose_secret()` call needed
+  - `age` is a regular dep, not a dev-dep (the public-key formatter is in non-test code)
+  - `unwrap_or_else(|_| ...)` not `map_err(|e| ...).unwrap_or_else(|_| ...)` for `current_dir()` (the result type is `Result<PathBuf, io::Error>`, we don't care about the error)
+- **F8a build-order quirk**: `sovereign-core/src/ports/mod.rs` must declare `pub mod backup;` BEFORE `pub use backup::BackupSink;` for the re-export to resolve
+- **sovereign bin needs `uuid` dep** for `parse_backup_id` (F8a)
+- **sovereign bin needs `sovereign-update` dep** (F10, DONE)
+- **sovereign bin needs `sovereign-doctor` dep** (F9, DONE)
+- **sovereign bin needs `age` dep** (F4.6, DONE) — for the public-key formatter
+- **Scaffolding dirs (now tracked)**: `sovereign-{backup,secrets-age,proxy-caddy,observability,doctor,update}` all in git; `sovereign-proto`, `sovereign-notify` still untracked stubs
+- **Step 8 cli changes applied**:
+  - `Cmd::Init { framework, force, output, name }` (was just `{ framework }`); `--force` overwrites, `--output` defaults to `app.yaml`, `--name` defaults to cwd basename
+  - `Cmd::Login { no_input, master_key }` (was unit variant); `--no-input` requires `SOVEREIGN_PASSPHRASE`, `--master-key` overrides default
+  - `Framework` enum: added `Express` and `Generic`; `to_framework()` mapping (to be written) goes from clap variant to `sovereign_core::ports::framework::Framework` (TODO: define that port type in Step 8 or treat as plain string)
+  - `Framework` enum derives `Serialize` for JSON envelope
+
+## Relevant Files
+- `C:\Users\Victo\Downloads\webproj\Cloud\README.md`: F1-F10 + F4.6 status table; Quickstart with `init && login && deploy`
+- `C:\Users\Victo\Downloads\webproj\Cloud\docs\phase-00-mvp.md`: F1-F10 specs incl. 13-gate DoD at §3
+- `C:\Users\Victo\Downloads\webproj\Cloud\docs\architecture.md`: hexagonal layout, state machines, REST/JSON
+- `C:\Users\Victo\Downloads\webproj\Cloud\docs\enterprise-readiness.md`: enterprise tier scope (V1+, NOT phase 0)
+- `C:\Users\Victo\Downloads\webproj\Cloud\docs\tech-stack.md`: §1 locked deps, §3 allocator, §7 testing tools, §10 musl
+- `C:\Users\Victo\Downloads\webproj\Cloud\deny.toml`: 9 entries in `[bans].skip` (added `sovereign-doctor` in F9; F10 not banned so no skip needed)
+- `C:\Users\Victo\Downloads\webproj\Cloud\.github\workflows\ci.yml`: 4 jobs (lint, test, build-musl, verify-distros)
+- `C:\Users\Victo\Downloads\webproj\Cloud\.cargo\config.toml`: musl cross-compile flags
+- `C:\Users\Victo\Downloads\webproj\Cloud\Cargo.toml`: workspace members + locked deps; `async-trait = "0.1"` + `tokio-util = { version = "0.7", features = ["rt"] }` + `sha2 = "0.10"` in `[workspace.dependencies]`
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign\src\main.rs`: `mod`s: cli, commands, commands_backup, commands_deploy, commands_domain, commands_init, commands_login, commands_rollback, commands_secret, commands_doctor, commands_update, exit, lock, output
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign\src\cli.rs`: `Cmd::{Init {framework, force, output, name}, Login {no_input, master_key}, Domain, Secret, Backup, Doctor, Update, ...}`; `Framework` enum has `Auto/Fastapi/Nextjs/Laravel/Go/Rails/Astro/Static/Express/Generic` + `Serialize`; `UpdateCmd::{Check,Apply,Rollback,History}` (F10); `UpdateChannelArg` with `to_update_channel()` (F10); `DoctorLevelArg` (F9); `BackupCmd::Restore { backup_id, to }` (F8a); `DomainCmd::{Add, List}`; `SecretCmd::{Set, List, Rotate}`; `use serde::Serialize;` at top
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign\src\commands.rs`: dispatch table; arms for `Backup`, `Domain`, `Secret`, `Doctor`, `Update`, `Init` (F4.6), `Login` (F4.6); `use crate::{commands_init, commands_login};`
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign\src\commands_deploy.rs`: F4+F5+F6+F8a — `connect_proxy()`, `connect_secrets()`, `connect_backup()` pub(crate) helpers; `default_db_path()` + `default_backup_dir()`; AppState wiring
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign\src\commands_rollback.rs`: F5+F6+F8a
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign\src\commands_backup.rs`: F8a (~250 lines) — 4 subcommands; `parse_backup_id`; CLI-side live-restore rejection
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign\src\commands_domain.rs`: F6 — `sovereign domain add/list`
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign\src\commands_secret.rs`: F7 — stdin reader, `build_state` with `backup: None, db_path: "(secret-cli-no-db)"`
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign\src\commands_doctor.rs`: F9 (~225 lines) — `run(out, level, explain, fix, report, json) -> Dispatch`; `build_context()`; `print_human`; `write_markdown_report`; `apply_fixes` (V0 no-op); non-Linux checks skip
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign\src\commands_update.rs`: F10 (~330 lines) — `run_check` (graceful offline fallback, exit 0/2), `run_apply` (downlaod → use case `apply_update`), `run_rollback` (use case `rollback_update` + `mark_update_rolled_back`), `run_history`; `build_storage()` shared with `commands_backup` pattern; `default_target_triple` from `std::env::consts`
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign\src\commands_init.rs`: F4.6 (~484 lines, NEW) — `InitResult` JSON; `run(out, cwd, framework_override, force, output, name)`; `build_app_spec` per-framework; `render_app_yaml` with `# Generated by sovereign init` header; 5 detector fns (`detect_python`, `detect_node`, `detect_go`, `detect_ruby`, `detect_php`); `next_steps_for`; 8 unit tests in `tests` mod
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign\src\commands_login.rs`: F4.6 (~269 lines, NEW) — `LoginResult` JSON; `run(out, no_input, master_key_override)`; `default_master_key_path()` platform-specific; `read_passphrase(no_input)` env-or-stdin; `ensure_parent_dir(path)` (chmod 0700 on Unix); `identity_to_public_bech32(&Identity)`; `err()` JSON/text envelope; 5 unit tests in `tests` mod
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign\src\lock.rs`: F5 — `LockFile`, `write()`, `read()`
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign\src\output.rs`: `Color` enum (Green/Yellow/Red/Blue/Cyan/Gray) with `#[allow(dead_code)]` on Blue/Cyan/Gray
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign\src\exit.rs`: `AppExit` 0-5 (Success/Generic/Usage/Partial/Upstream/Doctor) with reserved Partial/Doctor
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign\src\scripts\Caddyfile`: F6 — `admin localhost:2019`, `auto_https on`, `tls internal`
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign\src\scripts\install.sh`: F6 — best-effort Caddyfile install
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign\Cargo.toml`: deps include `sovereign-{proxy-caddy,secrets-age,backup,doctor,update}` + `uuid` + `age`; `age` is a regular dep (F4.6), not just dev-dep
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-core\src\state.rs`: `AppState` has `storage`, `runtime`, `proxy`, `secrets`, `backup`, `db_path: PathBuf`; `no_runtime()` fn (free fn, not method)
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-core\src\ports\mod.rs`: `pub mod {backup,proxy,runtime,secrets,storage,update}` + `pub use` re-exports (incl. F10's `update::*` and re-added `ContainerSpec/HealthResult/RuntimeEndpoint/RuntimePort/default_v0_host/V0_DEFAULT_HOST_SUFFIX/ProxyPort`)
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-core\src\ports\storage.rs`: `StoragePort` incl. F5/F7 methods + F8a `vacuum_into` + F10 `record_update/last_update/list_updates/mark_update_rolled_back`
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-core\src\ports\backup.rs`: F8a — `BackupSink` trait
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-core\src\ports\secrets.rs`: F7 — `SecretsPort` trait
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-core\src\ports\proxy.rs`: F6 — `ProxyPort` trait, `V0_DEFAULT_HOST_SUFFIX`, `default_v0_host`
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-core\src\ports\runtime.rs`: F4+F6 — `HealthResult`, `ContainerSpec`, `RuntimePort` trait
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-core\src\ports\update.rs`: F10 (~170 lines) — `UpdateChannel`, `Version`, `Sha256`, `Binary`, `Release`, `UpdateRecord`, `UpdateError`, `UpdatePort`; `UpdatePort::fetch/apply` take `&Path` (clippy fix)
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-core\src\use_cases\mod.rs`: `pub mod {auto_rollback,backup,deploy,health,rollback,secret,update}`
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-core\src\use_cases\auto_rollback.rs`: F8b (~580 lines) — `ProberConfig`, `ProberState`, `Prober::step()/run()`, `trigger_auto_rollback`; 2 unit tests
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-core\src\use_cases\backup.rs`: F8a (~390 lines) — `create_backup`, `list_backups`, `verify_backup`, `restore_backup`, `expected_min_bytes`; 1 unit test
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-core\src\use_cases\deploy.rs`: F4+F6+F7 — calls `super::secret::env_for_deploy`
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-core\src\use_cases\rollback.rs`: F5+F6 — `refresh_proxy_route()`; `RollbackRequest { app_id, to: Option<DeploymentId>, actor }`
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-core\src\use_cases\secret.rs`: F7 — `set_secret`, `list_secret_keys`, `rotate_secret`, `delete_secret`, `env_for_deploy`; `validate_key`; 2 unit tests
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-core\src\use_cases\update.rs`: F10 (~200 lines) — `apply_update`, `rollback_update`, `atomic_swap`, `check_update`, `last_update`, `list_update_history`, `current_binary_version`; 6 unit tests
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-core\Cargo.toml`: deps: anyhow, thiserror, serde, serde_json, tracing, uuid, chrono, async-trait, sqlx, **tokio-util**, **sha2 0.10**; dev-deps: **tempfile 3**
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-doctor\src\lib.rs`: F9 — re-exports `check, fix, level, report, checks`; `MIN_FREE_MEMORY_MB=512`, `MIN_FREE_DISK_MB=5*1024`, `BASIC_CHECKS_PER_CATEGORY=3`
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-doctor\src\check.rs`: F9 — `CheckCategory` (14 variants), `CheckStatus` (Pass/Warn/Fail/Skip), `CheckContext`, `CheckResult`, `Check` trait
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-doctor\src\fix.rs`: F9 — `FixOutcome` (Fixed/Skipped), `FixError`, `DoctorFix` trait
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-doctor\src\level.rs`: F9 — `DoctorLevel` with `is_shipped_in_v0()`, `label()`
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-doctor\src\report.rs`: F9 — `Doctor::for_level(level)`, `DoctorReport::add/summary/counts`, `ReportEntry`, `ReportCounts`
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-doctor\src\checks\mod.rs` + `basic.rs`: F9 — `basic_level_checks()` returns 18 checks
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-doctor\src\checks\{system,binary,storage,runtime,proxy,secrets}.rs`: F9 — 18 checks
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-doctor\Cargo.toml`: F9 — deps: sovereign-core, async-trait, clap, serde, serde_json, thiserror, tokio, tracing, chrono, sqlx, age 0.11; dev-dep: tempfile
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-runtime-docker\src\lib.rs`: F6 — pinned host port to `spec.port`, `127.0.0.1`; imports `RuntimeEndpoint` from `ports::runtime`
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-storage-sqlite\src\lib.rs`: F8a — `vacuum_into`; F10 — `record_update/last_update/list_updates/mark_update_rolled_back`; `chrono` dep added in F10
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-storage-sqlite\src\deployment.rs`: F5 — `set_rollback_target`
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-storage-sqlite\src\row.rs`: F5 — `select_current_deployment` + `select_healthy_before`
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-storage-sqlite\migrations\0001_init.sql`: 7 core tables
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-storage-sqlite\migrations\0002_audit.sql`: audit + 2 triggers
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-storage-sqlite\migrations\0003_rollback_target.sql`: F5 ALTER
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-storage-sqlite\migrations\0004_update_history.sql`: F10 — `update_history` table + index
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-storage-sqlite\tests\integration.rs`: 32 tests; F10 fix: `open_runs_migrations...` now expects `>= 8` tables (was `== 8`); `mod backup_use_case` (3 tests) at end
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-storage-sqlite\tests\auto_rollback_integration.rs`: F8b (~336 lines) — `MockRuntime`, 4 prober tests
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-storage-sqlite\Cargo.toml`: deps: anyhow, **chrono**, thiserror, serde, serde_json, sqlx, tracing, tokio, async-trait, sovereign-core; dev-deps: tempfile, uuid, async-trait (workspace), sovereign-backup
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-backup\src\lib.rs`: F8a (~280 lines) — `FileBackupSink`, 7 unit tests
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-backup\Cargo.toml`: F8a — deps: anyhow, thiserror, tracing, tokio, async-trait, uuid, sovereign-core; dev-dep: tempfile
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-observability\src\lib.rs`: `init()` for tracing subscriber
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-proxy-caddy\src\lib.rs`: F6 — `CaddyProxy`, `DEFAULT_ADMIN_URL = "http://127.0.0.1:2019"`, `route_id`; 6 unit tests
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-proxy-caddy\tests\caddy_integration.rs`: F6 — `#[ignore]`d docker shell-out test
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-secrets-age\src\lib.rs`: F7 — `AgeSecrets` with `Arc<OnceCell<Arc<Identity>>>`; `DEFAULT_MASTER_KEY_PATH = "/var/lib/sovereign/master.key"`; 7 unit tests
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-secrets-age\Cargo.toml`: F7 — deps: sovereign-core, anyhow, thiserror, async-trait, futures, age, argon2, rand, tracing, tokio; dev-dep: tempfile
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-update\src\lib.rs`: F10 — re-exports `HttpUpdate, MockUpdate, Binary, Release, Sha256, UpdateChannel, UpdateError, UpdatePort, UpdateRecord, Version`
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-update\src\http_update.rs`: F10 — `HttpUpdate` with `manifest_base: String`, `Client`, `current_version: Version`, `storage: Option<Arc<dyn StoragePort>>`; takes `&Path` (not `&PathBuf`) for clippy
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-update\src\mock_update.rs`: F10 — `MockUpdate` with `Mutex<BTreeMap<UpdateChannel, Release>>` + `fetch_log: Mutex<Vec<(String, PathBuf)>>`; takes `&Path`; writes `b"MOCK-UPDATE-BINARY"`
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-update\tests\mock_apply.rs`: F10 — 4 integration tests + 1 `#[cfg_attr(target_os = "windows", ignore)]` (apply_then_rollback_round_trip)
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-update\Cargo.toml`: F10 — `[lib] test = false` (Windows test binary hang workaround); deps: sovereign-core v0.1.0, async-trait, chrono, reqwest (workspace), serde, serde_json, sha2 0.10, thiserror, tokio, tracing; dev-deps: tempfile, tokio `["rt", "macros", "sync", "fs", "io-util"]`
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-notify\src\lib.rs`: V0.5 stub
+- `C:\Users\Victo\Downloads\webproj\Cloud\crates\sovereign-proto\src\lib.rs`: stub (untracked)

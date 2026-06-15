@@ -120,3 +120,48 @@ pub trait RuntimePort: Send + Sync {
         timeout: Duration,
     ) -> Result<HealthResult, AppError>;
 }
+
+/// Spec for a native (systemd-managed) app. Used by the native runtime
+/// adapter to generate systemd unit files and manage the app lifecycle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NativeUnitSpec {
+    /// App name (DNS-label safe).
+    pub name: String,
+    /// Absolute path to the binary.
+    pub bin_path: String,
+    /// systemd `ExecStart` template. Supports `{port}` substitution.
+    pub exec_start: String,
+    /// Port the app listens on.
+    pub port: u16,
+    /// Environment variables.
+    pub env: Vec<(String, String)>,
+    /// HTTP health check path (e.g. `/health`).
+    pub health_path: String,
+    /// System user to run as (e.g. `sovereign-myapp`).
+    pub user: String,
+    /// App data directory (e.g. `/opt/sovereign/apps/myapp/data`).
+    pub data_dir: String,
+}
+
+/// The systemd-native runtime port. Manages systemd units for native
+/// (non-container) apps.
+#[async_trait]
+pub trait SystemdNativePort: Send + Sync {
+    /// Install and start a native app's systemd unit.
+    async fn install_unit(&self, spec: &NativeUnitSpec) -> Result<(), AppError>;
+
+    /// Stop and remove a native app's systemd unit.
+    async fn remove_unit(&self, app_name: &str) -> Result<(), AppError>;
+
+    /// Restart a native app's systemd unit.
+    async fn restart_unit(&self, app_name: &str) -> Result<(), AppError>;
+
+    /// Check if a native app's systemd unit is active.
+    async fn is_active(&self, app_name: &str) -> Result<bool, AppError>;
+
+    /// Allocate an available port in the ephemeral range.
+    async fn allocate_port(&self) -> Result<u16, AppError>;
+
+    /// Release a previously allocated port.
+    async fn release_port(&self, port: u16) -> Result<(), AppError>;
+}

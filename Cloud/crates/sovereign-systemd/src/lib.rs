@@ -12,4 +12,5 @@
 
 pub mod adapters;
 pub mod apt;
+pub mod native;
 pub mod systemd;

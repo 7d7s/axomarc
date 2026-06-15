@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 
 use crate::domain::{AuditEvent, AuditKind, Backup, BackupId, BackupStatus, NewBackup, Timestamp};
 use crate::error::AppError;
+use crate::rbac::{self, Action, Actor};
 use crate::state::AppState;
 
 /// The V0 floor for `min_size_bytes` in the sanity check. The spec
@@ -44,6 +45,11 @@ pub fn expected_min_bytes(source_size: u64) -> u64 {
 /// check, the row is recorded as `Failed` with `error` set, the
 /// snapshot file is removed, and an `Err` is returned.
 pub async fn create_backup(state: &AppState, actor: &str) -> Result<Backup, AppError> {
+    // RBAC: verify the actor is allowed to create backups.
+    let actor_obj = Actor::from_str_loose(actor);
+    rbac::check(&actor_obj, Action::BackupCreate)
+        .map_err(|e| AppError::Unauthorized(e.to_string()))?;
+
     let sink = state
         .backup
         .as_deref()
@@ -169,6 +175,11 @@ pub async fn verify_backup(
     id: BackupId,
     actor: &str,
 ) -> Result<Backup, AppError> {
+    // RBAC: verify the actor is allowed to verify backups.
+    let actor_obj = Actor::from_str_loose(actor);
+    rbac::check(&actor_obj, Action::BackupCreate)
+        .map_err(|e| AppError::Unauthorized(e.to_string()))?;
+
     let sink = state
         .backup
         .as_deref()
@@ -228,6 +239,11 @@ pub async fn restore_backup(
     target_path: &Path,
     actor: &str,
 ) -> Result<Backup, AppError> {
+    // RBAC: verify the actor is allowed to restore backups.
+    let actor_obj = Actor::from_str_loose(actor);
+    rbac::check(&actor_obj, Action::BackupCreate)
+        .map_err(|e| AppError::Unauthorized(e.to_string()))?;
+
     let sink = state
         .backup
         .as_deref()

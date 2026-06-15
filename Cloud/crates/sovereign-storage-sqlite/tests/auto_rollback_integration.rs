@@ -166,6 +166,7 @@ async fn prober_does_not_fire_below_threshold() {
                 image_ref: Some("nginx:alpine".into()),
                 config_yaml: "kind: app\nname: api\n".into(),
                 health_path: Some("/health".into()),
+                ..Default::default()
             },
             "user:alice",
         )
@@ -203,6 +204,7 @@ async fn prober_fires_on_threshold_and_records_audit() {
                 image_ref: Some("nginx:alpine".into()),
                 config_yaml: "kind: app\nname: api\n".into(),
                 health_path: Some("/health".into()),
+                ..Default::default()
             },
             "user:alice",
         )
@@ -265,6 +267,7 @@ async fn prober_resets_streak_on_success() {
                 image_ref: Some("nginx:alpine".into()),
                 config_yaml: "kind: app\nname: api\n".into(),
                 health_path: Some("/health".into()),
+                ..Default::default()
             },
             "user:alice",
         )
@@ -306,6 +309,7 @@ async fn auto_rollback_with_no_previous_healthy_marks_failed() {
                 image_ref: Some("nginx:alpine".into()),
                 config_yaml: "kind: app\nname: api\n".into(),
                 health_path: Some("/health".into()),
+                ..Default::default()
             },
             "user:alice",
         )

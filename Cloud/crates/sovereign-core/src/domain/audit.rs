@@ -30,6 +30,8 @@ pub enum AuditKind {
     User,
     /// Catch-all for `sovereign doctor` events, CLI config changes, etc.
     System,
+    /// `webhook.received`, `webhook.dispatched`, `webhook.rejected`.
+    Webhook,
 }
 
 impl AuditKind {
@@ -46,6 +48,7 @@ impl AuditKind {
             Self::Server => "server",
             Self::User => "user",
             Self::System => "system",
+            Self::Webhook => "webhook",
         }
     }
 }
@@ -79,6 +82,9 @@ pub mod kind {
     pub const SERVER_REMOVE: AuditKind = AuditKind::Server;
     pub const USER_LOGIN: AuditKind = AuditKind::User;
     pub const DOCTOR_RUN: AuditKind = AuditKind::System;
+    pub const WEBHOOK_RECEIVED: AuditKind = AuditKind::Webhook;
+    pub const WEBHOOK_DISPATCHED: AuditKind = AuditKind::Webhook;
+    pub const WEBHOOK_REJECTED: AuditKind = AuditKind::Webhook;
 }
 
 /// A single row in the `audit_event` table.

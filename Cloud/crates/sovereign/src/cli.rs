@@ -130,7 +130,8 @@ pub enum Cmd {
         /// App to deploy (defaults to the app in the current directory)
         #[arg(long)]
         app: Option<String>,
-        /// Image to deploy (overrides the app.yaml)
+        /// Image to deploy (overrides the app.yaml). For native mode,
+        /// this is the path to the .sov archive.
         #[arg(long)]
         image: Option<String>,
         /// Deployment strategy
@@ -142,6 +143,12 @@ pub enum Cmd {
         /// Don't write `sovereign.lock` in the repo (F5 sub-task 5)
         #[arg(long)]
         no_lock: bool,
+        /// (Native mode) Binary path inside the .sov archive
+        #[arg(long)]
+        native_binary: Option<String>,
+        /// (Native mode) Exec start template (e.g. "./myapp --port {port}")
+        #[arg(long)]
+        native_exec_start: Option<String>,
     },
 
     /// Roll back an app to a previous deployment
@@ -249,6 +256,32 @@ pub enum Cmd {
     Service {
         #[command(subcommand)]
         cmd: ServiceCmd,
+    },
+
+    /// Start or manage the long-running daemon process. The daemon
+    /// runs the HTTP server (webhooks, health, metrics) and the
+    /// Telegram poller as a single systemd service.
+    Daemon {
+        #[command(subcommand)]
+        cmd: DaemonCmd,
+    },
+
+    /// Manage Telegram chatops (bot binding, poller lifecycle)
+    Chatops {
+        #[command(subcommand)]
+        cmd: ChatopsCmd,
+    },
+
+    /// Manage users (add, list, disable, enable, whoami)
+    User {
+        #[command(subcommand)]
+        cmd: UserCmd,
+    },
+
+    /// Manage API tokens (create, list, revoke)
+    Token {
+        #[command(subcommand)]
+        cmd: TokenCmd,
     },
 
     /// Generate the man page (writes sovereign.1 to the given directory)
@@ -396,6 +429,121 @@ pub enum ServiceCmd {
     },
     /// List all managed system services with their current status
     List,
+}
+
+/// The daemon subcommand tree. Runs the long-lived HTTP server and
+/// Telegram poller as a single process, managed by systemd.
+#[derive(Subcommand, Debug)]
+pub enum DaemonCmd {
+    /// Start the daemon (blocks until SIGTERM/SIGINT)
+    Start {
+        /// Listen address override (default: 127.0.0.1:8443)
+        #[arg(long)]
+        listen: Option<String>,
+    },
+    /// Install the systemd unit file and enable the service
+    Install {
+        /// Override the unit name (default: sovereign-daemon)
+        #[arg(long, default_value = "sovereign-daemon")]
+        unit_name: String,
+    },
+    /// Show daemon status (is it running? uptime? version?)
+    Status,
+    /// Show recent daemon logs (journalctl -u sovereign-daemon -n 50)
+    Logs {
+        /// Number of lines to show
+        #[arg(long, default_value_t = 50)]
+        lines: u32,
+    },
+}
+
+/// The chatops subcommand tree. Manages the Telegram bot binding
+/// and poller lifecycle.
+#[derive(Subcommand, Debug)]
+pub enum ChatopsCmd {
+    /// Generate a 6-digit binding code and print a deeplink.
+    /// The operator shares the deeplink with the user; the user
+    /// clicks it to send `/start <code>` to the bot.
+    Init {
+        /// Sovereign user email to bind
+        #[arg(long)]
+        user: String,
+    },
+    /// Start the Telegram long-polling loop (blocks).
+    /// Requires SOVEREIGN_TELEGRAM_TOKEN env var or --token flag.
+    Start {
+        /// Telegram bot token (env: SOVEREIGN_TELEGRAM_TOKEN)
+        #[arg(long, env = "SOVEREIGN_TELEGRAM_TOKEN", hide_env_values = true)]
+        token: Option<String>,
+    },
+    /// Revoke a Telegram binding (unbind chat_id from user)
+    Revoke {
+        /// User email to unbind
+        #[arg(long)]
+        user: String,
+    },
+    /// List active Telegram bindings
+    Bindings,
+}
+
+/// User management subcommands.
+#[derive(Subcommand, Debug, Clone)]
+pub enum UserCmd {
+    /// Add a new user. First user becomes admin (bootstrap).
+    Add {
+        /// Email address
+        email: String,
+        /// Password (reads from stdin if not provided)
+        #[arg(long)]
+        password: bool,
+        /// Role (default: viewer)
+        #[arg(long, default_value = "viewer")]
+        role: String,
+        /// Display name
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// List all users
+    List {
+        /// Filter by role
+        #[arg(long)]
+        role: Option<String>,
+    },
+    /// Disable a user (soft-delete)
+    Disable {
+        /// Email of user to disable
+        email: String,
+    },
+    /// Re-enable a disabled user
+    Enable {
+        /// Email of user to enable
+        email: String,
+    },
+    /// Show current user context
+    Whoami,
+}
+
+/// API token management subcommands.
+#[derive(Subcommand, Debug, Clone)]
+pub enum TokenCmd {
+    /// Create a new API token
+    Create {
+        /// Token name
+        name: String,
+        /// Comma-separated scopes (e.g. "app.deploy,secret.read")
+        #[arg(long)]
+        scopes: String,
+        /// TTL (e.g. "30d", "24h")
+        #[arg(long)]
+        ttl: Option<String>,
+    },
+    /// List API tokens
+    List,
+    /// Revoke an API token
+    Revoke {
+        /// Token name to revoke
+        name: String,
+    },
 }
 
 /// The diagnostic level argument for the CLI. Mirrors

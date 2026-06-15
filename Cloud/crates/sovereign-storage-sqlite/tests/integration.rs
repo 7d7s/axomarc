@@ -136,6 +136,7 @@ fn sample_app(name: &str) -> NewApp {
         image_ref: None,
         config_yaml: "kind: app\nname: api\n".to_string(),
         health_path: Some("/healthz".to_string()),
+        ..Default::default()
     }
 }
 

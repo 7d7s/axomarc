@@ -3,10 +3,10 @@
 // At V0, the wiring is intentionally thin — the heavy lifting is in
 // `sovereign_core::use_cases::deploy::start_deploy`. The CLI:
 //   1. opens storage at the default path
-//   2. connects the Docker runtime (env DOCKER_HOST or platform default)
-//   3. resolves the app by name (the CLI gets a `String` from `--app`;
+//   2. resolves the app by name (the CLI gets a `String` from `--app`;
 //      we look it up in storage by name, not by id)
-//   4. calls the use case
+//   3. if deploy_mode == Native, call native_deploy()
+//   4. otherwise, connect Docker runtime and call start_deploy()
 //   5. prints the URL on success / the error on failure
 //
 // If no Docker daemon is available the subcommand returns a clean
@@ -16,20 +16,18 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use sovereign_backup::FileBackupSink;
-use sovereign_core::domain::Strategy;
+use sovereign_core::domain::{DeployMode, Strategy};
 use sovereign_core::error::AppError;
-use sovereign_core::ports::{BackupSink, ProxyPort, RuntimePort, SecretsPort, StoragePort};
+use sovereign_core::ports::{RuntimePort, StoragePort};
 use sovereign_core::state::AppState;
 use sovereign_core::use_cases::deploy::{self, DeployRequest};
-use sovereign_proxy_caddy::CaddyProxy;
 use sovereign_runtime_docker::DockerRuntime;
-use sovereign_secrets_age::AgeSecrets;
 use sovereign_storage_sqlite::SqliteState;
 use tracing::instrument;
 
 use crate::cli::Cmd;
 use crate::commands::Dispatch;
+use crate::connect;
 use crate::exit::AppExit;
 use crate::output::{Envelope, Output};
 
@@ -37,23 +35,28 @@ use crate::output::{Envelope, Output};
 /// directly so this is easy to test.
 #[instrument(skip(out))]
 pub async fn run(cmd: &Cmd, out: &Output) -> Dispatch {
-    let (app_name, image, strategy, wait, no_lock, actor) = match cmd {
-        Cmd::Deploy {
-            app,
-            image,
-            strategy,
-            wait,
-            no_lock,
-        } => (
-            app.clone().unwrap_or_default(),
-            image.clone(),
-            *strategy,
-            *wait,
-            *no_lock,
-            "cli".to_string(),
-        ),
-        _ => return Dispatch::Err(AppExit::Generic),
-    };
+    let (app_name, image, strategy, wait, no_lock, actor, native_binary, native_exec_start) =
+        match cmd {
+            Cmd::Deploy {
+                app,
+                image,
+                strategy,
+                wait,
+                no_lock,
+                native_binary,
+                native_exec_start,
+            } => (
+                app.clone().unwrap_or_default(),
+                image.clone(),
+                *strategy,
+                *wait,
+                *no_lock,
+                "cli".to_string(),
+                native_binary.clone(),
+                native_exec_start.clone(),
+            ),
+            _ => return Dispatch::Err(AppExit::Generic),
+        };
 
     if app_name.is_empty() {
         return err(
@@ -63,10 +66,8 @@ pub async fn run(cmd: &Cmd, out: &Output) -> Dispatch {
         );
     }
 
-    // 1. Open storage. The DB lives in the data dir; for V0 we just
-    //    look in the platform-default location and let the open fail
-    //    cleanly with a "data dir not initialized" message.
-    let db_path = default_db_path();
+    // 1. Open storage.
+    let db_path = connect::default_db_path();
     let storage = match SqliteState::open(&db_path).await {
         Ok(s) => Arc::new(s) as Arc<dyn StoragePort>,
         Err(e) => {
@@ -81,9 +82,7 @@ pub async fn run(cmd: &Cmd, out: &Output) -> Dispatch {
         }
     };
 
-    // 2. Resolve the app by name. If it's not there, we fail fast
-    //    with a NotFound error message (rather than starting a
-    //    half-deploy).
+    // 2. Resolve the app by name.
     let app = match storage
         .get_app_by_name(&app_name)
         .await
@@ -100,9 +99,12 @@ pub async fn run(cmd: &Cmd, out: &Output) -> Dispatch {
         Err(e) => return err(out, AppExit::Generic, &format!("storage error: {e}")),
     };
 
-    // 3. Resolve the image. Prefer the CLI's --image flag, then the
-    //    app's pinned `image_ref` (set by the last successful deploy
-    //    or by `sovereign init`).
+    // 3. Branch on deploy mode.
+    if app.deploy_mode == DeployMode::Native {
+        return run_native(out, &app_name, &app, image, native_binary, native_exec_start, &db_path).await;
+    }
+
+    // Docker path (pull / build / pack modes).
     let image_ref = image
         .or_else(|| app.image_ref.clone())
         .ok_or_else(|| AppError::validation("either --image or app.image_ref must be set"));
@@ -111,8 +113,6 @@ pub async fn run(cmd: &Cmd, out: &Output) -> Dispatch {
         Err(e) => return err(out, AppExit::Usage, &format!("{e}")),
     };
 
-    // 4. Connect the Docker runtime. If it fails, the operator sees
-    //    a clear "cannot connect to docker" error.
     let runtime = match DockerRuntime::connect_from_env().await {
         Ok(r) => Arc::new(r) as Arc<dyn RuntimePort>,
         Err(e) => {
@@ -130,9 +130,9 @@ pub async fn run(cmd: &Cmd, out: &Output) -> Dispatch {
     let state = AppState {
         storage,
         runtime,
-        proxy: connect_proxy().await,
-        secrets: connect_secrets(),
-        backup: connect_backup(&db_path),
+        proxy: connect::connect_proxy().await,
+        secrets: connect::connect_secrets(),
+        backup: connect::connect_backup(),
         db_path,
     };
     let req = DeployRequest {
@@ -152,10 +152,6 @@ pub async fn run(cmd: &Cmd, out: &Output) -> Dispatch {
 
     match deploy::start_deploy(&state, req).await {
         Ok(result) => {
-            // F5 sub-task 5: write the `sovereign.lock` receipt for
-            // healthy deploys. Best-effort — a failure to write the
-            // lock or to `git push` is a warning, not a deploy fail
-            // (the audit log + DB row are the source of truth).
             let lock_outcome = if !no_lock
                 && result.deployment.status == sovereign_core::domain::DeploymentStatus::Healthy
             {
@@ -206,10 +202,109 @@ pub async fn run(cmd: &Cmd, out: &Output) -> Dispatch {
     }
 }
 
+/// Native deploy path: extract binary from .sov archive, install systemd unit.
+async fn run_native(
+    out: &Output,
+    app_name: &str,
+    app: &sovereign_core::domain::App,
+    archive_path: Option<String>,
+    native_binary: Option<String>,
+    native_exec_start: Option<String>,
+    db_path: &std::path::Path,
+) -> Dispatch {
+    let archive = match archive_path {
+        Some(p) => std::path::PathBuf::from(p),
+        None => {
+            return err(
+                out,
+                AppExit::Usage,
+                "native deploy requires --image <path-to.sov>",
+            );
+        }
+    };
+    if !archive.exists() {
+        return err(
+            out,
+            AppExit::Usage,
+            &format!("archive not found: {}", archive.display()),
+        );
+    }
+
+    let binary_path = native_binary.unwrap_or_else(|| app_name.to_string());
+    let exec_start = native_exec_start.unwrap_or_else(|| format!("./{app_name} --port {{port}}"));
+    let health_path = app.health_path.as_deref().unwrap_or("/health");
+
+    // Decrypt secrets for env injection. Build a minimal AppState
+    // just for secret resolution (native deploy doesn't use RuntimePort).
+    let storage = match SqliteState::open(db_path).await {
+        Ok(s) => Arc::new(s) as Arc<dyn StoragePort>,
+        Err(e) => {
+            return err(out, AppExit::Upstream, &format!("reopen storage: {e}"));
+        }
+    };
+    let secrets = connect::connect_secrets();
+    // env_for_deploy needs AppState but we don't have a RuntimePort.
+    // Build a minimal state with a dummy runtime (never used for native).
+    let dummy_runtime: Arc<dyn RuntimePort> = Arc::new(DummyRuntime);
+    let state = AppState {
+        storage,
+        runtime: dummy_runtime,
+        proxy: None,
+        secrets,
+        backup: None,
+        db_path: db_path.to_path_buf(),
+    };
+    let env = match sovereign_core::use_cases::secret::env_for_deploy(&state, app.id).await {
+        Ok(e) => e,
+        Err(e) => {
+            return err(out, AppExit::Upstream, &format!("secret resolve: {e}"));
+        }
+    };
+
+    if out.format() == crate::output::Format::Text {
+        let _ = out.text(&format!(
+            "deploying {} (native mode, archive={})...",
+            app.name,
+            archive.display()
+        ));
+    }
+
+    match crate::native_runtime::native_deploy(
+        app_name,
+        &archive,
+        &binary_path,
+        &exec_start,
+        &env,
+        health_path,
+    )
+    .await
+    {
+        Ok(result) => {
+            let url = format!("http://127.0.0.1:{}", result.port);
+            if out.format() == crate::output::Format::Text {
+                let _ = out.text(&format!(
+                    "{} is live at {} (port={}, user={})",
+                    app.name, url, result.port, result.user
+                ));
+            } else {
+                let env = Envelope::<serde_json::Value>::ok(serde_json::json!({
+                    "app": app.name,
+                    "mode": "native",
+                    "port": result.port,
+                    "url": url,
+                    "bin_path": result.bin_path,
+                    "user": result.user,
+                }));
+                let _ = out.success(&env);
+            }
+            Dispatch::Ok
+        }
+        Err(e) => err(out, AppExit::Upstream, &format!("native deploy failed: {e}")),
+    }
+}
+
 /// Convert the CLI's clap-derive `Strategy` enum into the core's
-/// domain `Strategy` enum. They have the same variants today; the
-/// indirection lets the CLI surface stay in `cli.rs` (clap deps)
-/// while the domain stays free of clap.
+/// domain `Strategy` enum.
 fn cli_strategy_to_core(s: crate::cli::Strategy) -> Strategy {
     match s {
         crate::cli::Strategy::BlueGreen => Strategy::BlueGreen,
@@ -218,55 +313,10 @@ fn cli_strategy_to_core(s: crate::cli::Strategy) -> Strategy {
     }
 }
 
-/// Resolve the default data dir. Linux: `~/.local/share/sovereign/sovereign.db`.
-/// macOS: `~/Library/Application Support/sovereign/sovereign.db`.
-/// Windows: `%APPDATA%\sovereign\sovereign.db`. Falls back to `./sovereign.db`.
+/// Re-export `connect::default_db_path` for callers that still
+/// reference it as `commands_deploy::default_db_path`.
 pub(crate) fn default_db_path() -> std::path::PathBuf {
-    if let Some(dir) = dirs_data() {
-        dir.join("sovereign").join("sovereign.db")
-    } else {
-        std::path::PathBuf::from("./sovereign.db")
-    }
-}
-
-/// Default backup directory. Sits next to the data dir; the on-disk
-/// layout mirrors `/var/lib/sovereign/backups/` on Linux production
-/// installs.
-pub(crate) fn default_backup_dir() -> std::path::PathBuf {
-    let db = default_db_path();
-    db.parent()
-        .map(|p| p.join("backups"))
-        .unwrap_or_else(|| std::path::PathBuf::from("./backups"))
-}
-
-/// Connect the filesystem backup sink. Always succeeds — the sink is
-/// a thin wrapper around a directory. A missing/unwritable directory
-/// becomes a runtime error the first time the operator tries to
-/// `sovereign backup create`.
-pub(crate) fn connect_backup(db_path: &std::path::Path) -> Option<Arc<dyn BackupSink>> {
-    let dir = db_path
-        .parent()
-        .map(|p| p.join("backups"))
-        .unwrap_or_else(default_backup_dir);
-    Some(Arc::new(FileBackupSink::new(dir)))
-}
-
-#[cfg(unix)]
-fn dirs_data() -> Option<std::path::PathBuf> {
-    std::env::var_os("XDG_DATA_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| {
-                let mut p = std::path::PathBuf::from(h);
-                p.push(".local/share");
-                p
-            })
-        })
-}
-
-#[cfg(windows)]
-fn dirs_data() -> Option<std::path::PathBuf> {
-    std::env::var_os("APPDATA").map(std::path::PathBuf::from)
+    connect::default_db_path()
 }
 
 fn err(out: &Output, code: AppExit, msg: &str) -> Dispatch {
@@ -279,62 +329,28 @@ fn err(out: &Output, code: AppExit, msg: &str) -> Dispatch {
     Dispatch::Err(code)
 }
 
-/// Connect to the local Caddy admin API. Returns `None` if Caddy is
-/// not reachable — deploy/rollback fall back to the
-/// `sovereign://<host>` URL in that case, which is correct for a
-/// test environment. The operator sees a clear "no proxy
-/// configured" message on the deploy receipt.
-pub(crate) async fn connect_proxy() -> Option<Arc<dyn ProxyPort>> {
-    match CaddyProxy::connect_from_env().await {
-        Ok(p) => {
-            tracing::info!("caddy admin API reachable; routes will be wired");
-            Some(Arc::new(p) as Arc<dyn ProxyPort>)
-        }
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                "caddy admin API not reachable; deploy URL will be the loopback placeholder. Run `sovereign domain add` once Caddy is up."
-            );
-            None
-        }
-    }
-}
+/// Placeholder runtime for native deploy (secret resolution only).
+/// Never actually called — native deploy uses sovereign-systemd directly.
+struct DummyRuntime;
 
-/// Open (or create) the age master key. Returns `None` if the
-/// master-key dir is not yet provisioned OR the passphrase is
-/// missing — in either case, the deploy continues with no env
-/// injection (the use case returns an empty env list). The CLI
-/// prints a one-time hint to run `sovereign secret set` (which
-/// auto-creates the key).
-pub(crate) fn connect_secrets() -> Option<Arc<dyn SecretsPort>> {
-    // V0.5+: every command that touches the master key needs the
-    // passphrase. We read it from the env var or prompt. If neither
-    // is available (e.g., a non-interactive deploy in CI with no
-    // SOVEREIGN_PASSPHRASE set), we opt out silently and let the
-    // use case return an empty env list.
-    let passphrase = match crate::commands_login::read_passphrase_or_prompt() {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                "no passphrase available; secrets will NOT be injected. Set SOVEREIGN_PASSPHRASE or run `sovereign login` first."
-            );
-            return None;
-        }
-    };
-    let secrets = AgeSecrets::with_default_path(passphrase);
-    // Probe: try a no-op encrypt of an empty buffer. If the master
-    // key is reachable, this returns Ok; if not (parent dir
-    // missing, perms wrong, etc.), it returns Err. We do NOT want
-    // to fail the deploy — just opt out of secret injection.
-    match secrets.encrypt(b"") {
-        Ok(_) => Some(Arc::new(secrets) as Arc<dyn SecretsPort>),
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                "master key not available; secrets will NOT be injected into the container. Run `sovereign login` to bootstrap."
-            );
-            None
-        }
+#[async_trait::async_trait]
+impl RuntimePort for DummyRuntime {
+    async fn pull_image(&self, _: &str) -> Result<(), AppError> {
+        Err(AppError::internal("dummy runtime"))
+    }
+    async fn create_container(&self, _: sovereign_core::ports::ContainerSpec) -> Result<String, AppError> {
+        Err(AppError::internal("dummy runtime"))
+    }
+    async fn start_container(&self, _: &str) -> Result<(), AppError> {
+        Err(AppError::internal("dummy runtime"))
+    }
+    async fn stop_container(&self, _: &str, _: std::time::Duration) -> Result<(), AppError> {
+        Err(AppError::internal("dummy runtime"))
+    }
+    async fn remove_container(&self, _: &str) -> Result<(), AppError> {
+        Err(AppError::internal("dummy runtime"))
+    }
+    async fn healthcheck(&self, _: &str, _: u16, _: &str, _: std::time::Duration) -> Result<sovereign_core::ports::HealthResult, AppError> {
+        Err(AppError::internal("dummy runtime"))
     }
 }

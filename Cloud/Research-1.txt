@@ -1,0 +1,2459 @@
+
+Act as a Principal Platform Engineer, Staff DevOps Engineer, Senior SRE, Startup CTO, Platform Product Manager, Infrastructure Architect, Linux Systems Engineer, and Operator with experience running infrastructure from a single VPS to thousands of servers.
+
+Your mission is NOT to generate feature lists.
+
+Your mission is to discover the highest-value operational capabilities that developers, startups, agencies, and platform teams actually use in production.
+
+Reject hype.
+
+Reject trend-driven features.
+
+Reject enterprise checkbox features.
+
+Reject AI-generated feature inflation.
+
+Focus only on capabilities that save time, reduce incidents, improve reliability, reduce operational complexity, or increase deployment velocity.
+
+---
+
+# Product Context
+
+The product is a:
+
+"Sovereign Application Runtime"
+
+Characteristics:
+
+* Self-hosted
+* Rust-based
+* Lightweight
+* Static binary
+* CLI-first
+* TUI-first
+* API-first
+* Cloud agnostic
+* VPS friendly
+* Startup friendly
+* Linux native
+* Runs without Kubernetes
+* Runs without cloud dependencies
+* Operates online or offline
+* Data remains under customer control
+
+Target Users:
+
+1. Solo Developers
+2. Freelancers
+3. Agencies
+4. Startups (1-20 engineers)
+5. Startups (20-100 engineers)
+6. Self-hosting enthusiasts
+7. Infrastructure teams
+
+Do not assume enterprise requirements.
+
+Do not assume Kubernetes.
+
+Do not assume platform teams.
+
+---
+
+# Feature Discovery Rules
+
+Every feature must answer:
+
+1. What operational task does it replace?
+2. How often is the task performed?
+3. What is the manual alternative?
+4. How much time does it save?
+5. What incidents does it prevent?
+6. Does value increase as infrastructure grows?
+7. Can a solo developer justify using it?
+8. Can a startup justify using it?
+9. What maintenance burden does it introduce?
+10. What complexity does it introduce?
+
+Reject features that cannot answer these questions.
+
+---
+
+# Operational Action Analysis
+
+Identify the top 200 real-world operational actions performed by:
+
+* Backend Developers
+* DevOps Engineers
+* SREs
+* Startup Founders
+* Platform Engineers
+* Linux Administrators
+
+Examples:
+
+* Deploy application
+* Rollback release
+* Restart service
+* View logs
+* Scale service
+* Add domain
+* Renew SSL
+* Create backup
+* Restore backup
+* Rotate secret
+* Provision server
+* Monitor health
+* Check metrics
+* Create environment
+* Clone environment
+
+For each action provide:
+
+Action:
+Frequency:
+Pain Level:
+Automation Potential:
+Business Impact:
+Priority:
+
+---
+
+# Core Runtime Features
+
+Discover all realistic capabilities related to:
+
+## Deployment
+
+* Build
+* Deploy
+* Rollback
+* Canary
+* Blue-Green
+* Health Validation
+* Release Management
+
+Evaluate each.
+
+---
+
+## Runtime Operations
+
+* Restart
+* Stop
+* Start
+* Scaling
+* Resource Limits
+* Runtime Status
+* Runtime Recovery
+
+Evaluate each.
+
+---
+
+## Networking
+
+* Domains
+* DNS
+* SSL
+* Wildcards
+* Routing
+* Internal Networking
+* Service Discovery
+
+Evaluate each.
+
+---
+
+## Secrets
+
+* Storage
+* Encryption
+* Rotation
+* Injection
+* Auditing
+
+Evaluate each.
+
+---
+
+## Storage
+
+* Volumes
+* Snapshots
+* Backups
+* Restore
+* Migration
+
+Evaluate each.
+
+---
+
+## Databases
+
+* Provisioning
+* Backup
+* Restore
+* Cloning
+* Migration
+
+Evaluate each.
+
+---
+
+## Logs
+
+* Collection
+* Search
+* Streaming
+* Retention
+* Export
+
+Evaluate each.
+
+---
+
+## Monitoring
+
+* CPU
+* RAM
+* Disk
+* Network
+* Process
+* Application Metrics
+
+Evaluate each.
+
+---
+
+## Alerting
+
+* Email
+* Telegram
+* Slack
+* Discord
+* Webhooks
+
+Evaluate each.
+
+---
+
+# Startup Scale Features
+
+Determine which features become valuable when infrastructure grows from:
+
+1 Server
+→ 5 Servers
+→ 20 Servers
+→ 100 Servers
+
+Examples:
+
+* Multi-Server Deployment
+* Fleet Management
+* Environment Promotion
+* Preview Environments
+* Cluster Coordination
+* Traffic Splitting
+
+Evaluate real-world usefulness.
+
+---
+
+# Governance Features
+
+Only include governance features that developers actually use.
+
+Evaluate:
+
+* Audit Logs
+* Deployment History
+* Secret History
+* Change Tracking
+* Approval Flows
+* Environment Protection
+* Access Reviews
+
+Reject compliance theater.
+
+Focus on operational value.
+
+---
+
+# Sovereignty Features
+
+Evaluate:
+
+* Self Hosting
+* Offline Mode
+* Air-Gapped Operation
+* Exportability
+* Migration
+* Backup Independence
+* Vendor Independence
+* Local Control Plane
+
+Determine:
+
+Mandatory
+Important
+Optional
+Unnecessary
+
+---
+
+# Reliability Features
+
+Evaluate:
+
+* Auto Rollback
+* Health Validation
+* Recovery Automation
+* Disaster Recovery
+* Snapshot Restore
+* Deployment Verification
+* Backup Verification
+
+Rank by operational value.
+
+---
+
+# Linux Native Features
+
+Evaluate capabilities specific to Linux operators:
+
+* systemd Integration
+* Journal Integration
+* SSH Operations
+* Firewall Management
+* Certificate Management
+* Package Management
+* Resource Monitoring
+
+Determine usefulness.
+
+---
+
+# TUI Features
+
+Determine what developers would actually use daily.
+
+Evaluate:
+
+* Dashboard
+* Logs
+* Deployments
+* Rollbacks
+* Metrics
+* Alerts
+* Domains
+* Secrets
+* Backups
+
+Rank by daily value.
+
+---
+
+# Feature Scoring Model
+
+For every feature calculate:
+
+Frequency Score (1-10)
+Time Saved Score (1-10)
+Reliability Impact (1-10)
+Scaling Value (1-10)
+Complexity Cost (1-10)
+
+Final Score:
+
+(Frequency + Time Saved + Reliability + Scaling) - Complexity
+
+---
+
+# Feature Classification
+
+Classify every feature into:
+
+## P0 — Mandatory
+
+Used weekly by most users.
+
+## P1 — High Value
+
+Used regularly.
+
+## P2 — Growth
+
+Useful after adoption.
+
+## P3 — Enterprise
+
+Do not build initially.
+
+## Reject
+
+Low value.
+Low usage.
+High complexity.
+Trend-driven.
+
+---
+
+# Deliverables
+
+Produce:
+
+1. Top 200 Operational Actions
+2. Top 100 Features Ranked
+3. P0 Features
+4. P1 Features
+5. P2 Features
+6. P3 Features
+7. Features To Reject
+8. Feature Dependency Graph
+9. Solo Developer Roadmap
+10. Startup Roadmap
+11. Scale Roadmap
+12. Governance Roadmap
+13. Sovereignty Roadmap
+14. Reliability Roadmap
+15. Linux Native Roadmap
+16. TUI Roadmap
+17. Final MVP
+18. Final V1
+19. Final V2
+20. Long-Term Platform Vision
+
+Important:
+
+Do not optimize for feature count.
+
+Do not optimize for enterprise sales.
+
+Do not optimize for trends.
+
+Optimize for:
+
+* Time saved
+* Reliability gained
+* Operational simplicity
+* Scale readiness
+* Long-term maintainability
+* Real-world production usage
+
+If your goal is:
+
+> Build a tool today that solves your deployment headache, but can evolve into a platform later.
+
+Then the biggest mistake is building the platform first.
+
+Build the **core engine** first.
+
+---
+
+# Product Vision
+
+## Mission
+
+A lightweight deployment and platform runtime for developers who don't want Kubernetes.
+
+```text
+Git Push
+   ↓
+Build
+   ↓
+Deploy
+   ↓
+Health Check
+   ↓
+Traffic Switch
+   ↓
+Rollback
+```
+
+Everything else becomes a plugin around this core.
+
+---
+
+# Core Philosophy
+
+### Not
+
+* Kubernetes
+* PaaS clone
+* Cloud provider
+* Internal developer platform
+
+### Yes
+
+* Single binary
+* Self-hosted
+* CLI-first
+* API-first
+* Extensible
+
+---
+
+# Architecture
+
+```text
+                 CLI
+                  │
+                  ▼
+          Control Plane API
+                  │
+        ┌─────────┼─────────┐
+        ▼         ▼         ▼
+
+    Deploy    Proxy     Secrets
+
+        ▼
+     Runtime
+        │
+ ┌──────┼──────┐
+ ▼      ▼      ▼
+
+Docker Podman Future
+```
+
+---
+
+# Layer 1 — Deployment Engine (MVP)
+
+This is the actual product.
+
+### Applications
+
+```yaml
+app: api
+
+source:
+  github: owner/repo
+
+build:
+  dockerfile: Dockerfile
+
+deploy:
+  replicas: 1
+
+health:
+  path: /health
+
+domain:
+  api.example.com
+```
+
+---
+
+### Commands
+
+```bash
+tool deploy api
+tool rollback api
+tool logs api
+tool restart api
+tool status api
+```
+
+---
+
+# Layer 2 — Runtime Abstraction
+
+Never tie yourself directly to Docker.
+
+Create an interface.
+
+```rust
+trait Runtime {
+    deploy()
+    stop()
+    restart()
+    logs()
+}
+```
+
+Adapters:
+
+```text
+Docker Runtime
+Podman Runtime
+Kubernetes Runtime (future)
+Nomad Runtime (future)
+```
+
+This prevents a rewrite later.
+
+---
+
+# Layer 3 — Reverse Proxy Engine
+
+Abstract this too.
+
+```rust
+trait Proxy {
+    add_route()
+    remove_route()
+    update_route()
+}
+```
+
+Initial:
+
+```text
+Caddy
+```
+
+Future:
+
+```text
+Nginx
+Traefik
+HAProxy
+```
+
+---
+
+# Layer 4 — Storage Engine
+
+Start with:
+
+```text
+SQLite
+```
+
+Tables:
+
+```text
+apps
+deployments
+domains
+servers
+secrets
+events
+```
+
+Future:
+
+```text
+PostgreSQL
+```
+
+No reason to start there.
+
+---
+
+# Future Platform Expansion
+
+Now it becomes a platform.
+
+---
+
+## Feature 1
+
+### Multi Server
+
+Current
+
+```text
+1 Server
+```
+
+Future
+
+```text
+Server A
+Server B
+Server C
+```
+
+Deploy:
+
+```bash
+tool deploy api --cluster production
+```
+
+---
+
+## Feature 2
+
+### Secrets Management
+
+```bash
+tool secret set DATABASE_URL
+```
+
+Encrypted.
+
+Injected during deployment.
+
+---
+
+## Feature 3
+
+### Backup Engine
+
+```bash
+tool backup create postgres
+```
+
+Schedules:
+
+```yaml
+daily
+weekly
+monthly
+```
+
+---
+
+## Feature 4
+
+### Monitoring
+
+Basic first.
+
+```text
+CPU
+RAM
+Disk
+Network
+```
+
+No Prometheus initially.
+
+---
+
+## Feature 5
+
+### Logs
+
+```bash
+tool logs api
+```
+
+Central aggregation.
+
+---
+
+## Feature 6
+
+### Deploy Pipelines
+
+```yaml
+pipeline:
+  - build
+  - test
+  - deploy
+  - verify
+```
+
+---
+
+## Feature 7
+
+### Templates
+
+```bash
+tool init fastapi
+tool init nextjs
+tool init laravel
+```
+
+Huge productivity gain.
+
+---
+
+# Real Platform Direction
+
+Most people think:
+
+```text
+Deployment Tool
+     ↓
+PaaS
+```
+
+I think stronger path is:
+
+```text
+Deployment Tool
+     ↓
+Runtime Management
+     ↓
+Infrastructure Automation
+     ↓
+Platform Runtime
+```
+
+Meaning:
+
+Instead of competing with:
+
+* Kubernetes
+* OpenShift
+* Rancher
+
+You compete with:
+
+> "The amount of manual work required to run applications."
+
+---
+
+# Suggested Modules
+
+```text
+core/
+├── deploy
+├── runtime
+├── proxy
+├── health
+├── rollback
+
+services/
+├── logs
+├── metrics
+├── secrets
+├── backup
+
+providers/
+├── docker
+├── podman
+├── caddy
+├── nginx
+
+storage/
+├── sqlite
+├── postgres
+
+cli/
+api/
+dashboard/
+```
+
+---
+
+# What I Would Build First (30 Days)
+
+### Week 1
+
+* CLI
+* SQLite
+* App registration
+* Docker integration
+
+### Week 2
+
+* Blue/Green deployment
+* Health checks
+* Rollback
+
+### Week 3
+
+* Caddy integration
+* Domain management
+* SSL automation
+
+### Week 4
+
+* GitHub webhook deployment
+* Logs
+* Deployment history
+
+At this point you already have a usable product.
+
+---
+
+# Brutal Verdict
+
+The strongest version is **not a platform**.
+
+The strongest version is:
+
+> A deployment engine with clean abstractions that can become a platform.
+
+
+If I were designing this as a **serious long-term product**, I would separate features into **Core Platform**, **Operations**, **Developer Experience**, and **Future Platform**.
+
+The mistake most founders make is adding 50 features before solving deployment.
+
+---
+
+# Product Vision
+
+> Self-hosted Application Runtime for Solo Developers and Startups.
+
+Not:
+
+* Kubernetes replacement
+* Cloud provider
+* Terraform replacement
+
+Instead:
+
+> Deploy, Operate, Monitor, Recover.
+
+---
+
+# V1 — Core Foundation (Must Exist)
+
+## Application Management
+
+```bash
+tool app create
+tool app update
+tool app delete
+tool app list
+```
+
+### Features
+
+* App registration
+* Metadata
+* Labels
+* Environment separation
+
+---
+
+## Deployment Engine
+
+```bash
+tool deploy api
+```
+
+### Features
+
+* Git deployment
+* Docker deployment
+* Local image deployment
+* Build pipeline
+* Deployment history
+
+---
+
+## Deployment Strategies
+
+### Rolling
+
+```bash
+tool deploy api --strategy rolling
+```
+
+### Blue Green
+
+```bash
+tool deploy api --strategy bluegreen
+```
+
+### Recreate
+
+```bash
+tool deploy api --strategy recreate
+```
+
+---
+
+## Rollback Engine
+
+```bash
+tool rollback api
+```
+
+### Features
+
+* One-click rollback
+* Version history
+* Failed deployment recovery
+
+---
+
+## Health Checks
+
+```yaml
+health:
+  path: /health
+  interval: 10s
+```
+
+### Support
+
+* HTTP
+* TCP
+* Process
+
+---
+
+# V1.1 — Networking
+
+## Reverse Proxy
+
+### Support
+
+* Caddy first
+* Nginx later
+
+---
+
+## Domain Management
+
+```bash
+tool domain add api.company.com
+```
+
+### Features
+
+* Domain mapping
+* Wildcards
+* Redirects
+
+---
+
+## SSL
+
+Automatic
+
+```text
+Let's Encrypt
+Auto Renewal
+```
+
+No Certbot headaches.
+
+---
+
+# V1.2 — Secrets
+
+## Secret Store
+
+```bash
+tool secret set DATABASE_URL
+```
+
+### Features
+
+* Encryption
+* Scoped secrets
+* Environment secrets
+
+---
+
+## Config Management
+
+```yaml
+env:
+  NODE_ENV: production
+```
+
+---
+
+# V1.3 — Logs
+
+## Application Logs
+
+```bash
+tool logs api
+```
+
+### Features
+
+* Stream
+* Search
+* Filter
+
+---
+
+## Deployment Logs
+
+```bash
+tool logs deploy
+```
+
+---
+
+# V1.4 — Monitoring
+
+## Infrastructure
+
+### Metrics
+
+* CPU
+* RAM
+* Disk
+* Network
+
+---
+
+## Application Metrics
+
+* Response time
+* Requests
+* Errors
+* Uptime
+
+---
+
+## Alerts
+
+### Channels
+
+* Email
+* Telegram
+* Discord
+* Slack
+
+---
+
+# V1.5 — Backups
+
+## Database
+
+Support:
+
+* PostgreSQL
+* MySQL
+* MariaDB
+
+---
+
+## Storage
+
+Support:
+
+* Local
+* S3 Compatible
+
+---
+
+## Recovery
+
+```bash
+tool restore backup-id
+```
+
+---
+
+# V2 — Startup Features
+
+---
+
+## Multi Environment
+
+```text
+dev
+staging
+production
+```
+
+---
+
+## Preview Deployments
+
+Every branch:
+
+```text
+feature-login.dev.company.com
+```
+
+---
+
+## Team Access
+
+### Roles
+
+```text
+Owner
+Admin
+Developer
+Read Only
+```
+
+---
+
+## Audit Logs
+
+```text
+Who deployed
+Who rolled back
+Who changed secrets
+```
+
+---
+
+# V2.1 — Server Management
+
+## Bootstrap
+
+```bash
+tool server add
+```
+
+Installs:
+
+* Docker
+* Runtime
+* Proxy
+
+---
+
+## Fleet View
+
+```text
+Server A
+Server B
+Server C
+```
+
+---
+
+## SSH Management
+
+Store encrypted keys.
+
+---
+
+# V2.2 — Jobs
+
+## Cron Jobs
+
+```yaml
+schedule: "0 * * * *"
+```
+
+---
+
+## Workers
+
+```yaml
+type: worker
+```
+
+---
+
+## Queues
+
+Support:
+
+* Redis
+* RabbitMQ
+
+---
+
+# V3 — Platform Layer
+
+Only after real adoption.
+
+---
+
+## Service Catalog
+
+```text
+Applications
+Databases
+Workers
+Queues
+Storage
+```
+
+---
+
+## Marketplace
+
+Templates:
+
+* FastAPI
+* Django
+* Next.js
+* Laravel
+* Go
+
+---
+
+## Internal Developer Platform
+
+Golden paths.
+
+---
+
+## Infrastructure Templates
+
+```bash
+tool create saas
+tool create api
+tool create ecommerce
+```
+
+---
+
+# Killer Features (Differentiators)
+
+Most important part.
+
+---
+
+## 1. Environment Cloning
+
+```bash
+tool clone staging production
+```
+
+Huge time saver.
+
+---
+
+## 2. Deployment Preview
+
+Before deployment:
+
+```text
+Changes
+New containers
+Config differences
+Secret differences
+```
+
+---
+
+## 3. Auto Rollback
+
+Deployment unhealthy?
+
+Automatically revert.
+
+---
+
+## 4. Disaster Recovery
+
+```bash
+tool recover
+```
+
+Restores:
+
+* Apps
+* Domains
+* Secrets
+* Backups
+
+---
+
+## 5. One Command Migration
+
+```bash
+tool migrate serverA serverB
+```
+
+Very few tools do this well.
+
+---
+
+## 6. Full App Export
+
+```bash
+tool export api
+```
+
+Produces:
+
+```text
+config
+secrets
+domains
+deployment history
+```
+
+---
+
+# Things I Would NOT Build Initially
+
+❌ Kubernetes support
+
+❌ Service Mesh
+
+❌ Multi-cloud abstraction
+
+❌ AI Copilot
+
+❌ Terraform replacement
+
+❌ Complex RBAC
+
+❌ Custom container runtime
+
+❌ Workflow engine
+
+❌ Plugin marketplace
+
+---
+
+# Final MVP Scope
+
+If you are solo, the actual MVP should be only:
+
+### Deploy
+
+* Git deployment
+* Docker deployment
+
+### Operate
+
+* Logs
+* Metrics
+* Health checks
+
+### Network
+
+* Domains
+* SSL
+
+### Safety
+
+* Rollback
+* Backups
+* Secrets
+
+### Infrastructure
+
+* Single server
+
+That's enough to solve 80% of the problems faced by solo developers and early-stage startups while keeping the architecture clean enough to grow into a larger platform later.
+
+
+Adding **Governance** and **Sovereignty** is interesting, but this is where many products become bloated.
+
+The question is:
+
+> Are you building a deployment tool, a platform runtime, or a sovereign infrastructure platform?
+
+If your long-term vision is a platform, then Governance and Sovereignty should exist from Day 1 in the architecture, but not necessarily in the UI.
+
+---
+
+# Governance Layer
+
+Most tools focus on deployment.
+
+Companies eventually need:
+
+```text
+Who deployed?
+Who changed secrets?
+Who deleted backups?
+Who modified domains?
+Who approved production?
+```
+
+Without governance, the platform becomes dangerous at scale.
+
+---
+
+## Audit Trail
+
+Every action becomes an event.
+
+```text
+2026-06-03
+user: victor
+action: deploy
+app: api
+version: v1.4.2
+result: success
+```
+
+Store forever.
+
+---
+
+## Change History
+
+Track:
+
+* Deployments
+* Secret changes
+* Domain changes
+* Backup changes
+* User access changes
+
+---
+
+## Policy Engine
+
+Example:
+
+```yaml
+policy:
+  production:
+    requires_approval: true
+```
+
+or
+
+```yaml
+policy:
+  secrets:
+    rotation_days: 90
+```
+
+Initially simple.
+
+No complex enterprise policy language.
+
+---
+
+## Compliance Reports
+
+Generate:
+
+```bash
+tool report governance
+```
+
+Output:
+
+```text
+Deployments
+Rollbacks
+Access Changes
+Secret Changes
+```
+
+Useful later for customers.
+
+---
+
+# Sovereignty Layer
+
+This is where you can differentiate.
+
+Most modern tools are cloud-dependent.
+
+A sovereign platform means:
+
+> The user owns everything.
+
+---
+
+## Self-Hosted First
+
+Nothing required from your cloud.
+
+Platform must run:
+
+* VPS
+* Bare metal
+* Private cloud
+* Air-gapped environment
+
+---
+
+## Local Control Plane
+
+No dependency on vendor APIs.
+
+```text
+Control Plane
+Database
+Secrets
+Logs
+Backups
+```
+
+all local.
+
+---
+
+## Data Ownership
+
+User owns:
+
+* Metrics
+* Logs
+* Secrets
+* Deployment history
+* Audit logs
+
+No telemetry requirement.
+
+---
+
+## Offline Operation
+
+Even if your company disappears:
+
+```text
+Platform continues working.
+```
+
+This is extremely important.
+
+---
+
+## Exportability
+
+Everything exportable.
+
+```bash
+tool export platform
+```
+
+Exports:
+
+```text
+Apps
+Secrets
+Domains
+Policies
+Backups
+Users
+Audit Logs
+```
+
+No lock-in.
+
+---
+
+## Migration Engine
+
+```bash
+tool migrate clusterA clusterB
+```
+
+Move entire environments.
+
+This is true sovereignty.
+
+---
+
+# Governance Architecture
+
+```text
+Core Runtime
+    │
+    ├── Deployments
+    ├── Networking
+    ├── Secrets
+    ├── Monitoring
+    └── Backups
+
+Governance Layer
+    │
+    ├── Audit
+    ├── Policies
+    ├── Compliance
+    └── Approvals
+
+Sovereignty Layer
+    │
+    ├── Export
+    ├── Migration
+    ├── Self Hosting
+    ├── Offline Mode
+    └── Data Ownership
+```
+
+---
+
+# What I Would Add to MVP
+
+Not full governance.
+
+Just foundations.
+
+### Audit Log
+
+```bash
+tool audit
+```
+
+---
+
+### Export
+
+```bash
+tool export app
+```
+
+---
+
+### Backup
+
+```bash
+tool backup create
+```
+
+---
+
+### Restore
+
+```bash
+tool restore
+```
+
+---
+
+### Ownership Metadata
+
+Every resource:
+
+```yaml
+owner: victor
+created_by: victor
+updated_by: victor
+```
+
+---
+
+# What I Would Delay
+
+Until real users:
+
+❌ SSO
+
+❌ Enterprise RBAC
+
+❌ Compliance dashboards
+
+❌ SOC2 tooling
+
+❌ Policy language
+
+❌ OPA integration
+
+❌ Multi-tenant governance
+
+---
+
+# Stronger Long-Term Vision
+
+Instead of:
+
+> "Another deployment platform"
+
+Position it as:
+
+> **Sovereign Application Runtime**
+
+Where developers and startups can:
+
+* Deploy applications
+* Operate infrastructure
+* Own their data
+* Export everything
+* Run anywhere
+* Migrate anytime
+* Avoid vendor lock-in
+
+That positioning is much more durable than competing directly with Coolify, Dokploy, or CapRover because you're competing on **control, portability, and operational simplicity**, not just deployment.
+
+For a project like the one you've described (deployment engine + reverse proxy management + secrets + logs + monitoring), the binary size and resource usage depend heavily on what you embed.
+
+## Hidden Assumption
+
+You're assuming:
+
+> "Rust = small binary."
+
+Not always.
+
+A statically linked Rust binary can be anywhere from:
+
+| Type                    | Binary Size |
+| ----------------------- | ----------- |
+| Simple CLI              | 2–8 MB      |
+| Medium API Server       | 10–30 MB    |
+| Complex Platform Daemon | 30–80 MB    |
+| Large Embedded Platform | 80–200+ MB  |
+
+---
+
+# Realistic Size for Your Tool
+
+Assuming:
+
+* Rust
+* SQLite
+* Axum
+* Tokio
+* Serde
+* Docker API integration
+* Caddy integration
+* Secrets
+* Audit logs
+* Deployment engine
+
+Release build:
+
+```bash
+cargo build --release
+```
+
+Likely:
+
+```text
+Linux x86_64
+20–45 MB
+```
+
+After optimization:
+
+```bash
+strip binary
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+opt-level = "z"
+```
+
+Expected:
+
+```text
+8–25 MB
+```
+
+which is excellent.
+
+---
+
+# Memory Usage
+
+## Idle
+
+Control plane running:
+
+```text
+15–50 MB RAM
+```
+
+Typical.
+
+---
+
+## Active
+
+During deployment:
+
+```text
+50–200 MB
+```
+
+depending on:
+
+* log streaming
+* image pulls
+* build operations
+
+---
+
+## Large Installations
+
+100+ apps:
+
+```text
+100–500 MB
+```
+
+still reasonable.
+
+---
+
+# CPU Usage
+
+### Idle
+
+Almost zero.
+
+```text
+0–1%
+```
+
+---
+
+### Deployment
+
+CPU spike from:
+
+```text
+docker build
+image extraction
+compression
+health checks
+```
+
+Not from Rust itself.
+
+Rust overhead is negligible.
+
+---
+
+# Biggest Optimization Opportunities
+
+Most developers optimize the wrong thing.
+
+---
+
+## 1. Avoid Embedded Databases Beyond SQLite
+
+Good:
+
+```text
+SQLite
+```
+
+Bad initially:
+
+```text
+PostgreSQL
+MySQL
+```
+
+SQLite is enough for:
+
+```text
+apps
+deployments
+audit logs
+secrets metadata
+```
+
+---
+
+## 2. Avoid Heavy UI Frameworks
+
+Big mistake:
+
+```text
+React SPA embedded
+Electron
+```
+
+Instead:
+
+```text
+CLI first
+HTMX later
+```
+
+Huge RAM savings.
+
+---
+
+## 3. Avoid Kubernetes SDKs
+
+The moment you add:
+
+```text
+kube-rs
+k8s-openapi
+```
+
+Binary size explodes.
+
+---
+
+## 4. Avoid Prometheus Embedded
+
+Don't implement:
+
+```text
+Prometheus
+Grafana
+Loki
+```
+
+inside your binary.
+
+Expose metrics.
+
+Let users integrate later.
+
+---
+
+# Rust Build Optimizations
+
+For production:
+
+```toml
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+```
+
+For smallest binary:
+
+```toml
+opt-level = "z"
+```
+
+---
+
+# Architecture Optimization
+
+Split into modules:
+
+```text
+tool
+│
+├── core
+├── deploy
+├── proxy
+├── secrets
+├── audit
+└── runtime
+```
+
+Load services only when needed.
+
+Example:
+
+```text
+logs disabled
+monitoring disabled
+backup disabled
+```
+
+No RAM wasted.
+
+---
+
+# Comparison
+
+Approximate memory footprints:
+
+| Tool                     | Idle RAM    |
+| ------------------------ | ----------- |
+| Your Rust Platform       | 20–50 MB    |
+| Coolify stack            | 500 MB–2 GB |
+| Dokploy stack            | 300 MB–1 GB |
+| Kubernetes control plane | 2–8 GB      |
+| OpenShift                | 8–20+ GB    |
+
+That's where Rust shines.
+
+---
+
+# Stronger Architecture
+
+Instead of one giant daemon:
+
+```text
+ctl
+agent
+runtime
+```
+
+### ctl
+
+CLI only.
+
+```text
+2–10 MB
+```
+
+---
+
+### agent
+
+Runs on server.
+
+```text
+10–40 MB RAM
+```
+
+---
+
+### runtime
+
+Deployment execution.
+
+Started only when required.
+
+This gives very low idle resource usage.
+
+---
+
+# Brutal Verdict
+
+If you build this correctly in Rust:
+
+* Static binary: **10–30 MB** realistic
+* Idle RAM: **20–50 MB**
+* Small VPS support: **1 vCPU / 512 MB RAM**
+* Comfortable production: **1 vCPU / 1 GB RAM**
+* Hundreds of deployments manageable without significant overhead
+
+The real resource consumption will come from **Docker containers, image builds, logs, and applications**, not from the Rust control plane itself. Your platform runtime should be able to stay under **50 MB idle RAM** and near-zero CPU if you avoid embedding heavyweight observability and UI stacks.
+
+
+# Master Requirement Gathering Prompt
+
+## Sovereign Application Runtime / Deployment Platform
+
+Act as a Principal Platform Engineer, DevOps Architect, Site Reliability Engineer, Platform Product Manager, Startup CTO, and Systems Architect.
+
+Your objective is NOT to suggest features.
+
+Your objective is to discover operational pain, deployment bottlenecks, infrastructure inefficiencies, developer workflow friction, governance requirements, security requirements, and platform opportunities.
+
+Challenge assumptions aggressively.
+
+Avoid feature requests without identifying the underlying problem.
+
+For every response, prioritize:
+
+1. Real operational pain
+2. Frequency of occurrence
+3. Business impact
+4. Engineering effort
+5. Reliability impact
+6. Security impact
+7. Scalability impact
+
+---
+
+# Company Profile
+
+## Organization Type
+
+* Solo Developer
+* Freelancer
+* Agency
+* Startup (1-10)
+* Startup (10-50)
+* SME
+* Enterprise
+
+## Team Composition
+
+* Backend Engineers
+* Frontend Engineers
+* DevOps Engineers
+* Platform Engineers
+* SREs
+* Security Engineers
+
+## Infrastructure Size
+
+* Number of Applications
+* Number of Servers
+* Number of Environments
+* Monthly Deployments
+* Monthly Active Users
+
+---
+
+# Current Workflow Analysis
+
+Describe current workflow from:
+
+Code Commit
+→ Build
+→ Test
+→ Deploy
+→ Monitor
+→ Recover
+
+For every step identify:
+
+* Manual Actions
+* Waiting Time
+* Human Error Risk
+* Existing Tools
+* Pain Level (1-10)
+
+---
+
+# Deployment Analysis
+
+How are applications deployed today?
+
+Examples:
+
+* Docker Compose
+* VPS
+* Kubernetes
+* Nomad
+* Manual SSH
+* CI/CD Pipelines
+
+For each deployment process identify:
+
+* Time Required
+* Number of Steps
+* Failure Rate
+* Rollback Time
+* Downtime Risk
+
+---
+
+# Operational Pain Discovery
+
+List top recurring operational problems.
+
+For each problem answer:
+
+Problem:
+Frequency:
+Impact:
+Current Workaround:
+Desired Outcome:
+
+Examples:
+
+* Deployment failures
+* SSL issues
+* Reverse proxy configuration
+* Secret management
+* Environment drift
+* DNS management
+* Database migrations
+* Server provisioning
+* Monitoring gaps
+* Backup failures
+* Incident response
+
+---
+
+# Infrastructure Inventory
+
+What resources are currently managed?
+
+Applications:
+Containers:
+Databases:
+Queues:
+Storage:
+Domains:
+Certificates:
+Secrets:
+Servers:
+Cron Jobs:
+Workers:
+
+For each resource identify:
+
+* Ownership
+* Lifecycle
+* Deployment Method
+* Recovery Process
+
+---
+
+# Reliability Assessment
+
+What failures occur most often?
+
+Examples:
+
+* Failed deployments
+* Broken releases
+* Database outages
+* Certificate expiration
+* Resource exhaustion
+* DNS failures
+* Misconfigured environment variables
+
+For each failure:
+
+Root Cause:
+Detection Method:
+Recovery Method:
+Recovery Time:
+
+---
+
+# Governance Assessment
+
+What actions require accountability?
+
+Examples:
+
+* Deployments
+* Rollbacks
+* Secret changes
+* Backup restoration
+* DNS modifications
+* Access changes
+
+Required capabilities:
+
+* Audit Logs
+* Approval Workflows
+* Deployment History
+* Change Tracking
+* Compliance Reporting
+
+Rank importance.
+
+---
+
+# Sovereignty Assessment
+
+Evaluate requirements for:
+
+* Self Hosting
+* Air Gapped Operation
+* Data Ownership
+* Vendor Independence
+* Exportability
+* Migration
+* Offline Operation
+
+For each:
+
+Mandatory / Preferred / Unnecessary
+
+Explain why.
+
+---
+
+# Security Assessment
+
+Current authentication method:
+
+Current authorization model:
+
+Current secret management:
+
+Current backup strategy:
+
+Current recovery strategy:
+
+Required:
+
+* MFA
+* RBAC
+* Encryption
+* Secret Rotation
+* Audit Trails
+* Backup Verification
+
+Rank importance.
+
+---
+
+# Developer Experience Assessment
+
+Most frustrating daily tasks:
+
+Most repetitive weekly tasks:
+
+Most error-prone tasks:
+
+Most time-consuming tasks:
+
+Most avoided tasks:
+
+For each:
+
+Time Consumed Per Week:
+Automation Potential:
+Business Impact:
+
+---
+
+# Monitoring Assessment
+
+Current monitoring stack:
+
+Current logging stack:
+
+Current alerting stack:
+
+Missing capabilities:
+
+Required dashboards:
+
+Required alerts:
+
+Required retention:
+
+---
+
+# Platform Vision Assessment
+
+If all operational pain disappeared tomorrow:
+
+What would engineers spend their time on instead?
+
+Which operational tasks should never require human intervention?
+
+Which tasks should be fully automated?
+
+Which tasks should remain manual?
+
+---
+
+# Feature Evaluation Framework
+
+For every proposed feature provide:
+
+Problem Solved:
+Frequency:
+Impact:
+Affected Users:
+Engineering Complexity:
+Operational Complexity:
+Security Implications:
+Maintenance Burden:
+
+Score:
+
+Reach (1-10)
+Impact (1-10)
+Confidence (1-10)
+Effort (1-10)
+
+Priority Score = (Reach × Impact × Confidence) / Effort
+
+---
+
+# Anti-Feature Validation
+
+For every proposed feature answer:
+
+What problem does it solve?
+
+Who requested it?
+
+How often will it be used?
+
+What happens if it is never built?
+
+Can an existing tool solve it?
+
+Does it increase operational complexity?
+
+Would a solo developer benefit?
+
+Would a startup benefit?
+
+Reject features that fail validation.
+
+---
+
+# Final Deliverables
+
+Produce:
+
+1. Operational Pain Matrix
+2. Feature Priority Matrix
+3. MVP Scope
+4. V1 Roadmap
+5. V2 Roadmap
+6. Governance Roadmap
+7. Sovereignty Roadmap
+8. Security Roadmap
+9. Reliability Roadmap
+10. Features to Reject
+11. Technical Architecture Recommendations
+12. Resource Usage Targets
+13. Scalability Targets
+14. Platform Vision
+
+Focus on operational reality.
+
+Do not optimize for trends.
+
+Do not optimize for feature count.
+
+Optimize for developer time saved, reliability gained, and operational complexity removed.

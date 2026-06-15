@@ -20,12 +20,12 @@ use sovereign_storage_sqlite::SqliteState;
 
 use crate::cli::BackupCmd;
 use crate::commands::Dispatch;
-use crate::commands_deploy::{connect_backup, default_db_path};
+use crate::connect;
 use crate::exit::AppExit;
 use crate::output::{Envelope, Output};
 
 pub async fn run(cmd: &BackupCmd, out: &Output) -> Dispatch {
-    let db_path = default_db_path();
+    let db_path = connect::default_db_path();
     let storage = match SqliteState::open(&db_path).await {
         Ok(s) => Arc::new(s) as Arc<dyn StoragePort>,
         Err(e) => {
@@ -44,7 +44,7 @@ pub async fn run(cmd: &BackupCmd, out: &Output) -> Dispatch {
         runtime: sovereign_core::state::no_runtime(),
         proxy: None,
         secrets: None,
-        backup: connect_backup(&db_path),
+        backup: connect::connect_backup(),
         db_path,
     };
 

@@ -1,0 +1,18 @@
+[package]
+name = "sovereign-git"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Sovereign git adapter — clone, checkout, ls-remote via pure Rust (gix)."
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tempfile = "3"
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -32,6 +32,7 @@ use crate::domain::{
 };
 use crate::error::AppError;
 use crate::ports::{default_v0_host, HealthResult};
+use crate::rbac::{self, Action, Actor};
 use crate::state::AppState;
 
 /// Hard cap on the rollback health-probe budget.
@@ -76,6 +77,11 @@ pub async fn start_rollback(
     state: &AppState,
     req: RollbackRequest,
 ) -> Result<RollbackResult, AppError> {
+    // RBAC: verify the actor is allowed to rollback.
+    let actor = Actor::from_str_loose(&req.actor);
+    rbac::check(&actor, Action::AppRollback)
+        .map_err(|e| AppError::Unauthorized(e.to_string()))?;
+
     // 1. Current.
     let current = state
         .storage

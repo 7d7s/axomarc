@@ -13,7 +13,9 @@ pub mod system_service;
 pub mod update;
 pub use backup::BackupSink;
 pub use proxy::{default_v0_host, ProxyPort, V0_DEFAULT_HOST_SUFFIX};
-pub use runtime::{ContainerSpec, HealthResult, RuntimeEndpoint, RuntimePort};
+pub use runtime::{
+    ContainerSpec, HealthResult, NativeUnitSpec, RuntimeEndpoint, RuntimePort, SystemdNativePort,
+};
 pub use secrets::SecretsPort;
 pub use storage::StoragePort;
 pub use system_service::SystemServicePort;

@@ -21,7 +21,9 @@ where
 {
     let row = sqlx::query_as::<_, App>(
         "SELECT id, name, owner, env, git_repo, image_ref, config_yaml, \
-         health_path, status, created_at, updated_at, version \
+         health_path, status, created_at, updated_at, version, \
+         deploy_mode, source_repo, source_branch, auto_deploy, \
+         auto_deploy_window, max_auto_deploys_per_hour \
          FROM app WHERE id = ?",
     )
     .bind(id.as_uuid())
@@ -36,7 +38,9 @@ where
 {
     let row = sqlx::query_as::<_, App>(
         "SELECT id, name, owner, env, git_repo, image_ref, config_yaml, \
-         health_path, status, created_at, updated_at, version \
+         health_path, status, created_at, updated_at, version, \
+         deploy_mode, source_repo, source_branch, auto_deploy, \
+         auto_deploy_window, max_auto_deploys_per_hour \
          FROM app WHERE name = ?",
     )
     .bind(name)
@@ -51,7 +55,9 @@ where
 {
     let rows = sqlx::query_as::<_, App>(
         "SELECT id, name, owner, env, git_repo, image_ref, config_yaml, \
-         health_path, status, created_at, updated_at, version \
+         health_path, status, created_at, updated_at, version, \
+         deploy_mode, source_repo, source_branch, auto_deploy, \
+         auto_deploy_window, max_auto_deploys_per_hour \
          FROM app ORDER BY created_at ASC, name ASC",
     )
     .fetch_all(exec)
@@ -65,7 +71,9 @@ where
 {
     let rows = sqlx::query_as::<_, App>(
         "SELECT id, name, owner, env, git_repo, image_ref, config_yaml, \
-         health_path, status, created_at, updated_at, version \
+         health_path, status, created_at, updated_at, version, \
+         deploy_mode, source_repo, source_branch, auto_deploy, \
+         auto_deploy_window, max_auto_deploys_per_hour \
          FROM app WHERE owner = ? ORDER BY created_at ASC, name ASC",
     )
     .bind(owner)

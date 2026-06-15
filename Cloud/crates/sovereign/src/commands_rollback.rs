@@ -26,7 +26,8 @@ use tracing::instrument;
 
 use crate::cli::Cmd;
 use crate::commands::Dispatch;
-use crate::commands_deploy::{connect_backup, connect_proxy, connect_secrets, default_db_path};
+use crate::commands_deploy::default_db_path;
+use crate::connect;
 use crate::exit::AppExit;
 use crate::output::{Envelope, Output};
 
@@ -101,9 +102,9 @@ pub async fn run(cmd: &Cmd, out: &Output) -> Dispatch {
     let state = AppState {
         storage,
         runtime,
-        proxy: connect_proxy().await,
-        secrets: connect_secrets(),
-        backup: connect_backup(&db_path),
+        proxy: connect::connect_proxy().await,
+        secrets: connect::connect_secrets(),
+        backup: connect::connect_backup(),
         db_path,
     };
 
