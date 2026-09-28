@@ -242,6 +242,20 @@ pub trait ModelStore: Send + Sync {
     /// TRUNCATE the model's table — refused unless `env` is a dev/test
     /// environment (fail-closed gate shared with the SQL builder).
     fn truncate(&self, model: &ModelDef, env: &str) -> Result<(), AppError>;
+
+    /// Atomic counter write: `SET field = field + by` plus every `extra`
+    /// assignment (e.g. `updated_at`) in ONE statement, so concurrent
+    /// increments never lose an update. Returns the updated row; `Ok(None)`
+    /// when no live row matches (missing/soft-deleted/foreign tenant).
+    fn increment(
+        &self,
+        model: &ModelDef,
+        id: Uuid,
+        tenant: Option<TenantId>,
+        field: &str,
+        by: i64,
+        extra: &Record,
+    ) -> Result<Option<Record>, AppError>;
 }
 
 /// Arc delegation: `Arc<impl ModelStore>` (and `Arc<dyn ModelStore>`) is
@@ -373,6 +387,18 @@ impl<T: ModelStore + ?Sized> ModelStore for Arc<T> {
     fn truncate(&self, model: &ModelDef, env: &str) -> Result<(), AppError> {
         (**self).truncate(model, env)
     }
+
+    fn increment(
+        &self,
+        model: &ModelDef,
+        id: Uuid,
+        tenant: Option<TenantId>,
+        field: &str,
+        by: i64,
+        extra: &Record,
+    ) -> Result<Option<Record>, AppError> {
+        (**self).increment(model, id, tenant, field, by, extra)
+    }
 }
 
 /// RFC 3339 UTC timestamp string for "now" (canonical record encoding).
@@ -465,6 +491,33 @@ pub fn require_filters(op: &str, filters: &[FieldFilter]) -> Result<(), AppError
     if filters.is_empty() {
         return Err(AppError::validation(format!(
             "{op} requires at least one filter"
+        )));
+    }
+    Ok(())
+}
+
+/// Counter-field validation for [`ModelStore::increment`] (shared by both
+/// backends and the runtime): the field must be declared, mutable (not
+/// `id`/`tenant_id`), and numeric.
+pub fn validate_counter(model: &ModelDef, field: &str) -> Result<(), AppError> {
+    if field == "id" || field == "tenant_id" {
+        return Err(AppError::validation(format!(
+            "counter field {field:?} is immutable"
+        )));
+    }
+    let target = model.field_named(field).ok_or_else(|| {
+        AppError::validation(format!(
+            "counter field {field:?} is not on model {}",
+            model.table
+        ))
+    })?;
+    if !matches!(
+        target.field_type,
+        FieldType::Int32 | FieldType::Int64 | FieldType::Float | FieldType::Decimal
+    ) {
+        return Err(AppError::validation(format!(
+            "counter field {field:?} is not numeric (is {:?})",
+            target.field_type
         )));
     }
     Ok(())
@@ -645,6 +698,11 @@ impl ModelStore for InMemoryModelStore {
                     && conflict.iter().all(|f| r.get(f) == record.get(f))
             }) {
                 for (key, value) in record {
+                    // Identity is never overwritten by a merge — mirrors the
+                    // pg `exclude_from_conflict_update(["id"])` posture.
+                    if key == "id" {
+                        continue;
+                    }
                     row.insert(key.clone(), value.clone());
                 }
                 return Ok(Self::clone_row(row));
@@ -910,6 +968,55 @@ impl ModelStore for InMemoryModelStore {
         self.with_table(&model.table, |rows| {
             rows.clear();
             Ok(())
+        })
+    }
+
+    fn increment(
+        &self,
+        model: &ModelDef,
+        id: Uuid,
+        tenant: Option<TenantId>,
+        field: &str,
+        by: i64,
+        extra: &Record,
+    ) -> Result<Option<Record>, AppError> {
+        validate_counter(model, field)?;
+        self.with_table(&model.table, |rows| {
+            let mut updated = None;
+            for row in rows.iter_mut() {
+                if uuid_str(row, "id") == Some(id)
+                    && tenant_matches(model, row, tenant)
+                    && !is_deleted(row)
+                {
+                    let next = match row.get(field) {
+                        Some(Json::Number(n)) => {
+                            if let Some(current) = n.as_i64() {
+                                Json::from(
+                                    current
+                                        .checked_add(by)
+                                        .ok_or_else(|| AppError::validation("counter overflow"))?,
+                                )
+                            } else {
+                                Json::from(n.as_f64().unwrap_or(0.0) + by as f64)
+                            }
+                        }
+                        // Unset/NULL counters start at zero.
+                        None | Some(Json::Null) => Json::from(by),
+                        _ => {
+                            return Err(AppError::validation(format!(
+                                "counter field {field:?} holds a non-numeric value"
+                            )))
+                        }
+                    };
+                    row.insert(field.to_string(), next);
+                    for (key, value) in extra {
+                        row.insert(key.clone(), value.clone());
+                    }
+                    updated = Some(Self::clone_row(row));
+                    break;
+                }
+            }
+            Ok(updated)
         })
     }
 }
@@ -1471,5 +1578,62 @@ mod tests {
             dyn_store.list(&model, Some(tenant), &[], &ListOpts::default()).unwrap().total,
             Some(0)
         );
+    }
+
+    #[test]
+    fn increment_updates_counter_extra_and_guards() {
+        let store = InMemoryModelStore::new();
+        let model = meter_model();
+        let a = TenantId::new();
+        let b = TenantId::new();
+        let row = store.insert(&model, &meter(a, "m0", 10)).unwrap();
+        let id = uuid_str(&row, "id").unwrap();
+        let foreign = store.insert(&model, &meter(b, "x", 1)).unwrap();
+        let foreign_id = uuid_str(&foreign, "id").unwrap();
+
+        let mut extra = Record::new();
+        extra.insert("label".into(), Json::String("bumped".into()));
+        let updated = store
+            .increment(&model, id, Some(a), "reading", 5, &extra)
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.get("reading"), Some(&Json::from(15)));
+        assert_eq!(updated.get("label"), Some(&Json::String("bumped".into())));
+
+        // Negative steps decrement in the same primitive.
+        let updated = store
+            .increment(&model, id, Some(a), "reading", -7, &Record::new())
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.get("reading"), Some(&Json::from(8)));
+
+        // Missing, foreign-tenant, and trashed rows are all Ok(None).
+        assert!(store
+            .increment(&model, Uuid::now_v7(), Some(a), "reading", 1, &Record::new())
+            .unwrap()
+            .is_none());
+        assert!(store
+            .increment(&model, foreign_id, Some(a), "reading", 1, &Record::new())
+            .unwrap()
+            .is_none());
+        store.delete(&model, id, Some(a)).unwrap();
+        assert!(store
+            .increment(&model, id, Some(a), "reading", 1, &Record::new())
+            .unwrap()
+            .is_none());
+
+        // Field validation: undeclared, non-numeric, immutable.
+        let err = store
+            .increment(&model, foreign_id, Some(b), "missing", 1, &Record::new())
+            .unwrap_err();
+        assert!(err.public_message.contains("not on model"), "{}", err.public_message);
+        let err = store
+            .increment(&model, foreign_id, Some(b), "label", 1, &Record::new())
+            .unwrap_err();
+        assert!(err.public_message.contains("not numeric"), "{}", err.public_message);
+        let err = store
+            .increment(&model, foreign_id, Some(b), "id", 1, &Record::new())
+            .unwrap_err();
+        assert!(err.public_message.contains("immutable"), "{}", err.public_message);
     }
 }

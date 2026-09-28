@@ -128,7 +128,7 @@ Landed in earlier stages (S7–S10, v0.9 hardening, v1.1) and therefore out of s
 
 **Finders & mutations (ModelRuntime, `crates/data/models/src/runtime.rs`)**
 - New operations: `first_or_create` (find by predicates → else create attrs), `first_or_new` (find → else unsaved record), `update_or_create` (find by predicates → merge attrs), `force_create` (bypasses mass-assignment guard), `create_many` (batch insert through the runtime: mutators, casts, observers once per record), `insert_get_id` (Insert + `RETURNING id`), `insert_or_ignore` (`ON CONFLICT DO NOTHING`), `update_or_insert` (Upsert builder via the runtime), `increment`/`decrement` (atomic `SET col = col ± n` with optional extra-column updates), `replicate` (clone minus except-fields, new id, optional relation detach), `refresh` (re-hydrate in place), `fresh` (re-fetch as new record), `load_missing` (load only unloaded relations), `touch` (update timestamps), `push` (save record then its loaded relations).
-- `find` miss → typed `AppError::not_found` (drives the Wave 2 error registry → 404 render).
+- `find` miss → typed `AppError::not_found` (drives the Wave 2 error registry → 404 render). Phase 3 delivery note: `find` itself keeps `Ok(None)` because the Wave 1 route-binding contract maps a miss to a 404 at the edge (`find_for_binding`, `Ok(None) = miss`); the typed error path is `get` (id) and `first_or_not_found` (predicates), both `KER_NOT_FOUND`.
 - Every operation runs the existing pipeline: mass assignment → mutators → casts → scopes → store → observers; tenant scoping enforced in every path.
 
 **Relation query surface**
@@ -170,7 +170,7 @@ Landed in earlier stages (S7–S10, v0.9 hardening, v1.1) and therefore out of s
 - Selection & ordering: `select` subset projection, `latest`/`oldest` (default `created_at`, column-overridable).
 - Locking: `lock_for_update` (`FOR UPDATE`), `shared_lock` (`FOR SHARE`).
 - Aggregates & existence: `count`, `sum`, `avg`, `min`, `max`, `exists`, `doesnt_exist`.
-- Retrieval: `pluck`, `value`, `chunk`/`each` (keyset-paginated iteration), `cursor` (streaming rows), conditional `when`/`tap`.
+- Retrieval: conditional `when`/`tap`. Phase 3 note: `pluck`, `value`, `chunk`/`each`, and `cursor` are execution methods — they landed on `ModelRuntime` (store/runtime level) instead of the builder, since `keel-query` compiles but never executes. `chunk`/`each` walk offset pages (200-row cap), `cursor` fetches pages lazily through a `RecordCursor` iterator (documented divergence from Laravel's single-statement stream), `pluck` fetches full rows (no column projection yet).
 - `truncate` dev/test-gated (refuses outside dev/test env).
 - Raw expressions only via the existing `Ident`-guarded safe API — no free-form SQL string injection path.
 
@@ -180,7 +180,9 @@ Landed in earlier stages (S7–S10, v0.9 hardening, v1.1) and therefore out of s
 
 **Port impact**
 - `ModelStore` trait gains: aggregate ops (`aggregate`: count/sum/avg/min/max), `exists`, find-by (first match, `find_by`), `find_for_update` (`FOR UPDATE` variant), `insert_or_ignore`, `truncate` (dev/test-gated via a fail-closed `build_gated`/`check_env` token), filter-keyed `update_filtered`/`delete_filtered` (pivot writes; empty filter list refused), and `force_delete` (trash purge / prune — hard-deletes even soft-delete models).
-- `PgModelStore` + in-memory implementations updated together; tenant-scoped query builders guard every new operation.
+- Phase 3 growth: `increment` (atomic `SET field = field + by` plus prepared extra columns in one statement; the runtime `decrement` signs the step; `validate_counter` — declared, numeric, mutable — shared by both backends) — in-memory, `PgModelStore`, and `Arc<T>` delegation together.
+- In-memory `upsert` now preserves the surviving row's `id` on merge (mirrors the pg `exclude_from_conflict_update(["id"])` posture; the `update_or_insert` test caught the backend divergence).
+- Tenant-scoped query builders guard every new operation; `PgModelStore` + in-memory implementations updated together.
 ## Wave 4 — Validation expansion + config + cache + parity residuals
 
 **Validation rule growth (~45 new `Rule` variants, manifest grammar 1:1)**

@@ -8,7 +8,7 @@ use keel_models::{
     json_value_to_bind, record_to_columns, FieldFilter, FieldType, FilterOp, ListOpts,
     ModelDef, ModelStore, Record,
 };
-use keel_models::store::{require_filters, validate_aggregate};
+use keel_models::store::{require_filters, validate_aggregate, validate_counter};
 use keel_query::select::{Condition, Ident, Operator};
 use keel_query::{CompiledSelect, CompiledWrite, Delete, Insert, ConflictPolicy, Select, Update, Value as Bind};
 use serde_json::Value as Json;
@@ -712,6 +712,41 @@ impl ModelStore for PgModelStore {
             query.execute(&pool).await.map_err(pg)?;
             Ok(())
         })
+    }
+
+    fn increment(
+        &self,
+        model: &ModelDef,
+        id: Uuid,
+        tenant: Option<TenantId>,
+        field: &str,
+        by: i64,
+        extra: &Record,
+    ) -> Result<Option<Record>, AppError> {
+        validate_counter(model, field)?;
+        let mut update = Update::table(ident(&model.table)?)
+            .where_eq(ident("id")?, Bind::Uuid(id))
+            // Atomic `SET field = field + by` — one statement with `extra`.
+            .increment(ident(field)?, by);
+        if model.tenant_scoped {
+            match tenant {
+                Some(t) => update = update.tenant_scope(ident("tenant_id")?, t),
+                None => update = update.where_eq(ident("tenant_id")?, Bind::Null),
+            }
+        }
+        if model.soft_deletes {
+            update = update.where_is_null(ident("deleted_at")?);
+        }
+        for (key, value) in extra {
+            let bind = match model.field_named(key) {
+                Some(f) => keel_models::json_to_bind(value, f)?,
+                None => json_value_to_bind(value)?,
+            };
+            update = update.set(ident(key)?, bind);
+        }
+        let compiled = update.returning(all_columns(model)?).build()?;
+        let rows = write_rows(&self.pool, &compiled)?;
+        Ok(map_rows(rows, model)?.into_iter().next())
     }
 }
 
