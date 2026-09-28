@@ -1,0 +1,17 @@
+[package]
+name = "keel-storage-s3"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Keel adapter: S3-compatible storage (MinIO self-host, D-19). In-memory sandbox now."
+
+[dependencies]
+keel-foundation = { workspace = true }
+keel-storage = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

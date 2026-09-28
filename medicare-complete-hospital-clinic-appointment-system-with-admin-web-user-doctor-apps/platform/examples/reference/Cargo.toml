@@ -1,0 +1,31 @@
+[package]
+name = "keel-example-reference"
+# Internal-only crate: not published to crates.io.
+publish = false
+description = "Keel reference application (S6): appointments domain end-to-end — manifest graph, policy-gated execution, delta+outbox, search, MCP tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+
+[dependencies]
+keel-foundation = { workspace = true }
+keel-context = { workspace = true }
+keel-execution = { workspace = true }
+keel-lifecycle = { workspace = true }
+keel-policy = { workspace = true }
+keel-command = { workspace = true }
+keel-registry = { workspace = true }
+keel-search = { workspace = true }
+keel-ai-mcp = { workspace = true }
+keel-observability = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

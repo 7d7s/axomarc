@@ -1,0 +1,202 @@
+name: keel-publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: package + validate everything, upload nothing"
+        type: boolean
+        default: true
+      crates:
+        description: "Optional comma-separated subset of crate names (empty = all publishable)"
+        type: string
+        required: false
+        default: ""
+
+# Publishing is serialized: never two publish runs at once.
+concurrency:
+  group: keel-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: platform
+
+jobs:
+  verify:
+    name: verify (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.92.0
+        run: rustup toolchain install 1.92.0 --profile minimal -c rustfmt -c clippy && rustup default 1.92.0
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            platform/target
+          key: keel-publish-${{ matrix.os }}-${{ hashFiles('platform/Cargo.lock') }}
+          restore-keys: |
+            keel-publish-${{ matrix.os }}-
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo check
+        run: cargo check --workspace --locked
+      - name: cargo test
+        run: cargo test --workspace --locked
+      - name: cargo doc
+        run: cargo doc --workspace --no-deps --locked
+      - name: architecture analyzer (xtask dep-rules)
+        run: cargo run -p xtask -- dep-rules
+
+  msrv:
+    name: msrv (1.85.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MSRV Rust 1.85.0
+        run: rustup toolchain install 1.85.0 --profile minimal && rustup default 1.85.0
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            platform/target
+          key: keel-msrv-${{ hashFiles('platform/Cargo.lock') }}
+          restore-keys: |
+            keel-msrv-
+      - name: cargo check at MSRV
+        run: cargo check --workspace --locked
+
+  deny:
+    name: cargo-deny (supply chain)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: cargo deny check
+        run: cargo deny check
+
+  publish:
+    name: publish to crates.io
+    needs: [verify, msrv, deny]
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.pub.outputs.version }}
+      crates: ${{ steps.pub.outputs.crates }}
+      count: ${{ steps.pub.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.92.0
+        run: rustup toolchain install 1.92.0 --profile minimal && rustup default 1.92.0
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            platform/target
+          key: keel-publish-ubuntu-latest-${{ hashFiles('platform/Cargo.lock') }}
+          restore-keys: |
+            keel-publish-ubuntu-latest-
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+      - name: semver gate
+        run: cargo run -p xtask -- semver
+      - name: publish
+        id: pub
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ !inputs.dry_run && secrets.CARGO_REGISTRY_TOKEN || '' }}
+        run: |
+          ARGS="publish"
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          if [ -n "${{ inputs.crates }}" ]; then
+            ARGS="$ARGS --only ${{ inputs.crates }}"
+          fi
+          cargo run -p xtask -- $ARGS 2>&1 | tee publish.log
+          LINE=$(grep '^XTASK-PUBLISH:' publish.log | tail -n 1)
+          echo "version=$(echo "$LINE" | sed -n 's/.*version=\([^ ]*\).*/\1/p')" >> "$GITHUB_OUTPUT"
+          echo "crates=$(echo "$LINE" | sed -n 's/.*crates=\([^ ]*\).*/\1/p')" >> "$GITHUB_OUTPUT"
+          echo "count=$(echo "$LINE" | sed -n 's/.*count=\([0-9]*\).*/\1/p')" >> "$GITHUB_OUTPUT"
+
+  smoke:
+    name: registry smoke test
+    needs: publish
+    if: inputs.dry_run == false && needs.publish.outputs.count != '0'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Rust 1.92.0
+        run: rustup toolchain install 1.92.0 --profile minimal && rustup default 1.92.0
+      - name: Build a fresh project against the published crates
+        env:
+          VER: ${{ needs.publish.outputs.version }}
+          CRATES: ${{ needs.publish.outputs.crates }}
+        run: |
+          DIR=$(mktemp -d)
+          cargo new "$DIR/keel-smoke" --lib
+          cd "$DIR/keel-smoke"
+          IFS=',' read -ra LIST <<< "$CRATES"
+          for c in "${LIST[@]}"; do
+            cargo add "$c@$VER"
+          done
+          for i in 1 2 3 4 5; do
+            if cargo build; then
+              echo "smoke: published crates resolve and build from crates.io"
+              exit 0
+            fi
+            echo "smoke: attempt $i failed — waiting for registry propagation..."
+            sleep 30
+          done
+          echo "smoke [!!]: published crates did not become buildable from crates.io"
+          exit 1
+
+  tag:
+    name: release tag + changelog
+    needs: publish
+    if: inputs.dry_run == false && needs.publish.outputs.count != '0'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create release tag
+        env:
+          VER: ${{ needs.publish.outputs.version }}
+        run: |
+          TAG="keel/platform-v$VER"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Keel platform release v$VER"
+          git push origin "$TAG"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff
+      - name: Regenerate changelog
+        env:
+          VER: ${{ needs.publish.outputs.version }}
+        run: |
+          TAG="keel/platform-v$VER"
+          PREFIX=$(git rev-parse --show-prefix)
+          git cliff --config cliff.toml --include-path "${PREFIX}**" --tag "$TAG" --output CHANGELOG.md
+          if [ -n "$(git status --porcelain CHANGELOG.md)" ]; then
+            git add CHANGELOG.md
+            git commit -m "chore(release): changelog for $TAG"
+            git push
+          fi

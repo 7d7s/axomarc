@@ -1,0 +1,38 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: medicare
+          POSTGRES_PASSWORD: medicare
+          POSTGRES_DB: medicare_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U medicare"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgres://medicare:medicare@127.0.0.1:5432/medicare_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.92.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy (D-34: -D warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test
+        run: cargo test --workspace
+      - name: dependency budget report (NFR-S6 / D-38)
+        run: |
+          echo "direct non-dev dependencies:"
+          cargo tree --workspace --depth 0 -e normal | sort -u

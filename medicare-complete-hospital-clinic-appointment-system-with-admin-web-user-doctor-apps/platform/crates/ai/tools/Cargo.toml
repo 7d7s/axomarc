@@ -1,0 +1,20 @@
+[package]
+name = "keel-ai-tools"
+description = "Keel AI tool contract (item 33/34): tools bind names to operations with capability metadata; generated from Command/Query contracts."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+
+[dependencies]
+keel-foundation = { workspace = true }
+keel-contracts = { workspace = true }
+keel-ai = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

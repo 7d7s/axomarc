@@ -1,0 +1,3 @@
+# Workspace aliases (S0: xtask is the architecture-guard entry point).
+[alias]
+xtask = "run -p xtask --"

@@ -1,0 +1,38 @@
+[package]
+name = "medicare-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Composition root: the only binary (D-43 apps/api)."
+
+[dependencies]
+kernel-core = { workspace = true }
+kernel-runtime = { workspace = true }
+kernel-db = { workspace = true }
+kernel-auth = { workspace = true }
+kernel-capability = { workspace = true }
+kernel-workflow = { workspace = true }
+kernel-notify = { workspace = true }
+mod-org = { workspace = true }
+mod-clinic = { workspace = true }
+mod-doctor = { workspace = true }
+mod-patient = { workspace = true }
+mod-appointment = { workspace = true }
+mod-rx = { workspace = true }
+mod-billing = { workspace = true }
+mod-inventory = { workspace = true }
+mod-notifycfg = { workspace = true }
+mod-reports = { workspace = true }
+mod-platform = { workspace = true }
+
+tokio = { workspace = true }
+axum = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }

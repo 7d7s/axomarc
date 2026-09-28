@@ -1,0 +1,12 @@
+[package]
+name = "mod-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Platform plane: tenants, plans, break-glass, support mode, export/erase (M7-07, D-21/22)."
+
+[dependencies]
+kernel-core = { workspace = true }
+kernel-runtime = { workspace = true }
+axum = { workspace = true }

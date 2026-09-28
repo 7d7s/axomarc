@@ -1,0 +1,62 @@
+[package]
+name = "keel-api"
+description = "Keel API host: boots the ApplicationHost, serves health/readiness and the first routes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+
+[[bin]]
+name = "keel-api"
+path = "src/main.rs"
+
+[dependencies]
+keel-foundation = { workspace = true }
+keel-context = { workspace = true }
+keel-execution = { workspace = true }
+keel-lifecycle = { workspace = true }
+keel-registry = { workspace = true }
+keel-command = { workspace = true }
+keel-query = { workspace = true }
+keel-http = { workspace = true }
+keel-validation = { workspace = true }
+keel-config = { workspace = true }
+keel-caching = { workspace = true }
+keel-cache-memory = { workspace = true }
+keel-cache-redis = { workspace = true }
+keel-metrics = { workspace = true }
+keel-policy = { workspace = true }
+keel-scope = { workspace = true }
+keel-models = { workspace = true }
+keel-postgres = { workspace = true }
+keel-observability = { workspace = true }
+keel-notifications = { workspace = true }
+keel-feature-flags = { workspace = true }
+keel-session = { workspace = true }
+keel-realtime = { workspace = true }
+keel-tokens = { workspace = true }
+keel-identity = { workspace = true }
+keel-storage = { workspace = true }
+keel-storage-local = { workspace = true }
+keel-views = { workspace = true }
+keel-mod-appointments = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dev-dependencies]
+tower = { workspace = true }
+keel-policy = { workspace = true }
+keel-foundation = { workspace = true }

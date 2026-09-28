@@ -1,0 +1,30 @@
+[package]
+name = "keel-testkit"
+description = "Keel testkit v1: TestApp harness, fakes, time control, factory primitives (item 28, L58)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+
+[dependencies]
+keel-foundation = { workspace = true }
+keel-execution = { workspace = true }
+keel-jobs = { workspace = true }
+keel-event = { workspace = true }
+keel-storage = { workspace = true }
+keel-search = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

@@ -1,0 +1,60 @@
+# Keel dev configuration (keel-config loads: defaults <- this file <- env)
+[app]
+name = "keel"
+env = "dev"
+listen = "127.0.0.1:8180"
+# Wave 2 debug gate: errors carry redacted internal context in dev only.
+debug = true
+
+[database]
+url = "postgres://keel:keel_dev_only@localhost:5432/keel"
+max_connections = 8
+run_migrations = true
+
+[auth]
+# secrets are asserted at boot (never defaulted in prod)
+jwt_secret = "dev-only-not-for-prod"
+
+[otp]
+provider = "msg91"
+code_ttl_secs = 300
+max_attempts = 5
+
+[storage]
+endpoint = "http://localhost:9000"
+bucket = "keel-dev"
+
+[views]
+# Wave 2 views engine: template roots (workspace-relative, first hit wins)
+# and the compiled-AST cache. `env` follows [app].env when omitted.
+paths = ["resources/views"]
+cache_dir = "storage/framework/views"
+
+[http]
+# Wave 2 api-plane errors: keep the Envelope (`false`) or serve RFC-7807
+# `application/problem+json` by default (`true`). A request-level
+# `Accept: application/json|application/problem+json` always wins.
+problem_json = false
+# Wave 2 cookies: seal every queued cookie *value* with AES-256-GCM under a
+# key derived from the application key (`k1.` wire form). Off until every
+# cookie consumer understands the sealed form.
+encrypt_cookies = false
+
+[limits]
+# usage-cap pricing (D-20): per-tenant caps enforced by capability engine
+default_monthly_operations = 100000
+[telemetry]
+# S5 Sentinel runtime (specs/STAGE-SENTINEL-SPEC.md). Frozen at boot like all
+# config (STAGE-0 SS10); env overlay KEEL_TELEMETRY_* still applies. Declare
+# console AND file: the runtime only auto-adds a console exporter when the
+# exporter map is empty.
+level = "info"
+format = "pretty"
+
+[telemetry.exporters.console]
+kind = "console"
+critical = true
+
+[telemetry.exporters.file]
+kind = "file"
+target = "storage/framework/telemetry/logs/app.jsonl"

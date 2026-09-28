@@ -1,0 +1,18 @@
+[package]
+name = "__PROJECT_CRATE__"
+description = "__PROJECT_DESCRIPTION__"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+keel-foundation = { workspace = true }
+keel-context = { workspace = true }
+keel-execution = { workspace = true }
+keel-lifecycle = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+time = { workspace = true }

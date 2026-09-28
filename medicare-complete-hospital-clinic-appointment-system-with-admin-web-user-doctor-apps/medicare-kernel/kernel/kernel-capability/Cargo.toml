@@ -1,0 +1,14 @@
+[package]
+name = "kernel-capability"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Scope lattice + capability engine (POL-01..04). Deny-by-default."
+
+[dependencies]
+kernel-core = { workspace = true }
+moka = { version = "0.12", features = ["sync"] }
+uuid = { workspace = true }
+time = { workspace = true }
+tracing = { workspace = true }

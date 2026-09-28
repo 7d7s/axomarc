@@ -1,0 +1,36 @@
+# medicare-kernel config — typed & validated at boot (02-SYSTEM-DESIGN.md §9)
+# Secrets come from environment variables, never from this file.
+
+[server]
+bind = "127.0.0.1:8080"
+
+[database]
+# override with DATABASE_URL env
+url = "postgres://medicare:medicare@127.0.0.1:5432/medicare"
+max_connections = 10
+
+[deploy]
+# standalone = per-customer self-host (D-11) | saas = shared multi-tenant (D-11)
+mode = "standalone"
+
+[jwt]
+# dev only: HS256 with shared secret. Production: ES256 + kid rotation (M1-02).
+mode = "hs256-dev"
+dev_secret = "change-me-in-dev-only"
+access_ttl_secs = 900
+refresh_ttl_secs = 2592000
+
+[otp]
+# D-16: MSG91 adapter; twilio adapter lands when needed
+provider = "msg91"
+code_ttl_secs = 300
+max_attempts = 5
+
+[storage]
+# D-19: MinIO bundled for standalone
+endpoint = "http://127.0.0.1:9000"
+bucket = "medicare"
+
+[demo]
+# seeded tenant used until AuthN (M1) is wired; remove at M2 gate
+tenant_id = "00000000-0000-0000-0000-0000000000a1"

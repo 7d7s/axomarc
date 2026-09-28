@@ -1,0 +1,12 @@
+[package]
+name = "mod-doctor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Doctors, schedules, slots (M4-03..05)."
+
+[dependencies]
+kernel-core = { workspace = true }
+kernel-runtime = { workspace = true }
+axum = { workspace = true }

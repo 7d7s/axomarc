@@ -1,0 +1,21 @@
+# justfile — artisan-equivalent shortcuts (D-43)
+default_env := { DATABASE_URL: "postgres://medicare:medicare@127.0.0.1:5432/medicare" }
+
+dev:
+    cargo run -p medicare-api
+
+test:
+    cargo test --workspace
+
+check:
+    cargo fmt --all -- --check
+    cargo clippy --workspace --all-targets -- -D warnings
+
+migrate:
+    sqlx migrate run --source migrations
+
+db-up:
+    docker compose up -d postgres minio
+
+scaffold name:
+    cargo run -p xtask -- scaffold-module {{name}}

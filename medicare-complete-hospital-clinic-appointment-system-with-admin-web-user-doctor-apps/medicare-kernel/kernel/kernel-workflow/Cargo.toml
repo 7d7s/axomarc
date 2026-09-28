@@ -1,0 +1,11 @@
+[package]
+name = "kernel-workflow"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Declarative state machines (SRS KER-04, APT-01)."
+
+[dependencies]
+kernel-core = { workspace = true }
+thiserror = { workspace = true }

@@ -1,0 +1,1841 @@
+//! Graph-driven HTTP edge (S7 C1/B-01, Wave 1 middleware model): compiles
+//! PlatformGraph from all applications/*/module.toml manifests and registers
+//! one axum route per RouteSpec with its fully-resolved middleware chain
+//! attached at registration time. Declared module routes become executable
+//! HTTP endpoints dispatched through the CommandBus.
+//!
+//! Dispatch contract (Wave 1):
+//! - identity resolution lives in the route's middleware chain (session ->
+//!   bearer PAT -> opt-in JWT via the auth stage); dispatch consumes the
+//!   installed ResolvedPrincipal extension
+//! - anonymous reach is only possible on public routes whose handler plan
+//!   does not require authorization (401 envelopes otherwise)
+//! - declared {param} model bindings resolve tenant-scoped through the
+//!   route.bindings registry and are injected as _bindings.<param> AFTER
+//!   the path/query/body merge (bodies cannot forge them); misses are 404
+//! - GET routes parse page/per_page (clamped) and inject _page
+//! - manifest [[validation]] rules run collect-all over the merged input
+//!   before dispatch (422 envelope with fields meta)
+//! - deprecated routes emit a Deprecation: true header + envelope meta
+//! - path/query params merge into the JSON body (body wins on conflict)
+//! - the Idempotency-Key header feeds the engine's idempotency gate
+//! - every response is the public Envelope; unknown routes fall through 404
+
+use std::path::Path;
+use std::sync::Arc;
+
+use axum::body::Body;
+use axum::extract::{Path as AxumPath, State};
+use axum::http::{header, HeaderMap, Request, StatusCode};
+use axum::response::IntoResponse;
+use axum::routing::{MethodFilter, MethodRouter};
+use axum::{Json, Router};
+use keel_context::{ExecutionContext, PrincipalContext, ScopeSnapshot, TenantContext};
+use keel_foundation::{
+    AuthorizationRevision, ExecutionProfileKind, OperationId, PrincipalId, SecurityPlane, TenantId,
+};
+use keel_execution::IdempotencyKey;
+use keel_http::{
+    AuthVia, ChainRuntime, EdgeAuthPort, Envelope, ResolvedPrincipal, ResolvedSession,
+};
+use keel_registry::{
+    BindingSpec, CachePolicy, CacheSpec, ModuleManifest, PlatformGraph, RoutePlan, RouteSpec,
+    ResponseKind, RoutePlane,
+};
+use time::OffsetDateTime;
+
+use crate::routes::AppState;
+
+// ------------------------------------------------------------- graph compile
+
+/// Discover module manifests under applications/ and modules/ (same layout
+/// keel graph uses in tools/keel-console).
+pub fn discover_manifests(root: &Path) -> Result<Vec<ModuleManifest>, String> {
+    let mut out = Vec::new();
+    for base in ["applications", "modules"] {
+        let dir = root.join(base);
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let manifest_path = entry.path().join("module.toml");
+            if manifest_path.exists() {
+                let raw = std::fs::read_to_string(&manifest_path)
+                    .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+                let manifest = keel_registry::ModuleManifest::from_toml(&raw)
+                    .map_err(|v| format!("{}: {}", manifest_path.display(), v.message))?;
+                out.push(manifest);
+            }
+        }
+    }
+    out.extend(discover_route_files(root)?);
+    out.sort_by(|a, b| a.name().cmp(b.name()));
+    Ok(out)
+}
+
+/// Wave 2 root route files (mirroring Laravel's routes/*.php): merge
+/// `routes/web.toml` + `routes/api.toml` routes (plane forced by file),
+/// `routes/console.toml` commands and `routes/channels.toml` channels
+/// into synthetic module manifests. Absent files are fine. Route-file
+/// operations must reference module-registered operations
+/// (GRAPH-ROUTEFILE-OP gate); channel capabilities must be declared
+/// somewhere (GRAPH-CHANNEL-CAP).
+pub fn discover_route_files(root: &Path) -> Result<Vec<ModuleManifest>, String> {
+    let mut out = Vec::new();
+    for (file, plane, module_name) in [
+        ("web.toml", Some("web"), "routes_web"),
+        ("api.toml", Some("api"), "routes_api"),
+        ("console.toml", None, "routes_console"),
+        ("channels.toml", None, "routes_channels"),
+    ] {
+        let path = root.join("routes").join(file);
+        if !path.exists() {
+            continue;
+        }
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let manifest =
+            keel_registry::RouteFileManifest::from_toml(&raw, &format!("routes/{file}"), plane)
+                .map_err(|v| format!("{}: {}", path.display(), v.message))?;
+        out.push(manifest.into_module(module_name));
+    }
+    Ok(out)
+}
+
+/// Compile the platform graph from a workspace root.
+pub fn compile_graph(root: &Path) -> Result<PlatformGraph, String> {
+    let manifests = discover_manifests(root)?;
+    PlatformGraph::compile(manifests).map_err(|violations| {
+        violations
+            .iter()
+            .map(|v| format!("{}: {}", v.code, v.message))
+            .collect::<Vec<_>>()
+            .join("; ")
+    })
+}
+
+// --------------------------------------------------------------- route cache
+
+/// Boot gate (Wave 1 route cache): absent artifact -> Ok(None) (live
+/// compile); present artifact must match the current manifest + middleware
+/// content and the current module ABI, else boot is refused with a pointer
+/// to keel route:cache. Corrupt artifacts refuse boot too (fail closed,
+/// strictly stricter than Laravel: the graph always recompiles).
+pub fn route_cache_check(root: &Path) -> Result<Option<Vec<RoutePlan>>, String> {
+    let path = keel_registry::route_cache_path(root);
+    let Some(artifact) = keel_registry::RouteCacheArtifact::load(&path)? else {
+        return Ok(None);
+    };
+    if !artifact.matches(root)? {
+        return Err(format!(
+            "route cache {} is stale (manifest or middleware.toml drift, or module ABI change); run keel route:cache to rebuild or keel route:clear to drop it",
+            path.display()
+        ));
+    }
+    Ok(Some(artifact.plans))
+}
+
+// ------------------------------------------------------------- route registry
+
+/// Per-route dispatch context captured at registration time.
+#[derive(Clone)]
+pub struct RouteDispatch {
+    pub operation: OperationId,
+    pub profile: ExecutionProfileKind,
+    pub plane: SecurityPlane,
+    /// Declared public = anonymously reachable (implicit auth/verified
+    /// stripped from the chain).
+    pub public: bool,
+    /// Emits a Deprecation: true header + meta.deprecated on success (L72).
+    pub deprecated: bool,
+    /// GET routes parse page/per_page and inject _page (Wave 1 pagination).
+    pub inject_page: bool,
+    /// Path-parameter -> model bindings resolved before dispatch.
+    pub bindings: Vec<BindingSpec>,
+    /// Compiled manifest validation for this route's operation (collect-all).
+    pub validator: Option<Arc<keel_validation::Validator>>,
+    /// Route plane (Wave 2): `web` renders error views instead of JSON
+    /// envelopes (unless the request explicitly expects JSON).
+    pub route_plane: RoutePlane,
+    /// Response wire kind (Wave 2): json (default) | html (rendered view) |
+    /// redirect (Location + flash) | download/file (StoragePort object) |
+    /// stream (chunked NDJSON) | no_content (204).
+    pub response: ResponseKind,
+    /// Dot-path view name for `response = "html"` routes (`pages.welcome`).
+    pub view: Option<String>,
+    /// True for GET-registered routes: they carry ETags and answer
+    /// conditional GETs with 304 (Wave 2 HTTP caching).
+    pub is_get: bool,
+    /// Per-route `Cache-Control` policy (Wave 2 HTTP caching); absent means
+    /// the route emits no explicit cache directive.
+    pub cache: Option<CacheSpec>,
+}
+
+/// Manifest {param} syntax is axum 0.8 capture syntax verbatim — pass
+/// through unchanged (axum rejects the old :param form).
+fn axum_path(spec_path: &str) -> String {
+    spec_path.to_string()
+}
+
+fn method_filter(method: &str) -> Option<MethodFilter> {
+    Some(match method.to_ascii_uppercase().as_str() {
+        "GET" => MethodFilter::GET,
+        "POST" => MethodFilter::POST,
+        "PUT" => MethodFilter::PUT,
+        "PATCH" => MethodFilter::PATCH,
+        "DELETE" => MethodFilter::DELETE,
+        "OPTIONS" => MethodFilter::OPTIONS,
+        "HEAD" => MethodFilter::HEAD,
+        _ => return None,
+    })
+}
+
+/// Registered route inventory (for keel route:list-style introspection).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RouteEntry {
+    pub module: String,
+    pub method: String,
+    pub path: String,
+    pub operation: String,
+    pub capability: Option<String>,
+}
+
+/// Find the cached dispatch plan for one manifest route (route-cache hit).
+fn cached_plan<'a>(plans: &'a [RoutePlan], module: &str, spec: &RouteSpec) -> Option<&'a RoutePlan> {
+    let method = spec.method.to_ascii_uppercase();
+    plans.iter().find(|p| {
+        p.module == module && p.method == method && p.path == spec.path && p.operation == spec.operation
+    })
+}
+
+/// Compile manifest validation entries into one collect-all Validator.
+/// None when the operation declares no rules. Rule parse errors fail the
+/// route registration (the GRAPH-VALIDATION-RULE boot gate rejects them in
+/// production; the live path degrades with a warning).
+fn compile_validator(
+    entries: &[(String, Vec<String>)],
+) -> Result<Option<Arc<keel_validation::Validator>>, String> {
+    if entries.is_empty() {
+        return Ok(None);
+    }
+    let mut validator = keel_validation::Validator::new();
+    for (field, tokens) in entries {
+        let rules = keel_validation::parse_rules(tokens)
+            .map_err(|errs| format!("field {field}: {}", errs.join("; ")))?;
+        validator = validator.field(field.clone(), rules);
+    }
+    Ok(Some(Arc::new(validator)))
+}
+
+/// Build a Router<()> of all graph routes, attaching each route's resolved
+/// middleware chain at registration time (Wave 1 middleware model). Skips
+/// (with a warning) any route whose method/operation id is malformed or
+/// whose middleware chain fails to resolve rather than failing boot here —
+/// the boot gates (GRAPH-MW-UNKNOWN, keel check) refuse those in production.
+pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
+    // One shared edge-auth port + one shared bucket map: a named throttle
+    // group is ONE limiter across all routes (Laravel semantics).
+    let edge_auth: Arc<dyn EdgeAuthPort> = Arc::new(EdgeAuth {
+        tokens: state.tokens.clone(),
+        principals: state.principals.clone(),
+        jwt: state.jwt.clone(),
+        policy: state.policy.clone(),
+        granted_capabilities: state.granted_capabilities.clone(),
+        default_tenant_id: state.default_tenant_id,
+    });
+    let throttle = state.middleware_catalog.throttle_configs();
+    let buckets = state.throttle_buckets.clone();
+
+    let mut router = Router::new();
+    for module in &graph.modules {
+        let plane = module.module.plane.to_security_plane();
+        let tenant_plane = module.module.plane == keel_registry::ModulePlane::Tenant;
+        for spec in &module.routes {
+            let Some(filter) = method_filter(&spec.method) else {
+                tracing::warn!(module = module.name(), method = %spec.method, path = %spec.path, "graph route skipped: unsupported method");
+                continue;
+            };
+            let operation_id = format!("{}.{}", module.name(), spec.operation);
+            let Ok(operation) = OperationId::parse(&operation_id) else {
+                tracing::warn!(operation = %operation_id, "graph route skipped: invalid operation id");
+                continue;
+            };
+            // Route-cache hit = register from the pinned artifact; miss =
+            // live resolution against the catalog (today's behavior).
+            let cached = state
+                .route_plans
+                .as_deref()
+                .and_then(|plans| cached_plan(plans, module.name(), spec));
+
+            let chain = match cached {
+                Some(plan) => plan.chain.clone(),
+                None => match state.middleware_catalog.resolve_chain(
+                    tenant_plane,
+                    spec.public,
+                    &spec.middleware,
+                    &spec.excluded_middleware,
+                ) {
+                    Ok(chain) => chain,
+                    Err(v) => {
+                        tracing::warn!(module = module.name(), method = %spec.method, path = %spec.path, error = %v.message, "graph route skipped: middleware chain rejected");
+                        continue;
+                    }
+                },
+            };
+
+            let validation_entries: Vec<(String, Vec<String>)> = match cached {
+                Some(plan) => plan.validation.clone(),
+                None => module
+                    .validation
+                    .iter()
+                    .filter(|s| s.operation == spec.operation)
+                    .map(|s| (s.field.clone(), s.rules.clone()))
+                    .collect(),
+            };
+            let validator = match compile_validator(&validation_entries) {
+                Ok(validator) => validator,
+                Err(error) => {
+                    tracing::warn!(module = module.name(), operation = %operation_id, error = %error, "graph route registered without manifest validation (rules failed to compile)");
+                    None
+                }
+            };
+
+            let profile = module
+                .capabilities
+                .get(&spec.operation)
+                .map(|c| c.profile)
+                .unwrap_or(ExecutionProfileKind::Command);
+            let dispatch = Arc::new(RouteDispatch {
+                operation,
+                profile,
+                plane,
+                public: spec.public,
+                deprecated: spec.deprecated,
+                inject_page: spec.method.eq_ignore_ascii_case("get"),
+                bindings: cached
+                    .map(|plan| plan.bindings.clone())
+                    .unwrap_or_else(|| spec.bindings.clone()),
+                validator,
+                // Wave 2: plane + wire kind drive the edge (HTML render, web
+                // error views). Invalid plane tokens are already refused by
+                // the GRAPH-PLANE boot gate, so the fallback is `api`.
+                route_plane: spec
+                    .plane
+                    .as_deref()
+                    .and_then(|token| RoutePlane::from_token(token).ok())
+                    .unwrap_or_default(),
+                response: spec.response,
+                view: spec.view.clone(),
+                is_get: spec.method.eq_ignore_ascii_case("get"),
+                cache: spec.cache,
+            });
+
+            let runtime = Arc::new(ChainRuntime {
+                chain,
+                auth: edge_auth.clone(),
+                require_verified_email: state.require_verified_email,
+                throttle: throttle.clone(),
+                buckets: buckets.clone(),
+            });
+
+            let path = axum_path(&spec.path);
+            let route: MethodRouter = axum::routing::on(filter, graph_dispatch)
+                .with_state((state.clone(), dispatch))
+                .layer(axum::middleware::from_fn_with_state(
+                    runtime,
+                    keel_http::chain_middleware,
+                ));
+            router = router.route(&path, route);
+            tracing::info!(method = %spec.method, path = %spec.path, operation = %operation_id, "graph route registered");
+        }
+    }
+    router
+}
+
+/// Inventory of graph routes (registration-independent, for meta endpoints).
+pub fn route_inventory(graph: &PlatformGraph) -> Vec<RouteEntry> {
+    let mut out = Vec::new();
+    for module in &graph.modules {
+        for spec in &module.routes {
+            out.push(RouteEntry {
+                module: module.name().to_string(),
+                method: spec.method.to_ascii_uppercase(),
+                path: spec.path.clone(),
+                operation: format!("{}.{}", module.name(), spec.operation),
+                capability: spec.capability.clone(),
+            });
+        }
+    }
+    out
+}
+
+// ------------------------------------------------------------------ edge auth
+
+/// Edge bearer resolution shared by every graph route chain (Wave 1): hashed
+/// PAT first (the default auth model), opt-in HS256 JWT interop second.
+/// PATs keep their login-time snapshot semantics (no install here — the
+/// pat_bypasses_snapshot contract); a stateless JWT never went through
+/// login in this process, so its access snapshot is hydrated at resolution
+/// time (idempotent install).
+pub(crate) struct EdgeAuth {
+    pub(crate) tokens: Arc<keel_tokens::TokenService>,
+    pub(crate) principals: Arc<dyn keel_identity::PrincipalStore>,
+    pub(crate) jwt: Option<Arc<keel_http::JwtHs256>>,
+    pub(crate) policy: Arc<keel_policy::PolicyEngine>,
+    pub(crate) granted_capabilities: Vec<String>,
+    pub(crate) default_tenant_id: Option<TenantId>,
+}
+
+impl EdgeAuthPort for EdgeAuth {
+    fn resolve_bearer(&self, token: &str) -> Option<ResolvedPrincipal> {
+        match self.tokens.verify(keel_tokens::TokenPurpose::Api, token) {
+            Ok(auth_token) => Some(ResolvedPrincipal {
+                principal: auth_token.principal_id,
+                tenant: tenant_from_label(&auth_token.label),
+                via: AuthVia::Bearer,
+            }),
+            Err(_) => {
+                let (principal, tenant) = resolve_jwt_token(self.jwt.as_deref(), token)?;
+                let tenant = tenant.or(self.default_tenant_id);
+                if let Some(tenant) = tenant {
+                    crate::auth_routes::install_snapshot_fields(
+                        &self.policy,
+                        &self.granted_capabilities,
+                        principal,
+                        tenant,
+                    );
+                }
+                Some(ResolvedPrincipal {
+                    principal,
+                    tenant,
+                    via: AuthVia::Jwt,
+                })
+            }
+        }
+    }
+
+    fn email_verified(&self, principal: PrincipalId) -> bool {
+        matches!(
+            self.principals.by_id(principal),
+            Ok(Some(p)) if p.email_verified_at.is_some()
+        )
+    }
+}
+
+/// B-22: resolve a bearer token through the opt-in HS256 JWT interop
+/// verifier. Returns None when the verifier is not wired (app.jwt off) or
+/// verification fails; callers collapse that to a uniform 401. The tenant
+/// claim is optional; absent tenants fall through to the caller's
+/// default-tenant logic.
+pub(crate) fn resolve_jwt_token(
+    jwt: Option<&keel_http::JwtHs256>,
+    token: &str,
+) -> Option<(PrincipalId, Option<TenantId>)> {
+    let claims = jwt?.verify(token).ok()?;
+    let principal = uuid::Uuid::parse_str(&claims.sub)
+        .ok()
+        .map(PrincipalId::from_uuid)?;
+    let tenant = claims
+        .tenant
+        .as_deref()
+        .and_then(|raw| uuid::Uuid::parse_str(raw).ok())
+        .map(TenantId::from_uuid);
+    Some((principal, tenant))
+}
+
+// ---------------------------------------------------------------- dispatch
+
+/// Query parser: a=1&b=2 -> ordered pairs. Tolerant: malformed pairs are
+/// skipped (never a request failure).
+fn query_pairs(query: Option<&str>) -> Vec<(String, String)> {
+    let Some(query) = query else {
+        return Vec::new();
+    };
+    query
+        .split('&')
+        .filter_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            if key.is_empty() {
+                return None;
+            }
+            Some((key.to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+/// Merge path + query params into the JSON input object (body wins).
+fn merge_params(
+    mut input: serde_json::Value,
+    params: Vec<(String, String)>,
+    query: Vec<(String, String)>,
+) -> serde_json::Value {
+    if !input.is_object() {
+        input = serde_json::json!({});
+    }
+    let obj = input.as_object_mut().expect("checked object");
+    for (key, value) in query.into_iter().chain(params) {
+        if !obj.contains_key(&key) {
+            obj.insert(key, serde_json::Value::String(value));
+        }
+    }
+    input
+}
+
+/// PAT labels carry the tenant: tenant:<uuid>.
+fn tenant_from_label(label: &Option<String>) -> Option<TenantId> {
+    let raw = label.as_ref()?.strip_prefix("tenant:")?;
+    uuid::Uuid::parse_str(raw).ok().map(TenantId::from_uuid)
+}
+
+/// Bearer credential for the dispatch edge. Delegates to the shared request
+/// helper so the api plane, uploads and `/auth/me` read `Authorization` the
+/// same way (case-insensitive scheme, trimmed, non-empty).
+pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    keel_http::bearer_token(headers)
+}
+
+/// Shared identity resolution for non-graph endpoints (uploads, /auth/me):
+/// session first, then bearer PAT. Used by upload_routes/auth_routes.
+pub(crate) fn resolve_identity(
+    state: &AppState,
+    headers: &HeaderMap,
+    session: Option<&ResolvedSession>,
+) -> Result<(PrincipalId, Option<TenantId>), keel_foundation::AppError> {
+    if let Some(resolved) = session {
+        return Ok((resolved.session.principal, resolved.session.tenant));
+    }
+    let Some(token) = bearer_token(headers) else {
+        return Err(keel_foundation::AppError::unauthenticated());
+    };
+    // Invalid/revoked bearer credentials are an authentication failure (401)
+    // at the transport edge, regardless of the domain error category.
+    // B-22: PAT is tried first (default model); the opt-in stateless HS256
+    // JWT interop verifier is the fallback when one is wired (app.jwt).
+    match state.tokens.verify(keel_tokens::TokenPurpose::Api, token) {
+        Ok(auth_token) => Ok((
+            auth_token.principal_id,
+            tenant_from_label(&auth_token.label),
+        )),
+        Err(_) => resolve_jwt_token(state.jwt.as_deref(), token)
+            .ok_or_else(keel_foundation::AppError::unauthenticated),
+    }
+}
+
+/// Wave 2 request intent (the `expects_json` half of the web-plane contract):
+/// only an explicit `Accept: application/json` keeps the JSON envelope on a
+/// web route. Browsers, `curl` without an Accept header and anything else get
+/// the HTML error view. Delegates to the shared request helper so every edge
+/// agrees on what "JSON client" means (wildcards never count, `q=0` never
+/// counts).
+fn expects_json(headers: &HeaderMap) -> bool {
+    keel_http::expects_json(headers)
+}
+
+/// Wave 2 error views: the registry-pinned view for the error code first,
+/// then `errors.404`, `errors.500` and `errors.maintenance` (503), falling
+/// back to the generic `errors.500` when the specific page is absent. The
+/// context carries public fields — status, canonical reason, the error's
+/// public message, its code and the request path — plus redacted internal
+/// detail when `app.debug` is on. Returns `None` when no engine is wired or
+/// no candidate renders, so the caller falls back to the JSON body.
+fn error_view_response(
+    state: &AppState,
+    status: StatusCode,
+    err: &keel_foundation::AppError,
+    path: &str,
+    pinned: Option<&str>,
+) -> Option<axum::response::Response> {
+    let engine = state.views.as_ref()?;
+    let by_status = match status {
+        StatusCode::NOT_FOUND => "errors.404",
+        StatusCode::SERVICE_UNAVAILABLE => "errors.maintenance",
+        _ => "errors.500",
+    };
+    let name = match pinned.filter(|n| !n.is_empty()) {
+        Some(p) if engine.exists(p) => p.to_string(),
+        _ if engine.exists(by_status) => by_status.to_string(),
+        _ if engine.exists("errors.500") => "errors.500".to_string(),
+        _ => return None,
+    };
+    let mut context = serde_json::json!({
+        "status": status.as_u16(),
+        "title": status.canonical_reason().unwrap_or("Error"),
+        "message": err.public_message,
+        "code": err.code,
+        "path": path,
+    });
+    if state.debug {
+        if let Some(debug) = crate::routes::debug_detail(err) {
+            if let Some(obj) = context.as_object_mut() {
+                obj.insert("debug".into(), debug);
+            }
+        }
+    }
+    let html = engine.render(&name, context).ok()?;
+    Some(
+        (status, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response(),
+    )
+}
+
+/// Wave 2 error rendering at the dispatch edge. The registry plan (status,
+/// render path, reportability) runs exactly once through
+/// `AppState::error_envelope`, which also logs reportable errors and attaches
+/// `app.debug` detail plus per-code renderer output. Web-plane HTML clients
+/// then get the error view; the api plane and machine clients get the
+/// Envelope, or RFC-7807 `application/problem+json` when negotiated
+/// (fail closed to the Envelope everywhere else).
+fn dispatch_error(
+    state: &AppState,
+    dispatch: &RouteDispatch,
+    headers: &HeaderMap,
+    path: &str,
+    err: &keel_foundation::AppError,
+) -> axum::response::Response {
+    let (status, envelope) = state.error_envelope(err);
+    let accept = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok());
+
+    if dispatch.route_plane == RoutePlane::Web
+        && !expects_json(headers)
+        && !keel_http::wants_problem(accept, false)
+    {
+        let pinned = state.error_renders.plan(err).view;
+        if let Some(response) = error_view_response(state, status, err, path, pinned.as_deref()) {
+            return response;
+        }
+        return (
+            status,
+            Json(serde_json::to_value(envelope).unwrap_or_default()),
+        )
+            .into_response();
+    }
+
+    if keel_http::wants_problem(accept, state.problem_json) {
+        let error = envelope
+            .error
+            .clone()
+            .unwrap_or_else(|| keel_http::ErrorBody::from_app_error(err));
+        return state.problem_response(status, &error, Some(path));
+    }
+    (
+        status,
+        Json(serde_json::to_value(envelope).unwrap_or_default()),
+    )
+        .into_response()
+}
+
+/// Wave 2 HTML route: render `route.view` with the operation result as the
+/// template context (an object result IS the context; scalars and arrays nest
+/// under `data`). Seeded with the views crate's documented edge conventions:
+/// `_errors` starts empty so `@error` renders nothing, and `_auth` carries the
+/// principal id when one is installed. A missing engine, a missing `view`, a
+/// missing template or a parse error is a 500 through the normal error path —
+/// never a half-rendered page.
+fn html_response(
+    state: &AppState,
+    dispatch: &RouteDispatch,
+    headers: &HeaderMap,
+    path: &str,
+    authed: Option<String>,
+    result: serde_json::Value,
+) -> (axum::response::Response, Option<Vec<u8>>) {
+    let fail = |err: keel_foundation::AppError| {
+        (dispatch_error(state, dispatch, headers, path, &err), None)
+    };
+    let Some(engine) = state.views.as_ref() else {
+        return fail(keel_foundation::AppError::internal("views are not configured"));
+    };
+    let Some(name) = dispatch.view.as_deref().filter(|n| !n.is_empty()) else {
+        return fail(keel_foundation::AppError::internal(
+            "route declares response = html but no view",
+        ));
+    };
+    let mut context = if result.is_object() {
+        result
+    } else {
+        serde_json::json!({ "data": result })
+    };
+    if let Some(obj) = context.as_object_mut() {
+        obj.entry("_errors")
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(who) = authed {
+            obj.insert("_auth".into(), serde_json::Value::String(who));
+        }
+    }
+    match engine.render(name, context) {
+        Ok(html) => {
+            // The caching step hashes exactly these bytes, so hand them back
+            // instead of re-reading the body off the transport later.
+            let bytes = html.as_bytes().to_vec();
+            let response = (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                html,
+            )
+                .into_response();
+            (response, Some(bytes))
+        }
+        Err(view) => fail(keel_foundation::AppError::internal(format!(
+            "view {name} failed: {}",
+            view.message
+        ))),
+    }
+}
+
+// ---------------------------------------------------- Wave 2 response kinds
+
+/// Render a successful operation result according to the route's declared
+/// response kind (19-PARITY "Response kinds"). Returns the response plus
+/// the exact bytes it was built from (when buffered) so the caching step
+/// can hash what was served without re-reading it from the transport.
+fn render_success(
+    state: &AppState,
+    dispatch: &RouteDispatch,
+    headers: &HeaderMap,
+    path: &str,
+    session: Option<ResolvedSession>,
+    view_auth: Option<String>,
+    result: serde_json::Value,
+) -> Result<(axum::response::Response, Option<Vec<u8>>), keel_foundation::AppError> {
+    use keel_foundation::AppError;
+    match dispatch.response {
+        ResponseKind::Html => Ok(html_response(
+            state, dispatch, headers, path, view_auth, result,
+        )),
+        ResponseKind::NoContent => Ok((StatusCode::NO_CONTENT.into_response(), None)),
+        ResponseKind::Redirect => Ok((redirect_response(state, session, result)?, None)),
+        ResponseKind::Download => Ok((download_response(state, result)?, None)),
+        ResponseKind::Stream => Ok((stream_response(result)?, None)),
+        ResponseKind::Json => {
+            let mut envelope = Envelope::ok(result);
+            if dispatch.deprecated {
+                envelope = envelope.with_meta(serde_json::json!({ "deprecated": true }));
+            }
+            let bytes = serde_json::to_vec(&envelope)
+                .map_err(|_| AppError::internal("envelope could not be serialized"))?;
+            let response = (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/json")],
+                Body::from(bytes.clone()),
+            )
+                .into_response();
+            Ok((response, Some(bytes)))
+        }
+    }
+}
+
+/// `response = "redirect"`: the operation result names the target — a bare
+/// URL string (302) or `{ to, status?, flash? }`. `flash` entries land in
+/// the caller's session and survive exactly one request.
+fn redirect_response(
+    state: &AppState,
+    session: Option<ResolvedSession>,
+    result: serde_json::Value,
+) -> Result<axum::response::Response, keel_foundation::AppError> {
+    use keel_foundation::AppError;
+    let (target, status, flash) = match &result {
+        serde_json::Value::String(to) => (to.clone(), StatusCode::FOUND, None),
+        serde_json::Value::Object(map) => {
+            let to = map
+                .get("to")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| AppError::validation("redirect result is missing `to`"))?;
+            let status = match map.get("status").and_then(|v| v.as_u64()) {
+                Some(raw) => u16::try_from(raw)
+                    .ok()
+                    .and_then(|raw| StatusCode::from_u16(raw).ok())
+                    .filter(|status| status.is_redirection())
+                    .ok_or_else(|| {
+                        AppError::validation("redirect status must be a 3xx code")
+                    })?,
+                None => StatusCode::FOUND,
+            };
+            let flash = map.get("flash").and_then(|v| v.as_object()).cloned();
+            (to.to_string(), status, flash)
+        }
+        _ => {
+            return Err(AppError::validation(
+                "redirect result must be a URL string or an object with `to`",
+            ))
+        }
+    };
+    if target.is_empty() {
+        return Err(AppError::validation("redirect target must not be empty"));
+    }
+    // A Location is a header value: CR/LF would be response splitting.
+    let location = header::HeaderValue::from_str(&target)
+        .map_err(|_| AppError::validation("redirect target must be a valid URL"))?;
+    if let Some(flash) = flash {
+        store_flash(state, session, &flash);
+    }
+    let mut response = axum::response::Response::new(Body::empty());
+    *response.status_mut() = status;
+    response.headers_mut().insert(header::LOCATION, location);
+    Ok(response)
+}
+
+/// Copy `flash` entries into the caller's session (one-request lifetime).
+/// Without a session there is nowhere durable to put them, so they are
+/// dropped loudly rather than silently pretending to be flash data.
+fn store_flash(
+    state: &AppState,
+    session: Option<ResolvedSession>,
+    flash: &serde_json::Map<String, serde_json::Value>,
+) {
+    let (Some(middleware), Some(session)) = (state.sessions.as_ref(), session) else {
+        tracing::warn!(
+            target: "keel::redirect",
+            "redirect flash dropped: no session on this request"
+        );
+        return;
+    };
+    for (key, value) in flash {
+        if let Err(error) = keel_http::flash_put(
+            &middleware.manager,
+            &session.session.id,
+            key,
+            value.clone(),
+        ) {
+            tracing::warn!(
+                target: "keel::redirect",
+                key = %key,
+                error = %error.public_message,
+                "flash value dropped"
+            );
+        }
+    }
+}
+
+/// `response = "download"` (`file` alias): the result names a stored
+/// object — `{ bucket, key, filename?, content_type? }` — and is served
+/// from the StoragePort with an attachment disposition. No key, no bucket
+/// access: the operation decides what the caller may take.
+fn download_response(
+    state: &AppState,
+    result: serde_json::Value,
+) -> Result<axum::response::Response, keel_foundation::AppError> {
+    use keel_foundation::AppError;
+    let map = result.as_object().ok_or_else(|| {
+        AppError::validation("download result must be an object with `key`")
+    })?;
+    let bucket = map
+        .get("bucket")
+        .and_then(|v| v.as_str())
+        .unwrap_or("uploads");
+    let key = map
+        .get("key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::validation("download result is missing `key`"))?;
+    if key.is_empty() {
+        return Err(AppError::validation("download key must not be empty"));
+    }
+    let object = keel_storage::ObjectRef {
+        bucket: bucket.to_string(),
+        key: key.to_string(),
+    };
+    let bytes = state.storage.get(&object)?;
+
+    let fallback_name = key.rsplit('/').next().unwrap_or(key);
+    let filename = map
+        .get("filename")
+        .and_then(|v| v.as_str())
+        .unwrap_or(fallback_name);
+    let filename = keel_http::sanitize_filename(filename);
+    if filename.is_empty() {
+        return Err(AppError::validation("download filename must not be empty"));
+    }
+    let content_type = map
+        .get("content_type")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| content_type_for(&filename));
+    let disposition = format!("attachment; filename=\"{filename}\"");
+
+    let mut response = Body::from(bytes).into_response();
+    *response.status_mut() = StatusCode::OK;
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_str(&content_type)
+            .map_err(|_| AppError::validation("content_type is not a valid header value"))?,
+    );
+    response.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        header::HeaderValue::from_str(&disposition)
+            .map_err(|_| AppError::validation("filename is not a valid header value"))?,
+    );
+    Ok(response)
+}
+
+/// Content type for a downloaded object, by filename extension. Anything
+/// unknown is served as `application/octet-stream` — never guessed from
+/// content sniffing, and never `text/html` (that would be an XSS footgun
+/// for a user-supplied file).
+fn content_type_for(filename: &str) -> String {
+    let extension = filename.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match extension.as_str() {
+        "txt" | "log" => "text/plain; charset=utf-8",
+        "html" | "htm" => "text/html; charset=utf-8",
+        "json" => "application/json",
+        "csv" => "text/csv; charset=utf-8",
+        "md" => "text/markdown; charset=utf-8",
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "webp" => "image/webp",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}
+
+/// `response = "stream"`: a chunked NDJSON body. An array result flushes
+/// one line per element, a `{"chunks": [...]}` object one line per chunk,
+/// anything else a single line — each line is its own HTTP chunk, so a
+/// client sees records as they are produced instead of one buffered blob.
+fn stream_response(
+    result: serde_json::Value,
+) -> Result<axum::response::Response, keel_foundation::AppError> {
+    let items: Vec<&serde_json::Value> = match &result {
+        serde_json::Value::Array(items) => items.iter().collect(),
+        serde_json::Value::Object(map) => match map.get("chunks") {
+            Some(serde_json::Value::Array(chunks)) => chunks.iter().collect(),
+            _ => vec![&result],
+        },
+        _ => vec![&result],
+    };
+    let lines: Vec<Result<axum::body::Bytes, std::convert::Infallible>> = items
+        .into_iter()
+        .map(|item| {
+            let mut bytes = serde_json::to_vec(item).unwrap_or_default();
+            bytes.push(b'\n');
+            Ok(axum::body::Bytes::from(bytes))
+        })
+        .collect();
+    let mut response = Body::from_stream(tokio_stream::iter(lines)).into_response();
+    *response.status_mut() = StatusCode::OK;
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("application/x-ndjson"),
+    );
+    Ok(response)
+}
+
+// --------------------------------------------------- Wave 2 HTTP caching
+
+/// Render a route's `CacheSpec` as a `Cache-Control` header value through
+/// the shared builder (directives are never hand-concatenated at the edge).
+fn cache_control_value(spec: &CacheSpec) -> String {
+    let builder = match spec.policy {
+        CachePolicy::NoStore => keel_http::CacheControlBuilder::new().no_store(),
+        CachePolicy::NoCache => keel_http::CacheControlBuilder::new().no_cache(),
+        CachePolicy::Private => keel_http::CacheControlBuilder::new().private(),
+        CachePolicy::Public => keel_http::CacheControlBuilder::new().public(),
+    };
+    let builder = match spec.max_age_secs {
+        Some(secs) => builder.max_age(secs),
+        None => builder,
+    };
+    match spec.stale_while_revalidate_secs {
+        Some(secs) => builder.stale_while_revalidate(secs),
+        None => builder,
+    }
+    .build()
+}
+
+/// Per-route caching (19-PARITY "HTTP caching"): emit the route's
+/// `Cache-Control`, add an ETag over the bytes actually served and answer
+/// a matching `If-None-Match` with 304 + no body. GET routes only; only
+/// buffered kinds (json/html) are ETagged — a streamed or stored-object
+/// body is not hashed twice for a validator.
+fn apply_caching(
+    dispatch: &RouteDispatch,
+    request_headers: &HeaderMap,
+    response: axum::response::Response,
+    buffer: Option<&[u8]>,
+) -> axum::response::Response {
+    let cache_control = dispatch.cache.map(|spec| cache_control_value(&spec));
+    let mut response = response;
+    if let Some(value) = &cache_control {
+        if let Ok(value) = header::HeaderValue::from_str(value) {
+            response.headers_mut().insert(header::CACHE_CONTROL, value);
+        }
+    }
+    if !dispatch.is_get {
+        return response;
+    }
+    let Some(bytes) = buffer else {
+        return response;
+    };
+    let etag = keel_http::etag_for(bytes);
+    let conditional = request_headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| keel_http::if_none_match_hits(value, &etag));
+
+    if conditional {
+        // 304: validators and policy only, never a body.
+        let mut not_modified = axum::response::Response::new(Body::empty());
+        *not_modified.status_mut() = StatusCode::NOT_MODIFIED;
+        if let Ok(value) = header::HeaderValue::from_str(&etag) {
+            not_modified.headers_mut().insert(header::ETAG, value);
+        }
+        if let Some(value) = &cache_control {
+            if let Ok(value) = header::HeaderValue::from_str(value) {
+                not_modified
+                    .headers_mut()
+                    .insert(header::CACHE_CONTROL, value);
+            }
+        }
+        return not_modified;
+    }
+    if let Ok(value) = header::HeaderValue::from_str(&etag) {
+        response.headers_mut().insert(header::ETAG, value);
+    }
+    response
+}
+
+/// Generic dispatcher for one graph route (Wave 1 slim edge). Identity,
+/// tenant resolution and the email-verified gate are handled by the route's
+/// middleware chain before this runs; dispatch consumes the installed
+/// ResolvedPrincipal extension. Anonymous reach only happens on public
+/// routes, and only when the handler plan does not require authorization.
+async fn graph_dispatch(
+    State((state, dispatch)): State<(AppState, Arc<RouteDispatch>)>,
+    headers: HeaderMap,
+    AxumPath(path_params): AxumPath<Vec<(String, String)>>,
+    req: Request<Body>,
+) -> axum::response::Response {
+    // Admission inserts RequestId/TraceId extensions; degrade gracefully when
+    // tests hit the router without the admission pipeline.
+    let request_id = req.extensions().get::<keel_foundation::RequestId>().copied();
+    let trace_id = req
+        .extensions()
+        .get::<keel_foundation::TraceId>()
+        .copied()
+        .unwrap_or_else(keel_foundation::TraceId::new);
+    let resolved = req.extensions().get::<ResolvedPrincipal>().cloned();
+    // Wave 2: redirect routes carry flash data onto the caller's session.
+    let resolved_session = req.extensions().get::<ResolvedSession>().cloned();
+    // Wave 2: `_auth` view convention + error-view path context.
+    let authenticated = resolved.is_some();
+
+    let uri = req.uri().clone();
+    let path = uri.path().to_string();
+    let body = match axum::body::to_bytes(req.into_body(), state.body_limit).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            let err = keel_foundation::AppError::validation("request body too large");
+            return dispatch_error(&state, &dispatch, &headers, &path, &err);
+        }
+    };
+
+    // Resolve the principal: the auth stage installed one, or the route is
+    // public and the handler plan tolerates anonymous callers.
+    let (principal, tenant) = match resolved {
+        Some(r) => {
+            let tenant = r.tenant.or(state.default_tenant_id);
+            let Some(tenant) = tenant else {
+                let err = keel_foundation::AppError::unauthenticated();
+                return dispatch_error(&state, &dispatch, &headers, &path, &err);
+            };
+            (r.principal, tenant)
+        }
+        None => {
+            let required = state
+                .bus
+                .handler(&dispatch.operation)
+                .map(|h| h.plan().authorization.required)
+                .unwrap_or(true);
+            if required {
+                let err = keel_foundation::AppError::unauthenticated();
+                return dispatch_error(&state, &dispatch, &headers, &path, &err);
+            }
+            let Some(tenant) = state.default_tenant_id else {
+                let err = keel_foundation::AppError::unauthenticated();
+                return dispatch_error(&state, &dispatch, &headers, &path, &err);
+            };
+            (crate::host::anonymous_principal(), tenant)
+        }
+    };
+
+    // JSON body (optional): empty body -> {} ; malformed -> 422 envelope.
+    let input: serde_json::Value = if body.is_empty() {
+        serde_json::json!({})
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(value) => value,
+            Err(_) => {
+                let err = keel_foundation::AppError::validation("request body must be valid JSON");
+                return dispatch_error(&state, &dispatch, &headers, &path, &err);
+            }
+        }
+    };
+
+    let query = query_pairs(uri.query());
+    let mut input = merge_params(input, path_params.clone(), query.clone());
+
+    // Wave 1 pagination: GET routes parse page/per_page (clamped to
+    // MAX_PER_PAGE) and inject _page. Parse errors are 422 envelopes.
+    if dispatch.inject_page {
+        let pairs: Vec<(&str, &str)> = query
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        match keel_http::PageQuery::from_pairs(pairs) {
+            Ok(page) => {
+                if let Some(obj) = input.as_object_mut() {
+                    obj.insert(
+                        "_page".into(),
+                        serde_json::json!({ "page": page.page, "per_page": page.per_page }),
+                    );
+                }
+            }
+            Err(err) => return dispatch_error(&state, &dispatch, &headers, &path, &err),
+        }
+    }
+
+    // Wave 1 model binding: each declared {param} binding resolves through
+    // the route.bindings registry (tenant-scoped find). Resolved records are
+    // injected AFTER the merge so bodies cannot forge _bindings.<param>.
+    // Misses, malformed ids and missing resolvers are 404 envelopes.
+    if !dispatch.bindings.is_empty() {
+        let obj = match input.as_object_mut() {
+            Some(obj) => obj,
+            None => {
+                let err = keel_foundation::AppError::not_found("binding target not found");
+                return dispatch_error(&state, &dispatch, &headers, &path, &err);
+            }
+        };
+        let mut bindings_map = serde_json::Map::new();
+        for binding in &dispatch.bindings {
+            let raw = path_params
+                .iter()
+                .find(|(k, _)| k == &binding.param)
+                .map(|(_, v)| v.clone());
+            let Some(raw) = raw else {
+                let err = keel_foundation::AppError::not_found(format!(
+                    "route parameter {} is missing",
+                    binding.param
+                ));
+                return dispatch_error(&state, &dispatch, &headers, &path, &err);
+            };
+            let Ok(id) = uuid::Uuid::parse_str(&raw) else {
+                let err = keel_foundation::AppError::not_found(format!(
+                    "{} {} not found",
+                    binding.model, raw
+                ));
+                return dispatch_error(&state, &dispatch, &headers, &path, &err);
+            };
+            let Some(resolver) = state.route_bindings.get(&binding.model) else {
+                let err = keel_foundation::AppError::not_found(format!(
+                    "{} {} not found",
+                    binding.model, raw
+                ));
+                return dispatch_error(&state, &dispatch, &headers, &path, &err);
+            };
+            match resolver.resolve(Some(tenant), id) {
+                Ok(Some(record)) => {
+                    bindings_map.insert(binding.param.clone(), serde_json::Value::Object(record));
+                }
+                Ok(None) | Err(_) => {
+                    let err = keel_foundation::AppError::not_found(format!(
+                        "{} {} not found",
+                        binding.model, raw
+                    ));
+                    return dispatch_error(&state, &dispatch, &headers, &path, &err);
+                }
+            }
+        }
+        obj.insert(
+            "_bindings".into(),
+            serde_json::Value::Object(bindings_map),
+        );
+    }
+
+    // Wave 1 FormRequest wiring: manifest validation runs collect-all over
+    // the merged input BEFORE dispatch (422 envelope with fields meta).
+    if let Some(validator) = &dispatch.validator {
+        if let Err(report) = validator.validate(&input) {
+            let err = report.into_app_error();
+            return dispatch_error(&state, &dispatch, &headers, &path, &err);
+        }
+    }
+
+    let idempotency = headers
+        .get(header::HeaderName::from_static("idempotency-key"))
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty() && v.len() <= 128)
+        .map(IdempotencyKey);
+
+    let now = OffsetDateTime::now_utc();
+    // Views edge convention: `_auth` is the principal id when an auth stage
+    // installed one; anonymous callers stay guests (@guest renders).
+    let view_auth = authenticated.then(|| principal.to_string());
+    let mut builder = ExecutionContext::builder(dispatch.profile, now)
+        .plane(dispatch.plane)
+        .trace_id(trace_id)
+        .principal(PrincipalContext {
+            id: principal,
+            display: None,
+        });
+    if let Some(request_id) = request_id {
+        builder = builder.request_id(request_id);
+    }
+    if dispatch.plane == SecurityPlane::Tenant {
+        builder = builder
+            .tenant(TenantContext {
+                id: tenant,
+                slug: "default".into(),
+                plan: "standard".into(),
+            })
+            .scope(ScopeSnapshot {
+                nodes: vec![],
+                revision: AuthorizationRevision(1),
+                computed_at: now,
+            });
+    }
+    let ctx = match builder.build() {
+        Ok(ctx) => ctx,
+        Err(err) => return dispatch_error(&state, &dispatch, &headers, &path, &err),
+    };
+
+    match state
+        .bus
+        .dispatch(ctx, &dispatch.operation, input, idempotency)
+        .await
+    {
+        Ok(outcome) => {
+            let (response, buffer) = match render_success(
+                &state,
+                &dispatch,
+                &headers,
+                &path,
+                resolved_session,
+                view_auth,
+                outcome.result,
+            ) {
+                Ok(rendered) => rendered,
+                Err(err) => return dispatch_error(&state, &dispatch, &headers, &path, &err),
+            };
+            // Cache-Control + ETag/304 first so a 304 still carries the
+            // route's policy and the Deprecation notice.
+            let mut response = apply_caching(&dispatch, &headers, response, buffer.as_deref());
+            if dispatch.deprecated {
+                response.headers_mut().insert(
+                    header::HeaderName::from_static("deprecation"),
+                    header::HeaderValue::from_static("true"),
+                );
+            }
+            response
+        }
+        Err(err) => dispatch_error(&state, &dispatch, &headers, &path, &err),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::HttpBody;
+
+    #[test]
+    fn axum_path_converts_braces() {
+        assert_eq!(
+            axum_path("/api/v1/appointments/{id}"),
+            "/api/v1/appointments/{id}"
+        );
+        assert_eq!(axum_path("/a/{x}/b/{y}"), "/a/{x}/b/{y}");
+        assert_eq!(axum_path("/plain"), "/plain");
+    }
+
+    #[test]
+    fn method_filter_mapping() {
+        assert!(method_filter("get").is_some());
+        assert!(method_filter("POST").is_some());
+        assert!(method_filter("TRACE").is_none());
+        assert!(method_filter("nope").is_none());
+    }
+
+    #[test]
+    fn merge_params_body_wins() {
+        let input = serde_json::json!({ "id": "from-body" });
+        let merged = merge_params(
+            input,
+            vec![
+                ("id".into(), "from-path".into()),
+                ("extra".into(), "p".into()),
+            ],
+            vec![("q".into(), "1".into())],
+        );
+        assert_eq!(merged["id"], "from-body");
+        assert_eq!(merged["extra"], "p");
+        assert_eq!(merged["q"], "1");
+        // Non-object bodies are replaced, not wrapped.
+        let merged = merge_params(
+            serde_json::json!([1, 2]),
+            vec![("a".into(), "b".into())],
+            vec![],
+        );
+        assert_eq!(merged["a"], "b");
+    }
+
+    #[test]
+    fn tenant_label_parsing() {
+        let id = uuid::Uuid::now_v7();
+        assert_eq!(
+            tenant_from_label(&Some(format!("tenant:{id}"))).map(|t| *t.as_uuid()),
+            Some(id)
+        );
+        assert_eq!(
+            tenant_from_label(&Some("tenant:not-a-uuid".to_string())),
+            None
+        );
+        assert_eq!(tenant_from_label(&Some("ci".to_string())), None);
+        assert_eq!(tenant_from_label(&None), None);
+    }
+
+    #[test]
+    fn query_pairs_skip_garbage() {
+        let pairs = query_pairs(Some("a=1&=x&b&c=3=4"));
+        assert_eq!(
+            pairs,
+            vec![("a".into(), "1".into()), ("c".into(), "3=4".into())]
+        );
+        assert!(query_pairs(None).is_empty());
+    }
+
+    // ------------------------------------------------------- route cache pin
+
+    const ALPHA_MANIFEST: &str = r#"
+[module]
+name = "alpha"
+version = "0.1.0"
+
+[capabilities]
+"index" = { profile = "READ" }
+
+[[routes]]
+method = "GET"
+path = "/x"
+operation = "index"
+"#;
+
+    fn manifest_dir(tag: &str) -> std::path::PathBuf {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "keel-api-routecache-{tag}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        let app_dir = dir.join("applications").join("alpha");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(app_dir.join("module.toml"), ALPHA_MANIFEST).unwrap();
+        dir
+    }
+
+    #[test]
+    fn route_cache_pin_accepts_match_rejects_drift_and_clears() {
+        let dir = manifest_dir("pin");
+        let graph = compile_graph(&dir).expect("graph compiles");
+        let catalog = keel_http::MiddlewareCatalog::builtin();
+        let plans = keel_registry::resolve_route_plans(&graph, &catalog).expect("plans resolve");
+        let artifact = keel_registry::RouteCacheArtifact {
+            module_abi: keel_registry::MODULE_ABI,
+            manifest_hash: keel_registry::manifests_hash(&dir).expect("hash computes"),
+            plans,
+        };
+        artifact
+            .write(&keel_registry::route_cache_path(&dir))
+            .expect("artifact writes");
+
+        // Matching artifact -> boot proceeds from the cache.
+        let cached = route_cache_check(&dir).expect("cache accepted").expect("plans present");
+        assert_eq!(cached.len(), 1);
+
+        // Manifest drift -> boot refused with a pointer to route:cache.
+        let manifest_path = dir.join("applications").join("alpha").join("module.toml");
+        let raw = std::fs::read_to_string(&manifest_path).unwrap();
+        std::fs::write(&manifest_path, format!("{raw}\n# drift\n")).unwrap();
+        let err = route_cache_check(&dir).expect_err("stale cache refuses boot");
+        assert!(err.contains("route:cache"), "{err}");
+
+        // route:clear semantics -> absent artifact means live compile again.
+        std::fs::remove_file(keel_registry::route_cache_path(&dir)).unwrap();
+        assert!(route_cache_check(&dir).expect("absent ok").is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn corrupt_route_cache_refuses_boot() {
+        let dir = manifest_dir("corrupt");
+        let path = keel_registry::route_cache_path(&dir);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{ not json").unwrap();
+        assert!(route_cache_check(&dir).is_err(), "corrupt artifact is a boot error");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ------------------------------------------------------------- edge auth
+
+    #[test]
+    fn edge_auth_resolves_pat_then_jwt_and_installs_snapshot() {
+        let tokens = Arc::new(keel_tokens::TokenService::new(Arc::new(
+            keel_tokens::InMemoryTokenStore::new(),
+        )));
+        let principals: Arc<dyn keel_identity::PrincipalStore> =
+            Arc::new(keel_identity::InMemoryPrincipalStore::new());
+        let jwt = keel_http::JwtHs256::new(b"edge-auth-unit-secret-0123456789".to_vec());
+        let policy = Arc::new(keel_policy::PolicyEngine::new());
+        let auth = EdgeAuth {
+            tokens: tokens.clone(),
+            principals,
+            jwt: Some(Arc::new(jwt.clone())),
+            policy: policy.clone(),
+            granted_capabilities: vec!["appointments.list".into()],
+            default_tenant_id: None,
+        };
+
+        let principal = PrincipalId::new();
+        let tenant = TenantId::new();
+
+        // PAT: resolves with the tenant label; NO snapshot install (login-time
+        // snapshot semantics, pat_bypasses_snapshot contract).
+        let issued = tokens
+            .issue(
+                principal,
+                keel_tokens::TokenPurpose::Api,
+                time::Duration::days(30),
+                Some(format!("tenant:{tenant}")),
+            )
+            .expect("pat issues");
+        let resolved = auth.resolve_bearer(&issued.plaintext).expect("pat resolves");
+        assert_eq!(resolved.principal, principal);
+        assert_eq!(resolved.tenant, Some(tenant));
+        assert_eq!(resolved.via, AuthVia::Bearer);
+        assert!(
+            policy.snapshot(principal, tenant).is_none(),
+            "PAT resolution must not install a snapshot"
+        );
+
+        // JWT: resolves and hydrates the access snapshot at resolution time.
+        let claims = keel_http::JwtClaims {
+            sub: principal.to_string(),
+            tenant: Some(tenant.to_string()),
+            exp: (OffsetDateTime::now_utc() + time::Duration::hours(1)).unix_timestamp(),
+            iat: None,
+            jti: None,
+        };
+        let token = jwt.sign(&claims);
+        let resolved = auth.resolve_bearer(&token).expect("jwt resolves");
+        assert_eq!(resolved.principal, principal);
+        assert_eq!(resolved.tenant, Some(tenant));
+        assert_eq!(resolved.via, AuthVia::Jwt);
+        assert!(
+            policy.snapshot(principal, tenant).is_some(),
+            "JWT resolution hydrates the access snapshot"
+        );
+
+        // Garbage: uniform None (the edge maps it to 401).
+        assert!(auth.resolve_bearer("garbage-token").is_none());
+    }
+
+    // ------------------------------------------ Wave 2 response kinds (unit)
+
+    /// State only — the response-kind helpers take `&AppState`, not a graph.
+    fn response_state(tag: &str) -> crate::routes::AppState {
+        let dir = std::env::temp_dir().join(format!("keel-resp-{tag}-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let (state, _, _) = crate::build_app_state(&dir, true, true);
+        state
+    }
+
+    fn dispatch(response: ResponseKind, is_get: bool, cache: Option<CacheSpec>) -> RouteDispatch {
+        RouteDispatch {
+            operation: OperationId::from_static("test.op"),
+            profile: ExecutionProfileKind::Command,
+            plane: SecurityPlane::Tenant,
+            public: true,
+            deprecated: false,
+            inject_page: is_get,
+            bindings: Vec::new(),
+            validator: None,
+            route_plane: RoutePlane::Api,
+            response,
+            view: None,
+            is_get,
+            cache,
+        }
+    }
+
+    fn header_of(response: &axum::response::Response, name: header::HeaderName) -> Option<String> {
+        response
+            .headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    }
+
+    #[test]
+    fn redirect_targets_come_from_the_operation_result() {
+        let state = response_state("redirect");
+        // A bare URL string redirects with the default 302 Found.
+        let response =
+            redirect_response(&state, None, serde_json::json!("/appointments")).expect("target");
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(
+            header_of(&response, header::LOCATION).as_deref(),
+            Some("/appointments")
+        );
+
+        // The object form carries the target plus an explicit 3xx status.
+        let response = redirect_response(
+            &state,
+            None,
+            serde_json::json!({ "to": "https://portal.test/dashboard", "status": 303 }),
+        )
+        .expect("target");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            header_of(&response, header::LOCATION).as_deref(),
+            Some("https://portal.test/dashboard")
+        );
+        // A redirect body is empty: nothing to render, nothing to cache.
+        assert!(response.body().size_hint().exact() == Some(0));
+    }
+
+    #[test]
+    fn redirect_refuses_non_3xx_statuses_and_header_injection() {
+        let state = response_state("redirect-reject");
+        let err = redirect_response(&state, None, serde_json::json!({ "to": "/x", "status": 200 }))
+            .expect_err("200 is not a redirect");
+        assert!(err.public_message.contains("3xx"), "{}", err.public_message);
+        let err = redirect_response(&state, None, serde_json::json!({ "to": "/x", "status": 999 }))
+            .expect_err("999 is not a status code");
+        assert!(err.public_message.contains("3xx"), "{}", err.public_message);
+        let err = redirect_response(
+            &state,
+            None,
+            serde_json::json!({ "to": "https://evil.test/\r\nSet-Cookie: pwn=1" }),
+        )
+        .expect_err("CRLF would split the response");
+        assert!(err.public_message.contains("valid URL"), "{}", err.public_message);
+        let err = redirect_response(&state, None, serde_json::json!({ "target": "/x" }))
+            .expect_err("`to` is the key");
+        assert!(err.public_message.contains("`to`"), "{}", err.public_message);
+        let err = redirect_response(&state, None, serde_json::json!(""))
+            .expect_err("empty target");
+        assert!(err.public_message.contains("empty"), "{}", err.public_message);
+    }
+
+    #[tokio::test]
+    async fn redirect_flash_survives_exactly_one_next_request() {
+        let state = response_state("flash");
+        let middleware = state.sessions.as_ref().expect("sessions enabled");
+        let session = middleware
+            .manager
+            .start(PrincipalId::new(), None, OffsetDateTime::now_utc())
+            .expect("session starts");
+
+        let response = redirect_response(
+            &state,
+            Some(ResolvedSession {
+                session: session.clone(),
+            }),
+            serde_json::json!({
+                "to": "/appointments",
+                "flash": { "status": "booked", "seats": 2 }
+            }),
+        )
+        .expect("redirect builds");
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(
+            header_of(&response, header::LOCATION).as_deref(),
+            Some("/appointments")
+        );
+
+        assert_eq!(
+            keel_http::flash_take(&middleware.manager, &session.id, "status").expect("read"),
+            Some(serde_json::json!("booked")),
+            "flash is readable on the very next request"
+        );
+        assert_eq!(
+            keel_http::flash_take(&middleware.manager, &session.id, "status").expect("read"),
+            None,
+            "and gone after one read"
+        );
+        assert_eq!(
+            keel_http::flash_take(&middleware.manager, &session.id, "seats").expect("read"),
+            Some(serde_json::json!(2))
+        );
+    }
+
+    #[tokio::test]
+    async fn download_serves_a_stored_object_as_an_attachment() {
+        let state = response_state("download");
+        state
+            .storage
+            .put("exports", "reports/appointments.csv", b"slot,patient\n09:00,ada\n".to_vec())
+            .expect("object stores");
+
+        let response = download_response(
+            &state,
+            serde_json::json!({ "bucket": "exports", "key": "reports/appointments.csv" }),
+        )
+        .expect("download builds");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            header_of(&response, header::CONTENT_TYPE).as_deref(),
+            Some("text/csv; charset=utf-8"),
+            "content type follows the filename extension"
+        );
+        assert_eq!(
+            header_of(&response, header::CONTENT_DISPOSITION).as_deref(),
+            Some("attachment; filename=\"appointments.csv\""),
+            "the filename falls back to the last key segment"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body reads");
+        assert_eq!(&body[..], b"slot,patient\n09:00,ada\n");
+
+        // Explicit content_type and filename win over the defaults.
+        let response = download_response(
+            &state,
+            serde_json::json!({
+                "bucket": "exports",
+                "key": "reports/appointments.csv",
+                "filename": "slots.data",
+                "content_type": "application/x-custom"
+            }),
+        )
+        .expect("download builds");
+        assert_eq!(
+            header_of(&response, header::CONTENT_TYPE).as_deref(),
+            Some("application/x-custom")
+        );
+        assert_eq!(
+            header_of(&response, header::CONTENT_DISPOSITION).as_deref(),
+            Some("attachment; filename=\"slots.data\"")
+        );
+
+        // Missing key: a download route never guesses what to hand over.
+        let err = download_response(&state, serde_json::json!({ "bucket": "exports" }))
+            .expect_err("no key");
+        assert!(err.public_message.contains("`key`"), "{}", err.public_message);
+        // Unknown object: the storage error surfaces as the route's error.
+        let err = download_response(
+            &state,
+            serde_json::json!({ "bucket": "exports", "key": "absent.csv" }),
+        )
+        .expect_err("object is absent");
+        assert_eq!(
+            keel_http::status_for_error(&err),
+            StatusCode::NOT_FOUND,
+            "{}",
+            err.public_message
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_flushes_one_ndjson_line_per_element() {
+        let response = stream_response(serde_json::json!([
+            { "slot": "09:00" },
+            { "slot": "10:00" }
+        ]))
+        .expect("stream builds");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            header_of(&response, header::CONTENT_TYPE).as_deref(),
+            Some("application/x-ndjson"),
+            "NDJSON, not the Envelope"
+        );
+        assert!(
+            response.body().size_hint().upper().is_none(),
+            "a streamed body has no known length"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body reads");
+        let text = String::from_utf8(body.to_vec()).expect("utf8");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        for line in lines {
+            serde_json::from_str::<serde_json::Value>(line).expect("each line is JSON");
+        }
+        assert!(text.ends_with('\n'), "every record is its own line");
+
+        // The `chunks` envelope streams element by element too.
+        let response =
+            stream_response(serde_json::json!({ "chunks": ["a", "b", "c"] })).expect("builds");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body reads");
+        assert_eq!(body.iter().filter(|byte| **byte == b'\n').count(), 3);
+
+        // Anything else is a single record (availability-style objects).
+        let response = stream_response(serde_json::json!({ "date": "2026-01-05" })).expect("builds");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body reads");
+        let text = String::from_utf8(body.to_vec()).expect("utf8");
+        assert_eq!(text.lines().count(), 1, "{text}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(text.trim_end()).ok(),
+            Some(serde_json::json!({ "date": "2026-01-05" }))
+        );
+    }
+
+    // ------------------------------------------- Wave 2 HTTP caching (unit)
+
+    #[test]
+    fn cache_control_renders_a_canonical_directive_list() {
+        let spec = |policy, max_age, swr| CacheSpec {
+            policy,
+            max_age_secs: max_age,
+            stale_while_revalidate_secs: swr,
+        };
+        assert_eq!(
+            cache_control_value(&spec(CachePolicy::Public, Some(60), Some(30))),
+            "public, max-age=60, stale-while-revalidate=30"
+        );
+        assert_eq!(
+            cache_control_value(&spec(CachePolicy::Private, Some(120), None)),
+            "private, max-age=120"
+        );
+        assert_eq!(cache_control_value(&spec(CachePolicy::NoStore, None, None)), "no-store");
+        assert_eq!(cache_control_value(&spec(CachePolicy::NoCache, None, None)), "no-cache");
+    }
+
+    #[tokio::test]
+    async fn conditional_get_short_circuits_with_304_for_get_routes() {
+        let body = b"{\"ok\":true}";
+        let policy = Some(CacheSpec {
+            policy: CachePolicy::Public,
+            max_age_secs: Some(60),
+            stale_while_revalidate_secs: None,
+        });
+        let route = dispatch(ResponseKind::Json, true, policy);
+
+        // First visit: 200 with a strong ETag and the declared policy.
+        let response = apply_caching(
+            &route,
+            &HeaderMap::new(),
+            (StatusCode::OK, "payload").into_response(),
+            Some(body),
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+        let etag = header_of(&response, header::ETAG).expect("ETag advertised");
+        assert!(etag.starts_with('\"') && etag.ends_with('\"'), "{etag}");
+        assert_eq!(etag, keel_http::etag_for(body), "ETag covers the served bytes");
+        assert_eq!(
+            header_of(&response, header::CACHE_CONTROL).as_deref(),
+            Some("public, max-age=60")
+        );
+
+        // Revisit with that validator: 304, validators only, no body.
+        let mut revisit = HeaderMap::new();
+        revisit.insert(
+            header::IF_NONE_MATCH,
+            header::HeaderValue::from_str(&etag).expect("etag is a header value"),
+        );
+        let response = apply_caching(
+            &route,
+            &revisit,
+            (StatusCode::OK, "payload").into_response(),
+            Some(body),
+        );
+        assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(
+            header_of(&response, header::ETAG).as_deref(),
+            Some(etag.as_str()),
+            "304 repeats the validator"
+        );
+        assert_eq!(
+            header_of(&response, header::CACHE_CONTROL).as_deref(),
+            Some("public, max-age=60"),
+            "304 still carries the policy"
+        );
+        let payload = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body reads");
+        assert!(payload.is_empty(), "304 never repeats the body");
+
+        // A stale validator still gets the full payload.
+        let mut stale = HeaderMap::new();
+        stale.insert(
+            header::IF_NONE_MATCH,
+            header::HeaderValue::from_static("\"other\""),
+        );
+        let response = apply_caching(
+            &route,
+            &stale,
+            (StatusCode::OK, "payload").into_response(),
+            Some(body),
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(header_of(&response, header::ETAG).is_some());
+
+        // `*` matches any current representation.
+        let mut star = HeaderMap::new();
+        star.insert(header::IF_NONE_MATCH, header::HeaderValue::from_static("*"));
+        let response = apply_caching(
+            &route,
+            &star,
+            (StatusCode::OK, "payload").into_response(),
+            Some(body),
+        );
+        assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+    }
+
+    #[test]
+    fn non_get_routes_and_bufferless_kinds_skip_the_validator() {
+        let policy = Some(CacheSpec {
+            policy: CachePolicy::NoStore,
+            max_age_secs: None,
+            stale_while_revalidate_secs: None,
+        });
+
+        // A POST route keeps its declared policy but never advertises an ETag.
+        let post = dispatch(ResponseKind::Json, false, policy);
+        let response = apply_caching(
+            &post,
+            &HeaderMap::new(),
+            (StatusCode::OK, "payload").into_response(),
+            Some(b"body"),
+        );
+        assert!(header_of(&response, header::ETAG).is_none(), "POST is not revalidated");
+        assert_eq!(
+            header_of(&response, header::CACHE_CONTROL).as_deref(),
+            Some("no-store")
+        );
+
+        // Streamed/stored-object responses carry the policy without being
+        // hashed twice for a validator.
+        let stream = dispatch(ResponseKind::Stream, true, policy);
+        let response = apply_caching(
+            &stream,
+            &HeaderMap::new(),
+            (StatusCode::OK, "payload").into_response(),
+            None,
+        );
+        assert!(header_of(&response, header::ETAG).is_none());
+        assert_eq!(
+            header_of(&response, header::CACHE_CONTROL).as_deref(),
+            Some("no-store")
+        );
+
+        // No declared policy: no Cache-Control, but GET bodies still get an
+        // ETag so a client can revalidate.
+        let plain = dispatch(ResponseKind::Json, true, None);
+        let response = apply_caching(
+            &plain,
+            &HeaderMap::new(),
+            (StatusCode::OK, "payload").into_response(),
+            Some(b"body"),
+        );
+        assert!(header_of(&response, header::CACHE_CONTROL).is_none());
+        assert!(header_of(&response, header::ETAG).is_some());
+    }
+}

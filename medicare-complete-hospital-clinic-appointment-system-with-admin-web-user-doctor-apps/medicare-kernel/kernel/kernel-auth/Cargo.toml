@@ -1,0 +1,17 @@
+[package]
+name = "kernel-auth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Sessions (JWT), argon2 passwords, server-side OTP helpers (D-13, D-16)."
+
+[dependencies]
+kernel-core = { workspace = true }
+argon2 = { workspace = true }
+jsonwebtoken = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }

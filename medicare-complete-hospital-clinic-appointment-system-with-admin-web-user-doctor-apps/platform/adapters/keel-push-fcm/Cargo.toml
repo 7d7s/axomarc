@@ -1,0 +1,20 @@
+[package]
+name = "keel-push-fcm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Keel adapter: Firebase Cloud Messaging push (D-17). Nudge-not-payload sandbox."
+
+[dependencies]
+keel-foundation = { workspace = true }
+keel-notifications = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

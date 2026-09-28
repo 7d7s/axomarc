@@ -1,0 +1,82 @@
+# module.toml — immutable contract shape (11-SPEC SS7). `keel graph` compiles it.
+[module]
+name = "appointments"
+api = 1
+version = "0.1.0"
+maturity = "L0"
+plane = "tenant"
+description = "Clinic appointments: book, cancel, list"
+
+[capabilities]
+book = { profile = "COMMAND" }
+cancel = { profile = "COMMAND" }
+list = { profile = "READ" }
+availability = { profile = "READ" }
+
+[dependencies]
+contracts = []
+
+[[routes]]
+method = "POST"
+path = "/api/v1/appointments"
+operation = "book"
+capability = "book"
+name = "book"
+
+[[routes]]
+method = "DELETE"
+path = "/api/v1/appointments/{id}"
+operation = "cancel"
+capability = "cancel"
+name = "cancel"
+# Wave 1 model binding reference: the edge resolves {id} through the
+# route.bindings registry (tenant-scoped) and injects _bindings.id.
+# Misses and cross-tenant lookups are 404 envelopes.
+bindings = [{ param = "id", model = "Appointment" }]
+
+[[routes]]
+method = "GET"
+path = "/api/v1/appointments"
+operation = "list"
+capability = "list"
+name = "list"
+
+# Wave 1 reference: public = true strips the implicit auth/verified stages
+# (throttle stays). The handler plan opts out of authorization so anonymous
+# callers reach it; non-public routes stay fail-closed.
+[[routes]]
+method = "GET"
+path = "/api/v1/appointments/availability"
+operation = "availability"
+capability = "availability"
+name = "availability"
+public = true
+
+# Wave 1 reference: deprecated = true emits the Deprecation: true response
+# header + envelope meta (L72). Kept as an alias of list.
+[[routes]]
+method = "GET"
+path = "/api/v1/appointments/history"
+operation = "list"
+capability = "list"
+name = "history"
+deprecated = true
+
+[[events]]
+name = "appointment.booked"
+
+[[events]]
+name = "appointment.cancelled"
+
+# Wave 1 FormRequest wiring: manifest validation enforced at the HTTP edge
+# before CommandBus dispatch (422 envelope with fields meta). Rule grammar:
+# keel_validation::Rule::from_token (GRAPH-VALIDATION-RULE gate).
+[[validation]]
+operation = "book"
+field = "patient"
+rules = ["required", "max:120"]
+
+[[validation]]
+operation = "book"
+field = "slot"
+rules = ["required", "date"]

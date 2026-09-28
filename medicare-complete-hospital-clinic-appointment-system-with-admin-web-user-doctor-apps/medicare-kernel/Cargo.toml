@@ -1,0 +1,85 @@
+[workspace]
+resolver = "2"
+members = [
+    "apps/api",
+    "kernel/kernel-core",
+    "kernel/kernel-runtime",
+    "kernel/kernel-db",
+    "kernel/kernel-delta",
+    "kernel/kernel-auth",
+    "kernel/kernel-capability",
+    "kernel/kernel-workflow",
+    "kernel/kernel-notify",
+    "modules/org",
+    "modules/clinic",
+    "modules/doctor",
+    "modules/patient",
+    "modules/appointment",
+    "modules/rx",
+    "modules/billing",
+    "modules/inventory",
+    "modules/notifycfg",
+    "modules/reports",
+    "modules/platform",
+    "xtask",
+]
+default-members = ["apps/api"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+rust-version = "1.92"
+
+[workspace.dependencies]
+# --- async runtime & http ---
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
+axum = { version = "0.8.9", features = ["macros"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.7", features = ["trace", "cors", "request-id", "util"] }
+hyper = { version = "1", features = ["full"] }
+# --- serde & data ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# --- db ---
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "time", "migrate", "macros"] }
+# --- ids & time ---
+uuid = { version = "1.24", features = ["v7", "serde"] }
+time = { version = "0.3", features = ["serde", "formatting", "macros"] }
+# --- auth ---
+jsonwebtoken = "11"
+argon2 = "0.5"
+# --- errors & logging ---
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# --- misc ---
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-tls"] }
+async-trait = "0.1"
+rand = "0.10"
+toml = "0.9"
+
+# internal crates
+kernel-core = { path = "kernel/kernel-core" }
+kernel-runtime = { path = "kernel/kernel-runtime" }
+kernel-db = { path = "kernel/kernel-db" }
+kernel-delta = { path = "kernel/kernel-delta" }
+kernel-auth = { path = "kernel/kernel-auth" }
+kernel-capability = { path = "kernel/kernel-capability" }
+kernel-workflow = { path = "kernel/kernel-workflow" }
+kernel-notify = { path = "kernel/kernel-notify" }
+mod-org = { path = "modules/org" }
+mod-clinic = { path = "modules/clinic" }
+mod-doctor = { path = "modules/doctor" }
+mod-patient = { path = "modules/patient" }
+mod-appointment = { path = "modules/appointment" }
+mod-rx = { path = "modules/rx" }
+mod-billing = { path = "modules/billing" }
+mod-inventory = { path = "modules/inventory" }
+mod-notifycfg = { path = "modules/notifycfg" }
+mod-reports = { path = "modules/reports" }
+mod-platform = { path = "modules/platform" }
+
+[profile.release]
+lto = "thin"
+strip = true

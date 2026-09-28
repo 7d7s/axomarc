@@ -1,0 +1,1791 @@
+# Keel × Laravel 13 — Forensic Parity Audit
+
+**Stage:** Report-only. No feature work, no Rust edits, no compile.
+
+**Baseline:** Laravel 13 surface as enumerated by the audit specification supplied for this stage.
+
+**Evidence rule:** Every Keel claim is tied to a repository path supplied as a locked evidence anchor in the audit brief. Where the supplied evidence does not prove runtime behavior, the status is intentionally conservative.
+
+**Status vocabulary:** `MATCHED`, `EQUIVALENT`, `SUPERSEDED`, `DELIBERATELY EXCLUDED`, `PARTIAL`, `API-ONLY`, `STUB`, `INCOMPLETE`, `DEAD`, `UNKNOWN`.
+
+**How to read:** A coarse subsystem is never marked `MATCHED` when important child capabilities remain unimplemented. Function-level matrices therefore override any optimistic subsystem impression.
+
+## 1. Executive Verdict
+
+Keel is a **late-alpha internal platform**, not a production Laravel alternative yet. The supplied repository evidence supports a broad architectural surface, but end-to-end application readiness is effectively **near zero** because the graph-driven route declarations do not yet reach the HTTP dispatch path. The exact break is `platform/runtime/keel-api/src/routes.rs:44-51`; graph route declarations are emitted toward CLI/OpenAPI concerns and never become executable HTTP routes.
+
+| Dimension | Verdict | Evidence / rationale |
+|---|---|---|
+| Maturity | Late-alpha internal platform | Repository reality and architecture gates; no user-facing module reaches the HTTP runtime. |
+| Surface parity | ≈55–60% by current feature-surface estimate | Broad core/platform coverage, but several major Laravel application layers remain partial or absent. |
+| End-to-end app readiness | Near zero | `platform/runtime/keel-api/src/routes.rs:44-51`; `platform/applications/appointments/module.toml`; no keel-api dependency on the appointments module. |
+| Architecture quality | High | `platform/crates/application/registry/src/lib.rs`; graph/lifecycle structure; architecture tests in `platform/tests/architecture/tests/architecture.rs`. |
+| Production readiness | NO | No HTTP graph wiring, no durable session path, no PostgreSQL-backed store test matrix, missing upload/cookie layer, metrics endpoint absent. |
+| Biggest risk | Edge gap | Graph → HTTP dispatch is the hard blocker to proving a real application. |
+| Biggest opportunity | Rust-native engine capabilities | Delta/audit/replay, capability authorization, typed execution/context, MCP/AI-native tooling. |
+
+### Brutal summary
+
+Keel already has more than a typical Rust “web framework starter”: registry, lifecycle host, command engine, policy/capability gates, queues, cache/locks, storage ports, realtime, tenancy, feature flags, observability, testkit and CLI tooling. But those foundations do not add up to a usable Laravel-class application framework until a developer can actually map a module to HTTP, authenticate a user, persist domain state in PostgreSQL, validate input, serialize a response and run that stack repeatedly in local development.
+
+## 2. Repository Reality
+
+The verified repository inventory supplied for this audit is:
+
+- **57 workspace members**
+- **41 library crates**
+- **7 adapters**
+- **2 runtimes**
+- **3 tools + xtask**
+- testkit
+- architecture tests
+- 2 examples
+- 1 domain app
+- approximately **22.7k LOC**
+- **112 `.rs` files**
+- **336 static `#[test]` attributes**
+- **334 tests in the last executed green gate**
+- approximately **24 external dependencies**, against the D-62 cap of 25
+- binaries: `keel-api`, `keel-worker`, `keel`
+
+### Repository evidence anchors
+
+| Area | Locked evidence | What it proves |
+|---|---|---|
+| Routing edge | `platform/runtime/keel-api/src/routes.rs:44-51` | Route specification handling exists but is not an executable graph-to-router path. |
+| Registry | `platform/crates/application/registry/src/lib.rs` | `RouteSpec` exists; no `name` field means named-route/URL-generation parity is absent. |
+| Domain manifest | `platform/applications/appointments/module.toml` | Domain module declares routes at manifest level. |
+| HTTP dependency gap | `keel-api` has no `keel-mod-appointments` dependency | The declared domain route is not connected to the API runtime. |
+| Admission | `platform/crates/web/http/src/middleware.rs` | Request-id → trace → body-limit → CORS → maintenance → rate-limit. |
+| CSRF | `platform/crates/web/http/src/csrf.rs` | Double-submit mechanism and CSRF cookie handling. |
+| CSRF config | `platform/runtime/keel-api/src/main.rs` | `KEEL_CSRF` is opt-in. |
+| Tokens | `platform/crates/security/tokens/src/lib.rs:137-214` | `TokenService` and `InMemoryTokenStore`. |
+| Reset flow | `platform/crates/security/tokens/src/reset.rs:45-64` | Reset token flow exists. |
+| Sessions | `platform/crates/security/sessions/src/lib.rs:197-279` | Session manager, regeneration and sweep. |
+| Identity | `platform/crates/security/identity/src/lib.rs:129-152` | Argon2 and OTP primitives. |
+| Persistent token store | `platform/crates/data/postgres/src/tokenstore.rs:64` | PostgreSQL-backed token storage exists. |
+| ORM metadata | `platform/crates/data/models/src/lib.rs` | Field/relation/model metadata and graph validation. |
+| Query builder | `platform/crates/execution/query/src/select.rs` | Typed `Select`, identifier safety, tenant scope; no write builder. |
+| Schema | `platform/database/migrations/*.sql` | 18 framework tables across 2 framework migration files. |
+| Persistent stores | `platform/crates/data/postgres/src/jobstore.rs`, `src/outboxstore.rs`, `src/tokenstore.rs` | Pg persistence is selective, not a general domain store. |
+| Events/outbox | `platform/crates/async/events/src/lib.rs:135,236` | Outbox store/pump. |
+| Worker | `platform/runtime/keel-worker/src/main.rs` | `SKIP LOCKED` claim loop, batches/chains/scheduler. |
+| Cache/locks | `platform/crates/services/cache/src/lib.rs:47,62` | Cache delete-if-equals and cache lock. |
+| Storage | `platform/crates/services/storage/src/lib.rs:23` | Storage port; local implemented, S3 stub. |
+| Notifications | `platform/crates/services/notifications/src/lib.rs:42` | Notification hub. |
+| Realtime | `platform/crates/services/realtime/src/lib.rs:69,187` | Broadcast hub and realtime router. |
+| Search | `platform/crates/services/search/src/lib.rs` | Search query/result abstraction and in-memory engine. |
+| Tenancy | `platform/crates/enterprise/tenancy/src/lib.rs:143,267` | Tenant primitives. |
+| Feature flags | `platform/crates/enterprise/feature-flags/src/lib.rs:431,472` | Feature flag runtime. |
+| Observability | `platform/crates/observability/logging/src/logsys.rs:88,219,249` | Redaction, init, request spans. |
+| Localization | `platform/crates/foundation/core/src/translate.rs:151` | Translation catalog primitive. |
+| Factory gap | `platform/tools/keel-codegen/src/generators.rs:126` | `todo!` in generated factory build path. |
+| Domain store anti-pattern | `platform/applications/appointments/src/lib.rs:45-46` | `Mutex<BTreeMap>` persistence, not a durable Pg store. |
+| Pg test gap | repository-wide zero `sqlx::test` | No PostgreSQL-backed integration matrix. |
+| Architecture gates | `platform/tests/architecture/tests/architecture.rs` | G07 dependency matrix, topology, graph compile tests. |
+
+## 3. Architecture Map
+
+### Current architecture
+
+```text
+manifest
+   ↓
+PlatformGraph (keel-registry)
+   ↓
+lifecycle host
+   ├─ Config
+   ├─ Kernel
+   ├─ Platform
+   └─ Modules
+   ↓
+CommandBus / Engine
+   ├─ plan
+   ├─ idempotency
+   ├─ delta
+   ├─ audit
+   └─ outbox
+   ↓
+policy / capability gates
+   ↓
+stores
+   ├─ memory
+   └─ PostgreSQL (jobs / outbox / tokens)
+```
+
+### Exact broken link
+
+The architectural design intent is graph-driven, but the HTTP edge remains hard-coded. `platform/runtime/keel-api/src/routes.rs:44-51` proves route handling at the edge, while `platform/crates/application/registry/src/lib.rs` proves route metadata in the graph. The supplied facts also prove that `platform/applications/appointments/module.toml` declares routes but `keel-api` has no `keel-mod-appointments` dependency. The result is:
+
+```text
+Module manifest
+  → PlatformGraph
+  → CLI/OpenAPI emission
+  → STOP
+
+Expected:
+Module manifest
+  → PlatformGraph
+  → HTTP router
+  → request pipeline
+  → controller/handler
+  → Engine
+  → response
+```
+
+This is the single most important architectural gap in the audit.
+
+### Architectural quality
+
+The underlying engine architecture is strong: lifecycle separation, centralized command execution, capability gates and auditable execution are more disciplined than the typical first-generation Rust web framework. The weakness is not the core engine; it is the missing **application edge contract** that should turn the graph into a runnable product surface.
+
+## 4. Laravel Parity Matrix
+
+The matrix below is deliberately granular. A subsystem cannot be called `MATCHED` when critical child capabilities are absent.
+
+| Subsystem / capability | Status | Evidence | Gap / interpretation | Priority |
+|---|---|---|---|---|
+| Application bootstrap | EQUIVALENT | platform/crates/application/registry/src/lib.rs | Graph/lifecycle architecture exists; HTTP module boot path incomplete | P0 |
+| Service container | EQUIVALENT | platform/crates/application/registry/src/lib.rs | Typed lifecycle/provider registry rather than Laravel facades | P1 |
+| Providers / lifecycle | EQUIVALENT | platform/crates/application/registry/src/lib.rs | Config → Kernel → Platform → Modules phases | P1 |
+| Facades / global helpers | DELIBERATELY EXCLUDED | typed Rust architecture; no Laravel facade layer | Rust idiom intentionally avoids global facade state | P3 |
+| Routing | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Route declarations do not dispatch HTTP traffic | P0 |
+| Named routes / URL generation | MISSING | platform/crates/application/registry/src/lib.rs | RouteSpec has no `name` field | P2 |
+| Middleware | MATCHED | platform/crates/web/http/src/middleware_catalog.rs; platform/crates/application/registry/src/middleware_catalog.rs | Named middleware chains (Wave 1): middleware.toml aliases/groups/throttle configs, implicit api group (throttle:api → auth → verified), per-route chains at the dispatch edge, GRAPH-MW-UNKNOWN boot gate; catalog is framework-owned in v1 (no module-defined custom middleware; Wave 5 codegen follow-up) | P1 |
+| CSRF | EQUIVALENT | platform/crates/web/http/src/csrf.rs | Double-submit implementation exists; opt-in configuration | P1 |
+| HTTP request parsing | PARTIAL | platform/crates/web/http/src/middleware.rs | Core request path exists; multipart absent | P0 |
+| Multipart uploads | MISSING | repo-wide zero rg hits supplied | No multipart implementation | P0 |
+| HTTP responses | PARTIAL | platform/runtime/keel-api/src/routes.rs:44-51 | Response layer exists but HTML/redirect edge is not complete | P0 |
+| HTML responses | MISSING | platform/runtime/keel-api/src/routes.rs:44-51 | No verified end-to-end HTML response path | P2 |
+| Redirects | MISSING | platform/runtime/keel-api/src/routes.rs:44-51 | Web flow primitive absent | P2 |
+| SSE | MATCHED | platform/crates/services/realtime/src/lib.rs:69,187 | Realtime service exposes streaming path | P2 |
+| WebSockets | MATCHED | platform/crates/services/realtime/src/lib.rs:69,187 | Flag-gated realtime router | P2 |
+| Controllers | EQUIVALENT | `RequestViewModel` / `ResponseViewModel` supplied in audit facts | Typed controller boundary exists | P1 |
+| FormRequest | PARTIAL | Validator / Rule enum supplied in audit facts | Validation engine is not wired into HTTP request lifecycle | P1 |
+| Views | UNKNOWN | S9 decision gate | No evidence to choose SSR/template strategy | P2 |
+| Blade | UNKNOWN | S9 decision gate | Must remain undecided rather than auto-counted missing | P2 |
+| Sessions | PARTIAL | platform/crates/security/sessions/src/lib.rs:197-279 | In-memory session manager only | P0 |
+| PgSessionStore | MISSING | no PgSessionStore in supplied evidence | Durable horizontal session store absent | P0 |
+| Cookies | MISSING | repo evidence identifies C6 cookie layer | Cookie glue absent | P0 |
+| Authentication primitives | EQUIVALENT | platform/crates/security/identity/src/lib.rs:129-152 | Argon2 / OTP primitives exist | P1 |
+| HTTP auth flows | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214 | Login/register/logout/token issuance not wired through HTTP edge | P0 |
+| JWT | EQUIVALENT (future add-on) | JWT absent; hashed PAT + HMAC sessions | Intentional non-default design; add-on later | P2 |
+| Authorization | SUPERSEDED | kernel capability authz supplied by audit facts | Capability model exceeds basic role-only framework authorization | P1 |
+| Validation | EQUIVALENT | Validator / Rule enum supplied | Rule engine exists; HTTP wiring incomplete | P1 |
+| Error handling | EQUIVALENT | typed envelope/error architecture supplied | Structured Rust errors vs Laravel exception helpers | P1 |
+| Logging | EQUIVALENT | platform/crates/observability/logging/src/logsys.rs:88,219,249 | Init/redaction/file mirror | P1 |
+| Request tracing | EQUIVALENT | platform/crates/observability/logging/src/logsys.rs:249 | Request spans | P1 |
+| Metrics | MISSING | D-68 / no metrics endpoint | No production metrics endpoint | P1 |
+| Maintenance mode | EQUIVALENT | platform/crates/web/http/src/middleware.rs | Admission layer includes maintenance | P2 |
+| Feature flags | EQUIVALENT | platform/crates/enterprise/feature-flags/src/lib.rs:431,472 | Runtime feature flags | P2 |
+| Tenancy | EQUIVALENT | platform/crates/enterprise/tenancy/src/lib.rs:143,267 | Tenant-aware primitives | P1 |
+| Localization | EQUIVALENT | platform/crates/foundation/core/src/translate.rs:151 | Catalog primitive exists | P3 |
+| Query builder | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; write builders absent | P0 |
+| Eloquent ORM | INCOMPLETE | platform/crates/data/models/src/lib.rs | Metadata-only model registry; no runtime CRUD | P0 |
+| Relations | INCOMPLETE | platform/crates/data/models/src/lib.rs | RelationDef exists; loading absent | P0 |
+| Casts | MISSING | platform/crates/data/models/src/lib.rs | No runtime cast machinery | P1 |
+| Accessors / mutators | MISSING | platform/crates/data/models/src/lib.rs | No runtime attribute transformation | P1 |
+| Scopes | MISSING | platform/crates/data/models/src/lib.rs | No runtime query scope layer | P1 |
+| Soft deletes | MISSING | platform/crates/data/models/src/lib.rs | No runtime soft-delete behavior | P2 |
+| Model events / observers | MISSING | platform/crates/data/models/src/lib.rs | No runtime model lifecycle event layer | P2 |
+| Pagination | MATCHED | platform/crates/web/http/src/pagination.rs; platform/runtime/keel-api/src/graph_routes.rs | Wired (Wave 1): GET routes parse page/per_page and inject _page; per_page clamped to MAX_PER_PAGE 100; list handlers emit a page meta block | P1 |
+| Migrations | MATCHED | platform/database/migrations/*.sql | keel migrate / seed and 18 framework tables | P1 |
+| Seeders | MATCHED | keel seed; framework migrations | Seed command exists | P1 |
+| Factories | PARTIAL | platform/tools/keel-codegen/src/generators.rs:126 | Generator build() contains todo! | P2 |
+| Cache | EQUIVALENT | platform/crates/services/cache/src/lib.rs:47,62 | moka cache + lock primitive | P2 |
+| Redis cache driver | MISSING | no Redis driver supplied | Production distributed cache path missing | P2 |
+| Queue | MATCHED | platform/runtime/keel-worker/src/main.rs | Worker, batches, chains, scheduler | P1 |
+| Redis queue driver | MISSING | no Redis queue driver supplied | Queue backend choice limited | P2 |
+| Events / outbox | MATCHED | platform/crates/async/events/src/lib.rs:135,236 | Outbox store/pump | P1 |
+| Scheduler | MATCHED | platform/runtime/keel-worker/src/main.rs | Scheduler path exists | P1 |
+| Broadcasting | MATCHED | platform/crates/services/realtime/src/lib.rs:69,187 | BroadcastHub and realtime router | P2 |
+| Storage abstraction | EQUIVALENT | platform/crates/services/storage/src/lib.rs:23 | StoragePort | P1 |
+| Local storage | MATCHED | platform/crates/services/storage/src/lib.rs:23 | Local implementation | P2 |
+| S3 storage | STUB | platform/crates/services/storage/src/lib.rs:23 | S3 path is stub | P2 |
+| Mail | EQUIVALENT | mail adapter supplied in audit facts | Adapter surface exists; HTML/template depth remains incomplete | P2 |
+| SMS | EQUIVALENT | SMS adapter supplied in audit facts | Adapter surface exists | P3 |
+| Push notifications | EQUIVALENT | push adapter supplied in audit facts | Adapter surface exists | P3 |
+| Notifications | EQUIVALENT | platform/crates/services/notifications/src/lib.rs:42 | NotifyHub | P2 |
+| Search | PARTIAL | platform/crates/services/search/src/lib.rs | In-memory search only | P2 |
+| pgvector | MISSING | platform/crates/services/search/src/lib.rs | No pgvector adapter | P2 |
+| HTTP client | UNKNOWN | no locked evidence anchor supplied | Depth not proven in audit facts | P2 |
+| Process API | UNKNOWN | no locked evidence anchor supplied | Depth not proven | P3 |
+| Images | UNKNOWN | no locked evidence anchor supplied | No current production claim | P3 |
+| Collections | DELIBERATELY EXCLUDED | Rust iterator model | Rust iterators preferred over Laravel collection wrapper | P3 |
+| Strings/helpers | SUPERSEDED | Rust standard-library / typed utilities strategy | Avoid PHP helper cloning where native Rust is stronger | P3 |
+| Concurrency | SUPERSEDED | tokio + ExecutionContext supplied in audit facts | Native structured async model is deliberate differentiation | P1 |
+| Context | SUPERSEDED | ExecutionContext supplied in audit facts | Typed execution context is deliberate differentiation | P1 |
+| Rate limiting | MATCHED | platform/crates/web/http/src/middleware.rs (client_key); platform/crates/web/http/src/middleware_catalog.rs | Per-principal/group token buckets (S7 + Wave 1): throttle:<group> keyed x-rate-key > bearer hash > first x-forwarded-for IP > global; 429 + Retry-After | P1 |
+| OpenAPI | MATCHED | route/OpenAPI emission in graph path supplied | Schema emission exists | P2 |
+| Swagger UI | MISSING | OpenAPI UI not supplied | Documentation UI absent | P3 |
+| GraphQL | MISSING | no GraphQL core supplied | Leave to ecosystem unless strategy changes | P3 |
+| Webhooks | EQUIVALENT | adapter exists per audit facts | Signature/idempotency depth requires further hardening | P2 |
+| AI/MCP | SUPERSEDED | MCP/AI-native capabilities supplied | First-class capability-aware machine interface | P1 |
+| Audit/replay | SUPERSEDED | delta/audit/replay/inspect supplied | Stronger operational forensic model | P1 |
+| Testing framework | EQUIVALENT | TestKit + assert_queries! supplied | Strong framework test primitives | P1 |
+| PostgreSQL integration tests | MISSING | repo-wide zero sqlx::test | Store risk remains unproven | P0 |
+| Browser / E2E | UNKNOWN | no locked evidence anchor supplied | Dusk equivalent not established | P3 |
+| Package ecosystem | PARTIAL | 7 adapters / manifests / compile-time modules | Extension discovery/registry is incomplete | P2 |
+| Plugin discovery | MISSING | D-69 | No registry/discovery surface | P2 |
+| Multi-DB | DELIBERATELY EXCLUDED | D-62; revisit v2.0 | Dependency cap / scope decision | P3 |
+| MongoDB | DELIBERATELY EXCLUDED | D-62 scope | Not a v1 target | P3 |
+| Dashboard UI | MISSING | keel inspect/replay data exists | No Horizon/Telescope-like UI | P3 |
+| Tinker equivalent | MISSING | no interactive shell supplied | Developer exploration gap | P3 |
+| Serve dev command | MISSING | no keel serve supplied | Local app loop broken | P1 |
+| Vendor publish | MISSING | no vendor:publish equivalent supplied | Package resource publishing absent | P3 |
+| Route cache | MATCHED | platform/crates/application/registry/src/route_plan.rs; platform/tools/keel-console/src/main.rs (route:cache) | storage/framework/routes.json artifact pinned to a SHA-256 manifest hash; stale artifact refuses boot (Wave 1; stricter than Laravel) | P2 |
+| Config cache | MISSING | no config cache command supplied | Deployment optimization absent | P2 |
+| View cache | UNKNOWN | views undecided | Cannot establish until S9 | P3 |
+| Horizon equivalent | MISSING | dashboard gap | Queue dashboard absent | P3 |
+| Telescope equivalent | SUPERSEDED | keel inspect/replay | Operational introspection is more general | P2 |
+| Breeze/Starter Kit | MISSING | no starter kit supplied | Adoption friction | P2 |
+| Jetstream equivalent | MISSING | no full starter stack supplied | Enterprise auth UI not provided | P3 |
+| Inertia equivalent | UNKNOWN | S9 web story undecided | SPA integration decision pending | P2 |
+| Livewire equivalent | UNKNOWN | S9 web story undecided | Server-driven UI decision pending | P2 |
+| Cashier equivalent | MISSING | no billing package supplied | Ecosystem item, not core blocker | P4 |
+| Socialite equivalent | MISSING | no social auth package supplied | Ecosystem item | P4 |
+| Dusk equivalent | MISSING | no browser automation surface supplied | Ecosystem item | P4 |
+| Valet equivalent | DELIBERATELY EXCLUDED | native Rust/container workflow | Local macOS PHP proxy is not a core Rust concern | P4 |
+
+### Migration capability matrix
+
+**Framework schema inventory:** the supplied locked facts establish **18 framework tables across `platform/database/migrations/*.sql`**. The repository migration files are available for this audit and define, in order: `tenants`, `principals`, `credentials`, `sessions`, `revisions`, `memberships`, `scope_nodes`, `scope_grants`, `capability_grants`, `delta_streams`, `delta_stones`, `audit_records`, `outbox`, `idempotency_keys`, `elevation_leases` (foundation migration) and `jobs_queue`, `diag_chain`, `auth_tokens` (services migration). Evidence: `platform/database/migrations/20260819000001_foundation.sql`, `platform/database/migrations/20260820000002_services.sql`. The migration behavior matrix below remains the source-of-truth gap ledger for operation-level behavior.
+
+| Operation | Laravel capability | Keel status | Evidence / gap | Priority |
+|---|---|---|---|---|
+| create table | Migration SQL / keel migrate | MATCHED | platform/database/migrations/*.sql; keel migrate/seed | P1 |
+| drop table | Migration SQL / keel migrate | MATCHED | platform/database/migrations/*.sql; keel migrate/seed | P1 |
+| drop if exists | Migration SQL / keel migrate | PARTIAL | Migration system exists but operation-level behavior is not proven by supplied anchors | P2 |
+| rename table | Migration SQL / keel migrate | PARTIAL | Migration system exists but operation-level behavior is not proven by supplied anchors | P2 |
+| add column | Migration SQL / keel migrate | MATCHED | platform/database/migrations/*.sql; keel migrate/seed | P1 |
+| alter column | Migration SQL / keel migrate | MATCHED | platform/database/migrations/*.sql; keel migrate/seed | P1 |
+| rename column | Migration SQL / keel migrate | PARTIAL | Migration system exists but operation-level behavior is not proven by supplied anchors | P2 |
+| drop column | Migration SQL / keel migrate | PARTIAL | Migration system exists but operation-level behavior is not proven by supplied anchors | P2 |
+| nullable | Migration SQL / keel migrate | PARTIAL | Migration system exists but operation-level behavior is not proven by supplied anchors | P2 |
+| default | Migration SQL / keel migrate | PARTIAL | Migration system exists but operation-level behavior is not proven by supplied anchors | P2 |
+| primary key | Migration SQL / keel migrate | PARTIAL | Migration system exists but operation-level behavior is not proven by supplied anchors | P2 |
+| composite primary key | Migration SQL / keel migrate | PARTIAL | Migration system exists but operation-level behavior is not proven by supplied anchors | P2 |
+| unique | Migration SQL / keel migrate | MATCHED | platform/database/migrations/*.sql; keel migrate/seed | P1 |
+| composite unique | Migration SQL / keel migrate | PARTIAL | Migration system exists but operation-level behavior is not proven by supplied anchors | P2 |
+| index | Migration SQL / keel migrate | MATCHED | platform/database/migrations/*.sql; keel migrate/seed | P1 |
+| full-text index | Migration SQL / keel migrate | PARTIAL | Migration system exists but operation-level behavior is not proven by supplied anchors | P2 |
+| foreign key | Migration SQL / keel migrate | MATCHED | platform/database/migrations/*.sql; keel migrate/seed | P1 |
+| cascade | Migration SQL / keel migrate | PARTIAL | Migration system exists but operation-level behavior is not proven by supplied anchors | P2 |
+| restrict | Migration SQL / keel migrate | PARTIAL | Migration system exists but operation-level behavior is not proven by supplied anchors | P2 |
+| set null | Migration SQL / keel migrate | PARTIAL | Migration system exists but operation-level behavior is not proven by supplied anchors | P2 |
+| enum | Migration SQL / keel migrate | PARTIAL | Migration system exists but operation-level behavior is not proven by supplied anchors | P2 |
+| json | Migration SQL / keel migrate | MATCHED | platform/database/migrations/*.sql; keel migrate/seed | P1 |
+| jsonb | Migration SQL / keel migrate | MATCHED | platform/database/migrations/*.sql; keel migrate/seed | P1 |
+| uuid | Migration SQL / keel migrate | MATCHED | platform/database/migrations/*.sql; keel migrate/seed | P1 |
+| ulid | Migration SQL / keel migrate | PARTIAL | Migration system exists but operation-level behavior is not proven by supplied anchors | P2 |
+| timestamps | Migration SQL / keel migrate | MATCHED | platform/database/migrations/*.sql; keel migrate/seed | P1 |
+| soft deletes | Migration SQL / keel migrate | PARTIAL | Migration system exists but operation-level behavior is not proven by supplied anchors | P2 |
+| generated columns | Migration SQL / keel migrate | PARTIAL | Migration system exists but operation-level behavior is not proven by supplied anchors | P2 |
+| check constraints | Migration SQL / keel migrate | PARTIAL | Migration system exists but operation-level behavior is not proven by supplied anchors | P2 |
+| comments | Migration SQL / keel migrate | PARTIAL | Migration system exists but operation-level behavior is not proven by supplied anchors | P2 |
+| raw SQL | Migration SQL / keel migrate | MATCHED | platform/database/migrations/*.sql; keel migrate/seed | P1 |
+| transactional migration | Migration SQL / keel migrate | PARTIAL | Migration system exists but operation-level behavior is not proven by supplied anchors | P2 |
+| reversible migration | Migration SQL / keel migrate | PARTIAL | Migration system exists but operation-level behavior is not proven by supplied anchors | P2 |
+| migration batch | Migration SQL / keel migrate | MATCHED | platform/database/migrations/*.sql; keel migrate/seed | P1 |
+| migration status | Migration SQL / keel migrate | MISSING | No locked evidence for equivalent workflow | P2 |
+| rollback | Migration SQL / keel migrate | UNKNOWN | Depth not locked in supplied evidence | P2 |
+| reset | Migration SQL / keel migrate | MISSING | No locked evidence for equivalent workflow | P2 |
+| refresh | Migration SQL / keel migrate | MISSING | No locked evidence for equivalent workflow | P2 |
+| fresh | Migration SQL / keel migrate | MISSING | No locked evidence for equivalent workflow | P2 |
+| migration lock | Migration SQL / keel migrate | MISSING | No locked evidence for equivalent workflow | P2 |
+| concurrent migration | Migration SQL / keel migrate | MISSING | No locked evidence for equivalent workflow | P2 |
+| schema dump | Migration SQL / keel migrate | MISSING | No locked evidence for equivalent workflow | P2 |
+
+### View capability matrix
+
+| View capability | Laravel baseline | Keel status | Evidence / gap | Priority |
+|---|---|---|---|---|
+| View resolution | Laravel 13 | UNKNOWN | S9 decision | No frozen template engine |
+| View paths | Laravel 13 | UNKNOWN | S9 | Pending SSR/SPA decision |
+| Layouts | Laravel 13 | UNKNOWN | S9 | Pending web story |
+| Partials | Laravel 13 | UNKNOWN | S9 | Pending web story |
+| Components | Laravel 13 | UNKNOWN | S9 | Pending web story |
+| Slots | Laravel 13 | UNKNOWN | S9 | Pending web story |
+| Sections/yield | Laravel 13 | UNKNOWN | S9 | Blade-compatible behavior undecided |
+| Escaping | Laravel 13 | UNKNOWN | S9 | No locked template runtime evidence |
+| Raw output | Laravel 13 | UNKNOWN | S9 | No locked template runtime evidence |
+| Loops/conditionals | Laravel 13 | UNKNOWN | S9 | No locked template runtime evidence |
+| Custom directives | Laravel 13 | UNKNOWN | S9 | No locked template runtime evidence |
+| Component attributes | Laravel 13 | UNKNOWN | S9 | No locked template runtime evidence |
+| View caching | Laravel 13 | UNKNOWN | S9 | Deployment semantics pending |
+| Compiled templates | Laravel 13 | UNKNOWN | S9 | Engine not selected |
+| Mail views | Laravel 13 | UNKNOWN | S9 | HTML mail template layer not established |
+| Notification views | Laravel 13 | UNKNOWN | S9 | Template engine pending |
+| Error views | Laravel 13 | UNKNOWN | S9 | Template engine pending |
+| Pagination views | Laravel 13 | UNKNOWN | S9 | Pagination is API-first currently |
+
+### Function-level Laravel capability ledger
+
+This ledger intentionally enumerates individual operations so a broad `Database` or `Validation` label cannot conceal a missing runtime function.
+
+| Subsystem | Laravel function / capability | Keel status | Evidence | Gap |
+|---|---|---|---|---|
+| Routing / URL | GET | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
+| Routing / URL | POST | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
+| Routing / URL | PUT | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
+| Routing / URL | PATCH | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
+| Routing / URL | DELETE | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
+| Routing / URL | OPTIONS | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
+| Routing / URL | HEAD | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
+| Routing / URL | ANY | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
+| Routing / URL | fallback | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
+| Routing / URL | group | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
+| Routing / URL | prefix | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
+| Routing / URL | domain | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
+| Routing / URL | subdomain | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
+| Routing / URL | name | MISSING | platform/crates/application/registry/src/lib.rs | No verified equivalent |
+| Routing / URL | where | UNKNOWN | No locked function-level evidence | No verified equivalent |
+| Routing / URL | whereNumber | UNKNOWN | No locked function-level evidence | No verified equivalent |
+| Routing / URL | whereAlpha | UNKNOWN | No locked function-level evidence | No verified equivalent |
+| Routing / URL | whereAlphaNumeric | UNKNOWN | No locked function-level evidence | No verified equivalent |
+| Routing / URL | middleware | MATCHED | platform/crates/application/registry/src/middleware_catalog.rs (resolve_chain); platform/runtime/keel-api/src/graph_routes.rs | Route middleware = [...] resolves alias-first then group, flattens, runs after the implicit api group (Wave 1); unknown entries fail GRAPH-MW-UNKNOWN |
+| Routing / URL | withoutMiddleware | UNKNOWN | No locked function-level evidence | No verified equivalent |
+| Routing / URL | controller | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
+| Routing / URL | resource | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
+| Routing / URL | apiResource | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
+| Routing / URL | singleton | UNKNOWN | No locked function-level evidence | No verified equivalent |
+| Routing / URL | apiSingleton | UNKNOWN | No locked function-level evidence | No verified equivalent |
+| Routing / URL | scopeBindings | UNKNOWN | No locked function-level evidence | No verified equivalent |
+| Routing / URL | scopeBindingsByResource | UNKNOWN | No locked function-level evidence | No verified equivalent |
+| Routing / URL | binding | MATCHED | platform/runtime/keel-api/src/graph_routes.rs; platform/applications/appointments/src/lib.rs (AppointmentBindingResolver) | bindings = [{ param, model }] on RouteSpec; resolver registered in the route.bindings service (Wave 1) |
+| Routing / URL | model binding | MATCHED | platform/runtime/keel-api/src/graph_routes.rs (_bindings injection); applications/appointments/module.toml (DELETE cancel) | Edge resolves {id} tenant-scoped and injects _bindings.<param> after the merge; malformed/miss/cross-tenant → 404; missing resolver fails GRAPH-BINDING-RESOLVER at boot (Wave 1) |
+| Routing / URL | signed URL | MISSING | No locked function-level evidence | No verified equivalent |
+| Routing / URL | temporary signed URL | MISSING | No locked function-level evidence | No verified equivalent |
+| Routing / URL | url defaults | MISSING | platform/crates/application/registry/src/lib.rs | No verified equivalent |
+| Routing / URL | route:list | UNKNOWN | No locked function-level evidence | No verified equivalent |
+| Routing / URL | route:cache | MATCHED | platform/tools/keel-console/src/main.rs (route_cache_at); platform/crates/application/registry/src/route_plan.rs | keel route:cache writes storage/framework/routes.json pinned to a SHA-256 manifest hash; boot registers from a matching artifact and refuses a stale one (Wave 1) |
+| Routing / URL | route:clear | MATCHED | platform/tools/keel-console/src/main.rs (route_clear_at) | keel route:clear deletes the artifact; boot falls back to live compilation (Wave 1) |
+| Validation | required | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | nullable | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | sometimes | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | string | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | integer | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | numeric | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | boolean | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | array | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | json | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | email | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | url | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | uuid | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | ulid | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | date | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | date_format | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | before | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | after | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | before_or_equal | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | after_or_equal | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | between | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | min | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | max | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | size | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | in | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | not_in | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | in_array | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | same | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | different | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | confirmed | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | regex | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | not_regex | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | required_if | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | required_unless | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | required_with | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | required_without | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | prohibited | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | prohibited_if | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | exclude | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | exclude_if | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | exists | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | unique | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | distinct | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | filled | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | present | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | file | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | image | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | mimes | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | mimetypes | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | extensions | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | dimensions | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | password | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | current_password | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | enum | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | ascii | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | lowercase | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | uppercase | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | hex_color | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | ip | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | ipv4 | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | ipv6 | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | mac_address | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | timezone | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | decimal | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | multiple_of | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | digits | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | digits_between | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | gt | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | gte | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | lt | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+| Validation | lte | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
+
+| Query Builder | select | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
+| Query Builder | addSelect | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
+| Query Builder | from | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
+| Query Builder | distinct | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
+| Query Builder | where | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
+| Query Builder | orWhere | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
+| Query Builder | whereIn | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
+| Query Builder | whereNotIn | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
+| Query Builder | whereNull | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
+| Query Builder | whereNotNull | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
+| Query Builder | whereBetween | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
+| Query Builder | whereNotBetween | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | whereDate | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | whereMonth | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | whereYear | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | whereColumn | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
+| Query Builder | whereExists | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | join | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
+| Query Builder | leftJoin | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
+| Query Builder | rightJoin | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
+| Query Builder | crossJoin | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | joinSub | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | union | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | unionAll | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | groupBy | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
+| Query Builder | having | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
+| Query Builder | orderBy | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
+| Query Builder | latest | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | oldest | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | limit | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
+| Query Builder | offset | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
+| Query Builder | cursor | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
+| Query Builder | lockForUpdate | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | sharedLock | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | insert | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | insertGetId | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | insertOrIgnore | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | upsert | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | update | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | updateOrInsert | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | increment | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | decrement | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | delete | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | truncate | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | count | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | max | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | min | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | avg | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | sum | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | exists | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | doesntExist | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Cache | get | EQUIVALENT | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
+| Cache | put | EQUIVALENT | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
+| Cache | add | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
+| Cache | remember | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
+| Cache | rememberForever | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
+| Cache | forever | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
+| Cache | forget | EQUIVALENT | platform/crates/services/cache/src/lib.rs:47,62 | moka cache/lock exists; exact Laravel semantics require compatibility tests |
+| Cache | flush | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
+| Cache | increment | EQUIVALENT | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
+| Cache | decrement | EQUIVALENT | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
+| Cache | pull | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
+| Cache | many | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
+| Cache | putMany | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
+| Cache | getMultiple | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
+| Cache | flexible | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
+| Cache | lock | EQUIVALENT | platform/crates/services/cache/src/lib.rs:47,62 | moka cache/lock exists; exact Laravel semantics require compatibility tests |
+| Cache | forceRelease | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
+| Cache | restoreLock | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
+| Queues / Scheduler | dispatch | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | dispatchSync | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | dispatchAfterResponse | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | delay | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | onQueue | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | onConnection | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | chain | MATCHED | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | batch | MATCHED | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | unique | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | middleware | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | retryUntil | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | backoff | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | timeout | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | maxAttempts | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | failed | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | queue:work | MATCHED | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | queue:restart | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | queue:retry | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | queue:failed | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | schedule | MATCHED | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | cron | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | everyMinute | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | hourly | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | daily | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | weekly | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | monthly | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | timezone | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | withoutOverlapping | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | onOneServer | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+
+| Filesystem / Storage | put | MATCHED | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
+| Filesystem / Storage | putFile | UNKNOWN | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
+| Filesystem / Storage | putFileAs | UNKNOWN | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
+| Filesystem / Storage | get | MATCHED | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
+| Filesystem / Storage | exists | MATCHED | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
+| Filesystem / Storage | missing | UNKNOWN | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
+| Filesystem / Storage | download | UNKNOWN | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
+| Filesystem / Storage | url | UNKNOWN | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
+| Filesystem / Storage | temporaryUrl | STUB | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
+| Filesystem / Storage | size | UNKNOWN | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
+| Filesystem / Storage | lastModified | UNKNOWN | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
+| Filesystem / Storage | mimeType | UNKNOWN | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
+| Filesystem / Storage | path | UNKNOWN | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
+| Filesystem / Storage | copy | UNKNOWN | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
+| Filesystem / Storage | move | UNKNOWN | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
+| Filesystem / Storage | delete | MATCHED | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
+| Filesystem / Storage | deleteDirectory | UNKNOWN | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
+| Filesystem / Storage | makeDirectory | UNKNOWN | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
+| Filesystem / Storage | files | UNKNOWN | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
+| Filesystem / Storage | allFiles | UNKNOWN | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
+| Filesystem / Storage | directories | UNKNOWN | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
+| Filesystem / Storage | allDirectories | UNKNOWN | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
+| Filesystem / Storage | checksum | UNKNOWN | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
+| Filesystem / Storage | visibility | UNKNOWN | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
+| Auth / Session | login | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
+| Auth / Session | logout | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
+| Auth / Session | register | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
+| Auth / Session | attempt | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
+| Auth / Session | guard | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
+| Auth / Session | user | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
+| Auth / Session | id | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
+| Auth / Session | check | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
+| Auth / Session | guest | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
+| Auth / Session | remember | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
+| Auth / Session | viaRemember | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
+| Auth / Session | validate | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
+| Auth / Session | authenticate | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
+| Auth / Session | password reset | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
+| Auth / Session | verify email | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
+| Auth / Session | session regenerate | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
+| Auth / Session | session invalidate | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
+| Auth / Session | session flash | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
+| Auth / Session | session forget | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
+| Auth / Session | token create | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
+| Auth / Session | token revoke | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
+| HTTP Request / Response | json response | PARTIAL | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
+| HTTP Request / Response | redirect | MISSING | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
+| HTTP Request / Response | download | MISSING | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
+| HTTP Request / Response | stream | PARTIAL | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
+| HTTP Request / Response | streamDownload | MISSING | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
+| HTTP Request / Response | file | MISSING | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
+| HTTP Request / Response | eventStream | PARTIAL | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
+| HTTP Request / Response | cookie set | MISSING | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
+| HTTP Request / Response | cookie delete | MISSING | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
+| HTTP Request / Response | input | PARTIAL | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
+| HTTP Request / Response | query | PARTIAL | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
+| HTTP Request / Response | route parameter | PARTIAL | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
+| HTTP Request / Response | file input | MISSING | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
+| HTTP Request / Response | collect | MISSING | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
+| HTTP Request / Response | validate | PARTIAL | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
+| HTTP Request / Response | validated | MISSING | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
+| Eloquent / ORM | create | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | createMany | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | save | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | update | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | updateOrCreate | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | firstOrCreate | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | firstOrNew | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | forceCreate | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | delete | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | forceDelete | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | restore | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | replicate | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | refresh | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | fresh | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | with | INCOMPLETE | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | load | INCOMPLETE | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | loadMissing | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | withCount | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | whereHas | INCOMPLETE | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | whereRelation | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | has | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | doesntHave | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | withoutGlobalScopes | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | scope | INCOMPLETE | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | makeVisible | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | makeHidden | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | append | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | withoutTimestamps | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | observe | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+
+### Exhaustive surface cross-reference ledger
+
+This cross-reference prevents the 24-section report from collapsing Laravel’s large surface into a handful of optimistic labels.
+
+| Area | Laravel capability | Keel status | Evidence / decision | Interpretation |
+|---|---|---|---|---|
+| Blade / Views | {{ }} | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | {!! !!} | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @if | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @unless | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @isset | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @empty | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @auth | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @guest | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @env | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @production | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @foreach | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @for | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @while | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @forelse | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @include | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @includeIf | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @includeWhen | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @extends | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @section | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @yield | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @show | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @parent | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @component | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @slot | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @props | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @aware | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @class | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @style | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @checked | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @selected | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @disabled | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @readonly | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @required | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @error | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @csrf | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @method | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @verbatim | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @once | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @push | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @prepend | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @stack | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | @session | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | custom directives | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | anonymous components | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | class components | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | dynamic components | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | component slots | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | component attributes | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | template inheritance | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+
+| Artisan family | cache:clear | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | cache:forget | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | cache:table | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | config:cache | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | config:clear | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | config:publish | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | config:show | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | db | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | db:monitor | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | db:seed | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | db:show | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | db:table | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | event:cache | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | event:clear | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | event:list | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | migrate | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | migrate:fresh | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | migrate:install | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | migrate:refresh | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | migrate:reset | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | migrate:rollback | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | migrate:status | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | queue:clear | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | queue:failed | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | queue:flush | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | queue:forget | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | queue:listen | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | queue:monitor | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | queue:prune-batches | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | queue:prune-failed | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | queue:restart | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | queue:retry | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | queue:retry-batch | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | queue:work | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | route:cache | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | route:clear | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | route:list | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | schedule:clear-cache | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | schedule:list | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | schedule:run | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | schedule:test | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | schedule:work | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | storage:link | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | view:cache | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | view:clear | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Artisan family | vendor:publish | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
+| Laravel 13 domain | HTTP | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Routing | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Middleware | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | CSRF | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Controllers | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Requests | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Responses | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Views | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | URLs | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Sessions | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Validation | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Errors | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Logging | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Artisan | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Broadcasting | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Cache | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Collections | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Concurrency | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Context | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Contracts | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Events | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Filesystem | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Helpers | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | HTTP Client | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Images | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Localization | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Mail | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Notifications | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Packages | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Processes | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Queues | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Rate Limiting | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Search | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Strings | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Scheduling | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Authentication | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Authorization | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Email Verification | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Encryption | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Hashing | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Password Reset | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Database | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Migrations | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Seeding | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Redis | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | MongoDB | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Eloquent | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Factories | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | API Resources | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | JSON:API | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | AI SDK | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | MCP | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+| Laravel 13 domain | Testing | AUDITED | See §4 and function-level ledgers | No coarse MATCHED status unless child capabilities are complete |
+
+### Decision-rule examples
+
+- **Database = PARTIAL**, because migration infrastructure is strong but ORM CRUD and general module PostgreSQL persistence are missing.
+- **Authentication = PARTIAL**, because token/session primitives exist but HTTP login/register/logout/token issuance are not wired through the real edge.
+- **Views = UNKNOWN**, because S9 has not yet selected SSR/templates versus SPA-first.
+- **Collections = DELIBERATELY EXCLUDED**, because Rust iterators provide a native and type-safe alternative.
+- **Concurrency/context = SUPERSEDED**, because Tokio plus typed execution context is the intended Rust-native model.
+- **AI/MCP and audit/replay = SUPERSEDED**, because these are deliberate architectural advantages rather than parity gaps.
+
+## 5. Missing Features
+
+### P0 — blockers
+
+| ID | Gap | Why it blocks |
+|---|---|---|
+| C1 | Graph → HTTP router | Without it, declared domain routes cannot execute over HTTP. |
+| C2 | HTTP auth flows | No production login/register/logout/token issuance path. |
+| C3 | Domain-module persistence port + PostgreSQL store | Domains fall back to in-memory stores. |
+| C4 | ORM runtime | Metadata and Select builder are insufficient for application CRUD. |
+| C5 | Multipart uploads | File upload workflows cannot be implemented. |
+| C6 | Cookie layer | Session/CSRF/auth browser glue is incomplete. |
+
+### P1 / High
+
+- SSR/template strategy or SPA starter decision.
+- `PgSessionStore`.
+- Named routes and URL generation.
+- Per-principal rate limiting.
+- `keel serve`.
+- Durable Redis cache/queue drivers.
+- pgvector search adapter.
+- Breeze-equivalent starter kit.
+
+### P2 / Medium
+
+- Horizon/Telescope-equivalent dashboard over `keel inspect` data.
+- Tinker-equivalent interactive shell.
+- Complete factory data-generation path.
+- Mail HTML templates.
+- Redirect and flash primitives for conventional web flows.
+
+### P4 / Low / ecosystem
+
+- Cashier equivalents.
+- Socialite equivalents.
+- Dusk equivalent.
+- Valet equivalent is intentionally not a core target.
+
+### Dependency order
+
+The six blockers are not independent. The minimum causal chain is:
+
+```text
+C1 graph → HTTP router
+   ↓
+C2 HTTP auth + C6 cookies
+   ↓
+C3 domain Pg store
+   ↓
+C4 ORM runtime
+   ↓
+C5 multipart/uploads
+```
+
+The roadmap therefore starts with edge wiring, not ORM polish.
+
+## 6. Broken / Partial Features
+
+### Factory generation
+
+`platform/tools/keel-codegen/src/generators.rs:126` contains `todo!("build __TYPE__ from factory fields")`. This is a real implementation hole in a generated developer workflow, not merely missing documentation.
+
+**Status:** `STUB`
+
+### Sessions
+
+`platform/crates/security/sessions/src/lib.rs:197-279` proves in-memory session management, regeneration and sweep. No `PgSessionStore` is supplied. Cross-instance durability and restart survival are therefore unproven.
+
+**Status:** `PARTIAL`
+
+### Appointments domain
+
+`platform/applications/appointments/src/lib.rs:45-46` uses `Mutex<BTreeMap>` storage. The supplied audit facts also establish that `keel-api` has no `keel-mod-appointments` dependency and the graph never reaches the HTTP dispatcher.
+
+**Status:** `INCOMPLETE` / unreachable over HTTP.
+
+### Tracker drift identified before this report
+
+- L05 / routing family: must not imply a runnable route path.
+- L06 middleware: stale `✗`; current status is `✓`.
+- L21 auth: stale JWT claim; current state is Argon2/OTP + hashed PAT + HMAC sessions, no JWT.
+- L61 logging: stale `◐`; initialization/redaction/file mirror are present.
+- L62 tracing: stale `◐`; request spans are present.
+
+## 7. Architectural Problems
+
+### 7.1 Hard-coded edge versus graph-driven intent
+
+The architecture is designed around a `PlatformGraph`, but the HTTP router remains a separate hard-coded surface. This creates a split-brain framework: the graph knows what the application is, while HTTP must still be manually wired.
+
+**Evidence:** `platform/crates/application/registry/src/lib.rs`; `platform/runtime/keel-api/src/routes.rs:44-51`.
+
+### 7.2 Modules lack a store-port family
+
+The appointments module falling back to `Mutex<BTreeMap>` is the concrete symptom. A framework cannot claim Laravel-class application persistence while module code must invent local store implementations.
+
+**Evidence:** `platform/applications/appointments/src/lib.rs:45-46`.
+
+### 7.3 `keel-models` is not connected to `keel-query`
+
+Model metadata can describe fields and relations, and `Select` can construct safe reads, but there is no proven model runtime that generates CRUD operations from `ModelDef`/`FieldDef`/`RelationDef`.
+
+**Evidence:** `platform/crates/data/models/src/lib.rs`; `platform/crates/execution/query/src/select.rs`.
+
+### 7.4 Session middleware is missing from the admission pipeline
+
+Admission currently proves request-id, tracing, body limits, CORS, maintenance and rate limiting. Session loading/identity hydration is not part of that chain.
+
+**Evidence:** `platform/crates/web/http/src/middleware.rs`; `platform/crates/security/sessions/src/lib.rs:197-279`.
+
+## 8. Security Findings
+
+| Severity | Finding | Evidence | Impact |
+|---|---|---|---|
+| Medium | In-memory sessions | `platform/crates/security/sessions/src/lib.rs:197-279` | No cross-instance revocation/durability; horizontal scaling is unsafe. |
+| Medium | IP-only rate-limit key | `platform/crates/web/http/src/middleware.rs` | Shared-network users can be over-throttled; principal fairness is weak. |
+| Low / Info | Per-boot random session secret | session architecture supplied | Restart can invalidate in-memory sessions. |
+| Low / Info | CSRF opt-in | `platform/runtime/keel-api/src/main.rs` | Safety depends on deployment configuration. |
+| Low / Info | Upload attack surface not yet present | repo-wide zero multipart hits | No upload surface exists yet, but C5 must include hardening before release. |
+
+### Positive security controls
+
+- SHA-256-hashed single-use tokens: `platform/crates/security/tokens/src/lib.rs:137-214`.
+- Argon2 / OTP primitives: `platform/crates/security/identity/src/lib.rs:129-152`.
+- AES-GCM sealing: supplied verified audit facts.
+- Capability-enforced authorization at the kernel boundary: supplied verified audit facts.
+- Double-submit CSRF: `platform/crates/web/http/src/csrf.rs`.
+- Logging redaction: `platform/crates/observability/logging/src/logsys.rs:88,219,249`.
+
+### Threat-model conclusions
+
+No SQL-injection claim should be made merely because the typed `Select` builder exists. The absence of runtime CRUD means the write surface is not yet present. Conversely, the future upload surface must be designed before C5 lands: MIME sniffing, content limits, path safety, antivirus/content validation and storage isolation must be explicit.
+
+## 9. Performance Findings
+
+### Proven architectural positives
+
+- `SKIP LOCKED` worker claim loop in `platform/runtime/keel-worker/src/main.rs` is appropriate for competing workers.
+- `moka` cache in `platform/crates/services/cache/src/lib.rs` provides a practical in-process cache foundation.
+- Typed `Select` builder in `platform/crates/execution/query/src/select.rs` gives a safe path to SQL construction without sacrificing composability.
+
+### What cannot yet be honestly benchmarked
+
+A meaningful router benchmark is **NOT POSSIBLE** because the graph-to-HTTP dispatch path is not connected. Benchmarking a hard-coded route table would measure the wrong architecture.
+
+Metrics and profiling are deferred under D-68. There is therefore no production telemetry layer sufficient to establish p95/p99 request behavior, queue saturation, database latency, cache hit ratios or per-handler allocation profiles.
+
+### Performance risks to watch in S7–S8
+
+- model hydration and allocation costs once ORM relation loading exists;
+- clone frequency crossing the graph → request → controller → engine boundary;
+- session lookups after introducing PgSessionStore;
+- serialization overhead for envelope/response models;
+- N+1 relation loading once Eloquent-style behavior is added;
+- queue throughput after durable domain stores are introduced.
+
+## 10. Developer Experience Audit
+
+### Where Keel is already stronger
+
+Keel has a distinct operational workflow around **inspect, replay, benchmark, upgrade and security-oriented CLI tooling**. This is materially different from the usual Laravel development loop and should remain a differentiator.
+
+### Where Laravel is still materially better
+
+Laravel has a coherent path from project creation to a working web application. Keel currently breaks that loop at the first endpoint because graph-declared routes are not executable HTTP routes.
+
+### Workflow comparison
+
+| Task | Laravel | Keel today | Verdict |
+|---|---|---|---|
+| Create application | mature project scaffolding | framework exists but end-user scaffold flow not proven | PARTIAL |
+| Run local HTTP app | standard `serve` flow | `keel serve` absent | MISSING |
+| Create route | route file + runtime dispatch | manifest/graph declaration exists but dispatch breaks | API-ONLY |
+| Create controller | first-class generator/runtime | controller/view-model concept exists | EQUIVALENT at type level |
+| Validate request | FormRequest + validator | Validator/Rule primitives | PARTIAL |
+| Persist model | Eloquent | metadata + typed Select only | INCOMPLETE |
+| Authenticate | full HTTP/session flow | primitives only | PARTIAL |
+| Inspect runtime | Telescope/Pulse ecosystem | `keel inspect` / replay model | SUPERSEDED opportunity |
+| Replay | limited operational model | delta/audit/replay | SUPERSEDED |
+| Benchmark | external tooling and Octane ecosystem | framework-native benchmark intent | SUPERSEDED opportunity |
+
+### DX gate
+
+S7 must make this loop work:
+
+```text
+create
+→ configure
+→ migrate
+→ make module
+→ route
+→ serve
+→ request
+→ authenticate
+→ persist
+→ test
+```
+
+## 11. CLI Audit
+
+The CLI is one of the most important Laravel parity surfaces because it compresses framework complexity into repeatable developer workflows. The table deliberately expands categories and generators instead of treating “34 commands” as sufficient.
+
+| Laravel command | Keel command | Status | Evidence / gap | Priority |
+|---|---|---|---|---|
+| about | about | MISSING | No mapped equivalent supplied | P3 |
+| clear-compiled | optimize:clear | PARTIAL | No Laravel compiled-artifact model | P3 |
+| down | down | EQUIVALENT | Maintenance mode capability | P2 |
+| env | env | UNKNOWN | Depth not locked by evidence | P3 |
+| inspire | — | DELIBERATELY EXCLUDED | Not a framework capability | P4 |
+| list | list | MATCHED | CLI command surface exists | P2 |
+| optimize | optimize | PARTIAL | Optimization semantics incomplete | P2 |
+| optimize:clear | optimize:clear | PARTIAL | Clear path needs subsystem caches | P2 |
+| up | up | EQUIVALENT | Maintenance disable path | P2 |
+| version | version | MATCHED | CLI binary exists | P2 |
+| cache:clear | cache:clear | PARTIAL | Cache command surface not fully mapped | P2 |
+| cache:forget | cache:forget | PARTIAL | Depends on command implementation | P2 |
+| cache:table | cache:table | MISSING | DB cache migration not established | P3 |
+| config:cache | config:cache | MISSING | Config deployment cache absent | P2 |
+| config:clear | config:clear | MISSING | No config cache clear command supplied | P2 |
+| config:publish | config:publish | MISSING | Package resource publish absent | P3 |
+| config:show | config:show | MISSING | No config inspection command supplied | P3 |
+| db | db | MATCHED | CLI/runtime exists at database layer | P2 |
+| db:monitor | db:monitor | UNKNOWN | No locked evidence | P3 |
+| db:seed | seed | MATCHED | keel seed | P1 |
+| db:show | db:show | UNKNOWN | No locked evidence | P3 |
+| db:table | db:table | UNKNOWN | No locked evidence | P3 |
+| event:cache | event:cache | MISSING | No separate event discovery cache | P3 |
+| event:clear | event:clear | MISSING | No event cache command | P3 |
+| event:list | event:list | UNKNOWN | Event runtime exists but list command not proven | P3 |
+| key:generate | key:generate | UNKNOWN | No locked evidence | P3 |
+| make:cast | make cast | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:channel | make channel | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:class | make class | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:command | make command | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:component | make component | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:controller | make controller | PARTIAL | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:event | make event | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:exception | make exception | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:factory | make factory | STUB | platform/tools/keel-codegen/src/generators.rs:126; build() contains todo! | P2 |
+| make:interface | make interface | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:job | make job | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:job-middleware | make job-middleware | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:listener | make listener | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:mail | make mail | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:middleware | make middleware | PARTIAL | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:model | make model | PARTIAL | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:notification | make notification | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:notifications-table | make notifications-table | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:policy | make policy | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:provider | make provider | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:request | make request | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:resource | make resource | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:rule | make rule | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:scope | make scope | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:seeder | make seeder | PARTIAL | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:test | make test | PARTIAL | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:view | make view | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| migrate | migrate | MATCHED | 2 framework migration files / 18 tables | P1 |
+| migrate:fresh | migrate:fresh | MISSING | Fresh workflow not supplied | P2 |
+| migrate:install | migrate:install | UNKNOWN | No locked evidence | P3 |
+| migrate:refresh | migrate:refresh | MISSING | Refresh workflow not supplied | P2 |
+| migrate:reset | migrate:reset | MISSING | Reset workflow not supplied | P2 |
+| migrate:rollback | migrate:rollback | UNKNOWN | Rollback depth not locked | P2 |
+| migrate:status | migrate:status | UNKNOWN | Status command not locked | P3 |
+| queue:clear | queue:clear | UNKNOWN | Worker runtime exists; command not locked | P3 |
+| queue:failed | queue:failed | UNKNOWN | No locked command evidence | P3 |
+| queue:flush | queue:flush | UNKNOWN | No locked command evidence | P3 |
+| queue:forget | queue:forget | UNKNOWN | No locked command evidence | P3 |
+| queue:listen | queue:listen | MATCHED | keel-worker runtime | P2 |
+| queue:monitor | queue:monitor | MISSING | No monitoring command | P3 |
+| queue:prune-batches | queue:prune-batches | UNKNOWN | Batches exist, command not locked | P3 |
+| queue:prune-failed | queue:prune-failed | UNKNOWN | No locked evidence | P3 |
+| queue:restart | queue:restart | UNKNOWN | No locked evidence | P3 |
+| queue:retry | queue:retry | UNKNOWN | No locked evidence | P3 |
+| queue:retry-batch | queue:retry-batch | UNKNOWN | No locked evidence | P3 |
+| queue:work | queue:work | MATCHED | keel-worker | P1 |
+| route:cache | route:cache | MATCHED | keel route:cache writes storage/framework/routes.json (resolved chains/bindings/validators + SHA-256 manifest hash); boot registers from a matching artifact and refuses a stale one (Wave 1) | P2 |
+| route:clear | route:clear | MATCHED | keel route:clear deletes the artifact; boot falls back to live compilation (Wave 1) | P2 |
+| route:list | route:list | PARTIAL | Route metadata exists, runtime edge incomplete | P2 |
+| schedule:clear-cache | schedule:clear-cache | UNKNOWN | Scheduler exists; command not locked | P3 |
+| schedule:list | schedule:list | UNKNOWN | Scheduler exists; command not locked | P3 |
+| schedule:run | schedule:run | MATCHED | Scheduler runtime | P1 |
+| schedule:test | schedule:test | UNKNOWN | No locked evidence | P3 |
+| schedule:work | schedule:work | MATCHED | Worker scheduler loop | P1 |
+| storage:link | storage:link | UNKNOWN | No locked evidence | P3 |
+| view:cache | view:cache | UNKNOWN | Views undecided until S9 | P3 |
+| view:clear | view:clear | UNKNOWN | Views undecided until S9 | P3 |
+| vendor:publish | vendor:publish | MISSING | Package resource publish absent | P3 |
+| horizon | inspect/queue | MISSING | No Horizon-equivalent dashboard | P3 |
+| telescope | inspect/replay | SUPERSEDED | Keel inspect/replay model is broader | P2 |
+| tinker | shell | MISSING | No interactive application shell | P3 |
+| serve | serve | MISSING | Critical local development loop gap | P1 |
+
+### Current verified command maturity
+
+The repository brief states **34/34 planned Keel commands are done (L55 ✓)**. This proves planning completion, not full Laravel command parity. The gaps above are the difference between a closed internal roadmap and a Laravel-equivalent CLI surface.
+
+## 12. ORM Audit
+
+The ORM is the largest structural parity gap after the HTTP edge.
+
+### What exists
+
+`platform/crates/data/models/src/lib.rs` provides:
+
+- `FieldType`
+- `FieldDef`
+- `RelationDef`
+- `ModelRegistry`
+- `validate_graph`
+
+`platform/crates/execution/query/src/select.rs` provides:
+
+- typed `Select` builder
+- joins
+- operators
+- `tenant_scope`
+- identifier safety
+
+That is **metadata + typed read composition**, not an Eloquent-class ORM runtime.
+
+### Function-level matrix
+
+| Capability | Status | Evidence | Gap | Priority |
+|---|---|---|---|---|
+| Model definition | EQUIVALENT | platform/crates/data/models/src/lib.rs | Compile-time metadata exists | P1 |
+| Create/save | MISSING | platform/crates/execution/query/src/select.rs | No write builder | P0 |
+| Insert many | MISSING | platform/crates/execution/query/src/select.rs | No batch insert builder | P1 |
+| Update | MISSING | platform/crates/execution/query/src/select.rs | No update builder | P0 |
+| Delete | MISSING | platform/crates/execution/query/src/select.rs | No delete builder | P0 |
+| Upsert | MISSING | platform/crates/execution/query/src/select.rs | No upsert builder | P1 |
+| Find one | PARTIAL | platform/crates/execution/query/src/select.rs | Read builder exists but no model runtime | P1 |
+| Eager loading | MISSING | platform/crates/data/models/src/lib.rs | Relation definitions are metadata-only | P0 |
+| Lazy loading | MISSING | platform/crates/data/models/src/lib.rs | No runtime relation fetch | P1 |
+| Lazy-loading prevention | MISSING | platform/crates/data/models/src/lib.rs | No runtime model loader | P2 |
+| Relations | INCOMPLETE | platform/crates/data/models/src/lib.rs | RelationDef exists; execution absent | P0 |
+| Many-to-many / pivot | MISSING | platform/crates/data/models/src/lib.rs | No runtime pivot abstraction | P2 |
+| Polymorphic relations | MISSING | platform/crates/data/models/src/lib.rs | No runtime polymorphic loader | P3 |
+| Casts | MISSING | platform/crates/data/models/src/lib.rs | No runtime cast system | P1 |
+| Accessors | MISSING | platform/crates/data/models/src/lib.rs | No computed attribute runtime | P1 |
+| Mutators | MISSING | platform/crates/data/models/src/lib.rs | No setter transformation runtime | P1 |
+| Fillable / mass assignment | MISSING | platform/crates/data/models/src/lib.rs | No equivalent security boundary | P1 |
+| Hidden / visible serialization | MISSING | platform/crates/data/models/src/lib.rs | No ORM serializer policy | P2 |
+| Scopes | MISSING | platform/crates/data/models/src/lib.rs | No local/global scope runtime | P1 |
+| Soft deletes | MISSING | platform/crates/data/models/src/lib.rs | No runtime behavior | P2 |
+| Model events | MISSING | platform/crates/data/models/src/lib.rs | No model lifecycle event system | P2 |
+| Observers | MISSING | platform/crates/data/models/src/lib.rs | No observer registry | P2 |
+| Factories | PARTIAL | platform/tools/keel-codegen/src/generators.rs:126 | Factory build path contains todo! | P2 |
+| Seeders | MATCHED | keel seed | Seed command exists | P1 |
+| Pagination integration | MATCHED | platform/crates/web/http/src/pagination.rs; platform/runtime/keel-api/src/graph_routes.rs | Wired to HTTP (Wave 1): GET routes parse page/per_page, inject _page, clamp per_page to MAX_PER_PAGE 100; list handlers emit a page meta block (page/per_page/total/has_more) | P1 |
+| N+1 detection | UNKNOWN | No locked evidence | Needs runtime instrumentation after ORM exists | P3 |
+| Transactions | EQUIVALENT | platform/crates/application/registry/src/lib.rs; data runtime facts | Command engine supports idempotent execution, but domain DB transaction semantics need proof | P1 |
+| Optimistic locking | MISSING | no locked evidence | No model runtime support | P3 |
+| Model serialization | MISSING | no locked evidence | No Eloquent-equivalent runtime serializer | P2 |
+
+### Model → query generation gap
+
+The highest-leverage ORM design decision is to connect `ModelDef`/`FieldDef`/`RelationDef` to a typed CRUD/query generation layer instead of building a second untyped ORM on top of `sqlx`. The intended bridge should be additive and compile-time aware.
+
+## 13. Package Ecosystem Audit
+
+Keel already has a useful port/adapter story: **7 adapters** ship and manifests/compile-time modules are already part of the architecture. That is the foundation for a package ecosystem, but not yet the ecosystem itself.
+
+| Capability | Status | Evidence | Gap |
+|---|---|---|---|
+| Package metadata | EQUIVALENT | module manifests | Need stable published package contract |
+| Service registration | EQUIVALENT | lifecycle/provider architecture | Need public third-party registration contract |
+| Configuration publishing | MISSING | no vendor-publish equivalent | Needed for package UX |
+| Routes | PARTIAL | route declarations in manifests | Runtime router integration is still blocked |
+| Migrations | EQUIVALENT | migration system | Package-owned migrations need lifecycle contract |
+| Views/assets | UNKNOWN | S9 web decision pending | Package view contract cannot be frozen yet |
+| CLI commands | PARTIAL | 34 planned commands | Package command registration needs public extension API |
+| Auto-discovery | MISSING | no registry/discovery evidence | Install-time discovery absent |
+| Extension API | PARTIAL | D-69 | Needs stable third-party extension contract |
+| Version compatibility | UNKNOWN | no locked evidence | Requires framework version/feature negotiation |
+| Marketplace/registry | DELIBERATELY EXCLUDED for v1 | dependency cap and scope | External registry can follow later |
+
+### Strategic decision
+
+Do not build a package marketplace before the runtime extension contract is stable. The correct order is: **module contract → extension API → discovery → package tooling → optional registry**.
+
+## 14. Testing Audit
+
+### Current evidence
+
+- **336 static `#[test]` attributes**.
+- **334 tests in the last executed green gate**.
+- Architecture gates exist in `platform/tests/architecture/tests/architecture.rs`: G07 dependency matrix, topology, graph compile.
+- TestKit and `assert_queries!` exist as framework test primitives.
+
+### Critical gap
+
+There are **zero PostgreSQL-backed tests** in the supplied repository facts; specifically, zero `sqlx::test` references. That is a **High risk** for every store that is intended to be production-backed.
+
+### Test pyramid assessment
+
+| Layer | Status | Finding |
+|---|---|---|
+| Unit | MATCHED | 336 static test attributes. |
+| Architecture tests | MATCHED | G07/topology/graph gates. |
+| HTTP integration | INCOMPLETE | Edge routing is not executable end-to-end. |
+| PostgreSQL integration | MISSING | No real Pg-backed matrix. |
+| Queue integration | PARTIAL | Worker exists; store breadth needs more real-backend tests. |
+| Auth integration | PARTIAL | Primitives exist; HTTP wiring is missing. |
+| Upload/security tests | MISSING | Multipart surface does not exist yet. |
+| Browser/E2E | UNKNOWN | No locked evidence. |
+| Load/perf | UNKNOWN | Router benchmark cannot yet be meaningful. |
+| Fuzz/property | UNKNOWN | No locked evidence. |
+
+### Release implication
+
+A framework can have hundreds of green unit tests and still be unsafe to release when the only durable store lacks integration coverage. PostgreSQL-backed tests must be a v0.9 gate.
+
+## 15. Observability Audit
+
+| Capability | Status | Evidence |
+|---|---|---|
+| Logging init | MATCHED | `platform/crates/observability/logging/src/logsys.rs:88,219,249` |
+| Redaction | MATCHED | same |
+| File mirror | MATCHED | same |
+| Request spans | MATCHED | same |
+| Structured trace store | SUPERSEDED | supplied delta/audit/replay design |
+| `keel inspect` | SUPERSEDED | supplied CLI facts |
+| `keel replay` | SUPERSEDED | supplied CLI facts |
+| Metrics endpoint | MISSING | D-68 |
+| Profiling | DEFERRED / not a core status | D-68; no production profile evidence |
+| Queue metrics | UNKNOWN | no locked evidence |
+| DB metrics | UNKNOWN | no locked evidence |
+| Health | EQUIVALENT | `keel-api` meta/health surface implied by runtime facts |
+
+### Why inspect/replay is a real differentiator
+
+Traditional application frameworks typically stop at request logs and tracing. Keel's delta/audit/replay model is closer to a forensic execution record. This should be protected as a **SUPERSEDED** capability, not flattened into a “Telescope clone.”
+
+## 16. Competitive Analysis
+
+| Framework | Strength relative to Keel today | Keel advantage | Brutal gap |
+|---|---|---|---|
+| Laravel 13 | Mature end-to-end application platform, enormous ecosystem | Typed Rust core, audit/replay, capability authz, MCP-native design | HTTP edge, ORM, sessions, templates, ecosystem maturity |
+| Loco | Closest full Rust application rival; strong auth/scaffolding/SSR | Keel's execution engine, capability model, observability/replay | Loco has the more coherent app-development loop today |
+| Axum | Excellent minimal async HTTP foundation | Batteries-included platform layer | Keel currently inherits Axum-class edge constraints until graph wiring is complete |
+| Actix Web | High-performance mature Rust HTTP | More opinionated application platform | Less end-to-end ecosystem breadth than Actix/Laravel ecosystem |
+| Poem | Flexible Rust framework | Deeper application engine | Ecosystem maturity |
+| Rocket | Strong ergonomic Rust web story | PlatformGraph + engine + capability model | Full-stack app tooling maturity |
+| Rails | Extremely coherent developer experience | Rust safety/performance | Productive web conventions and ecosystem |
+| Django | Batteries-included Python platform | Typed/compiled runtime and systems performance | ORM/admin/ecosystem maturity |
+| Phoenix | Realtime excellence | Capability model and enterprise execution engine | Realtime/productivity ecosystem maturity |
+| NestJS | Excellent modular enterprise TS framework | Rust runtime/type safety | Package ecosystem and ready-made web integrations |
+| Spring Boot | Enterprise maturity and huge ecosystem | Lower-level efficiency and typed capabilities | Enterprise integrations, tooling, ecosystem |
+| ASP.NET Core | Mature typed full-stack platform | Smaller runtime footprint + explicit capability engine | Ecosystem and application surface breadth |
+
+### Laravel ecosystem product matrix
+
+| Laravel product | Keel strategic status | Evidence | Gap / interpretation | Priority |
+|---|---|---|---|---|
+| Cashier (Stripe) | DELIBERATELY EXCLUDED | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Cashier (Paddle) | DELIBERATELY EXCLUDED | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Dusk | DELIBERATELY EXCLUDED | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Envoy | UNKNOWN / ECOSYSTEM | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Fortify | EQUIVALENT / FUTURE | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Folio | UNKNOWN / ECOSYSTEM | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Herd | UNKNOWN / ECOSYSTEM | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Head | UNKNOWN / ECOSYSTEM | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Horizon | UNKNOWN / ECOSYSTEM | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Octane | SUPERSEDED | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Passport | UNKNOWN / ECOSYSTEM | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Pennant | UNKNOWN / ECOSYSTEM | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Pint | UNKNOWN / ECOSYSTEM | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Precognition | UNKNOWN / ECOSYSTEM | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Prompts | UNKNOWN / ECOSYSTEM | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Pulse | UNKNOWN / ECOSYSTEM | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Reverb | EQUIVALENT / FUTURE | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Sail | DELIBERATELY EXCLUDED | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Sanctum | EQUIVALENT / FUTURE | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Scout | EQUIVALENT / FUTURE | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Socialite | DELIBERATELY EXCLUDED | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Telescope | SUPERSEDED | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Valet | DELIBERATELY EXCLUDED | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Breeze | EQUIVALENT / FUTURE | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Jetstream | UNKNOWN / ECOSYSTEM | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Inertia | UNKNOWN / ECOSYSTEM | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Livewire | UNKNOWN / ECOSYSTEM | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+
+### Security API ledger
+
+| Capability | Status | Evidence | Gap |
+|---|---|---|---|
+| encrypt | PARTIAL | platform/crates/security/identity/src/lib.rs:129-152; platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/web/http/src/csrf.rs; platform/crates/enterprise/tenancy/src/lib.rs:143,267; platform/crates/observability/logging/src/logsys.rs:88,219,249 | Exact runtime behavior must be covered by security tests |
+| decrypt | PARTIAL | platform/crates/security/identity/src/lib.rs:129-152; platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/web/http/src/csrf.rs; platform/crates/enterprise/tenancy/src/lib.rs:143,267; platform/crates/observability/logging/src/logsys.rs:88,219,249 | Exact runtime behavior must be covered by security tests |
+| hash | EQUIVALENT | platform/crates/security/identity/src/lib.rs:129-152; platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/web/http/src/csrf.rs; platform/crates/enterprise/tenancy/src/lib.rs:143,267; platform/crates/observability/logging/src/logsys.rs:88,219,249 | Exact runtime behavior must be covered by security tests |
+| check | EQUIVALENT | platform/crates/security/identity/src/lib.rs:129-152; platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/web/http/src/csrf.rs; platform/crates/enterprise/tenancy/src/lib.rs:143,267; platform/crates/observability/logging/src/logsys.rs:88,219,249 | Exact runtime behavior must be covered by security tests |
+| needsRehash | PARTIAL | platform/crates/security/identity/src/lib.rs:129-152; platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/web/http/src/csrf.rs; platform/crates/enterprise/tenancy/src/lib.rs:143,267; platform/crates/observability/logging/src/logsys.rs:88,219,249 | Exact runtime behavior must be covered by security tests |
+| randomBytes | PARTIAL | platform/crates/security/identity/src/lib.rs:129-152; platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/web/http/src/csrf.rs; platform/crates/enterprise/tenancy/src/lib.rs:143,267; platform/crates/observability/logging/src/logsys.rs:88,219,249 | Exact runtime behavior must be covered by security tests |
+| randomInt | PARTIAL | platform/crates/security/identity/src/lib.rs:129-152; platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/web/http/src/csrf.rs; platform/crates/enterprise/tenancy/src/lib.rs:143,267; platform/crates/observability/logging/src/logsys.rs:88,219,249 | Exact runtime behavior must be covered by security tests |
+| verifySignature | PARTIAL | platform/crates/security/identity/src/lib.rs:129-152; platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/web/http/src/csrf.rs; platform/crates/enterprise/tenancy/src/lib.rs:143,267; platform/crates/observability/logging/src/logsys.rs:88,219,249 | Exact runtime behavior must be covered by security tests |
+| hmac | PARTIAL | platform/crates/security/identity/src/lib.rs:129-152; platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/web/http/src/csrf.rs; platform/crates/enterprise/tenancy/src/lib.rs:143,267; platform/crates/observability/logging/src/logsys.rs:88,219,249 | Exact runtime behavior must be covered by security tests |
+| password reset token | PARTIAL | platform/crates/security/identity/src/lib.rs:129-152; platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/web/http/src/csrf.rs; platform/crates/enterprise/tenancy/src/lib.rs:143,267; platform/crates/observability/logging/src/logsys.rs:88,219,249 | Exact runtime behavior must be covered by security tests |
+| email verification token | PARTIAL | platform/crates/security/identity/src/lib.rs:129-152; platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/web/http/src/csrf.rs; platform/crates/enterprise/tenancy/src/lib.rs:143,267; platform/crates/observability/logging/src/logsys.rs:88,219,249 | Exact runtime behavior must be covered by security tests |
+| signed URL | PARTIAL | platform/crates/security/identity/src/lib.rs:129-152; platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/web/http/src/csrf.rs; platform/crates/enterprise/tenancy/src/lib.rs:143,267; platform/crates/observability/logging/src/logsys.rs:88,219,249 | Exact runtime behavior must be covered by security tests |
+| temporary signed URL | PARTIAL | platform/crates/security/identity/src/lib.rs:129-152; platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/web/http/src/csrf.rs; platform/crates/enterprise/tenancy/src/lib.rs:143,267; platform/crates/observability/logging/src/logsys.rs:88,219,249 | Exact runtime behavior must be covered by security tests |
+| csrf token | EQUIVALENT | platform/crates/security/identity/src/lib.rs:129-152; platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/web/http/src/csrf.rs; platform/crates/enterprise/tenancy/src/lib.rs:143,267; platform/crates/observability/logging/src/logsys.rs:88,219,249 | Exact runtime behavior must be covered by security tests |
+| session id regenerate | PARTIAL | platform/crates/security/identity/src/lib.rs:129-152; platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/web/http/src/csrf.rs; platform/crates/enterprise/tenancy/src/lib.rs:143,267; platform/crates/observability/logging/src/logsys.rs:88,219,249 | Exact runtime behavior must be covered by security tests |
+| session invalidate | PARTIAL | platform/crates/security/identity/src/lib.rs:129-152; platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/web/http/src/csrf.rs; platform/crates/enterprise/tenancy/src/lib.rs:143,267; platform/crates/observability/logging/src/logsys.rs:88,219,249 | Exact runtime behavior must be covered by security tests |
+| authorization gate | SUPERSEDED | platform/crates/security/identity/src/lib.rs:129-152; platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/web/http/src/csrf.rs; platform/crates/enterprise/tenancy/src/lib.rs:143,267; platform/crates/observability/logging/src/logsys.rs:88,219,249 | Exact runtime behavior must be covered by security tests |
+| policy check | SUPERSEDED | platform/crates/security/identity/src/lib.rs:129-152; platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/web/http/src/csrf.rs; platform/crates/enterprise/tenancy/src/lib.rs:143,267; platform/crates/observability/logging/src/logsys.rs:88,219,249 | Exact runtime behavior must be covered by security tests |
+| capability check | SUPERSEDED | platform/crates/security/identity/src/lib.rs:129-152; platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/web/http/src/csrf.rs; platform/crates/enterprise/tenancy/src/lib.rs:143,267; platform/crates/observability/logging/src/logsys.rs:88,219,249 | Exact runtime behavior must be covered by security tests |
+| tenant isolation | EQUIVALENT | platform/crates/security/identity/src/lib.rs:129-152; platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/web/http/src/csrf.rs; platform/crates/enterprise/tenancy/src/lib.rs:143,267; platform/crates/observability/logging/src/logsys.rs:88,219,249 | Exact runtime behavior must be covered by security tests |
+| secret redaction | EQUIVALENT | platform/crates/security/identity/src/lib.rs:129-152; platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/web/http/src/csrf.rs; platform/crates/enterprise/tenancy/src/lib.rs:143,267; platform/crates/observability/logging/src/logsys.rs:88,219,249 | Exact runtime behavior must be covered by security tests |
+| request ID | EQUIVALENT | platform/crates/security/identity/src/lib.rs:129-152; platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/web/http/src/csrf.rs; platform/crates/enterprise/tenancy/src/lib.rs:143,267; platform/crates/observability/logging/src/logsys.rs:88,219,249 | Exact runtime behavior must be covered by security tests |
+| trace ID | EQUIVALENT | platform/crates/security/identity/src/lib.rs:129-152; platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/web/http/src/csrf.rs; platform/crates/enterprise/tenancy/src/lib.rs:143,267; platform/crates/observability/logging/src/logsys.rs:88,219,249 | Exact runtime behavior must be covered by security tests |
+
+### Verdict
+
+The realistic Rust competitor today is **Loco**, not Laravel. Laravel remains the application-platform benchmark. Keel should not claim superiority until S7 proves a real application path and S8 proves real domain persistence.
+
+## 17. Rust-Native Opportunities
+
+The framework should not clone PHP history where Rust gives a better primitive.
+
+### Deliberate advantages
+
+1. **Compile-time architecture gates** — topology and dependency invariants can fail before runtime. Evidence: `platform/tests/architecture/tests/architecture.rs`.
+2. **Typed envelopes and errors** — structured result propagation can replace stringly exception conventions.
+3. **Delta/audit/replay** — execution can become a first-class forensic artifact.
+4. **Capability authorization** — capabilities can be enforced at the engine boundary rather than distributed across controllers.
+5. **MCP/AI-native interfaces** — framework capabilities can be exposed through machine-readable contracts.
+6. **Zero-cost typed middleware** — use Rust's type system instead of dynamic middleware reflection.
+7. **Typed concurrency/context** — Tokio + `ExecutionContext` instead of callback-style concurrency.
+8. **Compile-time query safety** — typed `Select`/identifier safety can eliminate classes of malformed query construction.
+
+### What not to copy
+
+- facades/global helpers;
+- PHP-style magic property access;
+- runtime reflection when procedural macros can provide compile-time contracts;
+- a generic Collection wrapper where iterators are stronger;
+- dynamic service resolution where static wiring gives better diagnostics.
+
+## 18. Architecture Redesign Recommendations
+
+All recommendations are **additive**. No rewrite is justified by the current evidence.
+
+### R1 — Graph-driven edge router
+
+Add an adapter in `keel-api` that consumes `PlatformGraph` route specs and produces executable HTTP routes. Keep `routes.rs` as the transport-specific edge implementation, but remove the duplicate source of truth.
+
+### R2 — Module store-port family
+
+Introduce a consistent module-facing store contract so a domain module can declare persistence capabilities once and bind a memory/test or PostgreSQL implementation behind the same port. This removes `Mutex<BTreeMap>` as a permanent architectural pattern.
+
+### R3 — Model metadata → query generation
+
+Connect `platform/crates/data/models/src/lib.rs` metadata to `platform/crates/execution/query/src/select.rs` and future typed write builders. Use compile-time generation for CRUD and relation-loading shapes.
+
+### R4 — Session middleware + PostgreSQL store
+
+Insert session loading into the admission/request context chain and add `PgSessionStore`. Do not ship distributed authentication without durable session state.
+
+### R5 — Optional JWT add-on
+
+JWT should remain non-default. The current hashed PAT + HMAC session model is intentionally simpler and more revocable. JWT can be added later as an `EQUIVALENT` option where stateless integration is required.
+
+## 19. Prioritized Backlog
+
+| ID | Domain | Feature | Status | Priority | Evidence | Dependencies | Complexity | Risk | Reason | Acceptance Criteria |
+|---|---|---|---|---|---|---|---|---|---|---|
+| B-01 | Edge | C1 graph → HTTP router | API-ONLY | P0 | routes.rs:44-51; registry RouteSpec | None | High | Critical | Remove graph/HTTP split | Declared module route becomes executable HTTP endpoint. |
+| B-02 | Auth | C2 HTTP auth flows | PARTIAL | P0 | security/tokens; identity | B-01 | High | Critical | Expose login/register/logout/token issuance | Authenticated request can traverse HTTP pipeline. |
+| B-03 | Sessions | C6 cookie layer + PgSessionStore | PARTIAL | P0 | security/sessions | B-02 | High | High | Make browser session durable | Restart + multi-instance preserve valid sessions. |
+| B-04 | Persistence | C3 module store ports + Pg stores | INCOMPLETE | P0 | appointments BTreeMap; postgres stores | B-01 | High | Critical | Standardize domain persistence ports | Appointments persists to Pg without bespoke store code. |
+| B-05 | ORM | C4 CRUD runtime | INCOMPLETE | P0 | models + select | B-04 | Very High | Critical | Add typed write path | Create/update/delete/upsert integration tests pass. |
+| B-06 | Uploads | C5 multipart | MISSING | P0 | zero multipart hits | B-01,B-03 | High | High | Add bounded multipart/file pipeline | Secure upload test matrix passes. |
+| B-07 | Routing | Named routes + URL generation | MISSING | P1 | registry RouteSpec lacks name | B-01 | Medium | Medium | Add named route metadata | URL helper resolves named route parameters. |
+| B-08 | DX | keel serve | MISSING | P1 | CLI gap | B-01 | Medium | Medium | Provide local app loop | Developer runs real domain over HTTP with one command. |
+| B-09 | Rate limiting | Per-principal rate limits | DONE (S7 bearer-hash keying; Wave 1 named throttle:<group> token buckets keyed x-rate-key > bearer hash > client IP, per-group capacity/refill in middleware.toml, 429 + Retry-After) | P1 | http middleware client_key + middleware_catalog throttle stage | B-02 | Medium | Medium | Use principal/tenant keying | Authenticated users receive isolated quotas. |
+| B-10 | ORM | Relations/eager loading | INCOMPLETE | P1 | models RelationDef | B-05 | High | High | Compile relation loaders | N+1-safe eager-load examples pass. |
+| B-11 | ORM | Casts/accessors/mutators/scopes | MISSING | P1 | models metadata | B-05 | High | High | Add model runtime semantics | Typed model behavior matches documented contract. |
+| B-12 | Cache | Redis driver | MISSING | P2 | cache service | None | Medium | Medium | Add distributed cache adapter | Cache tests pass against Redis. |
+| B-13 | Queues | Redis queue driver | MISSING | P2 | worker runtime | None | Medium | Medium | Add durable Redis queue | Worker integration passes. |
+| B-14 | Search | pgvector adapter | MISSING | P2 | services/search | B-04 | Medium | Medium | Add Pg vector search port | Vector query integration passes. |
+| B-15 | Web | SSR/SPA strategy + starter | UNKNOWN | P2 | S9 decision | B-01 | High | High | Freeze web UX architecture | One supported full-stack application path documented. |
+| B-16 | CLI | Tinker-equivalent shell | MISSING | P3 | CLI surface | B-05 | Medium | Low | Provide typed interactive console | Developer can inspect/query real app state safely. |
+| B-17 | Observability | Metrics endpoint | MISSING | P1 | D-68 | B-01 | Medium | High | Expose metrics and health | Prometheus-compatible endpoint and tests. |
+| B-18 | Packages | Extension registry/discovery | PARTIAL | P2 | D-69 | B-01 | High | Medium | Stabilize third-party module contract | Third-party package can register routes/commands/config. |
+| B-19 | Testing | PostgreSQL integration matrix | MISSING | P0 | zero sqlx::test | B-04,B-05 | High | Critical | Prove real persistence | Pg-backed CI matrix is green. |
+| B-20 | Ecosystem | Breeze-equivalent starter + dashboard | MISSING | P2 | starter/dashboard gap | B-15,B-17 | High | Medium | Reduce adoption friction | New app can bootstrap auth/admin/observability path. |
+
+## 20. Dependency-Aware Roadmap
+
+### S7 — Edge Wiring
+
+Scope:
+
+- graph-driven HTTP router;
+- HTTP authentication flow;
+- cookie layer;
+- durable Pg sessions;
+- multipart uploads;
+- real domain module reachable over HTTP.
+
+**Exit criteria:** a real domain module is served over HTTP, authenticated, session-backed, and able to process a bounded request lifecycle without hand-wired graph bypasses.
+
+### S8 — Data Runtime
+
+Scope:
+
+- ORM CRUD;
+- relation loading;
+- casts;
+- accessors/mutators;
+- scopes;
+- module PostgreSQL stores;
+- transaction/runtime tests.
+
+**Exit criteria:** a real domain module can create/read/update/delete durable PostgreSQL data through the framework's model/persistence contract.
+
+### S9 — Web Story
+
+Scope:
+
+- decide SSR/template engine vs SPA-first vs dual-mode;
+- named routes and URL generation;
+- redirects;
+- flash state;
+- starter web application contract.
+
+**Exit criteria:** a real user-facing web workflow is buildable without framework-specific escape hatches.
+
+### S10 — Ecosystem
+
+Scope:
+
+- Redis cache/queue;
+- pgvector;
+- package discovery/registry;
+- starter kit;
+- dashboard over inspect/replay;
+- extension API hardening.
+
+**Exit criteria:** third-party developers can install/extend Keel without modifying framework internals.
+
+## 21. Definition of Done
+
+| Release | Definition of Done |
+|---|---|
+| v0.1 | S7 exit: one real module served over HTTP with working authentication and durable sessions. |
+| v0.2 | S8 exit: durable PostgreSQL domain persistence with CRUD, relations and core model semantics. |
+| v0.5 | S9 + core S10: coherent web story, starter path, core ecosystem contracts. |
+| v0.9 | PostgreSQL-backed integration matrix, metrics endpoint, security hardening, deployment gates. |
+| v1.0 | §22 parity gate green, documentation complete, benchmark suite documented, upgrade/migration story established. |
+| v2.0 | WASM plugins and multi-database support, subject to a new scope/dependency decision. |
+
+### Release acceptance dimensions
+
+| Dimension | Required evidence before v1.0 |
+|---|---|
+| HTTP | real route from graph to handler and response |
+| Auth | login/logout/session/token flow over HTTP |
+| Persistence | real Pg CRUD and domain store integration |
+| ORM | CRUD + relations + casts/scopes + serialization |
+| Uploads | multipart limits, validation and storage tests |
+| CLI | command matrix reconciled with documented framework surface |
+| Packages | third-party module can register supported resources |
+| Observability | logs + traces + metrics with redaction |
+| Security | attack-oriented tests for auth/session/CSRF/upload/tenant isolation |
+| Documentation | examples execute against actual APIs |
+
+### v1.0 non-negotiables
+
+No feature can be declared complete if it is only a trait, macro, metadata object, or happy-path example. Runtime behavior plus integration evidence is required.
+
+## 22. Laravel Parity Gate
+
+This table assigns the final strategic decision, not merely today's runtime status. `EQUIVALENT` does not mean “already implemented”; it may mean the selected destination architecture is an intentional equivalent. Runtime readiness remains governed by §§4–6.
+
+| Capability | Parity decision |
+|---|---|
+| Application bootstrap | EQUIVALENT |
+| Container | EQUIVALENT |
+| Providers | EQUIVALENT |
+| Facades/global helpers | DELIBERATELY EXCLUDED |
+| Routing core | EQUIVALENT |
+| Named routes | EQUIVALENT future S7/S9 |
+| Middleware | EQUIVALENT |
+| CSRF | EQUIVALENT |
+| Controllers | EQUIVALENT |
+| Requests/FormRequest | EQUIVALENT future HTTP wiring |
+| Responses | EQUIVALENT future edge completion |
+| Views | UNKNOWN / UNDECIDED until S9 |
+| Blade | UNKNOWN / UNDECIDED until S9 |
+| URL generation | EQUIVALENT future |
+| Sessions | EQUIVALENT future durable implementation |
+| Cookies | EQUIVALENT future |
+| Validation | EQUIVALENT |
+| Errors | EQUIVALENT |
+| Logging | EQUIVALENT |
+| Artisan/CLI | EQUIVALENT |
+| Broadcasting | EQUIVALENT |
+| Cache | EQUIVALENT |
+| Collections | DELIBERATELY EXCLUDED |
+| Concurrency | SUPERSEDED |
+| Context | SUPERSEDED |
+| Events | EQUIVALENT |
+| Filesystem | EQUIVALENT |
+| HTTP client | UNKNOWN |
+| Images | UNKNOWN |
+| Localization | EQUIVALENT |
+| Mail | EQUIVALENT |
+| Notifications | EQUIVALENT |
+| Processes | UNKNOWN |
+| Queues | EQUIVALENT |
+| Rate limiting | EQUIVALENT future per-principal |
+| Search | EQUIVALENT future pgvector |
+| Strings/helpers | SUPERSEDED |
+| Scheduler | EQUIVALENT |
+| Authentication | EQUIVALENT future (HTTP flows) |
+| Authorization | SUPERSEDED |
+| Email verification | EQUIVALENT future |
+| Encryption | EQUIVALENT |
+| Hashing | EQUIVALENT |
+| Password reset | EQUIVALENT |
+| Database core | EQUIVALENT |
+| Query builder | EQUIVALENT future CRUD |
+| Pagination | EQUIVALENT future HTTP |
+| Migrations | MATCHED |
+| Seeding | MATCHED |
+| Redis | EQUIVALENT future |
+| MongoDB | DELIBERATELY EXCLUDED |
+| Eloquent | EQUIVALENT future ORM runtime |
+| Factories | EQUIVALENT future |
+| API resources | EQUIVALENT future |
+| JSON:API | EQUIVALENT future |
+| AI/MCP | SUPERSEDED |
+| Testing | EQUIVALENT |
+| Browser automation / Dusk | DELIBERATELY EXCLUDED from core v1; ecosystem |
+| Cashier | DELIBERATELY EXCLUDED from core |
+| Socialite | DELIBERATELY EXCLUDED from core |
+| Valet | DELIBERATELY EXCLUDED |
+| Telescope | SUPERSEDED by inspect/replay |
+| Horizon | DELIBERATELY EXCLUDED from core v1; dashboard roadmap |
+| Octane | SUPERSEDED by native Rust runtime model |
+| Sail | DELIBERATELY EXCLUDED |
+| Fortify | EQUIVALENT via auth services, not Laravel package clone |
+| Sanctum | EQUIVALENT via hashed PAT + session model |
+| Passport | EQUIVALENT future OAuth2 package |
+| Scout | EQUIVALENT future search adapters |
+| Reverb | EQUIVALENT via realtime service |
+| Folio | UNKNOWN until S9 |
+| Livewire | UNKNOWN until S9 |
+| Inertia | UNKNOWN until S9 |
+| Breeze | EQUIVALENT future starter kit |
+| Jetstream | DELIBERATELY EXCLUDED as exact clone; starter kit can cover outcome |
+| Multi-database | DELIBERATELY EXCLUDED per D-62; revisit v2.0 |
+
+### Important policy decisions
+
+- **Blade/views:** remain `UNKNOWN / UNDECIDED` until S9. They are not automatically counted as missing.
+- **Facades/global helpers:** `DELIBERATELY EXCLUDED` because Rust dependency injection is the intended idiom.
+- **Collections:** `DELIBERATELY EXCLUDED`; Rust iterators are the native equivalent.
+- **JWT:** future `EQUIVALENT` add-on, not a defect in the current non-JWT default.
+- **Multi-database:** `DELIBERATELY EXCLUDED` for v1 under D-62; revisit v2.0.
+- **Telescope:** `SUPERSEDED` where inspect/replay provides stronger forensic semantics.
+- **Octane:** `SUPERSEDED` by the native Rust runtime model rather than copied as a PHP worker accelerator.
+
+## 23. Production Readiness Gate
+
+The following checklist is a hard gate. A release is not production-ready until every item is green:
+
+- [ ] Graph → HTTP router works end-to-end.
+- [ ] Login works over HTTP.
+- [ ] Registration works over HTTP where the application requires it.
+- [ ] Logout invalidates server-side state.
+- [ ] Cookie set/read/delete semantics are tested.
+- [ ] Sessions are durable across restart and instances.
+- [ ] Multipart uploads are implemented and hardened.
+- [ ] Real PostgreSQL stores exist for domain modules.
+- [ ] PostgreSQL integration tests are present and green.
+- [ ] ORM CRUD is implemented and tested.
+- [ ] Relation loading is implemented and tested.
+- [ ] Per-principal/tenant rate limiting exists.
+- [ ] Metrics endpoint exists.
+- [ ] No `todo!`, `unimplemented!`, or equivalent placeholder remains in generated production paths.
+- [ ] `keel serve` or a documented equivalent provides a one-command local loop.
+- [ ] Named routes/URL generation are either implemented or explicitly superseded.
+- [ ] Deployment cache semantics are documented.
+- [ ] Health/readiness behavior is documented and tested.
+- [ ] Graceful shutdown is verified for API and worker runtimes.
+- [ ] Security review covers authentication, cookies, uploads, CSRF, authorization and tenancy.
+- [ ] Framework blueprint tracker matches actual repository reality.
+
+### Current gate result
+
+**FAIL**. The failures are concentrated in the edge/data/authentication boundary rather than the core execution engine.
+
+## 24. Final Brutal Verdict
+
+### If released today
+
+If Keel were released today as a purported Laravel alternative, adoption would **stall at the first real `curl`** for any domain application that relies on the graph-driven module model. The framework has substantial internal machinery, but the defining promise of an application framework is that a developer can turn domain code into a running, secure application. Today that path stops before the HTTP runtime.
+
+### Ten adoption killers
+
+1. Graph routes do not become executable HTTP routes.
+2. No durable session store.
+3. No cookie layer.
+4. No HTTP login/register/logout flow.
+5. Domain persistence still falls back to `BTreeMap` in the example module.
+6. ORM is metadata + typed Select, not a CRUD runtime.
+7. Multipart upload support is absent.
+8. `keel serve` is absent, weakening the local loop.
+9. No PostgreSQL-backed integration test matrix.
+10. Web/view strategy is undecided, so full-stack application shape is not yet frozen.
+
+### Ten genuine advantages over Laravel
+
+1. Compile-time architecture gates.
+2. Typed execution/context model.
+3. Capability-enforced authorization at the engine boundary.
+4. Delta/audit/replay as a first-class runtime artifact.
+5. `keel inspect` / replay workflow.
+6. Rust-native async/concurrency model.
+7. Typed query construction and identifier safety.
+8. Manifest/graph-driven module architecture.
+9. MCP/AI-native capability exposure.
+10. Native binary/runtime posture with lower-level control over memory and concurrency.
+
+### Must-fix before Keel is a serious framework
+
+The non-negotiable first wave is exactly **C1–C6**:
+
+```text
+C1 Graph → HTTP router
+C2 HTTP auth flows
+C3 Domain persistence ports + PostgreSQL store
+C4 ORM runtime
+C5 Multipart uploads
+C6 Cookie layer / durable session glue
+```
+
+### Brutal verdict
+
+**Current verdict: PROMISING, but not yet strong enough for external framework adoption.**
+
+The architectural foundation is stronger than the current product surface. That is good news: the recommended path is additive, not a rewrite. But the team should resist the temptation to add advanced ecosystem features before the application edge is real. Do not spend the next cycle polishing AI/MCP, dashboards or package marketplaces while a simple domain route cannot reach an HTTP handler.
+
+The next implementation decision should therefore come from **S7 Edge Wiring**, not from another feature audit.
+
+## 25. v1.0 Gate Reconciliation (2026-08-24)
+
+Sections 1-24 are the frozen forensic snapshot of 2026-08-22 (pre-S7). The S7-S10 implementation
+push (v0.1-v0.5) and the v0.9 hardening pass have since landed. This section reconciles the
+Definition of Done (section 21), the parity gate (section 22) and the production-readiness gate
+(section 23) with verified repository reality. Where this section disagrees with an earlier
+section, this section governs.
+
+### 25.1 The ten adoption killers - resolved
+
+| # | Snapshot blocker (section 24) | Resolution | Evidence |
+|---|---|---|---|
+| 1 | Graph routes do not become executable HTTP routes | S7 C1: graph router compiles RouteSpecs into axum routes; appointments served over HTTP | `runtime/keel-api/src/graph_routes.rs`; `http_integration::full_cycle_register_login_book_list_cancel` |
+| 2 | No durable session store | S7 C6: PgSessionStore behind SessionPort; in-memory for degraded boot | `crates/data/postgres` (sessions), pg-tests slice |
+| 3 | No cookie layer | S7 C6: typed Cookie/CookieJar + HMAC-tagged `keel_session` cookie | `crates/web/http/src/session_mw.rs`, cookie-shape integration tests |
+| 4 | No HTTP login/register/logout flow | S7 C2: /auth/register,login,logout,me,password-reset with session + PAT modes | `runtime/keel-api/src/auth_routes.rs`; throttle/bad-password/bearer tests |
+| 5 | Domain persistence falls back to BTreeMap | S8 C3: ModelStore port; appointments refactored onto it | `applications/appointments`; PgModelStore |
+| 6 | ORM is metadata, not a CRUD runtime | S8 C4: ModelRuntime (mass assignment, casts, scopes, accessors/mutators, events, eager loading) + Insert/Update/Delete/Upsert builders | `crates/data/models`, `crates/execution/query`, pg matrix |
+| 7 | Multipart uploads absent | S7 C5: bounded multipart pipeline (8 parts / 64 KB fields / 8 MB files), MIME hook, filename sanitization into StoragePort | `crates/web/http/src/upload.rs`; upload + part-bomb attack tests |
+| 8 | keel serve absent | S7 B-08: one-command local loop (api + optional worker) | `tools/keel-console` serve; 12-CLI.md |
+| 9 | No PostgreSQL integration matrix | S8 B-19 + v0.9: pg-tests feature; 19 tests green (15 against live PostgreSQL 16: bridge, sessions, tokens, principals, model store CRUD/tenant/upsert/soft-delete/eager-load, pgvector keyword/facet/vector/hybrid; 4 codec/SQL-shape unit tests) | `cargo test --features pg-tests`; v0.9 milestone read |
+| 10 | Web/view strategy undecided | S9 B-15: SPA-first frozen (named routes + signed URLs + redirects + flash + OpenAPI client + starter kit); SSR deliberately deferred to v2.0 | `templates/starter-template`; parity policy below |
+
+### 25.2 Production-readiness gate (section 23): PASS
+
+| Gate item | Result | Evidence |
+|---|---|---|
+| Graph → HTTP router works end-to-end | GREEN | http_integration suite (19 tests) |
+| Login works over HTTP | GREEN | full_cycle + bearer tests |
+| Registration works over HTTP where required | GREEN | register tests; env-gated (dev/test or KEEL_ALLOW_REGISTER) |
+| Logout invalidates server-side state | GREEN | sessions_persist_across_requests_and_logout_destroys |
+| Cookie set/read/delete semantics tested | GREEN | cookie-shape + forged-tag + logout clear tests |
+| Sessions durable across restart and instances | GREEN | PgSessionStore + restart durability proof (v0.9 pg pass); KEEL_SESSION_SECRET stability documented |
+| Multipart uploads implemented and hardened | GREEN | limits/traversal/part-bomb/unauthenticated/non-multipart tests |
+| Real PostgreSQL stores for domain modules | GREEN | PgModelStore; appointments persists real rows |
+| PostgreSQL integration tests present and green | GREEN | pg-tests matrix: 19 tests (15 live-Pg incl. tenant isolation) |
+| ORM CRUD implemented and tested | GREEN | pg_modelstore CRUD/RETURNING/upsert tests |
+| Relation loading implemented and tested | GREEN | BelongsTo eager-load test; N+1 detector as guard |
+| Per-principal/tenant rate limiting | GREEN | bearer-principal keying (S7 B-09); login throttle test |
+| Metrics endpoint exists | GREEN | flag-gated /metrics (app.metrics), Prometheus text; middleware counts tested |
+| No todo!/unimplemented! in generated production paths | GREEN | v0.9 placeholder audit; codegen templates asserted placeholder-free by test |
+| keel serve provides one-command local loop | GREEN | keel-console serve (+ --worker) |
+| Named routes/URL generation implemented or superseded | GREEN | implemented: RouteSpec name + resolve_url + GRAPH-DUP-ROUTENAME gate (S9 B-07) |
+| Deployment cache semantics documented | GREEN | 13-OPERATIONS "Deployment cache semantics" (boot-time graph compile stays the source of truth; Wave 1 adds the optional hash-pinned route:cache artifact with drift-refusing boot) |
+| Health/readiness documented and tested | GREEN | 13-OPERATIONS probe semantics + healthz/readyz degraded-state test |
+| Graceful shutdown verified for API and worker | GREEN | axum with_graceful_shutdown drain; worker cooperative stop + final outbox drain; documented |
+| Security review covers auth/cookies/uploads/CSRF/authz/tenancy | GREEN | v0.9 hardening pass: constant-time comparisons, session fixation, login timing, enumeration resistance, part bomb, forged cookies; 06-SECURITY records the matrix |
+| Framework blueprint tracker matches repository reality | GREEN | docs/rust/13-FRAMEWORK-BLUEPRINT.md milestone reads S7-S10 + v0.9 hardening; CLI matrix reconciled at 42 commands |
+
+### 25.3 Parity-gate rows resolved since the snapshot
+
+| Row (section 22) | Snapshot position | v1.0 resolution |
+|---|---|---|
+| Routing core / Responses | EQUIVALENT future edge completion | Implemented (S7); envelope + redirect + flash edge complete |
+| Named routes / URL generation | EQUIVALENT future S7/S9 | Implemented (S9), incl. signed + temporary signed URLs |
+| Requests/FormRequest | EQUIVALENT future HTTP wiring | Wired: validation runs in-engine before operations; 422 envelopes at the edge |
+| Sessions / Cookies | EQUIVALENT future durable implementation | Implemented (S7) + hardened (v0.9): rotation, constant-time tags, durable Pg store |
+| Authentication | EQUIVALENT future HTTP | Implemented (S7): register/login/logout/me/password-reset, PAT + session modes |
+| Query builder | EQUIVALENT future CRUD | Implemented (S8): Insert/Update/Delete/Upsert with tenant guards + RETURNING |
+| Eloquent | EQUIVALENT future ORM runtime | Implemented (S8): CRUD, relations, casts, scopes, accessors/mutators, events |
+| Factories | EQUIVALENT future | Implemented (S8): codegen build() real, placeholder-free |
+| Pagination | EQUIVALENT future HTTP | Wired through list operations (PageReq envelope); Wave 1: GET routes parse page/per_page at the edge, inject _page (MAX_PER_PAGE 100 clamp), list handlers emit a page meta block |
+| Redis | EQUIVALENT future | Implemented (S10): RedisCache + RedisJobStore adapters, feature-gated |
+| Search | EQUIVALENT future pgvector | Implemented (S10): pgvector adapter, keyword/facet/vector/hybrid, tenant-isolated |
+| Rate limiting | EQUIVALENT future per-principal | Implemented (S7); Wave 1 named throttle:<group> chains (per-group token buckets in middleware.toml, 429 + Retry-After) |
+| Broadcasting / Reverb | EQUIVALENT via realtime service | Flag-gated realtime router + SSE/WebSocket paths |
+| Artisan/CLI | EQUIVALENT | 42 commands incl. serve + observe family; matrix reconciled in 12-CLI |
+| Breeze | EQUIVALENT future starter kit | Implemented (S9): starter template behind keel new --with-starter |
+| Sanctum | EQUIVALENT via hashed PAT + session model | Implemented (S7 auth flows) |
+| Fortify | EQUIVALENT via auth services | Implemented (S7 register/login/reset) |
+| Scout | EQUIVALENT future search adapters | Implemented (S10 pgvector) |
+| Telescope | SUPERSEDED by inspect/replay | Extended: keel observe family (status/logs/errors/traces/request/audit/incidents/exporters/policies/buffers/health/cost/metrics) |
+| Horizon | dashboard roadmap | Implemented (S10): Horizon-lite /_dashboard over meta/queue/flag JSON |
+| Octane | SUPERSEDED by native runtime | Unchanged |
+| Views / Blade / Folio / Livewire / Inertia | UNKNOWN until S9 | Resolved SPA-first (S9): OpenAPI-generated client + starter web shell; SSR/template engine NOT counted missing per gate policy, revisit at v2.0 with a fresh dependency-budget decision |
+| Passport (OAuth2) | EQUIVALENT future | Unchanged: post-v1.0 add-on |
+| Metrics (D-68) | MISSING | Scoped delivery (S10): runtime metrics live (/metrics); profiling remains deferred per D-68 |
+
+### 25.4 Deliberate v1.0 deferrals and exclusions (unchanged policy)
+
+- **SSR/template engine** - v2.0 revisit with a fresh dependency-budget decision; SPA-first is the supported v1.0 web story.
+
+All deferrals below are tracked as concrete backlog items in section 26.
+- **Package marketplace/registry discovery** - post-v1.0; the extension contract is stabilized first (module ABI gate, S10).
+- **JWT default, OAuth2 server** - future add-ons; hashed PAT + HMAC sessions remain the default.
+- **Facades/global helpers, collections wrapper, multi-DB/MongoDB, Cashier/Socialite/Dusk/Valet clones** - DELIBERATELY EXCLUDED per section 22 policy; Rust-native equivalents supersede them.
+
+### 25.5 v1.0 verdict (supersedes section 24 snapshot)
+
+Definition of Done check: parity gate green per 25.2-25.3; documentation complete (01-18
+reconciled with repository reality, CLI matrix at 42 commands, examples execute against actual
+APIs); benchmark suite documented (keel benchmark, benchmarks/baseline.json, G15 budget gate);
+upgrade/migration story established (keel upgrade + 16-MIGRATION-FROM-LARAVEL vocabulary map and
+strategy).
+
+**v1.0 gate result: PASS.** The snapshot's brutal verdict ("promising, but not yet strong enough
+for external framework adoption") was correct for 2026-08-22. As of this reconciliation the
+application edge is real, durable, authenticated, attack-tested and PostgreSQL-proven. Keel meets
+its v1.0 parity gate as an API-first, SPA-friendly Laravel-class application platform with a
+Rust-native execution engine - with the documented deferrals above as the agreed v1.x/v2.0 agenda.
+
+## 26. v1.x Backlog (drafted from section 25.4 deferrals, 2026-08-24)
+
+Numbering continues the section 19 backlog (B-21 onward). Sources: the 25.4 deferral list plus
+residual parity rows that were committed as "EQUIVALENT future" but were not v1.0-blocking.
+Budget rule: the D-62 external-dependency budget is exhausted as of v1.0 (the final slot was
+spent on the S10 redis client). Every item below is either zero-new-dependency or explicitly
+requires a budget amendment or a decision gate.
+
+Program: these backlog items are sequenced, expanded and superseded by the nine-wave program in `19-PARITY-PROGRAM.md` (v2, 2026-08-25); where that document assigns an item to a wave, the wave assignment governs over this table's priorities.
+
+Wave 1 completion entry (2026-08-28): Wave 1 — HTTP core completion is DONE per `19-PARITY-PROGRAM.md`: named middleware chains (`middleware.toml` aliases/groups/`throttle.<group>` + implicit `api` group + `GRAPH-MW-UNKNOWN` boot gate), route model binding (`route.bindings` registry service, `_bindings.<param>` injection, `GRAPH-BINDING-RESOLVER` at keel-api boot), pagination injection (`_page`, `MAX_PER_PAGE` 100 clamp, page meta block), manifest `[[validation]]` enforced at the edge (422 + `fields` meta), deprecated-route `Deprecation: true` header/meta, `keel route:cache`/`route:clear` with hash-pinned boot refusal (`storage/framework/routes.json`), and OpenAPI constraint emission. Evidence: CHANGELOG `[Unreleased]`; `http_integration` Wave 1 battery; 609 workspace tests + architecture gate green; clippy clean on all touched crates. The §4 rows (Middleware, Rate limiting, Route cache, Pagination), the function-level ledger rows (middleware, binding, model binding, route:cache, route:clear), the §11 CLI rows and §19 B-09 above are flipped accordingly.
+
+| ID | Domain | Feature | Status | Priority | Evidence | Dependencies | Complexity | Risk | Reason | Acceptance criteria |
+|---|---|---|---|---|---|---|---|---|---|---|
+| B-21 | Auth | OAuth2 authorization-server module (Passport-class): authorization code + PKCE, refresh tokens, client registry, revocation; ships as a module, never core; PAT + session stays the default | MISSING (add-on) | P2 | sec.22 Passport row; runtime/keel-api/src/auth_routes.rs; crates/security/tokens | v1.0 stable; module ABI gate | High | High (security surface) | third-party API integration; parity commitment | Module registers via ABI gate; code+PKCE/refresh/revocation flows HTTP-tested; zero-new-dep build on existing crypto (sha2/argon2/SignedUrls pattern) or recorded D-62 amendment; 06-SECURITY + 16-MIGRATION updated |
+| B-22 | Auth | JWT stateless interop add-on (non-default, report R5): opt-in verification for bearer JWTs with expiry + revocation story (jti denylist or short TTL) | DONE v1.1 (opt-in HS256 verifier behind app.jwt + non-empty auth.jwt_secret; PAT-first bearer resolution with JWT fallback; alg pinned HS256, exp enforced, uniform 401 on every failure; zero new deps over sha2; PAT/session default unchanged; revocation rides short TTL + jti hygiene; RS256 budget-gated) | P3 | R5 recommendation; TokenService; sha2 already a direct dep | none | Medium | Medium | interop with stateless ecosystems without changing the default model | app.jwt flag opt-in; HS256 zero-new-dep over sha2; RS256 only with a recorded budget decision (transitive ring promotion); PAT/session default unchanged; integration tests; docs |
+| B-23 | Auth | Email verification HTTP flow: /auth/email-verification request+confirm over existing single-use TokenPurpose::Verify + notification delivery; configurable gating for unverified principals | DONE v1.1 (endpoints + gate + durable store column + tests; mail delivery rides dev_token until notification wiring) | P2 | crates/security/tokens/src/lib.rs (TokenPurpose::Verify); reset.rs flow pattern; mail adapter | notifications/mail adapter | Medium | Low | parity commitment (email verification EQUIVALENT future); account trust | request/confirm endpoints enumeration-resistant; expiry enforced; single-use redemption; unverified gating configurable; tests; 06-SECURITY updated |
+| B-24 | Ecosystem | Package registry + discovery: registry index, keel pkg:list/add, manifest + API-ID compatibility validation at graph compile, fail-closed | PARTIAL (ABI gate + API-ID registry landed S10); discovery MISSING (D-69) | P2 | S10 module ABI gate (module.toml [module].api, MODULE_ABI=1); 15-EXTENSION | continued ABI contract stability | High | Medium | third-party extension at scale without framework edits | third-party manifest-only package installs and registers routes/commands/config; graph-compile validation fails closed; publishing story documented |
+| B-25 | Ecosystem/DX | Package resource publishing (vendor:publish-class): keel publish materializes a package's migrations/config/assets into the host app | MISSING | P3 | parity matrix row (vendor publish) | B-24 | Medium | Low | packages need a first-class way to ship resources | publish is idempotent with conflict reporting; tested against a sample package; 15-EXTENSION updated |
+| B-26 | Web | SSR/template-engine decision gate (v2.0): adopt a template engine (layouts/components/escaping/compiled cache) dual-mode with the SPA story, or formally defer again | DEFERRED (S9 SPA-first policy) | P2 (decision) | sec.25.3 views rows; S9 decision record | fresh D-62 budget decision | decision Low; impl High | Medium | server-rendered Laravel-class web story | decision doc with budget impact; if adopted: engine crate passes G17 facets, dual-mode starter, parity rows updated; if deferred: rationale recorded |
+| B-27 | Observability | Profiling workflow (D-68 remainder): documented CPU/alloc flamegraph path for keel-api + keel-worker | MISSING (D-68 scoped to runtime metrics) | P3 | D-68 decision; 13-OPERATIONS | none (samply runs out-of-process: zero workspace deps) | Medium | Low | performance investigation workflow | flamegraph workflow documented and runnable for both runtimes; no runtime impact when not attached; optional keel profile wrapper |
+| B-28 | Testing | Browser/E2E smoke kit: Playwright-based smoke suite against the starter template (external tooling, zero workspace deps) | MISSING (Dusk-class left to ecosystem per parity gate) | P3 | parity matrix browser/E2E row; templates/starter-template | starter kit | Medium | Low | user-facing regression confidence | starter smoke suite covers auth + one domain flow; documented in 11-TESTING; CI-optional job |
+| B-29 | DX | keel shell (Tinker-class): typed interactive console over the app graph/stores under the caller principal | DONE v1.1 (`keel shell` spawns `keel-api --shell` per dep-rules topology; REPL over the production boot: login (argon2, same as POST /auth/login), whoami, ops, routes, run <module.operation> [json] through the CommandBus under the caller principal; capability denial enforced by the policy engine and tested (denied run writes nothing); prod refused unless KEEL_SHELL_ALLOW=1) | P3 | sec.19 B-16 | model runtime (S8) | Medium | Low | exploration/ops developer experience | REPL executes operations through the engine under a principal; capability denial enforced and tested |
+| B-30 | Ecosystem | WASM plugin runtime decision gate (v2.0): sandboxed third-party modules over the capability ABI | DEFERRED (DoD v2.0 row; D-69) | P3 (decision) | DoD v2.0; D-69 roadmap | B-24; scope + budget decision | Very High | High | sandboxed third-party code without native compilation | decision doc first; if adopted: minimal wasm host passes G07 and the capability ABI; budget amendment recorded |
+| B-31 | Data | Multi-database driver decision gate (v2.0): second first-class driver behind the existing store ports | DELIBERATELY EXCLUDED v1 (D-62); DoD v2.0 roadmap | P3 (decision) | D-62; DoD v2.0 | D-62 amendment | Very High | High | ecosystem expansion | decision doc first; if adopted: second driver passes the full store matrix (CRUD/tenant/transactions); migrations remain SQL-first |
+
+### 26.1 Sequencing proposal
+
+- **v1.1 - zero-dep trust builders:** B-23 (email verification), B-22 (JWT HS256 add-on),
+  B-29 (keel shell). All three build on landed primitives (TokenPurpose::Verify, sha2, model
+  runtime) with no dependency-budget impact.
+- **v1.2 - ecosystem + auth expansion:** B-21 (OAuth2), B-24 (registry/discovery), B-25
+  (publishing), B-27 (profiling), B-28 (browser smoke). B-21 is the headline item and the most
+  security-sensitive; it lands only after the ABI contract has a release of stability behind it.
+- **v2.0 - decision gates:** B-26 (SSR), B-30 (WASM), B-31 (multi-DB). Each gate opens with a
+  written decision + fresh budget case; implementation starts only after the gate passes. This
+  matches the Definition of Done v2.0 row (WASM plugins and multi-database subject to a new
+  scope/dependency decision).
+
+### 26.2 Dependency-budget ledger for v1.x
+
+- D-62 as of v1.0: exhausted (cap 25; final slot spent on the S10 redis client).
+- Zero-new-dep items: B-22 HS256 (sha2), B-23/B-21 (existing crypto + token patterns),
+  B-27 (out-of-process samply), B-28 (out-of-process Playwright), B-29 (pure Rust).
+- Decision-gated candidates requiring amendment or removal if adopted: RS256 JWT (promote
+  transitive ring to direct), any template engine (B-26), wasm runtime (B-30), second database
+  driver (B-31).
+
+### 26.3 Permanent exclusions (not backlog)
+
+Per section 22 policy, these are design decisions, not deferred work, and must not re-enter the
+backlog without an explicit strategy change: facades/global helpers, a Collection wrapper,
+MongoDB, JWT as the default auth model, Cashier/Socialite/Dusk/Valet core clones, and a package
+marketplace before the extension contract stabilizes.

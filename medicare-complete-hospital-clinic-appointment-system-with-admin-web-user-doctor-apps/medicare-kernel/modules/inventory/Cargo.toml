@@ -1,0 +1,12 @@
+[package]
+name = "mod-inventory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Stock (movement-only), procurement PO workflows (M6-07/08)."
+
+[dependencies]
+kernel-core = { workspace = true }
+kernel-runtime = { workspace = true }
+axum = { workspace = true }

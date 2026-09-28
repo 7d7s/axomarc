@@ -1,0 +1,28 @@
+[package]
+name = "keel-example-minimal"
+# Internal-only crate: not published to crates.io.
+publish = false
+description = "Keel golden path: host boot -> module registration -> engine execution -> delta stone"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+
+[dependencies]
+keel-foundation = { workspace = true }
+keel-context = { workspace = true }
+keel-execution = { workspace = true }
+keel-lifecycle = { workspace = true }
+keel-policy = { workspace = true }
+keel-command = { workspace = true }
+keel-observability = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

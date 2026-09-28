@@ -1,0 +1,29 @@
+# module.toml — immutable contract shape (11-SPEC SS7). `keel graph` compiles it.
+[module]
+name = "appointments"
+version = "0.1.0"
+maturity = "L0"
+plane = "tenant"
+description = "Keel reference application: clinic appointments end-to-end"
+
+[capabilities]
+book = { profile = "COMMAND" }
+list = { profile = "READ" }
+
+[dependencies]
+contracts = []
+
+[[routes]]
+method = "POST"
+path = "/api/v1/appointments"
+operation = "book"
+capability = "book"
+
+[[routes]]
+method = "GET"
+path = "/api/v1/appointments/{id}"
+operation = "list"
+capability = "list"
+
+[[events]]
+name = "appointment.booked"

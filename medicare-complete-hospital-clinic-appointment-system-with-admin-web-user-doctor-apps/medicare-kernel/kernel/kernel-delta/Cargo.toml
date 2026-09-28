@@ -1,0 +1,14 @@
+[package]
+name = "kernel-delta"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Delta writer + outbox primitives (SRS DLS-*). Fan-out hub lives in kernel-notify."
+
+[dependencies]
+kernel-core = { workspace = true }
+sqlx = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }

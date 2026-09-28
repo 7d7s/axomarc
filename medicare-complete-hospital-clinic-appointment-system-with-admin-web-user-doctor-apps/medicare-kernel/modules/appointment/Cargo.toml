@@ -1,0 +1,20 @@
+[package]
+name = "mod-appointment"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Appointments, queue, check-in, live calling (Tier A aggregate)."
+
+[dependencies]
+kernel-core = { workspace = true }
+kernel-runtime = { workspace = true }
+kernel-workflow = { workspace = true }
+kernel-db = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+time = { workspace = true }
+thiserror = { workspace = true }

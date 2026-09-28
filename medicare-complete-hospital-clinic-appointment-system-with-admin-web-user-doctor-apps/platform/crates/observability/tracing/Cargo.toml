@@ -1,0 +1,23 @@
+[package]
+name = "keel-tracing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Keel Sentinel: span model, causality, W3C traceparent, adaptive sampling."
+publish = false
+
+[dependencies]
+keel-foundation = { workspace = true }
+keel-telemetry = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

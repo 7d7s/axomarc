@@ -1,0 +1,981 @@
+//! # keel-jobs
+//! Jobs are durable executions (11-SPEC §29/§41): same engine, same context,
+//! same delta/audit semantics as any other front door. Persistence lives in the
+//! postgres adapter (SKIP LOCKED, item 22); this crate defines the contract,
+//! retry/backoff semantics, registries and batch/chain types.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use keel_foundation::{AppError, CorrelationId, ExecutionId};
+use serde::{Deserialize, Serialize};
+use time::{Duration, OffsetDateTime};
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobStatus {
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+    Dead,
+}
+
+fn default_queue() -> String {
+    "default".into()
+}
+
+fn default_available() -> OffsetDateTime {
+    OffsetDateTime::now_utc()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DurableJob {
+    pub id: Uuid,
+    pub execution_id: ExecutionId,
+    pub name: String,
+    pub payload: serde_json::Value,
+    #[serde(default = "default_queue")]
+    pub queue: String,
+    pub attempt: u32,
+    pub max_attempts: u32,
+    #[serde(with = "time::serde::iso8601")]
+    pub deadline: OffsetDateTime,
+    /// Delayed jobs are invisible to claimers until this instant (backoff too).
+    #[serde(with = "time::serde::iso8601", default = "default_available")]
+    pub available_at: OffsetDateTime,
+    pub status: JobStatus,
+    /// Higher priority claims first within a queue.
+    #[serde(default)]
+    pub priority: i32,
+    #[serde(default)]
+    pub claimed_by: Option<String>,
+    #[serde(default, with = "time::serde::iso8601::option")]
+    pub claimed_at: Option<OffsetDateTime>,
+    pub causation_id: Option<CorrelationId>,
+    pub correlation_id: Option<CorrelationId>,
+    pub last_error: Option<String>,
+    #[serde(with = "time::serde::iso8601")]
+    pub enqueued_at: OffsetDateTime,
+    #[serde(default, with = "time::serde::iso8601::option")]
+    pub finished_at: Option<OffsetDateTime>,
+}
+
+impl DurableJob {
+    /// Retry semantics: exhausted attempts -> Dead (manual/intervention path).
+    pub fn next_status_after_failure(&self) -> JobStatus {
+        if self.attempt >= self.max_attempts {
+            JobStatus::Dead
+        } else {
+            JobStatus::Pending
+        }
+    }
+
+    pub fn exhausted(&self) -> bool {
+        self.status == JobStatus::Dead
+    }
+
+    pub fn finished(&self) -> bool {
+        matches!(self.status, JobStatus::Succeeded | JobStatus::Dead)
+    }
+}
+
+/// Retry backoff (item 22): deterministic exponential, base * 2^(attempt-1),
+/// capped at max. attempt 0 -> zero delay.
+pub fn backoff_delay(attempt: u32, base: Duration, max: Duration) -> Duration {
+    if attempt == 0 {
+        return Duration::ZERO;
+    }
+    let exp = 2u128.saturating_pow(attempt.saturating_sub(1).min(30));
+    let base_secs = base.whole_seconds().max(1) as u128;
+    let max_secs = (max.whole_seconds().max(1) as u128).max(base_secs);
+    let secs = base_secs.saturating_mul(exp).min(max_secs);
+    Duration::seconds(secs.min(i64::MAX as u128) as i64)
+}
+
+/// Default retry backoff applied by stores: 30s base, 10min cap.
+pub const DEFAULT_BACKOFF_BASE_SECS: i64 = 30;
+pub const DEFAULT_BACKOFF_MAX_SECS: i64 = 600;
+
+// ------------------------------------------------------------------ registry
+
+/// Registered job type: retry budget, queue, execution deadline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobDef {
+    pub name: String,
+    #[serde(default = "default_max_attempts")]
+    pub max_attempts: u32,
+    #[serde(default = "default_queue")]
+    pub queue: String,
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+fn default_max_attempts() -> u32 {
+    3
+}
+fn default_timeout_secs() -> u64 {
+    300
+}
+
+impl JobDef {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            max_attempts: default_max_attempts(),
+            queue: default_queue(),
+            timeout_secs: default_timeout_secs(),
+        }
+    }
+}
+
+/// Compile-time-visible catalog of job types (item 22 registries).
+#[derive(Debug, Default)]
+pub struct JobRegistry {
+    defs: Vec<JobDef>,
+}
+
+impl JobRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register(&mut self, def: JobDef) -> Result<(), AppError> {
+        if self.defs.iter().any(|d| d.name == def.name) {
+            return Err(AppError::validation(format!(
+                "job registered twice: {}",
+                def.name
+            )));
+        }
+        if def.max_attempts == 0 {
+            return Err(AppError::validation(format!(
+                "job {} needs max_attempts >= 1",
+                def.name
+            )));
+        }
+        self.defs.push(def);
+        Ok(())
+    }
+
+    pub fn get(&self, name: &str) -> Option<&JobDef> {
+        self.defs.iter().find(|d| d.name == name)
+    }
+
+    pub fn names(&self) -> Vec<&str> {
+        self.defs.iter().map(|d| d.name.as_str()).collect()
+    }
+
+    /// Materialize a fresh Pending job from its definition.
+    pub fn build(
+        &self,
+        name: &str,
+        payload: serde_json::Value,
+        now: OffsetDateTime,
+    ) -> Result<DurableJob, AppError> {
+        let def = self
+            .get(name)
+            .ok_or_else(|| AppError::not_found(format!("job definition {name}")))?;
+        Ok(build_from_def(def, payload, now))
+    }
+}
+
+/// Construct a `DurableJob` from an explicit `JobDef` (used by the scheduler
+/// and by callers holding a def outside a registry).
+pub fn build_from_def(def: &JobDef, payload: serde_json::Value, now: OffsetDateTime) -> DurableJob {
+    DurableJob {
+        id: Uuid::now_v7(),
+        execution_id: ExecutionId::new(),
+        name: def.name.clone(),
+        payload,
+        queue: def.queue.clone(),
+        attempt: 0,
+        max_attempts: def.max_attempts,
+        deadline: now + Duration::seconds(def.timeout_secs as i64),
+        available_at: now,
+        status: JobStatus::Pending,
+        priority: 0,
+        claimed_by: None,
+        claimed_at: None,
+        causation_id: None,
+        correlation_id: None,
+        last_error: None,
+        enqueued_at: now,
+        finished_at: None,
+    }
+}
+
+// ----------------------------------------------------------- batches/chains
+
+/// Fan-out group (item 22 types; execution lands in S3).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchSpec {
+    pub id: Uuid,
+    pub name: String,
+    pub jobs: Vec<DurableJob>,
+    /// Optional job name to enqueue when every member finished.
+    pub on_complete: Option<String>,
+}
+
+impl BatchSpec {
+    pub fn validate(&self) -> Result<(), AppError> {
+        if self.jobs.is_empty() {
+            return Err(AppError::validation("batch requires at least one job"));
+        }
+        let mut ids: Vec<_> = self.jobs.iter().map(|j| j.id).collect();
+        let before = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        if ids.len() != before {
+            return Err(AppError::validation("batch job ids must be unique"));
+        }
+        if self.jobs.iter().any(|j| j.status != JobStatus::Pending) {
+            return Err(AppError::validation("batch members must start pending"));
+        }
+        Ok(())
+    }
+
+    pub fn size(&self) -> usize {
+        self.jobs.len()
+    }
+}
+
+/// Strictly ordered pipeline: next job starts only when the previous finished.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChainSpec {
+    pub id: Uuid,
+    pub jobs: Vec<DurableJob>,
+}
+
+impl ChainSpec {
+    pub fn validate(&self) -> Result<(), AppError> {
+        if self.jobs.is_empty() {
+            return Err(AppError::validation("chain requires at least one job"));
+        }
+        if self.jobs.iter().any(|j| j.status != JobStatus::Pending) {
+            return Err(AppError::validation("chain members must start pending"));
+        }
+        Ok(())
+    }
+
+    pub fn len(&self) -> usize {
+        self.jobs.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.jobs.is_empty()
+    }
+
+    /// The job to run at position index (None once the chain is exhausted).
+    pub fn step(&self, index: usize) -> Option<&DurableJob> {
+        self.jobs.get(index)
+    }
+}
+
+// ------------------------------------------------------------------- stores
+
+/// Storage port (frozen, STAGE-0-SPEC §5). Implemented by keel-postgres on a
+/// SKIP LOCKED table and by InMemoryJobStore for degraded boot.
+pub trait JobStore: Send + Sync {
+    fn enqueue(&self, job: DurableJob) -> Result<Uuid, AppError>;
+    fn claim(&self, worker: &str) -> Result<Option<DurableJob>, AppError>;
+    fn complete(&self, id: Uuid) -> Result<(), AppError>;
+    fn fail(&self, id: Uuid, error: &str) -> Result<JobStatus, AppError>;
+}
+
+/// Operational add-ons (item 22/29) beyond the frozen §5 surface.
+pub trait JobStoreAdmin: Send + Sync {
+    fn list(&self, status: Option<JobStatus>, limit: usize) -> Result<Vec<DurableJob>, AppError>;
+    /// Manual retry: put a failed/dead job back to pending.
+    fn requeue(&self, id: Uuid) -> Result<(), AppError>;
+}
+
+/// Degraded-boot store (D-52): same semantics, no durability.
+#[derive(Debug, Default)]
+pub struct InMemoryJobStore {
+    jobs: Mutex<Vec<DurableJob>>,
+}
+
+impl InMemoryJobStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn find_index(jobs: &[DurableJob], id: Uuid) -> Result<usize, AppError> {
+        jobs.iter()
+            .position(|j| j.id == id)
+            .ok_or_else(|| AppError::not_found(format!("job {id}")))
+    }
+}
+
+impl JobStore for InMemoryJobStore {
+    fn enqueue(&self, job: DurableJob) -> Result<Uuid, AppError> {
+        if job.status != JobStatus::Pending {
+            return Err(AppError::validation("new jobs must be pending"));
+        }
+        let id = job.id;
+        self.jobs.lock().unwrap().push(job);
+        Ok(id)
+    }
+
+    fn claim(&self, worker: &str) -> Result<Option<DurableJob>, AppError> {
+        let now = OffsetDateTime::now_utc();
+        let mut jobs = self.jobs.lock().unwrap();
+        let idx = jobs
+            .iter()
+            .enumerate()
+            .filter(|(_, j)| j.status == JobStatus::Pending && j.available_at <= now)
+            .min_by(|(_, a), (_, b)| {
+                b.priority
+                    .cmp(&a.priority)
+                    .then_with(|| a.available_at.cmp(&b.available_at))
+                    .then_with(|| a.enqueued_at.cmp(&b.enqueued_at))
+            })
+            .map(|(i, _)| i);
+        let Some(idx) = idx else {
+            return Ok(None);
+        };
+        let job = &mut jobs[idx];
+        job.status = JobStatus::Running;
+        job.attempt += 1;
+        job.claimed_by = Some(worker.to_string());
+        job.claimed_at = Some(now);
+        Ok(Some(job.clone()))
+    }
+
+    fn complete(&self, id: Uuid) -> Result<(), AppError> {
+        let mut jobs = self.jobs.lock().unwrap();
+        let idx = Self::find_index(&jobs, id)?;
+        let job = &mut jobs[idx];
+        if job.status != JobStatus::Running {
+            return Err(AppError::conflict(format!("job {id} is not running")));
+        }
+        job.status = JobStatus::Succeeded;
+        job.finished_at = Some(OffsetDateTime::now_utc());
+        Ok(())
+    }
+
+    fn fail(&self, id: Uuid, error: &str) -> Result<JobStatus, AppError> {
+        let now = OffsetDateTime::now_utc();
+        let mut jobs = self.jobs.lock().unwrap();
+        let idx = Self::find_index(&jobs, id)?;
+        let job = &mut jobs[idx];
+        if job.status != JobStatus::Running {
+            return Err(AppError::conflict(format!("job {id} is not running")));
+        }
+        job.last_error = Some(error.to_string());
+        let next = job.next_status_after_failure();
+        job.status = next;
+        match next {
+            JobStatus::Pending => {
+                let delay = backoff_delay(
+                    job.attempt,
+                    Duration::seconds(DEFAULT_BACKOFF_BASE_SECS),
+                    Duration::seconds(DEFAULT_BACKOFF_MAX_SECS),
+                );
+                job.available_at = now + delay;
+            }
+            JobStatus::Dead => job.finished_at = Some(now),
+            _ => {}
+        }
+        Ok(next)
+    }
+}
+
+impl JobStoreAdmin for InMemoryJobStore {
+    fn list(&self, status: Option<JobStatus>, limit: usize) -> Result<Vec<DurableJob>, AppError> {
+        let jobs = self.jobs.lock().unwrap();
+        let mut out: Vec<DurableJob> = jobs
+            .iter()
+            .filter(|j| status.is_none() || Some(j.status) == status)
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| b.enqueued_at.cmp(&a.enqueued_at));
+        out.truncate(limit);
+        Ok(out)
+    }
+
+    fn requeue(&self, id: Uuid) -> Result<(), AppError> {
+        let mut jobs = self.jobs.lock().unwrap();
+        let idx = Self::find_index(&jobs, id)?;
+        let job = &mut jobs[idx];
+        if !matches!(job.status, JobStatus::Failed | JobStatus::Dead) {
+            return Err(AppError::conflict(
+                "only failed or dead jobs can be requeued",
+            ));
+        }
+        job.status = JobStatus::Pending;
+        job.available_at = OffsetDateTime::now_utc();
+        job.claimed_by = None;
+        job.claimed_at = None;
+        job.finished_at = None;
+        Ok(())
+    }
+}
+
+// ------------------------------------------------- batch/chain runtime (S3)
+
+/// Tracks a running fan-out batch: which members are still outstanding and
+/// whether any member died. Completed when `outstanding` is empty.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchRun {
+    pub id: Uuid,
+    pub name: String,
+    /// Job ids that have not finished (succeeded OR dead) yet.
+    pub outstanding: Vec<Uuid>,
+    /// Job ids that exhausted retries.
+    pub dead: Vec<Uuid>,
+    /// Job name to enqueue when every member finished.
+    pub on_complete: Option<String>,
+}
+
+impl BatchRun {
+    pub fn finished(&self) -> bool {
+        self.outstanding.is_empty()
+    }
+
+    pub fn ok(&self) -> bool {
+        self.finished() && self.dead.is_empty()
+    }
+}
+
+/// Executes a `BatchSpec` (item 22 types, L33). In-memory orchestration:
+/// the runtime enqueues all members, then tracks completion as the worker
+/// reports job finishes. Persistence of the batch ledger lands with the
+/// postgres adapter; this runs on any `JobStore` (degraded boot included).
+pub struct BatchRuntime {
+    store: Arc<dyn JobStore>,
+    runs: Mutex<HashMap<Uuid, BatchRun>>,
+}
+
+impl BatchRuntime {
+    pub fn new(store: Arc<dyn JobStore>) -> Self {
+        Self {
+            store,
+            runs: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Enqueue every member of a validated batch; returns the batch run id.
+    pub fn dispatch(&self, spec: BatchSpec) -> Result<Uuid, AppError> {
+        spec.validate()?;
+        let id = spec.id;
+        let outstanding: Vec<Uuid> = spec.jobs.iter().map(|j| j.id).collect();
+        for job in spec.jobs {
+            self.store.enqueue(job)?;
+        }
+        let run = BatchRun {
+            id,
+            name: spec.name,
+            outstanding,
+            dead: Vec::new(),
+            on_complete: spec.on_complete,
+        };
+        self.runs.lock().unwrap().insert(id, run);
+        Ok(id)
+    }
+
+    /// Worker hook: a member finished. `dead` = it exhausted its retries.
+    /// Returns the completed `BatchRun` when the last member lands.
+    pub fn member_finished(
+        &self,
+        batch_id: Uuid,
+        job_id: Uuid,
+        dead: bool,
+    ) -> Result<Option<BatchRun>, AppError> {
+        let mut runs = self.runs.lock().unwrap();
+        let Some(run) = runs.get_mut(&batch_id) else {
+            return Err(AppError::not_found(format!("batch {batch_id}")));
+        };
+        run.outstanding.retain(|id| *id != job_id);
+        if dead {
+            run.dead.push(job_id);
+        }
+        Ok(if run.finished() {
+            Some(run.clone())
+        } else {
+            None
+        })
+    }
+
+    /// Convenience: run the `on_complete` job when a batch finished ok.
+    pub fn maybe_run_completion(
+        &self,
+        registry: &JobRegistry,
+        run: &BatchRun,
+        now: OffsetDateTime,
+    ) -> Result<Option<Uuid>, AppError> {
+        if !run.ok() {
+            return Ok(None);
+        }
+        let Some(name) = &run.on_complete else {
+            return Ok(None);
+        };
+        let payload = serde_json::json!({ "batch_id": run.id, "name": run.name });
+        let job = registry.build(name, payload, now)?;
+        self.store.enqueue(job).map(Some)
+    }
+
+    pub fn run(&self, batch_id: Uuid) -> Option<BatchRun> {
+        self.runs.lock().unwrap().get(&batch_id).cloned()
+    }
+
+    /// Worker convenience: find the batch containing `job_id` (if any) and
+    /// report its finish. Ok(None) = job not part of any known batch.
+    pub fn finish_by_job(&self, job_id: Uuid, dead: bool) -> Result<Option<BatchRun>, AppError> {
+        let containing = self
+            .runs
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(_, run)| run.outstanding.contains(&job_id))
+            .map(|(id, _)| *id);
+        match containing {
+            Some(batch_id) => self.member_finished(batch_id, job_id, dead),
+            None => Ok(None),
+        }
+    }
+}
+
+/// Executes a `ChainSpec` (L34): strictly ordered pipeline where the next
+/// job is enqueued only when the previous one SUCCEEDED. A failed member
+/// halts the chain (its retries are handled by the store; once it goes
+/// dead the chain stops and reports).
+pub struct ChainRuntime {
+    store: Arc<dyn JobStore>,
+    chains: Mutex<HashMap<Uuid, (Vec<DurableJob>, usize)>>,
+}
+
+impl ChainRuntime {
+    pub fn new(store: Arc<dyn JobStore>) -> Self {
+        Self {
+            store,
+            chains: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Enqueue the first step and arm the chain.
+    pub fn dispatch(&self, spec: ChainSpec) -> Result<Uuid, AppError> {
+        spec.validate()?;
+        let id = spec.id;
+        let jobs = spec.jobs;
+        let first = jobs[0].clone();
+        self.store.enqueue(first)?;
+        self.chains.lock().unwrap().insert(id, (jobs, 0));
+        Ok(id)
+    }
+
+    /// Worker hook for the current step. `succeeded` decides whether the
+    /// chain advances. Returns the next enqueued job id, if the chain moved.
+    pub fn step_finished(&self, chain_id: Uuid, succeeded: bool) -> Result<Option<Uuid>, AppError> {
+        let mut chains = self.chains.lock().unwrap();
+        let Some((jobs, index)) = chains.get_mut(&chain_id) else {
+            return Err(AppError::not_found(format!("chain {chain_id}")));
+        };
+        if !succeeded {
+            return Ok(None);
+        }
+        *index += 1;
+        let Some(next) = jobs.get(*index).cloned() else {
+            return Ok(None);
+        };
+        let next_id = next.id;
+        // Enqueue while holding the lock to keep order deterministic.
+        self.store.enqueue(next)?;
+        Ok(Some(next_id))
+    }
+
+    /// Position of the currently-armed step (for observability).
+    pub fn position(&self, chain_id: Uuid) -> Option<usize> {
+        self.chains.lock().unwrap().get(&chain_id).map(|(_, i)| *i)
+    }
+
+    /// Worker convenience: advance/halt the chain whose CURRENT step is
+    /// `job_id`. Ok(None) = not a chain job (or halted by failure).
+    pub fn finish_by_job(&self, job_id: Uuid, succeeded: bool) -> Result<Option<Uuid>, AppError> {
+        let containing = self
+            .chains
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(_, (jobs, index))| jobs.get(*index).is_some_and(|current| current.id == job_id))
+            .map(|(id, _)| *id);
+        match containing {
+            Some(chain_id) => self.step_finished(chain_id, succeeded),
+            None => Ok(None),
+        }
+    }
+}
+
+// ----------------------------------------------------------------- handlers
+
+/// Future type used by async job handlers (item 23).
+pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+
+/// Executes a durable job: one implementation per job name. Handlers are
+/// registered in a WorkerRegistry and dispatched by the keel-worker claim
+/// loop; Err maps to JobStore::fail (backoff, retry budget, then dead).
+pub trait JobHandler: Send + Sync {
+    /// Job name served by this handler (must match a JobRegistry entry).
+    fn name(&self) -> &str;
+    /// Runs the job for an already-claimed durable execution.
+    fn handle<'a>(&'a self, job: &'a DurableJob) -> BoxFuture<'a, Result<(), AppError>>;
+}
+
+/// Name -> handler dispatch table used by the worker loop (item 23).
+#[derive(Default)]
+pub struct WorkerRegistry {
+    handlers: Vec<Arc<dyn JobHandler>>,
+}
+
+impl WorkerRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register(&mut self, handler: Arc<dyn JobHandler>) -> Result<(), AppError> {
+        if self.handlers.iter().any(|h| h.name() == handler.name()) {
+            return Err(AppError::validation(format!(
+                "job handler registered twice: {}",
+                handler.name()
+            )));
+        }
+        self.handlers.push(handler);
+        Ok(())
+    }
+
+    pub fn get(&self, name: &str) -> Option<Arc<dyn JobHandler>> {
+        self.handlers.iter().find(|h| h.name() == name).cloned()
+    }
+
+    pub fn names(&self) -> Vec<&str> {
+        self.handlers.iter().map(|h| h.name()).collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.handlers.is_empty()
+    }
+}
+
+/// Newtype wrappers so trait objects can live in the lifecycle
+/// ServiceRegistry (TypeId-keyed; get::<T>() requires a sized type).
+pub struct JobStoreService(pub Arc<dyn JobStore>);
+pub struct JobStoreAdminService(pub Arc<dyn JobStoreAdmin>);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn job(attempt: u32, max: u32) -> DurableJob {
+        let now = OffsetDateTime::now_utc();
+        DurableJob {
+            id: Uuid::now_v7(),
+            execution_id: ExecutionId::new(),
+            name: "demo.job".into(),
+            payload: serde_json::Value::Null,
+            queue: "default".into(),
+            attempt,
+            max_attempts: max,
+            deadline: now + Duration::minutes(5),
+            available_at: now,
+            status: JobStatus::Running,
+            priority: 0,
+            claimed_by: None,
+            claimed_at: None,
+            causation_id: None,
+            correlation_id: None,
+            last_error: None,
+            enqueued_at: now,
+            finished_at: None,
+        }
+    }
+
+    #[test]
+    fn retry_exhaustion_marks_dead() {
+        assert_eq!(job(1, 3).next_status_after_failure(), JobStatus::Pending);
+        assert_eq!(job(3, 3).next_status_after_failure(), JobStatus::Dead);
+    }
+
+    #[test]
+    fn backoff_curve_and_cap() {
+        let base = Duration::seconds(30);
+        let max = Duration::seconds(600);
+        assert_eq!(backoff_delay(0, base, max), Duration::ZERO);
+        assert_eq!(backoff_delay(1, base, max), Duration::seconds(30));
+        assert_eq!(backoff_delay(2, base, max), Duration::seconds(60));
+        assert_eq!(backoff_delay(3, base, max), Duration::seconds(120));
+        assert_eq!(backoff_delay(9, base, max), Duration::seconds(600));
+    }
+
+    #[test]
+    fn registry_rejects_duplicates_and_builds_jobs() {
+        let mut reg = JobRegistry::new();
+        reg.register(JobDef::new("mail.send")).unwrap();
+        assert!(reg.register(JobDef::new("mail.send")).is_err());
+        let now = OffsetDateTime::now_utc();
+        let built = reg.build("mail.send", json!({"to": "a@b.c"}), now).unwrap();
+        assert_eq!(built.status, JobStatus::Pending);
+        assert_eq!(built.max_attempts, 3);
+        assert_eq!(built.deadline, now + Duration::seconds(300));
+        assert!(reg.build("missing.job", json!(null), now).is_err());
+    }
+
+    #[test]
+    fn store_lifecycle_with_priority_and_backoff() {
+        let store = InMemoryJobStore::new();
+        let mut low = job(0, 3);
+        low.status = JobStatus::Pending;
+        low.priority = 0;
+        let mut high = job(0, 3);
+        high.status = JobStatus::Pending;
+        high.priority = 10;
+        store.enqueue(low).unwrap();
+        store.enqueue(high).unwrap();
+
+        let claimed = store.claim("w1").unwrap().unwrap();
+        assert_eq!(claimed.priority, 10, "higher priority claims first");
+        assert_eq!(claimed.attempt, 1);
+
+        let status = store.fail(claimed.id, "boom").unwrap();
+        assert_eq!(status, JobStatus::Pending);
+        let after_fail = store.list(Some(JobStatus::Pending), 10).unwrap();
+        assert!(after_fail
+            .iter()
+            .any(|j| j.last_error.as_deref() == Some("boom")));
+        assert!(after_fail
+            .iter()
+            .all(|j| j.available_at > OffsetDateTime::now_utc() - Duration::seconds(1)));
+
+        store
+            .complete(store.claim("w1").unwrap().unwrap().id)
+            .unwrap();
+        let done = store.list(Some(JobStatus::Succeeded), 10).unwrap();
+        assert_eq!(done.len(), 1);
+    }
+
+    #[test]
+    fn delayed_jobs_wait_and_dead_jobs_requeue() {
+        let store = InMemoryJobStore::new();
+        let mut j = job(0, 1);
+        j.status = JobStatus::Pending;
+        let id = store.enqueue(j).unwrap();
+        let claimed = store.claim("w1").unwrap().unwrap();
+        let status = store.fail(id, "fatal").unwrap();
+        assert_eq!(status, JobStatus::Dead, "attempt 1 of max 1 dies");
+        assert!(claimed.finished() || store.list(Some(JobStatus::Dead), 10).unwrap().len() == 1);
+        assert!(
+            store.claim("w1").unwrap().is_none(),
+            "dead jobs are not claimable"
+        );
+
+        store.requeue(id).unwrap();
+        assert!(
+            store.claim("w2").unwrap().is_some(),
+            "requeued dead job is claimable"
+        );
+        assert!(store.requeue(Uuid::now_v7()).is_err(), "unknown id errors");
+    }
+
+    #[test]
+    fn batch_and_chain_validation() {
+        let mut b = BatchSpec {
+            id: Uuid::now_v7(),
+            name: "nightly".into(),
+            jobs: vec![],
+            on_complete: None,
+        };
+        assert!(b.validate().is_err());
+        let mut j1 = job(0, 3);
+        j1.status = JobStatus::Pending;
+        b.jobs = vec![j1.clone(), j1.clone()];
+        assert!(b.validate().is_err(), "duplicate ids rejected");
+        b.jobs = vec![j1.clone()];
+        assert!(b.validate().is_ok());
+        assert_eq!(b.size(), 1);
+
+        let c = ChainSpec {
+            id: Uuid::now_v7(),
+            jobs: vec![j1],
+        };
+        assert!(c.validate().is_ok());
+        assert!(c.step(0).is_some());
+        assert!(c.step(1).is_none());
+        assert!(ChainSpec {
+            id: Uuid::now_v7(),
+            jobs: vec![]
+        }
+        .validate()
+        .is_err());
+    }
+
+    struct CountingHandler {
+        calls: std::sync::atomic::AtomicU32,
+    }
+
+    impl JobHandler for CountingHandler {
+        fn name(&self) -> &str {
+            "demo.job"
+        }
+
+        fn handle<'a>(&'a self, _job: &'a DurableJob) -> BoxFuture<'a, Result<(), AppError>> {
+            Box::pin(async move {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+        }
+    }
+
+    #[test]
+    fn worker_registry_registers_and_rejects_duplicates() {
+        let mut reg = WorkerRegistry::new();
+        assert!(reg.is_empty());
+        let handler = Arc::new(CountingHandler {
+            calls: std::sync::atomic::AtomicU32::new(0),
+        });
+        reg.register(handler.clone()).unwrap();
+        assert!(reg.register(handler.clone()).is_err());
+        assert_eq!(reg.names(), vec!["demo.job"]);
+        assert!(reg.get("demo.job").is_some());
+        assert!(reg.get("missing.job").is_none());
+        assert!(!reg.is_empty());
+    }
+
+    #[tokio::test]
+    async fn worker_registry_dispatches_to_handler() {
+        let mut reg = WorkerRegistry::new();
+        let handler = Arc::new(CountingHandler {
+            calls: std::sync::atomic::AtomicU32::new(0),
+        });
+        reg.register(handler.clone()).unwrap();
+        let mut j = job(0, 3);
+        j.status = JobStatus::Pending;
+        let h = reg.get("demo.job").unwrap();
+        for _ in 0..3 {
+            h.handle(&j).await.unwrap();
+        }
+        assert_eq!(handler.calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn batch_runtime_fans_out_and_completes() {
+        let store = Arc::new(InMemoryJobStore::new());
+        let runtime = BatchRuntime::new(store.clone());
+        let mut j1 = job(0, 3);
+        j1.status = JobStatus::Pending;
+        let mut j2 = job(0, 3);
+        j2.status = JobStatus::Pending;
+        let spec = BatchSpec {
+            id: Uuid::now_v7(),
+            name: "nightly".into(),
+            jobs: vec![j1.clone(), j2.clone()],
+            on_complete: Some("batch.done".into()),
+        };
+        let id = runtime.dispatch(spec).unwrap();
+        assert_eq!(
+            store.list(Some(JobStatus::Pending), 10).unwrap().len(),
+            2,
+            "both members enqueued"
+        );
+
+        assert!(
+            runtime.member_finished(id, j1.id, false).unwrap().is_none(),
+            "not finished yet"
+        );
+        let done = runtime.member_finished(id, j2.id, false).unwrap().unwrap();
+        assert!(done.finished());
+        assert!(done.ok());
+
+        let mut registry = JobRegistry::new();
+        registry.register(JobDef::new("batch.done")).unwrap();
+        let enqueued = runtime
+            .maybe_run_completion(&registry, &done, OffsetDateTime::now_utc())
+            .unwrap();
+        assert!(enqueued.is_some(), "on_complete job enqueued for ok batch");
+        assert!(store
+            .list(Some(JobStatus::Pending), 10)
+            .unwrap()
+            .iter()
+            .any(|j| j.name == "batch.done"));
+    }
+
+    #[test]
+    fn batch_with_dead_member_skips_completion() {
+        let store = Arc::new(InMemoryJobStore::new());
+        let runtime = BatchRuntime::new(store.clone());
+        let mut j1 = job(0, 3);
+        j1.status = JobStatus::Pending;
+        let spec = BatchSpec {
+            id: Uuid::now_v7(),
+            name: "risky".into(),
+            jobs: vec![j1.clone()],
+            on_complete: Some("batch.done".into()),
+        };
+        let id = runtime.dispatch(spec).unwrap();
+        let done = runtime.member_finished(id, j1.id, true).unwrap().unwrap();
+        assert!(done.finished());
+        assert!(!done.ok(), "dead member marks the batch failed");
+        let mut registry = JobRegistry::new();
+        registry.register(JobDef::new("batch.done")).unwrap();
+        assert!(runtime
+            .maybe_run_completion(&registry, &done, OffsetDateTime::now_utc())
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn chain_advances_only_on_success() {
+        let store = Arc::new(InMemoryJobStore::new());
+        let runtime = ChainRuntime::new(store.clone());
+        let mut a = job(0, 3);
+        a.status = JobStatus::Pending;
+        let mut b = job(0, 3);
+        b.status = JobStatus::Pending;
+        let mut c = job(0, 3);
+        c.status = JobStatus::Pending;
+        let spec = ChainSpec {
+            id: Uuid::now_v7(),
+            jobs: vec![a.clone(), b.clone(), c.clone()],
+        };
+        let id = runtime.dispatch(spec).unwrap();
+        assert_eq!(runtime.position(id), Some(0));
+        assert_eq!(
+            store.list(Some(JobStatus::Pending), 10).unwrap().len(),
+            1,
+            "only step 0 enqueued"
+        );
+
+        assert!(
+            runtime.step_finished(id, true).unwrap().is_some(),
+            "advance to step 1"
+        );
+        assert_eq!(runtime.position(id), Some(1));
+        assert_eq!(
+            store.list(Some(JobStatus::Pending), 10).unwrap().len(),
+            2,
+            "steps 0+1 enqueued"
+        );
+        assert!(
+            runtime.step_finished(id, false).unwrap().is_none(),
+            "failure halts the chain"
+        );
+        assert_eq!(
+            store.list(Some(JobStatus::Pending), 10).unwrap().len(),
+            2,
+            "step 2 never enqueued"
+        );
+        assert!(
+            runtime.step_finished(id, true).unwrap().is_some(),
+            "advance to step 2 after recovery"
+        );
+        assert_eq!(
+            store.list(Some(JobStatus::Pending), 10).unwrap().len(),
+            3,
+            "all three steps enqueued"
+        );
+        assert!(
+            runtime.step_finished(id, true).unwrap().is_none(),
+            "chain exhausted"
+        );
+        assert_eq!(runtime.position(id), Some(3));
+    }
+}

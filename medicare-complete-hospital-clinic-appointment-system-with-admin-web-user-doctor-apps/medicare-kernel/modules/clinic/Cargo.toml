@@ -1,0 +1,12 @@
+[package]
+name = "mod-clinic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Clinic structure: cities, clinics, departments, specializations, services (M4-01/02)."
+
+[dependencies]
+kernel-core = { workspace = true }
+kernel-runtime = { workspace = true }
+axum = { workspace = true }

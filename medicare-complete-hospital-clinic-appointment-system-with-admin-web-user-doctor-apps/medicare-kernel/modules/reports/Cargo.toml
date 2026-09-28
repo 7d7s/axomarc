@@ -1,0 +1,12 @@
+[package]
+name = "mod-reports"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Read projections + standard reports (M7-05, D-41)."
+
+[dependencies]
+kernel-core = { workspace = true }
+kernel-runtime = { workspace = true }
+axum = { workspace = true }

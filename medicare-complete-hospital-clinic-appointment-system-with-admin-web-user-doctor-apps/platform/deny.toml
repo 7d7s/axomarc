@@ -1,0 +1,51 @@
+# cargo-deny configuration - supply-chain gate for the Keel platform.
+#
+# Run locally:   just deny
+# Run in CI:     .github/workflows/keel-publish.yml (job: deny)
+#
+# Policy references: DEPENDENCY-POLICY.md (admission, budget) and SECURITY.md.
+# Exceptions require a governance note in the justification table AND a
+# comment below explaining why the exception is safe.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+# RUSTSEC advisories are denied by default. Only explicitly reviewed,
+# accepted advisories may be ignored here (with a linked justification).
+ignore = []
+
+[licenses]
+version = 2
+# Aligned with DEPENDENCY-POLICY.md criterion 3 (MIT / Apache-2.0 / BSD).
+# - OpenSSL: ring's historical license tag (pulled in via rustls).
+# - MPL-2.0: tolerated exception for `webpki-roots` (Mozilla CA bundle,
+#   used by the rustls stack). MPL-2.0 is file-level copyleft; the crate is
+#   used unmodified as a data dependency, so no source obligations propagate
+#   into Keel code. Any further MPL dependency needs governance approval.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "Zlib",
+  "OpenSSL",
+  "MPL-2.0",
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -1,0 +1,17 @@
+[package]
+name = "keel-workflow"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Keel framework: declarative state machines + workflow compiler validation."
+
+[dependencies]
+keel-foundation = { workspace = true }
+serde = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

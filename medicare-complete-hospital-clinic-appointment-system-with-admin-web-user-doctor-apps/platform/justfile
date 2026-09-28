@@ -1,0 +1,51 @@
+# Keel platform — developer commands (G01)
+
+default: dev
+
+# one-command dev environment
+dev:
+    docker compose up -d
+    cargo run -p keel-api
+
+check:
+    cargo check --workspace
+    cargo test --workspace
+    cargo run -p xtask -- dep-rules
+
+fmt:
+    cargo fmt --all
+
+lint:
+    cargo clippy --workspace -- -D warnings
+
+db-up:
+    docker compose up -d
+
+db-down:
+    docker compose down
+
+migrate:
+    cargo run -p keel-api -- --migrate-only
+
+# --- release engineering (see PUBLISHING.md) ---
+
+# package + validate all publishable crates without uploading
+publish-dry:
+    cargo run -p xtask -- publish --dry-run
+
+# publish all publishable crates to crates.io (requires `cargo login`)
+publish:
+    cargo run -p xtask -- publish
+
+# bump the lockstep workspace version (MAJOR.MINOR.PATCH)
+bump VERSION:
+    cargo run -p xtask -- bump {{VERSION}}
+
+# supply-chain gate (`cargo install cargo-deny`): advisories, licenses, bans, sources
+deny:
+    cargo deny check
+
+# regenerate CHANGELOG.md at a release tag (`cargo install git-cliff`)
+# example: just changelog keel/platform-v0.1.0
+changelog TAG:
+    git cliff --config cliff.toml --tag {{TAG}} --output CHANGELOG.md

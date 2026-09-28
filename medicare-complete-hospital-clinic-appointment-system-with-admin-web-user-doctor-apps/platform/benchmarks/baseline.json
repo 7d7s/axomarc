@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "captured_at": "2026-08-22T01:16:53.4012128Z",
+  "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+  "iterations": 300,
+  "phases": {
+    "authorization": 3.0,
+    "delta-write": 46.6,
+    "memory": 307783.0,
+    "read": 10.5,
+    "routing": 0.3,
+    "serialization": 144.7,
+    "startup": 1363.4
+  }
+}

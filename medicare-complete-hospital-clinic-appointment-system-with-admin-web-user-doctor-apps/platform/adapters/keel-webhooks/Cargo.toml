@@ -1,0 +1,25 @@
+[package]
+name = "keel-webhooks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Keel adapter: outbound webhooks — subscriptions, HMAC signing, delivery via the HTTP client port."
+
+[dependencies]
+keel-foundation = { workspace = true }
+keel-http-client = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

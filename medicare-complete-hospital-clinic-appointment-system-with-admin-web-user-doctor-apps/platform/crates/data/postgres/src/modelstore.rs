@@ -1,0 +1,435 @@
+//! Durable model store on PostgreSQL (S8 C3/B-04/B-05): implements the
+//! keel-models `ModelStore` port by compiling records/filters through the
+//! typed query builders and executing them here. Tenant isolation is applied
+//! on EVERY path (`tenant_scope`); soft deletes honor `ModelDef::soft_deletes`.
+
+use keel_foundation::{AppError, TenantId};
+use keel_models::{
+    json_value_to_bind, record_to_columns, FieldFilter, FieldType, FilterOp, ListOpts,
+    ModelDef, ModelStore, Record,
+};
+use keel_query::select::{Condition, Ident, Operator};
+use keel_query::{CompiledSelect, CompiledWrite, Delete, Insert, ConflictPolicy, Select, Update, Value as Bind};
+use serde_json::Value as Json;
+use sqlx::postgres::{PgArguments, PgPool, PgRow};
+use sqlx::{Column, Row};
+use time::OffsetDateTime;
+use uuid::Uuid;
+
+use crate::bridge::block_on;
+
+pub struct PgModelStore {
+    pool: PgPool,
+}
+
+impl PgModelStore {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+fn pg(e: impl std::fmt::Display) -> AppError {
+    AppError::persistence(format!("model store: {e}"))
+}
+
+fn ident(name: &str) -> Result<Ident, AppError> {
+    Ident::new(name.to_string())
+}
+
+fn bind_params<'q>(
+    mut query: sqlx::query::Query<'q, sqlx::Postgres, PgArguments>,
+    params: &'q [Bind],
+) -> sqlx::query::Query<'q, sqlx::Postgres, PgArguments> {
+    for param in params {
+        query = match param {
+            Bind::Null => query.bind(None::<String>),
+            Bind::Bool(b) => query.bind(b),
+            Bind::Int(i) => query.bind(i),
+            Bind::Float(f) => query.bind(f),
+            Bind::Text(t) => query.bind(t),
+            Bind::Uuid(u) => query.bind(u),
+            Bind::Timestamp(ts) => query.bind(ts),
+            Bind::Json(j) => query.bind(j),
+        };
+    }
+    query
+}
+
+/// Map one row into the canonical Record encoding using the model's field
+/// types (framework timestamp columns are typed by convention).
+fn row_to_record(row: &PgRow, model: &ModelDef) -> Result<Record, AppError> {
+    let mut record = Record::new();
+    for column in row.columns() {
+        let name = column.name();
+        let value = decode_column(row, name, model)?;
+        record.insert(name.to_string(), value);
+    }
+    Ok(record)
+}
+
+fn decode_column(row: &PgRow, name: &str, model: &ModelDef) -> Result<Json, AppError> {
+    let column_type = model
+        .field_named(name)
+        .map(|f| f.field_type.clone())
+        .unwrap_or_else(|| match name {
+            "id" | "tenant_id" => FieldType::Uuid,
+            "created_at" | "updated_at" | "deleted_at" => FieldType::Timestamp,
+            "version" => FieldType::Int64,
+            _ => FieldType::Text,
+        });
+    Ok(match column_type {
+        FieldType::Uuid => {
+            let v: Option<Uuid> = row.try_get(name).map_err(pg)?;
+            v.map(|u| Json::String(u.to_string())).unwrap_or(Json::Null)
+        }
+        FieldType::Bool => {
+            let v: Option<bool> = row.try_get(name).map_err(pg)?;
+            v.map(Json::Bool).unwrap_or(Json::Null)
+        }
+        FieldType::Int32 => {
+            let v: Option<i32> = row.try_get(name).map_err(pg)?;
+            v.map(|i| Json::from(i64::from(i))).unwrap_or(Json::Null)
+        }
+        FieldType::Int64 => {
+            let v: Option<i64> = row.try_get(name).map_err(pg)?;
+            v.map(Json::from).unwrap_or(Json::Null)
+        }
+        FieldType::Float | FieldType::Decimal => {
+            let v: Option<f64> = row.try_get(name).map_err(pg)?;
+            v.map(Json::from).unwrap_or(Json::Null)
+        }
+        FieldType::Text | FieldType::TextLarge | FieldType::Date | FieldType::Enum { .. } => {
+            let v: Option<String> = row.try_get(name).map_err(pg)?;
+            v.map(Json::String).unwrap_or(Json::Null)
+        }
+        FieldType::Timestamp => {
+            let v: Option<OffsetDateTime> = row.try_get(name).map_err(pg)?;
+            match v {
+                Some(ts) => Json::String(
+                    ts.format(&time::format_description::well_known::Rfc3339)
+                        .map_err(pg)?,
+                ),
+                None => Json::Null,
+            }
+        }
+        FieldType::Json => {
+            let v: Option<Json> = row.try_get(name).map_err(pg)?;
+            v.unwrap_or(Json::Null)
+        }
+    })
+}
+
+/// Semantic filter -> typed WHERE condition.
+fn filter_condition(model: &ModelDef, filter: &FieldFilter) -> Result<Condition, AppError> {
+    let column = ident(&filter.field)?;
+    let field = model.field_named(&filter.field);
+    let bind_of = |value: &Json| -> Result<Bind, AppError> {
+        match field {
+            Some(f) => keel_models::json_to_bind(value, f),
+            None => json_value_to_bind(value),
+        }
+    };
+    Ok(match filter.op {
+        FilterOp::Eq => Condition {
+            column,
+            operator: Operator::Eq,
+            values: vec![bind_of(&filter.value)?],
+        },
+        FilterOp::Ne => Condition {
+            column,
+            operator: Operator::Ne,
+            values: vec![bind_of(&filter.value)?],
+        },
+        FilterOp::In => {
+            let list = filter
+                .value
+                .as_array()
+                .ok_or_else(|| AppError::validation("IN filter needs an array value"))?;
+            if list.is_empty() {
+                return Err(AppError::validation("IN filter needs at least one value"));
+            }
+            let mut values = Vec::with_capacity(list.len());
+            for item in list {
+                values.push(bind_of(item)?);
+            }
+            Condition {
+                column,
+                operator: Operator::In,
+                values,
+            }
+        }
+        FilterOp::IsNull => Condition {
+            column,
+            operator: Operator::IsNull,
+            values: Vec::new(),
+        },
+        FilterOp::NotNull => Condition {
+            column,
+            operator: Operator::NotNull,
+            values: Vec::new(),
+        },
+    })
+}
+
+/// Base SELECT for a model list: tenant scope + soft-delete veil + filters.
+fn base_select(
+    model: &ModelDef,
+    tenant: Option<TenantId>,
+    filters: &[FieldFilter],
+) -> Result<Select, AppError> {
+    let table = ident(&model.table)?;
+    let mut select = Select::from_table(table);
+    if model.tenant_scoped {
+        if let Some(t) = tenant {
+            select = select.tenant_scope(ident("tenant_id")?, t);
+        } else {
+            // Tenant-scoped model without a tenant: match nothing.
+            select = select.where_eq(ident("tenant_id")?, Bind::Null);
+        }
+    }
+    if model.soft_deletes {
+        select = select.where_null(ident("deleted_at")?);
+    }
+    for filter in filters {
+        let cond = filter_condition(model, filter)?;
+        select = match cond.operator {
+            Operator::In => select.where_in(cond.column, cond.values),
+            Operator::IsNull => select.where_null(cond.column),
+            Operator::NotNull => select.where_not_null(cond.column),
+            other => select.where_op(
+                cond.column,
+                other,
+                cond.values.into_iter().next().unwrap_or(Bind::Null),
+            ),
+        };
+    }
+    Ok(select)
+}
+
+
+fn fetch_rows(pool: &PgPool, compiled: &CompiledSelect) -> Result<Vec<PgRow>, AppError> {
+    let sql = compiled.sql.clone();
+    let params = compiled.params.clone();
+    let pool = pool.clone();
+    block_on(async move {
+        let query = bind_params(sqlx::query(&sql), &params);
+        query.fetch_all(&pool).await.map_err(pg)
+    })
+}
+
+/// Execute a write compiled by the typed builders; returns RETURNING rows.
+fn write_rows(pool: &PgPool, compiled: &CompiledWrite) -> Result<Vec<PgRow>, AppError> {
+    let sql = if compiled.sql.contains(" RETURNING ") {
+        compiled.sql.clone()
+    } else {
+        format!("{} RETURNING *", compiled.sql)
+    };
+    let params = compiled.params.clone();
+    let pool = pool.clone();
+    block_on(async move {
+        let query = bind_params(sqlx::query(&sql), &params);
+        query.fetch_all(&pool).await.map_err(pg)
+    })
+}
+
+fn map_rows(rows: Vec<PgRow>, model: &ModelDef) -> Result<Vec<Record>, AppError> {
+    rows.iter().map(|r| row_to_record(r, model)).collect()
+}
+
+impl ModelStore for PgModelStore {
+    fn list(
+        &self,
+        model: &ModelDef,
+        tenant: Option<TenantId>,
+        filters: &[FieldFilter],
+        opts: &ListOpts,
+    ) -> Result<keel_query::Page<Record>, AppError> {
+        let mut select = base_select(model, tenant, filters)?;
+        let (page, per_page) = match opts.page {
+            Some(req) => {
+                let req = req.validate()?;
+                select = select.limit(u64::from(req.per_page)).offset(u64::from(req.offset()));
+                (req.page, req.per_page)
+            }
+            None => (1, 0),
+        };
+        let compiled = select.build()?;
+        let rows = fetch_rows(&self.pool, &compiled)?;
+        let total = if opts.page.is_some() {
+            // COUNT over the same shape (rebuild without limit/offset).
+            let count_select = base_select(model, tenant, filters)?.build()?;
+            let count_sql = format!(
+                "SELECT COUNT(*) FROM ({}) AS _keel_count",
+                count_select.sql
+            );
+            let params = count_select.params.clone();
+            let pool = self.pool.clone();
+            let count: i64 = block_on(async move {
+                let query = bind_params(sqlx::query(&count_sql), &params);
+                let row: PgRow = query.fetch_one(&pool).await.map_err(pg)?;
+                row.try_get::<i64, usize>(0).map_err(pg)
+            })?;
+            count.max(0) as u64
+        } else {
+            rows.len() as u64
+        };
+        let items = map_rows(rows, model)?;
+        Ok(keel_query::Page::new(items, page, per_page, Some(total)))
+    }
+
+    fn find(
+        &self,
+        model: &ModelDef,
+        id: Uuid,
+        tenant: Option<TenantId>,
+        include_deleted: bool,
+    ) -> Result<Option<Record>, AppError> {
+        let mut select = Select::from_table(ident(&model.table)?).where_eq(
+            ident("id")?,
+            Bind::Uuid(id),
+        );
+        if model.tenant_scoped {
+            match tenant {
+                Some(t) => select = select.tenant_scope(ident("tenant_id")?, t),
+                None => select = select.where_eq(ident("tenant_id")?, Bind::Null),
+            }
+        }
+        if model.soft_deletes && !include_deleted {
+            select = select.where_null(ident("deleted_at")?);
+        }
+        let rows = fetch_rows(&self.pool, &select.build()?)?;
+        Ok(map_rows(rows, model)?.into_iter().next())
+    }
+
+    fn insert(&self, model: &ModelDef, record: &Record) -> Result<Record, AppError> {
+        let (columns, params) = record_to_columns(record)?;
+        let mut insert = Insert::into_table(ident(&model.table)?).columns(columns);
+        insert = insert.row(params);
+        if model.tenant_scoped {
+            insert = insert.tenant_scope(
+                ident("tenant_id")?,
+                keel_foundation::TenantId::from_uuid(record_uuid(record, "tenant_id")?),
+            );
+        }
+        let compiled = insert.returning(all_columns(model)?).build()?;
+        let rows = write_rows(&self.pool, &compiled)?;
+        map_rows(rows, model)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| pg("insert returned no row"))
+    }
+
+    fn update(
+        &self,
+        model: &ModelDef,
+        id: Uuid,
+        tenant: Option<TenantId>,
+        changes: &Record,
+    ) -> Result<Option<Record>, AppError> {
+        if changes.is_empty() {
+            return self.find(model, id, tenant, false);
+        }
+        let mut update = Update::table(ident(&model.table)?).where_eq(ident("id")?, Bind::Uuid(id));
+        if model.tenant_scoped {
+            match tenant {
+                Some(t) => update = update.tenant_scope(ident("tenant_id")?, t),
+                None => update = update.where_eq(ident("tenant_id")?, Bind::Null),
+            }
+        }
+        for (key, value) in changes {
+            let bind = match model.field_named(key) {
+                Some(f) => keel_models::json_to_bind(value, f)?,
+                None => json_value_to_bind(value)?,
+            };
+            update = update.set(ident(key)?, bind);
+        }
+        let compiled = update.returning(all_columns(model)?).build()?;
+        let rows = write_rows(&self.pool, &compiled)?;
+        Ok(map_rows(rows, model)?.into_iter().next())
+    }
+
+    fn delete(
+        &self,
+        model: &ModelDef,
+        id: Uuid,
+        tenant: Option<TenantId>,
+    ) -> Result<bool, AppError> {
+        if model.soft_deletes {
+            let mut update = Update::table(ident(&model.table)?)
+                .where_eq(ident("id")?, Bind::Uuid(id))
+                .where_is_null(ident("deleted_at")?)
+                .set(ident("deleted_at")?, Bind::Timestamp(OffsetDateTime::now_utc()));
+            if model.tenant_scoped {
+                match tenant {
+                    Some(t) => update = update.tenant_scope(ident("tenant_id")?, t),
+                    None => update = update.where_eq(ident("tenant_id")?, Bind::Null),
+                }
+            }
+            let compiled = update.returning(vec![ident("id")?]).build()?;
+            let rows = write_rows(&self.pool, &compiled)?;
+            return Ok(!rows.is_empty());
+        }
+        let mut delete = Delete::from_table(ident(&model.table)?).where_eq(ident("id")?, Bind::Uuid(id));
+        if model.tenant_scoped {
+            match tenant {
+                Some(t) => delete = delete.tenant_scope(ident("tenant_id")?, t),
+                None => delete = delete.where_eq(ident("tenant_id")?, Bind::Null),
+            }
+        }
+        let compiled = delete.returning(vec![ident("id")?]).build()?;
+        let rows = write_rows(&self.pool, &compiled)?;
+        Ok(!rows.is_empty())
+    }
+
+    fn upsert(
+        &self,
+        model: &ModelDef,
+        record: &Record,
+        conflict: &[String],
+    ) -> Result<Record, AppError> {
+        if conflict.is_empty() {
+            return Err(AppError::validation("upsert needs conflict fields"));
+        }
+        let (columns, params) = record_to_columns(record)?;
+        let conflict_columns: Vec<Ident> = conflict
+            .iter()
+            .map(|c| ident(c))
+            .collect::<Result<_, _>>()?;
+        let mut insert = Insert::into_table(ident(&model.table)?)
+            .columns(columns)
+            .row(params)
+            .on_conflict(conflict_columns, ConflictPolicy::DoUpdate)
+            // Identity is never overwritten by a merge: the surviving row
+            // keeps its primary key (Laravel updateOrCreate semantics).
+            .exclude_from_conflict_update(vec![ident("id")?]);
+        if model.tenant_scoped {
+            insert = insert.tenant_scope(
+                ident("tenant_id")?,
+                keel_foundation::TenantId::from_uuid(record_uuid(record, "tenant_id")?),
+            );
+        }
+        let compiled = insert.returning(all_columns(model)?).build()?;
+        let rows = write_rows(&self.pool, &compiled)?;
+        map_rows(rows, model)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| pg("upsert returned no row"))
+    }
+}
+
+fn record_uuid(record: &Record, key: &str) -> Result<Uuid, AppError> {
+    record
+        .get(key)
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .ok_or_else(|| AppError::validation(format!("record needs a uuid in {key:?}")))
+}
+
+/// RETURNING column list: the model's declared fields (framework timestamp
+/// columns are returned only when the model declares them).
+fn all_columns(model: &ModelDef) -> Result<Vec<Ident>, AppError> {
+    let mut names: Vec<String> = model.fields.iter().map(|f| f.name.clone()).collect();
+    names.sort();
+    names.dedup();
+    names.iter().map(|n| ident(n)).collect()
+}

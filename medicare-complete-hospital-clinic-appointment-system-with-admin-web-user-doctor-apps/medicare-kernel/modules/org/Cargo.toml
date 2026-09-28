@@ -1,0 +1,12 @@
+[package]
+name = "mod-org"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Org lattice: nodes, memberships, roles, grants (M2 tasks)."
+
+[dependencies]
+kernel-core = { workspace = true }
+kernel-runtime = { workspace = true }
+axum = { workspace = true }
