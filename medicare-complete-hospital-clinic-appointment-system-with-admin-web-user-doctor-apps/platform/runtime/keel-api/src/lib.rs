@@ -9,6 +9,7 @@ pub mod graph_routes;
 pub mod host;
 pub mod routes;
 pub mod shell;
+pub mod static_assets;
 pub mod telemetry_routes;
 pub mod upload_routes;
 
@@ -386,12 +387,68 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Wave 2 views: engine built from the `[views]` section. Roots and the
     // compiled cache resolve against the workspace root, so the same templates
-    // are served regardless of the cwd the host was started from.
-    let views = Some(Arc::new(keel_views::ViewsEngine::new(views_config(
-        &cfg.views,
-        &root,
-        env.as_str(),
-    ))));
+    // are served regardless of the cwd the host was started from. The
+    // `@asset("...")` URL helper is registered here (once per engine) so
+    // templates see production behaviour in every harness too.
+    let assets = load_asset_manifest(&root.join("public"));
+    let views_engine =
+        keel_views::ViewsEngine::new(views_config(&cfg.views, &root, env.as_str()));
+    register_asset_directive(&views_engine, assets.clone());
+    let views = Some(Arc::new(views_engine));
+
+    // Wave 2 static assets (19-PARITY "Static assets"): `public/` answers
+    // real files through the router fallback installed below. The directory
+    // is allowed to be missing (dev before the first build) — the resolver
+    // then misses every request and unmatched paths render the not-found.
+    let static_files = Some(Arc::new(keel_http::StaticFiles::new(
+        root.join("public"),
+    )));
+
+    // Wave 2 signed URLs (19-PARITY "URL generation"): the `signed`
+    // middleware builtin verifies links through this gate. An empty
+    // application key leaves no trustworthy secret, so the gate stays off
+    // and every route declaring `signed` refuses (fail-closed 500) instead
+    // of accepting an unsigned link.
+    let signed_urls = if cfg.app.key.is_empty() {
+        tracing::warn!(
+            "app.key is empty; routes declaring `signed` will refuse requests (fail-closed)"
+        );
+        None
+    } else {
+        Some(Arc::new(keel_http::SignedGate::new(
+            keel_http::derive_signed_key(&cfg.app.key),
+            tokens.clone(),
+        )))
+    };
+
+    // Wave 2 subdomain tenancy (19-PARITY route host matching): the host
+    // gate resolves a subdomain's tenant here and feeds it into tenant
+    // resolution. The registry is the in-memory control-plane port until
+    // the keel-postgres `tenants` adapter lands; Dev/Test get the seeded
+    // dev tenant the database bootstrap writes, so `subdomain = "dev"`
+    // resolves out of the box. Unknown slugs fall back to the default
+    // tenant (the host match itself still applies).
+    let tenant_store = Arc::new(keel_tenancy::InMemoryTenantStore::new());
+    if matches!(env, Environment::Dev | Environment::Test) {
+        if let Ok(dev_id) = uuid::Uuid::parse_str(host::DEV_TENANT_UUID) {
+            use keel_tenancy::TenantStore as _;
+            let seeded = tenant_store.upsert(keel_tenancy::TenantRecord {
+                id: TenantId::from_uuid(dev_id),
+                slug: "dev".into(),
+                name: "Development Tenant".into(),
+                plan: "standard".into(),
+                status: keel_tenancy::TenantStatus::Active,
+                region: "in".into(),
+                capabilities: std::collections::BTreeSet::new(),
+                created_at: time::OffsetDateTime::now_utc(),
+                revision: keel_foundation::TenantRevision(1),
+            });
+            if let Err(error) = seeded {
+                tracing::warn!(%error, "dev tenant not registered for subdomain resolution");
+            }
+        }
+    }
+    let tenants = Some(Arc::new(keel_tenancy::TenantService::new(tenant_store)));
 
     let state = routes::AppState {
         bus,
@@ -426,6 +483,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         cookie_cipher: cookie_cipher(cfg.http.encrypt_cookies, &cfg.app.key)
             .map_err(|error| error.public_message)?,
         terminating,
+        signed_urls,
+        tenants,
+        static_files,
+        assets,
     };
 
     // B-29: `keel shell` — interactive console over the booted graph. Same
@@ -452,6 +513,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         router
     };
+    // Wave 2 static assets: `public/` answers real files LAST (a router
+    // fallback), and a miss — traversal included — renders the same
+    // not-found path a graph route miss uses.
+    let router = static_assets::with_static_files(router, &state);
     // Sentinel context propagation (S5): build the per-request TelemetryContext
     // from the inbound traceparent (or a fresh root) joined to the admission
     // request id; handlers read it from extensions (never hand-crafted).
@@ -540,6 +605,60 @@ fn views_config(
         cache_dir: section.cache_dir.as_deref().map(resolve),
         env: section.env.clone().unwrap_or_else(|| env.to_string()),
     }
+}
+
+/// Wave 2 static assets: locate the Vite build manifest under `public/`.
+/// Vite 4 writes `build/manifest.json`, Vite 5+ nests it at
+/// `build/.vite/manifest.json`. No manifest yet is the normal state before
+/// the first build (`@asset` then emits literal URLs); an *unreadable* one
+/// is logged loudly and degrades the same way rather than failing boot.
+fn load_asset_manifest(public: &std::path::Path) -> Option<Arc<keel_http::AssetManifest>> {
+    for relative in ["build/manifest.json", "build/.vite/manifest.json"] {
+        let path = public.join(relative);
+        if !path.is_file() {
+            continue;
+        }
+        return match keel_http::AssetManifest::from_path(&path) {
+            Ok(manifest) => {
+                tracing::info!(
+                    path = %path.display(),
+                    entries = manifest.len(),
+                    "asset manifest loaded"
+                );
+                Some(Arc::new(manifest))
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    path = %path.display(),
+                    "asset manifest unreadable; @asset falls back to literal URLs"
+                );
+                None
+            }
+        };
+    }
+    tracing::debug!(dir = %public.display(), "no Vite build manifest yet");
+    None
+}
+
+/// Wave 2 asset URL helper in templates: `@asset("...")` resolves the key
+/// through the Vite build manifest when it is known (a source key maps to
+/// its hashed artifact) and otherwise emits the literal root-absolute URL —
+/// Laravel's `asset()` helper as a view directive. The handler owns
+/// escaping, so the URL always leaves the template HTML-safe.
+fn register_asset_directive(
+    engine: &keel_views::ViewsEngine,
+    assets: Option<Arc<keel_http::AssetManifest>>,
+) {
+    engine.register_directive("asset", move |_name, arg, _ctx| {
+        let raw = arg.unwrap_or_default().trim();
+        let key = raw.trim_matches(&['"', '\''][..]).trim();
+        let url = match assets.as_ref() {
+            Some(manifest) => manifest.url(key),
+            None => keel_http::asset_url(key),
+        };
+        Ok(keel_views::html_escape(&url))
+    });
 }
 
 /// Wave 2 queued-cookie encryption (opt-in via `[http] encrypt_cookies`).
@@ -687,18 +806,38 @@ pub fn build_app_state(
 
     // Wave 2 views: the harness points the engine at <storage_root>/views so
     // tests can drop fixture templates, and keeps the compiled cache off disk
-    // (each harness gets a fresh temp dir).
-    let views = Some(Arc::new(keel_views::ViewsEngine::new(
-        keel_views::ViewsConfig {
-            paths: vec![storage_root.join("views")],
-            cache_dir: None,
-            env: "test".into(),
-        },
+    // (each harness gets a fresh temp dir). `@asset` is registered against
+    // the fixture build manifest when one exists under <storage_root>/public,
+    // so the helper behaves in tests exactly as it does in production.
+    let assets = load_asset_manifest(&storage_root.join("public"));
+    let views_engine = keel_views::ViewsEngine::new(keel_views::ViewsConfig {
+        paths: vec![storage_root.join("views")],
+        cache_dir: None,
+        env: "test".into(),
+    });
+    register_asset_directive(&views_engine, assets.clone());
+    let views = Some(Arc::new(views_engine));
+    // Wave 2 static assets: the harness resolves <storage_root>/public —
+    // tests opt into the fallback through `static_assets::with_static_files`
+    // exactly as `run()` does for production.
+    let static_files = Some(Arc::new(keel_http::StaticFiles::new(
+        storage_root.join("public"),
     )));
     // Wave 2 error rendering: the harness shares the registry the same way
     // production does (services may register into it), with both transport
     // gates closed so tests opt in explicitly.
     let error_renders = Arc::new(keel_http::ErrorRenderRegistry::new());
+
+    // Wave 2 routing edge: a fixed harness application key backs the signed
+    // URL gate, and a fresh (empty) tenant registry tests can seed through
+    // the public store API feeds the host gate's subdomain resolution.
+    let signed_urls = Some(Arc::new(keel_http::SignedGate::new(
+        b"harness-app-key-for-signed-urls".to_vec(),
+        tokens.clone(),
+    )));
+    let tenants = Some(Arc::new(keel_tenancy::TenantService::new(Arc::new(
+        keel_tenancy::InMemoryTenantStore::new(),
+    ))));
 
     let state = routes::AppState {
         bus: Arc::new(bus),
@@ -754,6 +893,10 @@ pub fn build_app_state(
         // are wired by `run()` (and layered by integration tests directly).
         cookie_cipher: None,
         terminating: Arc::new(crate::edge::TerminatingHooks::new()),
+        signed_urls,
+        tenants,
+        static_files,
+        assets,
     };
     (state, graph, appt_store)
 }

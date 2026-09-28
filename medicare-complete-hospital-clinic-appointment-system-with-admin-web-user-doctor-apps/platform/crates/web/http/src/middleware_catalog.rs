@@ -10,6 +10,9 @@
 //!   installs [`ResolvedPrincipal`], else 401 envelope)
 //! - `verified` (B-23 email gate, 403 `AUTH_DENIED` when the config requires
 //!   it)
+//! - `signed` (Wave 2 signed URLs: HMAC + TTL over the request path+query,
+//!   one-time `once` markers consumed through the token store; 403 on a bad
+//!   signature, 404 on a replayed one-time link)
 //! - `throttle:<group>` (token bucket keyed by group + client key;
 //!   429 + Retry-After)
 //!
@@ -75,6 +78,10 @@ pub struct ChainRuntime {
     pub require_verified_email: bool,
     pub throttle: BTreeMap<String, ThrottleGroupConfig>,
     pub buckets: Arc<Mutex<HashMap<String, BucketState>>>,
+    /// Wave 2 signed-URL resolution: present when the deployment has an
+    /// application key. A route declaring `signed` without it is refused
+    /// (500, fail-closed) — an unsigned link must never pass silently.
+    pub signed_urls: Option<Arc<dyn crate::SignedUrlPort>>,
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<&str> {
@@ -164,6 +171,24 @@ pub async fn chain_middleware(
                     return error_response(&err).into_response();
                 }
             }
+            BuiltinMw::Signed => {
+                let Some(port) = &rt.signed_urls else {
+                    // Deployment misconfiguration, not a client error: a
+                    // signed link must never pass an unconfigured verifier.
+                    let err = AppError::internal(
+                        "signed url verification is not configured (application key missing)",
+                    );
+                    return error_response(&err).into_response();
+                };
+                let target = req
+                    .uri()
+                    .path_and_query()
+                    .map(|pq| pq.as_str().to_string())
+                    .unwrap_or_else(|| req.uri().path().to_string());
+                if let Err(err) = port.resolve(&target) {
+                    return error_response(&err).into_response();
+                }
+            }
         }
     }
     next.run(req).await
@@ -210,6 +235,19 @@ mod tests {
                 .map(|(g, c)| (g.to_string(), c.clone()))
                 .collect(),
             buckets: Arc::new(Mutex::new(HashMap::new())),
+            signed_urls: None,
+        })
+    }
+
+    /// Chain runtime with a signed-URL resolver attached (Wave 2 `signed`).
+    fn signed_runtime(chain: Vec<BuiltinMw>, port: Arc<dyn crate::SignedUrlPort>) -> Arc<ChainRuntime> {
+        Arc::new(ChainRuntime {
+            chain,
+            auth: Arc::new(FakeAuth { verified: true }),
+            require_verified_email: false,
+            throttle: BTreeMap::new(),
+            buckets: Arc::new(Mutex::new(HashMap::new())),
+            signed_urls: Some(port),
         })
     }
 
@@ -274,6 +312,7 @@ mod tests {
             require_verified_email: true,
             throttle: BTreeMap::new(),
             buckets: Arc::new(Mutex::new(HashMap::new())),
+            signed_urls: None,
         });
         let mut req = get_req();
         req.headers_mut()
@@ -288,6 +327,7 @@ mod tests {
             require_verified_email: true,
             throttle: BTreeMap::new(),
             buckets: Arc::new(Mutex::new(HashMap::new())),
+            signed_urls: None,
         });
         let mut req = get_req();
         req.headers_mut()
@@ -302,6 +342,7 @@ mod tests {
             require_verified_email: false,
             throttle: BTreeMap::new(),
             buckets: Arc::new(Mutex::new(HashMap::new())),
+            signed_urls: None,
         });
         let mut req = get_req();
         req.headers_mut()
@@ -358,5 +399,66 @@ mod tests {
         // Second request: group a is exhausted.
         let res = router.oneshot(get_req()).await.unwrap();
         assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    // ------------------------------------ Wave 2 `signed` (19-PARITY URLs)
+
+    const SIGNED_SECRET: &[u8] = b"unit-signed-url-secret-0123456789";
+
+    fn gate() -> Arc<crate::SignedGate> {
+        let tokens = Arc::new(keel_tokens::TokenService::new(Arc::new(
+            keel_tokens::InMemoryTokenStore::new(),
+        )));
+        Arc::new(crate::SignedGate::new(SIGNED_SECRET.to_vec(), tokens))
+    }
+
+    fn uri_req(uri: &str) -> Request<Body> {
+        Request::builder().uri(uri).body(Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn signed_stage_redempts_a_one_time_link_exactly_once() {
+        let gate = gate();
+        let link = gate
+            .sign_once(
+                PrincipalId::new(),
+                "/?campaign=welcome",
+                time::Duration::minutes(5),
+            )
+            .expect("one-time link mints");
+
+        // First redemption reaches the handler.
+        let rt = signed_runtime(vec![BuiltinMw::Signed], gate.clone());
+        let res = app(rt).oneshot(uri_req(&link)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        // Replay of the very same URL is spent: 404 (410/404 per plan).
+        let rt = signed_runtime(vec![BuiltinMw::Signed], gate);
+        let res = app(rt).oneshot(uri_req(&link)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let envelope: serde_json::Value = serde_json::from_slice(&body).expect("error envelope");
+        assert_eq!(envelope["ok"], false);
+        assert_eq!(envelope["error"]["code"], "KER_NOT_FOUND");
+    }
+
+    #[tokio::test]
+    async fn signed_stage_rejects_tampered_and_unconfigured_links() {
+        // Multi-use signed URL: verifies, and a flipped parameter fails.
+        let urls = crate::SignedUrls::new(SIGNED_SECRET.to_vec());
+        let link = urls.sign("/?x=1", Some(time::Duration::minutes(5)));
+        let rt = signed_runtime(vec![BuiltinMw::Signed], gate());
+        let res = app(rt).oneshot(uri_req(&link)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let tampered = link.replace("x=1", "x=2");
+        let rt = signed_runtime(vec![BuiltinMw::Signed], gate());
+        let res = app(rt).oneshot(uri_req(&tampered)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+
+        // A route declaring `signed` with no verifier configured fails closed.
+        let rt = runtime(vec![BuiltinMw::Signed], false, &[]);
+        let res = app(rt).oneshot(uri_req(&link)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

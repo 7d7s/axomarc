@@ -21,12 +21,13 @@
 //! - the Idempotency-Key header feeds the engine's idempotency gate
 //! - every response is the public Envelope; unknown routes fall through 404
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::{Path as AxumPath, State};
-use axum::http::{header, HeaderMap, Request, StatusCode};
+use axum::extract::{FromRequestParts, Path as AxumPath, State};
+use axum::http::{header, HeaderMap, Method, Request, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{MethodFilter, MethodRouter};
 use axum::{Json, Router};
@@ -177,17 +178,58 @@ fn axum_path(spec_path: &str) -> String {
     spec_path.to_string()
 }
 
-fn method_filter(method: &str) -> Option<MethodFilter> {
+/// The wire methods a manifest `method` answers (19-PARITY route dispatch):
+/// `GET` gains an automatic `HEAD`, and `ANY` is `Route::any`'s set — which
+/// includes `OPTIONS`, so an `ANY` route answers the OPTIONS probe itself.
+/// Unknown methods have no entry and are skipped at registration (the boot
+/// gates refuse them outright in production).
+fn declared_methods(method: &str) -> Option<Vec<&'static str>> {
     Some(match method.to_ascii_uppercase().as_str() {
+        "GET" => vec!["GET", "HEAD"],
+        "POST" => vec!["POST"],
+        "PUT" => vec!["PUT"],
+        "PATCH" => vec!["PATCH"],
+        "DELETE" => vec!["DELETE"],
+        "HEAD" => vec!["HEAD"],
+        "OPTIONS" => vec!["OPTIONS"],
+        "ANY" => vec![
+            "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS",
+        ],
+        _ => return None,
+    })
+}
+
+/// One already-uppercased method token -> its axum filter bit.
+fn filter_for(method: &str) -> Option<MethodFilter> {
+    Some(match method {
         "GET" => MethodFilter::GET,
         "POST" => MethodFilter::POST,
         "PUT" => MethodFilter::PUT,
         "PATCH" => MethodFilter::PATCH,
         "DELETE" => MethodFilter::DELETE,
-        "OPTIONS" => MethodFilter::OPTIONS,
         "HEAD" => MethodFilter::HEAD,
+        "OPTIONS" => MethodFilter::OPTIONS,
         _ => return None,
     })
+}
+
+/// Union of the filters for a set of declared methods.
+fn filter_from(methods: &[&'static str]) -> Option<MethodFilter> {
+    let mut iter = methods.iter();
+    let mut filter = filter_for(iter.next()?)?;
+    for method in iter {
+        filter = filter.or(filter_for(method)?);
+    }
+    Some(filter)
+}
+
+/// One manifest method -> (declared wire methods, axum filter). The filter
+/// is derived from the declaration, so the Allow list the OPTIONS probe
+/// serves can never drift from what the route actually matches.
+fn route_methods(method: &str) -> Option<(Vec<&'static str>, MethodFilter)> {
+    let declared = declared_methods(method)?;
+    let filter = filter_from(&declared)?;
+    Some((declared, filter))
 }
 
 /// Registered route inventory (for keel route:list-style introspection).
@@ -247,11 +289,39 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
     let buckets = state.throttle_buckets.clone();
 
     let mut router = Router::new();
+
+    // Wave 2 route dispatch: collect the Allow set per path first so every
+    // GET path gets exactly one auto OPTIONS probe (204 + Allow, listing
+    // every method served there). Paths that already declare OPTIONS — an
+    // explicit route or `method = "ANY"` — answer it through dispatch and
+    // are excluded from the probe list.
+    let mut allow: BTreeMap<String, BTreeSet<&'static str>> = BTreeMap::new();
+    let mut explicit_options: BTreeSet<String> = BTreeSet::new();
+    let mut probe_paths: BTreeSet<String> = BTreeSet::new();
+    for module in &graph.modules {
+        for spec in &module.routes {
+            let Some(methods) = declared_methods(&spec.method) else {
+                continue;
+            };
+            let path = axum_path(&spec.path);
+            allow
+                .entry(path.clone())
+                .or_default()
+                .extend(methods.iter().copied());
+            if methods.contains(&"OPTIONS") {
+                explicit_options.insert(path);
+            } else if methods.contains(&"GET") {
+                probe_paths.insert(path);
+            }
+        }
+    }
+    probe_paths.retain(|path| !explicit_options.contains(path));
+
     for module in &graph.modules {
         let plane = module.module.plane.to_security_plane();
         let tenant_plane = module.module.plane == keel_registry::ModulePlane::Tenant;
         for spec in &module.routes {
-            let Some(filter) = method_filter(&spec.method) else {
+            let Some((declared, filter)) = route_methods(&spec.method) else {
                 tracing::warn!(module = module.name(), method = %spec.method, path = %spec.path, "graph route skipped: unsupported method");
                 continue;
             };
@@ -300,6 +370,13 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
                 }
             };
 
+            // Route-cache hit carries the same constraints the manifest
+            // resolves (route-cache parity with chain/bindings); they gate
+            // route matching, not dispatch.
+            let constraints = cached
+                .map(|plan| plan.constraints.clone())
+                .unwrap_or_else(|| spec.resolved_constraints.clone());
+
             let profile = module
                 .capabilities
                 .get(&spec.operation)
@@ -336,20 +413,317 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
                 require_verified_email: state.require_verified_email,
                 throttle: throttle.clone(),
                 buckets: buckets.clone(),
+                signed_urls: state
+                    .signed_urls
+                    .clone()
+                    .map(|gate| gate as Arc<dyn keel_http::SignedUrlPort>),
             });
 
             let path = axum_path(&spec.path);
-            let route: MethodRouter = axum::routing::on(filter, graph_dispatch)
-                .with_state((state.clone(), dispatch))
+            let mut route: MethodRouter = axum::routing::on(filter, graph_dispatch)
+                .with_state((state.clone(), dispatch.clone()))
                 .layer(axum::middleware::from_fn_with_state(
                     runtime,
                     keel_http::chain_middleware,
                 ));
+            // Wave 2 route gate: host matching + parameter constraints run
+            // BEFORE auth — the layer sits outside the chain, so a request
+            // the route does not match never reaches the identity stage
+            // (404, the way Laravel route domains and `where*` behave).
+            if spec.domain.is_some() || spec.subdomain.is_some() || !constraints.is_empty() {
+                route = route.layer(axum::middleware::from_fn_with_state(
+                    (state.clone(), RouteGate::new(dispatch, spec, constraints)),
+                    route_gate,
+                ));
+            }
+            // Wave 2 HEAD auto-registration: strip outermost so a chain
+            // short-circuit (401/404, envelope or error view) is stripped
+            // exactly like a handled GET body.
+            if declared.contains(&"HEAD") {
+                route = route.layer(axum::middleware::from_fn(strip_head_body));
+            }
             router = router.route(&path, route);
             tracing::info!(method = %spec.method, path = %spec.path, operation = %operation_id, "graph route registered");
         }
     }
+
+    // One auto OPTIONS probe per GET path: 204 + Allow, listing every
+    // method registered on that path (19-PARITY "GET routes auto-register
+    // HEAD + OPTIONS"). Registered last, after every declared method has
+    // contributed to the Allow set.
+    for path in probe_paths {
+        let Some(methods) = allow.get(&path) else {
+            continue;
+        };
+        let mut served = methods.clone();
+        served.insert("OPTIONS");
+        let allow_header = served.into_iter().collect::<Vec<_>>().join(", ");
+        tracing::info!(path = %path, allow = %allow_header, "graph route registered (auto OPTIONS probe)");
+        let probe: MethodRouter = axum::routing::options(options_probe).with_state(allow_header);
+        router = router.route(&path, probe);
+    }
     router
+}
+
+// ------------------------------------------- Wave 2 routing edge (19-PARITY)
+
+/// Body ceiling when computing a HEAD answer's `Content-Length` from the GET
+/// body it mirrors: a body larger than this (a stream, a download) is
+/// reported without a length instead of being buffered to the end.
+const HEAD_BODY_LIMIT: usize = 8 * 1024 * 1024;
+
+/// Auto OPTIONS answer (19-PARITY "GET routes auto-register HEAD +
+/// OPTIONS"): 204 with an `Allow` header enumerating every method the path
+/// serves. Registered once per path, after the declared routes, so the set
+/// is complete.
+async fn options_probe(State(allow): State<String>) -> axum::response::Response {
+    let mut response = axum::response::Response::new(Body::empty());
+    *response.status_mut() = StatusCode::NO_CONTENT;
+    if let Ok(value) = header::HeaderValue::from_str(&allow) {
+        response.headers_mut().insert(header::ALLOW, value);
+    }
+    response
+}
+
+/// HEAD answers carry the GET status and headers with no body (RFC 9110
+/// §9.3.2), reporting the length the GET would have served when the body is
+/// known. Layered outermost on every HEAD-capable route so a chain
+/// short-circuit (401/404, envelope or error view) strips too.
+async fn strip_head_body(
+    req: Request<Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let is_head = req.method() == Method::HEAD;
+    let response = next.run(req).await;
+    if !is_head {
+        return response;
+    }
+    let (parts, body) = response.into_parts();
+    let bytes = axum::body::to_bytes(body, HEAD_BODY_LIMIT).await.ok();
+    let mut parts = parts;
+    // 204 must not carry a Content-Length (RFC 9110 §8.6).
+    if let (Some(bytes), false) = (&bytes, parts.status == StatusCode::NO_CONTENT) {
+        if let Ok(value) = header::HeaderValue::from_str(&bytes.len().to_string()) {
+            parts.headers.insert(header::CONTENT_LENGTH, value);
+        }
+    }
+    axum::response::Response::from_parts(parts, Body::empty())
+}
+
+/// Wave 2 route gate (19-PARITY routing): the "does this route match?"
+/// predicates — `domain`/`subdomain` host matching and resolved parameter
+/// constraints — enforced BEFORE the auth chain. The gate layers outside
+/// `chain_middleware`, so a wrong host or a rejected capture never reaches
+/// the identity stage: the route simply does not exist for that request
+/// (404, the way Laravel's route domains and `where*` constraints behave).
+/// A matched `subdomain` also resolves a tenant record from the registry
+/// and carries it to dispatch as [`HostTenant`] (multi-tenant web hosting).
+#[derive(Clone)]
+struct RouteGate {
+    dispatch: Arc<RouteDispatch>,
+    domain: Option<String>,
+    subdomain: Option<String>,
+    constraints: Vec<keel_registry::ResolvedConstraint>,
+}
+
+impl RouteGate {
+    fn new(
+        dispatch: Arc<RouteDispatch>,
+        spec: &RouteSpec,
+        constraints: Vec<keel_registry::ResolvedConstraint>,
+    ) -> Self {
+        Self {
+            dispatch,
+            domain: non_empty(spec.domain.as_deref()),
+            subdomain: non_empty(spec.subdomain.as_deref())
+                .map(|label| label.to_ascii_lowercase()),
+            constraints,
+        }
+    }
+}
+
+fn non_empty(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+/// Lowercased host from the Host header with any `:port` stripped. The
+/// authority may come as a comma list when a proxy appended its own, so only
+/// the first entry counts; a missing header answers empty (no route matches).
+fn host_label(headers: &HeaderMap) -> String {
+    let Some(raw) = headers.get(header::HOST).and_then(|value| value.to_str().ok()) else {
+        return String::new();
+    };
+    let authority = raw.split(',').next().unwrap_or(raw).trim();
+    let host = match authority.rsplit_once(':') {
+        Some((head, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => head,
+        _ => authority,
+    };
+    host.trim_end_matches('.').to_ascii_lowercase()
+}
+
+/// Exact host match, or a `*.example.com` wildcard covering any subdomain
+/// of that suffix (the apex itself does not match, as with DNS wildcards).
+fn domain_matches(host: &str, expected: &str) -> bool {
+    let host = host.to_ascii_lowercase();
+    let expected = expected.trim_end_matches('.').to_ascii_lowercase();
+    match expected.strip_prefix("*.") {
+        Some(suffix) => host
+            .strip_suffix(&format!(".{suffix}"))
+            .is_some_and(|prefix| !prefix.is_empty() && !prefix.ends_with('.')),
+        None => host == expected,
+    }
+}
+
+/// The first DNS label is the declared subdomain (`acme.example.com` ->
+/// `acme`), and the host must actually carry a parent domain.
+fn subdomain_matches(host: &str, expected: &str) -> bool {
+    let mut labels = host.split('.');
+    let Some(label) = labels.next() else {
+        return false;
+    };
+    !label.is_empty() && label.eq_ignore_ascii_case(expected) && labels.next().is_some()
+}
+
+/// Tenant resolved from a route's `subdomain` by the host gate, carried to
+/// dispatch as a request extension where it feeds tenant resolution:
+/// the principal's own tenant wins, then this, then the configured default.
+#[derive(Debug, Clone)]
+pub struct HostTenant(pub TenantContext);
+
+async fn route_gate(
+    State((state, gate)): State<(AppState, RouteGate)>,
+    mut req: Request<Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let host = host_label(req.headers());
+    if let Some(expected) = gate.domain.as_deref() {
+        if !domain_matches(&host, expected) {
+            return route_miss(&state, &gate, req.headers(), req.uri().path());
+        }
+    }
+    if let Some(expected) = gate.subdomain.as_deref() {
+        if !subdomain_matches(&host, expected) {
+            return route_miss(&state, &gate, req.headers(), req.uri().path());
+        }
+        // Matched subdomain -> tenant lookup feeding tenant resolution. An
+        // unknown slug keeps the existing resolution (the host still had to
+        // match): nothing is silently promoted to another tenant's data.
+        if let Some(tenants) = state.tenants.as_ref() {
+            match tenants.resolve(&keel_tenancy::TenantHint::Slug(expected.to_string())) {
+                Ok(record) => {
+                    let context = tenants.context(&record);
+                    tracing::debug!(
+                        subdomain = %expected,
+                        tenant = %context.slug,
+                        "host tenant feeds tenant resolution"
+                    );
+                    req.extensions_mut().insert(HostTenant(context));
+                }
+                Err(error) => tracing::debug!(
+                    subdomain = %expected,
+                    error = %error.public_message,
+                    "subdomain has no tenant record; tenant resolution falls back"
+                ),
+            }
+        }
+    }
+    if !gate.constraints.is_empty() {
+        // Constraints are part of route MATCHING (Laravel `where*`), so they
+        // belong here rather than in the handler: a capture the constraint
+        // rejects means no route, before any identity work. The captures are
+        // read through axum's own `Path` extractor, so values are decoded
+        // exactly as dispatch sees them (no second path parser at the edge).
+        let (mut parts, body) = req.into_parts();
+        let captured =
+            match AxumPath::<Vec<(String, String)>>::from_request_parts(&mut parts, &()).await {
+                Ok(AxumPath(captured)) => captured,
+                Err(error) => {
+                    // An already-matched route always carries its captures;
+                    // if they cannot be read, refuse rather than dispatch a
+                    // constraint nobody checked.
+                    tracing::warn!(?error, "route captures unreadable; treating as a route miss");
+                    return route_miss(&state, &gate, &parts.headers, parts.uri.path());
+                }
+            };
+        for constraint in &gate.constraints {
+            let Some(value) = captured
+                .iter()
+                .find(|(key, _)| key == &constraint.param)
+                .map(|(_, value)| value.as_str())
+            else {
+                // GRAPH-CONSTRAINT-PARAM refuses boot when a constrained
+                // param is absent from the path, so this is unreachable in
+                // a booted graph; nothing to check against.
+                continue;
+            };
+            if !keel_registry::constraint_matches(constraint, value) {
+                tracing::debug!(
+                    param = %constraint.param,
+                    kind = %constraint.kind.as_str(),
+                    "route constraint rejects the capture"
+                );
+                return route_miss(&state, &gate, &parts.headers, parts.uri.path());
+            }
+        }
+        req = Request::from_parts(parts, body);
+    }
+    next.run(req).await
+}
+
+/// Route miss: the request does not match this entry (host or capture), so
+/// the route does not exist for it — 404 through the usual render path
+/// (web-plane error views included), never 403.
+fn route_miss(
+    state: &AppState,
+    gate: &RouteGate,
+    headers: &HeaderMap,
+    path: &str,
+) -> axum::response::Response {
+    dispatch_error(
+        state,
+        &gate.dispatch,
+        headers,
+        path,
+        &keel_foundation::AppError::not_found("route"),
+    )
+}
+
+/// Render a path that matched NO route — the static fallback's miss case
+/// (traversal attempts, unknown URLs, files that do not exist). A synthetic
+/// web-plane dispatch sends browsers to the `errors/404` view and machine
+/// clients to the Envelope/problem, exactly like a graph route that resolves
+/// to nothing, so an unmatched path is one error shape rather than axum's
+/// bare text.
+pub(crate) fn not_found_response(
+    state: &AppState,
+    headers: &HeaderMap,
+    path: &str,
+) -> axum::response::Response {
+    let dispatch = RouteDispatch {
+        operation: OperationId::from_static("http.not_found"),
+        profile: ExecutionProfileKind::Read,
+        plane: SecurityPlane::Edge,
+        public: true,
+        deprecated: false,
+        inject_page: false,
+        bindings: Vec::new(),
+        validator: None,
+        route_plane: RoutePlane::Web,
+        response: ResponseKind::Json,
+        view: None,
+        is_get: true,
+        cache: None,
+    };
+    dispatch_error(
+        state,
+        &dispatch,
+        headers,
+        path,
+        &keel_foundation::AppError::not_found("route"),
+    )
 }
 
 /// Inventory of graph routes (registration-independent, for meta endpoints).
@@ -1016,6 +1390,12 @@ async fn graph_dispatch(
         .copied()
         .unwrap_or_else(keel_foundation::TraceId::new);
     let resolved = req.extensions().get::<ResolvedPrincipal>().cloned();
+    // Wave 2: the host gate resolves a route's `subdomain` into a tenant
+    // record before auth; it feeds resolution below the principal's own
+    // tenant (identity wins, so a session can never be promoted into
+    // another tenant's context) and above the configured default.
+    let host_tenant = req.extensions().get::<HostTenant>().cloned();
+    let host_tenant_id = host_tenant.as_ref().map(|host| host.0.id);
     // Wave 2: redirect routes carry flash data onto the caller's session.
     let resolved_session = req.extensions().get::<ResolvedSession>().cloned();
     // Wave 2: `_auth` view convention + error-view path context.
@@ -1035,7 +1415,7 @@ async fn graph_dispatch(
     // public and the handler plan tolerates anonymous callers.
     let (principal, tenant) = match resolved {
         Some(r) => {
-            let tenant = r.tenant.or(state.default_tenant_id);
+            let tenant = r.tenant.or(host_tenant_id).or(state.default_tenant_id);
             let Some(tenant) = tenant else {
                 let err = keel_foundation::AppError::unauthenticated();
                 return dispatch_error(&state, &dispatch, &headers, &path, &err);
@@ -1052,7 +1432,7 @@ async fn graph_dispatch(
                 let err = keel_foundation::AppError::unauthenticated();
                 return dispatch_error(&state, &dispatch, &headers, &path, &err);
             }
-            let Some(tenant) = state.default_tenant_id else {
+            let Some(tenant) = host_tenant_id.or(state.default_tenant_id) else {
                 let err = keel_foundation::AppError::unauthenticated();
                 return dispatch_error(&state, &dispatch, &headers, &path, &err);
             };
@@ -1185,11 +1565,18 @@ async fn graph_dispatch(
         builder = builder.request_id(request_id);
     }
     if dispatch.plane == SecurityPlane::Tenant {
+        // A host-fed tenant contributes its real slug and plan (the slug
+        // the caller's hostname resolved to); anything else keeps the
+        // bootstrap defaults.
+        let (slug, plan) = match host_tenant.as_ref() {
+            Some(host) if host.0.id == tenant => (host.0.slug.clone(), host.0.plan.clone()),
+            _ => ("default".into(), "standard".into()),
+        };
         builder = builder
             .tenant(TenantContext {
                 id: tenant,
-                slug: "default".into(),
-                plan: "standard".into(),
+                slug,
+                plan,
             })
             .scope(ScopeSnapshot {
                 nodes: vec![],
@@ -1252,10 +1639,54 @@ mod tests {
 
     #[test]
     fn method_filter_mapping() {
-        assert!(method_filter("get").is_some());
-        assert!(method_filter("POST").is_some());
-        assert!(method_filter("TRACE").is_none());
-        assert!(method_filter("nope").is_none());
+        // GET answers HEAD too (auto-registration); ANY is Route::any's set.
+        let (declared, filter) = route_methods("get").expect("get");
+        assert_eq!(declared, vec!["GET", "HEAD"]);
+        assert_eq!(
+            filter,
+            MethodFilter::GET.or(MethodFilter::HEAD),
+            "the filter is the union of the declared methods"
+        );
+        let (declared, _) = route_methods("ANY").expect("any");
+        assert_eq!(
+            declared,
+            vec!["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+        );
+        assert!(route_methods("POST").is_some());
+        assert!(route_methods("TRACE").is_none());
+        assert!(route_methods("nope").is_none());
+    }
+
+    #[test]
+    fn host_label_strips_port_and_lowercases() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::HOST,
+            header::HeaderValue::from_static("API.Example.COM:8080"),
+        );
+        assert_eq!(host_label(&headers), "api.example.com");
+        assert_eq!(host_label(&HeaderMap::new()), "", "no Host -> no match");
+    }
+
+    #[test]
+    fn host_matching_rules() {
+        assert!(domain_matches("api.example.com", "api.example.com"));
+        assert!(domain_matches("api.example.com", "API.Example.COM"));
+        assert!(!domain_matches("api.example.com", "portal.example.com"));
+        // Wildcards cover any subdomain but never the apex itself.
+        assert!(domain_matches("a.example.com", "*.example.com"));
+        assert!(domain_matches("a.b.example.com", "*.example.com"));
+        assert!(!domain_matches("example.com", "*.example.com"));
+        assert!(!domain_matches("notexample.com", "*.example.com"));
+
+        assert!(subdomain_matches("acme.example.com", "acme"));
+        assert!(subdomain_matches("ACME.example.com", "acme"));
+        assert!(!subdomain_matches("acme.example.com", "globex"));
+        assert!(
+            !subdomain_matches("acme", "acme"),
+            "a bare host carries no parent domain"
+        );
+        assert!(!subdomain_matches("", "acme"));
     }
 
     #[test]

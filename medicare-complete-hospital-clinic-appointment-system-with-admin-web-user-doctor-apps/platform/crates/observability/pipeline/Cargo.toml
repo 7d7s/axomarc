@@ -8,7 +8,6 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 description = "Keel Sentinel: telemetry processing DAG (normalize, classify, enrich, redact, fingerprint, sample, dedupe, correlate, route)."
-publish = false
 
 [dependencies]
 keel-foundation = { workspace = true }

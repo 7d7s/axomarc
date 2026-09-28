@@ -234,7 +234,33 @@ fn publish_order(pkgs: &[Pkg]) -> Result<Vec<String>, String> {
 const PUBLISH_RETRIES: usize = 5;
 const PUBLISH_RETRY_DELAY_SECS: u64 = 30;
 
-fn publish_one(root: &Path, name: &str, dry_run: bool) -> bool {
+/// Result of one `cargo publish` attempt.
+enum PublishOutcome {
+    /// Uploaded (or dry-run packaged + verified).
+    Ok,
+    /// Dry-run only: cargo refused to package because workspace-internal
+    /// `keel-*` dependencies are not on crates.io yet (first-publish
+    /// bootstrap gap). The real wave publishes in dependency order, which
+    /// resolves each dep before its dependents are attempted.
+    Deferred(String),
+    /// A real failure (manifest, files, guard, registry).
+    Failed,
+}
+
+/// The unresolved package name when the only failure is the first-publish
+/// bootstrap gap: workspace-internal `keel-*` crates are absent from the
+/// crates.io index until the wave runs, so cargo cannot package dependents.
+fn bootstrap_missing(stderr: &str) -> Option<&str> {
+    if !stderr.contains("location searched: crates.io index") {
+        return None;
+    }
+    const PAT: &str = "no matching package named `";
+    let rest = stderr.get(stderr.find(PAT)? + PAT.len()..)?;
+    let name = &rest[..rest.find('`')?];
+    name.starts_with("keel-").then_some(name)
+}
+
+fn publish_one(root: &Path, name: &str, dry_run: bool) -> PublishOutcome {
     let max_attempts = if dry_run { 1 } else { PUBLISH_RETRIES };
     for attempt in 1..=max_attempts {
         let mut cmd = std::process::Command::new("cargo");
@@ -246,17 +272,27 @@ fn publish_one(root: &Path, name: &str, dry_run: bool) -> bool {
             Ok(o) => o,
             Err(e) => {
                 println!("publish [!!]: failed to invoke cargo publish for {name}: {e}");
-                return false;
+                return PublishOutcome::Failed;
             }
         };
         if output.status.success() {
             println!("publish: {name} OK (attempt {attempt})");
-            return true;
+            return PublishOutcome::Ok;
         }
         let stderr = String::from_utf8_lossy(&output.stderr);
+        if dry_run {
+            if let Some(missing) = bootstrap_missing(&stderr) {
+                println!(
+                    "publish: {name} deferred (first-publish bootstrap gap: \
+                     `{missing}` is not on crates.io yet — manifest and files \
+                     validated; the real wave packages it in dependency order)"
+                );
+                return PublishOutcome::Deferred(missing.to_string());
+            }
+        }
         if !dry_run && (stderr.contains("already exists") || stderr.contains("already uploaded")) {
             println!("publish: {name} already published at this version — continuing");
-            return true;
+            return PublishOutcome::Ok;
         }
         println!(
             "publish [!!]: cargo publish failed for {name} (attempt {attempt}/{max_attempts})"
@@ -269,14 +305,17 @@ fn publish_one(root: &Path, name: &str, dry_run: bool) -> bool {
             std::thread::sleep(std::time::Duration::from_secs(PUBLISH_RETRY_DELAY_SECS));
         }
     }
-    false
+    PublishOutcome::Failed
 }
 
 /// Publish all publishable workspace crates to crates.io, in dependency order.
 ///
 /// `--dry-run` packages and validates without uploading (no retries: a dry-run
-/// failure is a real problem). `--only a,b,c` restricts the run to a subset.
-/// The final `XTASK-PUBLISH:` line is machine-readable for CI.
+/// failure is a real problem). Crates whose workspace-internal `keel-*` deps
+/// are not on crates.io yet are reported as `deferred` — the first-publish
+/// bootstrap gap; the real wave publishes in dependency order, which resolves
+/// each dep before its dependents are attempted. `--only a,b,c` restricts the
+/// run to a subset. The final `XTASK-PUBLISH:` line is machine-readable for CI.
 fn publish(args: &[String]) -> ExitCode {
     let mut dry_run = false;
     let mut only: Option<Vec<String>> = None;
@@ -376,17 +415,29 @@ fn publish(args: &[String]) -> ExitCode {
 
     let version = selected[0].version.clone();
     let mut published = Vec::new();
+    let mut deferred = Vec::new();
     for pkg in &selected {
-        if !publish_one(root, &pkg.name, dry_run) {
-            return ExitCode::FAILURE;
+        match publish_one(root, &pkg.name, dry_run) {
+            PublishOutcome::Ok => published.push(pkg.name.clone()),
+            PublishOutcome::Deferred(missing) => {
+                published.push(pkg.name.clone());
+                deferred.push(format!("{}({missing})", pkg.name));
+            }
+            PublishOutcome::Failed => return ExitCode::FAILURE,
         }
-        published.push(pkg.name.clone());
     }
 
+    if !deferred.is_empty() {
+        println!(
+            "publish: {} crate(s) deferred to the real ordered wave (bootstrap gap)",
+            deferred.len()
+        );
+    }
     println!(
-        "XTASK-PUBLISH: version={version} crates={} count={} dry-run={dry_run}",
+        "XTASK-PUBLISH: version={version} crates={} count={} dry-run={dry_run} deferred={}",
         published.join(","),
-        published.len()
+        published.len(),
+        deferred.len()
     );
     ExitCode::SUCCESS
 }

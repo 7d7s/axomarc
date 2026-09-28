@@ -40,7 +40,7 @@ Every framework crate transitively depends on `keel-foundation`, so nothing
 else could upload until this rename landed. Replacement names were verified
 available on crates.io before the sweep.
 
-### Wave 2 (remaining release steps) - the remaining 52 crates
+### Wave 2 (remaining release steps) - the remaining 60 crates
 
 1. ~~Perform the renames (package names, dependency keys, imports, doc
    references in `platform/docs/*` and `platform/API-STABILITY.md`)~~ - DONE.
@@ -49,8 +49,28 @@ available on crates.io before the sweep.
 3. Add `keel-framework` to `members` and `[workspace.dependencies]`.
 4. `just deny && just publish-dry` must both pass.
 5. Publish the wave: `just publish` (local) or dispatch `keel-publish.yml`
-   with `dry_run=false`. The topologically ordered run publishes all 53
-   crates in one pass with registry-propagation retries.
+   with `dry_run=false`. The topologically ordered run publishes all 61
+   crates in one pass (`keel-analyzer` is already live; `already exists` is
+   treated as success) with registry-propagation retries.
+
+Publish-gate triage (2026-09-29, Wave 2 prep): the Wave 2 guard (`publishable
+crate depends on gated crate`) failed on 10 edges. Fixed per crate intent: the
+seven Sentinel/integrity crates whose READMEs say *internal-only until a
+release wave* had their gate lifted (`keel-metrics`, `keel-telemetry`,
+`keel-tracing`, `keel-pipeline`, `keel-buffer`, `keel-export`,
+`keel-integrity`), and `keel-api` gained `publish = false` — it is the demo
+API host that hard-wires `keel-mod-appointments` (application code, staying
+gated) and is not a library artifact. Result: 68 members, 61 publishable, 7
+gated (`keel-audit`, `keel-api`, `keel-mod-appointments`, `keel-arch-validation`,
+`keel-example-minimal`, `keel-example-reference`, `xtask`).
+
+Dry-run bootstrap semantics: `cargo publish --dry-run` resolves every
+dependency against the crates.io index, so before the first real publish the
+58 crates that depend on unpublished workspace crates cannot be packaged yet
+(first-publish bootstrap gap). `xtask publish --dry-run` reports those as
+`deferred` (bootstrap gap) and fails on anything else; the real `just publish`
+runs in dependency order, resolving each crate before its dependents are
+attempted.
 
 ## Prerequisites (human release manager)
 
@@ -90,6 +110,10 @@ just publish       # cargo publish in dependency order (retries on propagation)
 - Emits a machine-readable final line for CI:
   `XTASK-PUBLISH: version=... crates=... count=... dry-run=...`
 - Fails fast if a publishable crate depends on a gated crate (Wave 2 guard).
+- Dry-run: crates blocked only by the first-publish bootstrap gap
+  (workspace-internal `keel-*` deps absent from the crates.io index) are
+  reported as `deferred` in the `XTASK-PUBLISH:` line; any other failure
+  still fails the run.
 
 ## Release flow (CI)
 

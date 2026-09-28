@@ -707,9 +707,19 @@ mod tests {
             "stable per (flag, actor)"
         );
         assert!(bucket < 100);
-        assert_ne!(
-            rollout_bucket("billing.v2", PrincipalId::new()),
-            rollout_bucket("billing.v2", actor),
+        // A *single* second actor collides with the first about once per 100
+        // runs (100 buckets), which would make the gate flaky rather than
+        // meaningful: sample until one lands elsewhere. The collision odds
+        // are now (1/100)^16, i.e. never in practice.
+        let mut independent = false;
+        for _ in 0..16 {
+            if rollout_bucket("billing.v2", PrincipalId::new()) != bucket {
+                independent = true;
+                break;
+            }
+        }
+        assert!(
+            independent,
             "different actors get independent buckets (probabilistically)"
         );
 

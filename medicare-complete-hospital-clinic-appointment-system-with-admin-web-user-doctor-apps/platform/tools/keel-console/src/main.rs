@@ -70,6 +70,15 @@ enum Cmd {
         /// Output format: table or json.
         #[arg(long, default_value = "table")]
         format: String,
+        /// Keep routes whose name contains this text (case-insensitive).
+        #[arg(long)]
+        name: Option<String>,
+        /// Keep routes whose path contains this text (case-insensitive).
+        #[arg(long)]
+        path: Option<String>,
+        /// Keep routes on this plane (api or web).
+        #[arg(long)]
+        plane: Option<String>,
     },
     /// Wave 1: resolve every route's middleware chain + bindings + validation
     /// and write storage/framework/routes.json (pinned to a manifest hash).
@@ -80,6 +89,14 @@ enum Cmd {
     /// live route resolution).
     #[command(name = "route:clear")]
     RouteClear,
+    /// Wave 2: precompile every template under `[views].paths` into the
+    /// compiled cache (`[views].cache_dir`, default storage/framework/views).
+    #[command(name = "view:cache")]
+    ViewCache,
+    /// Wave 2: drop every compiled view cache entry (boot recompiles on
+    /// demand; a corrupt or stale entry never survives a clear).
+    #[command(name = "view:clear")]
+    ViewClear,
     /// List declared events.
     #[command(name = "event:list")]
     EventList,
@@ -320,7 +337,19 @@ fn main() -> ExitCode {
         Cmd::MakeMigration { name } => make_migration(&name),
         Cmd::Graph => graph_report(),
         Cmd::Modules => modules_list(),
-        Cmd::RouteList { format } => route_list(&format),
+        Cmd::RouteList {
+            format,
+            name,
+            path,
+            plane,
+        } => route_list(
+            &format,
+            name.as_deref(),
+            path.as_deref(),
+            plane.as_deref(),
+        ),
+        Cmd::ViewCache => view_cache(),
+        Cmd::ViewClear => view_clear(),
         Cmd::RouteCache => route_cache(),
         Cmd::RouteClear => route_clear(),
         Cmd::EventList => event_list(),
@@ -693,44 +722,148 @@ fn modules_list() -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn route_list(format: &str) -> anyhow::Result<ExitCode> {
+/// One row of `route:list` (the table and json formats share it).
+#[derive(Debug)]
+struct RouteRow {
+    method: String,
+    path: String,
+    module: String,
+    operation: String,
+    /// `api` (default) or `web` — the declared route plane.
+    plane: String,
+    /// Owning `[[route_groups]]` name (empty when the route is ungrouped).
+    group: String,
+    version: String,
+    deprecated: bool,
+    name: String,
+}
+
+/// Build the `route:list` rows for `graph` through the optional filters
+/// (19-PARITY "route:list filters"). `--plane` is an EXACT match and is
+/// validated up front so a typo never silently matches nothing; `--name`
+/// and `--path` are case-insensitive substring filters. Group prefix and
+/// group plane are already merged into the spec at parse time
+/// (`registry::apply_groups`), so the rows show what the edge serves.
+fn route_rows(
+    graph: &keel_registry::PlatformGraph,
+    name_filter: Option<&str>,
+    path_filter: Option<&str>,
+    plane_filter: Option<&str>,
+) -> anyhow::Result<Vec<RouteRow>> {
+    let plane_filter = match plane_filter {
+        Some(raw) => {
+            let plane = raw.to_ascii_lowercase();
+            if plane != "api" && plane != "web" {
+                anyhow::bail!("unknown plane {plane:?} (expected api or web)");
+            }
+            Some(plane)
+        }
+        None => None,
+    };
+    let contains = |filter: Option<&str>, value: &str| match filter {
+        None => true,
+        Some(needle) => value
+            .to_lowercase()
+            .contains(&needle.to_lowercase()),
+    };
+    let mut rows = Vec::new();
+    for m in &graph.modules {
+        for r in &m.routes {
+            let row = RouteRow {
+                method: r.method.clone(),
+                path: r.path.clone(),
+                module: m.name().to_string(),
+                operation: r.operation.clone(),
+                plane: r.plane.clone().unwrap_or_else(|| "api".to_string()),
+                group: r.group.clone().unwrap_or_default(),
+                version: r.version.clone(),
+                deprecated: r.deprecated,
+                name: r.name.clone().unwrap_or_default(),
+            };
+            if let Some(plane) = &plane_filter {
+                if &row.plane != plane {
+                    continue;
+                }
+            }
+            if !contains(name_filter, &row.name) || !contains(path_filter, &row.path) {
+                continue;
+            }
+            rows.push(row);
+        }
+    }
+    Ok(rows)
+}
+
+fn route_list(
+    format: &str,
+    name: Option<&str>,
+    path: Option<&str>,
+    plane: Option<&str>,
+) -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
-    let graph = match compile_graph(&root) {
+    route_list_at(&root, format, name, path, plane)
+}
+
+fn route_list_at(
+    root: &Path,
+    format: &str,
+    name: Option<&str>,
+    path: Option<&str>,
+    plane: Option<&str>,
+) -> anyhow::Result<ExitCode> {
+    let graph = match compile_graph(root) {
         Ok(g) => g,
         Err(code) => return Ok(code),
     };
-    let mut rows: Vec<serde_json::Value> = Vec::new();
-    for m in &graph.modules {
-        for r in &m.routes {
-            rows.push(serde_json::json!({
-                "method": r.method,
-                "path": r.path,
-                "module": m.name(),
-                "operation": r.operation,
-                "version": r.version,
-                "name": r.name,
-            }));
-        }
-    }
+    let rows = route_rows(&graph, name, path, plane)?;
     match format {
-        "json" => println!("{}", serde_json::to_string_pretty(&rows)?),
+        "json" => {
+            let json: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "method": r.method,
+                        "path": r.path,
+                        "module": r.module,
+                        "operation": r.operation,
+                        "plane": r.plane,
+                        "group": r.group,
+                        "version": r.version,
+                        "deprecated": r.deprecated,
+                        // Absent names stay `null` (the pre-Wave-2 shape).
+                        "name": if r.name.is_empty() {
+                            serde_json::Value::Null
+                        } else {
+                            serde_json::Value::String(r.name.clone())
+                        },
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&json)?);
+        }
         "table" => {
-            for row in &rows {
-                println!(
-                    "  {:<6} {:<32} -> {}.{}  [{}]{}",
-                    row["method"].as_str().unwrap_or_default(),
-                    row["path"].as_str().unwrap_or_default(),
-                    row["module"].as_str().unwrap_or_default(),
-                    row["operation"].as_str().unwrap_or_default(),
-                    row["version"].as_str().unwrap_or_default(),
-                    row["name"]
-                        .as_str()
-                        .map(|n| format!("  name={n}"))
-                        .unwrap_or_default(),
-                );
-            }
             if rows.is_empty() {
                 println!("  (none)");
+            } else {
+                println!(
+                    "  {:<6} {:<4} {:<34} -> {:<26} {:<7}  {:<12} {:<10} NAME",
+                    "METHOD", "PLANE", "PATH", "MODULE.OPERATION", "VERSION",
+                    "GROUP", "DEPRECATED"
+                );
+                for row in &rows {
+                    let target = format!("{}.{}", row.module, row.operation);
+                    println!(
+                        "  {:<6} {:<4} {:<34} -> {:<26} {:<7}  {:<12} {:<10} {}",
+                        row.method,
+                        row.plane,
+                        row.path,
+                        target,
+                        row.version,
+                        row.group,
+                        if row.deprecated { "deprecated" } else { "" },
+                        row.name,
+                    );
+                }
             }
         }
         other => anyhow::bail!("unknown format {other:?} (expected table or json)"),
@@ -1023,6 +1156,87 @@ fn cache_clear() -> anyhow::Result<ExitCode> {
     println!("cache: nothing to clear — platform caches are in-process per node (MemoryCache).");
     println!("Restart api/worker processes to reset them.");
     Ok(ExitCode::SUCCESS)
+}
+
+// -------------------------------------------------------------------- views
+
+/// Wave 2: precompile every discoverable template under `[views].paths`
+/// into the compiled cache (`[views].cache_dir`). Boot serves from this
+/// cache (mtime + content hash), so a release runs view:cache after the
+/// templates ship.
+fn view_cache() -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    view_cache_at(&root)
+}
+
+fn view_cache_at(root: &Path) -> anyhow::Result<ExitCode> {
+    let engine = views_engine(root)?;
+    let cached = engine
+        .precompile_all()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    match engine.config().cache_dir.as_ref() {
+        Some(dir) => println!("view:cache: {cached} templates compiled into {}", dir.display()),
+        None => println!(
+            "view:cache: {cached} templates compiled (no [views] cache_dir; disk cache disabled)"
+        ),
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Wave 2: drop every compiled view cache entry — the in-process memo plus
+/// the `*.json` artifacts under the cache dir. Boot recompiles on demand,
+/// so a corrupt or stale entry never survives a clear.
+fn view_clear() -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    view_clear_at(&root)
+}
+
+fn view_clear_at(root: &Path) -> anyhow::Result<ExitCode> {
+    let engine = views_engine(root)?;
+    let cleared = engine
+        .clear_cache()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("view:clear: {cleared} compiled views cleared");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Build the views engine from the loaded `[views]` section — the CLI twin
+/// of the boot conversion in `keel-api`. The dependency matrix forbids
+/// `application -> web`, so each consumer maps the plain-data section
+/// itself (same rules: relative paths resolve against the workspace root,
+/// empty paths fall back to resources/views).
+fn views_engine(root: &Path) -> anyhow::Result<keel_views::ViewsEngine> {
+    let cfg = load_config(root)?;
+    let env = cfg.app.env.as_str();
+    Ok(keel_views::ViewsEngine::new(views_config(
+        &cfg.views,
+        root,
+        env,
+    )))
+}
+
+fn views_config(
+    section: &keel_config::ViewsSection,
+    root: &Path,
+    env: &str,
+) -> keel_views::ViewsConfig {
+    let resolve = |raw: &str| {
+        let path = std::path::PathBuf::from(raw);
+        if path.is_absolute() {
+            path
+        } else {
+            root.join(path)
+        }
+    };
+    let mut paths: Vec<std::path::PathBuf> = section.paths.iter().map(|p| resolve(p)).collect();
+    if paths.is_empty() {
+        paths.push(root.join("resources/views"));
+    }
+    keel_views::ViewsConfig {
+        paths,
+        cache_dir: section.cache_dir.as_deref().map(resolve),
+        env: section.env.clone().unwrap_or_else(|| env.to_string()),
+    }
 }
 
 // -------------------------------------------------------------- maintenance
@@ -2899,6 +3113,146 @@ middleware = ["ghost"]
         // route:clear -> artifact gone (boot falls back to live resolution).
         assert_eq!(route_clear_at(&dir).expect("route clear runs"), ExitCode::SUCCESS);
         assert!(!path.exists(), "artifact removed");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Wave 2 route:list filters (19-PARITY): `--plane` is a validated
+    /// exact match, `--name`/`--path` are case-insensitive substrings, and
+    /// every row carries plane/group/version/deprecation — after the group
+    /// prefix and plane have been merged into the spec at parse time.
+    #[test]
+    fn route_list_filters_carry_the_parity_columns() {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "keel-console-routelist-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        let app_dir = dir.join("applications").join("alpha");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("module.toml"),
+            r#"
+[module]
+name = "alpha"
+version = "0.1.0"
+
+[capabilities]
+"index" = { profile = "READ" }
+
+[[route_groups]]
+name = "web-pages"
+prefix = "admin"
+plane = "web"
+
+[[routes]]
+method = "GET"
+path = "/notes"
+operation = "index"
+capability = "index"
+name = "notes.index"
+
+[[routes]]
+method = "POST"
+path = "/notes"
+operation = "index"
+capability = "index"
+name = "notes.create"
+group = "web-pages"
+deprecated = true
+
+[[routes]]
+method = "GET"
+path = "/health"
+operation = "index"
+capability = "index"
+"#,
+        )
+        .unwrap();
+
+        let graph = compile_graph(&dir).expect("fixture graph compiles");
+
+        // No filters: every route, with the parity columns populated.
+        let all = route_rows(&graph, None, None, None).expect("rows build");
+        assert_eq!(all.len(), 3);
+        let web = route_rows(&graph, None, None, Some("web")).expect("web plane filter");
+        assert_eq!(web.len(), 1);
+        assert_eq!(web[0].path, "/admin/notes", "group prefix merged into the row");
+        assert_eq!(web[0].plane, "web", "group plane inherited at parse time");
+        assert_eq!(web[0].group, "web-pages");
+        assert_eq!(web[0].method, "POST");
+        assert!(web[0].deprecated, "deprecation column reflects the manifest");
+        let api = route_rows(&graph, None, None, Some("api")).expect("api plane filter");
+        assert_eq!(api.len(), 2);
+        assert!(api.iter().all(|r| !r.deprecated));
+        assert_eq!(api[0].group, "", "ungrouped routes keep an empty group");
+
+        // Name/path filters are case-insensitive substrings.
+        let named = route_rows(&graph, Some("NOTES."), None, None).expect("name filter");
+        assert_eq!(named.len(), 2);
+        let health = route_rows(&graph, None, Some("/HEALTH"), None).expect("path filter");
+        assert_eq!(health.len(), 1);
+        assert_eq!(health[0].path, "/health");
+        let empty = route_rows(&graph, Some("nope"), None, None).expect("no match is empty");
+        assert!(empty.is_empty());
+
+        // A typo'd plane refuses instead of silently listing nothing.
+        route_rows(&graph, None, None, Some("graphql"))
+            .expect_err("unknown plane refuses");
+
+        // Both printers accept the filtered row set end to end.
+        assert_eq!(
+            route_list_at(&dir, "json", None, None, Some("web")).expect("json listing runs"),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(
+            route_list_at(&dir, "table", None, Some("notes"), None).expect("table listing runs"),
+            ExitCode::SUCCESS
+        );
+        route_list_at(&dir, "yaml", None, None, None).expect_err("unknown format refuses");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Wave 2 view-cache cycle: view:cache precompiles every template into
+    /// the cache dir derived from the same `[views]` section the boot reads
+    /// (section defaults apply when the config has no `[views]` table),
+    /// re-runs overwrite in place, and view:clear removes the artifacts so
+    /// boot recompiles on demand.
+    #[test]
+    fn view_cache_cycle_compiles_and_clears() {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "keel-console-viewcache-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(dir.join("config")).unwrap();
+        std::fs::write(
+            dir.join("config").join("dev.toml"),
+            "[app]\nname = \"viewcache\"\nenv = \"test\"\n",
+        )
+        .unwrap();
+        let views = dir.join("resources").join("views");
+        std::fs::create_dir_all(views.join("pages")).unwrap();
+        std::fs::create_dir_all(views.join("errors")).unwrap();
+        std::fs::write(views.join("pages").join("hello.html"), "<p>hello {{ name }}</p>").unwrap();
+        std::fs::write(views.join("errors").join("404.html"), "<h1>404</h1>").unwrap();
+
+        assert_eq!(view_cache_at(&dir).expect("view cache runs"), ExitCode::SUCCESS);
+        let cache_dir = dir.join("storage").join("framework").join("views");
+        let count = |label: &str| {
+            std::fs::read_dir(&cache_dir)
+                .unwrap_or_else(|e| panic!("{label}: cache dir readable: {e}"))
+                .count()
+        };
+        assert_eq!(count("after cache"), 2, "one compiled artifact per template");
+
+        // Idempotent: drift overwrites the same entry instead of piling up.
+        assert_eq!(view_cache_at(&dir).expect("view cache reruns"), ExitCode::SUCCESS);
+        assert_eq!(count("after rerun"), 2, "no duplicate artifacts");
+
+        assert_eq!(view_clear_at(&dir).expect("view clear runs"), ExitCode::SUCCESS);
+        assert_eq!(count("after clear"), 0, "compiled artifacts removed");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

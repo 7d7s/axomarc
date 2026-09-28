@@ -1,6 +1,8 @@
 [package]
 name = "keel-api"
 description = "Keel API host: boots the ApplicationHost, serves health/readiness and the first routes"
+# Demo/dev API host: hard-wires keel-mod-appointments and the Sentinel# metrics layer, neither of which ships to crates.io (Wave 2 publish-dry triage).
+publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -38,6 +40,7 @@ keel-feature-flags = { workspace = true }
 keel-session = { workspace = true }
 keel-realtime = { workspace = true }
 keel-tokens = { workspace = true }
+keel-tenancy = { workspace = true }
 keel-identity = { workspace = true }
 keel-storage = { workspace = true }
 keel-storage-local = { workspace = true }

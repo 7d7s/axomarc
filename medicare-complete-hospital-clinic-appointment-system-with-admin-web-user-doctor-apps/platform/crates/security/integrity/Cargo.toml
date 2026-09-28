@@ -8,7 +8,6 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 description = "Keel audit hash-chain primitives (sha2) + HMAC batch signing; consumable by data/execution layers (D-74)."
-publish = false
 
 [dependencies]
 keel-foundation = { workspace = true }

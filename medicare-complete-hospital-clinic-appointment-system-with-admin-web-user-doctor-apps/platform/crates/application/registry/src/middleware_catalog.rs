@@ -39,14 +39,19 @@ pub struct MwViolation {
 pub enum BuiltinMw {
     Auth,
     Verified,
+    /// Wave 2 signed-URL resolution (19-PARITY "URL generation"): verify the
+    /// HMAC over the request path+query before auth runs, and consume the
+    /// `once` marker of a one-time signed URL through the token store.
+    Signed,
     Throttle { group: String },
 }
 
-/// Parse a builtin id: "auth" | "verified" | "throttle:<group>".
+/// Parse a builtin id: "auth" | "verified" | "signed" | "throttle:<group>".
 pub fn parse_builtin_id(id: &str) -> Result<BuiltinMw, String> {
     match id {
         "auth" => Ok(BuiltinMw::Auth),
         "verified" => Ok(BuiltinMw::Verified),
+        "signed" => Ok(BuiltinMw::Signed),
         other => {
             if let Some(group) = other.strip_prefix("throttle:") {
                 if group.is_empty() {
@@ -57,7 +62,7 @@ pub fn parse_builtin_id(id: &str) -> Result<BuiltinMw, String> {
                 })
             } else {
                 Err(format!(
-                    "unknown middleware builtin {id:?} (expected auth, verified, throttle:<group>)"
+                    "unknown middleware builtin {id:?} (expected auth, verified, signed, throttle:<group>)"
                 ))
             }
         }
@@ -106,6 +111,8 @@ impl MiddlewareCatalog {
         let mut aliases = BTreeMap::new();
         aliases.insert("auth".into(), "auth".into());
         aliases.insert("verified".into(), "verified".into());
+        // Wave 2: signed-URL gate (19-PARITY "URL generation").
+        aliases.insert("signed".into(), "signed".into());
         aliases.insert("throttle:api".into(), "throttle:api".into());
         let mut groups = BTreeMap::new();
         groups.insert(

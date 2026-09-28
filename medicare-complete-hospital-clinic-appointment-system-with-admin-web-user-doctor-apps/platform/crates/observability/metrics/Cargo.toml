@@ -8,7 +8,6 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 description = "Keel Sentinel: metrics registry, cardinality protection, Prometheus text exposition, cost counters."
-publish = false
 
 [dependencies]
 keel-foundation = { workspace = true }

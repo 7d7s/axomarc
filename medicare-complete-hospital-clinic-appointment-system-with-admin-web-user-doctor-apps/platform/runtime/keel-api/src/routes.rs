@@ -93,6 +93,26 @@ pub struct AppState {
     /// `ServiceRegistry` so module providers register into this very Arc
     /// from `Provider::init` (`TerminatingProvider`).
     pub terminating: Arc<crate::edge::TerminatingHooks>,
+    // --- Wave 2 routing edge -----------------------------------------------
+    /// Signed-URL gate behind the `signed` middleware builtin: HMAC + TTL
+    /// verification and one-time `once` redemption through the token store.
+    /// `None` without an application key — a route declaring `signed` then
+    /// refuses every request (fail-closed, 500) instead of passing unsigned.
+    pub signed_urls: Option<Arc<keel_http::SignedGate>>,
+    /// Control-plane tenant registry consulted by the host gate when a route
+    /// declares `subdomain`: a matched subdomain resolves a record here and
+    /// feeds it into tenant resolution (19-PARITY route host matching).
+    pub tenants: Option<Arc<keel_tenancy::TenantService>>,
+    // --- Wave 2 static assets ----------------------------------------------
+    /// `public/` file resolver behind the router fallback (19-PARITY
+    /// "Static assets"): declared routes always win, a file that
+    /// canonicalizes inside the root is served, anything else renders the
+    /// not-found path. `None` leaves the router without a fallback.
+    pub static_files: Option<Arc<keel_http::StaticFiles>>,
+    /// Vite build manifest (`public/build/manifest.json`) powering the
+    /// `@asset("...")` URL helper in templates; `None` (no build yet)
+    /// degrades to literal root-absolute URLs.
+    pub assets: Option<Arc<keel_http::AssetManifest>>,
 }
 
 impl AppState {

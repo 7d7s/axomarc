@@ -29,6 +29,7 @@ fn purpose_from(text: &str) -> Result<TokenPurpose, AppError> {
         "verify" => TokenPurpose::Verify,
         "oauth_code" => TokenPurpose::OauthCode,
         "oauth_refresh" => TokenPurpose::OauthRefresh,
+        "signed_url" => TokenPurpose::SignedUrl,
         other => return Err(AppError::internal(format!("unknown token purpose {other}"))),
     })
 }

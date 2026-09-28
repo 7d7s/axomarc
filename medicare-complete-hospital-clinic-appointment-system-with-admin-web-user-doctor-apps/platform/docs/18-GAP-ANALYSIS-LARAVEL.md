@@ -149,21 +149,21 @@ The matrix below is deliberately granular. A subsystem cannot be called `MATCHED
 | Service container | EQUIVALENT | platform/crates/application/registry/src/lib.rs | Typed lifecycle/provider registry rather than Laravel facades | P1 |
 | Providers / lifecycle | EQUIVALENT | platform/crates/application/registry/src/lib.rs | Config → Kernel → Platform → Modules phases | P1 |
 | Facades / global helpers | DELIBERATELY EXCLUDED | typed Rust architecture; no Laravel facade layer | Rust idiom intentionally avoids global facade state | P3 |
-| Routing | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Route declarations do not dispatch HTTP traffic | P0 |
-| Named routes / URL generation | MISSING | platform/crates/application/registry/src/lib.rs | RouteSpec has no `name` field | P2 |
+| Routing | MATCHED | platform/runtime/keel-api/src/graph_routes.rs; platform/runtime/keel-api/tests/routing_edge_integration.rs | Graph routes dispatch at the edge (Wave 2): verb/ANY dispatch, auto HEAD/OPTIONS with 405 + Allow, api/web planes, groups, domain/subdomain gates, constraints, signed URLs; fallback routes stay gate-only (row `fallback`) | P0 |
+| Named routes / URL generation | MATCHED | platform/crates/application/registry/src/lib.rs (RouteSpec.name, GRAPH-DUP-ROUTENAME, resolve_url, UrlSection); platform/tools/keel-console/src/main.rs (route:list --name) | Named routes generate URLs with `[url]` defaults (explicit values win) and list with `--name` filters (Wave 1-2) | P2 |
 | Middleware | MATCHED | platform/crates/web/http/src/middleware_catalog.rs; platform/crates/application/registry/src/middleware_catalog.rs | Named middleware chains (Wave 1): middleware.toml aliases/groups/throttle configs, implicit api group (throttle:api → auth → verified), per-route chains at the dispatch edge, GRAPH-MW-UNKNOWN boot gate; catalog is framework-owned in v1 (no module-defined custom middleware; Wave 5 codegen follow-up) | P1 |
 | CSRF | EQUIVALENT | platform/crates/web/http/src/csrf.rs | Double-submit implementation exists; opt-in configuration | P1 |
 | HTTP request parsing | PARTIAL | platform/crates/web/http/src/middleware.rs | Core request path exists; multipart absent | P0 |
 | Multipart uploads | MISSING | repo-wide zero rg hits supplied | No multipart implementation | P0 |
-| HTTP responses | PARTIAL | platform/runtime/keel-api/src/routes.rs:44-51 | Response layer exists but HTML/redirect edge is not complete | P0 |
-| HTML responses | MISSING | platform/runtime/keel-api/src/routes.rs:44-51 | No verified end-to-end HTML response path | P2 |
-| Redirects | MISSING | platform/runtime/keel-api/src/routes.rs:44-51 | Web flow primitive absent | P2 |
+| HTTP responses | MATCHED | platform/runtime/keel-api/src/graph_routes.rs (response dispatch); platform/runtime/keel-api/tests/response_layer_integration.rs | json/html/redirect/download/stream/no_content kinds dispatched at the edge: 204, NDJSON flush, per-route Cache-Control, ETag/304 (Wave 2) | P0 |
+| HTML responses | MATCHED | platform/runtime/keel-api/tests/views_integration.rs; platform/runtime/keel-api/tests/error_rendering_integration.rs | `response = "html"` renders the declared view with the operation result as context; web-plane errors render `errors.404` (Wave 2; closes this row per 19-PARITY-PROGRAM) | P2 |
+| Redirects | MATCHED | platform/runtime/keel-api/src/graph_routes.rs (redirect_response unit tests) | `Location` from the operation result (string or `{to,status,flash}`), status validated, flash carried for exactly one request (Wave 2) | P2 |
 | SSE | MATCHED | platform/crates/services/realtime/src/lib.rs:69,187 | Realtime service exposes streaming path | P2 |
 | WebSockets | MATCHED | platform/crates/services/realtime/src/lib.rs:69,187 | Flag-gated realtime router | P2 |
 | Controllers | EQUIVALENT | `RequestViewModel` / `ResponseViewModel` supplied in audit facts | Typed controller boundary exists | P1 |
 | FormRequest | PARTIAL | Validator / Rule enum supplied in audit facts | Validation engine is not wired into HTTP request lifecycle | P1 |
-| Views | UNKNOWN | S9 decision gate | No evidence to choose SSR/template strategy | P2 |
-| Blade | UNKNOWN | S9 decision gate | Must remain undecided rather than auto-counted missing | P2 |
+| Views | EQUIVALENT | platform/crates/web/views/src/engine.rs; platform/crates/web/views/src/parser.rs | Interpreted-AST template engine renders SSR views from `[views].paths` with a compiled-AST cache (`keel view:cache`); SPA-first remains the default web story (Wave 2; S9 preserved) | P2 |
+| Blade | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Blade-familiar syntax over the full directive ledger; PHP eval, `@php` and `@while` are deliberately SUPERSEDED (19-PARITY-PROGRAM policy); unimplemented directives flip to MISSING below (Wave 2) | P2 |
 | Sessions | PARTIAL | platform/crates/security/sessions/src/lib.rs:197-279 | In-memory session manager only | P0 |
 | PgSessionStore | MISSING | no PgSessionStore in supplied evidence | Durable horizontal session store absent | P0 |
 | Cookies | MISSING | repo evidence identifies C6 cookie layer | Cookie glue absent | P0 |
@@ -302,17 +302,17 @@ The matrix below is deliberately granular. A subsystem cannot be called `MATCHED
 |---|---|---|---|---|
 | View resolution | Laravel 13 | UNKNOWN | S9 decision | No frozen template engine |
 | View paths | Laravel 13 | UNKNOWN | S9 | Pending SSR/SPA decision |
-| Layouts | Laravel 13 | UNKNOWN | S9 | Pending web story |
-| Partials | Laravel 13 | UNKNOWN | S9 | Pending web story |
-| Components | Laravel 13 | UNKNOWN | S9 | Pending web story |
-| Slots | Laravel 13 | UNKNOWN | S9 | Pending web story |
-| Sections/yield | Laravel 13 | UNKNOWN | S9 | Blade-compatible behavior undecided |
-| Escaping | Laravel 13 | UNKNOWN | S9 | No locked template runtime evidence |
-| Raw output | Laravel 13 | UNKNOWN | S9 | No locked template runtime evidence |
-| Loops/conditionals | Laravel 13 | UNKNOWN | S9 | No locked template runtime evidence |
-| Custom directives | Laravel 13 | UNKNOWN | S9 | No locked template runtime evidence |
-| Component attributes | Laravel 13 | UNKNOWN | S9 | No locked template runtime evidence |
-| View caching | Laravel 13 | UNKNOWN | S9 | Deployment semantics pending |
+| Layouts | Laravel 13 | EQUIVALENT | platform/crates/web/views/src/parser.rs (Wave 2 directive ledger) | `@extends`/`@section`/`@yield`/`@parent`; layout facet test |
+| Partials | Laravel 13 | EQUIVALENT | platform/crates/web/views/src/parser.rs (Wave 2 directive ledger) | `@include`/`@includeIf`/`@includeWhen` |
+| Components | Laravel 13 | EQUIVALENT | platform/crates/web/views/src/parser.rs (Wave 2 directive ledger) | `@component` with `@props` |
+| Slots | Laravel 13 | EQUIVALENT | platform/crates/web/views/src/parser.rs (Wave 2 directive ledger) | `@slot`/`@endslot` with defaults; component-slot facet test |
+| Sections/yield | Laravel 13 | EQUIVALENT | platform/crates/web/views/src/parser.rs (Wave 2 directive ledger) | `@section`/`@yield`/`@show`/`@parent` in the ledger |
+| Escaping | Laravel 13 | EQUIVALENT | platform/crates/web/views/src/parser.rs (Wave 2 directive ledger) | `{{ }}` auto-escapes; escaping XSS facet test |
+| Raw output | Laravel 13 | EQUIVALENT | platform/crates/web/views/src/parser.rs (Wave 2 directive ledger) | `{!! !!}` raw echo |
+| Loops/conditionals | Laravel 13 | EQUIVALENT | platform/crates/web/views/src/parser.rs (Wave 2 directive ledger) | `@if`/`@unless`/`@foreach`/`@for`/`@forelse`; `@while` SUPERSEDED |
+| Custom directives | Laravel 13 | EQUIVALENT | platform/crates/web/views/src/engine.rs (register_directive, register_conditional) | Custom directive registry + Blade::if-style conditionals |
+| Component attributes | Laravel 13 | EQUIVALENT | platform/crates/web/views/src/parser.rs (Wave 2 directive ledger) | `@props` plus attribute helpers `@class`/`@style`/`@checked`/... |
+| View caching | Laravel 13 | EQUIVALENT | platform/crates/web/views/src/engine.rs (precompile_all/clear_cache); platform/tools/keel-console/src/main.rs (view_cache_at) | Compiled-AST cache under `[views].cache_dir`, invalidated by mtime + content hash; `keel view:cache`/`view:clear` (Wave 2) |
 | Compiled templates | Laravel 13 | UNKNOWN | S9 | Engine not selected |
 | Mail views | Laravel 13 | UNKNOWN | S9 | HTML mail template layer not established |
 | Notification views | Laravel 13 | UNKNOWN | S9 | Template engine pending |
@@ -325,39 +325,39 @@ This ledger intentionally enumerates individual operations so a broad `Database`
 
 | Subsystem | Laravel function / capability | Keel status | Evidence | Gap |
 |---|---|---|---|---|
-| Routing / URL | GET | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
-| Routing / URL | POST | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
-| Routing / URL | PUT | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
-| Routing / URL | PATCH | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
-| Routing / URL | DELETE | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
-| Routing / URL | OPTIONS | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
-| Routing / URL | HEAD | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
-| Routing / URL | ANY | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
-| Routing / URL | fallback | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
-| Routing / URL | group | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
-| Routing / URL | prefix | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
-| Routing / URL | domain | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
-| Routing / URL | subdomain | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
-| Routing / URL | name | MISSING | platform/crates/application/registry/src/lib.rs | No verified equivalent |
-| Routing / URL | where | UNKNOWN | No locked function-level evidence | No verified equivalent |
-| Routing / URL | whereNumber | UNKNOWN | No locked function-level evidence | No verified equivalent |
-| Routing / URL | whereAlpha | UNKNOWN | No locked function-level evidence | No verified equivalent |
-| Routing / URL | whereAlphaNumeric | UNKNOWN | No locked function-level evidence | No verified equivalent |
+| Routing / URL | GET | MATCHED | platform/runtime/keel-api/src/graph_routes.rs (declared_methods/route_methods); platform/runtime/keel-api/tests/routing_edge_integration.rs | GET dispatches and also answers auto-HEAD (body stripped) and the auto-OPTIONS probe; Declared verb dispatches at the edge; wrong verb on the path -> 405 with `Allow`; verb-mismatch unit `verb_mismatch_is_405_with_allow` (Wave 2) |
+| Routing / URL | POST | MATCHED | platform/runtime/keel-api/src/graph_routes.rs (declared_methods/route_methods); platform/runtime/keel-api/tests/routing_edge_integration.rs | Declared verb dispatches at the edge; wrong verb on the path -> 405 with `Allow`; verb-mismatch unit `verb_mismatch_is_405_with_allow` (Wave 2); store flows verified in the http_integration CRUD roundtrip |
+| Routing / URL | PUT | MATCHED | platform/runtime/keel-api/src/graph_routes.rs (declared_methods/route_methods); platform/runtime/keel-api/tests/routing_edge_integration.rs | Declared verb dispatches at the edge; wrong verb on the path -> 405 with `Allow`; verb-mismatch unit `verb_mismatch_is_405_with_allow` (Wave 2); update flows verified in the http_integration CRUD roundtrip |
+| Routing / URL | PATCH | MATCHED | platform/runtime/keel-api/src/graph_routes.rs (declared_methods/route_methods); platform/runtime/keel-api/tests/routing_edge_integration.rs | Declared verb dispatches at the edge; wrong verb on the path -> 405 with `Allow`; verb-mismatch unit `verb_mismatch_is_405_with_allow` (Wave 2); resource `update` registers PUT + PATCH under one operation |
+| Routing / URL | DELETE | MATCHED | platform/runtime/keel-api/src/graph_routes.rs (declared_methods/route_methods); platform/runtime/keel-api/tests/routing_edge_integration.rs | Declared verb dispatches at the edge; wrong verb on the path -> 405 with `Allow`; verb-mismatch unit `verb_mismatch_is_405_with_allow` (Wave 2); cancel/destroy flows verified in http_integration |
+| Routing / URL | OPTIONS | MATCHED | platform/runtime/keel-api/src/graph_routes.rs (declared_methods/route_methods); platform/runtime/keel-api/tests/routing_edge_integration.rs | Auto-OPTIONS probe answers 204 + `Allow` for every method the path serves; an explicit OPTIONS route wins (`get_route_answers_the_auto_options_probe`) |
+| Routing / URL | HEAD | MATCHED | platform/runtime/keel-api/src/graph_routes.rs (declared_methods/route_methods); platform/runtime/keel-api/tests/routing_edge_integration.rs | Auto-HEAD mirrors GET with the body stripped (8 MiB cap) via `strip_head_body` (`get_route_answers_head_without_a_body`) |
+| Routing / URL | ANY | MATCHED | platform/runtime/keel-api/src/graph_routes.rs (declared_methods/route_methods); platform/runtime/keel-api/tests/routing_edge_integration.rs | `method = "ANY"` expands to the full verb set incl. OPTIONS at registration and dispatches all of them (`any_route_answers_every_declared_verb`) |
+| Routing / URL | fallback | API-ONLY | platform/crates/application/registry/src/lib.rs:1005 (GRAPH-FALLBACK-DUP); platform/crates/application/registry/src/route_plan.rs:145 | Wave 2 parses `fallback = true`, gates GRAPH-FALLBACK-DUP (max one per plane) and carries it in the route plan; the HTTP edge does not claim unmatched paths - router fallback serves static files / renders not-found (edge wiring deferred) |
+| Routing / URL | group | MATCHED | platform/crates/application/registry/src/lib.rs (apply_groups); platform/tools/keel-console/src/main.rs (route_list_filters_carry_the_parity_columns) | `[[route_groups]]` members inherit prefix/middleware/plane at parse (route fields win; group middleware runs outermost); GRAPH-GROUP-UNKNOWN gate (Wave 2) |
+| Routing / URL | prefix | MATCHED | platform/crates/application/registry/src/lib.rs (normalize_prefix/apply_groups) | Group prefixes fold into the route path at parse (slash-normalized); `route:list` prints the merged paths (Wave 2) |
+| Routing / URL | domain | MATCHED | platform/runtime/keel-api/src/graph_routes.rs (RouteGate); platform/runtime/keel-api/tests/routing_edge_integration.rs (domain_gate_matches_before_the_auth_chain) | `domain` matches the request Host exactly, `*.example.test` matches any subdomain; the gate runs before auth - mismatch 404s (Wave 2) |
+| Routing / URL | subdomain | MATCHED | platform/runtime/keel-api/src/graph_routes.rs (RouteGate); platform/runtime/keel-api/tests/routing_edge_integration.rs (subdomain_gate_404s_the_wrong_host_and_feeds_the_tenant) | `subdomain` resolves a tenant through the host feed into tenant resolution; the wrong host 404s (Wave 2) |
+| Routing / URL | name | MATCHED | platform/crates/application/registry/src/lib.rs (RouteSpec.name, GRAPH-DUP-ROUTENAME, resolve_url); docs/19-PARITY-PROGRAM.md:96 | Named routes generate URLs with `[url]` defaults; `keel route:list --name` filters them (Wave 1-2) |
+| Routing / URL | where | SUPERSEDED | platform/crates/application/registry/src/route_plan.rs (ConstraintSpec { param, kind, pattern }); docs/19-PARITY-PROGRAM.md:90 | Closed constraint kinds plus a hand-interpreted pattern mini-grammar (chars, classes, `{n,m}`) replace arbitrary-regex `where` - documented divergence, no regex crate (Wave 2) |
+| Routing / URL | whereNumber | MATCHED | platform/crates/application/registry/src/route_plan.rs; platform/runtime/keel-api/tests/routing_edge_integration.rs (constraint_mismatch_is_a_route_miss_for_every_kind) | `kind = "number"` resolves as a routing predicate; mismatch is a route miss (404) before auth (Wave 2) |
+| Routing / URL | whereAlpha | MATCHED | platform/crates/application/registry/src/route_plan.rs; platform/runtime/keel-api/tests/routing_edge_integration.rs (constraint_mismatch_is_a_route_miss_for_every_kind) | `kind = "alpha"` resolves as a routing predicate; mismatch is a route miss (404) (Wave 2) |
+| Routing / URL | whereAlphaNumeric | MATCHED | platform/crates/application/registry/src/route_plan.rs; platform/runtime/keel-api/tests/routing_edge_integration.rs (constraint_mismatch_is_a_route_miss_for_every_kind) | `kind = "alpha-num"` resolves as a routing predicate; mismatch is a route miss (404) (Wave 2) |
 | Routing / URL | middleware | MATCHED | platform/crates/application/registry/src/middleware_catalog.rs (resolve_chain); platform/runtime/keel-api/src/graph_routes.rs | Route middleware = [...] resolves alias-first then group, flattens, runs after the implicit api group (Wave 1); unknown entries fail GRAPH-MW-UNKNOWN |
-| Routing / URL | withoutMiddleware | UNKNOWN | No locked function-level evidence | No verified equivalent |
-| Routing / URL | controller | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
-| Routing / URL | resource | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
-| Routing / URL | apiResource | API-ONLY | platform/runtime/keel-api/src/routes.rs:44-51 | Graph declaration exists but runtime dispatch is disconnected |
-| Routing / URL | singleton | UNKNOWN | No locked function-level evidence | No verified equivalent |
-| Routing / URL | apiSingleton | UNKNOWN | No locked function-level evidence | No verified equivalent |
-| Routing / URL | scopeBindings | UNKNOWN | No locked function-level evidence | No verified equivalent |
-| Routing / URL | scopeBindingsByResource | UNKNOWN | No locked function-level evidence | No verified equivalent |
+| Routing / URL | withoutMiddleware | MATCHED | platform/crates/application/registry/src/middleware_catalog.rs (excluded_middleware_* tests); platform/runtime/keel-api/src/graph_routes.rs | `excluded_middleware` removes entries from the resolved chain (groups flattened first); naming an alias outside the chain fails GRAPH-MW-UNKNOWN (Wave 2) |
+| Routing / URL | controller | EQUIVALENT | platform/runtime/keel-api/src/graph_routes.rs (operation dispatch); docs/18 Core-architecture `Controllers` row | No `Route::controller` class registration; HTTP dispatches to declared module operations behind the typed RequestViewModel/ResponseViewModel controller boundary (Wave 2) |
+| Routing / URL | resource | EQUIVALENT | platform/crates/application/registry/src/lib.rs (RESOURCE_VERBS, resource_expands_into_six_route_specs) | `resource` expands at parse into index/show/store/update (PUT+PATCH)/destroy with capability + names; the web create/edit form verbs are not auto-generated - declare them as explicit HTML routes (Wave 1) |
+| Routing / URL | apiResource | MATCHED | platform/crates/application/registry/src/lib.rs (RESOURCE_VERBS) | Expansion matches Laravel `apiResource` exactly (index, show, store, update x2, destroy) with `only`/`except` verb filters; the flat list feeds route:list/OpenAPI/the edge (Wave 1) |
+| Routing / URL | singleton | EQUIVALENT | platform/crates/application/registry/src/lib.rs (SINGLETON_VERBS, singleton_expands_without_id_into_four_route_specs) | `singleton = true` expands show/update (PUT+PATCH)/destroy without `{id}`; vs Laravel defaults (show/edit/update plus optional creatable/destroyable): the edit form page is not auto-generated and destroy is on by default; `only`/`except` narrows (Wave 2) |
+| Routing / URL | apiSingleton | EQUIVALENT | platform/crates/application/registry/src/lib.rs (SINGLETON_VERBS); platform/crates/application/registry/src/lib.rs:1564 (resource/singleton expansion units) | Laravel `apiSingleton` (`only = store/show/update/destroy` over singleton defaults) is covered by `singleton = true` (show/update/destroy without `{id}`); a store on the instance path is declared as an explicit route (Wave 2) |
+| Routing / URL | scopeBindings | PARTIAL | platform/crates/application/registry/src/lib.rs (BindingSpec); platform/runtime/keel-api/tests/http_integration.rs (binding hit/miss/cross-tenant -> 404) | Bindings resolve per path param, tenant-scoped (cross-tenant -> 404); no parent -> child binding-scoping model exists in the graph (Wave 1-2) |
+| Routing / URL | scopeBindingsByResource | PARTIAL | platform/crates/application/registry/src/lib.rs (BindingSpec); platform/runtime/keel-api/tests/http_integration.rs (binding hit/miss/cross-tenant -> 404) | Same model: per-param tenant-scoped resolution; resource-family scoping is not part of the graph (Wave 1-2) |
 | Routing / URL | binding | MATCHED | platform/runtime/keel-api/src/graph_routes.rs; platform/applications/appointments/src/lib.rs (AppointmentBindingResolver) | bindings = [{ param, model }] on RouteSpec; resolver registered in the route.bindings service (Wave 1) |
 | Routing / URL | model binding | MATCHED | platform/runtime/keel-api/src/graph_routes.rs (_bindings injection); applications/appointments/module.toml (DELETE cancel) | Edge resolves {id} tenant-scoped and injects _bindings.<param> after the merge; malformed/miss/cross-tenant → 404; missing resolver fails GRAPH-BINDING-RESOLVER at boot (Wave 1) |
-| Routing / URL | signed URL | MISSING | No locked function-level evidence | No verified equivalent |
-| Routing / URL | temporary signed URL | MISSING | No locked function-level evidence | No verified equivalent |
-| Routing / URL | url defaults | MISSING | platform/crates/application/registry/src/lib.rs | No verified equivalent |
-| Routing / URL | route:list | UNKNOWN | No locked function-level evidence | No verified equivalent |
+| Routing / URL | signed URL | MATCHED | platform/crates/web/http/src/signed.rs (tamper/expiry units); platform/runtime/keel-api/src/graph_routes.rs (`signed` builtin); platform/runtime/keel-api/tests/routing_edge_integration.rs (one_time_signed_link_redempts_exactly_once) | HMAC-SHA256 gate via the `signed` middleware builtin; unsigned -> 403, tampered/expired refused, fail-closed 500 without `app.key` (Wave 2) |
+| Routing / URL | temporary signed URL | MATCHED | platform/crates/web/http/src/signed.rs (expiry unit tests); platform/runtime/keel-api/tests/routing_edge_integration.rs | TTL is carried in the link and verified at resolution; Keel adds a one-time redemption variant (spent link -> 404) (Wave 2) |
+| Routing / URL | url defaults | MATCHED | platform/crates/application/registry/src/lib.rs (UrlSection, resolve_url_falls_back_to_registered_url_defaults) | `[url] defaults` fill `{param}` entries `resolve_url` is not given explicitly; caller values win (Laravel `URL::defaults`) (Wave 2) |
+| Routing / URL | route:list | MATCHED | platform/tools/keel-console/src/main.rs (route_rows/route_list_at; test route_list_filters_carry_the_parity_columns) | table/json with plane/group/version/deprecated/name columns; `--name`/`--path` case-insensitive substring filters, `--plane` validated `api`/`web` (Wave 2) |
 | Routing / URL | route:cache | MATCHED | platform/tools/keel-console/src/main.rs (route_cache_at); platform/crates/application/registry/src/route_plan.rs | keel route:cache writes storage/framework/routes.json pinned to a SHA-256 manifest hash; boot registers from a matching artifact and refuses a stale one (Wave 1) |
 | Routing / URL | route:clear | MATCHED | platform/tools/keel-console/src/main.rs (route_clear_at) | keel route:clear deletes the artifact; boot falls back to live compilation (Wave 1) |
 | Validation | required | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
@@ -575,12 +575,12 @@ This ledger intentionally enumerates individual operations so a broad `Database`
 | Auth / Session | session forget | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
 | Auth / Session | token create | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
 | Auth / Session | token revoke | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
-| HTTP Request / Response | json response | PARTIAL | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
-| HTTP Request / Response | redirect | MISSING | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
-| HTTP Request / Response | download | MISSING | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
-| HTTP Request / Response | stream | PARTIAL | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
-| HTTP Request / Response | streamDownload | MISSING | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
-| HTTP Request / Response | file | MISSING | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
+| HTTP Request / Response | json response | MATCHED | platform/runtime/keel-api/tests/http_integration.rs; platform/runtime/keel-api/tests/error_rendering_integration.rs | Envelope end-to-end on the api plane; RFC-7807 `problem+json` opt-in; web-plane clients get error views (Wave 2) |
+| HTTP Request / Response | redirect | MATCHED | platform/runtime/keel-api/src/graph_routes.rs (redirect_response unit tests) | `Location` + validated status + one-request flash (Wave 2) |
+| HTTP Request / Response | download | MATCHED | platform/runtime/keel-api/src/graph_routes.rs (download_response unit tests) | StoragePort object served as an attachment with sanitized filename + explicit content type (Wave 2) |
+| HTTP Request / Response | stream | MATCHED | platform/runtime/keel-api/src/graph_routes.rs (stream_response); platform/runtime/keel-api/tests/response_layer_integration.rs (stream_routes_flush_ndjson_instead_of_an_envelope) | Chunked NDJSON line flush (`Body::from_stream`) instead of one buffered payload (Wave 2) |
+| HTTP Request / Response | streamDownload | PARTIAL | platform/runtime/keel-api/src/graph_routes.rs (download_response:1211-1229) | Attachment downloads land, but the object is read fully into memory first - no chunked-download path yet (documented divergence from Laravel streamed download) |
+| HTTP Request / Response | file | MATCHED | platform/crates/application/registry/src/lib.rs:89 (`#[serde(alias = "file")]`) | `response = "file"` is an accepted alias for `download` - same StoragePort attachment path (Wave 2) |
 | HTTP Request / Response | eventStream | PARTIAL | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
 | HTTP Request / Response | cookie set | MISSING | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
 | HTTP Request / Response | cookie delete | MISSING | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
@@ -627,55 +627,55 @@ This cross-reference prevents the 24-section report from collapsing Laravel’s 
 
 | Area | Laravel capability | Keel status | Evidence / decision | Interpretation |
 |---|---|---|---|---|
-| Blade / Views | {{ }} | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | {!! !!} | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @if | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @unless | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @isset | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @empty | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @auth | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @guest | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @env | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @production | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @foreach | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @for | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @while | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @forelse | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @include | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @includeIf | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @includeWhen | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @extends | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @section | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @yield | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @show | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @parent | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @component | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @slot | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @props | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @aware | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @class | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @style | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @checked | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @selected | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @disabled | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @readonly | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @required | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @error | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @csrf | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @method | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @verbatim | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @once | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @push | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @prepend | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @stack | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | @session | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | custom directives | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | anonymous components | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | class components | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | dynamic components | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | component slots | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | component attributes | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
-| Blade / Views | template inheritance | UNKNOWN / UNDECIDED | S9 decision gate | Do not count as missing until template/SPA strategy is frozen |
+| Blade / Views | {{ }} | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Auto-escaped echo over dot paths + filters; interpreted expressions replace PHP eval |
+| Blade / Views | {!! !!} | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Raw echo - identical semantics |
+| Blade / Views | @if | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Conditionals run on the safe expression grammar |
+| Blade / Views | @unless | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Inverted conditional, ledger + render facet |
+| Blade / Views | @isset | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Presence check over the JSON context |
+| Blade / Views | @empty | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Emptiness check, also the @forelse empty branch |
+| Blade / Views | @auth | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Auth context from the authenticated principal |
+| Blade / Views | @guest | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Inverse of @auth |
+| Blade / Views | @env | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Environment gate (e.g. @env("dev")) |
+| Blade / Views | @production | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Inverse environment gate |
+| Blade / Views | @foreach | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Loop over arrays/objects with loop vars |
+| Blade / Views | @for | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Indexed loop, ledger + render |
+| Blade / Views | @while | SUPERSEDED | platform/crates/web/views/src/parser.rs:492-496 (targeted refusal) | Refused at parse; @foreach over ranges covers iteration (19-PARITY-PROGRAM policy) |
+| Blade / Views | @forelse | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Loop with empty branch; facet test |
+| Blade / Views | @include | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Partial render with explicit data |
+| Blade / Views | @includeIf | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Conditional partial |
+| Blade / Views | @includeWhen | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Context-conditional partial |
+| Blade / Views | @extends | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Layout inheritance; layout facet test |
+| Blade / Views | @section | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Section content with @endsection/@show |
+| Blade / Views | @yield | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Layout placeholder |
+| Blade / Views | @show | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Overridable section |
+| Blade / Views | @parent | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Parent layout content; layout facet test |
+| Blade / Views | @component | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | View-file component with slots |
+| Blade / Views | @slot | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Named slots with defaults; component-slot facet test |
+| Blade / Views | @props | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Declared props pulled from slot attributes |
+| Blade / Views | @aware | MISSING | platform/crates/web/views/src/parser.rs (absent from the closed ledger) | Not in the closed ledger; pass data through @include/@component arguments |
+| Blade / Views | @class | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Conditional class attribute helper |
+| Blade / Views | @style | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Conditional style attribute helper |
+| Blade / Views | @checked | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Form attribute helper |
+| Blade / Views | @selected | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Form attribute helper |
+| Blade / Views | @disabled | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Form attribute helper |
+| Blade / Views | @readonly | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Form attribute helper |
+| Blade / Views | @required | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Form attribute helper |
+| Blade / Views | @error | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Validation error slot; csrf/method/error/lang facet test |
+| Blade / Views | @csrf | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | CSRF field emission; csrf/method/error/lang facet test |
+| Blade / Views | @method | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Method-spoof field; csrf/method/error/lang facet test |
+| Blade / Views | @verbatim | MISSING | platform/crates/web/views/src/parser.rs (absent from the closed ledger) | Not in the ledger; raw output is {!! !!} |
+| Blade / Views | @once | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Render-once scope; stack facet test |
+| Blade / Views | @push | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Stack push; stack facet test |
+| Blade / Views | @prepend | MISSING | platform/crates/web/views/src/parser.rs (absent from the closed ledger) | Not in the ledger; stacks are @push/@stack only |
+| Blade / Views | @stack | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Stack emission; stack facet test |
+| Blade / Views | @session | MISSING | platform/crates/web/views/src/parser.rs (absent from the closed ledger) | Not in the closed ledger |
+| Blade / Views | custom directives | EQUIVALENT | platform/crates/web/views/src/engine.rs (register_directive, register_conditional) | Custom directive registry + Blade::if-style conditionals; custom directive/conditional facet test |
+| Blade / Views | anonymous components | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | @component("name") resolves a view file with @props/@slot |
+| Blade / Views | class components | MISSING | platform/crates/web/views/src/parser.rs (absent from the closed ledger) | No PHP-style component classes; view-file @component with @props covers the data-driven case |
+| Blade / Views | dynamic components | MISSING | platform/crates/web/views/src/parser.rs (absent from the closed ledger) | No dynamic component selection in the ledger |
+| Blade / Views | component slots | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | @component/@slot/@endslot with defaults; component-slot facet test |
+| Blade / Views | component attributes | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | @props receives declared slot attributes; helpers @class/@style/@checked/... |
+| Blade / Views | template inheritance | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | @extends/@section/@yield/@parent; layout facet test |
 
 | Artisan family | cache:clear | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
 | Artisan family | cache:forget | MAPPED IN §11 | see §11 CLI matrix | Individual runtime parity remains governed by command evidence |
@@ -1065,15 +1065,15 @@ The CLI is one of the most important Laravel parity surfaces because it compress
 | queue:work | queue:work | MATCHED | keel-worker | P1 |
 | route:cache | route:cache | MATCHED | keel route:cache writes storage/framework/routes.json (resolved chains/bindings/validators + SHA-256 manifest hash); boot registers from a matching artifact and refuses a stale one (Wave 1) | P2 |
 | route:clear | route:clear | MATCHED | keel route:clear deletes the artifact; boot falls back to live compilation (Wave 1) | P2 |
-| route:list | route:list | PARTIAL | Route metadata exists, runtime edge incomplete | P2 |
+| route:list | route:list | MATCHED | table/json with plane/group/version/deprecation columns; `--name`/`--path`/`--plane` filters (Wave 2) | P2 |
 | schedule:clear-cache | schedule:clear-cache | UNKNOWN | Scheduler exists; command not locked | P3 |
 | schedule:list | schedule:list | UNKNOWN | Scheduler exists; command not locked | P3 |
 | schedule:run | schedule:run | MATCHED | Scheduler runtime | P1 |
 | schedule:test | schedule:test | UNKNOWN | No locked evidence | P3 |
 | schedule:work | schedule:work | MATCHED | Worker scheduler loop | P1 |
 | storage:link | storage:link | UNKNOWN | No locked evidence | P3 |
-| view:cache | view:cache | UNKNOWN | Views undecided until S9 | P3 |
-| view:clear | view:clear | UNKNOWN | Views undecided until S9 | P3 |
+| view:cache | view:cache | MATCHED | precompiles every template under `[views].paths` into `[views].cache_dir` (mtime + content hash) (Wave 2) | P3 |
+| view:clear | view:clear | MATCHED | drops the in-process memo plus every `*.json` artifact; boot recompiles on demand (Wave 2) | P3 |
 | vendor:publish | vendor:publish | MISSING | Package resource publish absent | P3 |
 | horizon | inspect/queue | MISSING | No Horizon-equivalent dashboard | P3 |
 | telescope | inspect/replay | SUPERSEDED | Keel inspect/replay model is broader | P2 |
@@ -1469,15 +1469,15 @@ This table assigns the final strategic decision, not merely today's runtime stat
 | Providers | EQUIVALENT |
 | Facades/global helpers | DELIBERATELY EXCLUDED |
 | Routing core | EQUIVALENT |
-| Named routes | EQUIVALENT future S7/S9 |
+| Named routes | EQUIVALENT (landed: resolve_url + [url] defaults + route:list --name) |
 | Middleware | EQUIVALENT |
 | CSRF | EQUIVALENT |
 | Controllers | EQUIVALENT |
 | Requests/FormRequest | EQUIVALENT future HTTP wiring |
-| Responses | EQUIVALENT future edge completion |
-| Views | UNKNOWN / UNDECIDED until S9 |
-| Blade | UNKNOWN / UNDECIDED until S9 |
-| URL generation | EQUIVALENT future |
+| Responses | MATCHED (Wave 2 response kinds at the edge) |
+| Views | EQUIVALENT (Wave 2 template engine) |
+| Blade | EQUIVALENT / SUPERSEDED (Wave 2 directive ledger) |
+| URL generation | EQUIVALENT (landed: resolve_url + [url] defaults) |
 | Sessions | EQUIVALENT future durable implementation |
 | Cookies | EQUIVALENT future |
 | Validation | EQUIVALENT |
@@ -1543,7 +1543,7 @@ This table assigns the final strategic decision, not merely today's runtime stat
 
 ### Important policy decisions
 
-- **Blade/views:** remain `UNKNOWN / UNDECIDED` until S9. They are not automatically counted as missing.
+- **Blade/views:** resolved by the Wave 2 template engine (`crates/web/views`): rows flip to `EQUIVALENT` (directive ledger) / `SUPERSEDED` (`@php`, `@while`); directives outside the closed ledger flip to `MISSING`.
 - **Facades/global helpers:** `DELIBERATELY EXCLUDED` because Rust dependency injection is the intended idiom.
 - **Collections:** `DELIBERATELY EXCLUDED`; Rust iterators are the native equivalent.
 - **JWT:** future `EQUIVALENT` add-on, not a defect in the current non-JWT default.
@@ -1708,7 +1708,7 @@ section, this section governs.
 | Telescope | SUPERSEDED by inspect/replay | Extended: keel observe family (status/logs/errors/traces/request/audit/incidents/exporters/policies/buffers/health/cost/metrics) |
 | Horizon | dashboard roadmap | Implemented (S10): Horizon-lite /_dashboard over meta/queue/flag JSON |
 | Octane | SUPERSEDED by native runtime | Unchanged |
-| Views / Blade / Folio / Livewire / Inertia | UNKNOWN until S9 | Resolved SPA-first (S9): OpenAPI-generated client + starter web shell; SSR/template engine NOT counted missing per gate policy, revisit at v2.0 with a fresh dependency-budget decision |
+| Views / Blade / Folio / Livewire / Inertia | EQUIVALENT (Wave 2 views engine) | SPA-first stays the default web story; the Wave 2 template engine covers Blade-equivalent views (full directive ledger, compiled cache). Folio/Livewire/Inertia stay out of scope under the S9 SPA-first policy |
 | Passport (OAuth2) | EQUIVALENT future | Unchanged: post-v1.0 add-on |
 | Metrics (D-68) | MISSING | Scoped delivery (S10): runtime metrics live (/metrics); profiling remains deferred per D-68 |
 
@@ -1747,6 +1747,8 @@ Program: these backlog items are sequenced, expanded and superseded by the nine-
 
 Wave 1 completion entry (2026-08-28): Wave 1 — HTTP core completion is DONE per `19-PARITY-PROGRAM.md`: named middleware chains (`middleware.toml` aliases/groups/`throttle.<group>` + implicit `api` group + `GRAPH-MW-UNKNOWN` boot gate), route model binding (`route.bindings` registry service, `_bindings.<param>` injection, `GRAPH-BINDING-RESOLVER` at keel-api boot), pagination injection (`_page`, `MAX_PER_PAGE` 100 clamp, page meta block), manifest `[[validation]]` enforced at the edge (422 + `fields` meta), deprecated-route `Deprecation: true` header/meta, `keel route:cache`/`route:clear` with hash-pinned boot refusal (`storage/framework/routes.json`), and OpenAPI constraint emission. Evidence: CHANGELOG `[Unreleased]`; `http_integration` Wave 1 battery; 609 workspace tests + architecture gate green; clippy clean on all touched crates. The §4 rows (Middleware, Rate limiting, Route cache, Pagination), the function-level ledger rows (middleware, binding, model binding, route:cache, route:clear), the §11 CLI rows and §19 B-09 above are flipped accordingly.
 
+Wave 2 completion entry (2026-09-29): Wave 2 - routing completion, web plane, views, request/response, errors and static assets is DONE per `19-PARITY-PROGRAM.md`: verb/ANY dispatch with auto HEAD/OPTIONS (405 + Allow), api/web planes, `[[route_groups]]` prefix/middleware/plane merge, domain/subdomain RouteGate before auth, closed constraint kinds + pattern mini-grammar (mismatch -> 404), `resolve_url` `[url]` defaults + temporary/one-time signed URLs, the `crates/web/views` template engine (directive ledger, compiled-AST cache, `keel view:cache`/`view:clear`), HTML routes + web-plane error views, response kinds (json/html/redirect/download/file/stream/no_content), ETag/304, RFC-7807 option, static assets for `public/` (traversal-safe, fingerprinted immutable caching, Vite `manifest.json` reader + `@asset`), and `keel route:list --name/--path/--plane` with parity columns. Evidence: CHANGELOG `[Unreleased]`; keel-api integration suites (http/views/error_rendering/response_layer/routing_edge/static_assets); 800+ workspace tests green; `clippy -D warnings` and `dep-rules` clean. The section 4 rows (Routing, Named routes, HTTP responses, HTML responses, Redirects, Views, Blade), the routing + response rows, the Laravel 13 template rows, the Blade/views cross-reference ledger, the section 11 CLI rows (route:list, view:cache, view:clear) and backlog B-26 are flipped accordingly.
+
 | ID | Domain | Feature | Status | Priority | Evidence | Dependencies | Complexity | Risk | Reason | Acceptance criteria |
 |---|---|---|---|---|---|---|---|---|---|---|
 | B-21 | Auth | OAuth2 authorization-server module (Passport-class): authorization code + PKCE, refresh tokens, client registry, revocation; ships as a module, never core; PAT + session stays the default | MISSING (add-on) | P2 | sec.22 Passport row; runtime/keel-api/src/auth_routes.rs; crates/security/tokens | v1.0 stable; module ABI gate | High | High (security surface) | third-party API integration; parity commitment | Module registers via ABI gate; code+PKCE/refresh/revocation flows HTTP-tested; zero-new-dep build on existing crypto (sha2/argon2/SignedUrls pattern) or recorded D-62 amendment; 06-SECURITY + 16-MIGRATION updated |
@@ -1754,7 +1756,7 @@ Wave 1 completion entry (2026-08-28): Wave 1 — HTTP core completion is DONE pe
 | B-23 | Auth | Email verification HTTP flow: /auth/email-verification request+confirm over existing single-use TokenPurpose::Verify + notification delivery; configurable gating for unverified principals | DONE v1.1 (endpoints + gate + durable store column + tests; mail delivery rides dev_token until notification wiring) | P2 | crates/security/tokens/src/lib.rs (TokenPurpose::Verify); reset.rs flow pattern; mail adapter | notifications/mail adapter | Medium | Low | parity commitment (email verification EQUIVALENT future); account trust | request/confirm endpoints enumeration-resistant; expiry enforced; single-use redemption; unverified gating configurable; tests; 06-SECURITY updated |
 | B-24 | Ecosystem | Package registry + discovery: registry index, keel pkg:list/add, manifest + API-ID compatibility validation at graph compile, fail-closed | PARTIAL (ABI gate + API-ID registry landed S10); discovery MISSING (D-69) | P2 | S10 module ABI gate (module.toml [module].api, MODULE_ABI=1); 15-EXTENSION | continued ABI contract stability | High | Medium | third-party extension at scale without framework edits | third-party manifest-only package installs and registers routes/commands/config; graph-compile validation fails closed; publishing story documented |
 | B-25 | Ecosystem/DX | Package resource publishing (vendor:publish-class): keel publish materializes a package's migrations/config/assets into the host app | MISSING | P3 | parity matrix row (vendor publish) | B-24 | Medium | Low | packages need a first-class way to ship resources | publish is idempotent with conflict reporting; tested against a sample package; 15-EXTENSION updated |
-| B-26 | Web | SSR/template-engine decision gate (v2.0): adopt a template engine (layouts/components/escaping/compiled cache) dual-mode with the SPA story, or formally defer again | DEFERRED (S9 SPA-first policy) | P2 (decision) | sec.25.3 views rows; S9 decision record | fresh D-62 budget decision | decision Low; impl High | Medium | server-rendered Laravel-class web story | decision doc with budget impact; if adopted: engine crate passes G17 facets, dual-mode starter, parity rows updated; if deferred: rationale recorded |
+| B-26 | Web | SSR/template-engine decision gate (v2.0): adopt a template engine (layouts/components/escaping/compiled cache) dual-mode with the SPA story, or formally defer again | DONE Wave 2 (template engine `crates/web/views` + HTML routes + `keel view:cache`/`view:clear`; directive ledger + G17 facets green; parity rows flipped) | P2 (decision) | sec.25.3 views rows; 19-PARITY-PROGRAM Wave 2 (B-26 moved earlier) | zero-new-dep (no budget amendment needed) | decision Low; impl High | Medium | server-rendered Laravel-class web story | decision doc with budget impact; if adopted: engine crate passes G17 facets, dual-mode starter, parity rows updated; if deferred: rationale recorded |
 | B-27 | Observability | Profiling workflow (D-68 remainder): documented CPU/alloc flamegraph path for keel-api + keel-worker | MISSING (D-68 scoped to runtime metrics) | P3 | D-68 decision; 13-OPERATIONS | none (samply runs out-of-process: zero workspace deps) | Medium | Low | performance investigation workflow | flamegraph workflow documented and runnable for both runtimes; no runtime impact when not attached; optional keel profile wrapper |
 | B-28 | Testing | Browser/E2E smoke kit: Playwright-based smoke suite against the starter template (external tooling, zero workspace deps) | MISSING (Dusk-class left to ecosystem per parity gate) | P3 | parity matrix browser/E2E row; templates/starter-template | starter kit | Medium | Low | user-facing regression confidence | starter smoke suite covers auth + one domain flow; documented in 11-TESTING; CI-optional job |
 | B-29 | DX | keel shell (Tinker-class): typed interactive console over the app graph/stores under the caller principal | DONE v1.1 (`keel shell` spawns `keel-api --shell` per dep-rules topology; REPL over the production boot: login (argon2, same as POST /auth/login), whoami, ops, routes, run <module.operation> [json] through the CommandBus under the caller principal; capability denial enforced by the policy engine and tested (denied run writes nothing); prod refused unless KEEL_SHELL_ALLOW=1) | P3 | sec.19 B-16 | model runtime (S8) | Medium | Low | exploration/ops developer experience | REPL executes operations through the engine under a principal; capability denial enforced and tested |

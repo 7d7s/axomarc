@@ -18,7 +18,7 @@ against the same workspace/config the runtime uses.
 |---|---|
 | `keel graph` | compile the platform graph from all `module.toml` |
 | `keel modules` | registered modules (version, maturity, plane, capability count) |
-| `keel route:list [--format table\|json]` | declared routes |
+| `keel route:list [--format table\|json] [--name F] [--path F] [--plane api\|web]` | declared routes with plane/group/version/deprecation columns; `--name`/`--path` are case-insensitive substring filters, `--plane` validates `api`/`web` (Wave 2) |
 | `keel route:cache` | write the pinned route artifact (Wave 1): resolved per-route middleware chains, bindings and validators → `storage/framework/routes.json`, hash-pinned to all `module.toml` + `middleware.toml` + `MODULE_ABI`; boot refuses a stale artifact |
 | `keel route:clear` | delete the route artifact; boot falls back to live compilation |
 | `keel event:list` | declared events |
@@ -55,6 +55,7 @@ against the same workspace/config the runtime uses.
 | `keel serve [--worker]` | one-command local loop: spawns keel-api (and keel-worker), streams logs (S7) |
 | `keel shell` | interactive platform console (v1.1 B-29): REPL over the booted engine, dispatches under your principal |
 | `keel cache:clear` | clear the app cache |
+| `keel view:cache` / `keel view:clear` | precompile every template under `[views].paths` into `[views].cache_dir` (mtime + content hash) / drop the compiled view artifacts; boot recompiles on demand (Wave 2 views engine) |
 | `keel flag:list` / `flag:set <name> <stage> [--tenant id]` | feature flag rollout |
 
 ## Diagnostics and quality

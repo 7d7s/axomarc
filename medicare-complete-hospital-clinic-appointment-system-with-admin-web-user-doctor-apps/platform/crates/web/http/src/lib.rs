@@ -4,6 +4,7 @@
 //!  ResponseViewModel → Resource → wire`. The domain never knows HTTP; this crate
 //! maps `AppError` to transport concerns at the edge.
 
+pub mod assets;
 pub mod cache;
 pub mod cookie;
 pub mod csrf;
@@ -18,9 +19,11 @@ pub mod request;
 pub mod resource;
 pub mod session_mw;
 pub mod signed;
+pub mod static_files;
 pub mod upload;
 pub mod viewmodel;
 
+pub use assets::{asset_url, AssetEntry, AssetManifest};
 pub use cache::{etag_for, if_none_match_hits, CacheControlBuilder};
 pub use cookie::{derive_cookie_key, Cookie, CookieCipher, CookieJar, CookieQueue, SameSite};
 pub use csrf::{session_csrf_token, CsrfGuard, CSRF_COOKIE, CSRF_HEADER};
@@ -43,7 +46,8 @@ pub use request::{accepts, bearer_token, client_ip, expects_json, fingerprint};
 pub use session_mw::{
     parse_session_cookie, session_cookie_value, ResolvedSession, SessionMiddleware, SESSION_COOKIE,
 };
-pub use signed::SignedUrls;
+pub use signed::{derive_signed_key, SignedGate, SignedUrlPort, SignedUrls};
+pub use static_files::{is_fingerprinted, StaticAsset, StaticFiles};
 pub use viewmodel::{Resource, Validated};
 pub use upload::{ingest_multipart, sanitize_filename, StoredUpload, UploadLimits};
 

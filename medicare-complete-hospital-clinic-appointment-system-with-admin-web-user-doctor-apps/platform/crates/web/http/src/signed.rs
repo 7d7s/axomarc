@@ -7,7 +7,10 @@
 //! parameter itself, so any tampering with the path, parameters or expiry
 //! invalidates the link.
 
-use keel_foundation::AppError;
+use std::sync::Arc;
+
+use keel_foundation::{codes, AppError, ErrorCategory, PrincipalId, Retryability, Severity};
+use keel_tokens::{TokenPurpose, TokenService};
 use sha2::{Digest, Sha256};
 use time::{Duration, OffsetDateTime};
 
@@ -66,6 +69,110 @@ impl SignedUrls {
     pub fn has_valid_signature(&self, path_and_query: &str) -> bool {
         self.verify(path_and_query).is_ok()
     }
+}
+
+/// Query parameter carrying the single-use marker of a one-time signed URL.
+const ONCE_PARAM: &str = "once";
+
+/// Derive the signed-URL HMAC secret from the deployment's application key.
+/// The derivation is scoped to the signed-URL context (as `derive_cookie_key`
+/// is scoped to cookies), so one derived key cannot forge another context's
+/// material and rotating the app key rotates every signed link.
+pub fn derive_signed_key(app_key: &str) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(app_key.as_bytes());
+    hasher.update(b"\x00keel.signed-url.v1");
+    hasher.finalize().to_vec()
+}
+
+/// Signed-URL resolution port (Wave 2, 19-PARITY "URL generation"). The
+/// chain runtime holds this behind a trait, mirroring [`crate::EdgeAuthPort`]:
+/// the web crate executes the `signed` builtin without owning the token store.
+pub trait SignedUrlPort: Send + Sync {
+    /// Resolve a request's path+query: the HMAC must be intact and the TTL
+    /// (when present) unexpired, and a carried `once` marker must be redeemed
+    /// for its first time. The first call wins; every later call fails with a
+    /// 404, so a one-time link cannot be replayed.
+    fn resolve(&self, path_and_query: &str) -> Result<(), AppError>;
+}
+
+/// The signer behind the `signed` middleware: HMAC verification plus the
+/// one-time redemption record, bound to the deployment's token store.
+pub struct SignedGate {
+    urls: SignedUrls,
+    tokens: Arc<TokenService>,
+}
+
+impl SignedGate {
+    pub fn new(secret: Vec<u8>, tokens: Arc<TokenService>) -> Self {
+        Self {
+            urls: SignedUrls::new(secret),
+            tokens,
+        }
+    }
+
+    /// Mint a one-time signed URL (19-PARITY "one-time redemption variant").
+    /// A single-use marker is recorded in the token store as a hash only and
+    /// travels inside the URL, under the signature together with `expires` —
+    /// so the marker can be neither stripped, swapped, nor replayed without
+    /// invalidating the HMAC.
+    pub fn sign_once(
+        &self,
+        principal: PrincipalId,
+        path: &str,
+        ttl: Duration,
+    ) -> Result<String, AppError> {
+        let issued = self
+            .tokens
+            .issue(principal, TokenPurpose::SignedUrl, ttl, None)?;
+        let sep = if path.contains('?') { '&' } else { '?' };
+        let marked = format!("{path}{sep}{ONCE_PARAM}={}", issued.plaintext);
+        Ok(self.urls.sign(&marked, Some(ttl)))
+    }
+
+    /// Verify signature + TTL, then consume the `once` marker when the URL
+    /// carries one. An ordinary (multi-use) signed URL has no marker and
+    /// simply verifies.
+    pub fn redeem(&self, path_and_query: &str) -> Result<(), AppError> {
+        self.urls.verify(path_and_query)?;
+        let Some(marker) = extract_param(path_and_query, ONCE_PARAM) else {
+            return Ok(());
+        };
+        self.tokens
+            .consume(TokenPurpose::SignedUrl, &marker)
+            .map(|_| ())
+            .map_err(|_| {
+                // Replay, unknown or expired marker: the link is spent. The
+                // NotFound category keeps it a 404 (410/404 per the Wave 2
+                // test plan) and lets a web plane render `errors.404`.
+                AppError::new(
+                    codes::NOT_FOUND,
+                    ErrorCategory::NotFound,
+                    Severity::Low,
+                    Retryability::NotRetryable,
+                    "signed url has already been redeemed",
+                )
+            })
+    }
+}
+
+impl SignedUrlPort for SignedGate {
+    fn resolve(&self, path_and_query: &str) -> Result<(), AppError> {
+        self.redeem(path_and_query)
+    }
+}
+
+/// Read `key=value` out of a `path?query` string. The signature is hex (it
+/// can never contain `&`/`=` pairs of its own), so scanning the raw string
+/// is safe; a marker appended after the signature invalidates the HMAC
+/// first and never reaches this point.
+fn extract_param(path_and_query: &str, key: &str) -> Option<String> {
+    let (_, query) = path_and_query.split_once('?')?;
+    query.split('&').find_map(|pair| {
+        let (k, v) = pair.split_once('=')?;
+        (k == key).then(|| v.to_string())
+    })
 }
 
 /// Separate `signature=...` from the rest of the path+query.
@@ -256,6 +363,74 @@ mod tests {
         assert!(s.has_valid_signature(&url));
         assert!(!s.has_valid_signature("/exports/1"));
         assert!(!s.has_valid_signature("/exports/1?signature=deadbeef"));
+    }
+
+    // ------------------------- Wave 2 one-time signed URLs (19-PARITY URL gen)
+
+    fn gate() -> SignedGate {
+        let tokens = Arc::new(keel_tokens::TokenService::new(Arc::new(
+            keel_tokens::InMemoryTokenStore::new(),
+        )));
+        SignedGate::new(b"signed-url-test-secret".to_vec(), tokens)
+    }
+
+    #[test]
+    fn one_time_url_redeems_exactly_once() {
+        let g = gate();
+        let url = g
+            .sign_once(
+                keel_foundation::PrincipalId::new(),
+                "/downloads/1?scope=csv",
+                Duration::minutes(10),
+            )
+            .expect("one-time url mints");
+        assert!(url.contains("once="), "{url}");
+        assert!(url.contains("expires="), "{url}");
+
+        // Redemption records through the token store; the first call wins.
+        g.redeem(&url).expect("first redemption succeeds");
+        let err = g.redeem(&url).expect_err("replay must be refused");
+        assert_eq!(err.category, ErrorCategory::NotFound);
+        assert_eq!(err.code, codes::NOT_FOUND);
+        assert!(err.public_message.contains("already been redeemed"));
+    }
+
+    #[test]
+    fn one_time_marker_is_bound_to_the_signature() {
+        let g = gate();
+        let url = g
+            .sign_once(
+                keel_foundation::PrincipalId::new(),
+                "/downloads/1",
+                Duration::minutes(10),
+            )
+            .expect("one-time url mints");
+
+        // Stripping the marker changes the signed body -> refused as forged.
+        let marker = url
+            .split_once('?')
+            .expect("query part")
+            .1
+            .split('&')
+            .find(|pair| pair.starts_with("once="))
+            .expect("marker present")
+            .to_string();
+        let stripped = url.replace(&format!("{marker}&"), "");
+        let err = g.redeem(&stripped).expect_err("marker cannot be stripped");
+        assert_eq!(err.category, ErrorCategory::Authorization);
+
+        // Appending a foreign marker after the signature fails the HMAC first.
+        let foreign = format!("{url}&once=attacker-supplied");
+        let err = g.redeem(&foreign).expect_err("foreign marker refused");
+        assert_eq!(err.category, ErrorCategory::Authorization);
+    }
+
+    #[test]
+    fn multi_use_signed_urls_keep_verifying() {
+        let g = gate();
+        let url = g.urls.sign("/plain", Some(Duration::minutes(5)));
+        g.redeem(&url).expect("first use");
+        g.redeem(&url).expect("ordinary signed urls are multi-use");
     }
 }
 

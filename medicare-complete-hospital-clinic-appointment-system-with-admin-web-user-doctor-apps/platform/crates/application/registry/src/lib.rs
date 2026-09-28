@@ -599,6 +599,22 @@ pub struct ModuleManifest {
     /// GRAPH-CHANNEL-CAP gate.
     #[serde(default)]
     pub channels: Vec<ChannelSpec>,
+    /// URL-generation defaults (Wave 2): registered defaults fill every
+    /// `{param}` `resolve_url` is not given explicitly (Laravel's
+    /// `URL::defaults`). Additive — absent section keeps
+    /// [`MODULE_ABI`].
+    #[serde(default)]
+    pub url: UrlSection,
+}
+
+/// `[url]` manifest section (Wave 2): default parameter values for URL
+/// generation. Scope is the declaring module's own routes; a value the
+/// caller passes explicitly always wins over a registered default.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UrlSection {
+    /// `{param} -> default value`.
+    #[serde(default)]
+    pub defaults: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -691,6 +707,9 @@ impl RouteFileManifest {
             route_groups: self.route_groups,
             console_commands: self.commands,
             channels: self.channels,
+            // Root route files generate URLs for their own routes only;
+            // module `[url] defaults` never leaks across the file boundary.
+            url: UrlSection::default(),
         }
     }
 }
@@ -1091,6 +1110,11 @@ impl PlatformGraph {
     /// placeholder must be supplied; extra parameters are appended as a
     /// sorted query string (Laravel-style extras). Unknown module/route name
     /// or a missing parameter is a graph violation. Values are percent-encoded.
+    ///
+    /// Wave 2 URL defaults: placeholders the caller omits fall back to the
+    /// module's registered `[url] defaults` (`URL::defaults`); an explicit
+    /// value always wins. Defaults only ever fill path placeholders — they
+    /// are never appended as query parameters.
     pub fn resolve_url(
         &self,
         module_name: &str,
@@ -1116,6 +1140,13 @@ impl PlatformGraph {
             if path.contains(&placeholder) {
                 path = path.replace(&placeholder, &url_encode(value));
                 used.insert(key.clone());
+            }
+        }
+        // Registered defaults fill the leftovers (Wave 2 URL defaults).
+        for (key, value) in &module.url.defaults {
+            let placeholder = format!("{{{key}}}");
+            if path.contains(&placeholder) {
+                path = path.replace(&placeholder, &url_encode(value));
             }
         }
         if let Some(start) = path.find('{') {
@@ -1382,6 +1413,97 @@ name = "same"
         assert!(err.message.contains("id"));
     }
 
+    /// Wave 2 URL defaults (Laravel `URL::defaults`): a registered default
+    /// fills an omitted path parameter, an explicit value beats it, and a
+    /// default never leaks into the query string of another route.
+    #[test]
+    fn resolve_url_falls_back_to_registered_url_defaults() {
+        let toml = r#"
+[module]
+name = "alpha"
+version = "0.1.0"
+
+[capabilities]
+"create" = { profile = "COMMAND" }
+
+[url]
+defaults = { locale = "en" }
+
+[[routes]]
+method = "GET"
+path = "/api/v1/{locale}/things/{id}"
+operation = "create"
+name = "things.show"
+
+[[routes]]
+method = "GET"
+path = "/api/v1/things"
+operation = "create"
+name = "things.index"
+"#;
+        let graph =
+            PlatformGraph::compile(vec![ModuleManifest::from_toml(toml).expect("manifest parses")])
+                .expect("graph compiles");
+        assert_eq!(
+            graph.module("alpha").expect("alpha").url.defaults["locale"],
+            "en"
+        );
+
+        // Omitted placeholder falls back to the registered default.
+        let mut params = BTreeMap::new();
+        params.insert("id".into(), "7".into());
+        assert_eq!(
+            graph.resolve_url("alpha", "things.show", &params).unwrap(),
+            "/api/v1/en/things/7"
+        );
+
+        // The explicit value wins over the registered default.
+        params.insert("locale".into(), "fr".into());
+        assert_eq!(
+            graph.resolve_url("alpha", "things.show", &params).unwrap(),
+            "/api/v1/fr/things/7"
+        );
+
+        // Defaults fill path placeholders only — never an extra query param.
+        assert_eq!(
+            graph
+                .resolve_url("alpha", "things.index", &BTreeMap::new())
+                .unwrap(),
+            "/api/v1/things"
+        );
+    }
+
+    /// A placeholder with no supplied value and no registered default stays a
+    /// graph violation (defaults relax generation, they do not hide bugs).
+    #[test]
+    fn resolve_url_still_requires_params_that_have_no_default() {
+        let toml = r#"
+[module]
+name = "alpha"
+version = "0.1.0"
+
+[capabilities]
+"create" = { profile = "COMMAND" }
+
+[url]
+defaults = { locale = "en" }
+
+[[routes]]
+method = "GET"
+path = "/api/v1/{locale}/things/{id}"
+operation = "create"
+name = "things.show"
+"#;
+        let graph =
+            PlatformGraph::compile(vec![ModuleManifest::from_toml(toml).expect("manifest parses")])
+                .expect("graph compiles");
+        let err = graph
+            .resolve_url("alpha", "things.show", &BTreeMap::new())
+            .unwrap_err();
+        assert_eq!(err.code, "GRAPH-ROUTE-NAME");
+        assert!(err.message.contains("id"), "{:?}", err.message);
+    }
+
     // ------------------------------------------------ S10 B-18: module ABI
 
     #[test]
@@ -1470,6 +1592,98 @@ resource = "notes"
         let m = resource_manifest("", "except = [\"destroy\", \"update\"]");
         assert_eq!(m.routes.len(), 3, "update excluded removes both PUT+PATCH");
         assert!(!m.routes.iter().any(|r| r.operation == "update"));
+    }
+
+    // ------------------------------------------------ Wave 2: singleton
+
+    fn singleton_manifest(route_extra: &str) -> ModuleManifest {
+        let toml = format!(
+            r#"
+[module]
+name = "profile"
+version = "0.1.0"
+
+[capabilities]
+"show" = {{ profile = "READ" }}
+"update" = {{ profile = "COMMAND" }}
+"destroy" = {{ profile = "COMMAND" }}
+
+[[routes]]
+singleton = true
+resource = "profile"
+{route_extra}
+"#
+        );
+        ModuleManifest::from_toml(&toml).expect("singleton manifest parses")
+    }
+
+    #[test]
+    fn singleton_expands_without_id_into_four_route_specs() {
+        let m = singleton_manifest("");
+        assert_eq!(
+            m.routes.len(),
+            4,
+            "show + update (PUT/PATCH) + destroy"
+        );
+        let pairs: Vec<(String, String)> = m
+            .routes
+            .iter()
+            .map(|r| (r.method.clone(), r.path.clone()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("GET".into(), "/profile".into()),
+                ("PUT".into(), "/profile".into()),
+                ("PATCH".into(), "/profile".into()),
+                ("DELETE".into(), "/profile".into()),
+            ],
+            "one instance per path — never an {{id}} segment"
+        );
+        let names: Vec<&str> = m.routes.iter().map(|r| r.name.as_deref().unwrap()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "profile.show",
+                "profile.update",
+                "profile.update",
+                "profile.destroy"
+            ],
+            "the update alias pair shares one route name"
+        );
+        // The expanded set still clears the graph gates (DUP-ROUTENAME alias,
+        // GRAPH-RESOURCE-OP capabilities).
+        PlatformGraph::compile(vec![m]).expect("singleton manifest compiles");
+    }
+
+    #[test]
+    fn singleton_only_and_except_filter_verbs() {
+        let m = singleton_manifest("only = [\"show\"]");
+        assert_eq!(m.routes.len(), 1);
+        assert_eq!(m.routes[0].method, "GET");
+        let m = singleton_manifest("except = [\"destroy\", \"update\"]");
+        assert_eq!(m.routes.len(), 1, "update excluded removes PUT + PATCH");
+    }
+
+    #[test]
+    fn singleton_without_a_resource_path_is_rejected() {
+        let toml = r#"
+[module]
+name = "profile"
+version = "0.1.0"
+
+[capabilities]
+"show" = { profile = "READ" }
+
+[[routes]]
+singleton = true
+method = "GET"
+path = "/profile"
+operation = "show"
+"#;
+        let err = ModuleManifest::from_toml(toml).unwrap_err();
+        assert_eq!(err.code, "GRAPH-MANIFEST");
+        assert!(err.message.contains("singleton"), "{}", err.message);
     }
 
     #[test]

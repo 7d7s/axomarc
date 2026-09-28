@@ -35,6 +35,10 @@ pub enum TokenPurpose {
     OauthCode,
     /// OAuth2 refresh-token rotation (single-use per rotation; B-21).
     OauthRefresh,
+    /// One-time signed URL redemption (Wave 2, single-use): the link carries
+    /// the plaintext marker, this row records its hash so the second
+    /// redemption fails.
+    SignedUrl,
 }
 
 impl TokenPurpose {
@@ -45,6 +49,7 @@ impl TokenPurpose {
             TokenPurpose::Verify => "verify",
             TokenPurpose::OauthCode => "oauth_code",
             TokenPurpose::OauthRefresh => "oauth_refresh",
+            TokenPurpose::SignedUrl => "signed_url",
         }
     }
 
@@ -56,6 +61,7 @@ impl TokenPurpose {
                 | TokenPurpose::Verify
                 | TokenPurpose::OauthCode
                 | TokenPurpose::OauthRefresh
+                | TokenPurpose::SignedUrl
         )
     }
 }
