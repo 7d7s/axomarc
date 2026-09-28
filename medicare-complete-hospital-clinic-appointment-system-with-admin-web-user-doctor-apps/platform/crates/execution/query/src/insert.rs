@@ -9,11 +9,14 @@ use keel_foundation::{AppError, TenantId};
 use crate::select::{Ident, Value};
 use crate::CompiledWrite;
 
-/// `ON CONFLICT` policy for upserts. The conflict target is always explicit —
-/// no target-less `ON CONFLICT` forms are generated.
+/// `ON CONFLICT` policy for upserts. An explicit conflict target is required
+/// for `DoUpdate`; `DoNothing` also accepts an empty target, which renders
+/// Postgres' target-less `ON CONFLICT DO NOTHING` (ignores ANY unique
+/// violation — the `insert_or_ignore` primitive).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConflictPolicy {
-    /// `ON CONFLICT (target) DO NOTHING` — losing rows are skipped.
+    /// `ON CONFLICT (target) DO NOTHING` — losing rows are skipped. With an
+    /// empty target: target-less `ON CONFLICT DO NOTHING` (any violation).
     DoNothing,
     /// `ON CONFLICT (target) DO UPDATE SET col = EXCLUDED.col` for every
     /// inserted column that is not part of the conflict target.
@@ -62,8 +65,9 @@ impl Insert {
         self
     }
 
-    /// Set the `ON CONFLICT` policy. Target columns must be a subset of the
-    /// inserted columns (checked at build time).
+    /// Set the `ON CONFLICT` policy. Non-empty target columns must be a
+    /// subset of the inserted columns (checked at build time); an empty
+    /// target is allowed for [`ConflictPolicy::DoNothing`] only.
     pub fn on_conflict(mut self, target: Vec<Ident>, policy: ConflictPolicy) -> Self {
         self.conflict_target = target;
         self.conflict = Some(policy);
@@ -159,47 +163,54 @@ impl Insert {
 
         if let Some(policy) = self.conflict {
             if self.conflict_target.is_empty() {
-                return Err(AppError::validation(
-                    "ON CONFLICT needs at least one target column",
-                ));
-            }
-            for t in &self.conflict_target {
-                if !self.columns.iter().any(|c| c == t) {
-                    return Err(AppError::validation(format!(
-                        "conflict target {} is not an inserted column",
-                        t.as_str()
-                    )));
+                // Target-less DO NOTHING ignores ANY unique-constraint
+                // violation (Postgres-legal; backs ModelStore::insert_or_ignore).
+                // DO UPDATE still needs an explicit target to upsert on.
+                if policy == ConflictPolicy::DoUpdate {
+                    return Err(AppError::validation(
+                        "ON CONFLICT DO UPDATE needs at least one target column",
+                    ));
                 }
-            }
-            sql.push_str(" ON CONFLICT (");
-            sql.push_str(
-                &self
-                    .conflict_target
-                    .iter()
-                    .map(|c| c.as_str().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            );
-            sql.push(')');
-            match policy {
-                ConflictPolicy::DoNothing => sql.push_str(" DO NOTHING"),
-                ConflictPolicy::DoUpdate => {
-                    let updates: Vec<String> = self
-                        .columns
-                        .iter()
-                        .filter(|c| {
-                            !self.conflict_target.iter().any(|t| t == *c)
-                                && !self.conflict_update_exclude.iter().any(|x| x == *c)
-                        })
-                        .map(|c| format!("{} = EXCLUDED.{}", c.as_str(), c.as_str()))
-                        .collect();
-                    if updates.is_empty() {
-                        return Err(AppError::validation(
-                            "ON CONFLICT DO UPDATE needs at least one non-target column",
-                        ));
+                sql.push_str(" ON CONFLICT DO NOTHING");
+            } else {
+                for t in &self.conflict_target {
+                    if !self.columns.iter().any(|c| c == t) {
+                        return Err(AppError::validation(format!(
+                            "conflict target {} is not an inserted column",
+                            t.as_str()
+                        )));
                     }
-                    sql.push_str(" DO UPDATE SET ");
-                    sql.push_str(&updates.join(", "));
+                }
+                sql.push_str(" ON CONFLICT (");
+                sql.push_str(
+                    &self
+                        .conflict_target
+                        .iter()
+                        .map(|c| c.as_str().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
+                sql.push(')');
+                match policy {
+                    ConflictPolicy::DoNothing => sql.push_str(" DO NOTHING"),
+                    ConflictPolicy::DoUpdate => {
+                        let updates: Vec<String> = self
+                            .columns
+                            .iter()
+                            .filter(|c| {
+                                !self.conflict_target.iter().any(|t| t == *c)
+                                    && !self.conflict_update_exclude.iter().any(|x| x == *c)
+                            })
+                            .map(|c| format!("{} = EXCLUDED.{}", c.as_str(), c.as_str()))
+                            .collect();
+                        if updates.is_empty() {
+                            return Err(AppError::validation(
+                                "ON CONFLICT DO UPDATE needs at least one non-target column",
+                            ));
+                        }
+                        sql.push_str(" DO UPDATE SET ");
+                        sql.push_str(&updates.join(", "));
+                    }
                 }
             }
         }
@@ -303,6 +314,28 @@ mod tests {
             .build()
             .unwrap();
         assert!(q.sql.ends_with("ON CONFLICT (key) DO NOTHING"));
+    }
+
+    #[test]
+    fn targetless_do_nothing_ok_do_update_still_needs_target() {
+        // Empty target + DoNothing renders Postgres' target-less form
+        // (ignores any unique violation — the insert_or_ignore primitive).
+        let q = Insert::into_table(id("t"))
+            .columns(vec![id("a")])
+            .row(vec![Value::Null])
+            .on_conflict(vec![], ConflictPolicy::DoNothing)
+            .build()
+            .unwrap();
+        assert!(q.sql.ends_with(" ON CONFLICT DO NOTHING"), "{}", q.sql);
+
+        // Empty target + DoUpdate stays a build error.
+        let err = Insert::into_table(id("t"))
+            .columns(vec![id("a")])
+            .row(vec![Value::Null])
+            .on_conflict(vec![], ConflictPolicy::DoUpdate)
+            .build()
+            .unwrap_err();
+        assert!(err.public_message.contains("target column"));
     }
 
     #[test]

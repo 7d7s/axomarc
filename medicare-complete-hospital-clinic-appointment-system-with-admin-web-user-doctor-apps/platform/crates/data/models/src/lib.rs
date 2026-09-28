@@ -23,7 +23,8 @@ pub use runtime::{
     ModelObserver, ModelPhase, ModelRuntime,
 };
 pub use store::{
-    now_rfc3339, FieldFilter, FilterOp, InMemoryModelStore, ListOpts, ModelStore, Record,
+    now_rfc3339, AggregateOp, FieldFilter, FilterOp, InMemoryModelStore, ListOpts, ModelStore,
+    Record,
 };
 
 use std::sync::Arc;

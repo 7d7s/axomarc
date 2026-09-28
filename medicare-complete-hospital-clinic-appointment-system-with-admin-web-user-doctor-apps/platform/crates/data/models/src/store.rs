@@ -18,7 +18,7 @@ use keel_query::PageReq;
 use serde_json::Value as Json;
 use uuid::Uuid;
 
-use crate::ModelDef;
+use crate::{FieldType, ModelDef};
 
 /// One persisted row, keyed by column name.
 pub type Record = serde_json::Map<String, Json>;
@@ -55,6 +55,52 @@ impl FieldFilter {
             field: field.into(),
             op: FilterOp::In,
             value: Json::Array(values),
+        }
+    }
+}
+
+/// Aggregate request for [`ModelStore::aggregate`]. COUNT(*) needs no field;
+/// SUM/AVG require a numeric field and MIN/MAX any orderable field — both
+/// validated against the model by the store at call time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AggregateOp {
+    /// COUNT(*)
+    Count,
+    Sum(String),
+    Avg(String),
+    Min(String),
+    Max(String),
+}
+
+impl AggregateOp {
+    pub fn count() -> Self {
+        AggregateOp::Count
+    }
+
+    pub fn sum(field: impl Into<String>) -> Self {
+        AggregateOp::Sum(field.into())
+    }
+
+    pub fn avg(field: impl Into<String>) -> Self {
+        AggregateOp::Avg(field.into())
+    }
+
+    pub fn min(field: impl Into<String>) -> Self {
+        AggregateOp::Min(field.into())
+    }
+
+    pub fn max(field: impl Into<String>) -> Self {
+        AggregateOp::Max(field.into())
+    }
+
+    /// The field the aggregate reads (`None` = COUNT(*)).
+    pub fn field(&self) -> Option<&str> {
+        match self {
+            AggregateOp::Count => None,
+            AggregateOp::Sum(f)
+            | AggregateOp::Avg(f)
+            | AggregateOp::Min(f)
+            | AggregateOp::Max(f) => Some(f.as_str()),
         }
     }
 }
@@ -114,6 +160,88 @@ pub trait ModelStore: Send + Sync {
         record: &Record,
         conflict: &[String],
     ) -> Result<Record, AppError>;
+
+    /// Aggregate over tenant+filter-scoped LIVE rows (soft-deleted rows never
+    /// count): COUNT(*) always; SUM/AVG need a numeric field, MIN/MAX any
+    /// orderable non-jsonb field (validated here). Empty match sets: Count →
+    /// 0, SUM/AVG/MIN/MAX → JSON null (SQL NULL semantics).
+    fn aggregate(
+        &self,
+        model: &ModelDef,
+        tenant: Option<TenantId>,
+        filters: &[FieldFilter],
+        op: AggregateOp,
+    ) -> Result<Json, AppError>;
+
+    /// True when at least one LIVE row matches tenant+filters.
+    fn exists(
+        &self,
+        model: &ModelDef,
+        tenant: Option<TenantId>,
+        filters: &[FieldFilter],
+    ) -> Result<bool, AppError>;
+
+    /// First row matching tenant+filters (scan/insertion order); the
+    /// soft-delete veil applies unless `include_deleted`.
+    fn find_by(
+        &self,
+        model: &ModelDef,
+        tenant: Option<TenantId>,
+        filters: &[FieldFilter],
+        include_deleted: bool,
+    ) -> Result<Option<Record>, AppError>;
+
+    /// [`ModelStore::find`] with a row lock (`SELECT ... FOR UPDATE`); the
+    /// in-memory backend relies on its store-wide mutex (equivalent effect
+    /// for a process-local store).
+    fn find_for_update(
+        &self,
+        model: &ModelDef,
+        id: Uuid,
+        tenant: Option<TenantId>,
+        include_deleted: bool,
+    ) -> Result<Option<Record>, AppError>;
+
+    /// Insert unless a conflicting row exists — same `id` or a declared
+    /// unique field matching within the record's tenant (Postgres also
+    /// ignores any other unique violation via target-less
+    /// `ON CONFLICT DO NOTHING`). Returns the stored row, or `None` when the
+    /// insert was ignored.
+    fn insert_or_ignore(&self, model: &ModelDef, record: &Record) -> Result<Option<Record>, AppError>;
+
+    /// Filter-keyed UPDATE (pivot sync, batch edits): applies `changes` to
+    /// every row matching tenant+filters (live rows only); returns the
+    /// updated rows. An empty filter list is refused — no unfiltered write.
+    fn update_filtered(
+        &self,
+        model: &ModelDef,
+        tenant: Option<TenantId>,
+        filters: &[FieldFilter],
+        changes: &Record,
+    ) -> Result<Vec<Record>, AppError>;
+
+    /// Filter-keyed DELETE (pivot detach, batch removal): soft-marks or
+    /// removes every matching live row per `model.soft_deletes`; returns the
+    /// affected rows. An empty filter list is refused.
+    fn delete_filtered(
+        &self,
+        model: &ModelDef,
+        tenant: Option<TenantId>,
+        filters: &[FieldFilter],
+    ) -> Result<Vec<Record>, AppError>;
+
+    /// Hard-delete the row even when `model.soft_deletes` (trash purge,
+    /// prune). True when a row was removed — live or already trashed.
+    fn force_delete(
+        &self,
+        model: &ModelDef,
+        id: Uuid,
+        tenant: Option<TenantId>,
+    ) -> Result<bool, AppError>;
+
+    /// TRUNCATE the model's table — refused unless `env` is a dev/test
+    /// environment (fail-closed gate shared with the SQL builder).
+    fn truncate(&self, model: &ModelDef, env: &str) -> Result<(), AppError>;
 }
 
 /// Arc delegation: `Arc<impl ModelStore>` (and `Arc<dyn ModelStore>`) is
@@ -170,6 +298,81 @@ impl<T: ModelStore + ?Sized> ModelStore for Arc<T> {
     ) -> Result<Record, AppError> {
         (**self).upsert(model, record, conflict)
     }
+
+    fn aggregate(
+        &self,
+        model: &ModelDef,
+        tenant: Option<TenantId>,
+        filters: &[FieldFilter],
+        op: AggregateOp,
+    ) -> Result<Json, AppError> {
+        (**self).aggregate(model, tenant, filters, op)
+    }
+
+    fn exists(
+        &self,
+        model: &ModelDef,
+        tenant: Option<TenantId>,
+        filters: &[FieldFilter],
+    ) -> Result<bool, AppError> {
+        (**self).exists(model, tenant, filters)
+    }
+
+    fn find_by(
+        &self,
+        model: &ModelDef,
+        tenant: Option<TenantId>,
+        filters: &[FieldFilter],
+        include_deleted: bool,
+    ) -> Result<Option<Record>, AppError> {
+        (**self).find_by(model, tenant, filters, include_deleted)
+    }
+
+    fn find_for_update(
+        &self,
+        model: &ModelDef,
+        id: Uuid,
+        tenant: Option<TenantId>,
+        include_deleted: bool,
+    ) -> Result<Option<Record>, AppError> {
+        (**self).find_for_update(model, id, tenant, include_deleted)
+    }
+
+    fn insert_or_ignore(&self, model: &ModelDef, record: &Record) -> Result<Option<Record>, AppError> {
+        (**self).insert_or_ignore(model, record)
+    }
+
+    fn update_filtered(
+        &self,
+        model: &ModelDef,
+        tenant: Option<TenantId>,
+        filters: &[FieldFilter],
+        changes: &Record,
+    ) -> Result<Vec<Record>, AppError> {
+        (**self).update_filtered(model, tenant, filters, changes)
+    }
+
+    fn delete_filtered(
+        &self,
+        model: &ModelDef,
+        tenant: Option<TenantId>,
+        filters: &[FieldFilter],
+    ) -> Result<Vec<Record>, AppError> {
+        (**self).delete_filtered(model, tenant, filters)
+    }
+
+    fn force_delete(
+        &self,
+        model: &ModelDef,
+        id: Uuid,
+        tenant: Option<TenantId>,
+    ) -> Result<bool, AppError> {
+        (**self).force_delete(model, id, tenant)
+    }
+
+    fn truncate(&self, model: &ModelDef, env: &str) -> Result<(), AppError> {
+        (**self).truncate(model, env)
+    }
 }
 
 /// RFC 3339 UTC timestamp string for "now" (canonical record encoding).
@@ -213,6 +416,69 @@ fn filter_matches(record: &Record, filter: &FieldFilter) -> bool {
             .unwrap_or(false),
         FilterOp::IsNull => matches!(actual, None | Some(Json::Null)),
         FilterOp::NotNull => !matches!(actual, None | Some(Json::Null)),
+    }
+}
+
+/// Validate an aggregate against the model (shared by both backends):
+/// unknown fields are refused; SUM/AVG need numeric fields; MIN/MAX any
+/// field except jsonb (no portable ordering). Returns the field type when a
+/// field is involved (`None` = COUNT(*)).
+pub fn validate_aggregate<'m>(
+    model: &'m ModelDef,
+    op: &AggregateOp,
+) -> Result<Option<&'m FieldType>, AppError> {
+    let Some(name) = op.field() else {
+        return Ok(None);
+    };
+    let field = model.field_named(name).ok_or_else(|| {
+        AppError::validation(format!(
+            "aggregate field {name:?} is not on model {}",
+            model.table
+        ))
+    })?;
+    match op {
+        AggregateOp::Sum(_) | AggregateOp::Avg(_) => {
+            if !matches!(
+                field.field_type,
+                FieldType::Int32 | FieldType::Int64 | FieldType::Float | FieldType::Decimal
+            ) {
+                return Err(AppError::validation(format!(
+                    "{op:?} aggregate needs a numeric field, {name:?} is {:?}",
+                    field.field_type
+                )));
+            }
+        }
+        AggregateOp::Min(_) | AggregateOp::Max(_) => {
+            if matches!(field.field_type, FieldType::Json) {
+                return Err(AppError::validation(format!(
+                    "{op:?} aggregate cannot order jsonb field {name:?}"
+                )));
+            }
+        }
+        AggregateOp::Count => {}
+    }
+    Ok(Some(&field.field_type))
+}
+
+/// Unfiltered-write guard for the filter-keyed store operations.
+pub fn require_filters(op: &str, filters: &[FieldFilter]) -> Result<(), AppError> {
+    if filters.is_empty() {
+        return Err(AppError::validation(format!(
+            "{op} requires at least one filter"
+        )));
+    }
+    Ok(())
+}
+
+/// Scalar ordering for MIN/MAX in the in-memory backend (numbers compare
+/// numerically, strings lexicographically, bools false<true; mixed or
+/// object/array values have no portable order).
+fn json_order(a: &Json, b: &Json) -> Option<std::cmp::Ordering> {
+    match (a, b) {
+        (Json::Number(x), Json::Number(y)) => x.as_f64().partial_cmp(&y.as_f64()),
+        (Json::String(x), Json::String(y)) => Some(x.cmp(y)),
+        (Json::Bool(x), Json::Bool(y)) => Some(x.cmp(y)),
+        _ => None,
     }
 }
 
@@ -387,6 +653,265 @@ impl ModelStore for InMemoryModelStore {
             Ok(Self::clone_row(record))
         })
     }
+
+    fn aggregate(
+        &self,
+        model: &ModelDef,
+        tenant: Option<TenantId>,
+        filters: &[FieldFilter],
+        op: AggregateOp,
+    ) -> Result<Json, AppError> {
+        validate_aggregate(model, &op)?;
+        self.with_table(&model.table, |rows| {
+            let matched: Vec<&Record> = rows
+                .iter()
+                .filter(|r| tenant_matches(model, r, tenant))
+                .filter(|r| !is_deleted(r))
+                .filter(|r| filters.iter().all(|f| filter_matches(r, f)))
+                .collect();
+            match op {
+                AggregateOp::Count => Ok(Json::from(matched.len() as u64)),
+                ref other => {
+                    let name = other.field().expect("non-count aggregate has a field");
+                    let values: Vec<&Json> = matched
+                        .iter()
+                        .filter_map(|r| r.get(name))
+                        .filter(|v| !matches!(v, Json::Null))
+                        .collect();
+                    if values.is_empty() {
+                        // SQL NULL semantics: no rows to aggregate.
+                        return Ok(Json::Null);
+                    }
+                    let finite = |f: f64| {
+                        serde_json::Number::from_f64(f).map(Json::Number).ok_or_else(|| {
+                            AppError::validation("aggregate produced a non-finite number")
+                        })
+                    };
+                    match other {
+                        AggregateOp::Sum(_) => {
+                            let mut int_sum: Option<i64> = Some(0);
+                            let mut float_sum = 0f64;
+                            for v in &values {
+                                let Json::Number(n) = v else {
+                                    return Err(AppError::validation(format!(
+                                        "field {name:?} holds a non-numeric value"
+                                    )));
+                                };
+                                match (int_sum.as_mut(), n.as_i64()) {
+                                    (Some(acc), Some(i)) => {
+                                        *acc += i;
+                                        float_sum += i as f64;
+                                    }
+                                    _ => {
+                                        float_sum += n.as_f64().ok_or_else(|| {
+                                            AppError::validation(format!(
+                                                "field {name:?} holds a non-numeric value"
+                                            ))
+                                        })?;
+                                        int_sum = None;
+                                    }
+                                }
+                            }
+                            match int_sum {
+                                Some(total) => Ok(Json::from(total)),
+                                None => finite(float_sum),
+                            }
+                        }
+                        AggregateOp::Avg(_) => {
+                            let mut sum = 0f64;
+                            for v in &values {
+                                let Json::Number(n) = v else {
+                                    return Err(AppError::validation(format!(
+                                        "field {name:?} holds a non-numeric value"
+                                    )));
+                                };
+                                sum += n.as_f64().ok_or_else(|| {
+                                    AppError::validation(format!(
+                                        "field {name:?} holds a non-numeric value"
+                                    ))
+                                })?;
+                            }
+                            finite(sum / values.len() as f64)
+                        }
+                        AggregateOp::Min(_) | AggregateOp::Max(_) => {
+                            let want_min = matches!(other, AggregateOp::Min(_));
+                            let mut best = values[0];
+                            for v in &values[1..] {
+                                let ord = json_order(best, v).ok_or_else(|| {
+                                    AppError::validation(format!(
+                                        "min/max on {name:?} needs comparable values"
+                                    ))
+                                })?;
+                                let take = (want_min && ord == std::cmp::Ordering::Greater)
+                                    || (!want_min && ord == std::cmp::Ordering::Less);
+                                if take {
+                                    best = v;
+                                }
+                            }
+                            Ok(best.clone())
+                        }
+                        AggregateOp::Count => {
+                            unreachable!("count handled before field aggregation")
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    fn exists(
+        &self,
+        model: &ModelDef,
+        tenant: Option<TenantId>,
+        filters: &[FieldFilter],
+    ) -> Result<bool, AppError> {
+        self.with_table(&model.table, |rows| {
+            Ok(rows.iter().any(|r| {
+                tenant_matches(model, r, tenant)
+                    && !is_deleted(r)
+                    && filters.iter().all(|f| filter_matches(r, f))
+            }))
+        })
+    }
+
+    fn find_by(
+        &self,
+        model: &ModelDef,
+        tenant: Option<TenantId>,
+        filters: &[FieldFilter],
+        include_deleted: bool,
+    ) -> Result<Option<Record>, AppError> {
+        self.with_table(&model.table, |rows| {
+            Ok(rows
+                .iter()
+                .find(|r| {
+                    tenant_matches(model, r, tenant)
+                        && (include_deleted || !is_deleted(r))
+                        && filters.iter().all(|f| filter_matches(r, f))
+                })
+                .map(Self::clone_row))
+        })
+    }
+
+    fn find_for_update(
+        &self,
+        model: &ModelDef,
+        id: Uuid,
+        tenant: Option<TenantId>,
+        include_deleted: bool,
+    ) -> Result<Option<Record>, AppError> {
+        // The store-wide mutex is already held for the whole lookup, which is
+        // the process-local equivalent of SELECT ... FOR UPDATE.
+        self.find(model, id, tenant, include_deleted)
+    }
+
+    fn insert_or_ignore(&self, model: &ModelDef, record: &Record) -> Result<Option<Record>, AppError> {
+        let id = uuid_str(record, "id")
+            .ok_or_else(|| AppError::validation("record needs a uuid id before insert"))?;
+        let record_tenant = uuid_str(record, "tenant_id").map(TenantId::from_uuid);
+        let unique_fields: Vec<String> = model
+            .fields
+            .iter()
+            .filter(|f| f.unique)
+            .map(|f| f.name.clone())
+            .collect();
+        self.with_table(&model.table, |rows| {
+            let conflict = rows.iter().any(|r| {
+                if uuid_str(r, "id") == Some(id) {
+                    return true;
+                }
+                // Unique-field collisions are tenant-scoped, mirroring upsert.
+                tenant_matches(model, r, record_tenant)
+                    && unique_fields.iter().any(|fname| {
+                        record
+                            .get(fname)
+                            .is_some_and(|value| r.get(fname) == Some(value))
+                    })
+            });
+            if conflict {
+                return Ok(None);
+            }
+            rows.push(Self::clone_row(record));
+            Ok(Some(Self::clone_row(record)))
+        })
+    }
+
+    fn update_filtered(
+        &self,
+        model: &ModelDef,
+        tenant: Option<TenantId>,
+        filters: &[FieldFilter],
+        changes: &Record,
+    ) -> Result<Vec<Record>, AppError> {
+        require_filters("update_filtered", filters)?;
+        self.with_table(&model.table, |rows| {
+            let mut updated = Vec::new();
+            for row in rows.iter_mut() {
+                if tenant_matches(model, row, tenant)
+                    && !is_deleted(row)
+                    && filters.iter().all(|f| filter_matches(row, f))
+                {
+                    for (key, value) in changes {
+                        row.insert(key.clone(), value.clone());
+                    }
+                    updated.push(Self::clone_row(row));
+                }
+            }
+            Ok(updated)
+        })
+    }
+
+    fn delete_filtered(
+        &self,
+        model: &ModelDef,
+        tenant: Option<TenantId>,
+        filters: &[FieldFilter],
+    ) -> Result<Vec<Record>, AppError> {
+        require_filters("delete_filtered", filters)?;
+        if model.soft_deletes {
+            let mut changes = Record::new();
+            changes.insert("deleted_at".into(), Json::String(now_rfc3339()));
+            return self.update_filtered(model, tenant, filters, &changes);
+        }
+        self.with_table(&model.table, |rows| {
+            let mut removed = Vec::new();
+            let mut kept = Vec::new();
+            for row in rows.drain(..) {
+                if tenant_matches(model, &row, tenant)
+                    && !is_deleted(&row)
+                    && filters.iter().all(|f| filter_matches(&row, f))
+                {
+                    removed.push(row);
+                } else {
+                    kept.push(row);
+                }
+            }
+            *rows = kept;
+            Ok(removed)
+        })
+    }
+
+    fn force_delete(
+        &self,
+        model: &ModelDef,
+        id: Uuid,
+        tenant: Option<TenantId>,
+    ) -> Result<bool, AppError> {
+        self.with_table(&model.table, |rows| {
+            let before = rows.len();
+            // No soft-delete veil: purges live AND trashed rows alike.
+            rows.retain(|r| !(uuid_str(r, "id") == Some(id) && tenant_matches(model, r, tenant)));
+            Ok(rows.len() < before)
+        })
+    }
+
+    fn truncate(&self, model: &ModelDef, env: &str) -> Result<(), AppError> {
+        keel_query::truncate::check_env(env)?;
+        self.with_table(&model.table, |rows| {
+            rows.clear();
+            Ok(())
+        })
+    }
 }
 
 #[cfg(test)]
@@ -506,5 +1031,445 @@ mod tests {
         let id = uuid_str(&row, "id").unwrap();
         assert!(store.delete(&model, id, None).unwrap());
         assert!(store.find(&model, id, None, true).unwrap().is_none());
+    }
+
+    // ---------------------------------------------------- Wave 3 (phase 2)
+
+    fn meter_model() -> ModelDef {
+        ModelDef::new("Meter", "meters")
+            .tenant_scoped()
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("tenant_id", FieldType::Uuid).required())
+            .field(FieldDef::new("reading", FieldType::Int64).required())
+            .field(FieldDef::new("label", FieldType::Text).required().unique())
+            .field(FieldDef::new("deleted_at", FieldType::Timestamp))
+    }
+
+    fn meter(tenant: TenantId, label: &str, reading: i64) -> Record {
+        let mut r = Record::new();
+        r.insert("id".into(), Json::String(Uuid::now_v7().to_string()));
+        r.insert("tenant_id".into(), Json::String(tenant.as_uuid().to_string()));
+        r.insert("label".into(), Json::String(label.into()));
+        r.insert("reading".into(), Json::from(reading));
+        r
+    }
+
+    fn hard_log_model() -> ModelDef {
+        ModelDef::new("Log", "logs")
+            .hard_deletes()
+            .field(FieldDef::new("id", FieldType::Uuid).required())
+            .field(FieldDef::new("msg", FieldType::Text))
+    }
+
+    fn log_row(msg: &str) -> Record {
+        let mut r = Record::new();
+        r.insert("id".into(), Json::String(Uuid::now_v7().to_string()));
+        r.insert("msg".into(), Json::String(msg.into()));
+        r
+    }
+
+    #[test]
+    fn aggregate_is_tenant_scoped_and_typed() {
+        let store = InMemoryModelStore::new();
+        let model = meter_model();
+        let a = TenantId::new();
+        let b = TenantId::new();
+        for (label, reading) in [("m0", 10i64), ("m1", 20), ("m2", 30)] {
+            store.insert(&model, &meter(a, label, reading)).unwrap();
+        }
+        store.insert(&model, &meter(b, "other", 999)).unwrap();
+
+        let count = store
+            .aggregate(&model, Some(a), &[], AggregateOp::count())
+            .unwrap();
+        assert_eq!(count.as_u64(), Some(3));
+        let sum = store
+            .aggregate(&model, Some(a), &[], AggregateOp::sum("reading"))
+            .unwrap();
+        assert_eq!(sum.as_i64(), Some(60));
+        let avg = store
+            .aggregate(&model, Some(a), &[], AggregateOp::avg("reading"))
+            .unwrap();
+        assert_eq!(avg.as_f64(), Some(20.0));
+        let min = store
+            .aggregate(&model, Some(a), &[], AggregateOp::min("reading"))
+            .unwrap();
+        assert_eq!(min.as_i64(), Some(10));
+        let max = store
+            .aggregate(&model, Some(a), &[], AggregateOp::max("reading"))
+            .unwrap();
+        assert_eq!(max.as_i64(), Some(30));
+
+        // Cross-tenant rows never leak into the aggregate.
+        let sum_b = store
+            .aggregate(&model, Some(b), &[], AggregateOp::sum("reading"))
+            .unwrap();
+        assert_eq!(sum_b.as_i64(), Some(999));
+
+        // Filters narrow the match set.
+        let filtered = store
+            .aggregate(
+                &model,
+                Some(a),
+                &[FieldFilter::eq("label", "m0")],
+                AggregateOp::count(),
+            )
+            .unwrap();
+        assert_eq!(filtered.as_u64(), Some(1));
+
+        // Soft-deleted rows never count.
+        let row = store
+            .find_by(&model, Some(a), &[FieldFilter::eq("label", "m0")], false)
+            .unwrap()
+            .unwrap();
+        store
+            .delete(&model, uuid_str(&row, "id").unwrap(), Some(a))
+            .unwrap();
+        let count = store
+            .aggregate(&model, Some(a), &[], AggregateOp::count())
+            .unwrap();
+        assert_eq!(count.as_u64(), Some(2));
+
+        // Empty match sets: COUNT is 0, SUM/AVG/MIN/MAX are SQL NULL.
+        let miss = [FieldFilter::eq("label", "nope")];
+        let zero = store
+            .aggregate(&model, Some(a), &miss, AggregateOp::count())
+            .unwrap();
+        assert_eq!(zero.as_u64(), Some(0));
+        let null = store
+            .aggregate(&model, Some(a), &miss, AggregateOp::sum("reading"))
+            .unwrap();
+        assert_eq!(null, Json::Null);
+
+        // Field validation: non-numeric SUM and unknown fields are refused.
+        let err = store
+            .aggregate(&model, Some(a), &[], AggregateOp::sum("label"))
+            .unwrap_err();
+        assert!(err.public_message.contains("numeric"), "{}", err.public_message);
+        let err = store
+            .aggregate(&model, Some(a), &[], AggregateOp::max("missing"))
+            .unwrap_err();
+        assert!(err.public_message.contains("not on model"), "{}", err.public_message);
+    }
+
+    #[test]
+    fn exists_and_find_by_first_match() {
+        let store = InMemoryModelStore::new();
+        let model = meter_model();
+        let a = TenantId::new();
+        let b = TenantId::new();
+        store.insert(&model, &meter(a, "m0", 1)).unwrap();
+
+        assert!(store.exists(&model, Some(a), &[]).unwrap());
+        // Tenant isolation and filter misses.
+        assert!(!store.exists(&model, Some(b), &[]).unwrap());
+        assert!(
+            !store
+                .exists(&model, Some(a), &[FieldFilter::eq("label", "zz")])
+                .unwrap()
+        );
+
+        let found = store
+            .find_by(&model, Some(a), &[FieldFilter::eq("label", "m0")], false)
+            .unwrap();
+        assert_eq!(
+            found.as_ref().and_then(|r| r.get("label")),
+            Some(&Json::String("m0".into()))
+        );
+        assert!(store.find_by(&model, Some(b), &[], false).unwrap().is_none());
+
+        // Soft-deleted rows: invisible live, visible with the trash toggle.
+        let id = uuid_str(found.as_ref().unwrap(), "id").unwrap();
+        store.delete(&model, id, Some(a)).unwrap();
+        assert!(
+            !store
+                .exists(&model, Some(a), &[FieldFilter::eq("label", "m0")])
+                .unwrap()
+        );
+        assert!(
+            store
+                .find_by(&model, Some(a), &[FieldFilter::eq("label", "m0")], true)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn find_for_update_follows_find_semantics() {
+        let store = InMemoryModelStore::new();
+        let model = meter_model();
+        let a = TenantId::new();
+        let row = store.insert(&model, &meter(a, "m0", 1)).unwrap();
+        let id = uuid_str(&row, "id").unwrap();
+
+        assert!(store
+            .find_for_update(&model, id, Some(a), false)
+            .unwrap()
+            .is_some());
+        assert!(store
+            .find_for_update(&model, id, Some(TenantId::new()), false)
+            .unwrap()
+            .is_none());
+
+        store.delete(&model, id, Some(a)).unwrap();
+        assert!(store
+            .find_for_update(&model, id, Some(a), false)
+            .unwrap()
+            .is_none());
+        assert!(store
+            .find_for_update(&model, id, Some(a), true)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn insert_or_ignore_skips_conflicts() {
+        let store = InMemoryModelStore::new();
+        let model = meter_model();
+        let a = TenantId::new();
+        let b = TenantId::new();
+
+        let r0 = meter(a, "gate", 1);
+        assert!(store.insert_or_ignore(&model, &r0).unwrap().is_some());
+        // Same id → ignored, not an error.
+        assert!(store.insert_or_ignore(&model, &r0).unwrap().is_none());
+
+        // Same unique label within the tenant → ignored.
+        let mut dupe = meter(a, "gate", 2);
+        dupe.insert("id".into(), Json::String(Uuid::now_v7().to_string()));
+        assert!(store.insert_or_ignore(&model, &dupe).unwrap().is_none());
+
+        // The same label in ANOTHER tenant still inserts (tenant-scoped
+        // uniqueness, mirroring the upsert conflict matching).
+        assert!(store.insert_or_ignore(&model, &meter(b, "gate", 3))
+            .unwrap()
+            .is_some());
+
+        let page = store.list(&model, Some(a), &[], &ListOpts::default()).unwrap();
+        assert_eq!(page.total, Some(1));
+        let page = store.list(&model, Some(b), &[], &ListOpts::default()).unwrap();
+        assert_eq!(page.total, Some(1));
+
+        // A record without an id is still refused up front.
+        let mut no_id = meter(a, "x", 1);
+        no_id.remove("id");
+        let err = store.insert_or_ignore(&model, &no_id).unwrap_err();
+        assert!(err.public_message.contains("uuid id"), "{}", err.public_message);
+    }
+
+    #[test]
+    fn truncate_is_gated_and_clears_the_table() {
+        let store = InMemoryModelStore::new();
+        let model = meter_model();
+        let a = TenantId::new();
+        let b = TenantId::new();
+        store.insert(&model, &meter(a, "m0", 1)).unwrap();
+        store.insert(&model, &meter(b, "m1", 2)).unwrap();
+
+        for env in ["prod", "staging", "", "DEV"] {
+            let err = store.truncate(&model, env).unwrap_err();
+            assert!(
+                err.public_message.contains("dev/test"),
+                "env {env:?} must be refused, got: {}",
+                err.public_message
+            );
+        }
+        // Nothing was cleared by the refused calls.
+        assert_eq!(
+            store.list(&model, Some(a), &[], &ListOpts::default()).unwrap().total,
+            Some(1)
+        );
+
+        store.truncate(&model, "test").unwrap();
+        assert_eq!(
+            store.list(&model, Some(a), &[], &ListOpts::default()).unwrap().total,
+            Some(0)
+        );
+        assert_eq!(
+            store.list(&model, Some(b), &[], &ListOpts::default()).unwrap().total,
+            Some(0)
+        );
+        assert!(store.truncate(&model, "dev").is_ok());
+    }
+
+    #[test]
+    fn update_filtered_updates_matches_only() {
+        let store = InMemoryModelStore::new();
+        let model = meter_model();
+        let a = TenantId::new();
+        let b = TenantId::new();
+        for label in ["m0", "m1", "m2"] {
+            store.insert(&model, &meter(a, label, 1)).unwrap();
+        }
+        store.insert(&model, &meter(b, "m0", 1)).unwrap();
+
+        let mut changes = Record::new();
+        changes.insert("label".into(), Json::String("renamed".into()));
+        let updated = store
+            .update_filtered(&model, Some(a), &[FieldFilter::eq("label", "m0")], &changes)
+            .unwrap();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(
+            updated[0].get("label"),
+            Some(&Json::String("renamed".into()))
+        );
+
+        // Only the matching tenant-a row changed; other rows intact.
+        let labels = |tenant| -> Vec<String> {
+            store
+                .list(&model, Some(tenant), &[], &ListOpts::default())
+                .unwrap()
+                .items
+                .iter()
+                .filter_map(|r| r.get("label").and_then(|v| v.as_str()).map(String::from))
+                .collect()
+        };
+        let mut a_labels = labels(a);
+        a_labels.sort();
+        assert_eq!(a_labels, vec!["m1", "m2", "renamed"]);
+        assert_eq!(labels(b), vec!["m0"]);
+
+        // Unfiltered batch writes are refused.
+        let err = store
+            .update_filtered(&model, Some(a), &[], &changes)
+            .unwrap_err();
+        assert!(
+            err.public_message.contains("at least one filter"),
+            "{}",
+            err.public_message
+        );
+
+        // Empty changes return the matches without writing.
+        let unchanged = store
+            .update_filtered(
+                &model,
+                Some(a),
+                &[FieldFilter::eq("label", "m1")],
+                &Record::new(),
+            )
+            .unwrap();
+        assert_eq!(unchanged.len(), 1);
+        assert_eq!(unchanged[0].get("label"), Some(&Json::String("m1".into())));
+    }
+
+    #[test]
+    fn delete_filtered_marks_or_removes() {
+        let store = InMemoryModelStore::new();
+        let model = meter_model(); // soft-delete model
+        let a = TenantId::new();
+        let b = TenantId::new();
+        for label in ["m0", "m1"] {
+            store.insert(&model, &meter(a, label, 1)).unwrap();
+        }
+        store.insert(&model, &meter(b, "m0", 1)).unwrap();
+
+        // Soft model: affected rows are trash-marked and returned.
+        let affected = store
+            .delete_filtered(&model, Some(a), &[FieldFilter::eq("label", "m0")])
+            .unwrap();
+        assert_eq!(affected.len(), 1);
+        assert!(is_deleted(&affected[0]));
+        assert_eq!(
+            store.list(&model, Some(a), &[], &ListOpts::default()).unwrap().total,
+            Some(1)
+        );
+        // Cross-tenant row untouched.
+        assert_eq!(
+            store.list(&model, Some(b), &[], &ListOpts::default()).unwrap().total,
+            Some(1)
+        );
+
+        // Empty filters refused.
+        let err = store
+            .delete_filtered(&model, Some(a), &[])
+            .unwrap_err();
+        assert!(
+            err.public_message.contains("at least one filter"),
+            "{}",
+            err.public_message
+        );
+
+        // Hard model: affected rows are removed outright.
+        let log = hard_log_model();
+        store.insert(&log, &log_row("keep")).unwrap();
+        let doomed = store.insert(&log, &log_row("doomed")).unwrap();
+        let affected = store
+            .delete_filtered(&log, None, &[FieldFilter::eq("msg", "doomed")])
+            .unwrap();
+        assert_eq!(affected.len(), 1);
+        assert_eq!(
+            affected[0].get("msg"),
+            Some(&Json::String("doomed".into()))
+        );
+        assert!(store
+            .find(&log, uuid_str(&doomed, "id").unwrap(), None, true)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            store.list(&log, None, &[], &ListOpts::default()).unwrap().total,
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn force_delete_purges_trashed_and_live_rows() {
+        let store = InMemoryModelStore::new();
+        let model = meter_model();
+        let a = TenantId::new();
+        let other = TenantId::new();
+        let row = store.insert(&model, &meter(a, "m0", 1)).unwrap();
+        let id = uuid_str(&row, "id").unwrap();
+        let foreign = store.insert(&model, &meter(other, "x", 1)).unwrap();
+        let foreign_id = uuid_str(&foreign, "id").unwrap();
+
+        // Soft-delete, then purge from the trash.
+        store.delete(&model, id, Some(a)).unwrap();
+        assert!(store.find(&model, id, Some(a), true).unwrap().is_some());
+        assert!(store.force_delete(&model, id, Some(a)).unwrap());
+        assert!(store.find(&model, id, Some(a), true).unwrap().is_none());
+        // Second purge finds nothing.
+        assert!(!store.force_delete(&model, id, Some(a)).unwrap());
+
+        // A live row is purgeable the same way.
+        let live = store.insert(&model, &meter(a, "live", 1)).unwrap();
+        let live_id = uuid_str(&live, "id").unwrap();
+        assert!(store.force_delete(&model, live_id, Some(a)).unwrap());
+        assert!(store.find(&model, live_id, Some(a), true).unwrap().is_none());
+
+        // Tenant isolation holds for force deletes too.
+        assert!(!store.force_delete(&model, foreign_id, Some(a)).unwrap());
+        assert!(store
+            .find(&model, foreign_id, Some(other), true)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn arc_delegation_forwards_new_port_methods() {
+        let store = InMemoryModelStore::new();
+        let model = meter_model();
+        let tenant = TenantId::new();
+        store.insert(&model, &meter(tenant, "m0", 7)).unwrap();
+
+        // &Arc<InMemoryModelStore> as &dyn ModelStore dispatches through the
+        // Arc<T> delegation impl, not the concrete type.
+        let dyn_store: &dyn ModelStore = &store;
+        assert!(dyn_store.exists(&model, Some(tenant), &[]).unwrap());
+        assert_eq!(
+            dyn_store
+                .aggregate(&model, Some(tenant), &[], AggregateOp::count())
+                .unwrap()
+                .as_u64(),
+            Some(1)
+        );
+        assert!(dyn_store
+            .find_by(&model, Some(tenant), &[], false)
+            .unwrap()
+            .is_some());
+        dyn_store.truncate(&model, "dev").unwrap();
+        assert_eq!(
+            dyn_store.list(&model, Some(tenant), &[], &ListOpts::default()).unwrap().total,
+            Some(0)
+        );
     }
 }

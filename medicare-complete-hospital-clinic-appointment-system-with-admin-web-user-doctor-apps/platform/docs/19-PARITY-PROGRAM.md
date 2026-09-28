@@ -179,7 +179,7 @@ Landed in earlier stages (S7–S10, v0.9 hardening, v1.1) and therefore out of s
 - Existing `make resource` codegen kind rewired to emit the trait impl; full JSON:API spec server stays a Wave 8 decision gate.
 
 **Port impact**
-- `ModelStore` trait gains: aggregate ops, `exists`, find-by (first match), `lock_for_update` variant, `insert_or_ignore`, `truncate` (gated).
+- `ModelStore` trait gains: aggregate ops (`aggregate`: count/sum/avg/min/max), `exists`, find-by (first match, `find_by`), `find_for_update` (`FOR UPDATE` variant), `insert_or_ignore`, `truncate` (dev/test-gated via a fail-closed `build_gated`/`check_env` token), filter-keyed `update_filtered`/`delete_filtered` (pivot writes; empty filter list refused), and `force_delete` (trash purge / prune — hard-deletes even soft-delete models).
 - `PgModelStore` + in-memory implementations updated together; tenant-scoped query builders guard every new operation.
 ## Wave 4 — Validation expansion + config + cache + parity residuals
 

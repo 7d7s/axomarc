@@ -36,12 +36,19 @@ impl Truncate {
     /// Compile only when `env` is a dev/test environment; staging, prod, and
     /// any unrecognized token are refused (fail closed).
     pub fn build_gated(&self, env: &str) -> Result<CompiledWrite, AppError> {
-        match env {
-            "dev" | "test" => self.build(),
-            other => Err(AppError::denied(format!(
-                "TRUNCATE refused outside dev/test environment (env {other:?})"
-            ))),
-        }
+        check_env(env)?;
+        self.build()
+    }
+}
+
+/// Fail-closed TRUNCATE environment gate, shared by the SQL builder and the
+/// in-memory store so both refuse with the SAME error outside dev/test.
+pub fn check_env(env: &str) -> Result<(), AppError> {
+    match env {
+        "dev" | "test" => Ok(()),
+        other => Err(AppError::denied(format!(
+            "TRUNCATE refused outside dev/test environment (env {other:?})"
+        ))),
     }
 }
 

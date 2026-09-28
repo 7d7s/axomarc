@@ -39,6 +39,22 @@ impl Delete {
         self
     }
 
+    /// Filter with an explicit operator and one value (the semantic-filter
+    /// parity path: `Ne`, `Gt`, ... arrive here from `filter_condition`).
+    pub fn where_op(
+        mut self,
+        column: Ident,
+        operator: Operator,
+        value: impl Into<Value>,
+    ) -> Self {
+        self.push(Condition {
+            column,
+            operator,
+            values: vec![value.into()],
+        });
+        self
+    }
+
     pub fn where_in(mut self, column: Ident, values: Vec<Value>) -> Self {
         self.push(Condition {
             column,
