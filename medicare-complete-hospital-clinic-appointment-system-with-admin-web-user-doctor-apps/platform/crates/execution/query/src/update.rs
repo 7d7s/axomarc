@@ -5,15 +5,36 @@
 
 use keel_foundation::{AppError, TenantId};
 
-use crate::select::{Condition, Ident, Operator, Value};
-use crate::CompiledWrite;
+use crate::select::{Clause, Condition, Ident, Junction, Operator, Value};
+use crate::{ClauseContext, CompiledWrite};
+
+/// One SET assignment: a plain `col = $n` bind, or an arithmetic adjust
+/// `col = col ± $n` (atomic increment/decrement — the increment reads the
+/// CURRENT row value in-database, never a read-modify-write roundtrip).
+#[derive(Debug, Clone)]
+enum SetItem {
+    Assign(Ident, Value),
+    Adjust {
+        column: Ident,
+        sign: &'static str,
+        value: Value,
+    },
+}
+
+impl SetItem {
+    fn column(&self) -> &Ident {
+        match self {
+            SetItem::Assign(column, _) | SetItem::Adjust { column, .. } => column,
+        }
+    }
+}
 
 /// Builder for parameterized UPDATE statements.
 #[derive(Debug, Clone)]
 pub struct Update {
     table: Ident,
-    sets: Vec<(Ident, Value)>,
-    conditions: Vec<Condition>,
+    sets: Vec<SetItem>,
+    conditions: Vec<(Junction, Clause)>,
     returning: Vec<Ident>,
     allow_unfiltered: bool,
 }
@@ -32,12 +53,36 @@ impl Update {
     /// One `SET column = value` assignment. Duplicate columns are rejected at
     /// build time (last-writer-wins hides bugs).
     pub fn set(mut self, column: Ident, value: impl Into<Value>) -> Self {
-        self.sets.push((column, value.into()));
+        self.sets.push(SetItem::Assign(column, value.into()));
         self
     }
 
+    /// Atomic `SET column = column + by`.
+    pub fn increment(mut self, column: Ident, by: i64) -> Self {
+        self.sets.push(SetItem::Adjust {
+            column,
+            sign: "+",
+            value: Value::Int(by),
+        });
+        self
+    }
+
+    /// Atomic `SET column = column - by`.
+    pub fn decrement(mut self, column: Ident, by: i64) -> Self {
+        self.sets.push(SetItem::Adjust {
+            column,
+            sign: "-",
+            value: Value::Int(by),
+        });
+        self
+    }
+
+    fn push(&mut self, condition: Condition) {
+        self.conditions.push((Junction::And, Clause::Pred(condition)));
+    }
+
     pub fn where_eq(mut self, column: Ident, value: impl Into<Value>) -> Self {
-        self.conditions.push(Condition {
+        self.push(Condition {
             column,
             operator: Operator::Eq,
             values: vec![value.into()],
@@ -51,7 +96,7 @@ impl Update {
         operator: Operator,
         value: impl Into<Value>,
     ) -> Self {
-        self.conditions.push(Condition {
+        self.push(Condition {
             column,
             operator,
             values: vec![value.into()],
@@ -60,7 +105,7 @@ impl Update {
     }
 
     pub fn where_in(mut self, column: Ident, values: Vec<Value>) -> Self {
-        self.conditions.push(Condition {
+        self.push(Condition {
             column,
             operator: Operator::In,
             values,
@@ -69,7 +114,7 @@ impl Update {
     }
 
     pub fn where_is_null(mut self, column: Ident) -> Self {
-        self.conditions.push(Condition {
+        self.push(Condition {
             column,
             operator: Operator::IsNull,
             values: Vec::new(),
@@ -78,7 +123,7 @@ impl Update {
     }
 
     pub fn where_not_null(mut self, column: Ident) -> Self {
-        self.conditions.push(Condition {
+        self.push(Condition {
             column,
             operator: Operator::NotNull,
             values: Vec::new(),
@@ -108,11 +153,11 @@ impl Update {
             return Err(AppError::validation("UPDATE needs at least one SET"));
         }
         let mut seen = std::collections::BTreeSet::new();
-        for (col, _) in &self.sets {
-            if !seen.insert(col.as_str()) {
+        for item in &self.sets {
+            if !seen.insert(item.column().as_str()) {
                 return Err(AppError::validation(format!(
                     "UPDATE sets column {} twice",
-                    col.as_str()
+                    item.column().as_str()
                 )));
             }
         }
@@ -127,16 +172,36 @@ impl Update {
         let assigns: Vec<String> = self
             .sets
             .iter()
-            .map(|(col, v)| {
-                params.push(v.clone());
-                format!("{} = ${}", col.as_str(), params.len())
+            .map(|item| match item {
+                SetItem::Assign(col, v) => {
+                    params.push(v.clone());
+                    format!("{} = ${}", col.as_str(), params.len())
+                }
+                SetItem::Adjust {
+                    column,
+                    sign,
+                    value,
+                } => {
+                    params.push(value.clone());
+                    format!(
+                        "{} = {} {} ${}",
+                        column.as_str(),
+                        column.as_str(),
+                        sign,
+                        params.len()
+                    )
+                }
             })
             .collect();
         sql.push_str(&assigns.join(", "));
 
         if !self.conditions.is_empty() {
             sql.push_str(" WHERE ");
-            sql.push_str(&super::render_conditions(&self.conditions, &mut params)?);
+            sql.push_str(&crate::render_conditions(
+                &self.conditions,
+                &mut params,
+                ClauseContext::Where,
+            )?);
         }
 
         if !self.returning.is_empty() {
@@ -221,5 +286,58 @@ mod tests {
             .where_eq(id("id"), 1i64)
             .build()
             .is_err());
+    }
+
+    // ---------------------------------------------------- Wave 3 (phase 1)
+
+    #[test]
+    fn increment_and_decrement_shapes() {
+        let q = Update::table(id("t"))
+            .increment(id("views"), 1)
+            .where_eq(id("id"), 1i64)
+            .build()
+            .unwrap();
+        assert_eq!(q.sql, "UPDATE t SET views = views + $1 WHERE id = $2");
+        assert_eq!(q.params, vec![Value::Int(1), Value::Int(1)]);
+
+        let q = Update::table(id("t"))
+            .decrement(id("balance"), 25)
+            .where_eq(id("id"), 1i64)
+            .build()
+            .unwrap();
+        assert_eq!(
+            q.sql,
+            "UPDATE t SET balance = balance - $1 WHERE id = $2"
+        );
+    }
+
+    #[test]
+    fn mixed_set_and_increment_keep_insertion_order() {
+        let q = Update::table(id("t"))
+            .set(id("a"), 1i64)
+            .increment(id("b"), 2)
+            .set(id("c"), 3i64)
+            .where_eq(id("id"), 9i64)
+            .build()
+            .unwrap();
+        assert_eq!(
+            q.sql,
+            "UPDATE t SET a = $1, b = b + $2, c = $3 WHERE id = $4"
+        );
+        assert_eq!(
+            q.params,
+            vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(9)]
+        );
+    }
+
+    #[test]
+    fn increment_duplicate_of_set_refused() {
+        let err = Update::table(id("t"))
+            .set(id("views"), 5i64)
+            .increment(id("views"), 1)
+            .where_eq(id("id"), 1i64)
+            .build()
+            .unwrap_err();
+        assert!(err.public_message.contains("twice"));
     }
 }

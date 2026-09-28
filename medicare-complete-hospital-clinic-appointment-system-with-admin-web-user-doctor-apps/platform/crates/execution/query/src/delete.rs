@@ -4,14 +4,14 @@
 
 use keel_foundation::{AppError, TenantId};
 
-use crate::select::{Condition, Ident, Operator, Value};
-use crate::CompiledWrite;
+use crate::select::{Clause, Condition, Ident, Junction, Operator, Value};
+use crate::{ClauseContext, CompiledWrite};
 
 /// Builder for parameterized DELETE statements.
 #[derive(Debug, Clone)]
 pub struct Delete {
     table: Ident,
-    conditions: Vec<Condition>,
+    conditions: Vec<(Junction, Clause)>,
     returning: Vec<Ident>,
     allow_unfiltered: bool,
 }
@@ -26,8 +26,12 @@ impl Delete {
         }
     }
 
+    fn push(&mut self, condition: Condition) {
+        self.conditions.push((Junction::And, Clause::Pred(condition)));
+    }
+
     pub fn where_eq(mut self, column: Ident, value: impl Into<Value>) -> Self {
-        self.conditions.push(Condition {
+        self.push(Condition {
             column,
             operator: Operator::Eq,
             values: vec![value.into()],
@@ -36,7 +40,7 @@ impl Delete {
     }
 
     pub fn where_in(mut self, column: Ident, values: Vec<Value>) -> Self {
-        self.conditions.push(Condition {
+        self.push(Condition {
             column,
             operator: Operator::In,
             values,
@@ -45,7 +49,7 @@ impl Delete {
     }
 
     pub fn where_is_null(mut self, column: Ident) -> Self {
-        self.conditions.push(Condition {
+        self.push(Condition {
             column,
             operator: Operator::IsNull,
             values: Vec::new(),
@@ -54,7 +58,7 @@ impl Delete {
     }
 
     pub fn where_not_null(mut self, column: Ident) -> Self {
-        self.conditions.push(Condition {
+        self.push(Condition {
             column,
             operator: Operator::NotNull,
             values: Vec::new(),
@@ -89,7 +93,11 @@ impl Delete {
         let mut sql = format!("DELETE FROM {}", self.table.as_str());
         if !self.conditions.is_empty() {
             sql.push_str(" WHERE ");
-            sql.push_str(&super::render_conditions(&self.conditions, &mut params)?);
+            sql.push_str(&crate::render_conditions(
+                &self.conditions,
+                &mut params,
+                ClauseContext::Where,
+            )?);
         }
         if !self.returning.is_empty() {
             sql.push_str(" RETURNING ");

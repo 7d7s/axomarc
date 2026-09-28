@@ -5,6 +5,12 @@
 //! posture: values NEVER interpolate into the SQL text — they travel only as
 //! `$N` bind parameters; every identifier is validated at construction
 //! ([`Ident`] rejects anything outside the SQL-identifier charset).
+//!
+//! WHERE/HAVING predicates form a clause tree ([`Clause`]): leaf predicates
+//! nest into parenthesized [`Clause::Group`]s with explicit [`Junction`]s, and
+//! correlated subqueries ([`Select::where_exists`]) render into the SAME bind
+//! sequence as the outer query — placeholders are numbered continuously by
+//! SQL text order. Builder methods defer all validation to [`Select::build`].
 
 use keel_foundation::AppError;
 use serde::{Deserialize, Serialize};
@@ -143,7 +149,12 @@ pub enum Operator {
     Lt,
     LtEq,
     Like,
+    /// Case-insensitive match (renders `ILIKE`).
+    Ilike,
     In,
+    NotIn,
+    Between,
+    NotBetween,
     IsNull,
     NotNull,
 }
@@ -158,10 +169,31 @@ impl Operator {
             Operator::Lt => "<",
             Operator::LtEq => "<=",
             Operator::Like => "LIKE",
+            Operator::Ilike => "ILIKE",
             Operator::In => "IN",
+            Operator::NotIn => "NOT IN",
+            Operator::Between => "BETWEEN",
+            Operator::NotBetween => "NOT BETWEEN",
             Operator::IsNull => "IS NULL",
             Operator::NotNull => "IS NOT NULL",
         }
+    }
+
+    /// Scalar comparison operators — usable between two COLUMNS or an
+    /// aggregate and a bind. List/range/null operators are excluded: they
+    /// either need bind lists or render as bare predicates.
+    pub(crate) fn is_scalar(self) -> bool {
+        matches!(
+            self,
+            Operator::Eq
+                | Operator::Ne
+                | Operator::Gt
+                | Operator::GtEq
+                | Operator::Lt
+                | Operator::LtEq
+                | Operator::Like
+                | Operator::Ilike
+        )
     }
 }
 
@@ -172,7 +204,79 @@ pub enum Direction {
     Desc,
 }
 
-/// One WHERE predicate. `IsNull`/`NotNull` ignore `values`.
+/// Junction between adjacent clauses at one nesting level. The first clause
+/// of a list is joined implicitly (its junction is not rendered); subsequent
+/// clauses render `AND`/`OR` per this tag. SQL precedence applies to flat
+/// mixes — use [`Select::group`] to pin parenthesization explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Junction {
+    And,
+    Or,
+}
+
+/// Aggregate projection for `SELECT <agg>` (and `having_aggregate`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Aggregate {
+    /// `COUNT(*)`
+    Count,
+    /// `COUNT(column)`
+    CountColumn(Ident),
+    Sum(Ident),
+    Avg(Ident),
+    Min(Ident),
+    Max(Ident),
+}
+
+impl Aggregate {
+    /// SQL text for the projection. Identifiers are [`Ident`]-validated.
+    pub(crate) fn render(&self) -> String {
+        match self {
+            Aggregate::Count => "COUNT(*)".to_string(),
+            Aggregate::CountColumn(c) => format!("COUNT({})", c.as_str()),
+            Aggregate::Sum(c) => format!("SUM({})", c.as_str()),
+            Aggregate::Avg(c) => format!("AVG({})", c.as_str()),
+            Aggregate::Min(c) => format!("MIN({})", c.as_str()),
+            Aggregate::Max(c) => format!("MAX({})", c.as_str()),
+        }
+    }
+}
+
+/// Date/time extraction part for the `where_date`/`where_year`/`where_month`/
+/// `where_day`/`where_time` family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DatePart {
+    Date,
+    Year,
+    Month,
+    Day,
+    Time,
+}
+
+impl DatePart {
+    /// Rendered predicate for `part(column) = <placeholder>`; the placeholder
+    /// carries the bind (date gets a `::date` cast so text/timestamp binds
+    /// both coerce).
+    pub(crate) fn render_sql(self, column: &str, placeholder: &str) -> String {
+        match self {
+            DatePart::Date => format!("{column}::date = {placeholder}::date"),
+            DatePart::Year => format!("EXTRACT(YEAR FROM {column}) = {placeholder}"),
+            DatePart::Month => format!("EXTRACT(MONTH FROM {column}) = {placeholder}"),
+            DatePart::Day => format!("EXTRACT(DAY FROM {column}) = {placeholder}"),
+            DatePart::Time => format!("TO_CHAR({column}, 'HH24:MI:SS') = {placeholder}"),
+        }
+    }
+}
+
+/// Row-level locking clause, rendered after LIMIT/OFFSET (Postgres order).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Lock {
+    /// `FOR UPDATE`
+    Update,
+    /// `FOR SHARE`
+    Share,
+}
+
+/// One WHERE predicate leaf. `IsNull`/`NotNull` ignore `values`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Condition {
     pub column: Ident,
@@ -189,6 +293,53 @@ pub struct Join {
     pub on_right: Ident,
 }
 
+/// One element of a WHERE/HAVING expression tree. Constructed through the
+/// `Select` builder methods; the variants exist so the renderer can express
+/// shapes a single column/value predicate cannot (column comparisons, row
+/// constructors, subqueries, nesting).
+#[derive(Debug, Clone)]
+pub enum Clause {
+    /// Leaf predicate (`column <op> value(s)`).
+    Pred(Condition),
+    /// Column-to-column comparison (`left <op> right`), no binds.
+    Column {
+        left: Ident,
+        operator: Operator,
+        right: Ident,
+    },
+    /// Composite row comparison for keyset pagination
+    /// (`(a, b) > ($1, $2)`).
+    Row {
+        columns: Vec<Ident>,
+        operator: Operator,
+        values: Vec<Value>,
+    },
+    /// Date-part equality (`created_at::date = $1::date`, `EXTRACT(...) = ...`).
+    DatePart {
+        part: DatePart,
+        column: Ident,
+        value: Value,
+    },
+    /// `EXISTS (subquery)` / `NOT EXISTS (subquery)`; the subquery renders
+    /// into the caller's bind sequence (continuous `$N` numbering).
+    Exists {
+        negated: bool,
+        subquery: Box<Select>,
+    },
+    /// Parenthesized nested group with its own junctions.
+    Group {
+        junction: Junction,
+        items: Vec<(Junction, Clause)>,
+    },
+    /// Aggregate comparison — HAVING-only (`COUNT(*) > $1`); rejected in a
+    /// WHERE context by the renderer.
+    AggregateCmp {
+        aggregate: Aggregate,
+        operator: Operator,
+        value: Value,
+    },
+}
+
 /// Compiled SELECT statement: SQL text with `$N` placeholders and the bind
 /// values in matching order.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -203,11 +354,26 @@ pub struct CompiledSelect {
 pub struct Select {
     table: Option<Ident>,
     columns: Vec<Ident>,
-    conditions: Vec<Condition>,
+    clauses: Vec<(Junction, Clause)>,
     joins: Vec<Join>,
     order: Vec<(Ident, Direction)>,
     limit: Option<u64>,
     offset: Option<u64>,
+    group_by: Vec<Ident>,
+    having: Vec<(Junction, Clause)>,
+    distinct: bool,
+    lock: Option<Lock>,
+    aggregate: Option<Aggregate>,
+    aggregate_alias: Option<Ident>,
+    exists: Option<bool>,
+    unions: Vec<(bool, Select)>,
+    /// Validation deferred from infallible builder methods to `build`.
+    deferred_error: Option<String>,
+}
+
+/// Identifier for a fixed, always-valid column (no Result plumbing needed).
+fn static_ident(raw: &str) -> Ident {
+    Ident(raw.to_string())
 }
 
 impl Select {
@@ -224,9 +390,19 @@ impl Select {
         self
     }
 
+    /// Batch projection: `SELECT a, b, ...` (empty iterator leaves `*`).
+    pub fn select(mut self, columns: impl IntoIterator<Item = Ident>) -> Self {
+        self.columns.extend(columns);
+        self
+    }
+
+    // ---------------------------------------------------------------- WHERE
+    // AND-joined family. Builder methods are infallible; validation happens
+    // at `build`.
+
     /// Filter: column equals value.
     pub fn where_eq(mut self, column: Ident, value: impl Into<Value>) -> Self {
-        self.conditions.push(Condition {
+        self.push_and(Condition {
             column,
             operator: Operator::Eq,
             values: vec![value.into()],
@@ -236,7 +412,7 @@ impl Select {
 
     /// Filter with an explicit operator and one value.
     pub fn where_op(mut self, column: Ident, operator: Operator, value: impl Into<Value>) -> Self {
-        self.conditions.push(Condition {
+        self.push_and(Condition {
             column,
             operator,
             values: vec![value.into()],
@@ -246,7 +422,7 @@ impl Select {
 
     /// Filter: column IN (values...). Empty value list is a build error.
     pub fn where_in(mut self, column: Ident, values: Vec<Value>) -> Self {
-        self.conditions.push(Condition {
+        self.push_and(Condition {
             column,
             operator: Operator::In,
             values,
@@ -254,8 +430,48 @@ impl Select {
         self
     }
 
+    /// Filter: column NOT IN (values...). Empty value list is a build error.
+    pub fn where_not_in(mut self, column: Ident, values: Vec<Value>) -> Self {
+        self.push_and(Condition {
+            column,
+            operator: Operator::NotIn,
+            values,
+        });
+        self
+    }
+
+    /// Filter: `column BETWEEN low AND high`.
+    pub fn where_between(
+        mut self,
+        column: Ident,
+        low: impl Into<Value>,
+        high: impl Into<Value>,
+    ) -> Self {
+        self.push_and(Condition {
+            column,
+            operator: Operator::Between,
+            values: vec![low.into(), high.into()],
+        });
+        self
+    }
+
+    /// Filter: `column NOT BETWEEN low AND high`.
+    pub fn where_not_between(
+        mut self,
+        column: Ident,
+        low: impl Into<Value>,
+        high: impl Into<Value>,
+    ) -> Self {
+        self.push_and(Condition {
+            column,
+            operator: Operator::NotBetween,
+            values: vec![low.into(), high.into()],
+        });
+        self
+    }
+
     pub fn where_null(mut self, column: Ident) -> Self {
-        self.conditions.push(Condition {
+        self.push_and(Condition {
             column,
             operator: Operator::IsNull,
             values: vec![],
@@ -264,13 +480,480 @@ impl Select {
     }
 
     pub fn where_not_null(mut self, column: Ident) -> Self {
-        self.conditions.push(Condition {
+        self.push_and(Condition {
             column,
             operator: Operator::NotNull,
             values: vec![],
         });
         self
     }
+
+    /// Column-to-column equality (`left = right`), no binds.
+    pub fn where_column(mut self, left: Ident, right: Ident) -> Self {
+        self.clauses.push((
+            Junction::And,
+            Clause::Column {
+                left,
+                operator: Operator::Eq,
+                right,
+            },
+        ));
+        self
+    }
+
+    /// Column-to-column comparison with an explicit scalar operator.
+    pub fn where_column_op(mut self, left: Ident, operator: Operator, right: Ident) -> Self {
+        self.clauses.push((
+            Junction::And,
+            Clause::Column {
+                left,
+                operator,
+                right,
+            },
+        ));
+        self
+    }
+
+    /// Case-insensitive match: renders `column ILIKE $n`. (Exact `LIKE` via
+    /// `where_op(.., Operator::Like, ..)`.)
+    pub fn where_like(mut self, column: Ident, pattern: impl Into<Value>) -> Self {
+        self.push_and(Condition {
+            column,
+            operator: Operator::Ilike,
+            values: vec![pattern.into()],
+        });
+        self
+    }
+
+    /// Filter on the DATE part of a timestamp column
+    /// (`column::date = $n::date`).
+    pub fn where_date(mut self, column: Ident, value: impl Into<Value>) -> Self {
+        self.push_date(DatePart::Date, column, value.into());
+        self
+    }
+
+    /// Filter on the YEAR part (`EXTRACT(YEAR FROM column) = $n`).
+    pub fn where_year(mut self, column: Ident, value: impl Into<Value>) -> Self {
+        self.push_date(DatePart::Year, column, value.into());
+        self
+    }
+
+    /// Filter on the MONTH part (`EXTRACT(MONTH FROM column) = $n`).
+    pub fn where_month(mut self, column: Ident, value: impl Into<Value>) -> Self {
+        self.push_date(DatePart::Month, column, value.into());
+        self
+    }
+
+    /// Filter on the DAY part (`EXTRACT(DAY FROM column) = $n`).
+    pub fn where_day(mut self, column: Ident, value: impl Into<Value>) -> Self {
+        self.push_date(DatePart::Day, column, value.into());
+        self
+    }
+
+    /// Filter on the TIME part (`TO_CHAR(column, 'HH24:MI:SS') = $n`).
+    pub fn where_time(mut self, column: Ident, value: impl Into<Value>) -> Self {
+        self.push_date(DatePart::Time, column, value.into());
+        self
+    }
+
+    /// `EXISTS (subquery)` — the subquery's binds merge into the outer
+    /// sequence (continuous `$N`), so correlation stays parameterized.
+    pub fn where_exists(mut self, subquery: Select) -> Self {
+        self.clauses.push((
+            Junction::And,
+            Clause::Exists {
+                negated: false,
+                subquery: Box::new(subquery),
+            },
+        ));
+        self
+    }
+
+    /// `NOT EXISTS (subquery)`.
+    pub fn where_not_exists(mut self, subquery: Select) -> Self {
+        self.clauses.push((
+            Junction::And,
+            Clause::Exists {
+                negated: true,
+                subquery: Box::new(subquery),
+            },
+        ));
+        self
+    }
+
+    /// Composite row comparison for keyset pagination: `(a, b) > ($1, $2)`.
+    /// Columns and values must be non-empty and equal in length; ordering
+    /// operators only (`=`, `<>`, `<`, `<=`, `>`, `>=`) — checked at build.
+    pub fn where_row_cmp(
+        mut self,
+        columns: Vec<Ident>,
+        operator: Operator,
+        values: Vec<Value>,
+    ) -> Self {
+        self.clauses.push((
+            Junction::And,
+            Clause::Row {
+                columns,
+                operator,
+                values,
+            },
+        ));
+        self
+    }
+
+    // OR-joined family. SQL precedence applies to flat mixes (`a AND b OR c`
+    // = `(a AND b) OR c`) — pin grouping with `group()` when mixing.
+
+    /// OR-filter with an explicit operator and one value.
+    pub fn or_where(mut self, column: Ident, operator: Operator, value: impl Into<Value>) -> Self {
+        self.push_or(Condition {
+            column,
+            operator,
+            values: vec![value.into()],
+        });
+        self
+    }
+
+    pub fn or_where_in(mut self, column: Ident, values: Vec<Value>) -> Self {
+        self.push_or(Condition {
+            column,
+            operator: Operator::In,
+            values,
+        });
+        self
+    }
+
+    pub fn or_where_not_in(mut self, column: Ident, values: Vec<Value>) -> Self {
+        self.push_or(Condition {
+            column,
+            operator: Operator::NotIn,
+            values,
+        });
+        self
+    }
+
+    pub fn or_where_null(mut self, column: Ident) -> Self {
+        self.push_or(Condition {
+            column,
+            operator: Operator::IsNull,
+            values: vec![],
+        });
+        self
+    }
+
+    pub fn or_where_not_null(mut self, column: Ident) -> Self {
+        self.push_or(Condition {
+            column,
+            operator: Operator::NotNull,
+            values: vec![],
+        });
+        self
+    }
+
+    pub fn or_where_between(
+        mut self,
+        column: Ident,
+        low: impl Into<Value>,
+        high: impl Into<Value>,
+    ) -> Self {
+        self.push_or(Condition {
+            column,
+            operator: Operator::Between,
+            values: vec![low.into(), high.into()],
+        });
+        self
+    }
+
+    pub fn or_where_not_between(
+        mut self,
+        column: Ident,
+        low: impl Into<Value>,
+        high: impl Into<Value>,
+    ) -> Self {
+        self.push_or(Condition {
+            column,
+            operator: Operator::NotBetween,
+            values: vec![low.into(), high.into()],
+        });
+        self
+    }
+
+    /// OR case-insensitive match (see [`Select::where_like`]).
+    pub fn or_where_like(mut self, column: Ident, pattern: impl Into<Value>) -> Self {
+        self.push_or(Condition {
+            column,
+            operator: Operator::Ilike,
+            values: vec![pattern.into()],
+        });
+        self
+    }
+
+    /// OR column-to-column equality.
+    pub fn or_where_column(mut self, left: Ident, right: Ident) -> Self {
+        self.clauses.push((
+            Junction::Or,
+            Clause::Column {
+                left,
+                operator: Operator::Eq,
+                right,
+            },
+        ));
+        self
+    }
+
+    /// Nested boolean group: the closure receives a fresh builder and its
+    /// conditions render parenthesized — `... AND (a = $1 OR b = $2)`.
+    /// Anything beyond conditions in the closure (joins, order, limit,
+    /// projection, ...) is a build error — groups carry predicates only.
+    pub fn group(mut self, build: impl FnOnce(Select) -> Select) -> Self {
+        let inner = build(Select::default());
+        let conditions_only = inner.table.is_none()
+            && !inner.distinct
+            && inner.aggregate.is_none()
+            && inner.aggregate_alias.is_none()
+            && inner.exists.is_none()
+            && inner.columns.is_empty()
+            && inner.joins.is_empty()
+            && inner.order.is_empty()
+            && inner.limit.is_none()
+            && inner.offset.is_none()
+            && inner.group_by.is_empty()
+            && inner.having.is_empty()
+            && inner.unions.is_empty();
+        if !conditions_only {
+            self.deferred_error = Some(
+                "group() closure accepts conditions only (projection/order/limit/...) not allowed"
+                    .to_string(),
+            );
+            return self;
+        }
+        self.clauses.push((
+            Junction::And,
+            Clause::Group {
+                junction: Junction::And,
+                items: inner.clauses,
+            },
+        ));
+        self
+    }
+
+    // --------------------------------------------------------------- HAVING
+
+    pub fn having_eq(mut self, column: Ident, value: impl Into<Value>) -> Self {
+        self.push_having(Condition {
+            column,
+            operator: Operator::Eq,
+            values: vec![value.into()],
+        });
+        self
+    }
+
+    /// HAVING with an explicit operator and one value — the same operator
+    /// set as the WHERE family.
+    pub fn having_op(mut self, column: Ident, operator: Operator, value: impl Into<Value>) -> Self {
+        self.push_having(Condition {
+            column,
+            operator,
+            values: vec![value.into()],
+        });
+        self
+    }
+
+    pub fn having_in(mut self, column: Ident, values: Vec<Value>) -> Self {
+        self.push_having(Condition {
+            column,
+            operator: Operator::In,
+            values,
+        });
+        self
+    }
+
+    pub fn having_between(
+        mut self,
+        column: Ident,
+        low: impl Into<Value>,
+        high: impl Into<Value>,
+    ) -> Self {
+        self.push_having(Condition {
+            column,
+            operator: Operator::Between,
+            values: vec![low.into(), high.into()],
+        });
+        self
+    }
+
+    pub fn having_null(mut self, column: Ident) -> Self {
+        self.push_having(Condition {
+            column,
+            operator: Operator::IsNull,
+            values: vec![],
+        });
+        self
+    }
+
+    pub fn having_not_null(mut self, column: Ident) -> Self {
+        self.push_having(Condition {
+            column,
+            operator: Operator::NotNull,
+            values: vec![],
+        });
+        self
+    }
+
+    /// Aggregate HAVING: `SUM(total) > $n` / `HAVING COUNT(*) > $n`.
+    pub fn having_aggregate(
+        mut self,
+        aggregate: Aggregate,
+        operator: Operator,
+        value: impl Into<Value>,
+    ) -> Self {
+        self.having.push((
+            Junction::And,
+            Clause::AggregateCmp {
+                aggregate,
+                operator,
+                value: value.into(),
+            },
+        ));
+        self
+    }
+
+    // -------------------------------------------- GROUPING / SETS / LOCKING
+
+    /// GROUP BY column (repeatable).
+    pub fn group_by(mut self, column: Ident) -> Self {
+        self.group_by.push(column);
+        self
+    }
+
+    /// `SELECT DISTINCT`.
+    pub fn distinct(mut self) -> Self {
+        self.distinct = true;
+        self
+    }
+
+    /// Set operation: `... UNION (other)`. The main branch's ORDER/LIMIT/
+    /// OFFSET move to the composite end; each union operand keeps its own
+    /// tail inside its parentheses.
+    pub fn union(mut self, other: Select) -> Self {
+        self.unions.push((false, other));
+        self
+    }
+
+    /// `UNION ALL` (keeps duplicates).
+    pub fn union_all(mut self, other: Select) -> Self {
+        self.unions.push((true, other));
+        self
+    }
+
+    /// Locking clause: `SELECT ... FOR UPDATE` (rows for update).
+    pub fn lock_for_update(mut self) -> Self {
+        self.lock = Some(Lock::Update);
+        self
+    }
+
+    /// Locking clause: `SELECT ... FOR SHARE` (share lock).
+    pub fn shared_lock(mut self) -> Self {
+        self.lock = Some(Lock::Share);
+        self
+    }
+
+    // ------------------------------------------------------------- ORDERING
+
+    pub fn order_by(mut self, column: Ident, direction: Direction) -> Self {
+        self.order.push((column, direction));
+        self
+    }
+
+    /// Newest-first on `created_at` (Laravel `latest()` default).
+    pub fn latest(mut self) -> Self {
+        self.order
+            .push((static_ident("created_at"), Direction::Desc));
+        self
+    }
+
+    /// Newest-first on an explicit column.
+    pub fn latest_by(mut self, column: Ident) -> Self {
+        self.order.push((column, Direction::Desc));
+        self
+    }
+
+    /// Oldest-first on `created_at`.
+    pub fn oldest(mut self) -> Self {
+        self.order.push((static_ident("created_at"), Direction::Asc));
+        self
+    }
+
+    /// Oldest-first on an explicit column.
+    pub fn oldest_by(mut self, column: Ident) -> Self {
+        self.order.push((column, Direction::Asc));
+        self
+    }
+
+    // ------------------------------------------------------------ AGGREGATES
+
+    /// Aggregate projection (`SELECT COUNT(*) FROM ...`). Conflicts with an
+    /// explicit column list (build error).
+    pub fn aggregate(mut self, aggregate: Aggregate) -> Self {
+        self.aggregate = Some(aggregate);
+        self
+    }
+
+    /// `SELECT COUNT(*)`.
+    pub fn count(self) -> Self {
+        self.aggregate(Aggregate::Count)
+    }
+
+    /// `SELECT SUM(column)`.
+    pub fn sum(self, column: Ident) -> Self {
+        self.aggregate(Aggregate::Sum(column))
+    }
+
+    /// `SELECT AVG(column)`.
+    pub fn avg(self, column: Ident) -> Self {
+        self.aggregate(Aggregate::Avg(column))
+    }
+
+    /// `SELECT MIN(column)`.
+    pub fn min(self, column: Ident) -> Self {
+        self.aggregate(Aggregate::Min(column))
+    }
+
+    /// `SELECT MAX(column)`.
+    pub fn max(self, column: Ident) -> Self {
+        self.aggregate(Aggregate::Max(column))
+    }
+
+    /// Alias for the aggregate projection (`... AS alias`). Requires an
+    /// aggregate (build error otherwise).
+    pub fn alias(mut self, alias: Ident) -> Self {
+        self.aggregate_alias = Some(alias);
+        self
+    }
+
+    /// Wrap the whole statement: `SELECT EXISTS (composite)`.
+    pub fn exists(mut self) -> Self {
+        self.exists = Some(true);
+        self
+    }
+
+    /// Wrap the whole statement: `SELECT NOT EXISTS (composite)`.
+    pub fn doesnt_exist(mut self) -> Self {
+        self.exists = Some(false);
+        self
+    }
+
+    pub fn limit(mut self, n: u64) -> Self {
+        self.limit = Some(n);
+        self
+    }
+
+    pub fn offset(mut self, n: u64) -> Self {
+        self.offset = Some(n);
+        self
+    }
+
+    // ---------------------------------------------------------------- JOINS
 
     pub fn join_inner(mut self, table: Ident, on_left: Ident, on_right: Ident) -> Self {
         self.joins.push(Join {
@@ -292,40 +975,115 @@ impl Select {
         self
     }
 
-    pub fn order_by(mut self, column: Ident, direction: Direction) -> Self {
-        self.order.push((column, direction));
-        self
-    }
-
-    pub fn limit(mut self, n: u64) -> Self {
-        self.limit = Some(n);
-        self
-    }
-
-    pub fn offset(mut self, n: u64) -> Self {
-        self.offset = Some(n);
-        self
-    }
-
     /// TENANT-plane scoping helper (L11 tie-in): append `column = $tenant`.
     pub fn tenant_scope(self, column: Ident, tenant: keel_foundation::TenantId) -> Self {
         self.where_eq(column, Value::Uuid(*tenant.as_uuid()))
     }
 
+    // ---------------------------------------------------------- CONDITIONAL
+
+    /// Apply the closure only when `condition` holds (Laravel `when`).
+    pub fn when(self, condition: bool, build: impl FnOnce(Self) -> Self) -> Self {
+        if condition {
+            build(self)
+        } else {
+            self
+        }
+    }
+
+    /// Inspect/mutate the builder mid-chain (Laravel `tap`).
+    pub fn tap(mut self, build: impl FnOnce(&mut Self)) -> Self {
+        build(&mut self);
+        self
+    }
+
+    // ------------------------------------------------------------- INTERNALS
+
+    fn push_and(&mut self, condition: Condition) {
+        self.clauses.push((Junction::And, Clause::Pred(condition)));
+    }
+
+    fn push_or(&mut self, condition: Condition) {
+        self.clauses.push((Junction::Or, Clause::Pred(condition)));
+    }
+
+    fn push_having(&mut self, condition: Condition) {
+        self.having.push((Junction::And, Clause::Pred(condition)));
+    }
+
+    fn push_date(&mut self, part: DatePart, column: Ident, value: Value) {
+        self.clauses.push((
+            Junction::And,
+            Clause::DatePart {
+                part,
+                column,
+                value,
+            },
+        ));
+    }
+
+    // -------------------------------------------------------------- RENDER
+
     /// Validate shape and generate SQL + ordered binds.
     pub fn build(self) -> Result<CompiledSelect, AppError> {
+        let mut params: Vec<Value> = Vec::new();
+        let sql = self.render(&mut params)?;
+        Ok(CompiledSelect { sql, params })
+    }
+
+    /// Render the full statement, appending binds to the CALLER's sequence —
+    /// this is how subqueries and union operands keep `$N` continuous with
+    /// the outer query.
+    pub(crate) fn render(&self, params: &mut Vec<Value>) -> Result<String, AppError> {
+        if let Some(message) = &self.deferred_error {
+            return Err(AppError::validation(message.clone()));
+        }
         let table = self
             .table
+            .as_ref()
             .ok_or_else(|| AppError::validation("SELECT requires a table"))?;
-        let mut params: Vec<Value> = Vec::new();
+        if self.aggregate_alias.is_some() && self.aggregate.is_none() {
+            return Err(AppError::validation(
+                "aggregate alias requires an aggregate projection",
+            ));
+        }
+        if self.aggregate.is_some() && !self.columns.is_empty() {
+            return Err(AppError::validation(
+                "aggregate projection conflicts with explicit column list",
+            ));
+        }
+        let composite = self.render_composite(table, params)?;
+        Ok(match self.exists {
+            None => composite,
+            Some(true) => format!("SELECT EXISTS ({composite})"),
+            Some(false) => format!("SELECT NOT EXISTS ({composite})"),
+        })
+    }
+
+    fn render_composite(
+        &self,
+        table: &Ident,
+        params: &mut Vec<Value>,
+    ) -> Result<String, AppError> {
         let mut sql = String::with_capacity(128);
 
         sql.push_str("SELECT ");
-        if self.columns.is_empty() {
-            sql.push('*');
-        } else {
-            let cols: Vec<&str> = self.columns.iter().map(|c| c.as_str()).collect();
-            sql.push_str(&cols.join(", "));
+        if self.distinct {
+            sql.push_str("DISTINCT ");
+        }
+        match &self.aggregate {
+            Some(aggregate) => {
+                sql.push_str(&aggregate.render());
+                if let Some(alias) = &self.aggregate_alias {
+                    sql.push_str(" AS ");
+                    sql.push_str(alias.as_str());
+                }
+            }
+            None if self.columns.is_empty() => sql.push('*'),
+            None => {
+                let cols: Vec<&str> = self.columns.iter().map(|c| c.as_str()).collect();
+                sql.push_str(&cols.join(", "));
+            }
         }
         sql.push_str(" FROM ");
         sql.push_str(table.as_str());
@@ -339,11 +1097,45 @@ impl Select {
             sql.push_str(join.on_right.as_str());
         }
 
-        if !self.conditions.is_empty() {
+        if !self.clauses.is_empty() {
             sql.push_str(" WHERE ");
-            sql.push_str(&crate::render_conditions(&self.conditions, &mut params)?);
+            sql.push_str(&crate::render_conditions(
+                &self.clauses,
+                params,
+                crate::ClauseContext::Where,
+            )?);
         }
 
+        if !self.group_by.is_empty() {
+            let cols: Vec<&str> = self.group_by.iter().map(|c| c.as_str()).collect();
+            sql.push_str(" GROUP BY ");
+            sql.push_str(&cols.join(", "));
+        }
+
+        if !self.having.is_empty() {
+            sql.push_str(" HAVING ");
+            sql.push_str(&crate::render_conditions(
+                &self.having,
+                params,
+                crate::ClauseContext::Having,
+            )?);
+        }
+
+        if self.unions.is_empty() {
+            self.render_tail(&mut sql, params);
+        } else {
+            for (all, branch) in &self.unions {
+                sql.push_str(if *all { " UNION ALL (" } else { " UNION (" });
+                sql.push_str(&branch.render(params)?);
+                sql.push(')');
+            }
+            self.render_tail(&mut sql, params);
+        }
+        Ok(sql)
+    }
+
+    /// ORDER BY / LIMIT / OFFSET / locking — always the statement tail.
+    fn render_tail(&self, sql: &mut String, params: &mut Vec<Value>) {
         if !self.order.is_empty() {
             let parts: Vec<String> = self
                 .order
@@ -371,8 +1163,12 @@ impl Select {
             params.push(Value::Int(n as i64));
             sql.push_str(&format!(" OFFSET ${}", params.len()));
         }
-
-        Ok(CompiledSelect { sql, params })
+        if let Some(lock) = self.lock {
+            sql.push_str(match lock {
+                Lock::Update => " FOR UPDATE",
+                Lock::Share => " FOR SHARE",
+            });
+        }
     }
 }
 
@@ -474,5 +1270,477 @@ mod tests {
         assert_eq!(Value::from(3i32).type_name(), "int");
         assert_eq!(Value::from(uuid::Uuid::now_v7()).type_name(), "uuid");
         assert_eq!(Value::Null.type_name(), "null");
+    }
+
+    // ------------------------------------------------------- Wave 3 (phase 1)
+
+    #[test]
+    fn or_where_renders_top_level_or() {
+        let q = Select::from_table(id("t"))
+            .where_eq(id("a"), 1i64)
+            .or_where(id("b"), Operator::Eq, 2i64)
+            .build()
+            .unwrap();
+        assert_eq!(q.sql, "SELECT * FROM t WHERE a = $1 OR b = $2");
+        assert_eq!(q.params.len(), 2);
+    }
+
+    #[test]
+    fn leading_or_where_renders_as_first_clause() {
+        let q = Select::from_table(id("t"))
+            .or_where_null(id("a"))
+            .where_eq(id("b"), 1i64)
+            .build()
+            .unwrap();
+        assert_eq!(q.sql, "SELECT * FROM t WHERE a IS NULL AND b = $1");
+    }
+
+    #[test]
+    fn flat_mixture_follows_sql_precedence() {
+        // Documented: AND binds tighter than OR — `a AND b OR c AND d`
+        // evaluates as `(a AND b) OR (c AND d)` (Laravel semantics).
+        let q = Select::from_table(id("t"))
+            .where_eq(id("a"), 1i64)
+            .where_eq(id("b"), 2i64)
+            .or_where(id("c"), Operator::Eq, 3i64)
+            .where_eq(id("d"), 4i64)
+            .build()
+            .unwrap();
+        assert_eq!(
+            q.sql,
+            "SELECT * FROM t WHERE a = $1 AND b = $2 OR c = $3 AND d = $4"
+        );
+    }
+
+    #[test]
+    fn nested_group_renders_parenthesized() {
+        let q = Select::from_table(id("t"))
+            .where_eq(id("tenant_id"), 1i64)
+            .group(|g| g.where_eq(id("a"), 2i64).or_where(id("b"), Operator::Eq, 3i64))
+            .build()
+            .unwrap();
+        assert_eq!(
+            q.sql,
+            "SELECT * FROM t WHERE tenant_id = $1 AND (a = $2 OR b = $3)"
+        );
+        assert_eq!(q.params.len(), 3);
+    }
+
+    #[test]
+    fn group_rejects_non_condition_builder() {
+        let err = Select::from_table(id("t"))
+            .group(|g| g.where_eq(id("a"), 1i64).limit(5))
+            .build()
+            .unwrap_err();
+        assert!(err.public_message.contains("conditions only"));
+
+        // An empty group is a build error, not a silent `()`.
+        let err = Select::from_table(id("t"))
+            .group(|g| g)
+            .build()
+            .unwrap_err();
+        assert!(err.public_message.contains("group"));
+    }
+
+    #[test]
+    fn where_not_in_shape_and_empty_rejected() {
+        let q = Select::from_table(id("t"))
+            .where_not_in(id("status"), vec!["a".into(), "b".into()])
+            .build()
+            .unwrap();
+        assert_eq!(q.sql, "SELECT * FROM t WHERE status NOT IN ($1, $2)");
+
+        let err = Select::from_table(id("t"))
+            .where_not_in(id("status"), vec![])
+            .build()
+            .unwrap_err();
+        assert!(err.public_message.contains("IN"));
+    }
+
+    #[test]
+    fn where_between_shapes() {
+        let q = Select::from_table(id("t"))
+            .where_between(id("n"), 1i64, 5i64)
+            .build()
+            .unwrap();
+        assert_eq!(q.sql, "SELECT * FROM t WHERE n BETWEEN $1 AND $2");
+
+        let q = Select::from_table(id("t"))
+            .where_not_between(id("n"), 1i64, 5i64)
+            .build()
+            .unwrap();
+        assert_eq!(q.sql, "SELECT * FROM t WHERE n NOT BETWEEN $1 AND $2");
+    }
+
+    #[test]
+    fn where_column_shapes_and_operator_guard() {
+        let q = Select::from_table(id("schedules"))
+            .where_column(id("starts_at"), id("ends_at"))
+            .where_column_op(id("a"), Operator::Gt, id("b"))
+            .build()
+            .unwrap();
+        assert_eq!(
+            q.sql,
+            "SELECT * FROM schedules WHERE starts_at = ends_at AND a > b"
+        );
+        assert!(q.params.is_empty());
+
+        let err = Select::from_table(id("t"))
+            .where_column_op(id("a"), Operator::In, id("b"))
+            .build()
+            .unwrap_err();
+        assert!(err.public_message.contains("operator"));
+    }
+
+    #[test]
+    fn where_like_renders_ilike() {
+        let q = Select::from_table(id("doctors"))
+            .where_like(id("name"), "%jo%")
+            .build()
+            .unwrap();
+        assert_eq!(q.sql, "SELECT * FROM doctors WHERE name ILIKE $1");
+        assert_eq!(q.params[0], Value::Text("%jo%".into()));
+    }
+
+    #[test]
+    fn date_family_shapes() {
+        let q = Select::from_table(id("t"))
+            .where_date(id("created_at"), "2026-01-01")
+            .build()
+            .unwrap();
+        assert_eq!(q.sql, "SELECT * FROM t WHERE created_at::date = $1::date");
+
+        let q = Select::from_table(id("t"))
+            .where_year(id("created_at"), 2026i64)
+            .build()
+            .unwrap();
+        assert_eq!(q.sql, "SELECT * FROM t WHERE EXTRACT(YEAR FROM created_at) = $1");
+
+        let q = Select::from_table(id("t"))
+            .where_month(id("created_at"), 9i64)
+            .build()
+            .unwrap();
+        assert_eq!(
+            q.sql,
+            "SELECT * FROM t WHERE EXTRACT(MONTH FROM created_at) = $1"
+        );
+
+        let q = Select::from_table(id("t"))
+            .where_day(id("created_at"), 29i64)
+            .build()
+            .unwrap();
+        assert_eq!(q.sql, "SELECT * FROM t WHERE EXTRACT(DAY FROM created_at) = $1");
+
+        let q = Select::from_table(id("t"))
+            .where_time(id("starts_at"), "09:30:00")
+            .build()
+            .unwrap();
+        assert_eq!(
+            q.sql,
+            "SELECT * FROM t WHERE TO_CHAR(starts_at, 'HH24:MI:SS') = $1"
+        );
+    }
+
+    #[test]
+    fn distinct_projection_and_batch_select() {
+        let q = Select::from_table(id("t"))
+            .distinct()
+            .select(vec![id("a"), id("b")])
+            .build()
+            .unwrap();
+        assert_eq!(q.sql, "SELECT DISTINCT a, b FROM t");
+    }
+
+    #[test]
+    fn latest_oldest_default_and_overridden_columns() {
+        let q = Select::from_table(id("posts")).latest().build().unwrap();
+        assert_eq!(q.sql, "SELECT * FROM posts ORDER BY created_at DESC");
+
+        let q = Select::from_table(id("posts")).oldest().build().unwrap();
+        assert_eq!(q.sql, "SELECT * FROM posts ORDER BY created_at ASC");
+
+        let q = Select::from_table(id("posts"))
+            .latest_by(id("published_at"))
+            .build()
+            .unwrap();
+        assert_eq!(q.sql, "SELECT * FROM posts ORDER BY published_at DESC");
+
+        let q = Select::from_table(id("posts"))
+            .oldest_by(id("published_at"))
+            .build()
+            .unwrap();
+        assert_eq!(q.sql, "SELECT * FROM posts ORDER BY published_at ASC");
+    }
+
+    #[test]
+    fn lock_clauses_render_after_limit_offset() {
+        let q = Select::from_table(id("jobs"))
+            .lock_for_update()
+            .limit(10)
+            .build()
+            .unwrap();
+        assert_eq!(q.sql, "SELECT * FROM jobs LIMIT $1 FOR UPDATE");
+
+        let q = Select::from_table(id("jobs"))
+            .shared_lock()
+            .limit(5)
+            .offset(10)
+            .build()
+            .unwrap();
+        assert_eq!(q.sql, "SELECT * FROM jobs LIMIT $1 OFFSET $2 FOR SHARE");
+    }
+
+    #[test]
+    fn group_by_and_having_shapes() {
+        let q = Select::from_table(id("bookings"))
+            .group_by(id("clinic_id"))
+            .having_op(id("clinic_id"), Operator::Eq, "x")
+            .build()
+            .unwrap();
+        assert_eq!(
+            q.sql,
+            "SELECT * FROM bookings GROUP BY clinic_id HAVING clinic_id = $1"
+        );
+
+        let q = Select::from_table(id("bookings"))
+            .group_by(id("clinic_id"))
+            .having_aggregate(Aggregate::Count, Operator::Gt, 5i64)
+            .build()
+            .unwrap();
+        assert_eq!(
+            q.sql,
+            "SELECT * FROM bookings GROUP BY clinic_id HAVING COUNT(*) > $1"
+        );
+
+        let q = Select::from_table(id("bookings"))
+            .group_by(id("clinic_id"))
+            .having_in(id("status"), vec!["open".into()])
+            .having_between(id("n"), 1i64, 3i64)
+            .build()
+            .unwrap();
+        assert_eq!(
+            q.sql,
+            "SELECT * FROM bookings GROUP BY clinic_id HAVING status IN ($1) AND n BETWEEN $2 AND $3"
+        );
+    }
+
+    #[test]
+    fn union_and_union_all_shapes() {
+        let branch = Select::from_table(id("b")).where_eq(id("y"), 2i64);
+        let q = Select::from_table(id("a"))
+            .where_eq(id("x"), 1i64)
+            .union(branch)
+            .build()
+            .unwrap();
+        assert_eq!(
+            q.sql,
+            "SELECT * FROM a WHERE x = $1 UNION (SELECT * FROM b WHERE y = $2)"
+        );
+        assert_eq!(q.params.len(), 2);
+
+        let q = Select::from_table(id("a"))
+            .union_all(Select::from_table(id("b")))
+            .build()
+            .unwrap();
+        assert_eq!(q.sql, "SELECT * FROM a UNION ALL (SELECT * FROM b)");
+    }
+
+    #[test]
+    fn union_moves_main_tail_to_composite_end() {
+        let q = Select::from_table(id("a"))
+            .where_eq(id("x"), 1i64)
+            .order_by(id("id"), Direction::Desc)
+            .limit(5)
+            .union(Select::from_table(id("b")))
+            .build()
+            .unwrap();
+        assert_eq!(
+            q.sql,
+            "SELECT * FROM a WHERE x = $1 UNION (SELECT * FROM b) ORDER BY id DESC LIMIT $2"
+        );
+        assert_eq!(q.params, vec![Value::Int(1), Value::Int(5)]);
+    }
+
+    #[test]
+    fn union_branch_keeps_its_own_tail_inside_parens() {
+        let branch = Select::from_table(id("b"))
+            .order_by(id("y"), Direction::Asc)
+            .limit(3);
+        let q = Select::from_table(id("a"))
+            .union(branch)
+            .build()
+            .unwrap();
+        assert_eq!(
+            q.sql,
+            "SELECT * FROM a UNION (SELECT * FROM b ORDER BY y ASC LIMIT $1)"
+        );
+    }
+
+    #[test]
+    fn aggregate_projection_shapes() {
+        let q = Select::from_table(id("appointments"))
+            .count()
+            .where_eq(id("status"), "done")
+            .build()
+            .unwrap();
+        assert_eq!(q.sql, "SELECT COUNT(*) FROM appointments WHERE status = $1");
+
+        let q = Select::from_table(id("invoices"))
+            .sum(id("total"))
+            .alias(id("total_sum"))
+            .build()
+            .unwrap();
+        assert_eq!(q.sql, "SELECT SUM(total) AS total_sum FROM invoices");
+
+        let q = Select::from_table(id("invoices")).avg(id("total")).build().unwrap();
+        assert_eq!(q.sql, "SELECT AVG(total) FROM invoices");
+
+        let q = Select::from_table(id("invoices")).min(id("total")).build().unwrap();
+        assert_eq!(q.sql, "SELECT MIN(total) FROM invoices");
+
+        let q = Select::from_table(id("invoices")).max(id("total")).build().unwrap();
+        assert_eq!(q.sql, "SELECT MAX(total) FROM invoices");
+
+        let q = Select::from_table(id("bookings"))
+            .aggregate(Aggregate::CountColumn(id("doctor_id")))
+            .alias(id("doctor_count"))
+            .build()
+            .unwrap();
+        assert_eq!(
+            q.sql,
+            "SELECT COUNT(doctor_id) AS doctor_count FROM bookings"
+        );
+    }
+
+    #[test]
+    fn aggregate_validation_conflicts() {
+        let err = Select::from_table(id("t"))
+            .count()
+            .column(id("a"))
+            .build()
+            .unwrap_err();
+        assert!(err.public_message.contains("aggregate"));
+
+        let err = Select::from_table(id("t"))
+            .alias(id("x"))
+            .build()
+            .unwrap_err();
+        assert!(err.public_message.contains("alias"));
+    }
+
+    #[test]
+    fn exists_wrappers_and_correlated_subquery() {
+        let subquery = Select::from_table(id("doctors"))
+            .where_column(id("doctors.id"), id("appointments.doctor_id"))
+            .where_eq(id("doctors.specialty"), "cardio");
+        let q = Select::from_table(id("appointments"))
+            .where_exists(subquery)
+            .where_eq(id("status"), "booked")
+            .build()
+            .unwrap();
+        assert_eq!(
+            q.sql,
+            "SELECT * FROM appointments WHERE EXISTS (SELECT * FROM doctors WHERE doctors.id = appointments.doctor_id AND doctors.specialty = $1) AND status = $2"
+        );
+        // Subquery binds merge into the outer sequence, in SQL text order.
+        assert_eq!(
+            q.params,
+            vec![Value::Text("cardio".into()), Value::Text("booked".into())]
+        );
+
+        let q = Select::from_table(id("t"))
+            .where_not_exists(Select::from_table(id("u")).where_eq(id("u.t_id"), 1i64))
+            .build()
+            .unwrap();
+        assert_eq!(
+            q.sql,
+            "SELECT * FROM t WHERE NOT EXISTS (SELECT * FROM u WHERE u.t_id = $1)"
+        );
+    }
+
+    #[test]
+    fn exists_and_doesnt_exist_wrap_the_statement() {
+        let q = Select::from_table(id("doctors"))
+            .where_eq(id("specialty"), "cardio")
+            .exists()
+            .build()
+            .unwrap();
+        assert_eq!(
+            q.sql,
+            "SELECT EXISTS (SELECT * FROM doctors WHERE specialty = $1)"
+        );
+
+        let q = Select::from_table(id("doctors")).doesnt_exist().build().unwrap();
+        assert_eq!(q.sql, "SELECT NOT EXISTS (SELECT * FROM doctors)");
+    }
+
+    #[test]
+    fn keyset_row_comparison_shape() {
+        let q = Select::from_table(id("events"))
+            .where_row_cmp(
+                vec![id("created_at"), id("id")],
+                Operator::Lt,
+                vec![Value::Text("2026-01-01".into()), Value::Int(9)],
+            )
+            .order_by(id("created_at"), Direction::Desc)
+            .order_by(id("id"), Direction::Desc)
+            .limit(50)
+            .build()
+            .unwrap();
+        assert_eq!(
+            q.sql,
+            "SELECT * FROM events WHERE (created_at, id) < ($1, $2) ORDER BY created_at DESC, id DESC LIMIT $3"
+        );
+        assert_eq!(q.params.len(), 3);
+    }
+
+    #[test]
+    fn row_comparison_validates_shape() {
+        let err = Select::from_table(id("t"))
+            .where_row_cmp(vec![], Operator::Gt, vec![Value::Int(1)])
+            .build()
+            .unwrap_err();
+        assert!(err.public_message.contains("at least one column"));
+
+        let err = Select::from_table(id("t"))
+            .where_row_cmp(vec![id("a"), id("b")], Operator::Gt, vec![Value::Int(1)])
+            .build()
+            .unwrap_err();
+        assert!(err.public_message.contains("values for"));
+
+        let err = Select::from_table(id("t"))
+            .where_row_cmp(vec![id("a")], Operator::In, vec![Value::Int(1)])
+            .build()
+            .unwrap_err();
+        assert!(err.public_message.contains("operator"));
+    }
+
+    #[test]
+    fn values_never_interpolate_into_sql_text() {
+        let payload = "%'; DROP TABLE doctors; --";
+        let q = Select::from_table(id("doctors"))
+            .where_like(id("name"), payload)
+            .build()
+            .unwrap();
+        assert!(!q.sql.contains("DROP"));
+        assert!(!q.sql.contains("'"));
+        assert_eq!(q.params[0], Value::Text(payload.to_string()));
+    }
+
+    #[test]
+    fn when_and_tap_conditionals() {
+        let q = Select::from_table(id("t"))
+            .when(false, |s| s.where_eq(id("a"), 1i64))
+            .build()
+            .unwrap();
+        assert_eq!(q.sql, "SELECT * FROM t");
+
+        let q = Select::from_table(id("t"))
+            .when(true, |s| s.where_eq(id("a"), 1i64))
+            .tap(|s| s.limit = Some(7))
+            .build()
+            .unwrap();
+        assert_eq!(q.sql, "SELECT * FROM t WHERE a = $1 LIMIT $2");
+        assert_eq!(q.params, vec![Value::Int(1), Value::Int(7)]);
     }
 }

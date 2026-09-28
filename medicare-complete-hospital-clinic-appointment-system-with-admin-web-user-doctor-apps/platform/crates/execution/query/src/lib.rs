@@ -9,11 +9,16 @@ use serde::{Deserialize, Serialize};
 pub mod delete;
 pub mod insert;
 pub mod select;
+pub mod truncate;
 pub mod update;
 
 pub use delete::Delete;
 pub use insert::{ConflictPolicy, Insert};
-pub use select::{CompiledSelect, Ident, Operator, Select, Value};
+pub use select::{
+    Aggregate, Clause, CompiledSelect, Condition, DatePart, Direction, Ident, Junction, Lock,
+    Operator, Select, Value,
+};
+pub use truncate::Truncate;
 pub use update::Update;
 
 /// Compiled WRITE statement (INSERT/UPDATE/DELETE): SQL text with `$N`
@@ -25,48 +30,215 @@ pub struct CompiledWrite {
     pub params: Vec<Value>,
 }
 
-/// Shared WHERE rendering for SELECT/UPDATE/DELETE builders. Appends binds to
-/// `params` in order and returns the joined predicate text.
+/// Rendering context for a clause list: aggregate comparisons
+/// ([`select::Clause::AggregateCmp`]) are HAVING-only — a `COUNT(*) > n`
+/// predicate in WHERE is invalid SQL and fails closed here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClauseContext {
+    Where,
+    Having,
+}
+
+/// Shared WHERE/HAVING rendering for the SELECT/UPDATE/DELETE builders: a
+/// flat list of junction-tagged [`select::Clause`]s joined left-to-right (the
+/// first clause's junction is implicit). Appends binds to `params` in SQL
+/// order — including binds inside nested groups and composed subqueries — and
+/// returns the predicate text. No free-form SQL: every leaf goes through
+/// [`select::Ident`] validation and `$N` binds.
 pub(crate) fn render_conditions(
-    conditions: &[select::Condition],
+    items: &[(select::Junction, select::Clause)],
     params: &mut Vec<Value>,
+    context: ClauseContext,
 ) -> Result<String, AppError> {
-    let mut parts = Vec::with_capacity(conditions.len());
-    for cond in conditions {
-        match cond.operator {
-            Operator::IsNull | Operator::NotNull => {
-                parts.push(format!("{} {}", cond.column.as_str(), cond.operator.sql()));
+    let mut out = String::new();
+    for (index, (junction, clause)) in items.iter().enumerate() {
+        if index > 0 {
+            out.push_str(match junction {
+                select::Junction::And => " AND ",
+                select::Junction::Or => " OR ",
+            });
+        }
+        out.push_str(&render_clause(clause, params, context)?);
+    }
+    Ok(out)
+}
+
+/// Recursive clause-tree rendering. Subqueries render into the same `params`
+/// vector, so `$N` numbering stays continuous with the enclosing statement.
+fn render_clause(
+    clause: &select::Clause,
+    params: &mut Vec<Value>,
+    context: ClauseContext,
+) -> Result<String, AppError> {
+    use select::{Clause, Operator};
+    match clause {
+        Clause::Pred(cond) => render_predicate(cond, params),
+        Clause::Column { left, operator, right } => {
+            if !operator.is_scalar() {
+                return Err(AppError::validation(format!(
+                    "column comparison does not accept operator {}",
+                    operator.sql()
+                )));
             }
-            Operator::In => {
-                if cond.values.is_empty() {
-                    return Err(AppError::validation(format!(
-                        "IN condition on {} needs at least one value",
-                        cond.column.as_str()
-                    )));
-                }
-                let mut marks = Vec::with_capacity(cond.values.len());
-                for value in &cond.values {
-                    params.push(value.clone());
-                    marks.push(format!("${}", params.len()));
-                }
-                parts.push(format!(
-                    "{} IN ({})",
-                    cond.column.as_str(),
-                    marks.join(", ")
+            Ok(format!(
+                "{} {} {}",
+                left.as_str(),
+                operator.sql(),
+                right.as_str()
+            ))
+        }
+        Clause::Row {
+            columns,
+            operator,
+            values,
+        } => {
+            if columns.is_empty() {
+                return Err(AppError::validation(
+                    "row comparison needs at least one column",
                 ));
             }
-            other => {
-                params.push(cond.values[0].clone());
-                parts.push(format!(
-                    "{} {} ${}",
-                    cond.column.as_str(),
-                    other.sql(),
-                    params.len()
+            if columns.len() != values.len() {
+                return Err(AppError::validation(format!(
+                    "row comparison binds {} values for {} columns",
+                    values.len(),
+                    columns.len()
+                )));
+            }
+            if !matches!(
+                operator,
+                Operator::Eq | Operator::Ne | Operator::Gt | Operator::GtEq | Operator::Lt
+                    | Operator::LtEq
+            ) {
+                return Err(AppError::validation(format!(
+                    "row comparison does not accept operator {}",
+                    operator.sql()
+                )));
+            }
+            let names: Vec<&str> = columns.iter().map(|c| c.as_str()).collect();
+            let mut marks = Vec::with_capacity(values.len());
+            for value in values {
+                params.push(value.clone());
+                marks.push(format!("${}", params.len()));
+            }
+            Ok(format!(
+                "({}) {} ({})",
+                names.join(", "),
+                operator.sql(),
+                marks.join(", ")
+            ))
+        }
+        Clause::DatePart {
+            part,
+            column,
+            value,
+        } => {
+            params.push(value.clone());
+            let placeholder = format!("${}", params.len());
+            Ok(part.render_sql(column.as_str(), &placeholder))
+        }
+        Clause::Exists { negated, subquery } => {
+            let inner = subquery.render(params)?;
+            Ok(format!(
+                "{}EXISTS ({inner})",
+                if *negated { "NOT " } else { "" }
+            ))
+        }
+        Clause::Group { items, .. } => {
+            if items.is_empty() {
+                return Err(AppError::validation("empty boolean group refused"));
+            }
+            Ok(format!("({})", render_conditions(items, params, context)?))
+        }
+        Clause::AggregateCmp {
+            aggregate,
+            operator,
+            value,
+        } => {
+            if context == ClauseContext::Where {
+                return Err(AppError::validation(
+                    "aggregate comparison is HAVING-only (use having_aggregate)",
                 ));
             }
+            if !operator.is_scalar() {
+                return Err(AppError::validation(format!(
+                    "aggregate comparison does not accept operator {}",
+                    operator.sql()
+                )));
+            }
+            params.push(value.clone());
+            Ok(format!(
+                "{} {} ${}",
+                aggregate.render(),
+                operator.sql(),
+                params.len()
+            ))
         }
     }
-    Ok(parts.join(" AND "))
+}
+
+/// Leaf predicate rendering: `column <op> $N` (single value), `column IN
+/// (...)`/`NOT IN (...)` (bind list), `column [NOT] BETWEEN $a AND $b`, or a
+/// bare `IS [NOT] NULL`.
+fn render_predicate(
+    cond: &select::Condition,
+    params: &mut Vec<Value>,
+) -> Result<String, AppError> {
+    use select::Operator;
+    let column = cond.column.as_str();
+    match cond.operator {
+        Operator::IsNull | Operator::NotNull => Ok(format!("{} {}", column, cond.operator.sql())),
+        Operator::In | Operator::NotIn => {
+            if cond.values.is_empty() {
+                return Err(AppError::validation(format!(
+                    "{} condition on {} needs at least one value",
+                    cond.operator.sql(),
+                    column
+                )));
+            }
+            let mut marks = Vec::with_capacity(cond.values.len());
+            for value in &cond.values {
+                params.push(value.clone());
+                marks.push(format!("${}", params.len()));
+            }
+            Ok(format!(
+                "{} {} ({})",
+                column,
+                cond.operator.sql(),
+                marks.join(", ")
+            ))
+        }
+        Operator::Between | Operator::NotBetween => {
+            if cond.values.len() != 2 {
+                return Err(AppError::validation(format!(
+                    "{} condition on {} needs exactly two values",
+                    cond.operator.sql(),
+                    column
+                )));
+            }
+            let mut marks = Vec::with_capacity(2);
+            for value in &cond.values {
+                params.push(value.clone());
+                marks.push(format!("${}", params.len()));
+            }
+            Ok(format!(
+                "{} {} {} AND {}",
+                column,
+                cond.operator.sql(),
+                marks[0],
+                marks[1]
+            ))
+        }
+        other => {
+            if cond.values.len() != 1 {
+                return Err(AppError::validation(format!(
+                    "condition on {} needs exactly one value",
+                    column
+                )));
+            }
+            params.push(cond.values[0].clone());
+            Ok(format!("{} {} ${}", column, other.sql(), params.len()))
+        }
+    }
 }
 
 /// Pagination contract (stable wire shape).
