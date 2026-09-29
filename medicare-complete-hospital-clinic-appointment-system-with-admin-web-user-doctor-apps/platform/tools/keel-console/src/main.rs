@@ -109,6 +109,15 @@ enum Cmd {
     /// demand; a corrupt or stale entry never survives a clear).
     #[command(name = "view:clear")]
     ViewClear,
+    /// Wave 5: warm every boot-pinning artifact in order (route:cache ->
+    /// config:cache -> view:cache), aborting on the first failure so a
+    /// broken step never leaves a half-warm deploy.
+    #[command(name = "optimize")]
+    Optimize,
+    /// Wave 5: drop all three boot-pinning artifacts (route:cache,
+    /// config:cache, view:cache); boot falls back to live compilation.
+    #[command(name = "optimize:clear")]
+    OptimizeClear,
     /// List declared events.
     #[command(name = "event:list")]
     EventList,
@@ -427,6 +436,8 @@ fn main() -> ExitCode {
         ),
         Cmd::ViewCache => view_cache(),
         Cmd::ViewClear => view_clear(),
+        Cmd::Optimize => optimize(),
+        Cmd::OptimizeClear => optimize_clear(),
         Cmd::RouteCache => route_cache(),
         Cmd::RouteClear => route_clear(),
         Cmd::EventList => event_list(),
@@ -1687,6 +1698,58 @@ fn view_clear_at(root: &Path) -> anyhow::Result<ExitCode> {
         .clear_cache()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("view:clear: {cleared} compiled views cleared");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Wave 5: `keel optimize` warms every boot-pinning artifact in the
+/// documented order (route:cache -> config:cache -> view:cache) and
+/// aborts on the first failure — a graph-gate refusal never proceeds to
+/// config or view, so a broken deploy fails fast instead of half-warm.
+fn optimize() -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    optimize_at(&root)
+}
+
+/// Testable core of optimize against an explicit workspace root.
+fn optimize_at(root: &Path) -> anyhow::Result<ExitCode> {
+    let code = route_cache_at(root)
+        .map_err(|e| anyhow::anyhow!("optimize aborted at route:cache: {e:#}"))?;
+    if code != ExitCode::SUCCESS {
+        anyhow::bail!("optimize aborted at route:cache (graph gate refused the artifact)");
+    }
+    let code = config_cache_at(root)
+        .map_err(|e| anyhow::anyhow!("optimize aborted at config:cache: {e:#}"))?;
+    if code != ExitCode::SUCCESS {
+        anyhow::bail!("optimize aborted at config:cache");
+    }
+    let code = view_cache_at(root)
+        .map_err(|e| anyhow::anyhow!("optimize aborted at view:cache: {e:#}"))?;
+    if code != ExitCode::SUCCESS {
+        anyhow::bail!("optimize aborted at view:cache");
+    }
+    println!("optimize: route, config and view caches are warm.");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Wave 5: `keel optimize:clear` removes all three boot-pinning artifacts.
+/// Every step is attempted (a clear never leaves one cache behind because
+/// another delete failed); the first error is reported afterwards.
+fn optimize_clear() -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    optimize_clear_at(&root)
+}
+
+/// Testable core of optimize:clear against an explicit workspace root.
+fn optimize_clear_at(root: &Path) -> anyhow::Result<ExitCode> {
+    let results = [
+        route_clear_at(root),
+        config_clear_at(root),
+        view_clear_at(root),
+    ];
+    if let Some(err) = results.into_iter().find_map(Result::err) {
+        return Err(err);
+    }
+    println!("optimize:clear: route, config and view caches are cold.");
     Ok(ExitCode::SUCCESS)
 }
 
@@ -3749,6 +3812,97 @@ middleware = ["ghost"]
         // route:clear -> artifact gone (boot falls back to live resolution).
         assert_eq!(route_clear_at(&dir).expect("route clear runs"), ExitCode::SUCCESS);
         assert!(!path.exists(), "artifact removed");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Wave 5 Phase 1: optimize warms route + config + view artifacts in
+    /// order and aborts on the first failure (a broken graph never reaches
+    /// the config step); optimize:clear drops all three so boot falls back
+    /// to live compilation everywhere.
+    #[test]
+    fn optimize_cycle_warms_and_clears_all_three_artifacts() {
+        let dir = phase5_root("optimize");
+        let app_dir = dir.join("applications").join("alpha");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("module.toml"),
+            r#"
+[module]
+name = "alpha"
+version = "0.1.0"
+
+[capabilities]
+"index" = { profile = "READ" }
+
+[[routes]]
+method = "GET"
+path = "/x"
+operation = "index"
+"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("resources").join("views")).unwrap();
+        std::fs::write(
+            dir.join("resources").join("views").join("hello.html"),
+            "<p>hello</p>",
+        )
+        .unwrap();
+
+        // optimize -> all three artifacts warm.
+        assert_eq!(optimize_at(&dir).expect("optimize runs"), ExitCode::SUCCESS);
+        assert!(
+            keel_registry::route_cache_path(&dir).exists(),
+            "route artifact warm"
+        );
+        assert!(
+            keel_registry::config_cache_path(&dir).exists(),
+            "config artifact warm"
+        );
+        let view_dir = dir.join("storage").join("framework").join("views");
+        let compiled = std::fs::read_dir(&view_dir).map(|d| d.count()).unwrap_or(0);
+        assert!(compiled > 0, "view cache warm ({compiled} entries)");
+
+        // Abort-on-first-failure: drop the config artifact, break the graph
+        // (GRAPH-MW-UNKNOWN at the route step), and prove optimize stops
+        // there — the config artifact stays absent.
+        std::fs::remove_file(keel_registry::config_cache_path(&dir)).unwrap();
+        std::fs::write(
+            app_dir.join("module.toml"),
+            r#"
+[module]
+name = "alpha"
+version = "0.1.0"
+
+[capabilities]
+"index" = { profile = "READ" }
+
+[[routes]]
+method = "GET"
+path = "/x"
+operation = "index"
+middleware = ["ghost"]
+"#,
+        )
+        .unwrap();
+        let err = optimize_at(&dir).expect_err("broken graph aborts optimize");
+        assert!(err.to_string().contains("route:cache"), "{err}");
+        assert!(
+            !keel_registry::config_cache_path(&dir).exists(),
+            "abort never reached the config step"
+        );
+
+        // optimize:clear -> every remaining artifact gone (clears do not
+        // recompile the graph, so they succeed even on a broken manifest).
+        assert_eq!(
+            optimize_clear_at(&dir).expect("optimize:clear runs"),
+            ExitCode::SUCCESS
+        );
+        assert!(!keel_registry::route_cache_path(&dir).exists(), "route cold");
+        assert!(!keel_registry::config_cache_path(&dir).exists(), "config cold");
+        let remaining = std::fs::read_dir(&view_dir)
+            .map(|d| d.count())
+            .unwrap_or(0);
+        assert_eq!(remaining, 0, "view cache cold");
         std::fs::remove_dir_all(&dir).ok();
     }
 
