@@ -443,6 +443,23 @@ impl ViewsEngine {
         }
         Ok(count)
     }
+
+    /// Drop **one** compiled cache entry (Wave 4 Phase 5,
+    /// `keel cache:forget views:<name>`): the in-process memo plus the disk
+    /// artifact. Returns true when anything was removed.
+    pub fn forget_cache(&self, name: &str) -> Result<bool, ViewError> {
+        let removed_memo = self.memo.lock().unwrap().remove(name).is_some();
+        let mut removed_disk = false;
+        if let Some(path) = self.cache_path(name) {
+            if path.is_file() {
+                std::fs::remove_file(&path).map_err(|e| {
+                    ViewError::new(VIEW_CACHE, format!("{}: {e}", path.display()))
+                })?;
+                removed_disk = true;
+            }
+        }
+        Ok(removed_memo || removed_disk)
+    }
 }
 
 fn hex_hash(bytes: &[u8]) -> String {

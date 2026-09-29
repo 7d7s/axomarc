@@ -177,9 +177,39 @@ enum Cmd {
     /// Dump the effective configuration (secrets redacted).
     #[command(name = "config:dump")]
     ConfigDump,
+    /// Wave 4 Phase 5: pin the frozen effective config to
+    /// storage/framework/config.json + content hash (boot hash-checks and
+    /// refuses drift, identical semantics to route:cache).
+    #[command(name = "config:cache")]
+    ConfigCache,
+    /// Wave 4 Phase 5: delete storage/framework/config.json (boot reads the
+    /// live config without the drift pin).
+    #[command(name = "config:clear")]
+    ConfigClear,
+    /// Wave 4 Phase 5: print one config section (secrets redacted).
+    #[command(name = "config:show")]
+    ConfigShow {
+        /// Section: app, database, auth, otp, storage, limits, telemetry,
+        /// views, http.
+        key: String,
+        /// Print JSON instead of TOML.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Wave 4 Phase 5: print the environment summary (config file layering,
+    /// redacted key facts, config-cache pin state).
+    #[command(name = "env")]
+    Env,
     /// Clear the application cache.
     #[command(name = "cache:clear")]
     CacheClear,
+    /// Wave 4 Phase 5: remove exactly one cache key (routes | config |
+    /// views:<template>).
+    #[command(name = "cache:forget")]
+    CacheForget {
+        /// Cache key: routes, config, or views:<template>.
+        key: String,
+    },
     /// Bring the application up (remove the maintenance file).
     Up,
     /// Maintenance mode: serve 503 until "keel up".
@@ -376,6 +406,11 @@ fn main() -> ExitCode {
         Cmd::KeyGenerate => key_generate(),
         Cmd::ConfigDump => config_dump(),
         Cmd::CacheClear => cache_clear(),
+        Cmd::ConfigCache => config_cache(),
+        Cmd::ConfigClear => config_clear(),
+        Cmd::ConfigShow { key, json } => config_show(&key, json),
+        Cmd::Env => env_summary(),
+        Cmd::CacheForget { key } => cache_forget(&key),
         Cmd::Up => up(),
         Cmd::Down { retry, secret } => down(retry, secret),
         Cmd::JobList { status, limit } => rt(job_list(status, limit)),
@@ -1170,6 +1205,225 @@ fn cache_clear() -> anyhow::Result<ExitCode> {
     println!("cache: nothing to clear — platform caches are in-process per node (MemoryCache).");
     println!("Restart api/worker processes to reset them.");
     Ok(ExitCode::SUCCESS)
+}
+
+// ------------------------------------------------------- config cache (Wave 4)
+
+/// Wave 4 Phase 5: write the frozen effective config + content hash to
+/// storage/framework/config.json. Boot re-derives the effective config and
+/// hash-checks the artifact (drift-refuse, identical to route:cache).
+fn config_cache() -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    config_cache_at(&root)
+}
+
+/// Testable core of config:cache against an explicit workspace root.
+fn config_cache_at(root: &Path) -> anyhow::Result<ExitCode> {
+    let cfg = load_config(root)?.freeze();
+    let json = cfg.cache_json();
+    let artifact = keel_registry::ConfigCacheArtifact {
+        abi: keel_registry::CONFIG_CACHE_ABI,
+        config_hash: keel_registry::config_hash(&json),
+        config: json,
+    };
+    let path = keel_registry::config_cache_path(root);
+    artifact
+        .write(&path)
+        .map_err(|e| anyhow::anyhow!("config cache write failed: {e}"))?;
+    let rel = path.strip_prefix(root).unwrap_or(&path);
+    println!("  + {} (hash {})", rel.display(), artifact.config_hash);
+    println!("config cache written. Boot now pins on this artifact; re-run after config changes or use config:clear.");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Wave 4 Phase 5: delete the config cache artifact (boot reads the live
+/// config without the drift pin).
+fn config_clear() -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    config_clear_at(&root)
+}
+
+/// Testable core of config:clear against an explicit workspace root.
+fn config_clear_at(root: &Path) -> anyhow::Result<ExitCode> {
+    let path = keel_registry::config_cache_path(root);
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+        let rel = path.strip_prefix(root).unwrap_or(&path);
+        println!("  - {}", rel.display());
+        println!("config cache cleared; boot reads the live config.");
+    } else {
+        println!("no config cache present ({}).", path.display());
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Known top-level config sections for `keel config:show` lookups.
+const CONFIG_SECTIONS: &[&str] = &[
+    "app", "database", "auth", "otp", "storage", "limits", "telemetry", "views", "http",
+];
+
+/// Wave 4 Phase 5: print one config section with every secret redacted
+/// (`--json` for JSON, TOML otherwise).
+fn config_show(key: &str, json: bool) -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    println!("{}", config_show_text(&root, key, json)?);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Testable core of config:show: renders one section of the redacted config.
+fn config_show_text(root: &Path, key: &str, json: bool) -> anyhow::Result<String> {
+    let cfg = load_config(root)?;
+    let redacted = cfg.redacted_json();
+    let Some(section) = redacted.get(key) else {
+        anyhow::bail!(
+            "unknown config section {key:?}; known sections: {}",
+            CONFIG_SECTIONS.join(", ")
+        );
+    };
+    if section.is_null() {
+        anyhow::bail!("config section {key:?} is not configured");
+    }
+    if json {
+        return Ok(serde_json::to_string_pretty(section)?);
+    }
+    toml::to_string_pretty(section).map_err(|e| {
+        anyhow::anyhow!("section {key:?} is not TOML-renderable ({e}); retry with --json")
+    })
+}
+
+/// Wave 4 Phase 5 (`keel env`): environment summary — the config file the
+/// layering resolved, redacted key facts and the config-cache pin state.
+fn env_summary() -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    print!("{}", env_summary_text(&root)?);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Testable core of `keel env` (returns the summary instead of printing).
+fn env_summary_text(root: &Path) -> anyhow::Result<String> {
+    let cfg_path = config_path(root);
+    let cfg = load_config(root)?;
+    let mut out = String::new();
+    out.push_str(&format!("environment: {}\n", cfg.app.env.as_str()));
+    out.push_str(&format!(
+        "app: {} (listen {})\n",
+        cfg.app.name, cfg.app.listen
+    ));
+    out.push_str(&format!("config file: {}\n", cfg_path.display()));
+    match cfg.database.as_ref() {
+        Some(db) => out.push_str(&format!(
+            "database: {} (max_connections {}, run_migrations {})\n",
+            keel_config::mask_url_password(&db.url),
+            db.max_connections,
+            db.run_migrations
+        )),
+        None => out.push_str("database: not configured\n"),
+    }
+    out.push_str(&format!("otp: {}\n", cfg.otp.provider));
+    out.push_str(&format!(
+        "storage: endpoint={} bucket={}\n",
+        cfg.storage.endpoint, cfg.storage.bucket
+    ));
+    out.push_str(&format!(
+        "limits: default_monthly_operations={}\n",
+        cfg.limits.default_monthly_operations
+    ));
+    out.push_str(&format!(
+        "views: {} path(s), cache_dir={}\n",
+        cfg.views.paths.len(),
+        cfg.views.cache_dir.as_deref().unwrap_or("(disabled)")
+    ));
+    out.push_str(&format!(
+        "http: problem_json={} encrypt_cookies={}\n",
+        cfg.http.problem_json, cfg.http.encrypt_cookies
+    ));
+    out.push_str(&format!(
+        "gates: require_verified_email={} debug={}\n",
+        cfg.app.require_verified_email, cfg.app.debug
+    ));
+    out.push_str(&format!(
+        "secrets: app.key={} auth.jwt_secret={}\n",
+        secret_state(cfg.app.key.as_str()),
+        secret_state(cfg.auth.jwt_secret.as_str())
+    ));
+    let cache_path = keel_registry::config_cache_path(root);
+    match keel_registry::ConfigCacheArtifact::load(&cache_path)
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+    {
+        Some(artifact) => out.push_str(&format!(
+            "config cache: present (hash {})\n",
+            artifact.config_hash
+        )),
+        None => out.push_str("config cache: not cached (run keel config:cache)\n"),
+    }
+    Ok(out)
+}
+
+/// Redaction state of one secret for the `keel env` summary.
+fn secret_state(value: &str) -> &'static str {
+    if value.is_empty() {
+        "empty"
+    } else if keel_config::keys::is_placeholder(value) {
+        "placeholder"
+    } else {
+        "set"
+    }
+}
+
+// -------------------------------------------------------- cache:forget (Wave 4)
+
+/// Wave 4 Phase 5 (`keel cache:forget <key>`): remove exactly one cache key.
+/// The caches that outlive a process are the framework disk artifacts
+/// (routes, config) and the compiled view entries; in-process MemoryCache
+/// keys belong to the running node (see cache:clear).
+fn cache_forget(key: &str) -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    cache_forget_at(&root, key)
+}
+
+/// Testable core of cache:forget against an explicit workspace root.
+fn cache_forget_at(root: &Path, key: &str) -> anyhow::Result<ExitCode> {
+    match key {
+        "routes" => {
+            forget_artifact(root, keel_registry::route_cache_path(root), key)
+        }
+        "config" => {
+            forget_artifact(root, keel_registry::config_cache_path(root), key)
+        }
+        _ => {
+            let Some(name) = key.strip_prefix("views:") else {
+                anyhow::bail!(
+                    "unknown cache key {key:?}; known keys: routes, config, views:<template>"
+                );
+            };
+            if name.is_empty() {
+                anyhow::bail!(
+                    "cache key `views:` needs a template name (e.g. views:dashboard.index)"
+                );
+            }
+            let engine = views_engine(root)?;
+            let removed = engine
+                .forget_cache(name)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            if removed {
+                println!("cache: forgot {key}");
+                return Ok(ExitCode::SUCCESS);
+            }
+            anyhow::bail!("cache key {key:?} not found (no compiled entry)")
+        }
+    }
+}
+
+/// Forget one single-file framework artifact (routes / config).
+fn forget_artifact(root: &Path, path: std::path::PathBuf, key: &str) -> anyhow::Result<ExitCode> {
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+        let rel = path.strip_prefix(root).unwrap_or(&path);
+        println!("cache: forgot {key} ({})", rel.display());
+        Ok(ExitCode::SUCCESS)
+    } else {
+        anyhow::bail!("cache key {key:?} not found ({})", path.display())
+    }
 }
 
 // -------------------------------------------------------------------- views
@@ -3201,6 +3455,214 @@ middleware = ["ghost"]
         // route:clear -> artifact gone (boot falls back to live resolution).
         assert_eq!(route_clear_at(&dir).expect("route clear runs"), ExitCode::SUCCESS);
         assert!(!path.exists(), "artifact removed");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Wave 4 Phase 5: temp workspace with a schema-clean config (secrets,
+    /// database URL password, views roots) for the config/env/cache tests.
+    fn phase5_root(tag: &str) -> std::path::PathBuf {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "keel-console-{tag}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(dir.join("config")).unwrap();
+        std::fs::write(
+            dir.join("config").join("dev.toml"),
+            r#"[app]
+name = "keel"
+env = "dev"
+
+[auth]
+jwt_secret = "unit-test-secret-value"
+
+[database]
+url = "postgres://user:db-password@localhost:5432/keel"
+
+[views]
+paths = ["resources/views"]
+cache_dir = "storage/framework/views"
+"#,
+        )
+        .unwrap();
+        dir
+    }
+
+    /// Wave 4 Phase 5: config:cache pins the frozen effective config; boot
+    /// hash-check accepts the pin and refuses drift (identical semantics to
+    /// route:cache); config:clear drops the artifact.
+    #[test]
+    fn config_cache_cycle_pins_and_clears_the_artifact() {
+        let dir = phase5_root("configcache");
+        assert_eq!(
+            config_cache_at(&dir).expect("config cache runs"),
+            ExitCode::SUCCESS
+        );
+        let path = keel_registry::config_cache_path(&dir);
+        assert!(path.exists(), "artifact written");
+        let artifact = keel_registry::ConfigCacheArtifact::load(&path)
+            .expect("artifact loads")
+            .expect("artifact present");
+        assert_eq!(artifact.abi, keel_registry::CONFIG_CACHE_ABI);
+        assert_eq!(artifact.config["app"]["env"], "dev");
+        assert_eq!(
+            artifact.config_hash,
+            keel_registry::config_hash(&artifact.config),
+            "stored hash matches the stored config"
+        );
+
+        // Boot gate: matching pin accepted, drift refused with a pointer.
+        keel_registry::config_cache_check(&dir, &artifact.config_hash)
+            .expect("pin accepted");
+        let stale = keel_registry::config_hash(&serde_json::json!({"app": {}}));
+        let err = keel_registry::config_cache_check(&dir, &stale)
+            .expect_err("stale pin refuses boot");
+        assert!(
+            err.contains(keel_registry::CONFIG_CACHE_CODE) && err.contains("config:cache"),
+            "{err}"
+        );
+
+        // Config file edit -> re-derived hash differs -> the old pin goes
+        // stale (the live drift path, end to end).
+        let cfg_path = dir.join("config").join("dev.toml");
+        let raw = std::fs::read_to_string(&cfg_path).unwrap();
+        std::fs::write(&cfg_path, raw.replace(r#"name = "keel""#, r#"name = "renamed""#))
+            .unwrap();
+        let fresh = load_config(&dir)
+            .expect("edited config loads")
+            .freeze()
+            .cache_json();
+        let fresh_hash = keel_registry::config_hash(&fresh);
+        assert_ne!(fresh_hash, artifact.config_hash, "edit changes the hash");
+        keel_registry::config_cache_check(&dir, &fresh_hash)
+            .expect_err("the old pin refuses the edited config");
+
+        // config:clear -> artifact gone (boot reads the live config again).
+        assert_eq!(
+            config_clear_at(&dir).expect("config clear runs"),
+            ExitCode::SUCCESS
+        );
+        assert!(!path.exists(), "artifact removed");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Wave 4 Phase 5: config:show prints exactly one section with every
+    /// secret redacted (TOML by default, `--json` for JSON) and fails
+    /// closed on unknown or unconfigured sections.
+    #[test]
+    fn config_show_renders_one_redacted_section() {
+        let dir = phase5_root("configshow");
+
+        let toml_view = config_show_text(&dir, "auth", false).expect("auth renders");
+        assert!(toml_view.contains("[REDACTED]"), "{toml_view}");
+        assert!(
+            !toml_view.contains("unit-test-secret-value"),
+            "secret never rendered"
+        );
+
+        let json_view = config_show_text(&dir, "auth", true).expect("json renders");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json_view).expect("valid json section");
+        assert_eq!(parsed["jwt_secret"], "[REDACTED]");
+
+        let db = config_show_text(&dir, "database", true).expect("database renders");
+        assert!(db.contains("[REDACTED]") && !db.contains("db-password"), "{db}");
+
+        let err = config_show_text(&dir, "nope", false).expect_err("unknown section");
+        assert!(err.to_string().contains("known sections"), "{err}");
+
+        // An unconfigured section (null in the redacted view) is reported
+        // as such, not as an unknown key.
+        let dir2 = phase5_root("configshow-empty");
+        let raw = std::fs::read_to_string(dir2.join("config").join("dev.toml")).unwrap();
+        std::fs::write(
+            dir2.join("config").join("dev.toml"),
+            raw.split("[database]").next().unwrap(),
+        )
+        .unwrap();
+        let err = config_show_text(&dir2, "database", false).expect_err("not configured");
+        assert!(err.to_string().contains("not configured"), "{err}");
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&dir2).ok();
+    }
+
+    /// Wave 4 Phase 5: `keel env` summarizes the environment with secrets
+    /// and the database URL masked, and reflects the config-cache state.
+    #[test]
+    fn env_summary_reports_environment_secrets_and_cache_state() {
+        let dir = phase5_root("env");
+        let text = env_summary_text(&dir).expect("summary renders");
+        assert!(text.contains("environment: dev"), "{text}");
+        assert!(text.contains("config file:"), "{text}");
+        assert!(
+            text.contains("secrets: app.key=empty auth.jwt_secret=set"),
+            "{text}"
+        );
+        assert!(text.contains("config cache: not cached"), "{text}");
+        assert!(!text.contains("db-password"), "database URL masked: {text}");
+
+        config_cache_at(&dir).expect("config cache runs");
+        let text = env_summary_text(&dir).expect("summary renders");
+        assert!(text.contains("config cache: present"), "{text}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Wave 4 Phase 5: cache:forget removes exactly one key; a missing key
+    /// or an unknown namespace fails closed with the known-key list.
+    #[test]
+    fn cache_forget_removes_exactly_one_key() {
+        let dir = phase5_root("cacheforget");
+        config_cache_at(&dir).expect("config cache runs");
+        let routes = keel_registry::route_cache_path(&dir);
+        std::fs::create_dir_all(routes.parent().unwrap()).unwrap();
+        std::fs::write(&routes, "{}").unwrap();
+
+        assert_eq!(
+            cache_forget_at(&dir, "routes").expect("forget runs"),
+            ExitCode::SUCCESS
+        );
+        assert!(!routes.exists(), "routes key gone");
+        assert!(
+            keel_registry::config_cache_path(&dir).exists(),
+            "the config key survives"
+        );
+
+        let err = cache_forget_at(&dir, "routes").expect_err("missing key fails");
+        assert!(err.to_string().contains("not found"), "{err}");
+        let err = cache_forget_at(&dir, "ghost").expect_err("unknown key fails");
+        assert!(err.to_string().contains("views:<template>"), "{err}");
+
+        cache_forget_at(&dir, "config").expect("forget config");
+        assert!(!keel_registry::config_cache_path(&dir).exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Wave 4 Phase 5: `cache:forget views:<template>` drops one compiled
+    /// view entry — the sibling entry survives.
+    #[test]
+    fn cache_forget_views_drops_one_compiled_entry() {
+        let dir = phase5_root("viewforget");
+        let views_dir = dir.join("resources").join("views");
+        std::fs::create_dir_all(&views_dir).unwrap();
+        std::fs::write(views_dir.join("alpha.html"), "<p>a</p>").unwrap();
+        std::fs::write(views_dir.join("beta.html"), "<p>b</p>").unwrap();
+        assert_eq!(view_cache_at(&dir).expect("view cache runs"), ExitCode::SUCCESS);
+        let cache_dir = dir.join("storage").join("framework").join("views");
+        let count = || std::fs::read_dir(&cache_dir).unwrap().count();
+        assert_eq!(count(), 2, "both templates compiled");
+
+        assert_eq!(
+            cache_forget_at(&dir, "views:alpha").expect("forget runs"),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(count(), 1, "exactly one compiled entry removed");
+
+        let err = cache_forget_at(&dir, "views:alpha").expect_err("gone key fails");
+        assert!(err.to_string().contains("not found"), "{err}");
+        let err = cache_forget_at(&dir, "views:").expect_err("bare namespace fails");
+        assert!(err.to_string().contains("template name"), "{err}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

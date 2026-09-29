@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use keel_command::CommandBus;
-use keel_config::PlatformConfig;
+use keel_config::FrozenConfig;
 use keel_context::{ExecutionContext, PrincipalContext, ScopeSnapshot, TenantContext};
 use keel_foundation::{
     AppError, AuthorizationRevision, ExecutionProfileKind, OperationId, PrincipalId, TenantId,
@@ -58,7 +58,7 @@ impl SystemHealth {
 }
 
 pub struct ConfigProvider {
-    pub config: Arc<PlatformConfig>,
+    pub config: FrozenConfig,
     pub health: Arc<SystemHealth>,
 }
 
@@ -70,7 +70,7 @@ impl Provider for ConfigProvider {
         Phase::Foundation
     }
     fn init(&self, r: &mut ServiceRegistry) -> Result<(), BootError> {
-        r.insert("platform.config", self.config.clone())?;
+        r.insert("platform.config", self.config.shared())?;
         r.insert("system.health", self.health.clone())
     }
 }

@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use keel_foundation::{ExecutionProfileKind, SecurityPlane};
 use serde::{Deserialize, Serialize};
 
+pub mod config_cache;
 pub mod constraint;
 pub mod middleware_catalog;
 pub mod route_plan;
@@ -18,6 +19,10 @@ pub use constraint::{
 pub use middleware_catalog::{
     middleware_violations, parse_builtin_id, BuiltinMw, MiddlewareCatalog, MwViolation,
     ThrottleGroupConfig, GRAPH_MW_UNKNOWN,
+};
+pub use config_cache::{
+    config_cache_check, config_cache_path, config_hash, ConfigCacheArtifact, CONFIG_CACHE_ABI,
+    CONFIG_CACHE_CODE,
 };
 pub use route_plan::{
     manifests_hash, resolve_route_plans, route_cache_path, RouteCacheArtifact, RoutePlan,

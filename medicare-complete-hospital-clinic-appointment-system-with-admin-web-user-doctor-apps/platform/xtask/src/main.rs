@@ -1,6 +1,8 @@
 //! xtask: repo-level automation for the Keel platform.
 //!
 //! - `cargo xtask dep-rules`  architecture analyzer gate (same engine as `keel check` and CI)
+//!   plus the Wave 4 boot env-var lint — the one gate command enforces both
+//! - `cargo xtask lint`       the boot env-var lint on its own (docs/19 L209)
 //! - `cargo xtask semver`     cargo-semver-checks release gate (skips before the first release tag)
 //! - `cargo xtask publish`    publish all publishable crates to crates.io in dependency order
 //! - `cargo xtask bump X.Y.Z` bump the lockstep workspace version
@@ -17,6 +19,7 @@ fn main() -> ExitCode {
     let task = args.first().map(|s| s.as_str()).unwrap_or("help");
     match task {
         "dep-rules" => dep_rules(),
+        "lint" => lint(),
         "semver" => semver(),
         "publish" => publish(&args[1..]),
         "bump" => match args.get(1) {
@@ -27,7 +30,7 @@ fn main() -> ExitCode {
             }
         },
         _ => {
-            println!("usage: cargo xtask <dep-rules|semver|publish|bump>");
+            println!("usage: cargo xtask <dep-rules|lint|semver|publish|bump>");
             ExitCode::SUCCESS
         }
     }
@@ -95,12 +98,120 @@ fn semver() -> ExitCode {
 fn dep_rules() -> ExitCode {
     let root = root_dir();
     let violations = keel_analyzer::analyze_workspace(root);
+    let env_violations = env_var_violations(root);
+    if violations.is_empty() && env_violations.is_empty() {
+        println!("dep-rules: clean");
+        println!("lint: clean");
+        return ExitCode::SUCCESS;
+    }
+    let mut code = ExitCode::SUCCESS;
     if violations.is_empty() {
         println!("dep-rules: clean");
+    } else {
+        for v in &violations {
+            println!("dep-rules [!!] {} {}: {}", v.code, v.member, v.message);
+        }
+        code = ExitCode::FAILURE;
+    }
+    if env_violations.is_empty() {
+        println!("lint: clean");
+    } else {
+        for v in &env_violations {
+            println!("lint [!!] {v}");
+        }
+        code = ExitCode::FAILURE;
+    }
+    code
+}
+
+// ------------------------------------------------- boot env-var lint (Wave 4)
+
+/// Wave 4 Phase 5 (docs/19 L209, closes L02): sanctioned boot paths — the
+/// only files outside `tests/` allowed to read the process environment
+/// directly. Configuration layering belongs in keel-config (`apply_env` +
+/// dotenv); everything else here is a binary entrypoint's boot concern
+/// (config path, logging overrides, operational gates).
+const SANCTIONED_ENV_PATHS: &[&str] = &[
+    "crates/application/configuration/src/lib.rs",
+    "crates/application/configuration/src/dotenv.rs",
+    "crates/observability/logging/src/config.rs",
+    "runtime/keel-api/src/lib.rs",
+    "runtime/keel-api/src/shell.rs",
+    "runtime/keel-worker/src/main.rs",
+    "tools/keel-console/src/main.rs",
+];
+
+/// The env-read needles, assembled at runtime so this scanner cannot match
+/// its own source text (the literals never appear joined in the file).
+fn env_read_needles() -> [String; 2] {
+    [
+        format!("{}(", "env::var"),
+        format!("{}(", "env::var_os"),
+    ]
+}
+
+/// Recursively collect `*.rs` files, skipping build/VCS trees.
+fn collect_rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if matches!(name.as_ref(), "target" | ".git" | "node_modules") {
+            continue;
+        }
+        if path.is_dir() {
+            collect_rs_files(&path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// Every environment read outside the sanctioned boot paths (tests
+/// directories are exempt: integration suites probe DATABASE_URL etc.).
+/// Sorted by `path:line` for stable output.
+fn env_var_violations(root: &Path) -> Vec<String> {
+    let needles = env_read_needles();
+    let mut files = Vec::new();
+    collect_rs_files(root, &mut files);
+    let mut out = Vec::new();
+    for file in files {
+        let rel = file
+            .strip_prefix(root)
+            .unwrap_or(&file)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if SANCTIONED_ENV_PATHS.contains(&rel.as_str()) || rel.contains("/tests/") {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        for (idx, line) in content.lines().enumerate() {
+            if needles.iter().any(|n| line.contains(n)) {
+                out.push(format!(
+                    "{rel}:{}: environment read outside the sanctioned boot paths",
+                    idx + 1
+                ));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// `cargo xtask lint` on its own (also enforced through `dep-rules`).
+fn lint() -> ExitCode {
+    let violations = env_var_violations(root_dir());
+    if violations.is_empty() {
+        println!("lint: clean");
         return ExitCode::SUCCESS;
     }
     for v in &violations {
-        println!("dep-rules [!!] {} {}: {}", v.code, v.member, v.message);
+        println!("lint [!!] {v}");
     }
     ExitCode::FAILURE
 }
@@ -547,4 +658,65 @@ fn bump(new_version: &str) -> ExitCode {
     );
     println!("bump: next — update CHANGELOG.md, then `just publish-dry`");
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod env_lint_tests {
+    use super::*;
+
+    fn temp_root(tag: &str) -> std::path::PathBuf {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "keel-xtask-envlint-{tag}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Wave 4 Phase 5: an env read outside the sanctioned boot paths is a
+    /// violation; sanctioned files and tests/ directories are exempt.
+    #[test]
+    fn flags_env_reads_outside_sanctioned_paths() {
+        let dir = temp_root("scan");
+        let write = |rel: &str, body: &str| {
+            let path = dir.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, body).unwrap();
+        };
+        // Fixture bodies come from the runtime-assembled needles so this
+        // test's own source never contains the joined pattern either.
+        let var_read = format!("std::{}\"X\")", env_read_needles()[0]);
+        let var_os_read = format!("std::{}\"Y\")", env_read_needles()[1]);
+        write(
+            "crates/x/src/lib.rs",
+            &format!("fn f() {{ let _ = {var_read}; }}\n"),
+        );
+        write(
+            "tools/keel-console/src/main.rs",
+            &format!("fn f() {{ let _ = {var_read}; }}\n"),
+        );
+        write(
+            "crates/x/tests/probe.rs",
+            &format!("fn f() {{ let _ = {var_os_read}; }}\n"),
+        );
+        write("crates/x/src/clean.rs", "fn f() { let _ = 1; }\n");
+
+        let violations = env_var_violations(&dir);
+        assert_eq!(
+            violations,
+            vec!["crates/x/src/lib.rs:1: environment read outside the sanctioned boot paths"],
+            "one violation: sanctioned + tests paths are exempt, clean files ignored"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The scanner assembles its needles at runtime, so it never flags its
+    /// own source; this proves the whole platform tree is lint-clean.
+    #[test]
+    fn platform_tree_is_env_lint_clean() {
+        let violations = env_var_violations(root_dir());
+        assert_eq!(violations, Vec::<String>::new());
+    }
 }

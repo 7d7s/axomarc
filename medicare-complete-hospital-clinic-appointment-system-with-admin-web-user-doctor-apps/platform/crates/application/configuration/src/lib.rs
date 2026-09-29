@@ -8,6 +8,7 @@ pub mod keys;
 
 use keel_foundation::AppError;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -237,6 +238,86 @@ pub struct PlatformConfig {
     pub http: HttpSection,
 }
 
+/// Wave 4 Phase 5 (docs/19 L210): the declared config schema — the keys the
+/// typed accessors understand, one entry per section. Every non-opaque key
+/// listed here has a serde default on its field (asserted by the
+/// `schema_covers_every_default_field` test, so adding a field without
+/// extending the schema fails the suite).
+pub const CONFIG_SCHEMA: &[(&str, &[&str])] = &[
+    (
+        "app",
+        &[
+            "name",
+            "env",
+            "listen",
+            "key",
+            "require_verified_email",
+            "debug",
+        ],
+    ),
+    ("auth", &["jwt_secret"]),
+    ("database", &["url", "max_connections", "run_migrations", "required"]),
+    ("http", &["problem_json", "encrypt_cookies"]),
+    ("limits", &["default_monthly_operations"]),
+    ("otp", &["provider", "code_ttl_secs", "max_attempts"]),
+    ("storage", &["endpoint", "bucket"]),
+    ("telemetry", &[]),
+    ("views", &["paths", "cache_dir", "env"]),
+];
+
+/// Sections whose inner keys are validated elsewhere: `telemetry` is an
+/// opaque JSON pass-through (see `PlatformConfig::telemetry`) — the
+/// observability layer parses it and tolerates unknown keys by design.
+pub const CONFIG_OPAQUE_SECTIONS: &[&str] = &["telemetry"];
+
+/// Violation code for every unknown-key report (mirrors the GRAPH-* gate
+/// family from the registry).
+pub const CONFIG_SCHEMA_CODE: &str = "GRAPH-CONFIG-SCHEMA";
+
+/// One unknown config key found by [`schema_violations`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigSchemaViolation {
+    pub key: String,
+}
+
+impl ConfigSchemaViolation {
+    pub fn message(&self) -> String {
+        format!("unknown config key `{}`", self.key)
+    }
+}
+
+/// Collect **every** unknown key in a raw config file (collect-all report,
+/// never fail-fast on the first typo). Unparseable content returns no
+/// violations — the typed `toml::from_str` in `load()` owns parse errors.
+pub fn schema_violations(raw: &str) -> Vec<ConfigSchemaViolation> {
+    let Ok(parsed) = raw.parse::<toml::Value>() else {
+        return Vec::new();
+    };
+    let Some(root) = parsed.as_table() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (key, value) in root {
+        let Some(entry) = CONFIG_SCHEMA.iter().find(|(name, _)| name == key) else {
+            out.push(ConfigSchemaViolation { key: key.clone() });
+            continue;
+        };
+        if CONFIG_OPAQUE_SECTIONS.contains(&key.as_str()) {
+            continue;
+        }
+        if let Some(section) = value.as_table() {
+            for subkey in section.keys() {
+                if !entry.1.contains(&subkey.as_str()) {
+                    out.push(ConfigSchemaViolation {
+                        key: format!("{key}.{subkey}"),
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
 impl PlatformConfig {
     /// Layered load: defaults <- file <- .env <- .env.<env> <- environment.
     /// .env files only fill variables that are not already set, so the real
@@ -250,6 +331,24 @@ impl PlatformConfig {
                 let raw = std::fs::read_to_string(p).map_err(|e| {
                     AppError::validation(format!("config read {}: {e}", p.display()))
                 })?;
+                // Wave 4 Phase 5 (GRAPH-CONFIG-SCHEMA): unknown keys are
+                // refused here, fail-closed, before any typed accessor could
+                // silently ignore them. Every offender is reported (collect-
+                // all, like the graph gates), not just the first typo.
+                let violations = schema_violations(&raw);
+                if !violations.is_empty() {
+                    return Err(AppError::validation(format!(
+                        "{}: {} unknown key(s) in {}: {}",
+                        CONFIG_SCHEMA_CODE,
+                        violations.len(),
+                        p.display(),
+                        violations
+                            .iter()
+                            .map(|v| v.key.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )));
+                }
                 toml::from_str(&raw).map_err(|e| {
                     AppError::validation(format!("config parse {}: {e}", p.display()))
                 })?
@@ -350,6 +449,85 @@ impl PlatformConfig {
 
     pub fn database_url(&self) -> Option<&str> {
         self.database.as_ref().map(|d| d.url.as_str())
+    }
+
+    /// Wave 4 Phase 5 (docs/19 L209, closes L02): freeze into the post-load
+    /// handle boot consumes. After `freeze()` configuration cannot be
+    /// mutated by type — `FrozenConfig` exposes getters only (no setters,
+    /// no `DerefMut`, the inner `Arc` never escapes).
+    pub fn freeze(self) -> FrozenConfig {
+        FrozenConfig(Arc::new(self))
+    }
+}
+
+/// Frozen post-load configuration: `Arc`-shared with getters only. Boot
+/// (keel-api `run()`, keel-worker) consumes this type; pre-boot tooling
+/// (`keel config:*`) works on the owned [`PlatformConfig`] and freezes it
+/// only to publish the effective config.
+#[derive(Debug, Clone)]
+pub struct FrozenConfig(Arc<PlatformConfig>);
+
+impl FrozenConfig {
+    pub fn app(&self) -> &AppConfig {
+        &self.0.app
+    }
+
+    pub fn database(&self) -> Option<&DatabaseConfig> {
+        self.0.database.as_ref()
+    }
+
+    pub fn auth(&self) -> &AuthConfig {
+        &self.0.auth
+    }
+
+    pub fn otp(&self) -> &OtpConfig {
+        &self.0.otp
+    }
+
+    pub fn storage(&self) -> &StorageConfig {
+        &self.0.storage
+    }
+
+    pub fn limits(&self) -> &LimitsConfig {
+        &self.0.limits
+    }
+
+    pub fn telemetry(&self) -> Option<&serde_json::Value> {
+        self.0.telemetry.as_ref()
+    }
+
+    pub fn views(&self) -> &ViewsSection {
+        &self.0.views
+    }
+
+    pub fn http(&self) -> &HttpSection {
+        &self.0.http
+    }
+
+    pub fn database_url(&self) -> Option<&str> {
+        self.0.database_url()
+    }
+
+    /// Effective config with secrets masked (same shape as
+    /// [`PlatformConfig::redacted_json`], for `keel config:show`).
+    pub fn redacted_json(&self) -> serde_json::Value {
+        self.0.redacted_json()
+    }
+
+    /// Canonical effective-config JSON — the config-cache pin input
+    /// (`keel config:cache`). Secrets are included on purpose: the artifact
+    /// pins the exact values boot enforces, so secret drift refuses boot
+    /// too. The artifact lives beside the config file it pins.
+    pub fn cache_json(&self) -> serde_json::Value {
+        serde_json::to_value(&*self.0).expect("PlatformConfig serializes")
+    }
+
+    /// Read-only shared view for the service registry: `platform.config`
+    /// keeps its `Arc<PlatformConfig>` module ABI type. Handing out the
+    /// shared handle cannot reintroduce mutation — the registry only clones
+    /// the `Arc` and no `&mut` path exists.
+    pub fn shared(&self) -> Arc<PlatformConfig> {
+        Arc::clone(&self.0)
     }
 }
 
@@ -510,5 +688,191 @@ mod tests {
         cfg.apply_env();
         std::env::remove_var("KEEL_APP_LISTEN");
         assert_eq!(cfg.app.listen, "127.0.0.1:9999");
+    }
+}
+
+#[cfg(test)]
+mod phase5_config_schema_tests {
+    use super::*;
+
+    /// GRAPH-CONFIG-SCHEMA: unknown section AND unknown nested keys are all
+    /// reported (collect-all), and the typed load() refuses the file.
+    #[test]
+    fn unknown_keys_are_reported_and_refused_at_load() {
+        let raw = r#"
+        [app]
+        name = "keel"
+        nmae = "typo"
+        [databse]
+        url = "postgres://x"
+        [http]
+        problem_json = false
+        ciphr = true
+        "#;
+        let violations = schema_violations(raw);
+        let keys: Vec<&str> = violations.iter().map(|v| v.key.as_str()).collect();
+        // toml tables iterate in sorted key order: root keys first, nested
+        // keys under their section.
+        assert_eq!(keys, vec!["app.nmae", "databse", "http.ciphr"]);
+        assert!(violations
+            .iter()
+            .any(|v| v.message().contains("databse")));
+
+        // Fail-closed at load(): the gate is not opt-in.
+        let dir = std::env::temp_dir().join(format!(
+            "keel-config-schema-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bad.toml");
+        std::fs::write(&path, raw).unwrap();
+        let err = PlatformConfig::load(Some(&path))
+            .expect_err("unknown keys refuse load");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(CONFIG_SCHEMA_CODE) && msg.contains("app.nmae") && msg.contains("databse"),
+            "report names the gate and every offender: {msg}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The shipped dev config is schema-clean (the gate must not brick boot).
+    #[test]
+    fn dev_toml_has_no_schema_violations() {
+        let raw = std::fs::read_to_string("../../../config/dev.toml").expect("dev.toml exists");
+        assert_eq!(
+            schema_violations(&raw),
+            Vec::new(),
+            "config/dev.toml must stay schema-clean"
+        );
+    }
+
+    /// `telemetry` is an opaque pass-through: inner keys are tolerated by
+    /// design (the observability layer validates them).
+    #[test]
+    fn opaque_telemetry_section_tolerates_inner_keys() {
+        let raw = r#"
+        [telemetry]
+        level = "info"
+        exporter.otlp.endpoint = "http://localhost:4317"
+        "#;
+        assert_eq!(schema_violations(raw), Vec::new());
+    }
+
+    /// Schema <-> struct sync: every field the typed accessors expose (via
+    /// its serde default serialization) must be declared in CONFIG_SCHEMA,
+    /// and every declared section must exist at the root. Adding a config
+    /// field without extending the schema fails here.
+    #[test]
+    fn schema_covers_every_default_field() {
+        let root = serde_json::to_value(PlatformConfig::default()).expect("default serializes");
+        for key in root.as_object().expect("object").keys() {
+            assert!(
+                CONFIG_SCHEMA.iter().any(|(name, _)| name == key),
+                "schema is missing section `{key}`"
+            );
+        }
+
+        let database = serde_json::to_value(DatabaseConfig {
+            url: String::new(),
+            max_connections: 8,
+            run_migrations: true,
+            required: false,
+        })
+        .expect("database serializes");
+        let sections: [(&str, serde_json::Value); 8] = [
+            (
+                "app",
+                serde_json::to_value(AppConfig::default()).expect("app"),
+            ),
+            (
+                "auth",
+                serde_json::to_value(AuthConfig::default()).expect("auth"),
+            ),
+            ("database", database),
+            (
+                "http",
+                serde_json::to_value(HttpSection::default()).expect("http"),
+            ),
+            (
+                "limits",
+                serde_json::to_value(LimitsConfig::default()).expect("limits"),
+            ),
+            (
+                "otp",
+                serde_json::to_value(OtpConfig::default()).expect("otp"),
+            ),
+            (
+                "storage",
+                serde_json::to_value(StorageConfig::default()).expect("storage"),
+            ),
+            (
+                "views",
+                serde_json::to_value(ViewsSection::default()).expect("views"),
+            ),
+        ];
+        for (name, value) in sections {
+            let (_, known) = CONFIG_SCHEMA
+                .iter()
+                .find(|(section, _)| *section == name)
+                .unwrap_or_else(|| panic!("section `{name}` missing from schema"));
+            for key in value.as_object().expect("object").keys() {
+                assert!(
+                    known.contains(&key.as_str()),
+                    "{name}.{key} is not declared in CONFIG_SCHEMA"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod phase5_freeze_tests {
+    use super::*;
+
+    #[test]
+    fn freeze_exposes_getters_and_canonical_cache_json() {
+        let mut cfg = PlatformConfig::default();
+        cfg.app.listen = "127.0.0.1:9000".into();
+        cfg.auth.jwt_secret = "unit-secret-value".into();
+        let frozen = cfg.freeze();
+
+        assert_eq!(frozen.app().listen, "127.0.0.1:9000");
+        assert!(frozen.database().is_none(), "no database configured");
+        assert_eq!(frozen.auth().jwt_secret, "unit-secret-value");
+        assert_eq!(frozen.otp().provider, "sandbox");
+        assert_eq!(frozen.limits().default_monthly_operations, 100_000);
+        assert_eq!(frozen.storage().endpoint, "");
+        assert_eq!(frozen.views().paths, vec!["resources/views".to_string()]);
+        assert!(!frozen.http().problem_json);
+        assert!(frozen.telemetry().is_none());
+        assert_eq!(frozen.database_url(), None);
+
+        // cache_json is the effective config (secrets included) and is
+        // stable across calls — the config-cache hash pins it.
+        let a = frozen.cache_json();
+        let b = frozen.cache_json();
+        assert_eq!(a, b);
+        assert_eq!(a["app"]["listen"], "127.0.0.1:9000");
+
+        // Clone shares the same frozen value (Arc), getters stay read-only.
+        let clone = frozen.clone();
+        assert_eq!(clone.cache_json(), a);
+
+        // The registry view keeps the Arc<PlatformConfig> ABI type.
+        let shared = frozen.shared();
+        assert_eq!(shared.app.listen, "127.0.0.1:9000");
+    }
+
+    #[test]
+    fn redacted_json_masks_secrets_on_frozen_config() {
+        let mut cfg = PlatformConfig::default();
+        cfg.app.key = "base64:super-secret".into();
+        let frozen = cfg.freeze();
+        let redacted = frozen.redacted_json();
+        assert_eq!(redacted["app"]["key"], "[REDACTED]");
+        // cache_json (the pin input) keeps the real value: drift on secrets
+        // must refuse boot too.
+        assert_eq!(frozen.cache_json()["app"]["key"], "base64:super-secret");
     }
 }

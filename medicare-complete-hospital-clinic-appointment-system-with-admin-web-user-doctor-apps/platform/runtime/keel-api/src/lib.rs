@@ -44,28 +44,28 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let prune_tenant: Option<TenantId> = flag_value("--tenant")
         .and_then(|v| uuid::Uuid::parse_str(&v).ok())
         .map(TenantId::from_uuid);
-    let cfg = PlatformConfig::load(Some(std::path::Path::new(&cfg_path)))?;
-    let env = cfg.app.env.clone();
-    let listen = cfg.app.listen.clone();
+    let cfg = PlatformConfig::load(Some(std::path::Path::new(&cfg_path)))?.freeze();
+    let env = cfg.app().env.clone();
+    let listen = cfg.app().listen.clone();
 
     // Sentinel (S5): the telemetry runtime replaces S1 `init_logging` as
     // the single logging init point. Layering: compiled defaults <-
     // `[telemetry]` section <- env overlay; the S1 env conventions stay
     // honored (RUST_LOG, KEEL_LOG_FILE, environment-driven console format).
     let mut telemetry_config =
-        keel_observability::TelemetryConfig::from_section(cfg.telemetry.as_ref());
+        keel_observability::TelemetryConfig::from_section(cfg.telemetry());
     if cfg
-        .telemetry
-        .as_ref()
+        .telemetry()
         .and_then(|s| s.get("format"))
         .is_none()
     {
-        telemetry_config.format =
-            if cfg.app.env.is_prod() || matches!(cfg.app.env, Environment::Staging) {
-                "json".into()
-            } else {
-                "pretty".into()
-            };
+        telemetry_config.format = if cfg.app().env.is_prod()
+            || matches!(cfg.app().env, Environment::Staging)
+        {
+            "json".into()
+        } else {
+            "pretty".into()
+        };
     }
     if let Ok(level) = std::env::var("RUST_LOG") {
         telemetry_config.level = level;
@@ -91,11 +91,21 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         telemetry_config.exporters.remove("console");
     }
 
-    let cfg = Arc::new(cfg);
+    // Wave 4 Phase 5: the config is frozen here (post-boot mutation is
+    // impossible by type — see keel_config::FrozenConfig).
 
     // Feature flags at boot (S3 item 32): decide which opt-in platform
     // services start. The boot input uses a synthetic internal actor.
     let root = std::env::current_dir()?;
+    // Config cache (Wave 4 Phase 5): a present artifact must pin the exact
+    // effective config boot just derived (file + environment overlay),
+    // else boot is refused — drift-refuse semantics identical to the route
+    // cache below.
+    keel_registry::config_cache_check(
+        &root,
+        &keel_registry::config_hash(&cfg.cache_json()),
+    )
+    .map_err(Box::<dyn std::error::Error>::from)?;
     // Resolve telemetry storage paths against the workspace root, then
     // construct + start the runtime BEFORE the lifecycle host boots so
     // boot-time events flow through it (S1 parity); the provider boot()
@@ -145,7 +155,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // default auth model. An empty jwt_secret disables interop with a warning
     // rather than booting with a zero-key verifier.
     let jwt = if boot_snapshot.flags.contains("app.jwt") {
-        let secret = cfg.auth.jwt_secret.as_bytes().to_vec();
+        let secret = cfg.auth().jwt_secret.as_bytes().to_vec();
         if secret.is_empty() {
             tracing::warn!(
                 "app.jwt is on but auth.jwt_secret is empty; JWT bearer interop disabled"
@@ -159,7 +169,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    let pool = match cfg.database.as_ref() {
+    let pool = match cfg.database() {
         Some(db) => {
             let probe = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
@@ -422,7 +432,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // templates see production behaviour in every harness too.
     let assets = load_asset_manifest(&root.join("public"));
     let views_engine =
-        keel_views::ViewsEngine::new(views_config(&cfg.views, &root, env.as_str()));
+        keel_views::ViewsEngine::new(views_config(cfg.views(), &root, env.as_str()));
     register_asset_directive(&views_engine, assets.clone());
     let views = Some(Arc::new(views_engine));
 
@@ -439,14 +449,14 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // application key leaves no trustworthy secret, so the gate stays off
     // and every route declaring `signed` refuses (fail-closed 500) instead
     // of accepting an unsigned link.
-    let signed_urls = if cfg.app.key.is_empty() {
+    let signed_urls = if cfg.app().key.is_empty() {
         tracing::warn!(
             "app.key is empty; routes declaring `signed` will refuse requests (fail-closed)"
         );
         None
     } else {
         Some(Arc::new(keel_http::SignedGate::new(
-            keel_http::derive_signed_key(&cfg.app.key),
+            keel_http::derive_signed_key(&cfg.app().key),
             tokens.clone(),
         )))
     };
@@ -493,7 +503,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         granted_capabilities,
         default_tenant_id,
         registration_open,
-        require_verified_email: cfg.app.require_verified_email,
+        require_verified_email: cfg.app().require_verified_email,
         jwt,
         body_limit: 1024 * 1024,
         storage,
@@ -509,9 +519,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         telemetry: Some(telemetry_runtime.clone()),
         views,
         error_renders,
-        debug: cfg.app.debug,
-        problem_json: cfg.http.problem_json,
-        cookie_cipher: cookie_cipher(cfg.http.encrypt_cookies, &cfg.app.key)
+        debug: cfg.app().debug,
+        problem_json: cfg.http().problem_json,
+        cookie_cipher: cookie_cipher(cfg.http().encrypt_cookies, &cfg.app().key)
             .map_err(|error| error.public_message)?,
         terminating,
         signed_urls,

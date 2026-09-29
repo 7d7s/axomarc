@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use clap::Parser;
-use keel_config::{Environment, PlatformConfig};
+use keel_config::{Environment, FrozenConfig, PlatformConfig};
 use keel_foundation::{codes, AppError, ErrorCategory, Retryability, Severity};
 use keel_event::{ListenerRegistry, OutboxPump, OutboxStore, OutboxStoreService};
 use keel_jobs::{
@@ -56,7 +56,7 @@ fn fallback_job_stores(
 }
 
 struct ConfigProvider {
-    config: Arc<PlatformConfig>,
+    config: FrozenConfig,
 }
 
 impl Provider for ConfigProvider {
@@ -67,7 +67,7 @@ impl Provider for ConfigProvider {
         Phase::Foundation
     }
     fn init(&self, r: &mut ServiceRegistry) -> Result<(), BootError> {
-        r.insert("platform.config", self.config.clone())
+        r.insert("platform.config", self.config.shared())
     }
 }
 
@@ -240,22 +240,22 @@ async fn dispatch_once(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let cfg_path = std::env::var("KEEL_CONFIG").unwrap_or_else(|_| "config/dev.toml".into());
-    let cfg = PlatformConfig::load(Some(std::path::Path::new(&cfg_path)))?;
+    let cfg =
+        PlatformConfig::load(Some(std::path::Path::new(&cfg_path)))?.freeze();
 
     // Sentinel (S5): the telemetry runtime replaces S1 `init_logging` as the
     // single logging init point. Layering: compiled defaults <- `[telemetry]`
     // section <- env overlay; the S1 env conventions stay honored (RUST_LOG,
     // KEEL_LOG_FILE, environment-driven console format).
     let mut telemetry_config =
-        keel_observability::TelemetryConfig::from_section(cfg.telemetry.as_ref());
+        keel_observability::TelemetryConfig::from_section(cfg.telemetry());
     if cfg
-        .telemetry
-        .as_ref()
+        .telemetry()
         .and_then(|s| s.get("format"))
         .is_none()
     {
-        telemetry_config.format = if cfg.app.env.is_prod()
-            || matches!(cfg.app.env, Environment::Staging)
+        telemetry_config.format = if cfg.app().env.is_prod()
+            || matches!(cfg.app().env, Environment::Staging)
         {
             "json".into()
         } else {
@@ -281,8 +281,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     telemetry_config.apply_env(); // KEEL_TELEMETRY_* wins over the S1 knobs
 
-    let env = cfg.app.env.clone();
-    let cfg = Arc::new(cfg);
+    let env = cfg.app().env.clone();
+    // Wave 4 Phase 5: frozen here — post-boot mutation is impossible by type.
 
     // Resolve telemetry storage paths against the workspace root, then
     // construct + start the runtime BEFORE the lifecycle host boots so
@@ -300,7 +300,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
     // Database probe (same semantics as keel-api; degraded boot D-52).
-    let pool = match cfg.database.as_ref() {
+    let pool = match cfg.database() {
         Some(db) => {
             let probe = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
