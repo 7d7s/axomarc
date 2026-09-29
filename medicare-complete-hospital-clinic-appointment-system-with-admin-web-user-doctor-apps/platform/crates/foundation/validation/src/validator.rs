@@ -5,8 +5,8 @@
 //! outside the grammar at boot, and the HTTP edge compiles the survivors into
 //! a [`Validator`]. Wave 4 Phase 1 grew the grammar from the Wave 1 core to
 //! the type / string / numeric battery (incl. `gt:<n|field>` field refs);
-//! conditionals, cross-field, date/file/auth and DB rules land in the
-//! following phases of the wave.
+//! Phase 2 added the conditional family, cross-field rules and `bail`; the
+//! date/file/auth and DB rules land in the following phases of the wave.
 //!
 //! All violations are collected (never fail-fast) and reported as ONE AppError
 //! with a `fields` meta map (field -> messages[]) so transports get a stable
@@ -14,14 +14,17 @@
 //! shape only. Regex rules are deliberately SUPERSEDED by closed grammars
 //! (same stance as route constraints): there is no `regex:` token by design.
 //!
-//! Presence semantics mirror Laravel: an absent key skips every rule unless
-//! `required`; a present `null` skips the other rules ONLY when the field
-//! declares `nullable` — otherwise type/format rules run and fail.
+//! Presence semantics mirror Laravel's implicit-rules model: an absent key
+//! runs only implicit rules (`required`, `present`, `accepted`, `filled`,
+//! `missing*`, `required_*`); a present `null` skips the rest ONLY when the
+//! field declares `nullable`; a whitespace-only string drops to
+//! implicit-only as well (Laravel's `presentOrRuleIsImplicit` quirk), so an
+//! optional `""` skips format rules.
 
 use keel_foundation::{AppError, PrincipalId};
 use serde_json::Value;
 
-use crate::checks::check;
+use crate::checks::{check, check_presence, is_excluded};
 
 /// One validation rule applied to a field.
 #[derive(Debug, Clone, PartialEq)]
@@ -114,6 +117,61 @@ pub enum Rule {
     Lt(NumTarget),
     /// Less than or equal to a literal or a sibling field's value.
     Lte(NumTarget),
+    // ------------------------------------------- Wave 4: conditionals ------
+    /// Required when sibling `<f>` is present and equals one of `<v...>`;
+    /// an absent sibling imposes no requirement (Laravel `required_if`).
+    RequiredIf(String, Vec<String>),
+    /// Required unless sibling `<f>` equals one of `<v...>`; an absent
+    /// sibling resolves as `null`, which only matches a literal `null` token.
+    RequiredUnless(String, Vec<String>),
+    /// Required when sibling `<f>` is present AND non-blank.
+    RequiredWith(String),
+    /// Required when sibling `<f>` is absent OR blank.
+    RequiredWithout(String),
+    /// Present and in `{yes, on, 1, "1", true, "true"}` (implies required).
+    Accepted,
+    /// `accepted` only when sibling `<f>` equals one of `<v...>`.
+    AcceptedIf(String, Vec<String>),
+    /// Present and in `{no, off, 0, "0", false, "false"}` (implies required).
+    Declined,
+    /// `declined` only when sibling `<f>` equals one of `<v...>`.
+    DeclinedIf(String, Vec<String>),
+    /// When present, must be `null` / empty string / empty array.
+    Prohibited,
+    /// `prohibited` only when sibling `<f>` equals one of `<v...>`.
+    ProhibitedIf(String, Vec<String>),
+    /// `prohibited` when sibling `<f>` is present (key exists).
+    ProhibitedWith(String),
+    /// The field is ignored entirely (structural, never evaluated).
+    Exclude,
+    /// The field is ignored entirely when `<f>` equals one of `<v...>`.
+    ExcludeIf(String, Vec<String>),
+    /// The key must be absent (present `null` still fails).
+    Missing,
+    /// The key must be absent when sibling `<f>` equals one of `<v...>`.
+    MissingIf(String, Vec<String>),
+    /// The key must be absent when sibling `<f>` is present.
+    MissingWith(String),
+    /// An absent key skips every other rule (structural).
+    Sometimes,
+    /// Present ⇒ non-blank (implicit: runs on `null` even with `nullable`).
+    Filled,
+    /// The key must exist (a present `null` satisfies it).
+    Present,
+    // --------------------------------------------- Wave 4: cross-field -----
+    /// Strict JSON equality with sibling `<f>`; a missing sibling fails.
+    Same(String),
+    /// Differs from sibling `<f>`; a missing sibling passes.
+    Different(String),
+    /// Strict JSON equality with the `<field>_confirmation` sibling.
+    Confirmed,
+    /// Value is an element of sibling `<f>`'s array (or equals a scalar
+    /// sibling); a missing sibling fails closed.
+    InArray(String),
+    /// Array with unique elements (strict JSON equality).
+    Distinct,
+    /// Stop evaluating this field after the first failure (structural).
+    Bail,
 }
 
 /// Target of the `gt`/`gte`/`lt`/`lte` family: a literal number or another
@@ -201,6 +259,31 @@ impl Rule {
             Rule::Gte(_) => "gte",
             Rule::Lt(_) => "lt",
             Rule::Lte(_) => "lte",
+            Rule::RequiredIf(_, _) => "required_if",
+            Rule::RequiredUnless(_, _) => "required_unless",
+            Rule::RequiredWith(_) => "required_with",
+            Rule::RequiredWithout(_) => "required_without",
+            Rule::Accepted => "accepted",
+            Rule::AcceptedIf(_, _) => "accepted_if",
+            Rule::Declined => "declined",
+            Rule::DeclinedIf(_, _) => "declined_if",
+            Rule::Prohibited => "prohibited",
+            Rule::ProhibitedIf(_, _) => "prohibited_if",
+            Rule::ProhibitedWith(_) => "prohibited_with",
+            Rule::Exclude => "exclude",
+            Rule::ExcludeIf(_, _) => "exclude_if",
+            Rule::Missing => "missing",
+            Rule::MissingIf(_, _) => "missing_if",
+            Rule::MissingWith(_) => "missing_with",
+            Rule::Sometimes => "sometimes",
+            Rule::Filled => "filled",
+            Rule::Present => "present",
+            Rule::Same(_) => "same",
+            Rule::Different(_) => "different",
+            Rule::Confirmed => "confirmed",
+            Rule::InArray(_) => "in_array",
+            Rule::Distinct => "distinct",
+            Rule::Bail => "bail",
         }
     }
 }
@@ -214,6 +297,47 @@ impl Rule {
         }
     }
 
+    /// A single field-path argument (`same:<f>`, `required_with:<f>`): the
+    /// shared `[A-Za-z0-9_.]` charset keeps junk out of the boot graph
+    /// (fail-closed, like `NumTarget::parse`).
+    fn field_arg(arg: Option<&str>, token: &str, rule: &str) -> Result<String, String> {
+        let a = Rule::arg(arg, token, rule)?;
+        let ok = a
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.');
+        if !ok {
+            return Err(format!("{rule} value must be a field name: {token}"));
+        }
+        Ok(a.to_string())
+    }
+
+    /// A `<f,v[,v...]>` argument (the `*_if` family): first part is the
+    /// sibling field, the rest are the values it may equal (Laravel's
+    /// `parseDependentRuleParameters` shape).
+    fn condition_arg(
+        arg: Option<&str>,
+        token: &str,
+        rule: &str,
+    ) -> Result<(String, Vec<String>), String> {
+        let a = Rule::arg(arg, token, rule)?;
+        let Some((field, rest)) = a.split_once(',') else {
+            return Err(format!("{rule} must be {rule}:<field,value>: {token}"));
+        };
+        let field = field.trim();
+        if field.is_empty()
+            || !field
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+        {
+            return Err(format!("{rule} field must be a field name: {token}"));
+        }
+        let values: Vec<String> = rest.split(',').map(|v| v.trim().to_string()).collect();
+        if values.iter().any(|v| v.is_empty()) {
+            return Err(format!("{rule} requires non-empty values: {token}"));
+        }
+        Ok((field.to_string(), values))
+    }
+
     /// Parse one manifest rule token into a [`Rule`]. Grammar (1:1 with the
     /// enum): "required", "min:<n>", "max:<n>", "email", "url", "uuid",
     /// "e164", "one_of:<a,b,c>", "range:<lo>,<hi>", "date" (Wave 1) plus the
@@ -224,7 +348,15 @@ impl Rule {
     /// "doesnt_end_with:<s>", "doesnt_contain:<s>", "hex_color",
     /// "mac_address", "timezone", "ulid"; numeric: "decimal:<n>",
     /// "digits:<n>", "digits_between:<a>,<b>", "multiple_of:<n>",
-    /// "gt:<n|field>", "gte:<n|field>", "lt:<n|field>", "lte:<n|field>".
+    /// "gt:<n|field>", "gte:<n|field>", "lt:<n|field>", "lte:<n|field>";
+    /// conditionals: "required_if:<f,v...>", "required_unless:<f,v...>",
+    /// "required_with:<f>", "required_without:<f>", "accepted",
+    /// "accepted_if:<f,v...>", "declined", "declined_if:<f,v...>",
+    /// "prohibited", "prohibited_if:<f,v...>", "prohibited_with:<f>",
+    /// "exclude", "exclude_if:<f,v...>", "missing", "missing_if:<f,v...>",
+    /// "missing_with:<f>", "sometimes", "filled", "present"; cross-field:
+    /// "same:<f>", "different:<f>", "confirmed", "in_array:<f>", "distinct";
+    /// control: "bail".
     /// Used by the registry GRAPH-VALIDATION-RULE gate and by the HTTP edge.
     pub fn from_token(token: &str) -> Result<Rule, String> {
         let token = token.trim();
@@ -363,6 +495,59 @@ impl Rule {
                 token,
                 "lte",
             )?),
+            // ------------------------------------------- conditionals ----
+            "accepted" => Rule::Accepted,
+            "declined" => Rule::Declined,
+            "prohibited" => Rule::Prohibited,
+            "exclude" => Rule::Exclude,
+            "missing" => Rule::Missing,
+            "sometimes" => Rule::Sometimes,
+            "filled" => Rule::Filled,
+            "present" => Rule::Present,
+            "required_if" => {
+                let (f, vals) = Rule::condition_arg(arg, token, "required_if")?;
+                Rule::RequiredIf(f, vals)
+            }
+            "required_unless" => {
+                let (f, vals) = Rule::condition_arg(arg, token, "required_unless")?;
+                Rule::RequiredUnless(f, vals)
+            }
+            "required_with" => Rule::RequiredWith(Rule::field_arg(arg, token, "required_with")?),
+            "required_without" => {
+                Rule::RequiredWithout(Rule::field_arg(arg, token, "required_without")?)
+            }
+            "accepted_if" => {
+                let (f, vals) = Rule::condition_arg(arg, token, "accepted_if")?;
+                Rule::AcceptedIf(f, vals)
+            }
+            "declined_if" => {
+                let (f, vals) = Rule::condition_arg(arg, token, "declined_if")?;
+                Rule::DeclinedIf(f, vals)
+            }
+            "prohibited_if" => {
+                let (f, vals) = Rule::condition_arg(arg, token, "prohibited_if")?;
+                Rule::ProhibitedIf(f, vals)
+            }
+            "prohibited_with" => {
+                Rule::ProhibitedWith(Rule::field_arg(arg, token, "prohibited_with")?)
+            }
+            "exclude_if" => {
+                let (f, vals) = Rule::condition_arg(arg, token, "exclude_if")?;
+                Rule::ExcludeIf(f, vals)
+            }
+            "missing_if" => {
+                let (f, vals) = Rule::condition_arg(arg, token, "missing_if")?;
+                Rule::MissingIf(f, vals)
+            }
+            "missing_with" => Rule::MissingWith(Rule::field_arg(arg, token, "missing_with")?),
+            // --------------------------------------------- cross-field ----
+            "same" => Rule::Same(Rule::field_arg(arg, token, "same")?),
+            "different" => Rule::Different(Rule::field_arg(arg, token, "different")?),
+            "confirmed" => Rule::Confirmed,
+            "in_array" => Rule::InArray(Rule::field_arg(arg, token, "in_array")?),
+            "distinct" => Rule::Distinct,
+            // ------------------------------------------- control ---------
+            "bail" => Rule::Bail,
             other => return Err(format!("unknown validation rule: {other}")),
         })
     }
@@ -496,6 +681,18 @@ impl Validator {
     }
 
     /// Validate under a context: collects every violation across all fields.
+    ///
+    /// Evaluation breadth mirrors Laravel's `isValidatable`:
+    /// - an absent key runs only IMPLICIT rules (`required`, `present`,
+    ///   `accepted`, `declined`, `filled`, `missing*`, `required_*`);
+    /// - a present `null` runs everything unless `nullable` is declared,
+    ///   in which case it drops to implicit-only;
+    /// - a blank string (whitespace only) also drops to implicit-only, so an
+    ///   optional `""` skips format rules exactly as Laravel does;
+    /// - any presence failure suppresses the field's value rules (the
+    ///   Wave 1 one-message-per-field shape for `required`);
+    /// - `bail` stops the field at its first failure;
+    /// - `sometimes` and `exclude`/`exclude_if` skip the field entirely.
     pub fn validate_with(&self, ctx: &ValidationContext<'_>) -> Result<(), ValidationReport> {
         let input = ctx.input();
         let mut report = ValidationReport::default();
@@ -504,47 +701,47 @@ impl Validator {
             return Err(report);
         }
         for spec in &self.specs {
+            let rules = &spec.rules;
             let value = lookup(input, &spec.field);
-            let required = spec.rules.iter().any(|r| matches!(r, Rule::Required));
-            let nullable = spec.rules.iter().any(|r| matches!(r, Rule::Nullable));
-            match value {
-                // Absent keys run only `required` (implicit) rules.
-                None => {
-                    if required {
-                        report.push(&spec.field, format!("{} is required", spec.field));
+            // Structural: `sometimes` lets an absent key through untouched.
+            if value.is_none() && rules.iter().any(|r| matches!(r, Rule::Sometimes)) {
+                continue;
+            }
+            // Structural: `exclude`/`exclude_if` ignore the field entirely
+            // (their other rules — including `required` — never run).
+            if rules.iter().any(|r| is_excluded(r, ctx)) {
+                continue;
+            }
+            let bail = rules.iter().any(|r| matches!(r, Rule::Bail));
+            let implicit_only = match value {
+                None => true,
+                Some(Value::Null) => rules.iter().any(|r| matches!(r, Rule::Nullable)),
+                Some(Value::String(s)) if s.trim().is_empty() => true,
+                _ => false,
+            };
+            let mut presence_failed = false;
+            for rule in rules {
+                if is_presence(rule) {
+                    if !is_implicit(rule) && implicit_only {
+                        continue;
+                    }
+                    if let Some(msg) = check_presence(rule, &spec.field, value, ctx) {
+                        report.push(&spec.field, msg);
+                        presence_failed = true;
+                        if bail {
+                            break;
+                        }
                     }
                     continue;
                 }
-                // Present null: `required` still fails; `nullable` skips the
-                // rest; otherwise the rules run and type/format rules reject.
-                Some(Value::Null) => {
-                    if required {
-                        report.push(&spec.field, format!("{} is required", spec.field));
-                        continue;
-                    }
-                    if nullable {
-                        continue;
-                    }
-                    for rule in &spec.rules {
-                        if matches!(rule, Rule::Required | Rule::Nullable) {
-                            continue;
-                        }
-                        if let Some(msg) = check(rule, &Value::Null, ctx) {
-                            report.push(&spec.field, msg);
-                        }
-                    }
+                if implicit_only || presence_failed {
+                    continue;
                 }
-                Some(v) => {
-                    if required && is_blank(v) {
-                        report.push(&spec.field, format!("{} is required", spec.field));
-                        continue;
-                    }
-                    for rule in &spec.rules {
-                        if matches!(rule, Rule::Required | Rule::Nullable) {
-                            continue;
-                        }
-                        if let Some(msg) = check(rule, v, ctx) {
-                            report.push(&spec.field, msg);
+                if let Some(v) = value {
+                    if let Some(msg) = check(rule, &spec.field, v, ctx) {
+                        report.push(&spec.field, msg);
+                        if bail {
+                            break;
                         }
                     }
                 }
@@ -556,6 +753,58 @@ impl Validator {
             Err(report)
         }
     }
+}
+
+/// Presence/conditional rules: they reason about the key's state (absent /
+/// null / blank / present) rather than only its value. Evaluated through
+/// [`crate::checks::check_presence`] in every branch.
+fn is_presence(rule: &Rule) -> bool {
+    matches!(
+        rule,
+        Rule::Required
+            | Rule::RequiredIf(_, _)
+            | Rule::RequiredUnless(_, _)
+            | Rule::RequiredWith(_)
+            | Rule::RequiredWithout(_)
+            | Rule::Accepted
+            | Rule::AcceptedIf(_, _)
+            | Rule::Declined
+            | Rule::DeclinedIf(_, _)
+            | Rule::Prohibited
+            | Rule::ProhibitedIf(_, _)
+            | Rule::ProhibitedWith(_)
+            | Rule::Exclude
+            | Rule::ExcludeIf(_, _)
+            | Rule::Missing
+            | Rule::MissingIf(_, _)
+            | Rule::MissingWith(_)
+            | Rule::Sometimes
+            | Rule::Filled
+            | Rule::Present
+    )
+}
+
+/// Laravel's `implicitRules`: the ones that still evaluate when the key is
+/// absent, blank, or `null` under `nullable`. Everything else (value rules,
+/// `prohibited*`, `exclude*`, `sometimes`) is skipped in those states.
+fn is_implicit(rule: &Rule) -> bool {
+    matches!(
+        rule,
+        Rule::Required
+            | Rule::RequiredIf(_, _)
+            | Rule::RequiredUnless(_, _)
+            | Rule::RequiredWith(_)
+            | Rule::RequiredWithout(_)
+            | Rule::Accepted
+            | Rule::AcceptedIf(_, _)
+            | Rule::Declined
+            | Rule::DeclinedIf(_, _)
+            | Rule::Missing
+            | Rule::MissingIf(_, _)
+            | Rule::MissingWith(_)
+            | Rule::Filled
+            | Rule::Present
+    )
 }
 
 /// One failed rule on one field (public-safe wording only).
@@ -621,14 +870,6 @@ fn lookup<'a>(input: &'a Value, field: &str) -> Option<&'a Value> {
         cur = cur.get(seg)?;
     }
     Some(cur)
-}
-
-fn is_blank(v: &Value) -> bool {
-    match v {
-        Value::String(s) => s.trim().is_empty(),
-        Value::Array(a) => a.is_empty(),
-        _ => false,
-    }
 }
 
 #[cfg(test)]
@@ -910,6 +1151,361 @@ mod tests {
     }
 
     #[test]
+    fn wave4_phase2_tokens_parse() {
+        for (token, rule) in [
+            ("accepted", Rule::Accepted),
+            ("declined", Rule::Declined),
+            ("prohibited", Rule::Prohibited),
+            ("exclude", Rule::Exclude),
+            ("missing", Rule::Missing),
+            ("sometimes", Rule::Sometimes),
+            ("filled", Rule::Filled),
+            ("present", Rule::Present),
+            ("confirmed", Rule::Confirmed),
+            ("distinct", Rule::Distinct),
+            ("bail", Rule::Bail),
+            ("required_with:phone", Rule::RequiredWith("phone".into())),
+            (
+                "required_without:phone",
+                Rule::RequiredWithout("phone".into()),
+            ),
+            (
+                "prohibited_with:backup",
+                Rule::ProhibitedWith("backup".into()),
+            ),
+            ("missing_with:legacy", Rule::MissingWith("legacy".into())),
+            ("same:password", Rule::Same("password".into())),
+            ("different:email", Rule::Different("email".into())),
+            ("in_array:tags", Rule::InArray("tags".into())),
+            (
+                "required_if:type,guest",
+                Rule::RequiredIf("type".into(), vec!["guest".into()]),
+            ),
+            (
+                "required_unless:type,guest,hotel",
+                Rule::RequiredUnless("type".into(), vec!["guest".into(), "hotel".into()]),
+            ),
+            (
+                "accepted_if:flow,signup",
+                Rule::AcceptedIf("flow".into(), vec!["signup".into()]),
+            ),
+            (
+                "declined_if:flow,edit",
+                Rule::DeclinedIf("flow".into(), vec!["edit".into()]),
+            ),
+            (
+                "prohibited_if:role,admin",
+                Rule::ProhibitedIf("role".into(), vec!["admin".into()]),
+            ),
+            (
+                "exclude_if:country,US",
+                Rule::ExcludeIf("country".into(), vec!["US".into()]),
+            ),
+            (
+                "missing_if:legacy,1",
+                Rule::MissingIf("legacy".into(), vec!["1".into()]),
+            ),
+        ] {
+            assert_eq!(Rule::from_token(token).unwrap(), rule, "{token}");
+        }
+        for bad in [
+            "required_if",
+            "required_if:",
+            "required_if:type",
+            "required_if:,guest",
+            "required_if:type,",
+            "required_unless",
+            "required_with",
+            "required_with:",
+            "required_with:a-b",
+            "required_without:",
+            "accepted_if:x",
+            "prohibited_if:role",
+            "exclude_if:type",
+            "missing_if:",
+            "missing_with",
+            "missing_with:",
+            "same",
+            "same:",
+            "same:a b",
+            "different:",
+            "in_array",
+            "in_array:",
+        ] {
+            assert!(Rule::from_token(bad).is_err(), "{bad} should fail");
+        }
+    }
+
+    #[test]
+    fn conditional_rules_follow_sibling_state() {
+        // required_if: an absent sibling imposes NO requirement.
+        let v = Validator::new()
+            .field("type", vec![Rule::Required])
+            .field(
+                "guest_name",
+                vec![Rule::RequiredIf("type".into(), vec!["guest".into()])],
+            );
+        assert!(v.validate(&json!({ "type": "hotel" })).is_ok());
+        let report = v
+            .validate(&json!({ "type": "guest" }))
+            .expect_err("condition met requires the field");
+        assert_eq!(
+            report.violations[0].message,
+            "guest_name is required when type is guest"
+        );
+
+        // required_unless inverts it; an absent sibling resolves as null.
+        let u = Validator::new().field(
+            "email",
+            vec![Rule::RequiredUnless("kind".into(), vec!["anon".into()])],
+        );
+        assert!(u.validate(&json!({ "kind": "anon" })).is_ok());
+        assert!(u.validate(&json!({ "kind": "member" })).is_err());
+        assert!(u
+            .validate(&json!({}))
+            .is_err(), "absent sibling never matches a string token");
+
+        // required_with: triggered only by a present AND non-blank sibling.
+        let w = Validator::new().field("email", vec![Rule::RequiredWith("phone".into())]);
+        assert!(w.validate(&json!({})).is_ok());
+        assert!(w.validate(&json!({ "phone": "   " })).is_ok());
+        assert!(w
+            .validate(&json!({ "phone": "+919876543210" }))
+            .is_err());
+
+        // required_without: triggered when the sibling is absent OR blank.
+        let wo = Validator::new().field("email", vec![Rule::RequiredWithout("phone".into())]);
+        assert!(wo.validate(&json!({})).is_err());
+        assert!(wo.validate(&json!({ "phone": "" })).is_err());
+        assert!(wo.validate(&json!({ "phone": "x" })).is_ok());
+
+        // numeric siblings compare numerically against the token.
+        let n = Validator::new().field(
+            "code",
+            vec![Rule::RequiredIf("age".into(), vec!["21".into()])],
+        );
+        assert!(n.validate(&json!({ "age": 21 })).is_err());
+        assert!(n.validate(&json!({ "age": "21" })).is_err());
+        assert!(n.validate(&json!({ "age": 22 })).is_ok());
+    }
+
+    #[test]
+    fn accepted_declined_and_their_conditionals() {
+        let a = Validator::new().field("tos", vec![Rule::Accepted]);
+        assert!(a.validate(&json!({})).is_err(), "accepted implies required");
+        assert!(a.validate(&json!({ "tos": "yes" })).is_ok());
+        assert!(a.validate(&json!({ "tos": true })).is_ok());
+        assert!(a.validate(&json!({ "tos": 1 })).is_ok());
+        assert!(a.validate(&json!({ "tos": "1" })).is_ok());
+        assert!(a.validate(&json!({ "tos": 1.0 })).is_err(), "strict: float 1.0 is not 1");
+        let report = a
+            .validate(&json!({ "tos": "no" }))
+            .expect_err("no is not accepted");
+        assert_eq!(report.violations[0].message, "tos must be accepted");
+
+        let d = Validator::new().field("opt_out", vec![Rule::Declined]);
+        assert!(d.validate(&json!({ "opt_out": "off" })).is_ok());
+        assert!(d.validate(&json!({ "opt_out": 0 })).is_ok());
+        assert!(d.validate(&json!({ "opt_out": false })).is_ok());
+        assert!(d.validate(&json!({})).is_err(), "declined implies required");
+        assert!(d.validate(&json!({ "opt_out": "yes" })).is_err());
+
+        let ai = Validator::new().field(
+            "tos",
+            vec![Rule::AcceptedIf("flow".into(), vec!["signup".into()])],
+        );
+        assert!(ai.validate(&json!({ "flow": "edit" })).is_ok());
+        assert!(ai.validate(&json!({ "tos": "yes" })).is_ok());
+        assert!(ai
+            .validate(&json!({ "flow": "signup" }))
+            .is_err(), "condition on ⇒ must be accepted");
+        assert!(ai
+            .validate(&json!({ "flow": "signup", "tos": "yes" }))
+            .is_ok());
+    }
+
+    #[test]
+    fn prohibited_present_filled_missing_families() {
+        // prohibited: null / "" / [] pass; any value fails; absent passes.
+        let p = Validator::new().field("admin", vec![Rule::Prohibited]);
+        assert!(p.validate(&json!({})).is_ok());
+        assert!(p.validate(&json!({ "admin": null })).is_ok());
+        assert!(p.validate(&json!({ "admin": "" })).is_ok());
+        assert!(p.validate(&json!({ "admin": [] })).is_ok());
+        let report = p
+            .validate(&json!({ "admin": "root" }))
+            .expect_err("prohibited rejects values");
+        assert_eq!(
+            report.violations[0].message,
+            "admin must be omitted or empty"
+        );
+
+        let pi = Validator::new().field(
+            "note",
+            vec![Rule::ProhibitedIf("role".into(), vec!["admin".into()])],
+        );
+        assert!(pi.validate(&json!({ "role": "user", "note": "hi" })).is_ok());
+        assert!(pi.validate(&json!({ "role": "admin", "note": "hi" })).is_err());
+        assert!(pi.validate(&json!({ "role": "admin" })).is_ok());
+
+        let pw = Validator::new().field("b", vec![Rule::ProhibitedWith("a".into())]);
+        assert!(pw.validate(&json!({ "b": "x" })).is_ok());
+        assert!(pw.validate(&json!({ "a": "", "b": "x" })).is_err());
+
+        // present: the key must exist; null satisfies it.
+        let pr = Validator::new().field("token", vec![Rule::Present]);
+        assert!(pr.validate(&json!({})).is_err());
+        assert!(pr.validate(&json!({ "token": null })).is_ok());
+        assert!(pr.validate(&json!({ "token": "" })).is_ok());
+
+        // filled: implicit — absent passes, present must be non-blank, and
+        // null FAILS even under `nullable` (Laravel's implicit-rule quirk).
+        let f = Validator::new().field("nick", vec![Rule::Filled]);
+        assert!(f.validate(&json!({})).is_ok());
+        assert!(f.validate(&json!({ "nick": "" })).is_err());
+        assert!(f.validate(&json!({ "nick": null })).is_err());
+        assert!(f.validate(&json!({ "nick": "x" })).is_ok());
+        let soft = Validator::new().field("nick", vec![Rule::Nullable, Rule::Filled]);
+        assert!(soft.validate(&json!({ "nick": null })).is_err());
+        assert!(soft.validate(&json!({})).is_ok());
+
+        // missing: the key must be absent (a present null still fails).
+        let m = Validator::new().field("legacy", vec![Rule::Missing]);
+        assert!(m.validate(&json!({})).is_ok());
+        assert!(m.validate(&json!({ "legacy": null })).is_err());
+        assert!(m.validate(&json!({ "legacy": "x" })).is_err());
+
+        let mi = Validator::new().field(
+            "legacy",
+            vec![Rule::MissingIf("version".into(), vec!["1".into()])],
+        );
+        assert!(mi.validate(&json!({ "version": "1" })).is_ok());
+        assert!(mi.validate(&json!({ "version": "1", "legacy": "x" })).is_err());
+        assert!(mi.validate(&json!({ "version": "2", "legacy": "x" })).is_ok());
+
+        let mw = Validator::new().field("old", vec![Rule::MissingWith("new".into())]);
+        assert!(mw.validate(&json!({ "old": "x" })).is_ok());
+        assert!(mw.validate(&json!({ "new": "y", "old": "x" })).is_err());
+    }
+
+    #[test]
+    fn exclude_and_sometimes_skip_validation() {
+        // `exclude` ignores the field entirely — even `required`.
+        let e = Validator::new().field(
+            "noise",
+            vec![Rule::Exclude, Rule::Required, Rule::Email],
+        );
+        assert!(e.validate(&json!({})).is_ok());
+        assert!(e.validate(&json!({ "noise": "whatever" })).is_ok());
+
+        // exclude_if: only when the sibling exists AND matches.
+        let ei = Validator::new().field(
+            "region",
+            vec![
+                Rule::ExcludeIf("country".into(), vec!["US".into()]),
+                Rule::Required,
+            ],
+        );
+        assert!(ei.validate(&json!({ "country": "US" })).is_ok());
+        assert!(ei.validate(&json!({ "country": "IN" })).is_err());
+        assert!(
+            ei.validate(&json!({})).is_err(),
+            "absent sibling never triggers exclusion"
+        );
+
+        // sometimes: an absent key skips every rule (incl. required).
+        let s = Validator::new().field(
+            "nick",
+            vec![Rule::Sometimes, Rule::Required, Rule::Email],
+        );
+        assert!(s.validate(&json!({})).is_ok());
+        assert!(s.validate(&json!({ "nick": "bad" })).is_err());
+        assert!(s.validate(&json!({ "nick": "" })).is_err());
+    }
+
+    #[test]
+    fn bail_stops_the_field_at_the_first_failure() {
+        let b = Validator::new().field("code", vec![Rule::Bail, Rule::Min(5), Rule::Email]);
+        let report = b
+            .validate(&json!({ "code": "abc" }))
+            .expect_err("bail still reports the first failure");
+        assert_eq!(report.len(), 1);
+
+        // without bail every failing rule reports
+        let all = Validator::new().field("code", vec![Rule::Min(5), Rule::Email]);
+        assert_eq!(all.validate(&json!({ "code": "abc" })).unwrap_err().len(), 2);
+
+        // bail also stops after the first PRESENCE failure
+        let both = Validator::new().field("x", vec![Rule::Required, Rule::Present]);
+        assert_eq!(both.validate(&json!({})).unwrap_err().len(), 2);
+        let bailed = Validator::new().field("x", vec![Rule::Bail, Rule::Required, Rule::Present]);
+        assert_eq!(bailed.validate(&json!({})).unwrap_err().len(), 1);
+    }
+
+    #[test]
+    fn cross_field_rules_compare_siblings() {
+        // same / different
+        let s = Validator::new().field("b", vec![Rule::Same("a".into())]);
+        assert!(s.validate(&json!({ "a": "x", "b": "x" })).is_ok());
+        assert!(s.validate(&json!({ "a": "x", "b": "y" })).is_err());
+        assert!(s.validate(&json!({ "b": "x" })).is_err());
+        let d = Validator::new().field("b", vec![Rule::Different("a".into())]);
+        assert!(d.validate(&json!({ "a": "x", "b": "y" })).is_ok());
+        assert!(d.validate(&json!({ "a": "x", "b": "x" })).is_err());
+        assert!(d.validate(&json!({ "b": "y" })).is_ok());
+
+        // confirmed: matches <field>_confirmation (Laravel's isset semantics)
+        let c = Validator::new().field("password", vec![Rule::Required, Rule::Confirmed]);
+        assert!(c
+            .validate(&json!({ "password": "s3cret", "password_confirmation": "s3cret" }))
+            .is_ok());
+        let report = c
+            .validate(&json!({ "password": "s3cret", "password_confirmation": "other" }))
+            .expect_err("mismatched confirmation");
+        assert!(report
+            .violations
+            .iter()
+            .any(|v| v.message == "confirmation does not match"));
+        assert!(c.validate(&json!({ "password": "s3cret" })).is_err());
+
+        // in_array: element of the sibling array; missing sibling fails closed
+        let ia = Validator::new().field("tag", vec![Rule::InArray("tags".into())]);
+        assert!(ia.validate(&json!({ "tags": ["a", "b"], "tag": "a" })).is_ok());
+        assert!(ia.validate(&json!({ "tags": ["a", "b"], "tag": "c" })).is_err());
+        assert!(ia.validate(&json!({ "tag": "a" })).is_err());
+        assert!(ia
+            .validate(&json!({ "tags": "a", "tag": "a" }))
+            .is_ok(), "scalar sibling compares equal");
+
+        // distinct: unique array elements
+        let dist = Validator::new().field("ids", vec![Rule::Distinct]);
+        assert!(dist.validate(&json!({ "ids": [1, 2, 3] })).is_ok());
+        let report = dist
+            .validate(&json!({ "ids": [1, 2, 1] }))
+            .expect_err("duplicate element");
+        assert_eq!(report.violations[0].message, "must contain unique values");
+        assert!(dist.validate(&json!({ "ids": "x" })).is_err());
+    }
+
+    #[test]
+    fn blank_strings_skip_non_implicit_rules() {
+        // Laravel's presentOrRuleIsImplicit quirk: whitespace-only strings
+        // only run implicit rules, so an optional "" passes format checks.
+        let v = Validator::new().field("email", vec![Rule::Email]);
+        assert!(v.validate(&json!({ "email": "" })).is_ok());
+        assert!(v.validate(&json!({ "email": "   " })).is_ok());
+        assert!(v.validate(&json!({ "email": "x" })).is_err());
+
+        // ... but implicit rules (`required`) still reject them, alone.
+        let r = Validator::new().field("email", vec![Rule::Required, Rule::Email]);
+        let report = r
+            .validate(&json!({ "email": "  " }))
+            .expect_err("required rejects blank strings");
+        assert_eq!(report.len(), 1);
+        assert_eq!(report.violations[0].message, "email is required");
+    }
+
+    #[test]
     fn rule_tokens_reject_malformed() {
         for bad in [
             "min", "min:x", "max:-1", "one_of", "one_of:", "one_of: ,", "range:1", "range:a,b",
@@ -972,6 +1568,15 @@ mod tests {
         assert_eq!(Rule::Gt(NumTarget::Literal(1.0)).name(), "gt");
         assert_eq!(Rule::Nullable.name(), "nullable");
         assert_eq!(Rule::StartsWith("x".into()).name(), "starts_with");
+        assert_eq!(
+            Rule::RequiredIf("a".into(), vec!["b".into()]).name(),
+            "required_if"
+        );
+        assert_eq!(Rule::RequiredWith("a".into()).name(), "required_with");
+        assert_eq!(Rule::MissingIf("a".into(), vec!["b".into()]).name(), "missing_if");
+        assert_eq!(Rule::Confirmed.name(), "confirmed");
+        assert_eq!(Rule::InArray("a".into()).name(), "in_array");
+        assert_eq!(Rule::Bail.name(), "bail");
     }
 
     #[test]
@@ -1014,6 +1619,32 @@ mod tests {
             "gte:floor",
             "lt:100",
             "lte:ceiling",
+            // Phase 2: conditionals, cross-field, bail
+            "required_if:type,guest",
+            "required_unless:type,anon",
+            "required_with:phone",
+            "required_without:phone",
+            "accepted",
+            "accepted_if:flow,signup",
+            "declined",
+            "declined_if:flow,edit",
+            "prohibited",
+            "prohibited_if:role,admin",
+            "prohibited_with:backup",
+            "exclude",
+            "exclude_if:country,US",
+            "missing",
+            "missing_if:legacy,1",
+            "missing_with:new",
+            "sometimes",
+            "filled",
+            "present",
+            "same:password",
+            "different:email",
+            "confirmed",
+            "in_array:tags",
+            "distinct",
+            "bail",
         ]
         .iter()
         .map(|s| s.to_string())

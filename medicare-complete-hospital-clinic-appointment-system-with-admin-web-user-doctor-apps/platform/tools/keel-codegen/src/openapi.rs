@@ -79,7 +79,34 @@ fn field_constraints(tokens: &[String]) -> (serde_json::Map<String, serde_json::
             | keel_validation::Rule::Ulid
             | keel_validation::Rule::Decimal(_)
             | keel_validation::Rule::Digits(_)
-            | keel_validation::Rule::DigitsBetween(_, _) => {}
+            | keel_validation::Rule::DigitsBetween(_, _)
+            // Presence/conditional and cross-field rules describe WHEN a
+            // field must validate, not its wire shape — no schema hints.
+            | keel_validation::Rule::RequiredIf(_, _)
+            | keel_validation::Rule::RequiredUnless(_, _)
+            | keel_validation::Rule::RequiredWith(_)
+            | keel_validation::Rule::RequiredWithout(_)
+            | keel_validation::Rule::Accepted
+            | keel_validation::Rule::AcceptedIf(_, _)
+            | keel_validation::Rule::Declined
+            | keel_validation::Rule::DeclinedIf(_, _)
+            | keel_validation::Rule::Prohibited
+            | keel_validation::Rule::ProhibitedIf(_, _)
+            | keel_validation::Rule::ProhibitedWith(_)
+            | keel_validation::Rule::Exclude
+            | keel_validation::Rule::ExcludeIf(_, _)
+            | keel_validation::Rule::Missing
+            | keel_validation::Rule::MissingIf(_, _)
+            | keel_validation::Rule::MissingWith(_)
+            | keel_validation::Rule::Sometimes
+            | keel_validation::Rule::Filled
+            | keel_validation::Rule::Present
+            | keel_validation::Rule::Same(_)
+            | keel_validation::Rule::Different(_)
+            | keel_validation::Rule::Confirmed
+            | keel_validation::Rule::InArray(_)
+            | keel_validation::Rule::Distinct
+            | keel_validation::Rule::Bail => {}
             keel_validation::Rule::MultipleOf(n) => {
                 schema.insert("multipleOf".into(), json!(n));
             }

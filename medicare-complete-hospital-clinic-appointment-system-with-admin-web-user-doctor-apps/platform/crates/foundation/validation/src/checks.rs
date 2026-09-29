@@ -1,7 +1,7 @@
-//! Rule evaluation (Wave 4 Phase 1): one `check` per [`Rule`], returning a
-//! public-safe violation message or `None`. Pure functions except the four
-//! numeric comparisons, which resolve sibling values through the
-//! [`ValidationContext`] (`gt:<n|field>` field refs).
+//! Rule evaluation (Wave 4 Phase 1 + Phase 2): one `check` per value rule and
+//! one `check_presence` per presence/conditional rule, each returning a
+//! public-safe violation message or `None`. Pure functions except the field
+//! ref rules, which resolve siblings through the [`ValidationContext`].
 //!
 //! Parity notes where our closed grammar deliberately narrows Laravel:
 //! - `gt/gte/lt/lte` compare NUMBERS only; Laravel falls back to size (string
@@ -14,6 +14,15 @@
 //!   combining marks (Laravel's `\pM`); there is no std primitive for marks.
 //! - present `null` fails every rule unless the field declares `nullable`
 //!   (Laravel's implicit PHP null-coercion quirks are not mirrored).
+//! - the `*_if` family matches sibling values through a CLOSED scalar
+//!   grammar (`scalar_match`); PHP's loose `in_array` would make `true`
+//!   equal every non-empty token, which we reject as fail-open.
+//! - `exclude`/`exclude_if` skip validation of the field entirely; Laravel
+//!   strips the key from its validated output data instead (our edge hands
+//!   operations the raw input, so skipping is the observable equivalent).
+//! - `in_array` resolves a plain dot-path sibling (wildcards are Phase 4);
+//!   a missing sibling fails closed, and `distinct` compares array elements
+//!   strictly (Laravel defaults to loose comparison).
 //!
 //! No regex engine: every pattern here is a hand-rolled closed grammar (the
 //! documented replacement for Laravel's `regex:` rule).
@@ -21,13 +30,43 @@
 use crate::validator::{NumTarget, Rule, ValidationContext};
 use serde_json::Value;
 
-/// Apply one rule to one presence-resolved value. `ctx.input` is the whole
-/// validated object so field-ref rules can resolve their sibling.
-pub(crate) fn check(rule: &Rule, v: &Value, ctx: &ValidationContext<'_>) -> Option<String> {
+/// Apply one value rule to one present value. `field` is the field the rules
+/// are bound to (only `confirmed` reads it, to find `<field>_confirmation`);
+/// `ctx.input` is the whole validated object so field-ref rules can resolve
+/// their sibling.
+pub(crate) fn check(
+    rule: &Rule,
+    field: &str,
+    v: &Value,
+    ctx: &ValidationContext<'_>,
+) -> Option<String> {
     match rule {
-        Rule::Required | Rule::Nullable => {
-            unreachable!("structural rules are resolved before rule checks")
-        }
+        // Structural (`required`/`nullable`/`sometimes`/`bail`/`exclude*`)
+        // and presence rules are resolved through `check_presence` by
+        // `validate_with` before value checks run; these arms keep the match
+        // total without panicking at the edge.
+        Rule::Required
+        | Rule::Nullable
+        | Rule::Sometimes
+        | Rule::Bail
+        | Rule::Exclude
+        | Rule::ExcludeIf(_, _)
+        | Rule::RequiredIf(_, _)
+        | Rule::RequiredUnless(_, _)
+        | Rule::RequiredWith(_)
+        | Rule::RequiredWithout(_)
+        | Rule::Accepted
+        | Rule::AcceptedIf(_, _)
+        | Rule::Declined
+        | Rule::DeclinedIf(_, _)
+        | Rule::Prohibited
+        | Rule::ProhibitedIf(_, _)
+        | Rule::ProhibitedWith(_)
+        | Rule::Missing
+        | Rule::MissingIf(_, _)
+        | Rule::MissingWith(_)
+        | Rule::Filled
+        | Rule::Present => None,
 
         // ------------------------------------------------ Wave 1 core ----
         // Wording is frozen: transports and existing tests rely on it.
@@ -226,7 +265,275 @@ pub(crate) fn check(rule: &Rule, v: &Value, ctx: &ValidationContext<'_>) -> Opti
         Rule::Gte(target) => compare(v, target, ctx, Cmp::Gte),
         Rule::Lt(target) => compare(v, target, ctx, Cmp::Lt),
         Rule::Lte(target) => compare(v, target, ctx, Cmp::Lte),
+
+        // ------------------------------------------------- cross-field ----
+        Rule::Same(other) => match ctx.resolve(other) {
+            // A missing sibling fails closed (Laravel requires the key).
+            Some(ov) if json_same(v, ov) => None,
+            _ => Some(format!("must match {other}")),
+        },
+        Rule::Different(other) => match ctx.resolve(other) {
+            Some(ov) if json_same(v, ov) => Some(format!("must differ from {other}")),
+            // A missing sibling cannot equal this value, so it passes.
+            _ => None,
+        },
+        // Laravel's `isset` semantics: a missing OR null confirmation fails.
+        Rule::Confirmed => match ctx.resolve(&format!("{field}_confirmation")) {
+            Some(cv) if !cv.is_null() && json_same(v, cv) => None,
+            _ => Some("confirmation does not match".into()),
+        },
+        Rule::InArray(other) => {
+            let found = match ctx.resolve(other) {
+                Some(Value::Array(items)) => items.iter().any(|i| json_same(v, i)),
+                Some(ov) => json_same(v, ov),
+                None => false,
+            };
+            if found {
+                None
+            } else {
+                Some(format!("must be one of the values in {other}"))
+            }
+        }
+        Rule::Distinct => match v {
+            Value::Array(items) => {
+                let dup = (0..items.len()).any(|i| {
+                    (i + 1..items.len()).any(|j| json_same(&items[i], &items[j]))
+                });
+                if dup {
+                    Some("must contain unique values".into())
+                } else {
+                    None
+                }
+            }
+            _ => Some("must be an array".into()),
+        },
     }
+}
+
+// ------------------------------------------ presence & conditionals -------
+
+/// Presence/conditional evaluation (Wave 4 Phase 2): `value` is the resolved
+/// lookup for the field under validation (`None` = key absent). Structural
+/// rules return `None` here — `validate_with` resolves them itself — and
+/// value rules never arrive (they are evaluated through [`check`]).
+pub(crate) fn check_presence(
+    rule: &Rule,
+    field: &str,
+    value: Option<&Value>,
+    ctx: &ValidationContext<'_>,
+) -> Option<String> {
+    match rule {
+        Rule::Required => required_fail(value).then(|| format!("{field} is required")),
+        Rule::Present => value
+            .is_none()
+            .then(|| format!("{field} must be present")),
+        Rule::RequiredIf(other, vals) => {
+            if triggered(ctx, other, vals) && required_fail(value) {
+                Some(format!(
+                    "{field} is required when {other} is {}",
+                    vals.join(" or ")
+                ))
+            } else {
+                None
+            }
+        }
+        Rule::RequiredUnless(other, vals) => {
+            // An absent sibling resolves as `null`, which only matches a
+            // literal `null` token — everything else still requires.
+            if !any_token(ctx.resolve(other), vals) && required_fail(value) {
+                Some(format!(
+                    "{field} is required unless {other} is {}",
+                    vals.join(" or ")
+                ))
+            } else {
+                None
+            }
+        }
+        Rule::RequiredWith(other) => {
+            if ctx.resolve(other).is_some_and(passes_required) && required_fail(value) {
+                Some(format!("{field} is required when {other} is present"))
+            } else {
+                None
+            }
+        }
+        Rule::RequiredWithout(other) => {
+            if !ctx.resolve(other).is_some_and(passes_required) && required_fail(value) {
+                Some(format!("{field} is required when {other} is missing"))
+            } else {
+                None
+            }
+        }
+        Rule::Accepted => (!value.is_some_and(accepted_ok))
+            .then(|| format!("{field} must be accepted")),
+        Rule::AcceptedIf(other, vals) => {
+            if triggered(ctx, other, vals) && !value.is_some_and(accepted_ok) {
+                Some(format!(
+                    "{field} must be accepted when {other} is {}",
+                    vals.join(" or ")
+                ))
+            } else {
+                None
+            }
+        }
+        Rule::Declined => (!value.is_some_and(declined_ok))
+            .then(|| format!("{field} must be declined")),
+        Rule::DeclinedIf(other, vals) => {
+            if triggered(ctx, other, vals) && !value.is_some_and(declined_ok) {
+                Some(format!(
+                    "{field} must be declined when {other} is {}",
+                    vals.join(" or ")
+                ))
+            } else {
+                None
+            }
+        }
+        Rule::Prohibited => value
+            .is_some_and(passes_required)
+            .then(|| format!("{field} must be omitted or empty")),
+        Rule::ProhibitedIf(other, vals) => {
+            if triggered(ctx, other, vals) && value.is_some_and(passes_required) {
+                Some(format!(
+                    "{field} must be omitted or empty when {other} is {}",
+                    vals.join(" or ")
+                ))
+            } else {
+                None
+            }
+        }
+        Rule::ProhibitedWith(other) => {
+            if ctx.resolve(other).is_some() && value.is_some_and(passes_required) {
+                Some(format!(
+                    "{field} must be omitted or empty when {other} is present"
+                ))
+            } else {
+                None
+            }
+        }
+        Rule::Missing => value
+            .is_some()
+            .then(|| format!("{field} must be missing")),
+        Rule::MissingIf(other, vals) => {
+            if triggered(ctx, other, vals) && value.is_some() {
+                Some(format!(
+                    "{field} must be missing when {other} is {}",
+                    vals.join(" or ")
+                ))
+            } else {
+                None
+            }
+        }
+        Rule::MissingWith(other) => {
+            if ctx.resolve(other).is_some() && value.is_some() {
+                Some(format!("{field} must be missing when {other} is present"))
+            } else {
+                None
+            }
+        }
+        Rule::Filled => match value {
+            // Absent keys pass (`Arr::has` is false); present keys must
+            // satisfy `required` — including `null`, because `filled` is
+            // implicit and therefore ignores `nullable`.
+            None => None,
+            Some(v) if passes_required(v) => None,
+            Some(_) => Some(format!("{field} must not be empty")),
+        },
+        // Structural: `validate_with` resolves these before evaluation.
+        Rule::Sometimes | Rule::Exclude | Rule::ExcludeIf(_, _) => None,
+        // Value rules never reach `check_presence`.
+        _ => None,
+    }
+}
+
+/// Structural exclusion: `exclude` ignores the field always; `exclude_if`
+/// ignores it only when the sibling key exists AND matches (an absent
+/// sibling never triggers). Resolved by `validate_with` before evaluation.
+pub(crate) fn is_excluded(rule: &Rule, ctx: &ValidationContext<'_>) -> bool {
+    match rule {
+        Rule::Exclude => true,
+        Rule::ExcludeIf(other, vals) => triggered(ctx, other, vals),
+        _ => false,
+    }
+}
+
+/// Does the sibling key exist AND equal one of the condition values? An
+/// absent sibling never triggers (Laravel's `! Arr::has(...) => true` guard).
+fn triggered(ctx: &ValidationContext<'_>, other: &str, vals: &[String]) -> bool {
+    ctx.resolve(other)
+        .is_some_and(|ov| any_token(Some(ov), vals))
+}
+
+/// `required`-family truthiness (Laravel's `validateRequired`): present,
+/// non-null, non-blank.
+pub(crate) fn passes_required(v: &Value) -> bool {
+    match v {
+        Value::Null => false,
+        Value::String(s) => !s.trim().is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        _ => true,
+    }
+}
+
+/// The field must satisfy `required` for its current key state.
+fn required_fail(value: Option<&Value>) -> bool {
+    !value.is_some_and(passes_required)
+}
+
+/// `accepted`: required first, then Laravel's strict set
+/// (`yes`, `on`, `1`, `1`, `true`, `"true"`).
+fn accepted_ok(v: &Value) -> bool {
+    passes_required(v)
+        && match v {
+            Value::Bool(b) => *b,
+            Value::Number(n) => matches!(n.as_i64(), Some(1)),
+            Value::String(s) => matches!(s.as_str(), "yes" | "on" | "1" | "true"),
+            _ => false,
+        }
+}
+
+/// `declined`: required first, then Laravel's strict set
+/// (`no`, `off`, `0`, `0`, `false`, `"false"`).
+fn declined_ok(v: &Value) -> bool {
+    passes_required(v)
+        && match v {
+            Value::Bool(b) => !*b,
+            Value::Number(n) => matches!(n.as_i64(), Some(0)),
+            Value::String(s) => matches!(s.as_str(), "no" | "off" | "0" | "false"),
+            _ => false,
+        }
+}
+
+/// Does the sibling value match ANY of the condition tokens? `None`
+/// (absent) resolves as `null` for `required_unless`'s null-world.
+fn any_token(other: Option<&Value>, vals: &[String]) -> bool {
+    vals.iter().any(|t| scalar_match(other, t))
+}
+
+/// Closed-grammar scalar comparison for the `*_if` family. Divergence from
+/// PHP: Laravel compares with a loose `in_array`, where `true == "anything"`
+/// holds for every non-empty token; we only accept the documented spellings
+/// (fail-closed). Absent siblings resolve as `null`.
+fn scalar_match(other: Option<&Value>, token: &str) -> bool {
+    match other {
+        None | Some(Value::Null) => token.eq_ignore_ascii_case("null"),
+        Some(Value::Bool(b)) => {
+            if *b {
+                matches!(token, "true" | "1" | "yes" | "on")
+            } else {
+                matches!(token, "false" | "0" | "no" | "off")
+            }
+        }
+        Some(Value::Number(n)) => n
+            .as_f64()
+            .is_some_and(|f| matches!(token.trim().parse::<f64>(), Ok(x) if x == f)),
+        Some(Value::String(s)) => s == token,
+        Some(_) => false,
+    }
+}
+
+/// Strict JSON equality (mirrors PHP `===`): `1` and `1.0` differ, `"1"`
+/// and `1` differ — serde_json keeps the number-variant split.
+fn json_same(a: &Value, b: &Value) -> bool {
+    a == b
 }
 
 // ----------------------------------------------------------------- helpers
@@ -619,7 +926,7 @@ mod tests {
     fn run(rule: &Rule, v: &Value) -> Option<String> {
         let empty = json!({});
         let ctx = ValidationContext::new(&empty);
-        check(rule, v, &ctx)
+        check(rule, "field", v, &ctx)
     }
 
     fn passes(rule: Rule, v: Value) -> bool {
@@ -819,37 +1126,64 @@ mod tests {
         let ctx = ValidationContext::new(&input);
 
         // literal targets
-        assert!(check(&Rule::Gt(NumTarget::Literal(18.0)), &json!(21), &ctx).is_none());
-        assert!(check(&Rule::Gt(NumTarget::Literal(18.0)), &json!(18), &ctx).is_some());
-        assert!(check(&Rule::Gte(NumTarget::Literal(18.0)), &json!(18), &ctx).is_none());
-        assert!(check(&Rule::Lt(NumTarget::Literal(20.0)), &json!(21), &ctx).is_some());
-        assert!(check(&Rule::Lte(NumTarget::Literal(21.0)), &json!(21), &ctx).is_none());
+        assert!(check(&Rule::Gt(NumTarget::Literal(18.0)), "age", &json!(21), &ctx).is_none());
+        assert!(check(&Rule::Gt(NumTarget::Literal(18.0)), "age", &json!(18), &ctx).is_some());
+        assert!(check(&Rule::Gte(NumTarget::Literal(18.0)), "age", &json!(18), &ctx).is_none());
+        assert!(check(&Rule::Lt(NumTarget::Literal(20.0)), "age", &json!(21), &ctx).is_some());
+        assert!(check(&Rule::Lte(NumTarget::Literal(21.0)), "age", &json!(21), &ctx).is_none());
 
         // field targets resolve from the shared input
         let age = Rule::Gt(NumTarget::Field("floor".into()));
-        assert!(check(&age, &json!(21), &ctx).is_none());
-        assert!(check(&age, &json!(17), &ctx).is_some());
+        assert!(check(&age, "age", &json!(21), &ctx).is_none());
+        assert!(check(&age, "age", &json!(17), &ctx).is_some());
 
         // missing / null / non-numeric references fail closed
         let missing = Rule::Gt(NumTarget::Field("absent".into()));
-        let msg = check(&missing, &json!(21), &ctx).expect("missing ref fails");
+        let msg = check(&missing, "age", &json!(21), &ctx).expect("missing ref fails");
         assert!(msg.contains("absent"), "{msg}");
 
         let null_ref = json!({ "other": null });
         let null_ctx = ValidationContext::new(&null_ref);
-        assert!(check(&missing, &json!(21), &null_ctx).is_some());
+        assert!(check(&missing, "age", &json!(21), &null_ctx).is_some());
 
         let non_num = json!({ "other": "abc" });
         let nn_ctx = ValidationContext::new(&non_num);
         let target = Rule::Gt(NumTarget::Field("other".into()));
-        assert!(check(&target, &json!(21), &nn_ctx).is_some());
+        assert!(check(&target, "age", &json!(21), &nn_ctx).is_some());
 
         // non-numeric values under test fail with the number message
-        let msg = check(&age, &json!("abc"), &ctx).expect("non-number fails");
+        let msg = check(&age, "age", &json!("abc"), &ctx).expect("non-number fails");
         assert_eq!(msg, "must be a number");
 
         // numeric strings compare numerically (Laravel is_numeric parity)
-        assert!(check(&age, &json!("21"), &ctx).is_none());
+        assert!(check(&age, "age", &json!("21"), &ctx).is_none());
+    }
+
+    #[test]
+    fn condition_token_matching_is_a_closed_grammar() {
+        // numbers compare numerically, strings exactly.
+        assert!(scalar_match(Some(&json!(21)), "21"));
+        assert!(scalar_match(Some(&json!(21.0)), "21"));
+        assert!(scalar_match(Some(&json!("21")), "21"));
+        assert!(!scalar_match(Some(&json!(22)), "21"));
+        assert!(!scalar_match(Some(&json!("guest")), "hot"));
+
+        // bools only match the documented spellings — PHP's loose in_array
+        // would make `true` equal ANY non-empty token (fail-open).
+        assert!(scalar_match(Some(&json!(true)), "true"));
+        assert!(scalar_match(Some(&json!(true)), "yes"));
+        assert!(scalar_match(Some(&json!(false)), "0"));
+        assert!(!scalar_match(Some(&json!(true)), "admin"));
+        assert!(!scalar_match(Some(&json!(false)), "true"));
+
+        // absent resolves as null: only the literal `null` token matches.
+        assert!(scalar_match(None, "null"));
+        assert!(scalar_match(Some(&Value::Null), "null"));
+        assert!(!scalar_match(None, "x"));
+
+        // structured values never match a scalar token.
+        assert!(!scalar_match(Some(&json!(["a"])), "a"));
+        assert!(!scalar_match(Some(&json!({"a": 1})), "a"));
     }
 
     #[test]
