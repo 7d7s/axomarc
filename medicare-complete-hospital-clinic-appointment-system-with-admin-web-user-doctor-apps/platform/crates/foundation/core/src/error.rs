@@ -58,6 +58,11 @@ pub mod codes {
     /// Wave 3 Phase 5 strict mode: `prevent_lazy_loading` tripped on
     /// `load_relation`/`load_missing` (the `with()` eager path stays legal).
     pub const LAZY_LOAD_PREVENTED: &str = "LAZY_LOAD_PREVENTED";
+    /// Wave 3 Phase 6 optimistic locking: a `version_column` compare-and-swap
+    /// matched zero rows — another writer modified the record between the
+    /// read and the write. Conflict category (HTTP 409 via
+    /// `status_for_error`).
+    pub const STALE_RECORD: &str = "STALE_RECORD";
 }
 
 /// The one error type. `meta` must stay PHI-free (safe metadata only).
@@ -139,6 +144,20 @@ impl AppError {
     pub fn conflict(public_message: impl Into<String>) -> Self {
         Self::new(
             codes::CONFLICT,
+            ErrorCategory::Conflict,
+            Severity::Low,
+            Retryability::NotRetryable,
+            public_message,
+        )
+    }
+
+    /// Wave 3 Phase 6 optimistic locking: the `version_column` compare-and-swap
+    /// matched zero rows (a concurrent writer won). Conflict category, so the
+    /// shared `status_for_error` mapping renders it as HTTP 409 without a
+    /// per-code error-registry entry.
+    pub fn stale_record(public_message: impl Into<String>) -> Self {
+        Self::new(
+            codes::STALE_RECORD,
             ErrorCategory::Conflict,
             Severity::Low,
             Retryability::NotRetryable,

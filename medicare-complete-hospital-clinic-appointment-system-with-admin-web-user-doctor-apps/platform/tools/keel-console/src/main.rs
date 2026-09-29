@@ -138,6 +138,19 @@ enum Cmd {
     /// Interactive platform console (v1.1 B-29): a Tinker-class REPL over the
     /// booted engine that dispatches under the principal you log in as.
     Shell,
+    /// Prune aged/trashed rows for every registered prunable model (Wave 3
+    /// Phase 6): boots keel-api in `--prune` maintenance mode and prints
+    /// per-model purge counts (no server, no REPL).
+    #[command(name = "model:prune")]
+    ModelPrune {
+        /// Rows purged per store pass (clamped to the 200-row page cap).
+        #[arg(long, default_value_t = 200)]
+        chunk: u32,
+        /// Tenant whose rows to prune (tenant-scoped models match no rows
+        /// without it).
+        #[arg(long)]
+        tenant: Option<String>,
+    },
     /// Build runtime binaries and write the release manifest (RELEASE.md).
     Build {
         /// dev or release.
@@ -382,6 +395,7 @@ fn main() -> ExitCode {
         Cmd::Build { profile } => build(&profile),
         Cmd::Serve { worker } => serve(worker),
         Cmd::Shell => shell_console(),
+        Cmd::ModelPrune { chunk, tenant } => model_prune(chunk, tenant),
         Cmd::Release => release_manifest(),
         Cmd::FlagList => flag_list(),
         Cmd::FlagSet {
@@ -2953,9 +2967,83 @@ fn shell_console() -> anyhow::Result<ExitCode> {
     }
 }
 
+// ------------------------------------------------------------------ prune
+
+/// Wave 3 Phase 6: `keel model:prune`. keel-console is Tools-class and
+/// dep-rules keeps it from linking runtime crates, so the sweep runs inside
+/// keel-api behind `--prune` (same spawn pattern as `keel shell`): boots the
+/// graph, purges `chunk` rows per store pass across every registered
+/// prunable model, prints per-model counts and exits — no server, no REPL.
+fn model_prune(chunk: u32, tenant: Option<String>) -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    let config = config_path(&root);
+    println!(
+        "keel model:prune: booting (chunk: {chunk}, config: {})",
+        config.display()
+    );
+    let mut command = std::process::Command::new("cargo");
+    command
+        .arg("run")
+        .arg("--quiet")
+        .arg("-p")
+        .arg("keel-api")
+        .arg("--")
+        .arg("--prune")
+        .arg("--chunk")
+        .arg(chunk.to_string());
+    if let Some(tenant) = tenant.as_deref() {
+        command.arg("--tenant").arg(tenant);
+    }
+    let status = command
+        .current_dir(&root)
+        .env("KEEL_CONFIG", &config)
+        .status()
+        .map_err(|e| anyhow::anyhow!("cannot spawn keel-api --prune: {e}"))?;
+    let code = status.code().unwrap_or(1);
+    if code == 0 {
+        Ok(ExitCode::SUCCESS)
+    } else {
+        eprintln!("keel model:prune exited with status {code}");
+        Ok(ExitCode::from(code.clamp(0, 255) as u8))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Wave 3 Phase 6: `keel model:prune` parses with the default chunk
+    /// cap and honors `--chunk`/`--tenant`.
+    #[test]
+    fn model_prune_cli_parses() {
+        let cli = Cli::try_parse_from(["keel", "model:prune"]).expect("parses");
+        match cli.cmd {
+            Cmd::ModelPrune { chunk, tenant } => {
+                assert_eq!(chunk, 200);
+                assert!(tenant.is_none());
+            }
+            _ => panic!("expected model:prune"),
+        }
+        let cli = Cli::try_parse_from([
+            "keel",
+            "model:prune",
+            "--chunk",
+            "50",
+            "--tenant",
+            "01900000-0000-7000-8000-000000000001",
+        ])
+        .expect("parses");
+        match cli.cmd {
+            Cmd::ModelPrune { chunk, tenant } => {
+                assert_eq!(chunk, 50);
+                assert_eq!(
+                    tenant.as_deref(),
+                    Some("01900000-0000-7000-8000-000000000001")
+                );
+            }
+            _ => panic!("expected model:prune"),
+        }
+    }
 
     /// Starter-template contract (S9 B-15/B-20 smoke): the template renders
     /// fully substituted, its manifest parses, the graph compiles, and named

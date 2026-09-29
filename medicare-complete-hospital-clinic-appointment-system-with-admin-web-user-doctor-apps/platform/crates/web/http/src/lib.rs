@@ -209,6 +209,19 @@ mod tests {
         assert_eq!(status_for_error(&e), StatusCode::TOO_MANY_REQUESTS);
     }
 
+    /// Wave 3 Phase 6: an optimistic-lock conflict (`STALE_RECORD`,
+    /// Conflict category) and a generic conflict both map to 409 at the
+    /// HTTP edge — no error_render change needed.
+    #[test]
+    fn conflict_category_maps_to_409() {
+        let e = AppError::stale_record("Ledger 1 was modified concurrently");
+        assert_eq!(e.code, keel_foundation::codes::STALE_RECORD);
+        assert_eq!(e.category, ErrorCategory::Conflict);
+        assert_eq!(status_for_error(&e), StatusCode::CONFLICT);
+        let e = AppError::conflict("already taken");
+        assert_eq!(status_for_error(&e), StatusCode::CONFLICT);
+    }
+
     #[test]
     fn error_body_never_leaks_internal() {
         let e = AppError::internal("secret stack trace").with_meta("op", "x");

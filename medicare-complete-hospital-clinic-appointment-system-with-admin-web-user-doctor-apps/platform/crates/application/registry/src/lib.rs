@@ -65,10 +65,15 @@ pub struct CapabilitySpec {
 /// binding): the captured path parameter is looked up in the module's
 /// registered model resolver (tenant-scoped ModelStore::find) and injected
 /// into the operation input as `_bindings.<param>`. Misses are 404 envelopes.
+/// `with_trashed` (Wave 3 Phase 6) additionally resolves soft-deleted rows
+/// through the resolver's `resolve_trashed` hook — fail-closed by default
+/// when the resolver does not implement it.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BindingSpec {
     pub param: String,
     pub model: String,
+    #[serde(default)]
+    pub with_trashed: bool,
 }
 
 /// Wire response kind for a route. JSON envelopes are the default (S9
@@ -1284,6 +1289,32 @@ version = "0.1.0"
             PlatformGraph::compile(vec![manifest("alpha", ""), manifest("beta", "")]).unwrap();
         assert_eq!(graph.modules.len(), 2);
         assert!(graph.operations.contains_key("alpha.create"));
+    }
+
+    /// Wave 3 Phase 6: `BindingSpec::with_trashed` is opt-in — absent from
+    /// existing manifests (defaults false) and settable in both formats.
+    #[test]
+    fn binding_spec_with_trashed_is_opt_in() {
+        #[derive(serde::Deserialize)]
+        struct Wrap {
+            binding: BindingSpec,
+        }
+        let bare: Wrap =
+            toml::from_str(r#"binding = { param = "id", model = "Thing" }"#).expect("parses");
+        assert!(!bare.binding.with_trashed, "absent flag defaults to false");
+
+        let opted: Wrap =
+            toml::from_str(r#"binding = { param = "id", model = "Thing", with_trashed = true }"#)
+                .expect("parses");
+        assert!(opted.binding.with_trashed);
+
+        let json: Wrap =
+            serde_json::from_str(r#"{"binding":{"param":"id","model":"Thing","with_trashed":true}}"#)
+                .expect("parses");
+        assert!(json.binding.with_trashed);
+        let json_bare: Wrap = serde_json::from_str(r#"{"binding":{"param":"id","model":"Thing"}}"#)
+            .expect("parses");
+        assert!(!json_bare.binding.with_trashed);
     }
 
     #[test]

@@ -18,7 +18,7 @@
 //! The runtime never executes SQL itself — it prepares records and filters,
 //! delegates persistence to the store port, and fires observers.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use keel_foundation::{codes, AppError, ErrorCategory, Retryability, Sealer, Severity, TenantId};
@@ -29,7 +29,7 @@ use uuid::Uuid;
 use crate::casts::{builtin_cast, Cast, EncryptedCast};
 use crate::store::{
     fold_aggregate_values, now_rfc3339, sort_records, validate_aggregate, validate_counter,
-    AggregateOp, ExistsFilter, FieldFilter, ListOpts, ModelStore, Record,
+    AggregateOp, ExistsFilter, FieldFilter, FilterOp, ListOpts, ModelStore, Record,
 };
 use crate::{FieldDef, FieldType, ModelDef, ModelRegistry, RelationDef, RelationKind};
 
@@ -124,6 +124,11 @@ type ScopeFn = Arc<dyn Fn(Vec<FieldFilter>) -> Vec<FieldFilter> + Send + Sync>;
 type AccessorFn = Arc<dyn Fn(&Record) -> Json + Send + Sync>;
 type MutatorFn = Arc<dyn Fn(Json) -> Result<Json, AppError> + Send + Sync>;
 
+/// Prune predicate for a `Prunable` model: builds the row filter (e.g.
+/// `created_at < now() - 90 days`). Invoked ONCE per prune pass so
+/// time-based cutoffs recompute against the clock each pass.
+pub type PrunePredicate = Arc<dyn Fn() -> Vec<FieldFilter> + Send + Sync>;
+
 /// Per-call serialization overrides behind [`ModelRuntime::wire`].
 #[derive(Default)]
 struct WireOpts {
@@ -180,6 +185,66 @@ impl WireBuilder<'_> {
     }
 }
 
+/// Dirty-tracking triple produced by [`ModelRuntime::update_tracked`]:
+/// the row BEFORE the write, the full merged row that was handed to the
+/// store (pending), and the row the store returned (stored). Field
+/// presence counts — a key missing in one side and `null` in the other
+/// reads dirty. Framework auto-changes (`updated_at`, the CAS version
+/// stamp) therefore show up too, matching Laravel's `isDirty`/
+/// `wasChanged`.
+#[derive(Debug, Clone)]
+pub struct RecordChanges {
+    original: Record,
+    pending: Record,
+    stored: Record,
+}
+
+impl RecordChanges {
+    /// Pre-write value of `field` (as last read from the store).
+    pub fn original(&self, field: &str) -> Option<&Json> {
+        self.original.get(field)
+    }
+
+    /// Whether the pending row (what was sent) differs from the original
+    /// on `field` — Laravel `isDirty`.
+    pub fn is_dirty(&self, field: &str) -> bool {
+        self.original.get(field) != self.pending.get(field)
+    }
+
+    /// Whether the STORED row differs from the original on `field` —
+    /// Laravel `wasChanged`.
+    pub fn was_changed(&self, field: &str) -> bool {
+        self.original.get(field) != self.stored.get(field)
+    }
+
+    /// Every field whose pending value differs from the original, sorted.
+    pub fn dirty_fields(&self) -> Vec<String> {
+        let mut fields: BTreeSet<String> = BTreeSet::new();
+        for key in self.pending.keys().chain(self.original.keys()) {
+            if self.is_dirty(key) {
+                fields.insert(key.clone());
+            }
+        }
+        fields.into_iter().collect()
+    }
+
+    /// Every field whose stored value differs from the original, sorted.
+    pub fn changed_fields(&self) -> Vec<String> {
+        let mut fields: BTreeSet<String> = BTreeSet::new();
+        for key in self.stored.keys().chain(self.original.keys()) {
+            if self.was_changed(key) {
+                fields.insert(key.clone());
+            }
+        }
+        fields.into_iter().collect()
+    }
+
+    /// The row exactly as the store returned it after the write.
+    pub fn stored(&self) -> &Record {
+        &self.stored
+    }
+}
+
 /// Runtime semantics for one [`ModelDef`]. Cheap to clone (Arc internals).
 #[derive(Clone)]
 pub struct ModelRuntime {
@@ -198,6 +263,25 @@ pub struct ModelRuntime {
     prevent_silently_discarding_attributes: bool,
     /// Strict mode: `value`/`pluck` error when a matched row lacks the field.
     prevent_accessing_missing_attributes: bool,
+    /// Global scopes: applied FIRST on every read chokepoint (`list`/
+    /// `first`/`pluck`), before named scopes and validation. Eager child
+    /// runtimes are built fresh and never inherit these.
+    global_scopes: BTreeMap<String, ScopeFn>,
+    /// Global scope names suppressed by [`ModelRuntime::without_global_scopes`]
+    /// (unknown names are ignored — suppression never errors).
+    suppressed_globals: BTreeSet<String>,
+    /// [`ModelRuntime::without_global_scopes_all`]: suppress EVERY registered
+    /// global scope AND lift the soft-delete veil (all reads become
+    /// `include_deleted`) — Laravel parity, where `SoftDeletingScope` IS a
+    /// global scope. Named suppression never touches the veil.
+    all_globals_suppressed: bool,
+    /// [`ModelRuntime::without_timestamps`]: skip `created_at`/`updated_at`
+    /// auto-injection; caller-supplied values still pass. Under this flag
+    /// `touch` is a no-op write.
+    without_timestamps: bool,
+    /// [`ModelRuntime::with_prunable`]: maintenance predicate — only
+    /// `prune` and [`ModelRuntime::is_prunable`] consult it.
+    prunable: Option<PrunePredicate>,
 }
 
 impl std::fmt::Debug for ModelRuntime {
@@ -221,6 +305,11 @@ impl ModelRuntime {
             prevent_lazy_loading: false,
             prevent_silently_discarding_attributes: false,
             prevent_accessing_missing_attributes: false,
+            global_scopes: BTreeMap::new(),
+            suppressed_globals: BTreeSet::new(),
+            all_globals_suppressed: false,
+            without_timestamps: false,
+            prunable: None,
         }
     }
 
@@ -243,6 +332,69 @@ impl ModelRuntime {
     ) -> Self {
         self.scopes.insert(name.into(), Arc::new(f));
         self
+    }
+
+    /// Global query scope (Wave 3 Phase 6): applied FIRST to every read
+    /// chokepoint (`list`/`first`/`pluck`) — before named scopes and field
+    /// validation. Suppressed by name via [`Self::without_global_scopes`],
+    /// or entirely (plus veil lift) via [`Self::without_global_scopes_all`].
+    /// Divergence: eager child runtimes are built fresh and do not inherit
+    /// globals (named scopes already do not apply to eager fetches).
+    pub fn with_global_scope(
+        mut self,
+        name: impl Into<String>,
+        f: impl Fn(Vec<FieldFilter>) -> Vec<FieldFilter> + Send + Sync + 'static,
+    ) -> Self {
+        self.global_scopes.insert(name.into(), Arc::new(f));
+        self
+    }
+
+    /// Suppress these GLOBAL scopes by name (unknown names are ignored —
+    /// suppression must never fail). The soft-delete veil stays in place;
+    /// only [`Self::without_global_scopes_all`] lifts it.
+    pub fn without_global_scopes(
+        mut self,
+        names: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.suppressed_globals
+            .extend(names.into_iter().map(Into::into));
+        self
+    }
+
+    /// Suppress every registered global scope AND lift the soft-delete
+    /// veil: all reads on this runtime become `include_deleted`
+    /// (`find`/`first`/`list`/`pluck`), matching Laravel, where removing
+    /// all global scopes removes `SoftDeletingScope` too. Tenant scoping is
+    /// never a global scope and is never lifted.
+    pub fn without_global_scopes_all(mut self) -> Self {
+        self.all_globals_suppressed = true;
+        self
+    }
+
+    /// Skip framework timestamp injection: `created_at`/`updated_at` on
+    /// insert and the `updated_at` refresh on update. Explicitly supplied
+    /// timestamp values still pass the cast boundary. Under this flag
+    /// `touch` performs a no-op write (nothing to stamp).
+    pub fn without_timestamps(mut self) -> Self {
+        self.without_timestamps = true;
+        self
+    }
+
+    /// Mark this model prunable: `prune` calls `f` once per pass to build
+    /// the row filter (e.g. `created_at < now() - 90 days`) and force-
+    /// purges matching rows in `chunk`-sized pages through the store.
+    pub fn with_prunable(
+        mut self,
+        f: impl Fn() -> Vec<FieldFilter> + Send + Sync + 'static,
+    ) -> Self {
+        self.prunable = Some(Arc::new(f));
+        self
+    }
+
+    /// Whether [`Self::with_prunable`] registered a predicate — the
+    /// [`crate::prune::PruneRegistry`] skips runtimes that did not.
+    pub fn is_prunable(&self) -> bool {
+        self.prunable.is_some()
     }
 
     /// Accessor: computed value appended by [`ModelRuntime::public_record`].
@@ -480,13 +632,25 @@ impl ModelRuntime {
             }
         }
 
-        // 7. Framework timestamps (only when declared on the model).
-        let now = now_rfc3339();
-        if self.model.field_named("created_at").is_some() {
-            record.insert("created_at".into(), Json::String(now.clone()));
+        // 7. Framework timestamps (only when declared on the model; skipped
+        //    under `without_timestamps`, which still lets an explicitly
+        //    supplied value from step 5 pass through).
+        if !self.without_timestamps {
+            let now = now_rfc3339();
+            if self.model.field_named("created_at").is_some() {
+                record.insert("created_at".into(), Json::String(now.clone()));
+            }
+            if self.model.field_named("updated_at").is_some() {
+                record.insert("updated_at".into(), Json::String(now));
+            }
         }
-        if self.model.field_named("updated_at").is_some() {
-            record.insert("updated_at".into(), Json::String(now));
+
+        // 7b. Optimistic-lock seed: a `version_column` model starts at
+        //     version 1; an explicitly supplied value passes through.
+        if let Some(column) = &self.model.version_column {
+            if !record.contains_key(column) {
+                record.insert(column.clone(), Json::from(1i64));
+            }
         }
 
         Ok(record)
@@ -516,7 +680,10 @@ impl ModelRuntime {
             let value = self.cast_to_db(field, value.clone())?;
             record.insert(key.clone(), value);
         }
-        if self.model.field_named("updated_at").is_some() && !record.contains_key("updated_at") {
+        if !self.without_timestamps
+            && self.model.field_named("updated_at").is_some()
+            && !record.contains_key("updated_at")
+        {
             record.insert("updated_at".into(), Json::String(now_rfc3339()));
         }
         Ok(record)
@@ -650,7 +817,18 @@ impl ModelRuntime {
         id: Uuid,
         tenant: Option<TenantId>,
     ) -> Result<Option<Record>, AppError> {
-        store.find(&self.model, id, tenant, false)
+        store.find(&self.model, id, tenant, self.include_deleted())
+    }
+
+    /// Find regardless of trash state (the `with_trashed` read): trashed,
+    /// live and hard-delete rows all resolve. Missing stays `Ok(None)`.
+    pub fn find_trashed(
+        &self,
+        store: &dyn ModelStore,
+        id: Uuid,
+        tenant: Option<TenantId>,
+    ) -> Result<Option<Record>, AppError> {
+        store.find(&self.model, id, tenant, true)
     }
 
     /// Like `find`, but NOT_FOUND errors instead of `None`.
@@ -668,10 +846,12 @@ impl ModelRuntime {
         &self,
         store: &dyn ModelStore,
         tenant: Option<TenantId>,
-        mut filters: Vec<FieldFilter>,
+        filters: Vec<FieldFilter>,
         scope_names: &[String],
         page: Option<PageReq>,
     ) -> Result<keel_query::Page<Record>, AppError> {
+        // Pipeline: global scopes FIRST, then named scopes, then validation.
+        let mut filters = self.apply_global_scopes(filters);
         for name in scope_names {
             let scope = self
                 .scopes
@@ -682,7 +862,75 @@ impl ModelRuntime {
         self.validate_predicates(&filters)?;
         let opts = ListOpts {
             page,
-            include_deleted: false,
+            include_deleted: self.include_deleted(),
+            ..Default::default()
+        };
+        store.list(&self.model, tenant, &filters, &opts)
+    }
+
+    /// Eloquent `withTrashed()`: [`Self::list`] for one call with the
+    /// soft-delete veil lifted (globals, named scopes and validation all
+    /// still apply). The runtime's own veil posture is unchanged.
+    pub fn with_trashed(
+        &self,
+        store: &dyn ModelStore,
+        tenant: Option<TenantId>,
+        filters: Vec<FieldFilter>,
+        scope_names: &[String],
+        page: Option<PageReq>,
+    ) -> Result<keel_query::Page<Record>, AppError> {
+        let mut filters = self.apply_global_scopes(filters);
+        for name in scope_names {
+            let scope = self
+                .scopes
+                .get(name)
+                .ok_or_else(|| AppError::validation(format!("unknown scope {name:?}")))?;
+            filters = scope(filters);
+        }
+        self.validate_predicates(&filters)?;
+        let opts = ListOpts {
+            page,
+            include_deleted: true,
+            ..Default::default()
+        };
+        store.list(&self.model, tenant, &filters, &opts)
+    }
+
+    /// Eloquent `onlyTrashed()`: [`Self::with_trashed`] narrowed to trashed
+    /// rows by an appended `deleted_at IS NOT NULL`. The term lands AFTER
+    /// validation because `deleted_at` may be a store-level column that the
+    /// manifest never declares. Requires `soft_deletes`.
+    pub fn only_trashed(
+        &self,
+        store: &dyn ModelStore,
+        tenant: Option<TenantId>,
+        filters: Vec<FieldFilter>,
+        scope_names: &[String],
+        page: Option<PageReq>,
+    ) -> Result<keel_query::Page<Record>, AppError> {
+        if !self.model.soft_deletes {
+            return Err(AppError::validation(format!(
+                "only_trashed requires soft_deletes on model {}",
+                self.model.name
+            )));
+        }
+        let mut filters = self.apply_global_scopes(filters);
+        for name in scope_names {
+            let scope = self
+                .scopes
+                .get(name)
+                .ok_or_else(|| AppError::validation(format!("unknown scope {name:?}")))?;
+            filters = scope(filters);
+        }
+        self.validate_predicates(&filters)?;
+        filters.push(FieldFilter::Cmp {
+            field: "deleted_at".into(),
+            op: FilterOp::NotNull,
+            value: Json::Null,
+        });
+        let opts = ListOpts {
+            page,
+            include_deleted: true,
             ..Default::default()
         };
         store.list(&self.model, tenant, &filters, &opts)
@@ -708,19 +956,94 @@ impl ModelRuntime {
         tenant: Option<TenantId>,
         changes: &Record,
     ) -> Result<Record, AppError> {
+        self.update_inner(store, id, tenant, changes)
+            .map(|(record, _)| record)
+    }
+
+    /// [`Self::update`] plus the [`RecordChanges`] triple (original /
+    /// pending / stored) for `isDirty`/`wasChanged`-style assertions after
+    /// the write. Framework auto-changes (`updated_at`, the version stamp)
+    /// count as dirty — Laravel-consistent.
+    pub fn update_tracked(
+        &self,
+        store: &dyn ModelStore,
+        id: Uuid,
+        tenant: Option<TenantId>,
+        changes: &Record,
+    ) -> Result<(Record, RecordChanges), AppError> {
+        self.update_inner(store, id, tenant, changes)
+    }
+
+    /// Shared write path for `update`/`update_tracked`. With a
+    /// `version_column` the store write becomes a compare-and-swap: the
+    /// expected version is read from the freshly fetched row (the window
+    /// between that read and the write IS the CAS scope), the prepared row
+    /// is stamped `n + 1` — any caller-supplied version is overwritten —
+    /// and a zero-row `update_filtered` means a concurrent writer won:
+    /// [`AppError::stale_record`] (`Conflict` → 409 at the HTTP edge).
+    /// Without a version column this is the plain read-merge-write path.
+    fn update_inner(
+        &self,
+        store: &dyn ModelStore,
+        id: Uuid,
+        tenant: Option<TenantId>,
+        changes: &Record,
+    ) -> Result<(Record, RecordChanges), AppError> {
         // Fetch first: validates existence and gives observers the merge.
-        let current = self.get(store, id, tenant)?;
-        let prepared = self.prepare_update(changes)?;
-        let mut next = current;
+        let original = self.get(store, id, tenant)?;
+        let mut prepared = self.prepare_update(changes)?;
+        let cas = if let Some(column) = &self.model.version_column {
+            let expected = original.get(column).cloned().unwrap_or(Json::Null);
+            let expected_n = expected.as_i64().ok_or_else(|| {
+                AppError::validation(format!(
+                    "{} {id} has no integer version in {column:?} — seed the column \
+                     (inserts stamp 1) before enabling version_column",
+                    self.model.name
+                ))
+            })?;
+            prepared.insert(column.clone(), Json::from(expected_n.saturating_add(1)));
+            Some((
+                FieldFilter::eq("id", Json::String(id.to_string())),
+                FieldFilter::eq(column.clone(), expected),
+            ))
+        } else {
+            None
+        };
+        let mut pending = original.clone();
         for (key, value) in &prepared {
-            next.insert(key.clone(), value.clone());
+            pending.insert(key.clone(), value.clone());
         }
-        self.fire(ModelPhase::Updating, &next);
-        let stored = store
-            .update(&self.model, id, tenant, &prepared)?
-            .ok_or_else(|| AppError::not_found(format!("{} {id}", self.model.name)))?;
+        self.fire(ModelPhase::Updating, &pending);
+
+        let stored = match cas {
+            Some((id_filter, version_filter)) => {
+                let rows = store.update_filtered(
+                    &self.model,
+                    tenant,
+                    &[id_filter, version_filter],
+                    &prepared,
+                )?;
+                rows.into_iter().next().ok_or_else(|| {
+                    AppError::stale_record(format!(
+                        "{} {id} was modified concurrently",
+                        self.model.name
+                    ))
+                    .with_meta("model", &self.model.name)
+                })?
+            }
+            None => store
+                .update(&self.model, id, tenant, &prepared)?
+                .ok_or_else(|| AppError::not_found(format!("{} {id}", self.model.name)))?,
+        };
         self.fire(ModelPhase::Updated, &stored);
-        Ok(stored)
+        Ok((
+            stored.clone(),
+            RecordChanges {
+                original,
+                pending,
+                stored,
+            },
+        ))
     }
 
     /// Soft- or hard-delete per model posture. Returns the removed id.
@@ -735,6 +1058,129 @@ impl ModelRuntime {
         store.delete(&self.model, id, tenant)?;
         self.fire(ModelPhase::Deleted, &current);
         Ok(id)
+    }
+
+    /// Whether a row carries a non-null `deleted_at` (a store-level column
+    /// — it need not be declared on the manifest).
+    fn is_trashed(record: &Record) -> bool {
+        matches!(record.get("deleted_at"), Some(Json::String(s)) if !s.is_empty())
+    }
+
+    /// Eloquent `restore`: clear `deleted_at` on a trashed row. 404 when
+    /// missing; an already-live row returns as-is (idempotent, no events).
+    /// Fires `Updating` before the write and `Updated` after; a lost race
+    /// re-reads the outcome (concurrent restore → its row, concurrent
+    /// purge → 404). Requires `soft_deletes`.
+    pub fn restore(
+        &self,
+        store: &dyn ModelStore,
+        id: Uuid,
+        tenant: Option<TenantId>,
+    ) -> Result<Record, AppError> {
+        if !self.model.soft_deletes {
+            return Err(AppError::validation(format!(
+                "restore requires soft_deletes on model {}",
+                self.model.name
+            )));
+        }
+        let Some(current) = self.find_trashed(store, id, tenant)? else {
+            return Err(AppError::not_found(format!("{} {id}", self.model.name)));
+        };
+        if !Self::is_trashed(&current) {
+            return Ok(current); // already live — idempotent, no events
+        }
+        self.fire(ModelPhase::Updating, &current);
+        let restored = match store.restore(&self.model, id, tenant)? {
+            Some(row) => row,
+            None => {
+                // Lost the race: another writer restored or purged the row
+                // between our read and our write — re-read the outcome.
+                let row = self
+                    .find_trashed(store, id, tenant)?
+                    .ok_or_else(|| AppError::not_found(format!("{} {id}", self.model.name)))?;
+                if Self::is_trashed(&row) {
+                    return Err(AppError::conflict(format!(
+                        "{} {id} changed concurrently during restore",
+                        self.model.name
+                    )));
+                }
+                row
+            }
+        };
+        self.fire(ModelPhase::Updated, &restored);
+        Ok(restored)
+    }
+
+    /// Eloquent `forceDelete`: purge the row regardless of trash state
+    /// (on hard-delete models it simply purges a live row). 404 when
+    /// missing; fires `Deleting`/`Deleted`. Returns the purged id.
+    pub fn force_delete(
+        &self,
+        store: &dyn ModelStore,
+        id: Uuid,
+        tenant: Option<TenantId>,
+    ) -> Result<Uuid, AppError> {
+        let current = self
+            .find_trashed(store, id, tenant)?
+            .ok_or_else(|| AppError::not_found(format!("{} {id}", self.model.name)))?;
+        self.fire(ModelPhase::Deleting, &current);
+        store.force_delete(&self.model, id, tenant)?;
+        self.fire(ModelPhase::Deleted, &current);
+        Ok(id)
+    }
+
+    /// Wave 3 Phase 6 maintenance: purge every row matching the
+    /// `with_prunable` predicate, `chunk` rows per store pass (clamped to
+    /// the platform's 200-row page cap, matching `chunk`). Each pass lists
+    /// page 1 (purged rows vanish, so the next pass sees the next batch)
+    /// with `include_deleted: true` — soft-deleted rows purge hard too —
+    /// sorted by `id` for a stable walk. Globals/named scopes do NOT
+    /// apply: the predicate alone defines the sweep. Stops on an empty
+    /// page or a pass that purged nothing (zero-progress guard).
+    /// Returns the number of purged rows.
+    pub fn prune(
+        &self,
+        store: &dyn ModelStore,
+        tenant: Option<TenantId>,
+        chunk: u32,
+    ) -> Result<u64, AppError> {
+        let predicate = self.prunable.as_ref().ok_or_else(|| {
+            AppError::validation(format!(
+                "model {} is not prunable (call with_prunable)",
+                self.model.name
+            ))
+        })?;
+        let per_page = chunk.clamp(1, 200);
+        let mut total = 0u64;
+        loop {
+            let filters = predicate();
+            self.validate_predicates(&filters)?;
+            let opts = ListOpts {
+                page: Some(PageReq {
+                    page: 1,
+                    per_page,
+                }),
+                include_deleted: true,
+                sort: Some(("id".into(), false)),
+                limit: None,
+            };
+            let page = store.list(&self.model, tenant, &filters, &opts)?;
+            if page.items.is_empty() {
+                break;
+            }
+            let mut purged = 0u64;
+            for row in &page.items {
+                let id = self.record_id(row)?;
+                if store.force_delete(&self.model, id, tenant)? {
+                    purged += 1;
+                }
+            }
+            total += purged;
+            if purged == 0 {
+                break; // zero-progress pass — never spin on an unremovable row
+            }
+        }
+        Ok(total)
     }
 
     pub fn upsert(
@@ -777,6 +1223,42 @@ impl ModelRuntime {
         Ok(())
     }
 
+    /// Apply every registered global scope in name order (BTreeMap is
+    /// deterministic), skipping suppressed ones. Named suppression and
+    /// `without_global_scopes_all` both funnel through here; the function
+    /// stays pure — validation is a separate step.
+    fn apply_global_scopes(&self, mut filters: Vec<FieldFilter>) -> Vec<FieldFilter> {
+        if self.all_globals_suppressed {
+            return filters;
+        }
+        for (name, scope) in &self.global_scopes {
+            if self.suppressed_globals.contains(name) {
+                continue;
+            }
+            filters = scope(filters);
+        }
+        filters
+    }
+
+    /// Whether reads on this runtime see soft-deleted rows. Only
+    /// `without_global_scopes_all` lifts the veil; named suppression and
+    /// `with_trashed`/`only_trashed` (per-call) never change this posture.
+    fn include_deleted(&self) -> bool {
+        self.all_globals_suppressed
+    }
+
+    /// Read chokepoint for `first`/`pluck`: globals FIRST, then field
+    /// validation. `chunk`/`cursor` validate raw and delegate to `list`,
+    /// so globals apply exactly once there — never double-applied.
+    fn prepare_filters(
+        &self,
+        filters: Vec<FieldFilter>,
+    ) -> Result<Vec<FieldFilter>, AppError> {
+        let filters = self.apply_global_scopes(filters);
+        self.validate_predicates(&filters)?;
+        Ok(filters)
+    }
+
     /// Canonical uuid id of a record (every Wave 3 model keys on a uuid
     /// `id`).
     fn record_id(&self, record: &Record) -> Result<Uuid, AppError> {
@@ -816,8 +1298,8 @@ impl ModelRuntime {
         tenant: Option<TenantId>,
         predicates: &[FieldFilter],
     ) -> Result<Option<Record>, AppError> {
-        self.validate_predicates(predicates)?;
-        store.find_by(&self.model, tenant, predicates, false)
+        let predicates = self.prepare_filters(predicates.to_vec())?;
+        store.find_by(&self.model, tenant, &predicates, self.include_deleted())
     }
 
     /// First match, else a typed `NOT_FOUND` error — the 404 path through
@@ -989,8 +1471,12 @@ impl ModelRuntime {
         field: &str,
     ) -> Result<Vec<Json>, AppError> {
         self.validate_read_field(field)?;
-        self.validate_predicates(predicates)?;
-        let page = store.list(&self.model, tenant, predicates, &ListOpts::default())?;
+        let predicates = self.prepare_filters(predicates.to_vec())?;
+        let opts = ListOpts {
+            include_deleted: self.include_deleted(),
+            ..Default::default()
+        };
+        let page = store.list(&self.model, tenant, &predicates, &opts)?;
         if self.prevent_accessing_missing_attributes
             && page.items.iter().any(|row| !row.contains_key(field))
         {
@@ -1187,7 +1673,8 @@ impl ModelRuntime {
     }
 
     /// Re-fetch this record's row as a NEW record (Eloquent `fresh()`):
-    /// `Ok(None)` when the row was soft-deleted or removed meanwhile.
+    /// `Ok(None)` when the row was removed meanwhile, or soft-deleted
+    /// unless the veil is lifted via `without_global_scopes_all`.
     pub fn fresh(
         &self,
         store: &dyn ModelStore,
@@ -1195,7 +1682,7 @@ impl ModelRuntime {
         tenant: Option<TenantId>,
     ) -> Result<Option<Record>, AppError> {
         let id = self.record_id(record)?;
-        store.find(&self.model, id, tenant, false)
+        store.find(&self.model, id, tenant, self.include_deleted())
     }
 
     /// Re-hydrate `record` in place from the store (Eloquent `refresh()`);
@@ -1313,7 +1800,9 @@ impl ModelRuntime {
         // 2. Save self: update the persisted row, else insert as new.
         let self_id = self.record_id(&attrs).ok();
         let persisted = match self_id {
-            Some(id) => store.find(&self.model, id, tenant, false)?.is_some(),
+            Some(id) => store
+                .find(&self.model, id, tenant, self.include_deleted())?
+                .is_some(),
             None => false,
         };
         let saved = if persisted {
@@ -5060,5 +5549,463 @@ mod tests {
             .unwrap_err()
             .public_message
             .contains("not on model"));
+    }
+
+    // ------------------------------------ Wave 3 Phase 6: optimistic locking
+
+    /// A versioned model: `version` seeds to 1 on insert and every update
+    /// compare-and-swaps it to `n + 1`.
+    fn versioned_model() -> ModelDef {
+        ModelDef::new("Ledger", "ledgers")
+            .field(FieldDef::new("id", FieldType::Uuid).required())
+            .field(FieldDef::new("note", FieldType::Text))
+            .field(FieldDef::new("version", FieldType::Int64))
+            .version_column("version")
+    }
+
+    fn note(text: &str) -> Record {
+        let mut r = Record::new();
+        r.insert("note".into(), Json::String(text.into()));
+        r
+    }
+
+    #[test]
+    fn version_column_seeds_one_and_stamps_every_update() {
+        let store = InMemoryModelStore::new();
+        let rt = ModelRuntime::new(versioned_model());
+        let row = rt.insert(&store, &note("a"), None).unwrap();
+        assert_eq!(row.get("version").and_then(Json::as_i64), Some(1));
+
+        let mut changes = Record::new();
+        changes.insert("note".into(), Json::String("b".into()));
+        let updated = rt.update(&store, rid(&row), None, &changes).unwrap();
+        assert_eq!(updated.get("version").and_then(Json::as_i64), Some(2));
+
+        // A caller-supplied (stale) version is overwritten by the stamp —
+        // re-submitting the old number never bypasses the CAS.
+        let mut resubmitted = changes;
+        resubmitted.insert("version".into(), Json::from(1i64));
+        let updated = rt.update(&store, rid(&row), None, &resubmitted).unwrap();
+        assert_eq!(updated.get("version").and_then(Json::as_i64), Some(3));
+        assert_eq!(updated.get("note").and_then(Json::as_str), Some("b"));
+    }
+
+    #[test]
+    fn cas_stale_write_reports_stale_record() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        /// A concurrent writer: on `Updating`, bump the stored version
+        /// behind the CAS's back (straight to the store — observers never
+        /// recurse through the runtime).
+        struct Interferer {
+            store: Arc<InMemoryModelStore>,
+            model: ModelDef,
+            fired: AtomicBool,
+        }
+        impl ModelObserver for Interferer {
+            fn on_model_event(&self, event: &ModelEvent) {
+                if event.phase != ModelPhase::Updating {
+                    return;
+                }
+                let Some(id) = event.record.get("id").and_then(Json::as_str) else {
+                    return;
+                };
+                let Ok(id) = Uuid::parse_str(id) else { return };
+                let mut bump = Record::new();
+                bump.insert("version".into(), Json::from(99i64));
+                let _ = self.store.update(&self.model, id, None, &bump);
+                self.fired.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let store = InMemoryModelStore::new();
+        let model = versioned_model();
+        let interferer = Arc::new(Interferer {
+            store: store.clone(),
+            model: model.clone(),
+            fired: AtomicBool::new(false),
+        });
+        let rt = ModelRuntime::new(model).with_observer(interferer.clone());
+        let row = rt.insert(&store, &note("a"), None).unwrap();
+
+        let mut changes = Record::new();
+        changes.insert("note".into(), Json::String("b".into()));
+        let err = rt.update(&store, rid(&row), None, &changes).unwrap_err();
+
+        assert!(interferer.fired.load(Ordering::SeqCst), "interferer ran");
+        assert_eq!(err.code, keel_foundation::codes::STALE_RECORD);
+        assert_eq!(err.category, keel_foundation::ErrorCategory::Conflict);
+        // The stale write was refused: the row keeps the interfering version
+        // and the original note.
+        let current = rt.get(&store, rid(&row), None).unwrap();
+        assert_eq!(current.get("version").and_then(Json::as_i64), Some(99));
+        assert_eq!(current.get("note").and_then(Json::as_str), Some("a"));
+    }
+
+    #[test]
+    fn cas_refuses_a_row_without_an_integer_version() {
+        let store = InMemoryModelStore::new();
+        let model = versioned_model();
+        let id = Uuid::now_v7();
+        // Seed straight through the store with NO version value at all.
+        let mut seeded = Record::new();
+        seeded.insert("id".into(), Json::String(id.to_string()));
+        seeded.insert("note".into(), Json::String("seeded".into()));
+        store.insert(&model, &seeded).unwrap();
+
+        let rt = ModelRuntime::new(model);
+        let mut changes = Record::new();
+        changes.insert("note".into(), Json::String("x".into()));
+        let err = rt.update(&store, id, None, &changes).unwrap_err();
+        assert_eq!(err.code, keel_foundation::codes::VALIDATION);
+        assert!(
+            err.public_message.contains("version"),
+            "{}",
+            err.public_message
+        );
+    }
+
+    #[test]
+    fn update_tracked_reports_original_pending_and_stored() {
+        let store = InMemoryModelStore::new();
+        let tenant = TenantId::new();
+        // Insert WITHOUT timestamps so the update's auto-stamp is a
+        // deterministic dirty field (absent before, present after).
+        let bare = ModelRuntime::new(appointment_model()).without_timestamps();
+        let row = bare.insert(&store, &input("p"), Some(tenant)).unwrap();
+        assert!(row.get("updated_at").is_none());
+
+        let rt = ModelRuntime::new(appointment_model());
+        let mut changes = Record::new();
+        changes.insert("status".into(), Json::String("cancelled".into()));
+        let (stored, tracking) = rt
+            .update_tracked(&store, rid(&row), Some(tenant), &changes)
+            .unwrap();
+
+        // Original snapshot predates the write.
+        assert_eq!(
+            tracking.original("status").and_then(Json::as_str),
+            Some("booked")
+        );
+        assert!(tracking.is_dirty("status"));
+        assert!(tracking.was_changed("status"));
+        // Framework auto-change (updated_at) counts dirty too: absent on the
+        // original row, stamped in the pending/stored rows.
+        assert!(tracking.is_dirty("updated_at"));
+        assert!(tracking.was_changed("updated_at"));
+        // Untouched fields stay clean.
+        assert!(!tracking.is_dirty("patient"));
+        assert!(!tracking.was_changed("patient"));
+        assert!(tracking
+            .dirty_fields()
+            .contains(&"status".to_string()));
+        assert!(tracking
+            .changed_fields()
+            .contains(&"status".to_string()));
+        assert_eq!(
+            tracking.stored().get("status").and_then(Json::as_str),
+            Some("cancelled")
+        );
+        assert_eq!(stored.get("status").and_then(Json::as_str), Some("cancelled"));
+    }
+
+    // ---------------------------------------- Wave 3 Phase 6: soft-delete trio
+
+    #[test]
+    fn soft_delete_trio_round_trips() {
+        let store = InMemoryModelStore::new();
+        let tenant = TenantId::new();
+        let rt = ModelRuntime::new(appointment_model());
+        let row = rt.insert(&store, &input("p"), Some(tenant)).unwrap();
+        let id = rid(&row);
+
+        // Live row: visible to list, absent from only_trashed.
+        assert_eq!(
+            rt.list(&store, Some(tenant), vec![], &[], None)
+                .unwrap()
+                .items
+                .len(),
+            1
+        );
+        assert_eq!(
+            rt.only_trashed(&store, Some(tenant), vec![], &[], None)
+                .unwrap()
+                .items
+                .len(),
+            0
+        );
+
+        // Soft delete: hidden from find/list, visible to the trashed reads.
+        rt.delete(&store, id, Some(tenant)).unwrap();
+        assert!(rt.find(&store, id, Some(tenant)).unwrap().is_none());
+        assert!(rt.find_trashed(&store, id, Some(tenant)).unwrap().is_some());
+        assert_eq!(
+            rt.list(&store, Some(tenant), vec![], &[], None)
+                .unwrap()
+                .items
+                .len(),
+            0
+        );
+        assert_eq!(
+            rt.with_trashed(&store, Some(tenant), vec![], &[], None)
+                .unwrap()
+                .items
+                .len(),
+            1
+        );
+        assert_eq!(
+            rt.only_trashed(&store, Some(tenant), vec![], &[], None)
+                .unwrap()
+                .items
+                .len(),
+            1
+        );
+
+        // Restore: back to live; restoring an already-live row is a no-op.
+        let restored = rt.restore(&store, id, Some(tenant)).unwrap();
+        assert!(!matches!(
+            restored.get("deleted_at"),
+            Some(Json::String(s)) if !s.is_empty()
+        ));
+        assert!(rt.find(&store, id, Some(tenant)).unwrap().is_some());
+        rt.restore(&store, id, Some(tenant)).unwrap();
+        assert_eq!(
+            rt.only_trashed(&store, Some(tenant), vec![], &[], None)
+                .unwrap()
+                .items
+                .len(),
+            0
+        );
+
+        // Missing rows are 404s for restore and force_delete.
+        let missing = Uuid::now_v7();
+        assert_eq!(
+            rt.restore(&store, missing, Some(tenant)).unwrap_err().code,
+            keel_foundation::codes::NOT_FOUND
+        );
+
+        // force_delete purges outright; a second call misses.
+        rt.force_delete(&store, id, Some(tenant)).unwrap();
+        assert!(rt.find_trashed(&store, id, Some(tenant)).unwrap().is_none());
+        assert_eq!(
+            rt.force_delete(&store, id, Some(tenant))
+                .unwrap_err()
+                .code,
+            keel_foundation::codes::NOT_FOUND
+        );
+    }
+
+    #[test]
+    fn trashed_reads_refuse_hard_delete_models() {
+        let store = InMemoryModelStore::new();
+        let rt = ModelRuntime::new(
+            ModelDef::new("Event", "events")
+                .hard_deletes()
+                .field(FieldDef::new("id", FieldType::Uuid).required())
+                .field(FieldDef::new("name", FieldType::Text)),
+        );
+        let err = rt
+            .only_trashed(&store, None, vec![], &[], None)
+            .unwrap_err();
+        assert_eq!(err.code, keel_foundation::codes::VALIDATION);
+        let err = rt.restore(&store, Uuid::now_v7(), None).unwrap_err();
+        assert_eq!(err.code, keel_foundation::codes::VALIDATION);
+        // force_delete needs no soft-delete posture — a missing row is
+        // simply 404.
+        let err = rt.force_delete(&store, Uuid::now_v7(), None).unwrap_err();
+        assert_eq!(err.code, keel_foundation::codes::NOT_FOUND);
+    }
+
+    // ------------------------------------------ Wave 3 Phase 6: global scopes
+
+    #[test]
+    fn global_scopes_run_first_and_named_suppression_relaxes_reads() {
+        let store = InMemoryModelStore::new();
+        let tenant = TenantId::new();
+        let rt = ModelRuntime::new(appointment_model())
+            .with_global_scope("only_booked", |mut f| {
+                f.push(FieldFilter::eq("status", "booked"));
+                f
+            })
+            .with_scope("cancelled", |mut f| {
+                f.push(FieldFilter::eq("status", "cancelled"));
+                f
+            });
+        let a = rt.insert(&store, &input("one"), Some(tenant)).unwrap();
+        let mut changes = Record::new();
+        changes.insert("status".into(), Json::String("cancelled".into()));
+        rt.update(&store, rid(&a), Some(tenant), &changes).unwrap();
+
+        // Global FIRST, then the named scope: booked AND cancelled → none.
+        let page = rt
+            .list(&store, Some(tenant), vec![], &["cancelled".into()], None)
+            .unwrap();
+        assert_eq!(page.items.len(), 0);
+        assert!(rt
+            .first(
+                &store,
+                Some(tenant),
+                &[FieldFilter::eq("status", "cancelled")]
+            )
+            .unwrap()
+            .is_none());
+
+        // Suppress the global by name: the named scope alone matches now.
+        let relaxed = rt.clone().without_global_scopes(["only_booked"]);
+        let page = relaxed
+            .list(&store, Some(tenant), vec![], &["cancelled".into()], None)
+            .unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert!(relaxed
+            .first(
+                &store,
+                Some(tenant),
+                &[FieldFilter::eq("status", "cancelled")]
+            )
+            .unwrap()
+            .is_some());
+        // pluck runs the same chokepoint.
+        assert_eq!(
+            relaxed
+                .pluck(
+                    &store,
+                    Some(tenant),
+                    &[FieldFilter::eq("status", "cancelled")],
+                    "patient"
+                )
+                .unwrap(),
+            vec![Json::String("one".into())]
+        );
+        // Unknown names are ignored — suppression never errors.
+        let _ = rt.clone().without_global_scopes(["nonexistent"]);
+    }
+
+    #[test]
+    fn without_global_scopes_all_lifts_the_soft_delete_veil() {
+        let store = InMemoryModelStore::new();
+        let tenant = TenantId::new();
+        let rt = ModelRuntime::new(appointment_model()).with_global_scope(
+            "only_booked",
+            |mut f| {
+                f.push(FieldFilter::eq("status", "booked"));
+                f
+            },
+        );
+        let row = rt.insert(&store, &input("p"), Some(tenant)).unwrap();
+        let id = rid(&row);
+        rt.delete(&store, id, Some(tenant)).unwrap();
+
+        // Default posture: veil down, global in force.
+        assert!(rt.find(&store, id, Some(tenant)).unwrap().is_none());
+        assert_eq!(
+            rt.list(&store, Some(tenant), vec![], &[], None)
+                .unwrap()
+                .items
+                .len(),
+            0
+        );
+
+        // All-globals suppressed: veil lifted AND every global scope gone.
+        let lifted = rt.clone().without_global_scopes_all();
+        assert!(lifted.find(&store, id, Some(tenant)).unwrap().is_some());
+        let page = lifted
+            .list(&store, Some(tenant), vec![], &[], None)
+            .unwrap();
+        assert_eq!(
+            page.items.len(),
+            1,
+            "trashed row visible, no status filter left"
+        );
+        assert!(lifted.first(&store, Some(tenant), &[]).unwrap().is_some());
+        assert_eq!(
+            lifted
+                .pluck(&store, Some(tenant), &[], "patient")
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    // ---------------------------------------------- Wave 3 Phase 6: pruning
+
+    #[test]
+    fn prune_walks_matches_in_chunked_passes() {
+        let store = InMemoryModelStore::new();
+        let model = ModelDef::new("Event", "events")
+            .hard_deletes()
+            .field(FieldDef::new("id", FieldType::Uuid).required())
+            .field(FieldDef::new("kind", FieldType::Text));
+        let rt = ModelRuntime::new(model.clone())
+            .with_prunable(|| vec![FieldFilter::eq("kind", "expired")]);
+        assert!(rt.is_prunable());
+        for kind in ["expired", "expired", "expired", "keep"] {
+            let mut row = Record::new();
+            row.insert("id".into(), Json::String(Uuid::now_v7().to_string()));
+            row.insert("kind".into(), Json::String(kind.into()));
+            store.insert(&model, &row).unwrap();
+        }
+
+        // chunk=1 walks every match across passes (clamped to the 200-row
+        // page cap, page 1 each pass as purged rows vanish).
+        assert_eq!(rt.prune(&store, None, 1).unwrap(), 3);
+        let page = store
+            .list(&model, None, &[], &ListOpts::default())
+            .unwrap();
+        assert_eq!(page.items.len(), 1, "the live row survives");
+        // An exhausted sweep purges nothing (no infinite zero-progress loop).
+        assert_eq!(rt.prune(&store, None, 50).unwrap(), 0);
+    }
+
+    #[test]
+    fn prune_refuses_models_without_a_predicate() {
+        let rt = ModelRuntime::new(appointment_model());
+        assert!(!rt.is_prunable());
+        let store = InMemoryModelStore::new();
+        let err = rt.prune(&store, None, 10).unwrap_err();
+        assert_eq!(err.code, keel_foundation::codes::VALIDATION);
+        assert!(err.public_message.contains("not prunable"));
+    }
+
+    // --------------------------------------- Wave 3 Phase 6: without_timestamps
+
+    #[test]
+    fn without_timestamps_skips_injection_and_touch_becomes_a_noop() {
+        let store = InMemoryModelStore::new();
+        let tenant = TenantId::new();
+        let plain = ModelRuntime::new(appointment_model());
+        let bare = ModelRuntime::new(appointment_model()).without_timestamps();
+
+        // Insert: no created_at/updated_at stamped under the flag.
+        let row = bare.insert(&store, &input("b"), Some(tenant)).unwrap();
+        assert!(row.get("created_at").is_none());
+        assert!(row.get("updated_at").is_none());
+        // Control: the flagless runtime stamps both.
+        let stamped = plain.insert(&store, &input("a"), Some(tenant)).unwrap();
+        assert!(stamped.get("created_at").and_then(Json::as_str).is_some());
+
+        // Explicitly supplied timestamps still pass under the flag.
+        let mut explicit = input("c");
+        explicit.insert("created_at".into(), Json::String("2020-01-01T00:00:00Z".into()));
+        let explicit = bare.insert(&store, &explicit, Some(tenant)).unwrap();
+        assert_eq!(
+            explicit.get("created_at").and_then(Json::as_str),
+            Some("2020-01-01T00:00:00Z")
+        );
+
+        // Update under the flag leaves updated_at alone; touch is a no-op
+        // write (nothing to stamp).
+        let mut changes = Record::new();
+        changes.insert("patient".into(), Json::String("z".into()));
+        let updated = bare
+            .update(&store, rid(&row), Some(tenant), &changes)
+            .unwrap();
+        assert!(updated.get("updated_at").is_none());
+        let touched = bare.touch(&store, rid(&row), Some(tenant)).unwrap();
+        assert!(touched.get("updated_at").is_none());
+        assert_eq!(touched.get("patient").and_then(Json::as_str), Some("z"));
+
+        // Control: touch stamps updated_at without the flag.
+        let touched = plain.touch(&store, rid(&stamped), Some(tenant)).unwrap();
+        assert!(touched.get("updated_at").and_then(Json::as_str).is_some());
     }
 }

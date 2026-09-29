@@ -1515,7 +1515,16 @@ async fn graph_dispatch(
                 ));
                 return dispatch_error(&state, &dispatch, &headers, &path, &err);
             };
-            match resolver.resolve(Some(tenant), id) {
+            // Wave 3 Phase 6: `with_trashed` bindings resolve soft-deleted
+            // rows through the resolver's trashed-aware hook (fail-closed
+            // default when the resolver does not implement it).
+            let resolved = keel_models::resolve_binding(
+                resolver.as_ref(),
+                binding.with_trashed,
+                Some(tenant),
+                id,
+            );
+            match resolved {
                 Ok(Some(record)) => {
                     bindings_map.insert(binding.param.clone(), serde_json::Value::Object(record));
                 }

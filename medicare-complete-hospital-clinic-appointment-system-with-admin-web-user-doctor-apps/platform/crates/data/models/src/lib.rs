@@ -16,14 +16,16 @@ use std::collections::BTreeMap;
 
 pub mod bindings;
 pub mod casts;
+pub mod prune;
 pub mod runtime;
 pub mod store;
 
-pub use bindings::{RouteBindingRegistry, RouteBindingResolver, RouteBindingsRef};
+pub use bindings::{resolve_binding, RouteBindingRegistry, RouteBindingResolver, RouteBindingsRef};
 pub use casts::{Cast, EncryptedCast};
+pub use prune::{PruneRegistry, PruneRegistryRef};
 pub use runtime::{
     json_to_bind, json_value_to_bind, parse_timestamp, record_to_columns, EagerConstraint,
-    ModelEvent, ModelObserver, ModelPhase, ModelRuntime, PivotSync,
+    ModelEvent, ModelObserver, ModelPhase, ModelRuntime, PivotSync, PrunePredicate, RecordChanges,
 };
 pub use store::{
     now_rfc3339, AggregateOp, ExistsFilter, FieldFilter, FilterOp, InMemoryModelStore,
@@ -388,6 +390,13 @@ pub struct ModelDef {
     /// (accessors still append — the Laravel `$visible`/`$appends` posture).
     #[serde(default)]
     pub visible: Vec<String>,
+    /// Wave 3 Phase 6 optimistic locking: integer column compared on every
+    /// `update` (`WHERE version = $n`, `SET version = n + 1`); a zero-row
+    /// match fails the write with `codes::STALE_RECORD`. `None` (default)
+    /// disables compare-and-swap. Validated at registration: the name must
+    /// resolve to a declared `Int32`/`Int64` field.
+    #[serde(default)]
+    pub version_column: Option<String>,
 }
 
 impl ModelDef {
@@ -401,6 +410,7 @@ impl ModelDef {
             relations: Vec::new(),
             hidden: Vec::new(),
             visible: Vec::new(),
+            version_column: None,
         }
     }
 
@@ -434,6 +444,13 @@ impl ModelDef {
     /// to exactly these keys (accessors still append).
     pub fn show(mut self, names: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.visible.extend(names.into_iter().map(Into::into));
+        self
+    }
+
+    /// Wave 3 Phase 6: enable optimistic locking on an integer column —
+    /// every `update` CAS-compares it and bumps it to `n + 1`.
+    pub fn version_column(mut self, name: impl Into<String>) -> Self {
+        self.version_column = Some(name.into());
         self
     }
 
@@ -602,6 +619,22 @@ impl ModelRegistry {
                     type_col,
                     &format!("relation {}.{} morph type column", model.name, rel.name),
                 )?;
+            }
+        }
+        // Wave 3 Phase 6: the optimistic-lock column must be a declared
+        // integer field so both stores can bind and compare it.
+        if let Some(column) = &model.version_column {
+            let Some(field) = model.field_named(column) else {
+                return Err(AppError::validation(format!(
+                    "model {} version_column {column:?} is not a declared field",
+                    model.name
+                )));
+            };
+            if !matches!(field.field_type, FieldType::Int32 | FieldType::Int64) {
+                return Err(AppError::validation(format!(
+                    "model {} version_column {column:?} must be an Int32 or Int64 field, got {:?}",
+                    model.name, field.field_type
+                )));
             }
         }
         Ok(())
@@ -774,6 +807,39 @@ mod tests {
         assert!(reg.get("Appointment").is_some());
         assert!(reg.get("Visit").is_none());
         assert!(reg.validate_graph().is_ok());
+    }
+
+    /// Wave 3 Phase 6: the optimistic-lock column must be a DECLARED
+    /// integer field so both stores can bind and compare it.
+    #[test]
+    fn version_column_must_be_a_declared_integer_field() {
+        let mut reg = ModelRegistry::new();
+        let undeclared = ModelDef::new("Thing", "things")
+            .field(FieldDef::new("id", FieldType::Uuid).required())
+            .version_column("missing");
+        let err = reg.register(undeclared).unwrap_err();
+        assert!(
+            err.public_message.contains("not a declared field"),
+            "{}",
+            err.public_message
+        );
+
+        let non_integer = ModelDef::new("Thing", "things")
+            .field(FieldDef::new("id", FieldType::Uuid).required())
+            .field(FieldDef::new("version", FieldType::Text))
+            .version_column("version");
+        let err = reg.register(non_integer).unwrap_err();
+        assert!(
+            err.public_message.contains("Int32 or Int64"),
+            "{}",
+            err.public_message
+        );
+
+        let ok = ModelDef::new("Thing", "things")
+            .field(FieldDef::new("id", FieldType::Uuid).required())
+            .field(FieldDef::new("version", FieldType::Int64))
+            .version_column("version");
+        reg.register(ok).expect("valid version column registers");
     }
 
     #[test]

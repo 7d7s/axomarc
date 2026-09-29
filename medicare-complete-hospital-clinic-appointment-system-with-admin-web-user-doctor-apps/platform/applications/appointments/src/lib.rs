@@ -238,6 +238,16 @@ impl AppointmentStore {
         self.runtime.find(&*self.backend, id, tenant)
     }
 
+    /// Wave 3 Phase 6: trashed-aware binding find (`with_trashed` route
+    /// bindings) — surfaces soft-deleted appointments too.
+    pub fn find_for_binding_trashed(
+        &self,
+        tenant: Option<TenantId>,
+        id: Uuid,
+    ) -> Result<Option<Record>, AppError> {
+        self.runtime.find_trashed(&*self.backend, id, tenant)
+    }
+
     /// Wave 1 pagination reference: one page of the tenant's appointments.
     pub fn list_paged(
         &self,
@@ -287,6 +297,16 @@ impl keel_models::RouteBindingResolver for AppointmentBindingResolver {
         id: Uuid,
     ) -> Result<Option<Record>, AppError> {
         self.store.find_for_binding(tenant, id)
+    }
+
+    /// Wave 3 Phase 6: `with_trashed` bindings resolve soft-deleted
+    /// appointments (the default trait impl would fail closed).
+    fn resolve_trashed(
+        &self,
+        tenant: Option<TenantId>,
+        id: Uuid,
+    ) -> Result<Option<Record>, AppError> {
+        self.store.find_for_binding_trashed(tenant, id)
     }
 }
 
@@ -682,6 +702,42 @@ mod tests {
             store.list(tenant).unwrap()[0].status,
             AppointmentStatus::Booked
         );
+    }
+
+    /// Wave 3 Phase 6: the binding resolver's trashed hook. The row is
+    /// soft-deleted behind the store's back — `resolve` (default bindings)
+    /// hides it, `resolve_trashed` (`with_trashed` bindings) surfaces it.
+    #[test]
+    fn trashed_binding_resolver_surfaces_soft_deleted_rows() {
+        use keel_models::RouteBindingResolver;
+
+        let tenant = TenantId::new();
+        let backend: Arc<dyn ModelStore> = keel_models::InMemoryModelStore::new();
+        let store = Arc::new(AppointmentStore::new(backend.clone()));
+        let resolver = AppointmentBindingResolver::new(store);
+
+        // Insert a live appointment straight through the model runtime.
+        let rt = ModelRuntime::new(appointment_model());
+        let mut record = Record::new();
+        record.insert("patient".into(), json!("A. Patient"));
+        record.insert("slot".into(), json!("2026-09-01T10:00Z"));
+        let row = rt.insert(&*backend, &record, Some(tenant)).unwrap();
+        let id = Uuid::parse_str(row["id"].as_str().unwrap()).unwrap();
+
+        // Live row: both hooks resolve it.
+        assert!(resolver.resolve(Some(tenant), id).unwrap().is_some());
+        assert!(resolver
+            .resolve_trashed(Some(tenant), id)
+            .unwrap()
+            .is_some());
+
+        // Soft delete: `resolve` misses, `resolve_trashed` still finds it.
+        rt.delete(&*backend, id, Some(tenant)).unwrap();
+        assert!(resolver.resolve(Some(tenant), id).unwrap().is_none());
+        assert!(resolver
+            .resolve_trashed(Some(tenant), id)
+            .unwrap()
+            .is_some());
     }
 
     #[tokio::test]

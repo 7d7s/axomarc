@@ -27,6 +27,23 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cfg_path = std::env::var("KEEL_CONFIG").unwrap_or_else(|_| "config/dev.toml".into());
     // B-29: interactive console mode (`keel shell` spawns `keel-api --shell`).
     let shell_mode = std::env::args().any(|arg| arg == "--shell");
+    // Wave 3 Phase 6: maintenance sweep (`keel model:prune` spawns
+    // `keel-api --prune [--chunk N] [--tenant T]`) — boots the graph, runs
+    // the registry sweep, prints per-model counts and exits.
+    let args: Vec<String> = std::env::args().collect();
+    let prune_mode = args.iter().any(|arg| arg == "--prune");
+    let flag_value = |flag: &str| {
+        args.iter()
+            .position(|arg| arg == flag)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let prune_chunk: u32 = flag_value("--chunk")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200);
+    let prune_tenant: Option<TenantId> = flag_value("--tenant")
+        .and_then(|v| uuid::Uuid::parse_str(&v).ok())
+        .map(TenantId::from_uuid);
     let cfg = PlatformConfig::load(Some(std::path::Path::new(&cfg_path)))?;
     let env = cfg.app.env.clone();
     let listen = cfg.app.listen.clone();
@@ -68,9 +85,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     telemetry_config.apply_env(); // KEEL_TELEMETRY_* wins over the S1 knobs
-    if shell_mode {
-        // The REPL owns stdout: keep the console exporter from interleaving
-        // log lines with the prompt (file/OTLP exporters still run).
+    if shell_mode || prune_mode {
+        // The REPL/sweep owns stdout: keep the console exporter from
+        // interleaving log lines with the printed output (file/OTLP still run).
         telemetry_config.exporters.remove("console");
     }
 
@@ -496,6 +513,35 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         let result = shell::run(state, &graph).await;
         telemetry_runtime.shutdown(std::time::Duration::from_secs(5));
         return result;
+    }
+
+    // Wave 3 Phase 6: `keel model:prune` — sweep every registered prunable
+    // model through the store in `--chunk`-sized pages, print per-model
+    // counts, exit (same production boot as `--shell`; no listener opens).
+    // An empty registry reports "none" — the `schedule:list` posture.
+    // `--tenant <uuid>` scopes the sweep; without it tenant-scoped models
+    // match no rows (documented: sweep the tenants individually).
+    if prune_mode {
+        let registry = host
+            .registry()
+            .get::<keel_models::PruneRegistryRef>()
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?
+            .0
+            .clone();
+        let store = host
+            .registry()
+            .get::<keel_models::ModelStoreRef>()
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+        let results = registry.sweep(&*store.0, prune_tenant, prune_chunk)?;
+        if results.is_empty() {
+            println!("keel model:prune: none (no prunable models registered)");
+        } else {
+            for (model, count) in &results {
+                println!("keel model:prune: {model} purged {count} row(s)");
+            }
+        }
+        telemetry_runtime.shutdown(std::time::Duration::from_secs(5));
+        return Ok(());
     }
 
     // Edge surface: platform routes + graph module routes + auth + uploads.

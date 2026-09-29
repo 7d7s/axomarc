@@ -262,6 +262,29 @@ fn filter_condition(model: Option<&ModelDef>, filter: &FieldFilter) -> Result<Co
             operator: Operator::NotNull,
             values: Vec::new(),
         },
+        // Range terms (Wave 3 Phase 6): bind through the declared field type
+        // like Eq; the SQL operator does the ordering (timestamps compare
+        // chronologically, text lexicographically).
+        FilterOp::Lt => Condition {
+            column,
+            operator: Operator::Lt,
+            values: vec![bind_of(value)?],
+        },
+        FilterOp::LtEq => Condition {
+            column,
+            operator: Operator::LtEq,
+            values: vec![bind_of(value)?],
+        },
+        FilterOp::Gt => Condition {
+            column,
+            operator: Operator::Gt,
+            values: vec![bind_of(value)?],
+        },
+        FilterOp::GtEq => Condition {
+            column,
+            operator: Operator::GtEq,
+            values: vec![bind_of(value)?],
+        },
     })
 }
 
@@ -848,6 +871,34 @@ impl ModelStore for PgModelStore {
                 None => json_value_to_bind(value)?,
             };
             update = update.set(ident(key)?, bind);
+        }
+        let compiled = update.returning(all_columns(model)?).build()?;
+        let rows = write_rows(&self.pool, &compiled)?;
+        Ok(map_rows(rows, model)?.into_iter().next())
+    }
+
+    fn restore(
+        &self,
+        model: &ModelDef,
+        id: Uuid,
+        tenant: Option<TenantId>,
+    ) -> Result<Option<Record>, AppError> {
+        // Hard-delete models have no trash to return to (and no deleted_at
+        // column to clear).
+        if !model.soft_deletes {
+            return Ok(None);
+        }
+        let mut update = Update::table(ident(&model.table)?)
+            .where_eq(ident("id")?, Bind::Uuid(id))
+            // Only TRASHED rows qualify: a live row matches nothing, so the
+            // write is naturally idempotent (mirrors in-memory `is_deleted`).
+            .where_not_null(ident("deleted_at")?)
+            .set(ident("deleted_at")?, Bind::Null);
+        if model.tenant_scoped {
+            match tenant {
+                Some(t) => update = update.tenant_scope(ident("tenant_id")?, t),
+                None => update = update.where_eq(ident("tenant_id")?, Bind::Null),
+            }
         }
         let compiled = update.returning(all_columns(model)?).build()?;
         let rows = write_rows(&self.pool, &compiled)?;

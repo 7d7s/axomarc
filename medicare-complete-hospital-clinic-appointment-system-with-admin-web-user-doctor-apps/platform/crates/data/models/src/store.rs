@@ -31,6 +31,15 @@ pub enum FilterOp {
     In,
     IsNull,
     NotNull,
+    /// Range comparisons (Wave 3 Phase 6 prune predicates): ordered by the
+    /// same scalar ordering as MIN/MAX — numbers numerically, strings
+    /// lexicographically (RFC3339 timestamps therefore sort chronologically).
+    /// A missing field, SQL NULL, or a non-orderable pair (mixed kinds)
+    /// never matches.
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
 }
 
 /// One query filter: a field-level comparison (tenant-safe: stores apply
@@ -96,6 +105,42 @@ impl FieldFilter {
             field: field.into(),
             op: FilterOp::In,
             value: Json::Array(values),
+        }
+    }
+
+    /// `field < value` (Wave 3 Phase 6 range filters / prune predicates).
+    pub fn lt(field: impl Into<String>, value: impl Into<Json>) -> Self {
+        Self::Cmp {
+            field: field.into(),
+            op: FilterOp::Lt,
+            value: value.into(),
+        }
+    }
+
+    /// `field <= value`.
+    pub fn lte(field: impl Into<String>, value: impl Into<Json>) -> Self {
+        Self::Cmp {
+            field: field.into(),
+            op: FilterOp::LtEq,
+            value: value.into(),
+        }
+    }
+
+    /// `field > value`.
+    pub fn gt(field: impl Into<String>, value: impl Into<Json>) -> Self {
+        Self::Cmp {
+            field: field.into(),
+            op: FilterOp::Gt,
+            value: value.into(),
+        }
+    }
+
+    /// `field >= value`.
+    pub fn gte(field: impl Into<String>, value: impl Into<Json>) -> Self {
+        Self::Cmp {
+            field: field.into(),
+            op: FilterOp::GtEq,
+            value: value.into(),
         }
     }
 }
@@ -303,6 +348,20 @@ pub trait ModelStore: Send + Sync {
         by: i64,
         extra: &Record,
     ) -> Result<Option<Record>, AppError>;
+
+    /// Soft-delete undo (Wave 3 Phase 6): clear the trash mark on the
+    /// TRASHED row `id` — `Some(row)` = the row was trashed and is now live;
+    /// `None` = no such row or the row was already live. Never resurrects a
+    /// live row (idempotent at the runtime layer) and never touches
+    /// `updated_at` — the port only clears the mark, mirroring how the soft
+    /// delete only sets it. Refused by both backends' callers for models
+    /// that don't soft-delete (`ModelRuntime::restore` guards).
+    fn restore(
+        &self,
+        model: &ModelDef,
+        id: Uuid,
+        tenant: Option<TenantId>,
+    ) -> Result<Option<Record>, AppError>;
 }
 
 /// Arc delegation: `Arc<impl ModelStore>` (and `Arc<dyn ModelStore>`) is
@@ -446,6 +505,15 @@ impl<T: ModelStore + ?Sized> ModelStore for Arc<T> {
     ) -> Result<Option<Record>, AppError> {
         (**self).increment(model, id, tenant, field, by, extra)
     }
+
+    fn restore(
+        &self,
+        model: &ModelDef,
+        id: Uuid,
+        tenant: Option<TenantId>,
+    ) -> Result<Option<Record>, AppError> {
+        (**self).restore(model, id, tenant)
+    }
 }
 
 /// RFC 3339 UTC timestamp string for "now" (canonical record encoding).
@@ -494,6 +562,21 @@ fn cmp_matches(record: &Record, field: &str, op: FilterOp, value: &Json) -> bool
             .unwrap_or(false),
         FilterOp::IsNull => matches!(actual, None | Some(Json::Null)),
         FilterOp::NotNull => !matches!(actual, None | Some(Json::Null)),
+        // Range terms: unorderable pairs (missing/NULL/mixed kinds) never
+        // match, mirroring SQL three-valued logic where `NULL < x` is
+        // unknown rather than true.
+        FilterOp::Lt | FilterOp::LtEq | FilterOp::Gt | FilterOp::GtEq => {
+            let Some(ord) = actual.and_then(|a| json_order(a, value)) else {
+                return false;
+            };
+            match op {
+                FilterOp::Lt => ord == std::cmp::Ordering::Less,
+                FilterOp::LtEq => ord != std::cmp::Ordering::Greater,
+                FilterOp::Gt => ord == std::cmp::Ordering::Greater,
+                FilterOp::GtEq => ord != std::cmp::Ordering::Less,
+                _ => unreachable!("guarded by the outer match"),
+            }
+        }
     }
 }
 
@@ -1268,6 +1351,34 @@ impl ModelStore for InMemoryModelStore {
                 }
             }
             Ok(updated)
+        })
+    }
+
+    fn restore(
+        &self,
+        model: &ModelDef,
+        id: Uuid,
+        tenant: Option<TenantId>,
+    ) -> Result<Option<Record>, AppError> {
+        // Hard-delete models have no trash to return to.
+        if !model.soft_deletes {
+            return Ok(None);
+        }
+        self.with_table(&model.table, |rows| {
+            let mut restored = None;
+            for row in rows.iter_mut() {
+                if uuid_str(row, "id") == Some(id)
+                    && tenant_matches(model, row, tenant)
+                    && is_deleted(row)
+                {
+                    // Clear the mark (NULL, as in pg); `updated_at` stays
+                    // untouched — the port only undoes the soft delete.
+                    row.insert("deleted_at".into(), Json::Null);
+                    restored = Some(Self::clone_row(row));
+                    break;
+                }
+            }
+            Ok(restored)
         })
     }
 }
@@ -2134,5 +2245,99 @@ mod tests {
             "{}",
             err.public_message
         );
+    }
+
+    // ------------------------------------ Wave 3 Phase 6: range filters + restore
+
+    #[test]
+    fn range_filters_order_scalars_and_skip_missing_fields() {
+        let store = InMemoryModelStore::new();
+        let model = ModelDef::new("Metric", "metrics")
+            .hard_deletes()
+            .field(FieldDef::new("id", FieldType::Uuid).required())
+            .field(FieldDef::new("name", FieldType::Text))
+            .field(FieldDef::new("score", FieldType::Int64));
+        for (name, score) in [("a", Some(1i64)), ("b", Some(5)), ("c", Some(10)), ("d", None)] {
+            let mut r = Record::new();
+            r.insert("id".into(), Json::String(Uuid::now_v7().to_string()));
+            r.insert("name".into(), Json::String(name.into()));
+            if let Some(score) = score {
+                r.insert("score".into(), Json::from(score));
+            }
+            store.insert(&model, &r).unwrap();
+        }
+        let names = |filters: Vec<FieldFilter>| -> Vec<String> {
+            let page = store
+                .list(
+                    &model,
+                    None,
+                    &filters,
+                    &ListOpts {
+                        sort: Some(("name".into(), false)),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            page.items
+                .iter()
+                .filter_map(|r| r.get("name").and_then(Json::as_str).map(str::to_string))
+                .collect()
+        };
+        // Numeric ordering; the score-less row "d" never matches a range.
+        assert_eq!(names(vec![FieldFilter::lt("score", Json::from(5i64))]), ["a"]);
+        assert_eq!(
+            names(vec![FieldFilter::lte("score", Json::from(5i64))]),
+            ["a", "b"]
+        );
+        assert_eq!(names(vec![FieldFilter::gt("score", Json::from(5i64))]), ["c"]);
+        assert_eq!(
+            names(vec![FieldFilter::gte("score", Json::from(5i64))]),
+            ["b", "c"]
+        );
+        // Lexicographic ordering for strings.
+        assert_eq!(
+            names(vec![FieldFilter::lt("name", Json::String("c".into()))]),
+            ["a", "b"]
+        );
+        assert_eq!(
+            names(vec![FieldFilter::gte("name", Json::String("c".into()))]),
+            ["c", "d"]
+        );
+    }
+
+    #[test]
+    fn restore_clears_the_trash_mark_and_hard_delete_models_stay_none() {
+        let store = InMemoryModelStore::new();
+        let model = widget_model();
+        let tenant = TenantId::new();
+        let row = store.insert(&model, &widget(tenant, "one")).unwrap();
+        let id = uuid_str(&row, "id").unwrap();
+
+        // Live row: nothing to restore.
+        assert!(store.restore(&model, id, Some(tenant)).unwrap().is_none());
+
+        store.delete(&model, id, Some(tenant)).unwrap();
+        let trashed = store
+            .find(&model, id, Some(tenant), true)
+            .unwrap()
+            .expect("trashed row still findable with the veil lifted");
+        assert!(is_deleted(&trashed));
+
+        let restored = store
+            .restore(&model, id, Some(tenant))
+            .unwrap()
+            .expect("restore returns the row");
+        assert!(!is_deleted(&restored));
+        assert!(store
+            .find(&model, id, Some(tenant), false)
+            .unwrap()
+            .is_some());
+
+        // Hard-delete models have no trash: the port reports "nothing done".
+        let hard = ModelDef::new("Log", "logs")
+            .hard_deletes()
+            .field(FieldDef::new("id", FieldType::Uuid).required())
+            .field(FieldDef::new("msg", FieldType::Text));
+        assert!(store.restore(&hard, Uuid::now_v7(), None).unwrap().is_none());
     }
 }

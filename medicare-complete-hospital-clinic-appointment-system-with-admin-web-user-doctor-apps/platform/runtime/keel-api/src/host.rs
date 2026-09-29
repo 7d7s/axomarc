@@ -477,6 +477,13 @@ impl Provider for PersistenceProvider {
             Arc::new(keel_models::RouteBindingsRef(Arc::new(
                 keel_models::RouteBindingRegistry::new(),
             ))),
+        )?;
+        // Wave 3 Phase 6: well-known model.prune registry — modules register
+        // `with_prunable` runtimes; `keel model:prune` sweeps them through
+        // this store (empty registry → the CLI reports "none").
+        r.insert(
+            "model.prune",
+            Arc::new(keel_models::PruneRegistryRef::default()),
         )
     }
 }
