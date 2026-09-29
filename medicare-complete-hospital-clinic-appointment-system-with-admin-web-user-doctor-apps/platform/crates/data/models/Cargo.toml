@@ -11,11 +11,16 @@ description = "Keel framework: data model + relationship contracts (blueprint L1
 
 [dependencies]
 keel-foundation = { workspace = true }
+keel-identity = { workspace = true }
 keel-query = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 time = { workspace = true }
 uuid = { workspace = true }
+
+[dev-dependencies]
+# Real AES-GCM proof for the `encrypted` cast (Data -> Security edge, cycle-free).
+keel-tokens = { workspace = true }
 
 [package.metadata.docs.rs]
 all-features = true

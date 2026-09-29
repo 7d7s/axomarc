@@ -55,6 +55,9 @@ pub mod codes {
     pub const DEADLINE: &str = "KER_DEADLINE";
     pub const BOOT: &str = "KER_BOOT";
     pub const MAINTENANCE: &str = "KER_MAINTENANCE";
+    /// Wave 3 Phase 5 strict mode: `prevent_lazy_loading` tripped on
+    /// `load_relation`/`load_missing` (the `with()` eager path stays legal).
+    pub const LAZY_LOAD_PREVENTED: &str = "LAZY_LOAD_PREVENTED";
 }
 
 /// The one error type. `meta` must stay PHI-free (safe metadata only).

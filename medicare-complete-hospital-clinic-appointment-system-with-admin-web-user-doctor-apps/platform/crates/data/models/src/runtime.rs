@@ -21,11 +21,12 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use keel_foundation::{AppError, TenantId};
+use keel_foundation::{codes, AppError, ErrorCategory, Retryability, Sealer, Severity, TenantId};
 use keel_query::{Ident, PageReq, Value as Bind};
 use serde_json::Value as Json;
 use uuid::Uuid;
 
+use crate::casts::{builtin_cast, Cast, EncryptedCast};
 use crate::store::{
     fold_aggregate_values, now_rfc3339, sort_records, validate_aggregate, validate_counter,
     AggregateOp, ExistsFilter, FieldFilter, ListOpts, ModelStore, Record,
@@ -123,6 +124,62 @@ type ScopeFn = Arc<dyn Fn(Vec<FieldFilter>) -> Vec<FieldFilter> + Send + Sync>;
 type AccessorFn = Arc<dyn Fn(&Record) -> Json + Send + Sync>;
 type MutatorFn = Arc<dyn Fn(Json) -> Result<Json, AppError> + Send + Sync>;
 
+/// Per-call serialization overrides behind [`ModelRuntime::wire`].
+#[derive(Default)]
+struct WireOpts {
+    force_visible: Vec<String>,
+    force_hidden: Vec<String>,
+    append: Vec<String>,
+}
+
+/// Per-call serialization builder: `rt.wire(&record)
+///     .make_visible(["token"])
+///     .make_hidden(["email"])
+///     .append(["full_name"])
+///     .to_record()?`
+///
+/// Precedence inside a projection: `sensitive` -> manifest `hidden` ->
+/// manifest `visible` -> `make_visible` -> `make_hidden` (last wins);
+/// accessors append after that and `make_hidden` can remove them by name.
+pub struct WireBuilder<'a> {
+    runtime: &'a ModelRuntime,
+    record: &'a Record,
+    opts: WireOpts,
+}
+
+impl WireBuilder<'_> {
+    /// Force these keys into the projection even when `sensitive` or the
+    /// manifest policy drops them (`make_hidden` still wins).
+    pub fn make_visible(mut self, names: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.opts
+            .force_visible
+            .extend(names.into_iter().map(Into::into));
+        self
+    }
+
+    /// Drop these keys from the projection — stored fields and computed
+    /// accessors alike.
+    pub fn make_hidden(mut self, names: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.opts
+            .force_hidden
+            .extend(names.into_iter().map(Into::into));
+        self
+    }
+
+    /// Assert these accessor names exist and their computed values appear in
+    /// the projection (accessors are on by default; this pins them and
+    /// rejects unknown names with `KER_VALIDATION`).
+    pub fn append(mut self, names: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.opts.append.extend(names.into_iter().map(Into::into));
+        self
+    }
+
+    /// Build the projection (or the first cast/append failure).
+    pub fn to_record(self) -> Result<Record, AppError> {
+        self.runtime.project(self.record, &self.opts)
+    }
+}
+
 /// Runtime semantics for one [`ModelDef`]. Cheap to clone (Arc internals).
 #[derive(Clone)]
 pub struct ModelRuntime {
@@ -132,6 +189,15 @@ pub struct ModelRuntime {
     scopes: BTreeMap<String, ScopeFn>,
     accessors: BTreeMap<String, AccessorFn>,
     mutators: BTreeMap<String, MutatorFn>,
+    /// Custom casts keyed by spec name (win over the built-ins).
+    casts: BTreeMap<String, Arc<dyn Cast>>,
+    /// Strict mode: `load_relation`/`load_missing` refuse with
+    /// [`codes::LAZY_LOAD_PREVENTED`]; `with()` stays legal.
+    prevent_lazy_loading: bool,
+    /// Strict mode: `push` errors instead of skipping undeclared attributes.
+    prevent_silently_discarding_attributes: bool,
+    /// Strict mode: `value`/`pluck` error when a matched row lacks the field.
+    prevent_accessing_missing_attributes: bool,
 }
 
 impl std::fmt::Debug for ModelRuntime {
@@ -151,6 +217,10 @@ impl ModelRuntime {
             scopes: BTreeMap::new(),
             accessors: BTreeMap::new(),
             mutators: BTreeMap::new(),
+            casts: BTreeMap::new(),
+            prevent_lazy_loading: false,
+            prevent_silently_discarding_attributes: false,
+            prevent_accessing_missing_attributes: false,
         }
     }
 
@@ -195,6 +265,48 @@ impl ModelRuntime {
         self
     }
 
+    /// Register a custom [`Cast`] under its spec name (fields declare it
+    /// with [`crate::FieldDef::cast`]). Registered casts win over the
+    /// built-ins of the same name.
+    pub fn with_cast(mut self, name: impl Into<String>, cast: Arc<dyn Cast>) -> Self {
+        self.casts.insert(name.into(), cast);
+        self
+    }
+
+    /// Bind the foundation encryption port so `cast = "encrypted"` works.
+    /// Ships the [`EncryptedCast`] under the `encrypted` name; the concrete
+    /// AES-256-GCM cipher is `keel_tokens::AesGcmSealer`.
+    pub fn with_sealer(mut self, sealer: Arc<dyn Sealer>) -> Self {
+        self.casts
+            .insert("encrypted".into(), Arc::new(EncryptedCast::new(sealer)));
+        self
+    }
+
+    /// Strict mode (Wave 3 Phase 5): lazy relation loading —
+    /// [`Self::load_relation`] and [`Self::load_missing`] — errors with
+    /// [`codes::LAZY_LOAD_PREVENTED`]; declare relations up front with
+    /// [`Self::with`] instead.
+    pub fn prevent_lazy_loading(mut self) -> Self {
+        self.prevent_lazy_loading = true;
+        self
+    }
+
+    /// Strict mode: [`Self::push`] errors when the record carries an
+    /// undeclared attribute instead of silently dropping it from the change
+    /// set.
+    pub fn prevent_silently_discarding_attributes(mut self) -> Self {
+        self.prevent_silently_discarding_attributes = true;
+        self
+    }
+
+    /// Strict mode: [`Self::value`] and [`Self::pluck`] error when a matched
+    /// row lacks the requested declared field instead of yielding
+    /// `None`/`null`.
+    pub fn prevent_accessing_missing_attributes(mut self) -> Self {
+        self.prevent_accessing_missing_attributes = true;
+        self
+    }
+
     pub fn model(&self) -> &ModelDef {
         &self.model
     }
@@ -210,6 +322,49 @@ impl ModelRuntime {
         };
         for observer in &self.observers {
             observer.on_model_event(&event);
+        }
+    }
+
+    // ---------------------------------------------------------------- casts
+
+    /// Resolve a field's cast: registered spec first (exact, then base name
+    /// before `:` so `with_cast("enum", ..)` can override `enum:a,b`), then
+    /// the built-in registry.
+    fn cast_instance(&self, field: &FieldDef) -> Result<Option<Arc<dyn Cast>>, AppError> {
+        let Some(spec) = field.cast.as_deref() else {
+            return Ok(None);
+        };
+        if let Some(cast) = self.casts.get(spec) {
+            return Ok(Some(Arc::clone(cast)));
+        }
+        let base = spec.split(':').next().unwrap_or(spec);
+        if base != spec {
+            if let Some(cast) = self.casts.get(base) {
+                return Ok(Some(Arc::clone(cast)));
+            }
+        }
+        builtin_cast(spec).map(Arc::from).map(Some).map_err(|e| {
+            AppError::validation(format!(
+                "field {}.{} cast {spec:?}: {}",
+                self.model.name, field.name, e.public_message
+            ))
+        })
+    }
+
+    /// Wire value -> storage value (cast `to_db`, validation at set time).
+    fn cast_to_db(&self, field: &FieldDef, value: Json) -> Result<Json, AppError> {
+        match self.cast_instance(field)? {
+            Some(cast) => cast.to_db(&value),
+            None => Ok(value),
+        }
+    }
+
+    /// Storage value -> wire value (only `encrypted` transforms: it opens
+    /// the sealed envelope back to plaintext).
+    fn cast_from_db(&self, field: &FieldDef, value: Json) -> Result<Json, AppError> {
+        match self.cast_instance(field)? {
+            Some(cast) => cast.from_db(&value),
+            None => Ok(value),
         }
     }
 
@@ -293,14 +448,16 @@ impl ModelRuntime {
             }
         }
 
-        // 5. Copy declared fields through the cast boundary.
+        // 5. Copy declared fields through the cast boundary: shape
+        //    validation first, then the field's cast (if any).
         for field in &self.model.fields {
             if field.name == "id" || field.name == "tenant_id" {
                 continue;
             }
             if let Some(value) = supplied.get(&field.name) {
                 json_to_bind(value, field)?;
-                record.insert(field.name.clone(), value.clone());
+                let value = self.cast_to_db(field, value.clone())?;
+                record.insert(field.name.clone(), value);
             }
         }
         // 5b. Force mode: undeclared keys pass through raw — no field
@@ -356,7 +513,8 @@ impl ModelRuntime {
                 ))
             })?;
             json_to_bind(value, field)?;
-            record.insert(key.clone(), value.clone());
+            let value = self.cast_to_db(field, value.clone())?;
+            record.insert(key.clone(), value);
         }
         if self.model.field_named("updated_at").is_some() && !record.contains_key("updated_at") {
             record.insert("updated_at".into(), Json::String(now_rfc3339()));
@@ -364,23 +522,102 @@ impl ModelRuntime {
         Ok(record)
     }
 
-    /// Hidden-field policy + accessor projection for wire serialization.
-    pub fn public_record(&self, record: &Record) -> Record {
-        let mut out = Record::new();
+    /// Hidden-field policy + accessor projection for wire serialization:
+    /// `sensitive` and manifest [`crate::ModelDef::hidden`] fields drop out,
+    /// a non-empty manifest [`crate::ModelDef::visible`] narrows the stored
+    /// fields, declared casts read back (`encrypted` opens to plaintext),
+    /// and every registered accessor appends. Returns the projection or the
+    /// first cast failure — corrupt sealed values fail closed.
+    pub fn public_record(&self, record: &Record) -> Result<Record, AppError> {
+        self.project(record, &WireOpts::default())
+    }
+
+    /// Per-call serialization overrides (Wave 3 Phase 5): chain
+    /// [`WireBuilder::make_visible`], [`WireBuilder::make_hidden`] and
+    /// [`WireBuilder::append`] on top of [`Self::public_record`].
+    pub fn wire<'a>(&'a self, record: &'a Record) -> WireBuilder<'a> {
+        WireBuilder {
+            runtime: self,
+            record,
+            opts: WireOpts::default(),
+        }
+    }
+
+    fn project(&self, record: &Record, opts: &WireOpts) -> Result<Record, AppError> {
+        // `append` names must be registered accessors — fail early rather
+        // than silently dropping the request.
+        for name in &opts.append {
+            if !self.accessors.contains_key(name) {
+                return Err(AppError::validation(format!(
+                    "append {name:?} is not an accessor of model {}",
+                    self.model.name
+                )));
+            }
+        }
+
+        // 1. Read casts: only `encrypted` transforms (decrypts); failures
+        //    propagate — every projection path fails closed.
+        let mut decoded = Record::new();
         for (key, value) in record {
-            let sensitive = self
-                .model
-                .field_named(key)
-                .map(|f| f.sensitive)
-                .unwrap_or(false);
-            if !sensitive {
+            let value = match self.model.field_named(key) {
+                Some(field) => self.cast_from_db(field, value.clone())?,
+                None => value.clone(),
+            };
+            decoded.insert(key.clone(), value);
+        }
+
+        // 2. Accessor input view: everything except `sensitive` fields
+        //    (accessors read the decoded record, manifest policy only
+        //    shapes the output).
+        let mut view = Record::new();
+        for (key, value) in &decoded {
+            if !self.is_sensitive(key) {
+                view.insert(key.clone(), value.clone());
+            }
+        }
+
+        // 3. Stored-field projection: sensitive + manifest first, then the
+        //    per-call overrides (make_hidden wins over make_visible).
+        let restrict = !self.model.visible.is_empty();
+        let mut out = Record::new();
+        for (key, value) in &decoded {
+            let mut keep = true;
+            if self.is_sensitive(key) {
+                keep = false;
+            }
+            if self.model.hidden.iter().any(|hidden| hidden == key) {
+                keep = false;
+            }
+            if restrict && !self.model.visible.iter().any(|shown| shown == key) {
+                keep = false;
+            }
+            if opts.force_visible.iter().any(|shown| shown == key) {
+                keep = true;
+            }
+            if opts.force_hidden.iter().any(|hidden| hidden == key) {
+                keep = false;
+            }
+            if keep {
                 out.insert(key.clone(), value.clone());
             }
         }
+
+        // 4. Accessors append over the projection (the `$appends` posture:
+        //    manifest lists don't gate them); make_hidden removes by name.
         for (name, accessor) in &self.accessors {
-            out.insert(name.clone(), accessor(&out));
+            if opts.force_hidden.iter().any(|hidden| hidden == name) {
+                continue;
+            }
+            out.insert(name.clone(), accessor(&view));
         }
-        out
+        Ok(out)
+    }
+
+    fn is_sensitive(&self, key: &str) -> bool {
+        self.model
+            .field_named(key)
+            .map(|field| field.sensitive)
+            .unwrap_or(false)
     }
     // ---------------------------------------------------------------- CRUD
 
@@ -563,6 +800,14 @@ impl ModelRuntime {
         Ok(())
     }
 
+    /// Strict-mode error for a matched row that lacks the requested field.
+    fn missing_attribute(&self, field: &str) -> AppError {
+        AppError::validation(format!(
+            "missing attribute {field:?} on {} (strict mode)",
+            self.model.name
+        ))
+    }
+
     /// First live row matching `predicates` (Eloquent
     /// `where(...)->first()`); `Ok(None)` on miss.
     pub fn first(
@@ -708,6 +953,8 @@ impl ModelRuntime {
     // ----------------------------------------------------------- retrieval
 
     /// Eloquent `value`: the first match's `field` value (`None` on miss).
+    /// Strict mode (`prevent_accessing_missing_attributes`) errors when the
+    /// matched row lacks the field instead of reporting a miss.
     pub fn value(
         &self,
         store: &dyn ModelStore,
@@ -716,14 +963,24 @@ impl ModelRuntime {
         field: &str,
     ) -> Result<Option<Json>, AppError> {
         self.validate_read_field(field)?;
-        Ok(self
-            .first(store, tenant, predicates)?
-            .and_then(|row| row.get(field).cloned()))
+        let Some(row) = self.first(store, tenant, predicates)? else {
+            return Ok(None);
+        };
+        match row.get(field) {
+            Some(value) => Ok(Some(value.clone())),
+            None if self.prevent_accessing_missing_attributes => {
+                Err(self.missing_attribute(field))
+            }
+            None => Ok(None),
+        }
     }
 
     /// Eloquent `pluck`: `field` values across every match in scan order
-    /// (soft-deleted rows excluded). Divergence from Laravel: the port
-    /// fetches full rows — there is no column projection yet.
+    /// (soft-deleted rows excluded). Strict mode
+    /// (`prevent_accessing_missing_attributes`) errors when any matched row
+    /// lacks the field instead of yielding `null`.
+    /// Divergence from Laravel: the port fetches full rows — there is no
+    /// column projection yet.
     pub fn pluck(
         &self,
         store: &dyn ModelStore,
@@ -734,6 +991,11 @@ impl ModelRuntime {
         self.validate_read_field(field)?;
         self.validate_predicates(predicates)?;
         let page = store.list(&self.model, tenant, predicates, &ListOpts::default())?;
+        if self.prevent_accessing_missing_attributes
+            && page.items.iter().any(|row| !row.contains_key(field))
+        {
+            return Err(self.missing_attribute(field));
+        }
         Ok(page
             .items
             .iter()
@@ -1037,6 +1299,12 @@ impl ModelRuntime {
                 continue;
             }
             if self.model.field_named(key).is_none() {
+                if self.prevent_silently_discarding_attributes {
+                    return Err(AppError::validation(format!(
+                        "field {key:?} would be silently discarded by push on {} (strict mode)",
+                        self.model.name
+                    )));
+                }
                 continue;
             }
             changes.insert(key.clone(), value.clone());
@@ -1128,6 +1396,19 @@ impl ModelRuntime {
         parents: &mut [Record],
         tenant: Option<TenantId>,
     ) -> Result<(), AppError> {
+        if self.prevent_lazy_loading {
+            return Err(AppError::new(
+                codes::LAZY_LOAD_PREVENTED,
+                ErrorCategory::Validation,
+                Severity::Low,
+                Retryability::NotRetryable,
+                format!(
+                    "lazy loading of relation {relation_name:?} on {} is prevented; declare it \
+                     with with() at query time",
+                    self.model.name
+                ),
+            ));
+        }
         self.load_relation_constrained(
             store,
             relation_name,
@@ -2374,7 +2655,7 @@ mod tests {
         let mut i = input("p");
         i.insert("notes".into(), Json::String("phi".into()));
         let stored = rt().insert(&store, &i, Some(TenantId::new())).unwrap();
-        let public = rt().public_record(&stored);
+        let public = rt().public_record(&stored).unwrap();
         assert!(!public.contains_key("notes"));
         assert!(public.contains_key("patient"));
     }
@@ -2407,7 +2688,7 @@ mod tests {
         assert_eq!(booked.total, Some(1));
         let all = rt.list(&store, Some(tenant), vec![], &[], None).unwrap();
         assert_eq!(all.total, Some(2));
-        assert!(rt.public_record(&all.items[0]).contains_key("summary"));
+        assert!(rt.public_record(&all.items[0]).unwrap().contains_key("summary"));
     }
 
     #[test]
@@ -4399,5 +4680,385 @@ mod tests {
             parents[0]["appointments"][0]["slot"],
             Json::String("11:00".into())
         );
+    }
+
+    // ------------------------------------------- casts (Phase 5)
+
+    fn cast_model() -> ModelDef {
+        ModelDef::new("Ledger", "ledgers")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("name", FieldType::Text).required())
+            .field(FieldDef::new("born_on", FieldType::Date).cast("date"))
+            .field(FieldDef::new("amount", FieldType::Decimal).cast("decimal:2"))
+            .field(FieldDef::new("kind", FieldType::Text).cast("enum:debit,credit"))
+            .field(FieldDef::new("meta", FieldType::Json).cast("json"))
+            .field(FieldDef::new("tags", FieldType::Json).cast("array"))
+            .field(FieldDef::new("secret", FieldType::Text).cast("encrypted"))
+            .field(FieldDef::new("password", FieldType::Text).cast("hashed"))
+    }
+
+    fn cast_input() -> Record {
+        let mut r = Record::new();
+        r.insert("name".into(), Json::String("entry".into()));
+        r
+    }
+
+    #[test]
+    fn cast_kinds_validate_and_normalize_at_set_time() {
+        let store = InMemoryModelStore::new();
+        let rt = ModelRuntime::new(cast_model());
+
+        let mut good = cast_input();
+        good.insert("born_on".into(), Json::String("2024-01-02".into()));
+        good.insert(
+            "amount".into(),
+            Json::Number(serde_json::Number::from_f64(12.3456).unwrap()),
+        );
+        good.insert("kind".into(), Json::String("debit".into()));
+        good.insert("meta".into(), Json::Object(serde_json::Map::new()));
+        good.insert("tags".into(), Json::Array(vec![Json::Number(1.into())]));
+        let stored = rt.insert(&store, &good, None).unwrap();
+        assert_eq!(stored["born_on"], Json::String("2024-01-02".into()));
+        assert_eq!(stored["amount"].as_f64(), Some(12.35));
+        assert_eq!(stored["kind"], Json::String("debit".into()));
+        assert_eq!(stored["tags"], Json::Array(vec![Json::Number(1.into())]));
+
+        // Set-time validation refuses bad values at the prepare boundary.
+        let mut bad = cast_input();
+        bad.insert("born_on".into(), Json::String("2024-02-30".into()));
+        let err = rt.insert(&store, &bad, None).unwrap_err();
+        assert!(
+            err.public_message.contains("valid calendar date"),
+            "{}",
+            err.public_message
+        );
+
+        let mut bad = cast_input();
+        bad.insert("kind".into(), Json::String("refund".into()));
+        let err = rt.insert(&store, &bad, None).unwrap_err();
+        assert!(
+            err.public_message.contains("debit, credit"),
+            "{}",
+            err.public_message
+        );
+
+        let mut bad = cast_input();
+        bad.insert("meta".into(), Json::String("scalar".into()));
+        let err = rt.insert(&store, &bad, None).unwrap_err();
+        assert!(
+            err.public_message.contains("object or array"),
+            "{}",
+            err.public_message
+        );
+
+        let mut bad = cast_input();
+        bad.insert("tags".into(), Json::Object(serde_json::Map::new()));
+        let err = rt.insert(&store, &bad, None).unwrap_err();
+        assert!(
+            err.public_message.contains("array cast"),
+            "{}",
+            err.public_message
+        );
+
+        // Column shape still validates before the cast runs.
+        let mut bad = cast_input();
+        bad.insert("amount".into(), Json::String("12.5".into()));
+        let err = rt.insert(&store, &bad, None).unwrap_err();
+        assert!(
+            err.public_message.contains("decimal number"),
+            "{}",
+            err.public_message
+        );
+
+        // An unbound sealer refuses the write instead of storing plaintext.
+        let mut secret = cast_input();
+        secret.insert("secret".into(), Json::String("hush".into()));
+        let err = rt.insert(&store, &secret, None).unwrap_err();
+        assert!(
+            err.public_message.contains("with_sealer"),
+            "{}",
+            err.public_message
+        );
+    }
+
+    #[test]
+    fn encrypted_cast_seals_through_the_runtime_sealer() {
+        use keel_tokens::{AesGcmSealer, KEY_LEN};
+
+        let store = InMemoryModelStore::new();
+        let sealed_rt = ModelRuntime::new(cast_model())
+            .with_sealer(Arc::new(AesGcmSealer::new([7u8; KEY_LEN])));
+        let mut input = cast_input();
+        input.insert("secret".into(), Json::String("hush".into()));
+        let stored = sealed_rt.insert(&store, &input, None).unwrap();
+
+        // At rest the value is a sealed envelope, never plaintext...
+        let at_rest = stored["secret"].as_str().unwrap();
+        assert_ne!(at_rest, "hush");
+        // ...and the projection opens it back up.
+        let public = sealed_rt.public_record(&stored).unwrap();
+        assert_eq!(public["secret"], Json::String("hush".into()));
+
+        // A different master key cannot open the envelope.
+        let wrong = ModelRuntime::new(cast_model())
+            .with_sealer(Arc::new(AesGcmSealer::new([9u8; KEY_LEN])));
+        assert!(wrong.public_record(&stored).is_err());
+    }
+
+    #[test]
+    fn hashed_cast_hashes_with_argon2_and_never_round_trips() {
+        let store = InMemoryModelStore::new();
+        let rt = ModelRuntime::new(cast_model());
+        let mut input = cast_input();
+        input.insert("password".into(), Json::String("hunter2".into()));
+
+        let first = rt.insert(&store, &input, None).unwrap();
+        let second = rt.insert(&store, &input, None).unwrap();
+        let hash = first["password"].as_str().unwrap();
+        assert!(hash.starts_with("$argon2"), "got {hash:?}");
+        assert_ne!(first["password"], Json::String("hunter2".into()));
+        assert_ne!(
+            first["password"], second["password"],
+            "fresh salt per write"
+        );
+        // Reads pass the PHC string through — plaintext never reappears.
+        let public = rt.public_record(&first).unwrap();
+        assert_eq!(public["password"], first["password"]);
+    }
+
+    #[test]
+    fn manifest_hidden_and_visible_shape_the_projection() {
+        let store = InMemoryModelStore::new();
+
+        // Manifest hidden: dropped by default, accessors still append.
+        let doc = ModelDef::new("Doc", "docs")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("title", FieldType::Text).required())
+            .field(FieldDef::new("body", FieldType::Text))
+            .hide(["body"]);
+        let rt = ModelRuntime::new(doc).with_accessor("label", |r| {
+            Json::String(format!("doc:{}", r.get("title").and_then(|v| v.as_str()).unwrap_or("?")))
+        });
+        let mut doc_in = Record::new();
+        doc_in.insert("title".into(), Json::String("t1".into()));
+        doc_in.insert("body".into(), Json::String("hidden".into()));
+        let stored = rt.insert(&store, &doc_in, None).unwrap();
+
+        let public = rt.public_record(&stored).unwrap();
+        assert!(!public.contains_key("body"));
+        assert!(public.contains_key("title"));
+        assert_eq!(public["label"], Json::String("doc:t1".into()));
+        // Per-call make_visible opts one key back in.
+        let shown = rt
+            .wire(&stored)
+            .make_visible(["body"])
+            .to_record()
+            .unwrap();
+        assert_eq!(shown["body"], Json::String("hidden".into()));
+
+        // Manifest visible: a non-empty list narrows the stored fields;
+        // accessors bypass it (the $appends posture).
+        let ticket = ModelDef::new("Ticket", "tickets")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("title", FieldType::Text).required())
+            .field(FieldDef::new("body", FieldType::Text))
+            .show(["id", "title"]);
+        let rt = ModelRuntime::new(ticket).with_accessor("flag", |_| Json::Bool(true));
+        let mut t_in = Record::new();
+        t_in.insert("title".into(), Json::String("open".into()));
+        t_in.insert("body".into(), Json::String("internal".into()));
+        let stored = rt.insert(&store, &t_in, None).unwrap();
+        let public = rt.public_record(&stored).unwrap();
+        assert!(public.contains_key("title"));
+        assert!(!public.contains_key("body"), "not in the visible list");
+        assert_eq!(public["flag"], Json::Bool(true));
+    }
+
+    #[test]
+    fn per_call_overrides_win_over_sensitive_and_manifest_policy() {
+        let store = InMemoryModelStore::new();
+        let tenant = TenantId::new();
+        let mut i = input("p");
+        i.insert("notes".into(), Json::String("phi".into()));
+        let stored = rt().insert(&store, &i, Some(tenant)).unwrap();
+
+        // make_visible opts a `sensitive` field back in for this call only.
+        let shown = rt()
+            .wire(&stored)
+            .make_visible(["notes"])
+            .to_record()
+            .unwrap();
+        assert_eq!(shown["notes"], Json::String("phi".into()));
+        assert!(!rt().public_record(&stored).unwrap().contains_key("notes"));
+
+        // make_hidden drops stored fields; make_hidden also beats
+        // make_visible when both name the same key.
+        let hidden = rt()
+            .wire(&stored)
+            .make_hidden(["patient"])
+            .to_record()
+            .unwrap();
+        assert!(!hidden.contains_key("patient"));
+        let both = rt()
+            .wire(&stored)
+            .make_visible(["notes"])
+            .make_hidden(["notes"])
+            .to_record()
+            .unwrap();
+        assert!(!both.contains_key("notes"), "make_hidden wins");
+
+        // append pins an accessor by name and rejects unknown names.
+        let doc = ModelDef::new("Note", "notes")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("title", FieldType::Text));
+        let rt = ModelRuntime::new(doc).with_accessor("label", |_| Json::String("L".into()));
+        let mut n = Record::new();
+        n.insert("title".into(), Json::String("t".into()));
+        let stored = rt.insert(&store, &n, None).unwrap();
+        let err = rt
+            .wire(&stored)
+            .append(["nope"])
+            .to_record()
+            .unwrap_err();
+        assert!(
+            err.public_message.contains("not an accessor"),
+            "{}",
+            err.public_message
+        );
+        let ok = rt
+            .wire(&stored)
+            .make_hidden(["label"])
+            .append(["label"])
+            .to_record()
+            .unwrap();
+        assert!(!ok.contains_key("label"), "make_hidden beats append");
+        let ok = rt.wire(&stored).append(["label"]).to_record().unwrap();
+        assert_eq!(ok["label"], Json::String("L".into()));
+    }
+
+    #[test]
+    fn prevent_lazy_loading_flags_the_lazy_path_only() {
+        let mut registry = ModelRegistry::new();
+        let patient = ModelDef::new("Patient", "patients")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("name", FieldType::Text).required())
+            .relation(RelationDef::has_many("appointments", "Appointment", "patient_id"));
+        let appointment = ModelDef::new("Appointment", "appointments")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("patient_id", FieldType::Uuid))
+            .field(FieldDef::new("status", FieldType::Text).required())
+            .relation(RelationDef::belongs_to("patient", "Patient", "patient_id"));
+        registry.register(patient.clone()).unwrap();
+        registry.register(appointment.clone()).unwrap();
+        registry.validate_graph().unwrap();
+        let registry = Arc::new(registry);
+
+        let lenient = ModelRuntime::new(patient.clone()).with_registry(registry.clone());
+        let appointment_rt = ModelRuntime::new(appointment).with_registry(registry.clone());
+        let store = InMemoryModelStore::new();
+        let alice = patient_named(&lenient, &store, "Alice");
+        appt(&appointment_rt, &store, &alice["id"], "booked");
+
+        let strict = ModelRuntime::new(patient)
+            .with_registry(registry)
+            .prevent_lazy_loading();
+        let mut rows = lenient
+            .list(&store, None, vec![], &[], None)
+            .unwrap()
+            .items;
+
+        // The lazy path refuses with the Phase 5 code...
+        let err = strict
+            .load_relation(&store, "appointments", &mut rows, None)
+            .unwrap_err();
+        assert_eq!(err.code, codes::LAZY_LOAD_PREVENTED);
+        let err = strict
+            .load_missing(&store, &["appointments".into()], &mut rows, None)
+            .unwrap_err();
+        assert_eq!(err.code, codes::LAZY_LOAD_PREVENTED);
+
+        // ...while the declared eager path stays legal under the flag...
+        strict.with(&store, &mut rows, None, "appointments").unwrap();
+        assert!(rows[0]["appointments"].as_array().is_some());
+
+        // ...and the lenient runtime still lazy-loads.
+        lenient
+            .load_relation(&store, "appointments", &mut rows, None)
+            .unwrap();
+        assert!(rows[0]["appointments"].as_array().is_some());
+    }
+
+    #[test]
+    fn prevent_silently_discarding_attributes_guards_push() {
+        let store = InMemoryModelStore::new();
+        let tenant = TenantId::new();
+        let rt = ModelRuntime::new(appointment_model());
+        let row = rt.insert(&store, &input("p"), Some(tenant)).unwrap();
+
+        // Lenient: the undeclared attribute skips silently (historical posture).
+        let mut lenient = row.clone();
+        lenient.insert("bogus".into(), Json::Bool(true));
+        rt.push(&store, &mut lenient, Some(tenant)).unwrap();
+
+        // Strict: refused with a validation error naming the attribute.
+        let strict = ModelRuntime::new(appointment_model())
+            .prevent_silently_discarding_attributes();
+        let mut strict_row = row.clone();
+        strict_row.insert("bogus".into(), Json::Bool(true));
+        let err = strict
+            .push(&store, &mut strict_row, Some(tenant))
+            .unwrap_err();
+        assert_eq!(err.code, codes::VALIDATION);
+        assert!(
+            err.public_message.contains("silently discarded"),
+            "{}",
+            err.public_message
+        );
+
+        // Framework columns (id/tenant/timestamps) are not attribute discards.
+        let mut clean = row.clone();
+        strict.push(&store, &mut clean, Some(tenant)).unwrap();
+    }
+
+    #[test]
+    fn prevent_accessing_missing_attributes_guards_value_and_pluck() {
+        let store = InMemoryModelStore::new();
+        let rt = ModelRuntime::new(cast_model());
+        rt.insert(&store, &cast_input(), None).unwrap(); // no born_on supplied
+
+        // Lenient: absent declared field reads as None / null.
+        assert_eq!(rt.value(&store, None, &[], "born_on").unwrap(), None);
+        assert_eq!(
+            rt.pluck(&store, None, &[], "born_on").unwrap(),
+            vec![Json::Null]
+        );
+
+        // Strict: matched-but-missing errors instead.
+        let strict = ModelRuntime::new(cast_model()).prevent_accessing_missing_attributes();
+        let err = strict.value(&store, None, &[], "born_on").unwrap_err();
+        assert!(
+            err.public_message.contains("missing attribute"),
+            "{}",
+            err.public_message
+        );
+        let err = strict.pluck(&store, None, &[], "born_on").unwrap_err();
+        assert!(
+            err.public_message.contains("missing attribute"),
+            "{}",
+            err.public_message
+        );
+
+        // No matched row is a miss, not an attribute access.
+        assert!(strict
+            .value(&store, None, &[FieldFilter::eq("name", "ghost")], "born_on")
+            .unwrap()
+            .is_none());
+
+        // Undeclared fields still fail the column guard in both modes.
+        assert!(strict
+            .value(&store, None, &[], "nope")
+            .unwrap_err()
+            .public_message
+            .contains("not on model"));
     }
 }

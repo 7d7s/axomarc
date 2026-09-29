@@ -15,10 +15,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub mod bindings;
+pub mod casts;
 pub mod runtime;
 pub mod store;
 
 pub use bindings::{RouteBindingRegistry, RouteBindingResolver, RouteBindingsRef};
+pub use casts::{Cast, EncryptedCast};
 pub use runtime::{
     json_to_bind, json_value_to_bind, parse_timestamp, record_to_columns, EagerConstraint,
     ModelEvent, ModelObserver, ModelPhase, ModelRuntime, PivotSync,
@@ -91,6 +93,12 @@ pub struct FieldDef {
     pub sensitive: bool,
     /// Optional DEFAULT rendered into DDL.
     pub default_sql: Option<String>,
+    /// Optional cast spec applied at the mass-assignment boundary (Wave 3
+    /// Phase 5): `date`, `datetime`, `decimal:<n>`, `json`, `array`,
+    /// `enum:<a,b>`, `encrypted`, `hashed`, or a custom name registered
+    /// with `ModelRuntime::with_cast`.
+    #[serde(default)]
+    pub cast: Option<String>,
 }
 
 impl FieldDef {
@@ -103,6 +111,7 @@ impl FieldDef {
             indexed: false,
             sensitive: false,
             default_sql: None,
+            cast: None,
         }
     }
 
@@ -124,6 +133,12 @@ impl FieldDef {
     }
     pub fn with_default(mut self, sql: impl Into<String>) -> Self {
         self.default_sql = Some(sql.into());
+        self
+    }
+
+    /// Declare a cast spec (see [`FieldDef::cast`]).
+    pub fn cast(mut self, spec: impl Into<String>) -> Self {
+        self.cast = Some(spec.into());
         self
     }
 }
@@ -364,6 +379,15 @@ pub struct ModelDef {
     pub soft_deletes: bool,
     pub fields: Vec<FieldDef>,
     pub relations: Vec<RelationDef>,
+    /// Manifest serialization policy (Wave 3 Phase 5): these fields drop
+    /// from every projection (applied after `sensitive`; per-call
+    /// `make_visible` can still force one back).
+    #[serde(default)]
+    pub hidden: Vec<String>,
+    /// When non-empty, ONLY these keys pass the stored-field projection
+    /// (accessors still append — the Laravel `$visible`/`$appends` posture).
+    #[serde(default)]
+    pub visible: Vec<String>,
 }
 
 impl ModelDef {
@@ -375,6 +399,8 @@ impl ModelDef {
             soft_deletes: true,
             fields: Vec::new(),
             relations: Vec::new(),
+            hidden: Vec::new(),
+            visible: Vec::new(),
         }
     }
 
@@ -395,6 +421,19 @@ impl ModelDef {
 
     pub fn relation(mut self, relation: RelationDef) -> Self {
         self.relations.push(relation);
+        self
+    }
+
+    /// Add manifest-hidden fields (dropped from every projection).
+    pub fn hide(mut self, names: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.hidden.extend(names.into_iter().map(Into::into));
+        self
+    }
+
+    /// Add manifest-visible fields; a non-empty list narrows the projection
+    /// to exactly these keys (accessors still append).
+    pub fn show(mut self, names: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.visible.extend(names.into_iter().map(Into::into));
         self
     }
 
@@ -499,6 +538,14 @@ impl ModelRegistry {
                         model.name, field.name
                     )));
                 }
+            }
+            if let Some(spec) = &field.cast {
+                casts::validate_cast_spec(spec).map_err(|e| {
+                    AppError::validation(format!(
+                        "field {}.{} cast {spec:?}: {}",
+                        model.name, field.name, e.public_message
+                    ))
+                })?;
             }
         }
         let mut rel_names = std::collections::BTreeSet::new();
@@ -754,6 +801,33 @@ mod tests {
         assert!(ModelRegistry::new()
             .register(ModelDef::new("Empty", "empty"))
             .is_err());
+    }
+
+    #[test]
+    fn cast_specs_and_manifest_lists_validate_at_register() {
+        // Malformed builtin parameters are refused at register time.
+        let bad = ModelDef::new("Ledger", "ledgers")
+            .field(FieldDef::new("id", FieldType::Uuid))
+            .field(FieldDef::new("amount", FieldType::Decimal).cast("decimal:x"));
+        let err = ModelRegistry::new().register(bad).unwrap_err();
+        assert!(err.public_message.contains("cast"), "{}", err.public_message);
+
+        // Well-formed builtins and custom names pass; manifest lists record.
+        let ok = ModelDef::new("Ledger", "ledgers")
+            .field(FieldDef::new("id", FieldType::Uuid))
+            .field(FieldDef::new("amount", FieldType::Decimal).cast("decimal:2"))
+            .field(FieldDef::new("note", FieldType::Text).cast("money_v2"))
+            .hide(["note"])
+            .show(["id", "amount"]);
+        let mut reg = ModelRegistry::new();
+        reg.register(ok).unwrap();
+        let stored = reg.get("Ledger").unwrap();
+        assert_eq!(stored.hidden, vec!["note"]);
+        assert_eq!(stored.visible, vec!["id", "amount"]);
+        assert_eq!(
+            stored.field_named("amount").unwrap().cast.as_deref(),
+            Some("decimal:2")
+        );
     }
 
     #[test]
