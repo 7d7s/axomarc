@@ -39,6 +39,13 @@ enum Cmd {
     /// version, env/debug, database/cache/queue/session drivers, flag
     /// snapshot, graph counts, dependency budget.
     About,
+    /// B-27 profiling wrapper: build the target, then record it with samply
+    /// (spawned out-of-process when installed; the manual flamegraph
+    /// workflow is documented in docs/13-OPERATIONS.md).
+    Profile {
+        #[command(subcommand)]
+        target: ProfileTarget,
+    },
     /// Scaffold a new domain module (applications/<name>); prompts when the name is omitted.
     #[command(name = "make:module")]
     MakeModule {
@@ -317,6 +324,26 @@ enum Cmd {
     },
 }
 
+/// B-27 `keel profile` targets: the two long-running runtimes. The package
+/// and the built binary share a name for both.
+#[derive(Subcommand)]
+enum ProfileTarget {
+    /// Record keel-api (the HTTP edge) under samply.
+    Api,
+    /// Record keel-worker (queue consumer) under samply.
+    Worker,
+}
+
+impl ProfileTarget {
+    /// Workspace package (and built binary name under target/debug).
+    fn name(&self) -> &'static str {
+        match self {
+            ProfileTarget::Api => "keel-api",
+            ProfileTarget::Worker => "keel-worker",
+        }
+    }
+}
+
 fn workspace_root() -> anyhow::Result<PathBuf> {
     let mut dir = std::env::current_dir()?;
     loop {
@@ -378,6 +405,7 @@ fn main() -> ExitCode {
         Cmd::Doctor => doctor(),
         Cmd::Check => check(),
         Cmd::About => rt(about()),
+        Cmd::Profile { target } => profile(target),
         Cmd::MakeModule {
             name,
             plane,
@@ -3330,6 +3358,78 @@ fn cmd_name(cmd: &Cmd) -> String {
     .to_string()
 }
 
+// ---------------------------------------------------------------- profile
+
+/// B-27: `keel profile <api|worker>` — an out-of-process samply wrapper.
+/// The presence probe asks `samply --version`; everything else lives in
+/// `run_profile` so the missing-samply path is deterministically testable.
+fn profile(target: ProfileTarget) -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    let available = std::process::Command::new("samply")
+        .arg("--version")
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false);
+    run_profile(&root, &target, available)
+}
+
+/// Testable core of `keel profile`. When samply is missing we print the
+/// install line + the documented manual workflow and fail closed — never a
+/// silent no-op. When present: build the target package, then hand the
+/// fresh binary to `samply record` (out-of-process, zero new dependencies).
+fn run_profile(
+    root: &Path,
+    target: &ProfileTarget,
+    samply_available: bool,
+) -> anyhow::Result<ExitCode> {
+    if !samply_available {
+        eprint!("{}", profile_guidance(target));
+        return Ok(ExitCode::FAILURE);
+    }
+    let package = target.name();
+    println!("keel profile: building {package}");
+    let build = std::process::Command::new("cargo")
+        .arg("build")
+        .arg("-p")
+        .arg(package)
+        .current_dir(root)
+        .status()
+        .map_err(|e| anyhow::anyhow!("cannot run cargo build: {e}"))?;
+    if !build.success() {
+        anyhow::bail!("cargo build -p {package} failed");
+    }
+    let binary = root.join("target").join("debug").join(package);
+    let (program, args) = profile_invocation(&binary);
+    println!(
+        "keel profile: {} {} (stop the recording to open the flamegraph)",
+        program,
+        args.join(" ")
+    );
+    let status = std::process::Command::new(&program)
+        .args(&args)
+        .current_dir(root)
+        .status()
+        .map_err(|e| anyhow::anyhow!("cannot spawn {program}: {e}"))?;
+    Ok(ExitCode::from(status.code().unwrap_or(1).clamp(0, 255) as u8))
+}
+
+/// Pure samply command line: `samply record <path-to-built-binary>`.
+fn profile_invocation(binary: &Path) -> (String, Vec<String>) {
+    (
+        "samply".to_string(),
+        vec!["record".to_string(), binary.display().to_string()],
+    )
+}
+
+/// The missing-samply guidance (stderr), pointed at the documented manual
+/// flamegraph workflow in docs/13-OPERATIONS.md.
+fn profile_guidance(target: &ProfileTarget) -> String {
+    format!(
+        "keel profile: samply not found on PATH (target: {})\n  install: cargo install samply\n  manual workflow: docs/13-OPERATIONS.md (flamegraph profiling)\n",
+        target.name()
+    )
+}
+
 // ------------------------------------------------------------------ serve
 
 /// keel serve (S7 B-08): one-command local loop. Spawns `cargo run -p
@@ -4053,6 +4153,50 @@ deprecated = true
             "{text}"
         );
         assert!(!text.contains("db-password"), "secrets never rendered");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Wave 4 Phase 9 (B-27): `keel profile` parses per target, the samply
+    /// command line records the built binary, and a missing samply fails
+    /// closed with the install line + the docs/13 workflow pointer (never
+    /// a silent no-op).
+    #[test]
+    fn profile_cli_parses_and_missing_samply_fails_closed() {
+        let cli = Cli::try_parse_from(["keel", "profile", "api"]).expect("api parses");
+        let Cmd::Profile { target: api } = cli.cmd else {
+            panic!("profile api parses");
+        };
+        assert_eq!(api.name(), "keel-api");
+        let cli = Cli::try_parse_from(["keel", "profile", "worker"]).expect("worker parses");
+        let Cmd::Profile { target: worker } = cli.cmd else {
+            panic!("profile worker parses");
+        };
+        assert_eq!(worker.name(), "keel-worker");
+
+        // samply command line: `samply record <root>/target/debug/<bin>`.
+        let root = std::path::Path::new(".");
+        let binary = root.join("target").join("debug").join("keel-api");
+        let (program, args) = profile_invocation(&binary);
+        assert_eq!(program, "samply");
+        assert_eq!(args.len(), 2, "{args:?}");
+        assert_eq!(args[0], "record");
+        assert!(args[1].ends_with("keel-api"), "{args:?}");
+        assert!(args[1].contains("target"), "{args:?}");
+
+        // Missing samply: guidance carries install + docs pointer, and the
+        // run fails closed.
+        let guidance = profile_guidance(&ProfileTarget::Api);
+        assert!(guidance.contains("samply not found"), "{guidance}");
+        assert!(guidance.contains("cargo install samply"), "{guidance}");
+        assert!(guidance.contains("docs/13-OPERATIONS.md"), "{guidance}");
+        assert!(guidance.contains("keel-api"), "{guidance}");
+        let dir =
+            std::env::temp_dir().join(format!("keel-console-profile-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(
+            run_profile(&dir, &ProfileTarget::Worker, false).expect("missing samply runs"),
+            ExitCode::FAILURE
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

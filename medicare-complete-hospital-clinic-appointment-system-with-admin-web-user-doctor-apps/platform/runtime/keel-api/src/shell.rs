@@ -50,6 +50,8 @@ commands:
   whoami                                      current principal/tenant + capability count
   ops                                         registered operations (plane, profile, capability)
   routes                                      graph route inventory
+  caps                                        declared capabilities + this session's grants
+  models                                      registered models (bindings + probes)
   run <module.operation> [json]               dispatch through the engine under your principal
   help                                        this text
   exit                                        leave the console
@@ -69,6 +71,8 @@ pub async fn execute_line(state: &AppState, session: &mut ShellSession, line: &s
         "whoami" => Outcome::Reply(whoami(state, session)),
         "ops" | "operations" => Outcome::Reply(operations(state)),
         "routes" => Outcome::Reply(routes(state)),
+        "caps" | "capabilities" => Outcome::Reply(caps(state, session)),
+        "models" => Outcome::Reply(models(state)),
         "login" => login(state, session, tokens.collect()),
         "run" => run_operation(state, session, line).await,
         other => Outcome::Reply(format!("unknown command: {other} — try `help`")),
@@ -126,6 +130,68 @@ fn routes(state: &AppState) -> String {
                 "{} {} -> {} ({})",
                 route.method, route.path, route.operation, route.module
             )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Wave 4 Phase 9 (B-29 completion): the graph-declared capability catalog
+/// with this session's grants marked. Anonymous sessions see the catalog
+/// without grants — the installed access snapshot is the only grant source
+/// (the same engine the HTTP edge authorizes against).
+fn caps(state: &AppState, session: &ShellSession) -> String {
+    let granted = session
+        .principal
+        .zip(session.tenant)
+        .and_then(|(principal, tenant)| state.policy.snapshot(principal, tenant))
+        .map(|snapshot| snapshot.capabilities)
+        .unwrap_or_default();
+    let mut catalog: std::collections::BTreeSet<String> =
+        state.granted_capabilities.iter().cloned().collect();
+    catalog.extend(granted.iter().cloned());
+    if catalog.is_empty() {
+        return "no capabilities declared".to_string();
+    }
+    let mut lines: Vec<String> = catalog
+        .iter()
+        .map(|capability| {
+            format!(
+                "{capability}  {}",
+                if granted.contains(capability) {
+                    "granted"
+                } else {
+                    "-"
+                }
+            )
+        })
+        .collect();
+    if session.principal.is_none() {
+        lines.push("(anonymous — `login` to see session grants)".to_string());
+    }
+    lines.join("\n")
+}
+
+/// Wave 4 Phase 9 (B-29 completion): every model the boot registered,
+/// tagged by the services that know it — route bindings (path-param
+/// resolution) and row probes (`unique`/`exists` validation).
+fn models(state: &AppState) -> String {
+    let bindings = state.route_bindings.models();
+    let probes = state.probes.models();
+    let names: std::collections::BTreeSet<String> =
+        bindings.iter().chain(probes.iter()).cloned().collect();
+    if names.is_empty() {
+        return "no models registered".to_string();
+    }
+    names
+        .iter()
+        .map(|name| {
+            let services = match (bindings.contains(name), probes.contains(name)) {
+                (true, true) => "bindings+probes",
+                (true, false) => "bindings",
+                (false, true) => "probes",
+                (false, false) => unreachable!("union member comes from one of the registries"),
+            };
+            format!("{name}  {services}")
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -411,7 +477,9 @@ mod tests {
         let Outcome::Reply(text) = execute_line(&state, &mut session, "help").await else {
             panic!("help replies");
         };
-        for expected in ["login", "whoami", "ops", "routes", "run", "exit"] {
+        for expected in [
+            "login", "whoami", "ops", "routes", "caps", "models", "run", "exit",
+        ] {
             assert!(text.contains(expected), "help missing {expected}");
         }
     }
@@ -597,6 +665,39 @@ mod tests {
             panic!("routes replies");
         };
         assert!(text.contains("appointments"), "{text}");
+    }
+
+    /// Wave 4 Phase 9 (B-29 completion): `caps` marks session grants over
+    /// the declared catalog (anonymous sees the catalog without grants);
+    /// `models` lists the binding + probe registries with their services.
+    #[tokio::test]
+    async fn caps_and_models_introspect_grants_and_registries() {
+        let (state, _store) = harness();
+        let mut session = ShellSession::default();
+
+        // Anonymous: the declared catalog is visible, nothing granted yet.
+        let Outcome::Reply(text) = execute_line(&state, &mut session, "caps").await else {
+            panic!("caps replies");
+        };
+        assert!(text.contains("appointments.book"), "{text}");
+        assert!(text.contains("appointments.availability"), "{text}");
+        assert!(text.contains("anonymous"), "{text}");
+        assert!(!text.contains("  granted"), "{text}");
+
+        // After login the installed snapshot marks every declared grant.
+        login_ok(&state, &mut session).await;
+        let Outcome::Reply(text) = execute_line(&state, &mut session, "caps").await else {
+            panic!("caps replies");
+        };
+        assert!(text.contains("appointments.book  granted"), "{text}");
+        assert!(text.contains("appointments.list  granted"), "{text}");
+        assert!(!text.contains("anonymous"), "{text}");
+
+        // Models: the harness registers Appointment in both registries.
+        let Outcome::Reply(text) = execute_line(&state, &mut session, "models").await else {
+            panic!("models replies");
+        };
+        assert!(text.contains("Appointment  bindings+probes"), "{text}");
     }
 
     #[test]
