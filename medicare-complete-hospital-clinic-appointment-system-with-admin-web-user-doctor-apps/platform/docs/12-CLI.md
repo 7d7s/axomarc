@@ -40,6 +40,7 @@ against the same workspace/config the runtime uses.
 | `keel migrate` / `migrate:status` / `migrate:fresh` | apply / report / drop+recreate (dev-test) |
 | `keel seed [--only a,b]` | idempotent seeders |
 | `keel db:inspect` | tables + row counts |
+| `keel model:prune [--chunk n] [--tenant <uuid>]` | sweep prunable models in chunked passes (1..=200); untenanted by default — passes the tenant only with `--tenant` (Wave 3) |
 
 ## Operations
 

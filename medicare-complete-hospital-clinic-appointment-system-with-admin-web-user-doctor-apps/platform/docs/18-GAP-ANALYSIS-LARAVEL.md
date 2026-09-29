@@ -180,18 +180,18 @@ The matrix below is deliberately granular. A subsystem cannot be called `MATCHED
 | Feature flags | EQUIVALENT | platform/crates/enterprise/feature-flags/src/lib.rs:431,472 | Runtime feature flags | P2 |
 | Tenancy | EQUIVALENT | platform/crates/enterprise/tenancy/src/lib.rs:143,267 | Tenant-aware primitives | P1 |
 | Localization | EQUIVALENT | platform/crates/foundation/core/src/translate.rs:151 | Catalog primitive exists | P3 |
-| Query builder | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; write builders absent | P0 |
-| Eloquent ORM | INCOMPLETE | platform/crates/data/models/src/lib.rs | Metadata-only model registry; no runtime CRUD | P0 |
-| Relations | INCOMPLETE | platform/crates/data/models/src/lib.rs | RelationDef exists; loading absent | P0 |
-| Casts | MISSING | platform/crates/data/models/src/lib.rs | No runtime cast machinery | P1 |
-| Accessors / mutators | MISSING | platform/crates/data/models/src/lib.rs | No runtime attribute transformation | P1 |
-| Scopes | MISSING | platform/crates/data/models/src/lib.rs | No runtime query scope layer | P1 |
-| Soft deletes | MISSING | platform/crates/data/models/src/lib.rs | No runtime soft-delete behavior | P2 |
-| Model events / observers | MISSING | platform/crates/data/models/src/lib.rs | No runtime model lifecycle event layer | P2 |
+| Query builder | MATCHED | platform/crates/execution/query/src/select.rs (clause tree + 33 rendering unit tests: union/union_all, group_by/having, locks, where_exists, date family, aggregates) | Full read-builder surface (Wave 3 Phase 1); writes ride ModelRuntime - keel-query compiles SQL but never executes it (documented divergence) | P0 |
+| Eloquent ORM | MATCHED | platform/crates/data/models/src/runtime.rs (finders/mutations, push, pluck/value/chunk/each/cursor); platform/crates/data/models/src/store.rs | Full CRUD runtime (Wave 3 Phases 2-3): every operation runs mass assignment -> mutators -> casts -> scopes -> store -> observers, tenant-scoped, with typed not-found and dirty-tracked updates | P0 |
+| Relations | MATCHED | platform/crates/data/models/src/runtime.rs (with/with_constrained, has/where_relation, attach/sync/toggle, morph; tests with_loads_a_nested_path_level_by_level, many_to_many_eager_loads_and_aggregates, morph_to_loads_each_type_through_the_morph_map) | Eager + lazy + pivot + polymorphic + aggregate-eager loading (Wave 3 Phase 4) | P0 |
+| Casts | MATCHED | platform/crates/data/models/src/casts.rs; runtime `with_cast` registry (tests cast_kinds_validate_and_normalize_at_set_time, encrypted_cast_seals_through_the_runtime_sealer) | Builtin + custom casts validated at set time; `encrypted` fails closed without a sealer (Wave 3 Phase 5) | P1 |
+| Accessors / mutators | MATCHED | platform/crates/data/models/src/runtime.rs (`with_accessor`/`with_mutator`, `append`; tests scopes_accessors_and_listing, mutator_transforms_wire_values) | Attribute transformation wired into the wire/projection paths; Wave 3 hardens `append` against unknown accessor names | P1 |
+| Scopes | MATCHED | platform/crates/data/models/src/runtime.rs (`with_scope`; `with_global_scope`/`without_global_scopes`; tests scopes_accessors_and_listing, global_scopes_run_first_and_named_suppression_relaxes_reads) | Named local + global query scopes (Wave 3 Phase 6) | P1 |
+| Soft deletes | MATCHED | platform/crates/data/models/src/runtime.rs (find_trashed/with_trashed/only_trashed/restore/force_delete; tests soft_delete_trio_round_trips) plus route-binding `with_trashed`; pg veil roundtrip in platform/crates/data/postgres/tests/pg_modelstore.rs | `deleted_at` veil, trash-scoped reads, restore/force delete, trashed route-model binding (Wave 3 Phase 6) | P2 |
+| Model events / observers | MATCHED | platform/crates/data/models/src/runtime.rs (`with_observer`, ModelPhase events; tests model_events_fire_in_order, cas_stale_write_reports_stale_record) | Pre-existing observer runtime; Wave 3 wires it into CAS version stamping + dirty tracking | P2 |
 | Pagination | MATCHED | platform/crates/web/http/src/pagination.rs; platform/runtime/keel-api/src/graph_routes.rs | Wired (Wave 1): GET routes parse page/per_page and inject _page; per_page clamped to MAX_PER_PAGE 100; list handlers emit a page meta block | P1 |
 | Migrations | MATCHED | platform/database/migrations/*.sql | keel migrate / seed and 18 framework tables | P1 |
 | Seeders | MATCHED | keel seed; framework migrations | Seed command exists | P1 |
-| Factories | PARTIAL | platform/tools/keel-codegen/src/generators.rs:126 | Generator build() contains todo! | P2 |
+| Factories | MATCHED | platform/tools/keel-codegen/src/generators.rs (FACTORY_TEMPLATE; tests factory_build_is_real_and_deterministic, generated_code_contains_no_placeholder_macros) | Real `build()` with no `todo!`/`unimplemented!` - the snapshot's "build() contains todo!" claim is stale (S8 reality per sec. 25.3; row reconciled with Wave 3) | P2 |
 | Cache | EQUIVALENT | platform/crates/services/cache/src/lib.rs:47,62 | moka cache + lock primitive | P2 |
 | Redis cache driver | MISSING | no Redis driver supplied | Production distributed cache path missing | P2 |
 | Queue | MATCHED | platform/runtime/keel-worker/src/main.rs | Worker, batches, chains, scheduler | P1 |
@@ -223,7 +223,7 @@ The matrix below is deliberately granular. A subsystem cannot be called `MATCHED
 | AI/MCP | SUPERSEDED | MCP/AI-native capabilities supplied | First-class capability-aware machine interface | P1 |
 | Audit/replay | SUPERSEDED | delta/audit/replay/inspect supplied | Stronger operational forensic model | P1 |
 | Testing framework | EQUIVALENT | TestKit + assert_queries! supplied | Strong framework test primitives | P1 |
-| PostgreSQL integration tests | MISSING | repo-wide zero sqlx::test | Store risk remains unproven | P0 |
+| PostgreSQL integration tests | PARTIAL | platform/crates/data/postgres/tests/pg_integration.rs; platform/crates/data/postgres/tests/pg_modelstore.rs (DATABASE_URL-gated suites: CRUD + soft-delete veil roundtrip, tenant isolation, upsert merge, belongs_to eager load, sessions/tokens) | Live-pg suites exist (the snapshot's "zero sqlx::test" claim predates them); the Wave 3 pg-matrix additions (aggregates/exists/restore+force_delete/version column/insert_or_ignore/chunk streaming) were not added - B-19 stays open | P0 |
 | Browser / E2E | UNKNOWN | no locked evidence anchor supplied | Dusk equivalent not established | P3 |
 | Package ecosystem | PARTIAL | 7 adapters / manifests / compile-time modules | Extension discovery/registry is incomplete | P2 |
 | Plugin discovery | MISSING | D-69 | No registry/discovery surface | P2 |
@@ -431,57 +431,57 @@ This ledger intentionally enumerates individual operations so a broad `Database`
 | Validation | lt | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
 | Validation | lte | EQUIVALENT | Validator / Rule enum supplied in audit facts | HTTP wiring and per-rule behavior must be proven before MATCHED |
 
-| Query Builder | select | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
-| Query Builder | addSelect | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
-| Query Builder | from | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
-| Query Builder | distinct | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
-| Query Builder | where | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
-| Query Builder | orWhere | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
-| Query Builder | whereIn | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
-| Query Builder | whereNotIn | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
-| Query Builder | whereNull | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
-| Query Builder | whereNotNull | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
-| Query Builder | whereBetween | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
-| Query Builder | whereNotBetween | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | whereDate | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | whereMonth | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | whereYear | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | whereColumn | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
-| Query Builder | whereExists | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | select | MATCHED | platform/crates/execution/query/src/select.rs (select projection batches) | Batch projection rendering tested; clause-tree battery proves the shape (Wave 3 Phase 1) |
+| Query Builder | addSelect | MATCHED | platform/crates/execution/query/src/select.rs (addSelect batches) | Multiple projection batches render bind-continuously (Wave 3 Phase 1) |
+| Query Builder | from | MATCHED | platform/crates/execution/query/src/select.rs | Clause-tree rendering proven by the select.rs test battery (Wave 3) |
+| Query Builder | distinct | MATCHED | platform/crates/execution/query/src/select.rs (distinct) | SELECT DISTINCT rendering tested (Wave 3 Phase 1) |
+| Query Builder | where | MATCHED | platform/crates/execution/query/src/select.rs (clause tree: Junction/Clause) | Recursive group rendering with bind continuity (Wave 3 Phase 1) |
+| Query Builder | orWhere | MATCHED | platform/crates/execution/query/src/select.rs (or_where family + nested groups) | Parenthesised OR groups tested (Wave 3 Phase 1) |
+| Query Builder | whereIn | MATCHED | platform/crates/execution/query/src/select.rs (where_in) | Clause-tree rendering proven by the select.rs test battery (Wave 3) |
+| Query Builder | whereNotIn | MATCHED | platform/crates/execution/query/src/select.rs (where_not_in) | NOT IN renders through the clause tree (Wave 3 Phase 1) |
+| Query Builder | whereNull | MATCHED | platform/crates/execution/query/src/select.rs (where_null) | Clause-tree rendering proven by the select.rs test battery (Wave 3) |
+| Query Builder | whereNotNull | MATCHED | platform/crates/execution/query/src/select.rs (where_not_null) | Clause-tree rendering proven by the select.rs test battery (Wave 3) |
+| Query Builder | whereBetween | MATCHED | platform/crates/execution/query/src/select.rs (where_between) | Range filter through the clause tree (Wave 3 Phase 1) |
+| Query Builder | whereNotBetween | MATCHED | platform/crates/execution/query/src/select.rs (not_between) | Range exclusion renders bind-continuously (Wave 3 Phase 1) |
+| Query Builder | whereDate | MATCHED | platform/crates/execution/query/src/select.rs (where_date) | Truncated date comparison; render-tested (Wave 3 Phase 1) |
+| Query Builder | whereMonth | MATCHED | platform/crates/execution/query/src/select.rs (where_month) | Month extraction comparison; render-tested (Wave 3 Phase 1) |
+| Query Builder | whereYear | MATCHED | platform/crates/execution/query/src/select.rs (where_year) | Year extraction comparison; render-tested (Wave 3 Phase 1) |
+| Query Builder | whereColumn | MATCHED | platform/crates/execution/query/src/select.rs (where_column(_op)) | Column-to-column comparison, no binds (Wave 3 Phase 1) |
+| Query Builder | whereExists | MATCHED | platform/crates/execution/query/src/select.rs (where_exists/where_not_exists; test or_where_exists_joins_the_preceding_clause) | Correlated subquery against the relation (Wave 3 Phase 4) |
 | Query Builder | join | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
 | Query Builder | leftJoin | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
 | Query Builder | rightJoin | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
 | Query Builder | crossJoin | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
 | Query Builder | joinSub | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | union | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | unionAll | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | groupBy | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
-| Query Builder | having | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
-| Query Builder | orderBy | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
-| Query Builder | latest | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | oldest | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | limit | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
-| Query Builder | offset | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
-| Query Builder | cursor | PARTIAL | platform/crates/execution/query/src/select.rs | Typed Select exists; remaining operation not proven |
-| Query Builder | lockForUpdate | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | sharedLock | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | insert | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | insertGetId | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | insertOrIgnore | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | upsert | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | update | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | updateOrInsert | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | increment | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | decrement | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | delete | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | truncate | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | count | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | max | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | min | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | avg | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | sum | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | exists | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
-| Query Builder | doesntExist | MISSING | No write builder in supplied evidence | Write/advanced query operation not implemented |
+| Query Builder | union | MATCHED | platform/crates/execution/query/src/select.rs (union/union_all) | Main tail moves to the composite end; render-tested (Wave 3 Phase 1) |
+| Query Builder | unionAll | MATCHED | platform/crates/execution/query/src/select.rs (union/union_all) | Non-distinct composite; render-tested (Wave 3 Phase 1) |
+| Query Builder | groupBy | MATCHED | platform/crates/execution/query/src/select.rs (group_by/having) | Aggregate grouping tested (Wave 3 Phase 1) |
+| Query Builder | having | MATCHED | platform/crates/execution/query/src/select.rs (having + having_aggregate + HAVING-only guard) | Predicate on aggregates, HAVING-only guarded (Wave 3 Phase 1) |
+| Query Builder | orderBy | MATCHED | platform/crates/execution/query/src/select.rs | Clause-tree rendering proven by the select.rs test battery (Wave 3) |
+| Query Builder | latest | MATCHED | platform/crates/execution/query/src/select.rs (latest, column override) | Default created_at descending ordering (Wave 3 Phase 1) |
+| Query Builder | oldest | MATCHED | platform/crates/execution/query/src/select.rs (oldest, column override) | Default created_at ascending ordering (Wave 3 Phase 1) |
+| Query Builder | limit | MATCHED | platform/crates/execution/query/src/select.rs | Clause-tree rendering proven by the select.rs test battery (Wave 3) |
+| Query Builder | offset | MATCHED | platform/crates/execution/query/src/select.rs | Clause-tree rendering proven by the select.rs test battery (Wave 3) |
+| Query Builder | cursor | EQUIVALENT | platform/crates/data/models/src/runtime.rs (cursor; test cursor_iterates_lazily_across_pages) | Lazy RecordCursor pages through the store instead of one SQL stream - documented divergence from Laravel cursor() (Wave 3) |
+| Query Builder | lockForUpdate | MATCHED | platform/crates/execution/query/src/select.rs (lock_for_update -> FOR UPDATE) | Pessimistic write-lock clause tested (Wave 3 Phase 1) |
+| Query Builder | sharedLock | MATCHED | platform/crates/execution/query/src/select.rs (shared_lock -> FOR SHARE) | Pessimistic read-lock clause tested (Wave 3 Phase 1) |
+| Query Builder | insert | EQUIVALENT | platform/crates/data/models/src/runtime.rs (insert; test insert_requires_tenant_and_generates_id); pg roundtrip in platform/crates/data/postgres/tests/pg_modelstore.rs | Writes ride ModelRuntime/ModelStore, not the compiler (documented); tenant-scoped insert with RETURNING (Wave 3) |
+| Query Builder | insertGetId | EQUIVALENT | platform/crates/data/models/src/runtime.rs (insert_get_id; test insert_get_id_and_insert_or_ignore) | Insert + RETURNING id through the runtime (Wave 3) |
+| Query Builder | insertOrIgnore | EQUIVALENT | platform/crates/data/models/src/runtime.rs (insert_or_ignore; test insert_get_id_and_insert_or_ignore) | ON CONFLICT DO NOTHING through the runtime; pg wire proof pending pg-matrix additions (Wave 3) |
+| Query Builder | upsert | EQUIVALENT | platform/crates/data/models/src/runtime.rs (upsert); store upsert_merge; pg test pg_modelstore_upsert_merges_on_conflict | Conflict-merge write rides the runtime/store (Wave 3) |
+| Query Builder | update | EQUIVALENT | platform/crates/data/models/src/runtime.rs (update/update_tracked + version_column CAS); pg roundtrip in platform/crates/data/postgres/tests/pg_modelstore.rs | Partial update with RETURNING, dirty-only change set, optimistic lock (Wave 3) |
+| Query Builder | updateOrInsert | EQUIVALENT | platform/crates/data/models/src/runtime.rs (update_or_insert; test update_or_insert_upserts_keyed_on_conflict_fields) | Keyed upsert through the runtime (Wave 3) |
+| Query Builder | increment | EQUIVALENT | platform/crates/data/models/src/runtime.rs (increment; test increment_decrement_counter_and_guards) | Atomic SET col = col + n; bypasses CAS by design (documented); pg proof pending pg-matrix additions (Wave 3) |
+| Query Builder | decrement | EQUIVALENT | platform/crates/data/models/src/runtime.rs (decrement; test increment_decrement_counter_and_guards) | Atomic SET col = col - n; bypasses CAS by design (documented); pg proof pending pg-matrix additions (Wave 3) |
+| Query Builder | delete | EQUIVALENT | platform/crates/data/models/src/runtime.rs (delete - stamps deleted_at unless .hard_deletes()); pg veil in pg_modelstore_crud_roundtrip | Soft delete by default with a hard-delete path (Wave 3) |
+| Query Builder | truncate | EQUIVALENT | platform/crates/data/models/src/store.rs (truncate, config-gated) | Destructive op rides the store behind a config gate (Wave 3) |
+| Query Builder | count | MATCHED | platform/crates/execution/query/src/select.rs (count) | Aggregate compiles to SQL with tested shape (Wave 3 Phase 1) |
+| Query Builder | max | MATCHED | platform/crates/execution/query/src/select.rs (max) | Aggregate compiles to SQL with tested shape (Wave 3 Phase 1) |
+| Query Builder | min | MATCHED | platform/crates/execution/query/src/select.rs (min) | Aggregate compiles to SQL with tested shape (Wave 3 Phase 1) |
+| Query Builder | avg | MATCHED | platform/crates/execution/query/src/select.rs (avg) | Aggregate compiles to SQL with tested shape (Wave 3 Phase 1) |
+| Query Builder | sum | MATCHED | platform/crates/execution/query/src/select.rs (sum) | Aggregate compiles to SQL with tested shape (Wave 3 Phase 1) |
+| Query Builder | exists | MATCHED | platform/crates/execution/query/src/select.rs (exists) | EXISTS compiles with tested shape (Wave 3 Phase 1) |
+| Query Builder | doesntExist | MATCHED | platform/crates/execution/query/src/select.rs (doesnt_exist) | NOT EXISTS compiles with tested shape (Wave 3 Phase 1) |
 | Cache | get | EQUIVALENT | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
 | Cache | put | EQUIVALENT | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
 | Cache | add | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
@@ -591,35 +591,35 @@ This ledger intentionally enumerates individual operations so a broad `Database`
 | HTTP Request / Response | collect | MISSING | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
 | HTTP Request / Response | validate | PARTIAL | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
 | HTTP Request / Response | validated | MISSING | platform/crates/web/http/src/middleware.rs; platform/runtime/keel-api/src/routes.rs:44-51 | Transport primitives exist but end-to-end edge remains incomplete |
-| Eloquent / ORM | create | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | createMany | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | save | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | update | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | updateOrCreate | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | firstOrCreate | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | firstOrNew | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | forceCreate | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | delete | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | forceDelete | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | restore | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | replicate | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | refresh | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | fresh | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | with | INCOMPLETE | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | load | INCOMPLETE | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | loadMissing | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | withCount | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | whereHas | INCOMPLETE | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | whereRelation | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | has | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | doesntHave | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | withoutGlobalScopes | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | scope | INCOMPLETE | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | makeVisible | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | makeHidden | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | append | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | withoutTimestamps | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
-| Eloquent / ORM | observe | MISSING | platform/crates/data/models/src/lib.rs; platform/crates/execution/query/src/select.rs | Model metadata/read builder exists; runtime Eloquent behavior is not implemented |
+| Eloquent / ORM | create | MATCHED | platform/crates/data/models/src/runtime.rs (insert/force_create/create_many; tests insert_requires_tenant_and_generates_id, force_create_bypasses_the_mass_assignment_guard) | create() rides the runtime pipeline: mass assignment -> mutators -> casts -> scopes -> store -> observers, tenant-scoped, RETURNING merge (Wave 3 Phase 3) |
+| Eloquent / ORM | createMany | MATCHED | platform/crates/data/models/src/runtime.rs (create_many; test create_many_runs_the_pipeline_per_record) | Batch insert runs the full pipeline once per record (Wave 3 Phase 3) |
+| Eloquent / ORM | save | MATCHED | platform/crates/data/models/src/runtime.rs (push; test push_saves_self_and_loaded_relations) | Explicit insert-or-update persist of the record + its loaded relations (depth-capped at 8); no implicit save-on-flush (documented divergence) (Wave 3 Phase 3) |
+| Eloquent / ORM | update | MATCHED | platform/crates/data/models/src/runtime.rs (update/update_tracked + version_column CAS; tests update_tracked_reports_original_pending_and_stored, cas_stale_write_reports_stale_record) | Dirty-only change set, RETURNING merge, STALE_RECORD -> 409 on version mismatch (Wave 3) |
+| Eloquent / ORM | updateOrCreate | MATCHED | platform/crates/data/models/src/runtime.rs (update_or_create; test update_or_create_updates_in_place_then_creates) | Find by predicates, merge attrs in place, else create (Wave 3 Phase 3) |
+| Eloquent / ORM | firstOrCreate | MATCHED | platform/crates/data/models/src/runtime.rs (first_or_create; test first_or_create_and_first_or_new) | Find by predicates, else create through the pipeline (Wave 3 Phase 3) |
+| Eloquent / ORM | firstOrNew | MATCHED | platform/crates/data/models/src/runtime.rs (first_or_new; test first_or_create_and_first_or_new) | Find else an unsaved record; persistence stays explicit (Wave 3 Phase 3) |
+| Eloquent / ORM | forceCreate | MATCHED | platform/crates/data/models/src/runtime.rs (force_create; test force_create_bypasses_the_mass_assignment_guard) | Deliberate mass-assignment guard bypass (Wave 3 Phase 3) |
+| Eloquent / ORM | delete | MATCHED | platform/crates/data/models/src/runtime.rs (delete - stamps deleted_at unless .hard_deletes(); tests soft_delete_hides_rows_until_trashed, trashed_reads_refuse_hard_delete_models); pg veil roundtrip in platform/crates/data/postgres/tests/pg_modelstore.rs | Soft delete by default, hard-delete opt-in (Wave 3) |
+| Eloquent / ORM | forceDelete | MATCHED | platform/crates/data/models/src/runtime.rs (force_delete; test trashed_reads_refuse_hard_delete_models) | Unconditional removal; store hard-delete returns Ok(None) (Wave 3 Phase 6) |
+| Eloquent / ORM | restore | MATCHED | platform/crates/data/models/src/runtime.rs (restore) + store restore roundtrip test | Clears deleted_at through the store port (Wave 3 Phase 6); pg proof pending pg-matrix additions |
+| Eloquent / ORM | replicate | MATCHED | platform/crates/data/models/src/runtime.rs (replicate; tests replicate_makes_an_unsaved_clone, replicate_detaches_loaded_relation_payloads) | Clone minus except-fields with a new id, relation payloads detached (Wave 3 Phase 3) |
+| Eloquent / ORM | refresh | MATCHED | platform/crates/data/models/src/runtime.rs (refresh; test refresh_and_fresh_rehydrate_from_the_store) | Re-hydrate the same record in place (Wave 3 Phase 3) |
+| Eloquent / ORM | fresh | MATCHED | platform/crates/data/models/src/runtime.rs (fresh; test refresh_and_fresh_rehydrate_from_the_store) | Re-fetch as a new record (Wave 3 Phase 3) |
+| Eloquent / ORM | with | MATCHED | platform/crates/data/models/src/runtime.rs (with/with_constrained; tests with_loads_a_nested_path_level_by_level, with_constrained_applies_per_level_constraints, with_rejects_an_empty_path) | Nested eager paths with per-level constraints; empty paths refused (Wave 3 Phase 4) |
+| Eloquent / ORM | load | MATCHED | platform/crates/data/models/src/runtime.rs (load_relation; test prevent_lazy_loading_flags_the_lazy_path_only) | Lazy eager-load on a hydrated record, fail-closed against unknown relations (Wave 3) |
+| Eloquent / ORM | loadMissing | MATCHED | platform/crates/data/models/src/runtime.rs (load_missing; test load_missing_only_loads_unloaded_relations) | Loads only relations not already loaded (Wave 3 Phase 3) |
+| Eloquent / ORM | withCount | MATCHED | platform/crates/data/models/src/runtime.rs (with_count/with_sum/with_min/with_max/with_avg; test with_count_and_friends_fold_related_rows) | Aggregate-eager folds related rows into the projection (Wave 3 Phase 4) |
+| Eloquent / ORM | whereHas | EQUIVALENT | platform/crates/data/models/src/runtime.rs (has/or_where_has with FieldFilter sub-filters; tests existence_filters_scope_tenant_and_soft_deletes, or_where_has_ors_with_the_preceding_terms) | Constraints ride typed FieldFilter lists instead of query-builder closures (no closure SQL in Rust) - documented divergence (Wave 3) |
+| Eloquent / ORM | whereRelation | MATCHED | platform/crates/data/models/src/runtime.rs (where_relation/where_doesnt_have_relation; test where_relation_filters_on_related_columns) | Equality filter on a related column + its negation (Wave 3 Phase 4) |
+| Eloquent / ORM | has | MATCHED | platform/crates/data/models/src/runtime.rs (has with operator/count; test has_and_doesnt_have_filter_on_relation_existence) | Count-constrained existence filter, tenant- and veil-aware (Wave 3 Phase 4) |
+| Eloquent / ORM | doesntHave | MATCHED | platform/crates/data/models/src/runtime.rs (doesnt_have; test has_and_doesnt_have_filter_on_relation_existence) | Negated existence filter (Wave 3 Phase 4) |
+| Eloquent / ORM | withoutGlobalScopes | MATCHED | platform/crates/data/models/src/runtime.rs (without_global_scopes/without_global_scopes_all; test without_global_scopes_all_lifts_the_soft_delete_veil) | Named suppression or full veil-lift per call (Wave 3 Phase 6) |
+| Eloquent / ORM | scope | MATCHED | platform/crates/data/models/src/runtime.rs (with_scope + with_global_scope; tests scopes_accessors_and_listing, global_scopes_run_first_and_named_suppression_relaxes_reads) | Named local scopes + globally applied scopes (Wave 3) |
+| Eloquent / ORM | makeVisible | MATCHED | platform/crates/data/models/src/runtime.rs (make_visible; tests manifest_hidden_and_visible_shape_the_projection, per_call_overrides_win_over_sensitive_and_manifest_policy) | Projection opt-in wins over manifest hidden (Wave 3 Phase 5) |
+| Eloquent / ORM | makeHidden | MATCHED | platform/crates/data/models/src/runtime.rs (make_hidden; test manifest_hidden_and_visible_shape_the_projection) | Projection opt-out; sensitive fields stay redacted in public_record (Wave 3 Phase 5) |
+| Eloquent / ORM | append | MATCHED | platform/crates/data/models/src/runtime.rs (append - validates registered accessor names; with_accessor) | Accessor-backed virtual attributes join the wire shape (Wave 3) |
+| Eloquent / ORM | withoutTimestamps | MATCHED | platform/crates/data/models/src/runtime.rs (without_timestamps; test without_timestamps_skips_injection_and_touch_becomes_a_noop) | Timestamp injection and touch become no-ops (Wave 3 Phase 6) |
+| Eloquent / ORM | observe | MATCHED | platform/crates/data/models/src/runtime.rs (with_observer, ModelPhase events; tests model_events_fire_in_order, cas_stale_write_reports_stale_record) | Observer registry fires create/update/delete phases; CAS version stamping lands there (Wave 3) |
 
 ### Exhaustive surface cross-reference ledger
 
@@ -1025,7 +1025,7 @@ The CLI is one of the most important Laravel parity surfaces because it compress
 | make:controller | make controller | PARTIAL | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
 | make:event | make event | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
 | make:exception | make exception | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
-| make:factory | make factory | STUB | platform/tools/keel-codegen/src/generators.rs:126; build() contains todo! | P2 |
+| make:factory | make factory | PARTIAL | platform/tools/keel-codegen/src/generators.rs (FACTORY_TEMPLATE; test factory_build_is_real_and_deterministic) - real build() with no todo! (stale STUB claim reconciled) | P2 |
 | make:interface | make interface | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
 | make:job | make job | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
 | make:job-middleware | make job-middleware | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
@@ -1038,7 +1038,7 @@ The CLI is one of the most important Laravel parity surfaces because it compress
 | make:policy | make policy | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
 | make:provider | make provider | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
 | make:request | make request | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
-| make:resource | make resource | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:resource | make resource | PARTIAL | platform/tools/keel-codegen/src/generators.rs (RESOURCE_TEMPLATE emits a compiling `impl keel_http::Resource`; tests resource_template_emits_the_trait_impl + the keel-http doctest build proof, Wave 3); no end-to-end CLI verification yet | P2 |
 | make:rule | make rule | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
 | make:scope | make scope | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
 | make:seeder | make seeder | PARTIAL | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
@@ -1051,6 +1051,7 @@ The CLI is one of the most important Laravel parity surfaces because it compress
 | migrate:reset | migrate:reset | MISSING | Reset workflow not supplied | P2 |
 | migrate:rollback | migrate:rollback | UNKNOWN | Rollback depth not locked | P2 |
 | migrate:status | migrate:status | UNKNOWN | Status command not locked | P3 |
+| model:prune | model:prune | MATCHED | PruneRegistry sweep through ModelRuntime; `--tenant`/`--chunk` flags, chunked passes (test model_prune_cli_parses) (Wave 3) | P3 |
 | queue:clear | queue:clear | UNKNOWN | Worker runtime exists; command not locked | P3 |
 | queue:failed | queue:failed | UNKNOWN | No locked command evidence | P3 |
 | queue:flush | queue:flush | UNKNOWN | No locked command evidence | P3 |
@@ -1113,34 +1114,34 @@ That is **metadata + typed read composition**, not an Eloquent-class ORM runtime
 | Capability | Status | Evidence | Gap | Priority |
 |---|---|---|---|---|
 | Model definition | EQUIVALENT | platform/crates/data/models/src/lib.rs | Compile-time metadata exists | P1 |
-| Create/save | MISSING | platform/crates/execution/query/src/select.rs | No write builder | P0 |
-| Insert many | MISSING | platform/crates/execution/query/src/select.rs | No batch insert builder | P1 |
-| Update | MISSING | platform/crates/execution/query/src/select.rs | No update builder | P0 |
-| Delete | MISSING | platform/crates/execution/query/src/select.rs | No delete builder | P0 |
-| Upsert | MISSING | platform/crates/execution/query/src/select.rs | No upsert builder | P1 |
-| Find one | PARTIAL | platform/crates/execution/query/src/select.rs | Read builder exists but no model runtime | P1 |
-| Eager loading | MISSING | platform/crates/data/models/src/lib.rs | Relation definitions are metadata-only | P0 |
-| Lazy loading | MISSING | platform/crates/data/models/src/lib.rs | No runtime relation fetch | P1 |
-| Lazy-loading prevention | MISSING | platform/crates/data/models/src/lib.rs | No runtime model loader | P2 |
-| Relations | INCOMPLETE | platform/crates/data/models/src/lib.rs | RelationDef exists; execution absent | P0 |
-| Many-to-many / pivot | MISSING | platform/crates/data/models/src/lib.rs | No runtime pivot abstraction | P2 |
-| Polymorphic relations | MISSING | platform/crates/data/models/src/lib.rs | No runtime polymorphic loader | P3 |
-| Casts | MISSING | platform/crates/data/models/src/lib.rs | No runtime cast system | P1 |
-| Accessors | MISSING | platform/crates/data/models/src/lib.rs | No computed attribute runtime | P1 |
-| Mutators | MISSING | platform/crates/data/models/src/lib.rs | No setter transformation runtime | P1 |
-| Fillable / mass assignment | MISSING | platform/crates/data/models/src/lib.rs | No equivalent security boundary | P1 |
-| Hidden / visible serialization | MISSING | platform/crates/data/models/src/lib.rs | No ORM serializer policy | P2 |
-| Scopes | MISSING | platform/crates/data/models/src/lib.rs | No local/global scope runtime | P1 |
-| Soft deletes | MISSING | platform/crates/data/models/src/lib.rs | No runtime behavior | P2 |
-| Model events | MISSING | platform/crates/data/models/src/lib.rs | No model lifecycle event system | P2 |
-| Observers | MISSING | platform/crates/data/models/src/lib.rs | No observer registry | P2 |
-| Factories | PARTIAL | platform/tools/keel-codegen/src/generators.rs:126 | Factory build path contains todo! | P2 |
+| Create/save | MATCHED | platform/crates/data/models/src/runtime.rs (insert + push = insert-or-update with relations; test push_saves_self_and_loaded_relations) | Explicit persist through the runtime pipeline (Wave 3) | P0 |
+| Insert many | MATCHED | platform/crates/data/models/src/runtime.rs (create_many; test create_many_runs_the_pipeline_per_record) | Batch insert runs mutators/casts/observers once per record (Wave 3) | P1 |
+| Update | MATCHED | platform/crates/data/models/src/runtime.rs (update/update_tracked + version CAS; tests update_tracked_reports_original_pending_and_stored, cas_stale_write_reports_stale_record) | Dirty-only change set with RETURNING merge (Wave 3) | P0 |
+| Delete | MATCHED | platform/crates/data/models/src/runtime.rs (delete/force_delete; pg veil roundtrip in platform/crates/data/postgres/tests/pg_modelstore.rs) | Soft delete by default, hard-delete opt-in; pg-proven (Wave 3) | P0 |
+| Upsert | MATCHED | platform/crates/data/models/src/runtime.rs (upsert/update_or_insert); pg test pg_modelstore_upsert_merges_on_conflict | Conflict-merge upsert through the store port (Wave 3) | P1 |
+| Find one | MATCHED | platform/crates/data/models/src/runtime.rs (find/get/first/first_or_not_found; test find_keeps_ok_none_while_error_finders_raise_not_found) | Model runtime with typed not-found (Wave 3) | P1 |
+| Eager loading | MATCHED | platform/crates/data/models/src/runtime.rs (with/with_constrained; tests with_loads_a_nested_path_level_by_level, has_many_eager_load, belongs_to_eager_load) | Nested eager paths with per-level constraints (Wave 3) | P0 |
+| Lazy loading | MATCHED | platform/crates/data/models/src/runtime.rs (load_relation/load_missing; test load_missing_only_loads_unloaded_relations) | On-demand relation fetch on hydrated records (Wave 3) | P1 |
+| Lazy-loading prevention | MATCHED | platform/crates/data/models/src/runtime.rs (prevent_lazy_loading; test prevent_lazy_loading_flags_the_lazy_path_only) | Strict-mode guard flags the lazy path (Wave 3) | P2 |
+| Relations | MATCHED | platform/crates/data/models/src/runtime.rs (belongs_to/has_many/many-through + aggregate eager; test many_through_eager_load_and_aggregates) | Relation execution complete: eager + lazy + aggregates (Wave 3) | P0 |
+| Many-to-many / pivot | MATCHED | platform/crates/data/models/src/runtime.rs (attach/detach/sync/toggle/update_existing_pivot; test pivot_sync_detach_toggle_and_update) | Runtime pivot abstraction with sync idempotence (Wave 3) | P2 |
+| Polymorphic relations | MATCHED | platform/crates/data/models/src/runtime.rs (morph_to/morph_many/morph_to_many; tests morph_to_loads_each_type_through_the_morph_map, morph_many_pins_owner_type_on_load_and_exists) | Morph-map resolution at load and existence (Wave 3) | P3 |
+| Casts | MATCHED | platform/crates/data/models/src/casts.rs + runtime `with_cast` registry (tests cast_kinds_validate_and_normalize_at_set_time, encrypted_cast_seals_through_the_runtime_sealer, hashed_cast_hashes_with_argon2_and_never_round_trips) | Builtin + custom casts validated at set time (Wave 3) | P1 |
+| Accessors | MATCHED | platform/crates/data/models/src/runtime.rs (with_accessor/append; test scopes_accessors_and_listing) | Computed attributes join the wire shape (Wave 3) | P1 |
+| Mutators | MATCHED | platform/crates/data/models/src/runtime.rs (with_mutator; test mutator_transforms_wire_values) | Setter transformation runs before persist (Wave 3) | P1 |
+| Fillable / mass assignment | MATCHED | platform/crates/data/models/src/runtime.rs (fill guard; test force_create_bypasses_the_mass_assignment_guard) | Guarded fill with a deliberate force_create bypass (Wave 3) | P1 |
+| Hidden / visible serialization | MATCHED | platform/crates/data/models/src/runtime.rs (wire/make_visible/make_hidden/public_record; tests manifest_hidden_and_visible_shape_the_projection, sensitive_fields_redacted_in_public_record) | Serializer policy with sensitive-field redaction (Wave 3) | P2 |
+| Scopes | MATCHED | platform/crates/data/models/src/runtime.rs (with_scope/with_global_scope/without_global_scopes; tests scopes_accessors_and_listing, global_scopes_run_first_and_named_suppression_relaxes_reads) | Local + global scope runtime (Wave 3) | P1 |
+| Soft deletes | MATCHED | platform/crates/data/models/src/runtime.rs (find_trashed/with_trashed/only_trashed/restore/force_delete; test soft_delete_trio_round_trips) plus route-binding `with_trashed` | Veil/trash/restore/force-delete runtime (Wave 3) | P2 |
+| Model events | MATCHED | platform/crates/data/models/src/runtime.rs (ModelPhase events; test model_events_fire_in_order) | Lifecycle events fire in declared order (Wave 3) | P2 |
+| Observers | MATCHED | platform/crates/data/models/src/runtime.rs (with_observer; tests model_events_fire_in_order, cas_stale_write_reports_stale_record) | Observer registry wired into CAS version stamping + dirty tracking (Wave 3) | P2 |
+| Factories | MATCHED | platform/tools/keel-codegen/src/generators.rs (FACTORY_TEMPLATE; tests factory_build_is_real_and_deterministic, generated_code_contains_no_placeholder_macros) | Real build() with no todo! - stale claim reconciled (Wave 3) | P2 |
 | Seeders | MATCHED | keel seed | Seed command exists | P1 |
 | Pagination integration | MATCHED | platform/crates/web/http/src/pagination.rs; platform/runtime/keel-api/src/graph_routes.rs | Wired to HTTP (Wave 1): GET routes parse page/per_page, inject _page, clamp per_page to MAX_PER_PAGE 100; list handlers emit a page meta block (page/per_page/total/has_more) | P1 |
-| N+1 detection | UNKNOWN | No locked evidence | Needs runtime instrumentation after ORM exists | P3 |
+| N+1 detection | UNKNOWN | No locked evidence | Eager loading removes the common N+1, but instrumentation-level detection still does not exist | P3 |
 | Transactions | EQUIVALENT | platform/crates/application/registry/src/lib.rs; data runtime facts | Command engine supports idempotent execution, but domain DB transaction semantics need proof | P1 |
-| Optimistic locking | MISSING | no locked evidence | No model runtime support | P3 |
-| Model serialization | MISSING | no locked evidence | No Eloquent-equivalent runtime serializer | P2 |
+| Optimistic locking | MATCHED | platform/crates/data/models/src/runtime.rs (version_column CAS -> STALE_RECORD -> 409; tests cas_stale_write_reports_stale_record, cas_refuses_a_row_without_an_integer_version, version_column_seeds_one_and_stamps_every_update) | Integer version column with stale-write rejection (Wave 3) | P3 |
+| Model serialization | MATCHED | platform/crates/data/models/src/runtime.rs (wire/append + visibility overrides; tests per_call_overrides_win_over_sensitive_and_manifest_policy, mutator_transforms_wire_values) | Eloquent-equivalent projection control (Wave 3) | P2 |
 
 ### Model → query generation gap
 
@@ -1357,13 +1358,13 @@ JWT should remain non-default. The current hashed PAT + HMAC session model is in
 | B-02 | Auth | C2 HTTP auth flows | PARTIAL | P0 | security/tokens; identity | B-01 | High | Critical | Expose login/register/logout/token issuance | Authenticated request can traverse HTTP pipeline. |
 | B-03 | Sessions | C6 cookie layer + PgSessionStore | PARTIAL | P0 | security/sessions | B-02 | High | High | Make browser session durable | Restart + multi-instance preserve valid sessions. |
 | B-04 | Persistence | C3 module store ports + Pg stores | INCOMPLETE | P0 | appointments BTreeMap; postgres stores | B-01 | High | Critical | Standardize domain persistence ports | Appointments persists to Pg without bespoke store code. |
-| B-05 | ORM | C4 CRUD runtime | INCOMPLETE | P0 | models + select | B-04 | Very High | Critical | Add typed write path | Create/update/delete/upsert integration tests pass. |
+| B-05 | ORM | C4 CRUD runtime | DONE (Wave 3: ModelRuntime finders/mutations + ModelStore port growth - create/update/delete/upsert proven in the runtime/store suites and the pg CRUD roundtrip; force-create/push/typed not-found) | P0 | models + select | B-04 | Very High | Critical | Add typed write path | Create/update/delete/upsert integration tests pass. |
 | B-06 | Uploads | C5 multipart | MISSING | P0 | zero multipart hits | B-01,B-03 | High | High | Add bounded multipart/file pipeline | Secure upload test matrix passes. |
 | B-07 | Routing | Named routes + URL generation | MISSING | P1 | registry RouteSpec lacks name | B-01 | Medium | Medium | Add named route metadata | URL helper resolves named route parameters. |
 | B-08 | DX | keel serve | MISSING | P1 | CLI gap | B-01 | Medium | Medium | Provide local app loop | Developer runs real domain over HTTP with one command. |
 | B-09 | Rate limiting | Per-principal rate limits | DONE (S7 bearer-hash keying; Wave 1 named throttle:<group> token buckets keyed x-rate-key > bearer hash > client IP, per-group capacity/refill in middleware.toml, 429 + Retry-After) | P1 | http middleware client_key + middleware_catalog throttle stage | B-02 | Medium | Medium | Use principal/tenant keying | Authenticated users receive isolated quotas. |
-| B-10 | ORM | Relations/eager loading | INCOMPLETE | P1 | models RelationDef | B-05 | High | High | Compile relation loaders | N+1-safe eager-load examples pass. |
-| B-11 | ORM | Casts/accessors/mutators/scopes | MISSING | P1 | models metadata | B-05 | High | High | Add model runtime semantics | Typed model behavior matches documented contract. |
+| B-10 | ORM | Relations/eager loading | DONE (Wave 3: eager + lazy + nested `with` with constraints, aggregate eager, pivots, polymorphic - tests with_loads_a_nested_path_level_by_level, pivot_sync_detach_toggle_and_update, morph_to_loads_each_type_through_the_morph_map) | P1 | models RelationDef | B-05 | High | High | Compile relation loaders | N+1-safe eager-load examples pass. |
+| B-11 | ORM | Casts/accessors/mutators/scopes | DONE (Wave 3: cast registry incl. encrypted/hashed fail-closed, accessors/mutators/`append`, local + global scopes, visibility + strict-mode flags) | P1 | models metadata | B-05 | High | High | Add model runtime semantics | Typed model behavior matches documented contract. |
 | B-12 | Cache | Redis driver | MISSING | P2 | cache service | None | Medium | Medium | Add distributed cache adapter | Cache tests pass against Redis. |
 | B-13 | Queues | Redis queue driver | MISSING | P2 | worker runtime | None | Medium | Medium | Add durable Redis queue | Worker integration passes. |
 | B-14 | Search | pgvector adapter | MISSING | P2 | services/search | B-04 | Medium | Medium | Add Pg vector search port | Vector query integration passes. |
@@ -1748,6 +1749,8 @@ Program: these backlog items are sequenced, expanded and superseded by the nine-
 Wave 1 completion entry (2026-08-28): Wave 1 — HTTP core completion is DONE per `19-PARITY-PROGRAM.md`: named middleware chains (`middleware.toml` aliases/groups/`throttle.<group>` + implicit `api` group + `GRAPH-MW-UNKNOWN` boot gate), route model binding (`route.bindings` registry service, `_bindings.<param>` injection, `GRAPH-BINDING-RESOLVER` at keel-api boot), pagination injection (`_page`, `MAX_PER_PAGE` 100 clamp, page meta block), manifest `[[validation]]` enforced at the edge (422 + `fields` meta), deprecated-route `Deprecation: true` header/meta, `keel route:cache`/`route:clear` with hash-pinned boot refusal (`storage/framework/routes.json`), and OpenAPI constraint emission. Evidence: CHANGELOG `[Unreleased]`; `http_integration` Wave 1 battery; 609 workspace tests + architecture gate green; clippy clean on all touched crates. The §4 rows (Middleware, Rate limiting, Route cache, Pagination), the function-level ledger rows (middleware, binding, model binding, route:cache, route:clear), the §11 CLI rows and §19 B-09 above are flipped accordingly.
 
 Wave 2 completion entry (2026-09-29): Wave 2 - routing completion, web plane, views, request/response, errors and static assets is DONE per `19-PARITY-PROGRAM.md`: verb/ANY dispatch with auto HEAD/OPTIONS (405 + Allow), api/web planes, `[[route_groups]]` prefix/middleware/plane merge, domain/subdomain RouteGate before auth, closed constraint kinds + pattern mini-grammar (mismatch -> 404), `resolve_url` `[url]` defaults + temporary/one-time signed URLs, the `crates/web/views` template engine (directive ledger, compiled-AST cache, `keel view:cache`/`view:clear`), HTML routes + web-plane error views, response kinds (json/html/redirect/download/file/stream/no_content), ETag/304, RFC-7807 option, static assets for `public/` (traversal-safe, fingerprinted immutable caching, Vite `manifest.json` reader + `@asset`), and `keel route:list --name/--path/--plane` with parity columns. Evidence: CHANGELOG `[Unreleased]`; keel-api integration suites (http/views/error_rendering/response_layer/routing_edge/static_assets); 800+ workspace tests green; `clippy -D warnings` and `dep-rules` clean. The section 4 rows (Routing, Named routes, HTTP responses, HTML responses, Redirects, Views, Blade), the routing + response rows, the Laravel 13 template rows, the Blade/views cross-reference ledger, the section 11 CLI rows (route:list, view:cache, view:clear) and backlog B-26 are flipped accordingly.
+
+Wave 3 completion entry (2026-09-29): Wave 3 — Eloquent & query parity + API resources is DONE per `19-PARITY-PROGRAM.md`: full keel-query read-builder surface (clause-tree rendering, unions, group/having, aggregates + existence compile, locks, date family, correlated `where_exists` — 33 rendering tests; execution rides ModelRuntime as documented), ModelStore port growth (aggregate/exists/find_for_update/filtered updates + deletes/force_delete/restore/truncate), ModelRuntime finders & mutations (`first_or_create`, `update_or_create`, `force_create`, `create_many`, `insert_get_id`, `insert_or_ignore`, `increment`/`decrement`, `replicate`, `refresh`/`fresh`, `load_missing`, `touch`, `push`, `pluck`/`value`/`chunk`/`each`/`cursor`), relation parity (eager aggregates, `has`/`where_relation`, nested `with` + per-level constraints, `attach`/`sync`/`toggle`, polymorphic morph-map), casts + serialization visibility + strict mode, soft-delete trio + route-binding `with_trashed` + global scopes, optimistic locking (`version_column` -> `STALE_RECORD` -> 409), `RecordChanges` dirty tracking, `without_timestamps`, `PruneRegistry` + `keel model:prune`, and the typed `Resource` transformer (`when`-conditional fields, wrapping key, `ResourceCollection` + pagination-meta passthrough) with `make resource` rewired to a compiling trait impl. Evidence: CHANGELOG `[Unreleased]`; keel-models runtime/store/prune/binding suites; keel-query rendering suites; keel-http resource suites; keel-codegen template gates; soft-delete veil roundtrip in the pg modelstore suite (DATABASE_URL-gated); 932 workspace tests with dep-rules + clippy clean. Deferred honestly: the Wave 3 live-pg matrix additions (aggregates/exists/restore + force_delete/version column/`insert_or_ignore`/chunk streaming vs PostgreSQL 16) were not added — B-19 stays open and the affected rows carry conservative wire-proof notes; the join rows (join/leftJoin/rightJoin/crossJoin/joinSub) are untouched Wave-3-out-of-scope. The section 4 rows (Query builder, Eloquent ORM, Relations, Casts, Accessors/mutators, Scopes, Soft deletes, Model events/observers, Factories, PostgreSQL integration tests), the query-builder and Eloquent function-ledger rows, the section 12 ORM matrix, the section 11 CLI rows (model:prune, make:factory, make:resource) and backlog B-05/B-10/B-11 are flipped accordingly.
 
 | ID | Domain | Feature | Status | Priority | Evidence | Dependencies | Complexity | Risk | Reason | Acceptance criteria |
 |---|---|---|---|---|---|---|---|---|---|---|
