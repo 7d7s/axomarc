@@ -448,6 +448,7 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
                 chain,
                 auth: edge_auth.clone(),
                 require_verified_email: state.require_verified_email,
+                confirm_timeout_secs: state.confirm_timeout_secs,
                 throttle: throttle.clone(),
                 buckets: buckets.clone(),
                 signed_urls: state

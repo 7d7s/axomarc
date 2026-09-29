@@ -104,11 +104,31 @@ impl SessionMiddleware {
 
     /// Set-Cookie header for a fresh/rotated session (login, regenerate).
     pub fn issue_cookie(&self, session: &Session) -> Result<HeaderValue, keel_foundation::AppError> {
+        self.cookie_header(session, None)
+    }
+
+    /// Wave 4 Phase 7 remember-me (docs/19 L220): same cookie with an
+    /// explicit `Max-Age` — login passes `SessionPolicy::remember_ttl` (the
+    /// 30 day window) instead of the middleware's default cookie TTL (8h).
+    pub fn issue_cookie_with_max_age(
+        &self,
+        session: &Session,
+        max_age_secs: u64,
+    ) -> Result<HeaderValue, keel_foundation::AppError> {
+        self.cookie_header(session, Some(max_age_secs))
+    }
+
+    fn cookie_header(
+        &self,
+        session: &Session,
+        max_age_secs: Option<u64>,
+    ) -> Result<HeaderValue, keel_foundation::AppError> {
         let mut cookie = Cookie::new(SESSION_COOKIE, session_cookie_value(session, &self.secret))?
             .same_site(SameSite::Lax)
             .secure(self.secure);
-        if self.cookie_ttl_secs > 0 {
-            cookie = cookie.max_age_secs(self.cookie_ttl_secs as i64);
+        let ttl = max_age_secs.unwrap_or(self.cookie_ttl_secs);
+        if ttl > 0 {
+            cookie = cookie.max_age_secs(ttl as i64);
         }
         cookie.header_value()
     }
@@ -268,5 +288,41 @@ mod tests {
         assert!(issued.contains("Max-Age=3600"));
         let cleared = mw.clear_cookie().unwrap().to_str().unwrap().to_string();
         assert!(cleared.contains("Max-Age=0"));
+    }
+
+    /// Wave 4 Phase 7: the remembered cookie carries the policy's 30 day
+    /// window while the default login keeps the 8 hour cookie TTL.
+    #[test]
+    fn remember_cookie_uses_policy_remember_ttl() {
+        let manager = Arc::new(SessionManager::new(
+            InMemorySessionStore::shared(),
+            SessionPolicy::default(),
+            b"unit-secret",
+        ));
+        let session = manager
+            .start(PrincipalId::new(), None, OffsetDateTime::now_utc())
+            .unwrap();
+        let mw = SessionMiddleware::new(manager.clone(), b"cookie-secret")
+            .with_cookie_ttl_secs(28_800);
+        assert_eq!(manager.policy().remember_ttl, 2_592_000);
+        let plain = mw
+            .issue_cookie(&session)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(plain.contains("Max-Age=28800"), "{plain}");
+        let remembered = mw
+            .issue_cookie_with_max_age(&session, manager.policy().remember_ttl)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(remembered.contains("Max-Age=2592000"), "{remembered}");
+        // Same session value: only the TTL differs.
+        assert!(
+            remembered.starts_with(&plain[..plain.find(';').unwrap()]),
+            "cookie value identical"
+        );
     }
 }

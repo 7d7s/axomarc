@@ -187,6 +187,11 @@ struct LoginBody {
     tenant: Option<String>,
     #[serde(default)]
     mode: Option<String>,
+    /// Wave 4 Phase 7 remember-me (docs/19 L220): prolongs the issued
+    /// cookie to `SessionPolicy::remember_ttl` (30 days) and records
+    /// `remember: true` in the session bag.
+    #[serde(default)]
+    remember: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -206,6 +211,7 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
         .route("/auth/me", get(me))
+        .route("/auth/confirm", post(confirm))
         .route("/auth/password-reset/request", post(reset_request))
         .route("/auth/password-reset/complete", post(reset_complete))
         .route(
@@ -236,12 +242,15 @@ fn principal_json(p: &Principal) -> serde_json::Value {
 }
 
 /// Complete the credential handshake shared by register + login: snapshot
-/// install, then session cookie and/or PAT issuance.
+/// install, then session cookie and/or PAT issuance. `remember` (login only)
+/// prolongs the cookie to the policy's remember window and records the flag
+/// in the session bag (Wave 4 Phase 7).
 fn finish_login(
     state: &AppState,
     principal: PrincipalId,
     tenant: TenantId,
     want_token: bool,
+    remember: bool,
     incoming: Option<&ResolvedSession>,
 ) -> Result<(AuthData, Option<axum::http::HeaderValue>), AppError> {
     install_access_snapshot(state, principal, tenant);
@@ -264,7 +273,17 @@ fn finish_login(
         let session = mw
             .manager
             .start(principal, Some(tenant), OffsetDateTime::now_utc())?;
-        cookie = Some(mw.issue_cookie(&session)?);
+        if remember {
+            // Bag first: the cookie value is id-only, so ordering is free.
+            mw.manager
+                .put(&session.id, "remember", serde_json::json!(true))?;
+            cookie = Some(mw.issue_cookie_with_max_age(
+                &session,
+                mw.manager.policy().remember_ttl,
+            )?);
+        } else {
+            cookie = Some(mw.issue_cookie(&session)?);
+        }
         if want_token {
             let issued = state.tokens.issue(
                 principal,
@@ -329,6 +348,7 @@ async fn register(
             principal.id,
             tenant,
             body.mode.as_deref() == Some("token"),
+            false,
             session.as_deref(),
         )
     })();
@@ -388,6 +408,7 @@ async fn login(
             principal.id,
             tenant,
             body.mode.as_deref() == Some("token"),
+            body.remember,
             session.as_deref(),
         )
     })();
@@ -456,10 +477,74 @@ async fn me(
             .principals
             .by_id(principal_id)?
             .ok_or_else(unauthenticated)?;
+        // Wave 4 Phase 7: report the remember-me bag flag (false without a
+        // session — bearer-only callers never have one).
+        let remember = session
+            .as_deref()
+            .map(|resolved| resolved.session.remembered())
+            .unwrap_or(false);
         Ok(serde_json::json!({
             "principal": principal_json(&principal),
             "tenant_id": tenant_id.map(|t| t.to_string()),
+            "remember": remember,
         }))
+    })();
+    match result {
+        Ok(data) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(Envelope::ok(data)).unwrap_or_default()),
+        )
+            .into_response(),
+        Err(err) => envelope(&state, &err).into_response(),
+    }
+}
+
+// ------------------------------------------- password-confirm (Wave 4 P7)
+
+#[derive(Debug, Deserialize)]
+struct ConfirmBody {
+    password: String,
+}
+
+/// Wave 4 Phase 7 (docs/19 L221): re-verify the CURRENT password and stamp
+/// `confirmed_at` into the session bag; `confirmed`-chained routes then
+/// admit for `auth.confirm_timeout_secs` (default 15 min). Session cookie
+/// required — a bearer-only principal has no bag to stamp, so the gate stays
+/// fail-closed for them.
+async fn confirm(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    session: Option<axum::extract::Extension<ResolvedSession>>,
+    Json(body): Json<ConfirmBody>,
+) -> impl IntoResponse {
+    let result = (|| -> Result<serde_json::Value, AppError> {
+        let resolved = session.ok_or_else(unauthenticated)?;
+        let mw = state.sessions.as_ref().ok_or_else(unauthenticated)?;
+        let principal_id = resolved.session.principal;
+        // Brute force: the same credential throttle as login, keyed per
+        // principal (this endpoint only re-verifies known sessions).
+        if !login_allowed(&headers, &principal_id.to_string()) {
+            return Err(AppError::cap_limit(
+                "too many confirmation attempts; retry later",
+            ));
+        }
+        let credential = state
+            .credentials
+            .password_for(principal_id)?
+            .ok_or_else(unauthenticated)?;
+        if !verify_credential(&credential, &Secret::new(&body.password))? {
+            return Err(unauthenticated());
+        }
+        let now = OffsetDateTime::now_utc();
+        mw.manager.put(
+            &resolved.session.id,
+            "confirmed_at",
+            serde_json::json!(
+                now.format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_default()
+            ),
+        )?;
+        Ok(serde_json::json!({ "confirmed": true }))
     })();
     match result {
         Ok(data) => (

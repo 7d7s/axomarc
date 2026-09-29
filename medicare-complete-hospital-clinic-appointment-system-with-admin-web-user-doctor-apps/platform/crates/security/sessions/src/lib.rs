@@ -73,6 +73,15 @@ pub struct SessionPolicy {
     pub idle_secs: u64,
     /// Absolute lifetime from creation; default 8 hours.
     pub absolute_secs: u64,
+    /// Wave 4 Phase 7 remember-me (docs/19 L220): cookie `Max-Age` for a
+    /// `remember: true` login; default 30 days (vs the 8 hour default
+    /// cookie). Server-side idle/absolute bounds stay as configured.
+    #[serde(default = "default_remember_ttl")]
+    pub remember_ttl: u64,
+}
+
+fn default_remember_ttl() -> u64 {
+    2_592_000 // 30 days
 }
 
 impl Default for SessionPolicy {
@@ -80,6 +89,7 @@ impl Default for SessionPolicy {
         Self {
             idle_secs: 1_800,
             absolute_secs: 28_800,
+            remember_ttl: default_remember_ttl(),
         }
     }
 }
@@ -136,6 +146,13 @@ impl Session {
         hasher.update(b"|");
         hasher.update(self.principal.as_uuid().as_bytes());
         hex(&hasher.finalize())
+    }
+
+    /// Wave 4 Phase 7: did this session log in with `remember: true`? The
+    /// flag lives in the bag (so id regeneration preserves it) and drives the
+    /// issued cookie's `Max-Age` (`SessionPolicy::remember_ttl`).
+    pub fn remembered(&self) -> bool {
+        self.data.get("remember") == Some(&serde_json::json!(true))
     }
 }
 
@@ -326,6 +343,7 @@ mod tests {
             SessionPolicy {
                 idle_secs: 60,
                 absolute_secs: 3600,
+                ..SessionPolicy::default()
             },
             b"unit-secret",
         )
@@ -401,6 +419,32 @@ mod tests {
             Some(&serde_json::json!("hi-IN"))
         );
         assert!(mgr.touch(&s.id, now).unwrap().is_none(), "old id is dead");
+    }
+
+    /// Wave 4 Phase 7 (docs/19 L220): the remember-me bag flag survives
+    /// regeneration, and the default policy carries the 30 day window.
+    #[test]
+    fn remember_flag_survives_regeneration_and_policy_defaults_to_30d() {
+        let policy = SessionPolicy::default();
+        assert_eq!(policy.remember_ttl, 2_592_000, "30 days");
+        assert_eq!(policy.absolute_secs, 28_800, "8h default stays");
+        // Older stored sessions without the field still deserialize.
+        let back: SessionPolicy =
+            serde_json::from_str(r#"{"idle_secs":60,"absolute_secs":3600}"#).unwrap();
+        assert_eq!(back.remember_ttl, 2_592_000);
+
+        let mgr = mgr(InMemorySessionStore::shared());
+        let now = OffsetDateTime::now_utc();
+        let s = mgr.start(principal(), None, now).unwrap();
+        assert!(!s.remembered(), "plain login is not remembered");
+        mgr.put(&s.id, "remember", serde_json::json!(true)).unwrap();
+
+        let rotated = mgr.regenerate(&s.id, now).unwrap().unwrap();
+        assert!(rotated.remembered(), "remember survives regeneration");
+        assert!(
+            mgr.touch(&rotated.id, now).unwrap().unwrap().remembered(),
+            "and reads back from the store"
+        );
     }
 
     #[test]

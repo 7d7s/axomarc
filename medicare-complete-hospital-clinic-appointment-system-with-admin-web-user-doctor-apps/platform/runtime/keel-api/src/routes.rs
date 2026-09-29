@@ -40,6 +40,9 @@ pub struct AppState {
     pub registration_open: bool,
     /// B-23: gate module operations until the principal's email is verified.
     pub require_verified_email: bool,
+    /// Wave 4 Phase 7: freshness window of a `POST /auth/confirm` stamp for
+    /// `confirmed`-chained routes (`auth.confirm_timeout_secs`, default 900).
+    pub confirm_timeout_secs: u64,
     /// B-22: opt-in HS256 JWT bearer interop (`app.jwt` flag). PAT + session
     /// stays the default auth model; this only verifies externally-issued tokens.
     pub jwt: Option<Arc<keel_http::JwtHs256>>,

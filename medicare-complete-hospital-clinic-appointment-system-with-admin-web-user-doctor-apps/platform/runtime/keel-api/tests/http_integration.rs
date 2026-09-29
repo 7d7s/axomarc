@@ -2306,3 +2306,166 @@ async fn throttle_group_exhaustion_is_429() {
         Some("1".to_string())
     );
 }
+
+// --------------------------- remember-me + password-confirm (Wave 4 P7)
+
+/// docs/19 L220: `remember: true` prolongs the cookie to the policy's 30 day
+/// window (vs the 8 hour default) and `/auth/me` reports the bag flag.
+#[tokio::test]
+async fn remember_login_issues_the_30d_cookie_and_me_reports_the_flag() {
+    let app = app();
+    let email = format!("remember-{}@clinic.test", uuid::Uuid::now_v7());
+    register(&app, &email).await;
+
+    // Plain login: the default 8 hour cookie, flag absent.
+    let plain = login(&app, &email, "correct-horse-99", Some("dev")).await;
+    assert_eq!(plain.status, StatusCode::OK, "{}", plain.body);
+    let plain_set = plain
+        .set_cookies
+        .iter()
+        .find(|c| c.starts_with("keel_session="))
+        .expect("session cookie");
+    assert!(plain_set.contains("Max-Age=28800"), "{plain_set}");
+    let plain_cookie = plain.session_cookie().unwrap();
+    let me = send(
+        &app,
+        json_req(
+            Method::GET,
+            "/auth/me",
+            Value::Null,
+            Some(&plain_cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(me.status, StatusCode::OK, "{}", me.body);
+    assert_eq!(me.data()["remember"], false);
+
+    // Remembered login: 30d cookie (2_592_000) + bag flag reported by me.
+    let body = serde_json::json!({
+        "identifier": email,
+        "password": "correct-horse-99",
+        "tenant": "dev",
+        "remember": true,
+    });
+    let rem = send(
+        &app,
+        json_req(Method::POST, "/auth/login", body, None, None),
+    )
+    .await;
+    assert_eq!(rem.status, StatusCode::OK, "{}", rem.body);
+    let rem_set = rem
+        .set_cookies
+        .iter()
+        .find(|c| c.starts_with("keel_session="))
+        .expect("session cookie");
+    assert!(rem_set.contains("Max-Age=2592000"), "{rem_set}");
+    let rem_cookie = rem.session_cookie().unwrap();
+    let me = send(
+        &app,
+        json_req(
+            Method::GET,
+            "/auth/me",
+            Value::Null,
+            Some(&rem_cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(me.status, StatusCode::OK, "{}", me.body);
+    assert_eq!(me.data()["remember"], true);
+}
+
+/// docs/19 L221: `POST /auth/confirm` re-verifies the password (401 on a
+/// miss or no session) and stamps an rfc3339 `confirmed_at` into the bag —
+/// the stamp `confirmed`-chained routes admit on (window gate covered in
+/// keel-http `confirmed_stage_enforces_the_password_confirmation_window`).
+#[tokio::test]
+async fn password_confirm_stamps_the_session_and_fails_closed() {
+    let app = app();
+    let email = format!("confirm-{}@clinic.test", uuid::Uuid::now_v7());
+    let reg = register(&app, &email).await;
+    assert_eq!(reg.status, StatusCode::OK, "{}", reg.body);
+    let cookie = reg.session_cookie().expect("session cookie");
+
+    // No session: nothing to stamp -> 401.
+    let anon = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/auth/confirm",
+            serde_json::json!({ "password": "correct-horse-99" }),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(anon.status, StatusCode::UNAUTHORIZED, "{}", anon.body);
+
+    // Wrong password: credential re-verified -> 401, no stamp.
+    let bad = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/auth/confirm",
+            serde_json::json!({ "password": "wrong-password" }),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(bad.status, StatusCode::UNAUTHORIZED, "{}", bad.body);
+
+    // Right password -> stamp lands.
+    let ok = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/auth/confirm",
+            serde_json::json!({ "password": "correct-horse-99" }),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(ok.status, StatusCode::OK, "{}", ok.body);
+    assert_eq!(ok.data()["confirmed"], true);
+
+    // Read the bag back through the session store for the same cookie: the
+    // stamp is an rfc3339 timestamp the `confirmed` gate can parse.
+    let value = cookie.strip_prefix("keel_session=").expect("cookie value");
+    let sid = keel_session::SessionId::parse(value.split('.').next().unwrap())
+        .expect("session id");
+    let stored = app
+        .state
+        .sessions
+        .as_ref()
+        .expect("sessions on")
+        .manager
+        .store()
+        .load(&sid)
+        .expect("store reads")
+        .expect("session lives");
+    let stamped = stored
+        .data
+        .get("confirmed_at")
+        .and_then(|v| v.as_str())
+        .expect("confirmed_at stamped");
+    time::OffsetDateTime::parse(stamped, &time::format_description::well_known::Rfc3339)
+        .expect("rfc3339 stamp");
+
+    // Confirm never implies remember-me.
+    let me = send(
+        &app,
+        json_req(
+            Method::GET,
+            "/auth/me",
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(me.status, StatusCode::OK, "{}", me.body);
+    assert_eq!(me.data()["remember"], false);
+}

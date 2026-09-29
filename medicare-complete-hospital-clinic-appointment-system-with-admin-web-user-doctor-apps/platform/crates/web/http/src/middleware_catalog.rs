@@ -10,6 +10,10 @@
 //!   installs [`ResolvedPrincipal`], else 401 envelope)
 //! - `verified` (B-23 email gate, 403 `AUTH_DENIED` when the config requires
 //!   it)
+//! - `confirmed` (Wave 4 Phase 7 password-confirm: a session stamped by
+//!   `POST /auth/confirm` within `confirm_timeout_secs`, else 403
+//!   `CONFIRMATION_REQUIRED` — fail-closed for bearer-only principals and
+//!   missing/stale stamps)
 //! - `signed` (Wave 2 signed URLs: HMAC + TTL over the request path+query,
 //!   one-time `once` markers consumed through the token store; 403 on a bad
 //!   signature, 404 on a replayed one-time link)
@@ -76,6 +80,10 @@ pub struct ChainRuntime {
     pub chain: Vec<BuiltinMw>,
     pub auth: Arc<dyn EdgeAuthPort>,
     pub require_verified_email: bool,
+    /// Wave 4 Phase 7: freshness window of a `POST /auth/confirm` stamp
+    /// (`auth.confirm_timeout_secs`, default 900). Zero = zero-width —
+    /// fail-closed, only a same-second confirmation passes.
+    pub confirm_timeout_secs: u64,
     pub throttle: BTreeMap<String, ThrottleGroupConfig>,
     pub buckets: Arc<Mutex<HashMap<String, BucketState>>>,
     /// Wave 2 signed-URL resolution: present when the deployment has an
@@ -171,6 +179,42 @@ pub async fn chain_middleware(
                     return error_response(&err).into_response();
                 }
             }
+            BuiltinMw::Confirmed => {
+                // Must be authenticated; the chain normally runs `auth` first.
+                if req.extensions().get::<ResolvedPrincipal>().is_none() {
+                    let err = AppError::unauthenticated();
+                    return error_response(&err).into_response();
+                }
+                // Freshness is session-bag state: bearer-only principals and
+                // missing/stale stamps all fail closed with 403.
+                let fresh = req
+                    .extensions()
+                    .get::<ResolvedSession>()
+                    .and_then(|rs| rs.session.data.get("confirmed_at"))
+                    .and_then(|v| v.as_str())
+                    .and_then(|raw| {
+                        time::OffsetDateTime::parse(
+                            raw,
+                            &time::format_description::well_known::Rfc3339,
+                        )
+                        .ok()
+                    })
+                    .map(|stamped| {
+                        let age = time::OffsetDateTime::now_utc() - stamped;
+                        age.whole_seconds() <= rt.confirm_timeout_secs as i64
+                    })
+                    .unwrap_or(false);
+                if !fresh {
+                    let err = AppError::new(
+                        codes::CONFIRMATION_REQUIRED,
+                        ErrorCategory::Authorization,
+                        Severity::Low,
+                        Retryability::NotRetryable,
+                        "password confirmation is required or has expired",
+                    );
+                    return error_response(&err).into_response();
+                }
+            }
             BuiltinMw::Signed => {
                 let Some(port) = &rt.signed_urls else {
                     // Deployment misconfiguration, not a client error: a
@@ -230,6 +274,7 @@ mod tests {
             chain,
             auth: Arc::new(FakeAuth { verified: true }),
             require_verified_email,
+            confirm_timeout_secs: 900,
             throttle: throttle
                 .iter()
                 .map(|(g, c)| (g.to_string(), c.clone()))
@@ -245,6 +290,7 @@ mod tests {
             chain,
             auth: Arc::new(FakeAuth { verified: true }),
             require_verified_email: false,
+            confirm_timeout_secs: 900,
             throttle: BTreeMap::new(),
             buckets: Arc::new(Mutex::new(HashMap::new())),
             signed_urls: Some(port),
@@ -310,6 +356,7 @@ mod tests {
             chain: chain.clone(),
             auth: Arc::new(FakeAuth { verified: false }),
             require_verified_email: true,
+            confirm_timeout_secs: 900,
             throttle: BTreeMap::new(),
             buckets: Arc::new(Mutex::new(HashMap::new())),
             signed_urls: None,
@@ -325,6 +372,7 @@ mod tests {
             chain,
             auth: Arc::new(FakeAuth { verified: true }),
             require_verified_email: true,
+            confirm_timeout_secs: 900,
             throttle: BTreeMap::new(),
             buckets: Arc::new(Mutex::new(HashMap::new())),
             signed_urls: None,
@@ -340,6 +388,7 @@ mod tests {
             chain: vec![BuiltinMw::Auth, BuiltinMw::Verified],
             auth: Arc::new(FakeAuth { verified: false }),
             require_verified_email: false,
+            confirm_timeout_secs: 900,
             throttle: BTreeMap::new(),
             buckets: Arc::new(Mutex::new(HashMap::new())),
             signed_urls: None,
@@ -349,6 +398,80 @@ mod tests {
             .insert(header::AUTHORIZATION, "Bearer good-pat".parse().unwrap());
         let res = app(rt).oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    /// Wave 4 Phase 7 (docs/19 L221): `confirmed` admits only a session
+    /// stamped by `POST /auth/confirm` inside the window. Anonymous -> 401;
+    /// bearer-only, unstamped, and stale stamps -> 403 CONFIRMATION_REQUIRED.
+    #[tokio::test]
+    async fn confirmed_stage_enforces_the_password_confirmation_window() {
+        let rt = Arc::new(ChainRuntime {
+            chain: vec![BuiltinMw::Auth, BuiltinMw::Confirmed],
+            auth: Arc::new(FakeAuth { verified: true }),
+            require_verified_email: false,
+            confirm_timeout_secs: 900,
+            throttle: BTreeMap::new(),
+            buckets: Arc::new(Mutex::new(HashMap::new())),
+            signed_urls: None,
+        });
+
+        // Anonymous -> the auth stage short-circuits with 401.
+        let res = app(rt.clone()).oneshot(get_req()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+
+        // Bearer-authenticated but no session bag -> fail-closed 403.
+        let mut req = get_req();
+        req.headers_mut()
+            .insert(header::AUTHORIZATION, "Bearer good-pat".parse().unwrap());
+        let res = app(rt.clone()).oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert_eq!(error_code(res).await, "CONFIRMATION_REQUIRED");
+
+        // Session stamped inside the window -> passes.
+        let now = OffsetDateTime::now_utc();
+        let mut req = get_req();
+        req.extensions_mut().insert(ResolvedSession {
+            session: session_stamped(now),
+        });
+        let res = app(rt.clone()).oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        // Session stamped before the window (901s > 900s) -> 403.
+        let mut req = get_req();
+        req.extensions_mut().insert(ResolvedSession {
+            session: session_stamped(now - time::Duration::seconds(901)),
+        });
+        let res = app(rt.clone()).oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert_eq!(error_code(res).await, "CONFIRMATION_REQUIRED");
+    }
+
+    /// A live session whose bag carries `confirmed_at` at the given instant.
+    fn session_stamped(at: OffsetDateTime) -> keel_session::Session {
+        let manager = SessionManager::new(
+            InMemorySessionStore::shared(),
+            SessionPolicy::default(),
+            b"unit-secret",
+        );
+        let mut session = manager
+            .start(PrincipalId::new(), Some(TenantId::new()), at)
+            .unwrap();
+        session.data.insert(
+            "confirmed_at".into(),
+            serde_json::json!(
+                at.format(&time::format_description::well_known::Rfc3339)
+                    .expect("rfc3339")
+            ),
+        );
+        session
+    }
+
+    async fn error_code(res: axum::response::Response) -> String {
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        body["error"]["code"].as_str().unwrap_or("").to_string()
     }
 
     #[tokio::test]

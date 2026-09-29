@@ -100,10 +100,29 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthConfig {
     #[serde(default)]
     pub jwt_secret: String,
+    /// Wave 4 Phase 7 password-confirm freshness window: how long a
+    /// `POST /auth/confirm` stamp keeps a `confirmed`-chained route open
+    /// (docs/19 L221; default 15 minutes). Zero = zero-width window —
+    /// fail-closed, the gate only admits a same-second confirmation.
+    #[serde(default = "default_confirm_timeout")]
+    pub confirm_timeout_secs: u64,
+}
+
+fn default_confirm_timeout() -> u64 {
+    900
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            jwt_secret: String::new(),
+            confirm_timeout_secs: default_confirm_timeout(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -255,7 +274,7 @@ pub const CONFIG_SCHEMA: &[(&str, &[&str])] = &[
             "debug",
         ],
     ),
-    ("auth", &["jwt_secret"]),
+    ("auth", &["jwt_secret", "confirm_timeout_secs"]),
     ("database", &["url", "max_connections", "run_migrations", "required"]),
     ("http", &["problem_json", "encrypt_cookies"]),
     ("limits", &["default_monthly_operations"]),

@@ -8,7 +8,8 @@
 //!   Absent file = the builtin catalog: aliases `auth`/`verified`/
 //!   `throttle:api`, group `api = ["throttle:api", "auth", "verified"]`.
 //! - Builtins: `auth` (installs the resolved principal), `verified` (B-23
-//!   email gate), `throttle:<group>` (token bucket keyed by group + client).
+//!   email gate), `confirmed` (Wave 4 Phase 7 password-confirm window),
+//!   `throttle:<group>` (token bucket keyed by group + client).
 //! - Tenant-plane graph routes get the implicit `api` group unless
 //!   `public = true` (which strips `auth` + `verified` only). Explicit route
 //!   `middleware = [...]` entries resolve alias-first, then group (flattened
@@ -39,6 +40,10 @@ pub struct MwViolation {
 pub enum BuiltinMw {
     Auth,
     Verified,
+    /// Wave 4 Phase 7 password-confirm (docs/19 L221): admit only a session
+    /// stamped by `POST /auth/confirm` within `auth.confirm_timeout_secs`;
+    /// 403 `CONFIRMATION_REQUIRED` otherwise.
+    Confirmed,
     /// Wave 2 signed-URL resolution (19-PARITY "URL generation"): verify the
     /// HMAC over the request path+query before auth runs, and consume the
     /// `once` marker of a one-time signed URL through the token store.
@@ -46,11 +51,13 @@ pub enum BuiltinMw {
     Throttle { group: String },
 }
 
-/// Parse a builtin id: "auth" | "verified" | "signed" | "throttle:<group>".
+/// Parse a builtin id: "auth" | "verified" | "confirmed" | "signed" |
+/// "throttle:<group>".
 pub fn parse_builtin_id(id: &str) -> Result<BuiltinMw, String> {
     match id {
         "auth" => Ok(BuiltinMw::Auth),
         "verified" => Ok(BuiltinMw::Verified),
+        "confirmed" => Ok(BuiltinMw::Confirmed),
         "signed" => Ok(BuiltinMw::Signed),
         other => {
             if let Some(group) = other.strip_prefix("throttle:") {
@@ -62,7 +69,7 @@ pub fn parse_builtin_id(id: &str) -> Result<BuiltinMw, String> {
                 })
             } else {
                 Err(format!(
-                    "unknown middleware builtin {id:?} (expected auth, verified, signed, throttle:<group>)"
+                    "unknown middleware builtin {id:?} (expected auth, verified, confirmed, signed, throttle:<group>)"
                 ))
             }
         }
@@ -111,6 +118,9 @@ impl MiddlewareCatalog {
         let mut aliases = BTreeMap::new();
         aliases.insert("auth".into(), "auth".into());
         aliases.insert("verified".into(), "verified".into());
+        // Wave 4 Phase 7: password-confirm gate (19-PARITY "password-confirm
+        // flow"); opt-in per route, never part of the implicit `api` group.
+        aliases.insert("confirmed".into(), "confirmed".into());
         // Wave 2: signed-URL gate (19-PARITY "URL generation").
         aliases.insert("signed".into(), "signed".into());
         aliases.insert("throttle:api".into(), "throttle:api".into());
@@ -381,6 +391,35 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code, GRAPH_MW_UNKNOWN);
         assert!(err.message.contains("nope"));
+    }
+
+    /// Wave 4 Phase 7: `confirmed` is a builtin alias — resolvable per route
+    /// — but never part of the implicit `api` group (opt-in only).
+    #[test]
+    fn confirmed_alias_resolves_but_stays_out_of_the_implicit_group() {
+        let catalog = MiddlewareCatalog::builtin();
+        assert_eq!(
+            parse_builtin_id("confirmed").expect("parses"),
+            BuiltinMw::Confirmed
+        );
+        let chain = catalog
+            .resolve_chain(true, false, &["confirmed".into()], &[])
+            .unwrap();
+        assert_eq!(
+            chain,
+            vec![
+                BuiltinMw::Throttle { group: "api".into() },
+                BuiltinMw::Auth,
+                BuiltinMw::Verified,
+                BuiltinMw::Confirmed,
+            ],
+            "confirmed rides after the implicit group"
+        );
+        let implicit = catalog.resolve_chain(true, false, &[], &[]).unwrap();
+        assert!(
+            !implicit.contains(&BuiltinMw::Confirmed),
+            "the default api group never gates confirmation"
+        );
     }
 
     #[test]

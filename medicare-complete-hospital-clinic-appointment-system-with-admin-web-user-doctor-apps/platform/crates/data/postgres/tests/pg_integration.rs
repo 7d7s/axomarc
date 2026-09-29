@@ -113,6 +113,7 @@ async fn pg_session_store_lifecycle() {
         SessionPolicy {
             idle_secs: 3600,
             absolute_secs: 7200,
+            ..SessionPolicy::default()
         },
         b"pg-test-secret",
     );
@@ -155,6 +156,7 @@ async fn pg_session_sweep_removes_expired_rows() {
     let policy = SessionPolicy {
         idle_secs: 60,
         absolute_secs: 120,
+        ..SessionPolicy::default()
     };
 
     let principals = PgPrincipalStore::new(pool.clone());

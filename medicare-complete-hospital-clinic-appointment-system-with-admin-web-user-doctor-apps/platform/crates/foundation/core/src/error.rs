@@ -63,6 +63,11 @@ pub mod codes {
     /// read and the write. Conflict category (HTTP 409 via
     /// `status_for_error`).
     pub const STALE_RECORD: &str = "STALE_RECORD";
+    /// Wave 4 Phase 7 password-confirm: a `confirmed`-chained route was hit
+    /// without a fresh `POST /auth/confirm` stamp, or the stamp is older
+    /// than `auth.confirm_timeout_secs`. Authorization category (HTTP 403
+    /// via `status_for_error`).
+    pub const CONFIRMATION_REQUIRED: &str = "CONFIRMATION_REQUIRED";
 }
 
 /// The one error type. `meta` must stay PHI-free (safe metadata only).
