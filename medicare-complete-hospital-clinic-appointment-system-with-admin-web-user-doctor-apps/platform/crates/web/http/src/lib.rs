@@ -43,12 +43,13 @@ pub use middleware::{
 pub use pagination::{Page, PageQuery, DEFAULT_PER_PAGE, MAX_PER_PAGE};
 pub use redirect::Redirect;
 pub use request::{accepts, bearer_token, client_ip, expects_json, fingerprint};
+pub use resource::{Fields, Resource, ResourceCollection};
 pub use session_mw::{
     parse_session_cookie, session_cookie_value, ResolvedSession, SessionMiddleware, SESSION_COOKIE,
 };
 pub use signed::{derive_signed_key, SignedGate, SignedUrlPort, SignedUrls};
 pub use static_files::{is_fingerprinted, StaticAsset, StaticFiles};
-pub use viewmodel::{Resource, Validated};
+pub use viewmodel::{TypedResource, Validated};
 pub use upload::{ingest_multipart, sanitize_filename, StoredUpload, UploadLimits};
 
 use axum::http::StatusCode;

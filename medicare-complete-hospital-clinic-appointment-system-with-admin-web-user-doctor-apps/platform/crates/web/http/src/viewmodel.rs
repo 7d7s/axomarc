@@ -6,8 +6,10 @@
 //! - [`Validated`] implements `TypedInput`: JSON -> `RequestViewModel` ->
 //!   validated business input (FormRequest role; parse AND validate before
 //!   the handler runs).
-//! - [`Resource`] implements `TypedOutput`: business result ->
-//!   `ResponseViewModel` -> wire JSON (the Resource role).
+//! - [`TypedResource`] implements `TypedOutput`: business result ->
+//!   `ResponseViewModel` -> wire JSON (the Resource role; renamed from
+//!   `Resource` in Wave 3 Phase 7 to give the name to the typed
+//!   transformer trait in [`crate::resource`]).
 //!
 //! The traits live here (Web) because the Execution layer must not know
 //! HTTP; modules opt in by depending on both crates.
@@ -40,12 +42,14 @@ where
 }
 
 /// Typed output bridge: business result -> [`ResponseViewModel`] -> wire.
+/// (Wave 3 Phase 7: renamed from `Resource` — the name now belongs to the
+/// typed transformer trait in [`crate::resource`].)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Resource<R: ResponseViewModel> {
+pub struct TypedResource<R: ResponseViewModel> {
     pub source: R::Source,
 }
 
-impl<R> TypedOutput for Resource<R>
+impl<R> TypedOutput for TypedResource<R>
 where
     R: ResponseViewModel + Send + 'static,
     R::Source: Send + 'static,
@@ -107,11 +111,11 @@ mod tests {
 
     #[test]
     fn resource_renders_the_wire_representation() {
-        let resource = Resource::<NameResource> {
+        let resource = TypedResource::<NameResource> {
             source: "keel".to_string(),
         };
         assert_eq!(
-            <Resource<NameResource> as TypedOutput>::into_value(resource),
+            <TypedResource<NameResource> as TypedOutput>::into_value(resource),
             serde_json::json!({ "upper": "KEEL" })
         );
     }

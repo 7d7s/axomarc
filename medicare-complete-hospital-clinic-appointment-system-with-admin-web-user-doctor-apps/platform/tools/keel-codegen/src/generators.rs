@@ -327,9 +327,17 @@ pub struct __TYPE__;
 
 pub struct __TYPE__Resource;
 
-impl keel_http::Resource<__TYPE__> for __TYPE__Resource {
-    fn from_source(_source: &__TYPE__) -> serde_json::Value {
-        serde_json::json!({})
+impl keel_http::Resource for __TYPE__Resource {
+    type Source = __TYPE__;
+
+    fn from_source(_source: &Self::Source) -> serde_json::Value {
+        // Conditional fields: `.when(condition, key, value)` omits the key
+        // entirely when the condition is false (Laravel `when` semantics);
+        // `.when_some(key, option)` omits on None. Render lists through
+        // `keel_http::ResourceCollection` (pagination meta passes through).
+        keel_http::Fields::new()
+            .field("type", "__NAME__")
+            .into_value()
     }
 }
 "##;
@@ -410,5 +418,26 @@ mod tests {
         assert!(content.contains("fn build(self) -> Widget"));
         assert!(content.contains("WidgetFACTORY_SEQ.fetch_add"));
         assert!(content.contains("pub struct WidgetFactory"));
+    }
+
+    /// Wave 3 Phase 7: the resource scaffold implements the REAL trait. The
+    /// old template wrote `impl keel_http::Resource<Source>` against the
+    /// viewmodel STRUCT — a scaffold that could never build (the doctest on
+    /// `keel_http::Resource` mirrors this shape as the compile proof).
+    #[test]
+    fn resource_template_emits_the_trait_impl() {
+        let (path, content) = generate("resource", "demo", "sample_thing").unwrap();
+        assert_eq!(
+            path,
+            "applications/demo/src/resources/sample_thing_resource.rs"
+        );
+        assert!(content.contains("impl keel_http::Resource for SampleThingResource"));
+        assert!(content.contains("type Source = SampleThing;"));
+        assert!(content.contains(r#".field("type", "sample_thing")"#));
+        // The struct-as-trait bug must not come back.
+        assert!(!content.contains("impl keel_http::Resource<"));
+        // The impl compiles standalone: `from_source` is infallible Value
+        // rendering with no todo!/unimplemented! (covered by the loop test).
+        assert!(content.contains("keel_http::Fields::new()"));
     }
 }

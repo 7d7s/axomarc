@@ -34,13 +34,18 @@ taxonomy onto HTTP status codes. Internal details never leak across the wire.
 ## View models
 
 - `RequestViewModel` — parse + validate inbound payloads (the FormRequest successor).
-- `ResponseViewModel` — shape outbound data (resources).
+- `ResponseViewModel` — shape outbound data (typed resources).
+- `Resource` — typed JSON transformer (Wave 3, `JsonResource` parity): `from_source`
+  body, `when`/`when_some` conditional fields (false/None omits the key, never null),
+  wrapping key (`wrap()`, default `data`), `ResourceCollection` for lists with
+  pagination-meta passthrough.
 
-Both are traits, checked by the compiler, not by runtime reflection.
+These are traits, checked by the compiler, not by runtime reflection.
 
 **Typed bridge (Wave 1, opt-in).** `TypedHandler<I, O>` (keel-command) adapts a typed
 `I -> O` handler function to the `OperationHandler` interface; `Validated<M: RequestViewModel>`
-and `Resource<R: ResponseViewModel>` (keel-http) supply the JSON → view-model → JSON halves.
+and `TypedResource<R: ResponseViewModel>` (keel-http) supply the JSON → view-model → JSON halves
+(`TypedResource` was named `Resource` until Wave 3 Phase 7 gave the name to the transformer trait).
 Handlers that don't need the bridge stay raw JSON (the appointments reference handlers are raw).
 
 ## Middleware
