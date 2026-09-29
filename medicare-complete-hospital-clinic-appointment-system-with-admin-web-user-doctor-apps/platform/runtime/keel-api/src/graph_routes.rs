@@ -26,7 +26,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::{FromRequestParts, Path as AxumPath, State};
+use axum::extract::{FromRequest, FromRequestParts, Path as AxumPath, State};
 use axum::http::{header, HeaderMap, Method, Request, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{MethodFilter, MethodRouter};
@@ -1403,6 +1403,7 @@ async fn graph_dispatch(
 
     let uri = req.uri().clone();
     let path = uri.path().to_string();
+    let method = req.method().clone();
     let body = match axum::body::to_bytes(req.into_body(), state.body_limit).await {
         Ok(bytes) => bytes,
         Err(_) => {
@@ -1440,12 +1441,74 @@ async fn graph_dispatch(
         }
     };
 
-    // JSON body (optional): empty body -> {} ; malformed -> 422 envelope.
-    let input: serde_json::Value = if body.is_empty() {
-        serde_json::json!({})
+    // Body intake (Wave 4 Phase 3): JSON for the plain path; mixed multipart
+    // when the request carries files — text fields become the input object
+    // and file parts store through the StoragePort as `UploadMeta` for the
+    // file rules. Empty body -> {} ; malformed -> 422 envelope.
+    let is_multipart = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.starts_with("multipart/form-data"));
+    let (input, uploads): (serde_json::Value, Vec<keel_validation::UploadMeta>) = if is_multipart
+    {
+        let content_type = headers[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap_or_default()
+            .to_string();
+        let multipart_req = Request::builder()
+            .method(method)
+            .uri(uri.clone())
+            .header(header::CONTENT_TYPE, content_type)
+            .body(Body::from(body))
+            .expect("multipart request rebuilds");
+        let multipart = match axum::extract::Multipart::from_request(multipart_req, &()).await {
+            Ok(mp) => mp,
+            Err(err) => {
+                let err = keel_foundation::AppError::validation(format!(
+                    "multipart request required: {err}"
+                ));
+                return dispatch_error(&state, &dispatch, &headers, &path, &err);
+            }
+        };
+        let prefix = format!("{}/", principal.as_uuid());
+        let (text_fields, stored) = match keel_http::ingest_multipart_mixed(
+            multipart,
+            &keel_http::UploadLimits::default(),
+            &*state.storage,
+            "uploads",
+            &prefix,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(err) => return dispatch_error(&state, &dispatch, &headers, &path, &err),
+        };
+        let mut obj = serde_json::Map::new();
+        for (key, raw) in text_fields {
+            // Form fields arrive as strings; JSON-shaped payloads parse back
+            // into typed values so rules and handlers see the same input
+            // they would from a JSON body (non-JSON text stays a string).
+            let value =
+                serde_json::from_str(&raw).unwrap_or(serde_json::Value::String(raw));
+            obj.insert(key, value);
+        }
+        let metas: Vec<keel_validation::UploadMeta> = stored
+            .into_iter()
+            .map(|s| keel_validation::UploadMeta {
+                field: s.field,
+                filename: s.filename,
+                content_type: s.content_type,
+                size: s.size as u64,
+                width: s.width,
+                height: s.height,
+            })
+            .collect();
+        (serde_json::Value::Object(obj), metas)
+    } else if body.is_empty() {
+        (serde_json::json!({}), Vec::new())
     } else {
         match serde_json::from_slice(&body) {
-            Ok(value) => value,
+            Ok(value) => (value, Vec::new()),
             Err(_) => {
                 let err = keel_foundation::AppError::validation("request body must be valid JSON");
                 return dispatch_error(&state, &dispatch, &headers, &path, &err);
@@ -1545,8 +1608,29 @@ async fn graph_dispatch(
 
     // Wave 1 FormRequest wiring: manifest validation runs collect-all over
     // the merged input BEFORE dispatch (422 envelope with fields meta).
+    // Wave 4 Phase 3: the context carries the principal, the credential
+    // verifier (`current_password`) and any multipart upload parts (`file`
+    // family) — all read-only, all fail-closed when absent.
     if let Some(validator) = &dispatch.validator {
-        if let Err(report) = validator.validate(&input) {
+        let credentials = state.credentials.clone();
+        let for_principal = principal;
+        let verifier = move |candidate: &str| -> bool {
+            match credentials.password_for(for_principal) {
+                Ok(Some(credential)) => keel_identity::verify_credential(
+                    &credential,
+                    &keel_identity::Secret::new(candidate),
+                )
+                .unwrap_or(false),
+                _ => false,
+            }
+        };
+        let mut ctx = keel_validation::ValidationContext::new(&input)
+            .with_principal(principal)
+            .with_verifier(&verifier);
+        if !uploads.is_empty() {
+            ctx = ctx.with_uploads(&uploads);
+        }
+        if let Err(report) = validator.validate_with(&ctx) {
             let err = report.into_app_error();
             return dispatch_error(&state, &dispatch, &headers, &path, &err);
         }

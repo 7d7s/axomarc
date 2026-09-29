@@ -46,6 +46,110 @@ pub struct StoredUpload {
     pub content_type: String,
     pub size: usize,
     pub object: ObjectRef,
+    /// Sniffed pixel width (images only); omitted from JSON when unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    /// Sniffed pixel height (images only); omitted from JSON when unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+}
+
+/// Pixel dimensions from an image header (Wave 4 Phase 3): the `dimensions`
+/// validation rule needs width/height without pulling in a decoder
+/// dependency, so only the header fields are read. PNG, JPEG (SOF), GIF,
+/// WebP (VP8/VP8L/VP8X) and BMP layouts; anything else → `None` (the rule
+/// then fails closed).
+pub fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    png_dimensions(bytes)
+        .or_else(|| gif_dimensions(bytes))
+        .or_else(|| jpeg_dimensions(bytes))
+        .or_else(|| webp_dimensions(bytes))
+        .or_else(|| bmp_dimensions(bytes))
+}
+
+fn png_dimensions(b: &[u8]) -> Option<(u32, u32)> {
+    if b.len() < 24 || b[..8] != *b"\x89PNG\r\n\x1a\n" || b[12..16] != *b"IHDR" {
+        return None;
+    }
+    Some((
+        u32::from_be_bytes(b[16..20].try_into().ok()?),
+        u32::from_be_bytes(b[20..24].try_into().ok()?),
+    ))
+}
+
+fn gif_dimensions(b: &[u8]) -> Option<(u32, u32)> {
+    if b.len() < 10 || (b[..6] != *b"GIF87a" && b[..6] != *b"GIF89a") {
+        return None;
+    }
+    Some((
+        u32::from(u16::from_le_bytes(b[6..8].try_into().ok()?)),
+        u32::from(u16::from_le_bytes(b[8..10].try_into().ok()?)),
+    ))
+}
+
+fn jpeg_dimensions(b: &[u8]) -> Option<(u32, u32)> {
+    if b.len() < 4 || b[0] != 0xFF || b[1] != 0xD8 {
+        return None;
+    }
+    let mut i = 2usize;
+    while i + 9 < b.len() {
+        if b[i] != 0xFF {
+            i += 1;
+            continue;
+        }
+        let marker = b[i + 1];
+        if marker == 0x01 || (0xD0..=0xD9).contains(&marker) {
+            i += 2;
+            continue;
+        }
+        let len = usize::from(u16::from_be_bytes([b[i + 2], b[i + 3]]));
+        // SOF0-SOF15 minus the non-frame markers carry the frame size.
+        let is_sof = (0xC0..=0xCF).contains(&marker) && !matches!(marker, 0xC4 | 0xC8 | 0xCC);
+        if is_sof {
+            let h = u16::from_be_bytes([b[i + 5], b[i + 6]]);
+            let w = u16::from_be_bytes([b[i + 7], b[i + 8]]);
+            return Some((u32::from(w), u32::from(h)));
+        }
+        i = i.checked_add(2 + len)?;
+    }
+    None
+}
+
+fn webp_dimensions(b: &[u8]) -> Option<(u32, u32)> {
+    if b.len() < 30 || b[..4] != *b"RIFF" || b[8..12] != *b"WEBP" {
+        return None;
+    }
+    match &b[12..16] {
+        b"VP8 " => Some((
+            u32::from(u16::from_le_bytes([b[26], b[27]]) & 0x3FFF),
+            u32::from(u16::from_le_bytes([b[28], b[29]]) & 0x3FFF),
+        )),
+        b"VP8L" => {
+            let bits = u32::from_le_bytes([b[21], b[22], b[23], b[24]]);
+            Some((
+                (bits & 0x3FFF) + 1,
+                ((bits >> 14) & 0x3FFF) + 1,
+            ))
+        }
+        b"VP8X" => {
+            let w = u32::from_le_bytes([b[24], b[25], b[26], 0]) & 0x00FF_FFFF;
+            let h = u32::from_le_bytes([b[27], b[28], b[29], 0]) & 0x00FF_FFFF;
+            Some((w + 1, h + 1))
+        }
+        _ => None,
+    }
+}
+
+fn bmp_dimensions(b: &[u8]) -> Option<(u32, u32)> {
+    if b.len() < 26 || b[..2] != *b"BM" {
+        return None;
+    }
+    let w = i32::from_le_bytes(b[18..22].try_into().ok()?);
+    let h = i32::from_le_bytes(b[22..26].try_into().ok()?);
+    if w <= 0 || h == 0 {
+        return None;
+    }
+    Some((w.unsigned_abs(), h.unsigned_abs()))
 }
 
 /// Sanitize an untrusted upload filename down to a safe basename:
@@ -66,15 +170,20 @@ pub fn sanitize_filename(raw: &str) -> String {
     }
 }
 
-/// Parse + validate + store every file part. Returns the stored file list.
-/// Non-file fields are consumed and size-checked but not retained.
-pub async fn ingest_multipart(
+/// Parse + validate + store every file part, RETAINING the text fields
+/// (Wave 4 Phase 3). Graph routes use this so one multipart request can
+/// carry both the operation input and its files: text fields come back as
+/// (name, utf-8 value) pairs, file parts as [`StoredUpload`]s with sniffed
+/// image dimensions. Zero file parts is valid here (unlike
+/// [`ingest_multipart`]); every size/MIME limit still applies while reading.
+pub async fn ingest_multipart_mixed(
     mut multipart: Multipart,
     limits: &UploadLimits,
     storage: &dyn StoragePort,
     bucket: &str,
     key_prefix: &str,
-) -> Result<Vec<StoredUpload>, AppError> {
+) -> Result<(Vec<(String, String)>, Vec<StoredUpload>), AppError> {
+    let mut fields: Vec<(String, String)> = Vec::new();
     let mut stored: Vec<StoredUpload> = Vec::new();
     let mut parts = 0usize;
     while let Some(mut field) = multipart
@@ -98,21 +207,25 @@ pub async fn ingest_multipart(
 
         match file_name {
             None => {
-                // Plain form field: bounded read, value discarded.
-                let mut size = 0usize;
+                // Plain form field: bounded read, value retained as utf-8
+                // (the graph edge coerces it into the JSON input).
+                let mut bytes: Vec<u8> = Vec::new();
                 while let Some(chunk) = field
                     .chunk()
                     .await
                     .map_err(|e| AppError::validation(format!("field {name}: {e}")))?
                 {
-                    size += chunk.len();
-                    if size > limits.max_field_bytes {
+                    if bytes.len() + chunk.len() > limits.max_field_bytes {
                         return Err(AppError::validation(format!(
                             "field {name} exceeds the {} byte limit",
                             limits.max_field_bytes
                         )));
                     }
+                    bytes.extend_from_slice(&chunk);
                 }
+                let value = String::from_utf8(bytes)
+                    .map_err(|_| AppError::validation(format!("field {name} must be utf-8")))?;
+                fields.push((name, value));
             }
             Some(raw_name) => {
                 if !limits.allowed_mime.is_empty()
@@ -141,6 +254,7 @@ pub async fn ingest_multipart(
                     bytes.extend_from_slice(&chunk);
                 }
                 let size = bytes.len();
+                let (width, height) = image_dimensions(&bytes).unzip();
                 let key = format!("{key_prefix}{}-{filename}", Uuid::now_v7());
                 let object = storage.put(bucket, &key, bytes)?;
                 stored.push(StoredUpload {
@@ -149,10 +263,26 @@ pub async fn ingest_multipart(
                     content_type,
                     size,
                     object,
+                    width,
+                    height,
                 });
             }
         }
     }
+    Ok((fields, stored))
+}
+
+/// Parse + validate + store every file part. Returns the stored file list.
+/// Non-file fields are consumed and size-checked but not retained.
+pub async fn ingest_multipart(
+    multipart: Multipart,
+    limits: &UploadLimits,
+    storage: &dyn StoragePort,
+    bucket: &str,
+    key_prefix: &str,
+) -> Result<Vec<StoredUpload>, AppError> {
+    let (_fields, stored) =
+        ingest_multipart_mixed(multipart, limits, storage, bucket, key_prefix).await?;
     if stored.is_empty() {
         return Err(AppError::validation(
             "no file parts found in the multipart body",
@@ -184,6 +314,54 @@ mod tests {
         assert_eq!(limits.max_parts, 8);
         assert_eq!(limits.max_file_bytes, 8 * 1024 * 1024);
         assert!(limits.allowed_mime.is_empty());
+    }
+
+    fn png_header(w: u32, h: u32) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+        b.extend_from_slice(&13u32.to_be_bytes()); // IHDR length
+        b.extend_from_slice(b"IHDR");
+        b.extend_from_slice(&w.to_be_bytes());
+        b.extend_from_slice(&h.to_be_bytes());
+        b.extend_from_slice(&[0u8; 13]);
+        b
+    }
+
+    #[test]
+    fn image_dimensions_reads_headers_without_a_decoder() {
+        // PNG: fixed IHDR offsets.
+        assert_eq!(image_dimensions(&png_header(300, 200)), Some((300, 200)));
+        // GIF: 16-bit little-endian logical screen size.
+        let mut gif = b"GIF89a".to_vec();
+        gif.extend_from_slice(&320u16.to_le_bytes());
+        gif.extend_from_slice(&240u16.to_le_bytes());
+        assert_eq!(image_dimensions(&gif), Some((320, 240)));
+        // JPEG: walk segments to the SOF frame header (height then width).
+        let mut jpg = vec![0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x0B, 0x08];
+        jpg.extend_from_slice(&100u16.to_be_bytes());
+        jpg.extend_from_slice(&200u16.to_be_bytes());
+        jpg.extend_from_slice(&[0x01, 0x11, 0x00]);
+        assert_eq!(image_dimensions(&jpg), Some((200, 100)));
+        // WebP lossless: 14-bit-minus-one pairs packed from byte 21.
+        let mut webp = b"RIFF".to_vec();
+        webp.extend_from_slice(&24u32.to_le_bytes());
+        webp.extend_from_slice(b"WEBP");
+        webp.extend_from_slice(b"VP8L");
+        webp.extend_from_slice(&10u32.to_le_bytes());
+        webp.push(0x2F);
+        webp.extend_from_slice(&(299u32 | (199u32 << 14)).to_le_bytes());
+        webp.extend_from_slice(&[0u8; 6]);
+        assert_eq!(image_dimensions(&webp), Some((300, 200)));
+        // BMP: DIB header width/height (height may be top-down negative).
+        let mut bmp = vec![0u8; 26];
+        bmp[0] = b'B';
+        bmp[1] = b'M';
+        bmp[18..22].copy_from_slice(&640i32.to_le_bytes());
+        bmp[22..26].copy_from_slice(&(-480i32).to_le_bytes());
+        assert_eq!(image_dimensions(&bmp), Some((640, 480)));
+        // Anything else is unknown — the dimensions rule fails closed.
+        assert_eq!(image_dimensions(b"not an image"), None);
+        assert_eq!(image_dimensions(b""), None);
     }
 }
 #[cfg(test)]
@@ -296,6 +474,39 @@ mod multipart_tests {
         assert_eq!(stored[0].filename, "a b.txt");
         assert_eq!(stored[0].size, 5);
         assert!(stored[0].object.key.starts_with("pfx/"));
+    }
+
+    #[tokio::test]
+    async fn mixed_ingest_retains_text_and_sniffs_image_dimensions() {
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend_from_slice(&13u32.to_be_bytes());
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&300u32.to_be_bytes());
+        png.extend_from_slice(&200u32.to_be_bytes());
+        png.extend_from_slice(&[0u8; 13]);
+        let req = multipart(vec![
+            ("patient", None, "text/plain", b"A. Patient".to_vec()),
+            ("slot", None, "text/plain", b"2026-09-01T10:00Z".to_vec()),
+            ("photo", Some("shot.png"), "image/png", png),
+        ]);
+        let mp = Multipart::from_request(req, &()).await.expect("parses");
+        let store = MemStore::default();
+        let (fields, stored) =
+            ingest_multipart_mixed(mp, &UploadLimits::default(), &store, "uploads", "pfx/")
+                .await
+                .unwrap();
+        assert_eq!(
+            fields,
+            vec![
+                ("patient".to_string(), "A. Patient".to_string()),
+                ("slot".to_string(), "2026-09-01T10:00Z".to_string()),
+            ],
+            "text parts are retained for the graph input"
+        );
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].field, "photo");
+        assert_eq!((stored[0].width, stored[0].height), (Some(300), Some(200)));
+        assert!(store.get(&stored[0].object).is_ok());
     }
 
     #[tokio::test]

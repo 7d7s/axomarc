@@ -172,6 +172,47 @@ pub enum Rule {
     Distinct,
     /// Stop evaluating this field after the first failure (structural).
     Bail,
+    // ------------------------------------------- Wave 4: dates ------------
+    /// String matching a closed `Y m d H i s` format grammar.
+    DateFormat(String),
+    /// Strictly before a date literal, `now`, or a sibling field's date.
+    Before(DateTarget),
+    /// Strictly after a date literal, `now`, or a sibling field's date.
+    After(DateTarget),
+    /// On or before a date literal, `now`, or a sibling field's date.
+    BeforeOrEqual(DateTarget),
+    /// On or after a date literal, `now`, or a sibling field's date.
+    AfterOrEqual(DateTarget),
+    // ------------------------------------------- Wave 4: files ------------
+    /// A stored upload part exists for this field.
+    File,
+    /// The stored part's content type is `image/*`.
+    Image,
+    /// The stored part's content type resolves to one of the listed types
+    /// (extension aliases like `jpg` map through a closed table).
+    Mimes(Vec<String>),
+    /// The stored part's declared content type is one of the listed MIME
+    /// types (`image/jpeg` style).
+    MimeTypes(Vec<String>),
+    /// The upload's filename carries one of the listed extensions.
+    Extensions(Vec<String>),
+    /// The image's pixel dimensions satisfy the declared bounds; a part
+    /// without sniffable dimensions fails closed.
+    Dimensions(Vec<DimBound>),
+    // ------------------------------------------- Wave 4: auth -------------
+    /// String meeting the active password policy (defaults in the context).
+    Password,
+    /// Verifies against the authenticated principal's stored credential
+    /// (the edge's verifier); absent verifier or principal fails closed.
+    CurrentPassword,
+    /// Contains at least one letter (composes with `password`).
+    Letters,
+    /// Contains at least one ASCII digit (composes with `password`).
+    Numbers,
+    /// Contains at least one non-alphanumeric character (composes with `password`).
+    Symbols,
+    /// Contains uppercase and lowercase letters (composes with `password`).
+    MixedCase,
 }
 
 /// Target of the `gt`/`gte`/`lt`/`lte` family: a literal number or another
@@ -284,6 +325,23 @@ impl Rule {
             Rule::InArray(_) => "in_array",
             Rule::Distinct => "distinct",
             Rule::Bail => "bail",
+            Rule::DateFormat(_) => "date_format",
+            Rule::Before(_) => "before",
+            Rule::After(_) => "after",
+            Rule::BeforeOrEqual(_) => "before_or_equal",
+            Rule::AfterOrEqual(_) => "after_or_equal",
+            Rule::File => "file",
+            Rule::Image => "image",
+            Rule::Mimes(_) => "mimes",
+            Rule::MimeTypes(_) => "mimetypes",
+            Rule::Extensions(_) => "extensions",
+            Rule::Dimensions(_) => "dimensions",
+            Rule::Password => "password",
+            Rule::CurrentPassword => "current_password",
+            Rule::Letters => "letters",
+            Rule::Numbers => "numbers",
+            Rule::Symbols => "symbols",
+            Rule::MixedCase => "mixed_case",
         }
     }
 }
@@ -338,6 +396,107 @@ impl Rule {
         Ok((field.to_string(), values))
     }
 
+    /// `<d>` for the date comparisons: the keyword `now`, a literal date in
+    /// any shape the `date` rule accepts (fail-closed at boot), or a
+    /// sibling field name.
+    fn date_target(arg: Option<&str>, token: &str, rule: &str) -> Result<DateTarget, String> {
+        let a = Rule::arg(arg, token, rule)?;
+        if a.eq_ignore_ascii_case("now") {
+            return Ok(DateTarget::Now);
+        }
+        if crate::checks::date_instant(a).is_some() {
+            return Ok(DateTarget::Literal(a.to_string()));
+        }
+        if a
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+        {
+            return Ok(DateTarget::Field(a.to_string()));
+        }
+        Err(format!(
+            "{rule} must be {rule}:<date|now|field>: {token}"
+        ))
+    }
+
+    /// `<a,b>`: a non-empty comma list of single-token values
+    /// (mimes/mimetypes/extensions).
+    fn list_arg(arg: Option<&str>, token: &str, rule: &str) -> Result<Vec<String>, String> {
+        let a = Rule::arg(arg, token, rule)?;
+        let items: Vec<String> = a.split(',').map(|s| s.trim().to_string()).collect();
+        if items
+            .iter()
+            .any(|i| i.is_empty() || i.chars().any(char::is_whitespace))
+        {
+            return Err(format!(
+                "{rule} requires a comma list of non-empty values: {token}"
+            ));
+        }
+        Ok(items)
+    }
+
+    /// `<k=v[,k=v...]>` for `dimensions`: a non-empty subset of the six
+    /// declared keys with positive integer values, no duplicate keys, and
+    /// `min_* <= max_*` cross-checked — all at boot.
+    fn dim_bounds(arg: Option<&str>, token: &str) -> Result<Vec<DimBound>, String> {
+        let a = Rule::arg(arg, token, "dimensions")?;
+        let mut out: Vec<DimBound> = Vec::new();
+        for pair in a.split(',') {
+            let Some((key, raw)) = pair.split_once('=') else {
+                return Err(format!(
+                    "dimensions must be dimensions:<key>=<n>[,...]: {token}"
+                ));
+            };
+            let key = key.trim();
+            let n: u32 = raw.trim().parse().ok().filter(|n: &u32| *n > 0).ok_or_else(|| {
+                format!("dimensions values must be positive integers: {token}")
+            })?;
+            let bound = match key {
+                "w" => DimBound::Width(n),
+                "h" => DimBound::Height(n),
+                "min_w" => DimBound::MinWidth(n),
+                "max_w" => DimBound::MaxWidth(n),
+                "min_h" => DimBound::MinHeight(n),
+                "max_h" => DimBound::MaxHeight(n),
+                other => return Err(format!("unknown dimensions key: {other}")),
+            };
+            out.push(bound);
+        }
+        let kind = |b: &DimBound| match b {
+            DimBound::Width(_) => 0,
+            DimBound::Height(_) => 1,
+            DimBound::MinWidth(_) => 2,
+            DimBound::MaxWidth(_) => 3,
+            DimBound::MinHeight(_) => 4,
+            DimBound::MaxHeight(_) => 5,
+        };
+        out.sort_by_key(kind);
+        for pair in out.windows(2) {
+            if kind(&pair[0]) == kind(&pair[1]) {
+                return Err(format!("duplicate dimensions key: {token}"));
+            }
+        }
+        let num = |b: &DimBound| match b {
+            DimBound::Width(n)
+            | DimBound::Height(n)
+            | DimBound::MinWidth(n)
+            | DimBound::MaxWidth(n)
+            | DimBound::MinHeight(n)
+            | DimBound::MaxHeight(n) => *n,
+        };
+        let at = |k: usize| out.iter().find(|b| kind(b) == k).map(num);
+        if let (Some(lo), Some(hi)) = (at(2), at(3)) {
+            if lo > hi {
+                return Err(format!("dimensions min_w exceeds max_w: {token}"));
+            }
+        }
+        if let (Some(lo), Some(hi)) = (at(4), at(5)) {
+            if lo > hi {
+                return Err(format!("dimensions min_h exceeds max_h: {token}"));
+            }
+        }
+        Ok(out)
+    }
+
     /// Parse one manifest rule token into a [`Rule`]. Grammar (1:1 with the
     /// enum): "required", "min:<n>", "max:<n>", "email", "url", "uuid",
     /// "e164", "one_of:<a,b,c>", "range:<lo>,<hi>", "date" (Wave 1) plus the
@@ -356,7 +515,11 @@ impl Rule {
     /// "exclude", "exclude_if:<f,v...>", "missing", "missing_if:<f,v...>",
     /// "missing_with:<f>", "sometimes", "filled", "present"; cross-field:
     /// "same:<f>", "different:<f>", "confirmed", "in_array:<f>", "distinct";
-    /// control: "bail".
+    /// control: "bail"; dates: "date_format:<fmt>", "before:<d>",
+    /// "after:<d>", "before_or_equal:<d>", "after_or_equal:<d>"; files:
+    /// "file", "image", "mimes:<a,b>", "mimetypes:<a,b>",
+    /// "extensions:<a,b>", "dimensions:<k=v,...>"; auth: "password",
+    /// "current_password", "letters", "numbers", "symbols", "mixed_case".
     /// Used by the registry GRAPH-VALIDATION-RULE gate and by the HTTP edge.
     pub fn from_token(token: &str) -> Result<Rule, String> {
         let token = token.trim();
@@ -548,6 +711,34 @@ impl Rule {
             "distinct" => Rule::Distinct,
             // ------------------------------------------- control ---------
             "bail" => Rule::Bail,
+            // ------------------------------------------- dates ------------
+            "date_format" => {
+                let fmt = Rule::arg(arg, token, "date_format")?;
+                crate::checks::check_date_format_spec(fmt)?;
+                Rule::DateFormat(fmt.to_string())
+            }
+            "before" => Rule::Before(Rule::date_target(arg, token, "before")?),
+            "after" => Rule::After(Rule::date_target(arg, token, "after")?),
+            "before_or_equal" => {
+                Rule::BeforeOrEqual(Rule::date_target(arg, token, "before_or_equal")?)
+            }
+            "after_or_equal" => {
+                Rule::AfterOrEqual(Rule::date_target(arg, token, "after_or_equal")?)
+            }
+            // ------------------------------------------- files ------------
+            "file" => Rule::File,
+            "image" => Rule::Image,
+            "mimes" => Rule::Mimes(Rule::list_arg(arg, token, "mimes")?),
+            "mimetypes" => Rule::MimeTypes(Rule::list_arg(arg, token, "mimetypes")?),
+            "extensions" => Rule::Extensions(Rule::list_arg(arg, token, "extensions")?),
+            "dimensions" => Rule::Dimensions(Rule::dim_bounds(arg, token)?),
+            // ------------------------------------------- auth -------------
+            "password" => Rule::Password,
+            "current_password" => Rule::CurrentPassword,
+            "letters" => Rule::Letters,
+            "numbers" => Rule::Numbers,
+            "symbols" => Rule::Symbols,
+            "mixed_case" => Rule::MixedCase,
             other => return Err(format!("unknown validation rule: {other}")),
         })
     }
@@ -571,6 +762,76 @@ pub fn parse_rules(tokens: &[String]) -> Result<Vec<Rule>, Vec<String>> {
     }
 }
 
+/// `before:<d>` / `after:<d>` target (Wave 4 Phase 3): a date literal in any
+/// shape the `date` rule accepts, the keyword `now`, or a sibling field name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DateTarget {
+    /// A literal date (`YYYY-MM-DD` or RFC-3339), validated at boot.
+    Literal(String),
+    /// The current time, resolved at evaluation.
+    Now,
+    /// A sibling field resolved through the context; an absent or non-date
+    /// sibling fails the comparison closed.
+    Field(String),
+}
+
+/// A `dimensions:<k=v,...>` bound (Wave 4 Phase 3). The manifest declares an
+/// arbitrary subset of the six keys; the key set, values and min/max pairs
+/// are validated at boot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DimBound {
+    /// Exact pixel width.
+    Width(u32),
+    /// Exact pixel height.
+    Height(u32),
+    /// Minimum pixel width.
+    MinWidth(u32),
+    /// Maximum pixel width.
+    MaxWidth(u32),
+    /// Minimum pixel height.
+    MinHeight(u32),
+    /// Maximum pixel height.
+    MaxHeight(u32),
+}
+
+/// Password criteria for the `password` rule (Wave 4 Phase 3). The engine
+/// default mirrors Laravel's `Password::defaults()` (min 8, letters, numbers,
+/// symbols, mixed case); `[auth.password_policy]` config feeds it through
+/// [`ValidationContext::with_password_policy`] in Phase 5. Sub-rule tokens
+/// (`min:<n>`, `letters`, `numbers`, `symbols`, `mixed_case`) compose in the
+/// same field's rule list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PasswordPolicy {
+    /// Minimum length in characters (Unicode scalar count).
+    pub min_length: usize,
+    /// Require at least one letter.
+    pub letters: bool,
+    /// Require at least one ASCII digit.
+    pub numbers: bool,
+    /// Require at least one non-alphanumeric character.
+    pub symbols: bool,
+    /// Require at least one uppercase and one lowercase letter.
+    pub mixed_case: bool,
+}
+
+impl Default for PasswordPolicy {
+    fn default() -> Self {
+        Self {
+            min_length: 8,
+            letters: true,
+            numbers: true,
+            symbols: true,
+            mixed_case: true,
+        }
+    }
+}
+
+/// `current_password` verifier: plaintext candidate → matches the
+/// authenticated principal's stored credential. The HTTP edge wires it from
+/// the `CredentialStore`; without one (or without a principal) the rule
+/// fails closed.
+pub type PasswordVerifier = dyn Fn(&str) -> bool + Send + Sync;
+
 /// Upload part metadata visible to file rules (Wave 4 Phase 3). The edge's
 /// `StoredUpload` lives in keel-http, which foundation crates cannot depend
 /// on, so the descriptor shape is declared here and mapped at the edge.
@@ -584,16 +845,34 @@ pub struct UploadMeta {
     pub content_type: String,
     /// Size in bytes.
     pub size: u64,
+    /// Pixel width, when sniffed from an image header at ingest.
+    pub width: Option<u32>,
+    /// Pixel height, when sniffed from an image header at ingest.
+    pub height: Option<u32>,
 }
 
 /// Everything a rule may need beyond the value under test. Built by the HTTP
 /// edge and passed to [`Validator::validate_with`]; plain shape rules need
 /// none of it, so [`Validator::validate`] constructs an empty context.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct ValidationContext<'a> {
     input: &'a Value,
     principal: Option<PrincipalId>,
     uploads: &'a [UploadMeta],
+    verifier: Option<&'a PasswordVerifier>,
+    policy: PasswordPolicy,
+}
+
+impl std::fmt::Debug for ValidationContext<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ValidationContext")
+            .field("input", &self.input)
+            .field("principal", &self.principal)
+            .field("uploads", &self.uploads)
+            .field("has_verifier", &self.verifier.is_some())
+            .field("policy", &self.policy)
+            .finish()
+    }
 }
 
 impl<'a> ValidationContext<'a> {
@@ -603,6 +882,8 @@ impl<'a> ValidationContext<'a> {
             input,
             principal: None,
             uploads: &[],
+            verifier: None,
+            policy: PasswordPolicy::default(),
         }
     }
 
@@ -615,6 +896,18 @@ impl<'a> ValidationContext<'a> {
     /// Carry the upload part metadata (`file`/`image`/`mimes`, Phase 3).
     pub fn with_uploads(mut self, uploads: &'a [UploadMeta]) -> Self {
         self.uploads = uploads;
+        self
+    }
+
+    /// Carry the credential verifier (`current_password`, Phase 3).
+    pub fn with_verifier(mut self, verifier: &'a PasswordVerifier) -> Self {
+        self.verifier = Some(verifier);
+        self
+    }
+
+    /// Override the `password` policy (Phase 5 wires `[auth.password_policy]`).
+    pub fn with_password_policy(mut self, policy: PasswordPolicy) -> Self {
+        self.policy = policy;
         self
     }
 
@@ -631,6 +924,21 @@ impl<'a> ValidationContext<'a> {
     /// Upload parts attached to this request.
     pub fn uploads(&self) -> &'a [UploadMeta] {
         self.uploads
+    }
+
+    /// The stored part uploaded under this form field, if any.
+    pub fn upload_for(&self, field: &str) -> Option<&'a UploadMeta> {
+        self.uploads.iter().find(|u| u.field == field)
+    }
+
+    /// The credential verifier wired by the edge, if any.
+    pub fn verifier(&self) -> Option<&'a PasswordVerifier> {
+        self.verifier
+    }
+
+    /// The active `password` policy.
+    pub fn password_policy(&self) -> PasswordPolicy {
+        self.policy
     }
 
     /// Dot-path lookup into the shared input (`items.0.name` style segments).
@@ -692,7 +1000,10 @@ impl Validator {
     /// - any presence failure suppresses the field's value rules (the
     ///   Wave 1 one-message-per-field shape for `required`);
     /// - `bail` stops the field at its first failure;
-    /// - `sometimes` and `exclude`/`exclude_if` skip the field entirely.
+    /// - `sometimes` and `exclude`/`exclude_if` skip the field entirely;
+    /// - an uploaded part makes the field count as submitted for presence
+    ///   rules (multipart file fields never ride the JSON body); file rules
+    ///   evaluate the part, while format rules only ever see JSON values.
     pub fn validate_with(&self, ctx: &ValidationContext<'_>) -> Result<(), ValidationReport> {
         let input = ctx.input();
         let mut report = ValidationReport::default();
@@ -702,7 +1013,14 @@ impl Validator {
         }
         for spec in &self.specs {
             let rules = &spec.rules;
-            let value = lookup(input, &spec.field);
+            let json_value = lookup(input, &spec.field);
+            let upload = ctx.upload_for(&spec.field);
+            // A stored part counts as a submitted value: presence rules must
+            // see the file even though only its metadata is in context.
+            let value = match json_value {
+                Some(v) => Some(v),
+                None => upload.map(|_| &*UPLOAD_MARKER),
+            };
             // Structural: `sometimes` lets an absent key through untouched.
             if value.is_none() && rules.iter().any(|r| matches!(r, Rule::Sometimes)) {
                 continue;
@@ -734,10 +1052,29 @@ impl Validator {
                     }
                     continue;
                 }
+                // File rules evaluate the stored part whenever one exists —
+                // even if the JSON key is absent. Without a part they fall
+                // back to normal breadth (a JSON value must be checkable).
+                if is_file_rule(rule) {
+                    if presence_failed || (implicit_only && upload.is_none()) {
+                        continue;
+                    }
+                    if let Some(v) = value {
+                        if let Some(msg) = check(rule, &spec.field, v, ctx) {
+                            report.push(&spec.field, msg);
+                            if bail {
+                                break;
+                            }
+                        }
+                    }
+                    continue;
+                }
                 if implicit_only || presence_failed {
                     continue;
                 }
-                if let Some(v) = value {
+                // Format rules describe JSON values; the upload marker is
+                // presence-only and never reaches them.
+                if let Some(v) = json_value {
                     if let Some(msg) = check(rule, &spec.field, v, ctx) {
                         report.push(&spec.field, msg);
                         if bail {
@@ -753,6 +1090,26 @@ impl Validator {
             Err(report)
         }
     }
+}
+
+/// Stand-in value for a field whose file arrived as a stored part: it never
+/// surfaces in messages (presence rules name the field, not the value) but
+/// makes the field count as submitted for presence evaluation.
+static UPLOAD_MARKER: std::sync::LazyLock<Value> =
+    std::sync::LazyLock::new(|| Value::String("upload".into()));
+
+/// File rules evaluate the stored part (or fail closed when a JSON value
+/// arrives with no part) rather than parsing the JSON value itself.
+fn is_file_rule(rule: &Rule) -> bool {
+    matches!(
+        rule,
+        Rule::File
+            | Rule::Image
+            | Rule::Mimes(_)
+            | Rule::MimeTypes(_)
+            | Rule::Extensions(_)
+            | Rule::Dimensions(_)
+    )
 }
 
 /// Presence/conditional rules: they reason about the key's state (absent /
@@ -1645,10 +2002,432 @@ mod tests {
             "in_array:tags",
             "distinct",
             "bail",
+            // Wave 4 Phase 3: dates, files, auth
+            "date_format:Y-m-d",
+            "before:2030-01-01",
+            "after:now",
+            "before_or_equal:end_date",
+            "after_or_equal:2026-01-01T00:00:00Z",
+            "file",
+            "image",
+            "mimes:jpg,png",
+            "mimetypes:image/jpeg",
+            "extensions:jpg,png",
+            "dimensions:min_w=100,max_h=600",
+            "password",
+            "current_password",
+            "letters",
+            "numbers",
+            "symbols",
+            "mixed_case",
         ]
         .iter()
         .map(|s| s.to_string())
         .collect();
         assert_eq!(parse_rules(&battery).unwrap().len(), battery.len());
+    }
+
+    #[test]
+    fn wave4_phase3_tokens_parse() {
+        for (token, rule) in [
+            ("file", Rule::File),
+            ("image", Rule::Image),
+            ("password", Rule::Password),
+            ("current_password", Rule::CurrentPassword),
+            ("letters", Rule::Letters),
+            ("numbers", Rule::Numbers),
+            ("symbols", Rule::Symbols),
+            ("mixed_case", Rule::MixedCase),
+            ("date_format:Y-m-d", Rule::DateFormat("Y-m-d".into())),
+            (
+                "before:2030-01-01",
+                Rule::Before(DateTarget::Literal("2030-01-01".into())),
+            ),
+            ("after:now", Rule::After(DateTarget::Now)),
+            (
+                "before_or_equal:end_date",
+                Rule::BeforeOrEqual(DateTarget::Field("end_date".into())),
+            ),
+            (
+                "after_or_equal:2026-01-01T00:00:00Z",
+                Rule::AfterOrEqual(DateTarget::Literal("2026-01-01T00:00:00Z".into())),
+            ),
+            (
+                "mimes:jpg,png",
+                Rule::Mimes(vec!["jpg".into(), "png".into()]),
+            ),
+            (
+                "mimetypes:image/jpeg",
+                Rule::MimeTypes(vec!["image/jpeg".into()]),
+            ),
+            (
+                "extensions:jpg,png",
+                Rule::Extensions(vec!["jpg".into(), "png".into()]),
+            ),
+            (
+                "dimensions:min_w=100,max_h=600",
+                Rule::Dimensions(vec![DimBound::MinWidth(100), DimBound::MaxHeight(600)]),
+            ),
+        ] {
+            assert_eq!(Rule::from_token(token).unwrap(), rule, "{token}");
+        }
+        for bad in [
+            "date_format",
+            "date_format:",
+            "date_format:x",
+            "date_format:Y-j",
+            "before",
+            "before:",
+            "before:2030-13-01",
+            "after:not a date",
+            "before_or_equal:",
+            "after_or_equal:2030/01/01",
+            "mimes:",
+            "mimes:jpg,",
+            "mimetypes:",
+            "extensions: ",
+            "dimensions",
+            "dimensions:",
+            "dimensions:x=1",
+            "dimensions:w=0",
+            "dimensions:w",
+            "dimensions:w=1,w=2",
+            "dimensions:min_w=9,max_w=2",
+            "dimensions:min_h=9,max_h=2",
+        ] {
+            assert!(Rule::from_token(bad).is_err(), "{bad} should fail");
+        }
+    }
+
+    #[test]
+    fn date_format_rules_match_a_closed_token_grammar() {
+        let v = Validator::new().field("on", vec![Rule::DateFormat("Y-m-d".into())]);
+        assert!(v.validate(&json!({ "on": "2026-09-29" })).is_ok());
+        let report = v
+            .validate(&json!({ "on": "29-09-2026" }))
+            .expect_err("wrong order");
+        assert_eq!(
+            report.violations[0].message,
+            "must match the format Y-m-d"
+        );
+        assert!(v.validate(&json!({ "on": "2026-13-01" })).is_err(), "month range");
+        assert!(v.validate(&json!({ "on": "2026-02-30" })).is_err(), "day range");
+        assert!(v.validate(&json!({ "on": "2024-02-29" })).is_ok(), "leap day");
+        assert!(v.validate(&json!({ "on": "2026-9-29" })).is_err(), "digit counts");
+        assert!(v.validate(&json!({ "on": "2026-09-29T00" })).is_err(), "no trailing");
+        let report = v
+            .validate(&json!({ "on": 20260929 }))
+            .expect_err("non-string");
+        assert_eq!(report.violations[0].message, "must be a string date");
+
+        let full = Validator::new().field("at", vec![Rule::DateFormat("Y-m-d H:i:s".into())]);
+        assert!(full.validate(&json!({ "at": "2026-09-29 14:30:05" })).is_ok());
+        assert!(full.validate(&json!({ "at": "2026-09-29 25:30:05" })).is_err(), "hour range");
+        assert!(full.validate(&json!({ "at": "2026-09-29 14:30:61" })).is_err(), "second range");
+
+        let eu = Validator::new().field("on", vec![Rule::DateFormat("d/m/Y".into())]);
+        assert!(eu.validate(&json!({ "on": "29/09/2026" })).is_ok());
+        assert!(eu.validate(&json!({ "on": "2026-09-29" })).is_err());
+    }
+
+    #[test]
+    fn before_and_after_compare_across_zones_and_fields() {
+        let before =
+            Validator::new().field("slot", vec![Rule::Before(DateTarget::Literal("2030-01-01".into()))]);
+        assert!(before.validate(&json!({ "slot": "2026-09-01T10:00Z" })).is_ok());
+        let report = before
+            .validate(&json!({ "slot": "2031-06-01" }))
+            .expect_err("after the target");
+        assert_eq!(report.violations[0].message, "must be before 2030-01-01");
+        let report = before
+            .validate(&json!({ "slot": "yesterday" }))
+            .expect_err("not a date");
+        assert_eq!(
+            report.violations[0].message,
+            "must be RFC-3339 or YYYY-MM-DD"
+        );
+        let report = before
+            .validate(&json!({ "slot": 7 }))
+            .expect_err("non-string");
+        assert_eq!(report.violations[0].message, "must be a string date");
+
+        // or_equal variants are inclusive, strict ones are not
+        let eq = Validator::new().field(
+            "d",
+            vec![Rule::BeforeOrEqual(DateTarget::Literal("2030-01-01".into()))],
+        );
+        assert!(eq.validate(&json!({ "d": "2030-01-01" })).is_ok());
+        assert!(eq.validate(&json!({ "d": "2030-01-02" })).is_err());
+        let after =
+            Validator::new().field("d", vec![Rule::After(DateTarget::Literal("2030-01-01".into()))]);
+        assert!(after.validate(&json!({ "d": "2030-01-02" })).is_ok());
+        assert!(after.validate(&json!({ "d": "2030-01-01" })).is_err());
+        let oae = Validator::new().field(
+            "d",
+            vec![Rule::AfterOrEqual(DateTarget::Literal("2030-01-01".into()))],
+        );
+        assert!(oae.validate(&json!({ "d": "2030-01-01" })).is_ok());
+
+        // offsets normalize: 23:00+05:30 is 17:30Z (before 20:00Z),
+        // 02:00+05:30 on Jan 2 is 20:30Z on Jan 1 (after).
+        let tz = Validator::new().field(
+            "when",
+            vec![Rule::Before(DateTarget::Literal("2026-01-01T20:00:00Z".into()))],
+        );
+        assert!(tz
+            .validate(&json!({ "when": "2026-01-01T23:00:00+05:30" }))
+            .is_ok());
+        assert!(tz
+            .validate(&json!({ "when": "2026-01-02T02:00:00+05:30" }))
+            .is_err());
+
+        // field targets resolve through the context and fail closed
+        let fe = Validator::new().field("end", vec![Rule::After(DateTarget::Field("start".into()))]);
+        assert!(fe
+            .validate(&json!({ "start": "2026-09-01", "end": "2026-09-02" }))
+            .is_ok());
+        assert!(fe
+            .validate(&json!({ "start": "2026-09-02", "end": "2026-09-01" }))
+            .is_err());
+        let report = fe
+            .validate(&json!({ "end": "2026-09-02" }))
+            .expect_err("missing sibling target");
+        assert_eq!(report.violations[0].message, "must be after start");
+        assert!(fe
+            .validate(&json!({ "start": "nope", "end": "2026-09-02" }))
+            .is_err(), "non-date sibling fails closed");
+
+        // `now` resolves at evaluation: only the certain sides are asserted
+        let past = Validator::new().field("d", vec![Rule::Before(DateTarget::Now)]);
+        assert!(past.validate(&json!({ "d": "2020-01-01" })).is_ok());
+        let future = Validator::new().field("d", vec![Rule::After(DateTarget::Now)]);
+        assert!(future.validate(&json!({ "d": "2999-01-01" })).is_ok());
+        assert!(future.validate(&json!({ "d": "2020-01-01" })).is_err());
+    }
+
+    #[test]
+    fn file_rules_read_upload_metadata() {
+        let metas = vec![
+            UploadMeta {
+                field: "photo".into(),
+                filename: "shot.PNG".into(),
+                content_type: "image/png".into(),
+                size: 1024,
+                width: Some(300),
+                height: Some(200),
+            },
+            UploadMeta {
+                field: "doc".into(),
+                filename: "notes.txt".into(),
+                content_type: "text/plain; charset=utf-8".into(),
+                size: 10,
+                width: None,
+                height: None,
+            },
+        ];
+        let input = json!({});
+        let ctx = ValidationContext::new(&input).with_uploads(&metas);
+
+        // every file rule reads the part's metadata, not the JSON value
+        let ok = Validator::new().field(
+            "photo",
+            vec![
+                Rule::File,
+                Rule::Image,
+                Rule::Mimes(vec!["jpg".into(), "png".into()]),
+                Rule::MimeTypes(vec!["image/png".into()]),
+                Rule::Extensions(vec!["png".into()]),
+                Rule::Dimensions(vec![DimBound::MinWidth(100), DimBound::MaxHeight(600)]),
+            ],
+        );
+        assert!(ok.validate_with(&ctx).is_ok());
+
+        // a part exists but is not an image / not of the allowed types
+        let report = Validator::new()
+            .field("doc", vec![Rule::Image])
+            .validate_with(&ctx)
+            .expect_err("text part is not an image");
+        assert_eq!(report.violations[0].message, "must be an image");
+        let report = Validator::new()
+            .field("doc", vec![Rule::Mimes(vec!["jpg".into(), "png".into()])])
+            .validate_with(&ctx)
+            .expect_err("wrong mime");
+        assert_eq!(
+            report.violations[0].message,
+            "must be a file of type: jpg, png"
+        );
+        let report = Validator::new()
+            .field("doc", vec![Rule::Extensions(vec!["pdf".into()])])
+            .validate_with(&ctx)
+            .expect_err("wrong extension");
+        assert_eq!(
+            report.violations[0].message,
+            "must have one of these extensions: pdf"
+        );
+
+        // dimension bounds fail closed when the part has no sniffed size
+        let report = Validator::new()
+            .field("doc", vec![Rule::Dimensions(vec![DimBound::MinWidth(100)])])
+            .validate_with(&ctx)
+            .expect_err("no pixel size on a text part");
+        assert_eq!(
+            report.violations[0].message,
+            "must have readable image dimensions"
+        );
+        // ... and with a specific message when bounds do not hold
+        let report = Validator::new()
+            .field(
+                "photo",
+                vec![Rule::Dimensions(vec![DimBound::MinWidth(500)])],
+            )
+            .validate_with(&ctx)
+            .expect_err("300px < 500px");
+        assert_eq!(
+            report.violations[0].message,
+            "must be at least 500 pixels wide"
+        );
+
+        // a JSON value with no stored part fails closed
+        let bare = json!({ "photo": "not-a-file" });
+        let report = Validator::new()
+            .field("photo", vec![Rule::File])
+            .validate_with(&ValidationContext::new(&bare))
+            .expect_err("no part");
+        assert_eq!(report.violations[0].message, "must be a file");
+
+        // absent everywhere: file rules are not implicit — they skip and
+        // `required` alone reports the missing field
+        let empty = json!({});
+        let plain = ValidationContext::new(&empty);
+        assert!(Validator::new()
+            .field("photo", vec![Rule::File, Rule::Image])
+            .validate_with(&plain)
+            .is_ok());
+        let report = Validator::new()
+            .field("photo", vec![Rule::Required, Rule::File])
+            .validate_with(&plain)
+            .expect_err("required with no part");
+        assert_eq!(report.violations[0].message, "photo is required");
+
+        // ... but a stored part counts as submitted: required passes even
+        // though the multipart file field never rides the JSON body.
+        assert!(Validator::new()
+            .field("photo", vec![Rule::Required, Rule::File])
+            .validate_with(&ctx)
+            .is_ok());
+    }
+
+    #[test]
+    fn password_policy_and_criterion_tokens() {
+        let v = Validator::new().field("pw", vec![Rule::Password]);
+        assert!(v.validate(&json!({ "pw": "Secret1!" })).is_ok());
+        let report = v
+            .validate(&json!({ "pw": "Shrt1!" }))
+            .expect_err("below min length");
+        assert_eq!(report.violations[0].message, "must be at least 8 characters");
+        let report = v
+            .validate(&json!({ "pw": "alllowercase1!" }))
+            .expect_err("no uppercase");
+        assert_eq!(
+            report.violations[0].message,
+            "must contain uppercase and lowercase letters"
+        );
+        let report = v
+            .validate(&json!({ "pw": "NoSymbolsABC" }))
+            .expect_err("no digit");
+        assert_eq!(report.violations[0].message, "must contain a number");
+        let report = v
+            .validate(&json!({ "pw": "NoSymbols12" }))
+            .expect_err("no symbol");
+        assert_eq!(report.violations[0].message, "must contain a symbol");
+        let report = v
+            .validate(&json!({ "pw": "12345678" }))
+            .expect_err("no letter");
+        assert_eq!(report.violations[0].message, "must contain a letter");
+        let report = v
+            .validate(&json!({ "pw": 12345678 }))
+            .expect_err("non-string");
+        assert_eq!(report.violations[0].message, "must be a string");
+
+        // config-shaped override (Phase 5 wires [auth.password_policy])
+        let custom = PasswordPolicy {
+            min_length: 12,
+            symbols: false,
+            mixed_case: false,
+            ..PasswordPolicy::default()
+        };
+        let cv = Validator::new().field(
+            "pw",
+            vec![Rule::Required, Rule::Password],
+        );
+        let ctx_json = json!({ "pw": "abcdefgh1234" });
+        let ctx = ValidationContext::new(&ctx_json).with_password_policy(custom);
+        assert!(cv.validate_with(&ctx).is_ok());
+        let report = cv
+            .validate_with(
+                &ValidationContext::new(&json!({ "pw": "Secret1!" })).with_password_policy(custom),
+            )
+            .expect_err("below the custom min");
+        assert_eq!(
+            report.violations[0].message,
+            "must be at least 12 characters"
+        );
+
+        // standalone criterion tokens compose with (and without) password
+        let letters = Validator::new().field("x", vec![Rule::Letters]);
+        assert!(letters.validate(&json!({ "x": "ab1" })).is_ok());
+        assert!(letters.validate(&json!({ "x": "123" })).is_err());
+        let report = letters
+            .validate(&json!({ "x": 42 }))
+            .expect_err("non-string");
+        assert_eq!(report.violations[0].message, "must be a string");
+        let numbers = Validator::new().field("x", vec![Rule::Numbers]);
+        assert!(numbers.validate(&json!({ "x": "ab" })).is_err());
+        let symbols = Validator::new().field("x", vec![Rule::Symbols]);
+        assert!(symbols.validate(&json!({ "x": "abc" })).is_err());
+        assert!(
+            symbols.validate(&json!({ "x": "a b" })).is_ok(),
+            "Laravel parity: whitespace counts as a symbol"
+        );
+        let mixed = Validator::new().field("x", vec![Rule::MixedCase]);
+        assert!(mixed.validate(&json!({ "x": "abc" })).is_err());
+        assert!(mixed.validate(&json!({ "x": "Abc" })).is_ok());
+
+        // `password` composes with the existing length rule
+        let composed =
+            Validator::new().field("pw", vec![Rule::Password, Rule::Min(12)]);
+        assert!(composed
+            .validate(&json!({ "pw": "Secret1!xyzw" }))
+            .is_ok());
+        assert!(composed
+            .validate(&json!({ "pw": "Secret1!" }))
+            .is_err(), "min:12");
+    }
+
+    #[test]
+    fn current_password_verifies_against_the_principal() {
+        let verifier = |candidate: &str| candidate == "hunter2";
+        let with = |ctx: ValidationContext<'_>| Validator::new().field("pw", vec![Rule::CurrentPassword]).validate_with(&ctx);
+
+        let ok = json!({ "pw": "hunter2" });
+        let ctx = ValidationContext::new(&ok).with_verifier(&verifier);
+        assert!(with(ctx).is_ok());
+
+        let bad = json!({ "pw": "wrong" });
+        let ctx = ValidationContext::new(&bad).with_verifier(&verifier);
+        let report = with(ctx).expect_err("wrong password");
+        assert_eq!(report.violations[0].message, "is incorrect");
+
+        // no verifier wired (anonymous) fails closed with the same shape
+        let plain = ValidationContext::new(&bad);
+        let report = with(plain).expect_err("no verifier");
+        assert_eq!(report.violations[0].message, "is incorrect");
+
+        // absent field: `current_password` is not implicit — it skips
+        let none = json!({});
+        assert!(Validator::new()
+            .field("pw", vec![Rule::CurrentPassword])
+            .validate_with(&ValidationContext::new(&none))
+            .is_ok());
     }
 }

@@ -106,7 +106,26 @@ fn field_constraints(tokens: &[String]) -> (serde_json::Map<String, serde_json::
             | keel_validation::Rule::Confirmed
             | keel_validation::Rule::InArray(_)
             | keel_validation::Rule::Distinct
-            | keel_validation::Rule::Bail => {}
+            | keel_validation::Rule::Bail
+            // Dates/files/auth are runtime-only checks (comparisons target
+            // sibling fields or stored parts; no static wire-shape hint).
+            | keel_validation::Rule::DateFormat(_)
+            | keel_validation::Rule::Before(_)
+            | keel_validation::Rule::After(_)
+            | keel_validation::Rule::BeforeOrEqual(_)
+            | keel_validation::Rule::AfterOrEqual(_)
+            | keel_validation::Rule::File
+            | keel_validation::Rule::Image
+            | keel_validation::Rule::Mimes(_)
+            | keel_validation::Rule::MimeTypes(_)
+            | keel_validation::Rule::Extensions(_)
+            | keel_validation::Rule::Dimensions(_)
+            | keel_validation::Rule::Password
+            | keel_validation::Rule::CurrentPassword
+            | keel_validation::Rule::Letters
+            | keel_validation::Rule::Numbers
+            | keel_validation::Rule::Symbols
+            | keel_validation::Rule::MixedCase => {}
             keel_validation::Rule::MultipleOf(n) => {
                 schema.insert("multipleOf".into(), json!(n));
             }

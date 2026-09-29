@@ -156,13 +156,20 @@ mod tests {
         (LocalDisk::new(&dir).unwrap(), dir)
     }
 
+    /// Unique per-call directory suffix. A bare nanosecond clock is not
+    /// unique across concurrently starting test threads (Windows may hand
+    /// out identical timestamps), which let one test's `remove_dir_all`
+    /// wipe another test's shared directory — the atomic sequence closes
+    /// that race.
     fn uuid_like() -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
         use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
-            .to_string()
+            .as_nanos();
+        format!("{nanos}-{}", SEQ.fetch_add(1, Ordering::Relaxed))
     }
 
     #[test]

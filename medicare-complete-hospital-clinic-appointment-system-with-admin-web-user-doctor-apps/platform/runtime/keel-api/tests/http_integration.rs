@@ -1651,6 +1651,300 @@ async fn manifest_validation_422_with_fields_meta() {
     );
 }
 
+// --------------------------------------------------- Wave 4 Phase 3 (edge)
+
+/// One part of a mixed multipart graph body: a text field (rides the JSON
+/// input) or a file (stores through the StoragePort as an upload).
+enum GraphPart<'a> {
+    Text(&'a str),
+    File(&'a str, &'a str, &'a [u8]),
+}
+
+fn graph_multipart(
+    method: Method,
+    uri: &str,
+    cookie: &str,
+    parts: &[(&str, GraphPart<'_>)],
+) -> Request<Body> {
+    let boundary = "keel-graph-boundary";
+    let mut body = Vec::new();
+    for (name, part) in parts {
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        match part {
+            GraphPart::Text(value) => {
+                body.extend_from_slice(
+                    format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+                );
+                body.extend_from_slice(value.as_bytes());
+            }
+            GraphPart::File(filename, content_type, data) => {
+                body.extend_from_slice(
+                    format!(
+                        "Content-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\n"
+                    )
+                    .as_bytes(),
+                );
+                body.extend_from_slice(format!("Content-Type: {content_type}\r\n\r\n").as_bytes());
+                body.extend_from_slice(data);
+            }
+        }
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(
+            header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .header(header::COOKIE, cookie)
+        .body(Body::from(body))
+        .unwrap()
+}
+
+/// Minimal PNG header (signature + IHDR) — enough for the edge's dimension
+/// sniff and the manifest file rules.
+fn png_bytes(w: u32, h: u32) -> Vec<u8> {
+    let mut b = b"\x89PNG\r\n\x1a\n".to_vec();
+    b.extend_from_slice(&13u32.to_be_bytes());
+    b.extend_from_slice(b"IHDR");
+    b.extend_from_slice(&w.to_be_bytes());
+    b.extend_from_slice(&h.to_be_bytes());
+    b.extend_from_slice(&[0u8; 13]);
+    b
+}
+
+/// Wave 4 Phase 3: a multipart book carries the operation input as text
+/// parts and its attachment as a stored part; the manifest file rules read
+/// the part's metadata and the booking lands like any JSON book.
+#[tokio::test]
+async fn multipart_book_accepts_text_fields_and_an_image_part() {
+    let app = app();
+    let email = format!("mp-{}@clinic.test", uuid::Uuid::now_v7());
+    let cookie = register(&app, &email).await.session_cookie().unwrap();
+
+    let res = send(
+        &app,
+        graph_multipart(
+            Method::POST,
+            "/api/v1/appointments",
+            &cookie,
+            &[
+                ("patient", GraphPart::Text("A. Patient")),
+                ("slot", GraphPart::Text("2026-09-01T10:00Z")),
+                (
+                    "photo",
+                    GraphPart::File("shot.png", "image/png", &png_bytes(300, 200)),
+                ),
+            ],
+        ),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let id = res.data()["id"]
+        .as_str()
+        .expect("appointment id")
+        .to_string();
+    assert_eq!(res.data()["status"], "booked");
+    assert_eq!(
+        app.store
+            .count(app.state.default_tenant_id.unwrap())
+            .unwrap(),
+        1,
+        "text parts flowed through the normal dispatch path"
+    );
+
+    // A plain JSON book in the same fixture proves the multipart path left
+    // the route behavior untouched (and `photo` is optional).
+    let json_book = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/api/v1/appointments",
+            serde_json::json!({ "patient": "P. Atient", "slot": "2026-09-02T10:00Z" }),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(json_book.status, StatusCode::OK, "{}", json_book.body);
+    assert_ne!(json_book.data()["id"].as_str(), Some(id.as_str()));
+}
+
+/// Wave 4 Phase 3: file-rule failures surface as a 422 `fields` entry for
+/// the upload field — wrong media type first, then bounds — and dispatch
+/// never runs.
+#[tokio::test]
+async fn multipart_book_rejects_files_that_fail_the_manifest_rules() {
+    let app = app();
+    let email = format!("mpbad-{}@clinic.test", uuid::Uuid::now_v7());
+    let cookie = register(&app, &email).await.session_cookie().unwrap();
+
+    // A text file under the `photo` field fails `image` first.
+    let res = send(
+        &app,
+        graph_multipart(
+            Method::POST,
+            "/api/v1/appointments",
+            &cookie,
+            &[
+                ("patient", GraphPart::Text("A. Patient")),
+                ("slot", GraphPart::Text("2026-09-01T10:00Z")),
+                ("photo", GraphPart::File("notes.txt", "text/plain", b"not an image")),
+            ],
+        ),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", res.body);
+    let photo = res.body["error"]["meta"]["fields"]["photo"]
+        .as_array()
+        .expect("photo errors");
+    assert!(photo.iter().any(|m| m == "must be an image"));
+    assert_eq!(
+        app.store
+            .count(app.state.default_tenant_id.unwrap())
+            .unwrap(),
+        0,
+        "edge validation runs before dispatch"
+    );
+
+    // A real PNG under `dimensions: min_w=100` fails on pixel size.
+    let res = send(
+        &app,
+        graph_multipart(
+            Method::POST,
+            "/api/v1/appointments",
+            &cookie,
+            &[
+                ("patient", GraphPart::Text("A. Patient")),
+                ("slot", GraphPart::Text("2026-09-01T10:00Z")),
+                ("photo", GraphPart::File("tiny.png", "image/png", &png_bytes(50, 50))),
+            ],
+        ),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", res.body);
+    let photo = res.body["error"]["meta"]["fields"]["photo"]
+        .as_array()
+        .expect("photo errors");
+    assert_eq!(photo[0], "must be at least 100 pixels wide");
+    assert_eq!(
+        app.store
+            .count(app.state.default_tenant_id.unwrap())
+            .unwrap(),
+        0
+    );
+}
+
+/// Wave 4 Phase 3: `before:` — a valid date past the manifest cutoff fails
+/// with the comparison message while every other rule passes.
+#[tokio::test]
+async fn book_slot_after_the_manifest_cutoff_is_rejected() {
+    let app = app();
+    let email = format!("before-{}@clinic.test", uuid::Uuid::now_v7());
+    let cookie = register(&app, &email).await.session_cookie().unwrap();
+
+    let res = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/api/v1/appointments",
+            serde_json::json!({ "patient": "A. Patient", "slot": "2031-01-01T10:00Z" }),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", res.body);
+    let slot = res.body["error"]["meta"]["fields"]["slot"]
+        .as_array()
+        .expect("slot errors");
+    assert_eq!(slot[0], "must be before 2030-01-01");
+    assert_eq!(
+        app.store
+            .count(app.state.default_tenant_id.unwrap())
+            .unwrap(),
+        0
+    );
+}
+
+/// Wave 4 Phase 3: `current_password` — the cancel route re-authenticates
+/// against the caller's stored credential; the wrong password is a 422
+/// before dispatch, the right one lets the cancel through, and no password
+/// keeps the pre-existing behavior (absent field skips the rule).
+#[tokio::test]
+async fn cancel_route_reauthenticates_with_current_password() {
+    let app = app();
+    let email = format!("reauth-{}@clinic.test", uuid::Uuid::now_v7());
+    let cookie = register(&app, &email).await.session_cookie().unwrap();
+
+    let book = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/api/v1/appointments",
+            serde_json::json!({ "patient": "A. Patient", "slot": "2026-09-01T10:00Z" }),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(book.status, StatusCode::OK, "{}", book.body);
+    let id = book.data()["id"]
+        .as_str()
+        .expect("appointment id")
+        .to_string();
+
+    // Wrong password: rejected at the edge; the appointment survives.
+    let bad = send(
+        &app,
+        json_req(
+            Method::DELETE,
+            &format!("/api/v1/appointments/{id}"),
+            serde_json::json!({ "password": "wrong-password" }),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(bad.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", bad.body);
+    let pw = bad.body["error"]["meta"]["fields"]["password"]
+        .as_array()
+        .expect("password errors");
+    assert_eq!(pw[0], "is incorrect");
+    let still = send(
+        &app,
+        json_req(
+            Method::GET,
+            "/api/v1/appointments",
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        still.data()["appointments"].as_array().expect("rows")[0]["status"],
+        "booked"
+    );
+
+    // The correct credential passes validation and the cancel lands.
+    let ok = send(
+        &app,
+        json_req(
+            Method::DELETE,
+            &format!("/api/v1/appointments/{id}"),
+            serde_json::json!({ "password": "correct-horse-99" }),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(ok.status, StatusCode::OK, "{}", ok.body);
+    assert_eq!(ok.data()["status"], "cancelled");
+}
+
 /// Wave 1 public routes: `public = true` strips the implicit auth/verified
 /// stages (throttle stays), and the handler plan opts out of authorization —
 /// anonymous callers get a 200 envelope.

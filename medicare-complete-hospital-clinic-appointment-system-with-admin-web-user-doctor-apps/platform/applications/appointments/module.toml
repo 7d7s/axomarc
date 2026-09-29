@@ -79,4 +79,20 @@ rules = ["required", "max:120"]
 [[validation]]
 operation = "book"
 field = "slot"
-rules = ["required", "date"]
+rules = ["required", "date", "before:2030-01-01"]
+
+# Wave 4 Phase 3: optional attachment — the multipart intake stores the part
+# and the file rules read its metadata (absent JSON key + absent part skips,
+# so plain JSON bookings are untouched).
+[[validation]]
+operation = "book"
+field = "photo"
+rules = ["image", "mimes:jpg,png", "extensions:jpg,png", "dimensions:min_w=100"]
+
+# Wave 4 Phase 3: sensitive-action re-auth — `current_password` verifies
+# against the caller's stored credential via the edge's verifier (absent
+# field skips; a wrong password fails closed).
+[[validation]]
+operation = "cancel"
+field = "password"
+rules = ["current_password"]

@@ -27,7 +27,9 @@
 //! No regex engine: every pattern here is a hand-rolled closed grammar (the
 //! documented replacement for Laravel's `regex:` rule).
 
-use crate::validator::{NumTarget, Rule, ValidationContext};
+use crate::validator::{
+    DateTarget, DimBound, NumTarget, PasswordPolicy, Rule, UploadMeta, ValidationContext,
+};
 use serde_json::Value;
 
 /// Apply one value rule to one present value. `field` is the field the rules
@@ -307,6 +309,221 @@ pub(crate) fn check(
             }
             _ => Some("must be an array".into()),
         },
+
+        // ------------------------------------------------- Wave 4 dates ---
+        Rule::DateFormat(fmt) => match v {
+            Value::String(s) if date_format_ok(s, fmt) => None,
+            Value::String(_) => Some(format!("must match the format {fmt}")),
+            _ => Some("must be a string date".into()),
+        },
+        Rule::Before(t) => date_cmp(v, t, ctx, DateCmp::Before),
+        Rule::After(t) => date_cmp(v, t, ctx, DateCmp::After),
+        Rule::BeforeOrEqual(t) => date_cmp(v, t, ctx, DateCmp::BeforeOrEqual),
+        Rule::AfterOrEqual(t) => date_cmp(v, t, ctx, DateCmp::AfterOrEqual),
+
+        // ------------------------------------------------- Wave 4 files ---
+        // File rules read the stored part; a JSON value with no part fails
+        // closed (`required` + multipart is the normal path).
+        Rule::File => match ctx.upload_for(field) {
+            Some(_) => None,
+            None => Some("must be a file".into()),
+        },
+        Rule::Image => match ctx.upload_for(field) {
+            None => Some("must be a file".into()),
+            Some(u) if normalize_mime(&u.content_type).starts_with("image/") => None,
+            Some(_) => Some("must be an image".into()),
+        },
+        Rule::Mimes(list) => match ctx.upload_for(field) {
+            None => Some("must be a file".into()),
+            Some(u) => {
+                let mime = normalize_mime(&u.content_type);
+                if list.iter().any(|e| resolve_mime(e) == mime) {
+                    None
+                } else {
+                    Some(format!("must be a file of type: {}", list.join(", ")))
+                }
+            }
+        },
+        Rule::MimeTypes(list) => match ctx.upload_for(field) {
+            None => Some("must be a file".into()),
+            Some(u) => {
+                let mime = normalize_mime(&u.content_type);
+                if list.iter().any(|e| e.eq_ignore_ascii_case(mime.as_str())) {
+                    None
+                } else {
+                    Some(format!("must be a file of type: {}", list.join(", ")))
+                }
+            }
+        },
+        Rule::Extensions(list) => match ctx.upload_for(field) {
+            None => Some("must be a file".into()),
+            Some(u) => match filename_ext(&u.filename) {
+                Some(ext) if list.iter().any(|e| e.eq_ignore_ascii_case(ext)) => None,
+                _ => Some(format!(
+                    "must have one of these extensions: {}",
+                    list.join(", ")
+                )),
+            },
+        },
+        Rule::Dimensions(bounds) => match ctx.upload_for(field) {
+            None => Some("must be a file".into()),
+            Some(u) => dimensions_fail(u, bounds),
+        },
+
+        // -------------------------------------------------- Wave 4 auth ---
+        Rule::Password => match v {
+            Value::String(s) => password_fail(s, &ctx.password_policy()),
+            _ => Some("must be a string".into()),
+        },
+        // A wrong password, a missing verifier and a missing principal are
+        // indistinguishable from the outside — all read "incorrect".
+        Rule::CurrentPassword => match v {
+            Value::String(s) => match ctx.verifier() {
+                Some(verify) if verify(s) => None,
+                _ => Some("is incorrect".into()),
+            },
+            _ => Some("is incorrect".into()),
+        },
+        Rule::Letters => {
+            criterion(v, |s| s.chars().any(|c| c.is_alphabetic()), "must contain a letter")
+        }
+        Rule::Numbers => criterion(
+            v,
+            |s| s.chars().any(|c| c.is_ascii_digit()),
+            "must contain a number",
+        ),
+        Rule::Symbols => criterion(
+            v,
+            // Laravel parity: any non-alphanumeric character counts — even
+            // whitespace (documented in the divergence notes).
+            |s| s.chars().any(|c| !c.is_alphanumeric()),
+            "must contain a symbol",
+        ),
+        Rule::MixedCase => criterion(
+            v,
+            |s| s.chars().any(|c| c.is_uppercase()) && s.chars().any(|c| c.is_lowercase()),
+            "must contain uppercase and lowercase letters",
+        ),
+    }
+}
+
+// ------------------------------------------ Wave 4 files & auth -----------
+
+/// Content type with any parameters stripped, lowercased (`image/png;
+/// charset=binary` → `image/png`).
+fn normalize_mime(raw: &str) -> String {
+    raw.split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
+}
+
+/// `mimes:` entries are extension-style (`jpg`, Laravel's mime guessing
+/// derives the type from the extension); resolve them to canonical MIME
+/// types. Entries already carrying `/` or unknown ones compare literally.
+fn resolve_mime(entry: &str) -> String {
+    let e = entry.to_ascii_lowercase();
+    if e.contains('/') {
+        return e;
+    }
+    match e.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "svg" | "svgz" => "image/svg+xml",
+        "tif" | "tiff" => "image/tiff",
+        "avif" => "image/avif",
+        "ico" => "image/x-icon",
+        "pdf" => "application/pdf",
+        "txt" => "text/plain",
+        "csv" => "text/csv",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "html" | "htm" => "text/html",
+        "zip" => "application/zip",
+        "gz" | "gzip" => "application/gzip",
+        "tar" => "application/x-tar",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" => "audio/ogg",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        other => other,
+    }
+    .to_string()
+}
+
+/// Extension after the final dot, lowercased (`scan.TAR.GZ` → `gz`).
+fn filename_ext(filename: &str) -> Option<&str> {
+    let base = filename.rsplit(['/', '\\']).next().unwrap_or(filename);
+    base.rsplit_once('.')
+        .map(|(_, ext)| ext)
+        .filter(|ext| !ext.is_empty())
+}
+
+/// First failing bound in canonical declaration order; a part whose pixel
+/// dimensions could not be sniffed fails closed.
+fn dimensions_fail(part: &UploadMeta, bounds: &[DimBound]) -> Option<String> {
+    let (Some(w), Some(h)) = (part.width, part.height) else {
+        return Some("must have readable image dimensions".into());
+    };
+    for bound in bounds {
+        let msg = match bound {
+            DimBound::Width(n) if w != *n => format!("must be {n} pixels wide"),
+            DimBound::Height(n) if h != *n => format!("must be {n} pixels tall"),
+            DimBound::MinWidth(n) if w < *n => format!("must be at least {n} pixels wide"),
+            DimBound::MaxWidth(n) if w > *n => format!("must be at most {n} pixels wide"),
+            DimBound::MinHeight(n) if h < *n => format!("must be at least {n} pixels tall"),
+            DimBound::MaxHeight(n) if h > *n => format!("must be at most {n} pixels tall"),
+            _ => continue,
+        };
+        return Some(msg);
+    }
+    None
+}
+
+/// `password` against the active policy: the first unmet criterion, in
+/// min-length → letters → numbers → symbols → mixed-case order (one message
+/// per evaluation, `bail`-style).
+fn password_fail(s: &str, policy: &PasswordPolicy) -> Option<String> {
+    if s.chars().count() < policy.min_length {
+        return Some(format!("must be at least {} characters", policy.min_length));
+    }
+    if policy.letters && !s.chars().any(|c| c.is_alphabetic()) {
+        return Some("must contain a letter".into());
+    }
+    if policy.numbers && !s.chars().any(|c| c.is_ascii_digit()) {
+        return Some("must contain a number".into());
+    }
+    if policy.symbols && !s.chars().any(|c| !c.is_alphanumeric()) {
+        return Some("must contain a symbol".into());
+    }
+    if policy.mixed_case
+        && !(s.chars().any(|c| c.is_uppercase()) && s.chars().any(|c| c.is_lowercase()))
+    {
+        return Some("must contain uppercase and lowercase letters".into());
+    }
+    None
+}
+
+/// Standalone criterion token shape: strings are tested, anything else
+/// fails closed (`password`'s sub-rules are usable on any field).
+fn criterion(
+    v: &Value,
+    ok: impl FnOnce(&str) -> bool,
+    msg: &str,
+) -> Option<String> {
+    match v {
+        Value::String(s) if ok(s) => None,
+        Value::String(_) => Some(msg.to_string()),
+        _ => Some("must be a string".into()),
     }
 }
 
@@ -718,29 +935,216 @@ pub(crate) fn is_e164(s: &str) -> bool {
     s.starts_with('+') && (8..=16).contains(&s.len()) && s[1..].chars().all(|c| c.is_ascii_digit())
 }
 
-pub(crate) fn is_date(s: &str) -> bool {
-    if time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).is_ok() {
-        return true;
+/// Parse the closed date shapes the `date` rule accepts into an absolute
+/// instant: RFC-3339, minute-precision `T10:00Z` / `T10:00±HH:MM` (the shape
+/// appointment slots use), and bare `YYYY-MM-DD` (midnight UTC). `is_date`,
+/// `before:*`/`after:*` and `date_format` all read this one grammar, so a
+/// value that passes `date` is always comparable.
+pub(crate) fn date_instant(s: &str) -> Option<time::OffsetDateTime> {
+    if let Ok(dt) =
+        time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
+    {
+        return Some(dt);
     }
     // RFC 3339 strictly requires seconds; also accept minute-precision
     // timestamps (T10:00Z / T10:00+05:30), the shape appointment slots use.
     if let Ok(fmt) =
         time::format_description::parse_borrowed::<2>("[year]-[month]-[day]T[hour]:[minute]Z")
     {
-        if time::PrimitiveDateTime::parse(s, &fmt).is_ok() {
-            return true;
+        if let Ok(dt) = time::PrimitiveDateTime::parse(s, &fmt) {
+            return Some(dt.assume_utc());
         }
     }
     if let Ok(fmt) = time::format_description::parse_borrowed::<2>(
         "[year]-[month]-[day]T[hour]:[minute][offset_hour sign:mandatory]:[offset_minute]",
     ) {
-        if time::OffsetDateTime::parse(s, &fmt).is_ok() {
-            return true;
+        if let Ok(dt) = time::OffsetDateTime::parse(s, &fmt) {
+            return Some(dt);
         }
     }
     match time::format_description::parse_borrowed::<2>("[year]-[month]-[day]") {
-        Ok(fmt) => time::Date::parse(s, &fmt).is_ok(),
-        Err(_) => false,
+        Ok(fmt) => time::Date::parse(s, &fmt)
+            .ok()
+            .and_then(|d| d.with_hms(0, 0, 0).ok())
+            .map(time::PrimitiveDateTime::assume_utc),
+        Err(_) => None,
+    }
+}
+
+pub(crate) fn is_date(s: &str) -> bool {
+    date_instant(s).is_some()
+}
+
+// ---------------------------------------- Wave 4 dates (Phase 3) ----------
+
+/// Which side of the target the value must sit on.
+#[derive(Clone, Copy)]
+enum DateCmp {
+    Before,
+    After,
+    BeforeOrEqual,
+    AfterOrEqual,
+}
+
+/// Compare a date value against a literal, `now`, or a sibling field. An
+/// unparseable VALUE fails with the `date` rule's shape message; an
+/// unresolvable TARGET fails closed with the comparison message (the claim
+/// is unprovable). Offsets normalize through `date_instant`, so the compare
+/// is chronological across zones.
+fn date_cmp(
+    v: &Value,
+    target: &DateTarget,
+    ctx: &ValidationContext<'_>,
+    cmp: DateCmp,
+) -> Option<String> {
+    let (display, target_at) = match target {
+        DateTarget::Literal(s) => (s.as_str(), date_instant(s)),
+        DateTarget::Now => ("now", Some(time::OffsetDateTime::now_utc())),
+        DateTarget::Field(name) => (
+            name.as_str(),
+            ctx.resolve(name)
+                .and_then(Value::as_str)
+                .and_then(date_instant),
+        ),
+    };
+    let cmp_msg = |cmp: DateCmp| match cmp {
+        DateCmp::Before => format!("must be before {display}"),
+        DateCmp::After => format!("must be after {display}"),
+        DateCmp::BeforeOrEqual => format!("must be on or before {display}"),
+        DateCmp::AfterOrEqual => format!("must be on or after {display}"),
+    };
+    // Fail closed on both sides: an unparseable value is not a date, and an
+    // unresolvable target cannot be proven (the comparison message reads as
+    // "unestablished", never as a pass).
+    let value_at = match v.as_str() {
+        Some(s) => match date_instant(s) {
+            Some(at) => at,
+            None => return Some("must be RFC-3339 or YYYY-MM-DD".into()),
+        },
+        None => return Some("must be a string date".into()),
+    };
+    let Some(target_at) = target_at else {
+        return Some(cmp_msg(cmp));
+    };
+    let ok = match cmp {
+        DateCmp::Before => value_at < target_at,
+        DateCmp::After => value_at > target_at,
+        DateCmp::BeforeOrEqual => value_at <= target_at,
+        DateCmp::AfterOrEqual => value_at >= target_at,
+    };
+    if ok {
+        None
+    } else {
+        Some(cmp_msg(cmp))
+    }
+}
+
+/// Boot validation for `date_format:<fmt>`: closed PHP-style token set
+/// (`Y m d H i s`); every other ASCII letter is a fail-closed boot error and
+/// any non-letter is a literal separator.
+pub(crate) fn check_date_format_spec(fmt: &str) -> Result<(), String> {
+    if fmt.is_empty() {
+        return Err("date_format requires a format: date_format:<fmt>".into());
+    }
+    for c in fmt.chars() {
+        if c.is_ascii_alphabetic() && !"YmdHis".contains(c) {
+            return Err(format!(
+                "unsupported date_format token {c:?} (closed set: Y m d H i s)"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Match a value against a closed `Y m d H i s` format: fixed digit counts
+/// per token, exact literal consumption (no trailing characters), then
+/// calendar/time range checks on whatever components the format captured.
+fn date_format_ok(s: &str, fmt: &str) -> bool {
+    let mut chars = s.chars().peekable();
+    let (mut year, mut month, mut day, mut hour, mut minute, mut second) =
+        (None, None, None, None, None, None);
+    for spec in fmt.chars() {
+        let taken = match spec {
+            'Y' => take_digits(&mut chars, 4),
+            'm' => take_digits(&mut chars, 2),
+            'd' => take_digits(&mut chars, 2),
+            'H' => take_digits(&mut chars, 2),
+            'i' => take_digits(&mut chars, 2),
+            's' => take_digits(&mut chars, 2),
+            literal => chars.next().filter(|&c| c == literal).map(|_| 0),
+        };
+        let Some(taken) = taken else {
+            return false;
+        };
+        match spec {
+            'Y' => year = Some(taken),
+            'm' => month = Some(taken),
+            'd' => day = Some(taken),
+            'H' => hour = Some(taken),
+            'i' => minute = Some(taken),
+            's' => second = Some(taken),
+            _ => {}
+        }
+    }
+    if chars.next().is_some() {
+        return false; // trailing characters
+    }
+    if hour.is_some_and(|h| h > 23)
+        || minute.is_some_and(|m| m > 59)
+        || second.is_some_and(|s| s > 59)
+    {
+        return false;
+    }
+    match (month, day) {
+        (Some(mo), Some(d)) => {
+            if !(1..=12).contains(&mo) {
+                return false;
+            }
+            match year {
+                Some(y) => date_parts_valid(y, mo, d),
+                // No year in the format: validate against a non-leap year,
+                // so `m-d` can never claim 02-30 (02-29 stays format-legal).
+                None => (1..=days_in_month(2001, mo)).contains(&d),
+            }
+        }
+        (Some(mo), None) => (1..=12).contains(&mo),
+        (None, Some(d)) => (1..=31).contains(&d),
+        (None, None) => true,
+    }
+}
+
+/// Consume exactly `n` ASCII digits as a number (whole token, no prefix).
+fn take_digits(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, n: usize) -> Option<i64> {
+    let mut out = 0i64;
+    for _ in 0..n {
+        let c = chars.next()?;
+        if !c.is_ascii_digit() {
+            return None;
+        }
+        out = out * 10 + i64::from(c.to_digit(10)?);
+    }
+    Some(out)
+}
+
+/// Real calendar validity (leap years included) for a captured Y/M/D.
+fn date_parts_valid(y: i64, m: i64, d: i64) -> bool {
+    let Ok(month) = time::Month::try_from(m as u8) else {
+        return false;
+    };
+    let (Ok(y), Ok(d)) = (i32::try_from(y), u8::try_from(d)) else {
+        return false;
+    };
+    time::Date::from_calendar_date(y, month, d).is_ok()
+}
+
+/// Days in a month, leap-year aware (Gregorian).
+fn days_in_month(y: i64, m: i64) -> i64 {
+    match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 => 29,
+        2 => 28,
+        _ => 0,
     }
 }
 

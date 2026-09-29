@@ -50,7 +50,10 @@ pub use session_mw::{
 pub use signed::{derive_signed_key, SignedGate, SignedUrlPort, SignedUrls};
 pub use static_files::{is_fingerprinted, StaticAsset, StaticFiles};
 pub use viewmodel::{TypedResource, Validated};
-pub use upload::{ingest_multipart, sanitize_filename, StoredUpload, UploadLimits};
+pub use upload::{
+    image_dimensions, ingest_multipart, ingest_multipart_mixed, sanitize_filename, StoredUpload,
+    UploadLimits,
+};
 
 use axum::http::StatusCode;
 use keel_foundation::{AppError, ErrorCategory};
