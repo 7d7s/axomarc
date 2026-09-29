@@ -16,12 +16,14 @@ use std::collections::BTreeMap;
 
 pub mod bindings;
 pub mod casts;
+pub mod probes;
 pub mod prune;
 pub mod runtime;
 pub mod store;
 
 pub use bindings::{resolve_binding, RouteBindingRegistry, RouteBindingResolver, RouteBindingsRef};
 pub use casts::{Cast, EncryptedCast};
+pub use probes::{ModelProbe, ProbeRegistry, ProbeRegistryRef, StoreProbe};
 pub use prune::{PruneRegistry, PruneRegistryRef};
 pub use runtime::{
     json_to_bind, json_value_to_bind, parse_timestamp, record_to_columns, EagerConstraint,

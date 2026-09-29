@@ -213,6 +213,40 @@ pub enum Rule {
     Symbols,
     /// Contains uppercase and lowercase letters (composes with `password`).
     MixedCase,
+    // ---------------------------------------- Wave 4 Phase 4: database ----
+    /// `unique:<model>[,<column>][,<ignore_id>][,<col>=<val>...]` — a live
+    /// row already matches under the request tenant; resolved through the
+    /// context's row probe (store failure ⇒ 503, never a pass).
+    Unique(ProbeSpec),
+    /// `exists:<model>[,<column>][,<col>=<val>...]` — no live row matches
+    /// under the request tenant; same probe failure semantics as `unique`.
+    Exists(ProbeSpec),
+    /// Manifest `custom = "<name>"` (never a `rules` token): resolved
+    /// through the context's custom-rule lookup at evaluation time; an
+    /// unregistered name fails closed as a field message (the
+    /// GRAPH-RULE-UNKNOWN boot gate should make it unreachable).
+    Custom(String),
+}
+
+/// Argument shape of the database rules (`unique`/`exists`,
+/// `unique:<model>[,...]`): the model to probe plus the wire's optional
+/// comma arguments, classified at parse time (Laravel-style):
+/// - a `col=val` token is a literal WHERE pair;
+/// - for `unique`, a UUID token is the row to ignore (self-match on update
+///   re-validation);
+/// - any other token overrides the match column (defaults to the validated
+///   field's own name).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProbeSpec {
+    /// Model whose store answers the probe (`unique:Appointment`).
+    pub model: String,
+    /// Match column; `None` = the final segment of the validated field
+    /// path (`profile.email` → `email`).
+    pub column: Option<String>,
+    /// Row id excluded from `unique` matches (UUID wire form).
+    pub ignore_id: Option<String>,
+    /// Literal `col=val` filters ANDed into the match.
+    pub wheres: Vec<(String, String)>,
 }
 
 /// Target of the `gt`/`gte`/`lt`/`lte` family: a literal number or another
@@ -342,8 +376,36 @@ impl Rule {
             Rule::Numbers => "numbers",
             Rule::Symbols => "symbols",
             Rule::MixedCase => "mixed_case",
+            Rule::Unique(_) => "unique",
+            Rule::Exists(_) => "exists",
+            Rule::Custom(_) => "custom",
         }
     }
+}
+
+/// Every rule name of the closed grammar — the vocabulary of manifest
+/// `messages` keys (an unknown key is a GRAPH-VALIDATION-RULE boot
+/// violation, never a silently dead template). Kept 1:1 with
+/// [`Rule::name`]; the `rule_names_cover_the_token_battery` test proves
+/// every parsed token's name lands here.
+pub const RULE_NAMES: &[&str] = &[
+    "required", "min", "max", "email", "url", "uuid", "e164", "one_of", "range", "date",
+    "nullable", "boolean", "integer", "numeric", "string", "array", "json", "ascii", "alpha",
+    "alpha_num", "alpha_dash", "lowercase", "uppercase", "starts_with", "ends_with", "contains",
+    "doesnt_start_with", "doesnt_end_with", "doesnt_contain", "hex_color", "mac_address",
+    "timezone", "ulid", "decimal", "digits", "digits_between", "multiple_of", "gt", "gte", "lt",
+    "lte", "required_if", "required_unless", "required_with", "required_without", "accepted",
+    "accepted_if", "declined", "declined_if", "prohibited", "prohibited_if", "prohibited_with",
+    "exclude", "exclude_if", "missing", "missing_if", "missing_with", "sometimes", "filled",
+    "present", "same", "different", "confirmed", "in_array", "distinct", "bail", "date_format",
+    "before", "after", "before_or_equal", "after_or_equal", "file", "image", "mimes",
+    "mimetypes", "extensions", "dimensions", "password", "current_password", "letters",
+    "numbers", "symbols", "mixed_case", "unique", "exists", "custom",
+];
+
+/// Is `name` a rule of the closed grammar (e.g. a manifest `messages` key)?
+pub fn is_known_rule_name(name: &str) -> bool {
+    RULE_NAMES.contains(&name)
 }
 
 impl Rule {
@@ -519,7 +581,10 @@ impl Rule {
     /// "after:<d>", "before_or_equal:<d>", "after_or_equal:<d>"; files:
     /// "file", "image", "mimes:<a,b>", "mimetypes:<a,b>",
     /// "extensions:<a,b>", "dimensions:<k=v,...>"; auth: "password",
-    /// "current_password", "letters", "numbers", "symbols", "mixed_case".
+    /// "current_password", "letters", "numbers", "symbols", "mixed_case";
+    /// database: "unique:<model>[,<column>][,<ignore_id>][,<col>=<val>...]",
+    /// "exists:<model>[,<column>][,<col>=<val>...]". Custom rules are never
+    /// tokens — they arrive through the manifest's `custom = "<name>"` key.
     /// Used by the registry GRAPH-VALIDATION-RULE gate and by the HTTP edge.
     pub fn from_token(token: &str) -> Result<Rule, String> {
         let token = token.trim();
@@ -739,8 +804,67 @@ impl Rule {
             "numbers" => Rule::Numbers,
             "symbols" => Rule::Symbols,
             "mixed_case" => Rule::MixedCase,
+            // ------------------------------------------- database ---------
+            "unique" => Rule::Unique(Rule::parse_probe(arg, token, "unique")?),
+            "exists" => Rule::Exists(Rule::parse_probe(arg, token, "exists")?),
             other => return Err(format!("unknown validation rule: {other}")),
         })
+    }
+
+    /// Parse a database rule's `<model>[,<tok>...]` argument (the shared
+    /// `unique`/`exists` grammar documented on [`ProbeSpec`]). Classification
+    /// per comma token: `col=val` → literal WHERE pair; for `unique` a UUID →
+    /// ignore row; anything else → column override. Duplicates and empty
+    /// tokens are boot-time parse errors (fail closed).
+    fn parse_probe(arg: Option<&str>, token: &str, rule: &str) -> Result<ProbeSpec, String> {
+        let a = Rule::arg(arg, token, rule)?;
+        let mut parts = a.split(',');
+        let model = parts.next().unwrap_or_default().trim().to_string();
+        if model.is_empty()
+            || !model
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(format!("{rule} requires a model name: {token}"));
+        }
+        let mut spec = ProbeSpec {
+            model,
+            column: None,
+            ignore_id: None,
+            wheres: Vec::new(),
+        };
+        for tok in parts {
+            let tok = tok.trim();
+            if tok.is_empty() {
+                return Err(format!("{rule} has an empty argument: {token}"));
+            }
+            if let Some((col, val)) = tok.split_once('=') {
+                let (col, val) = (col.trim(), val.trim());
+                if col.is_empty() || val.is_empty() {
+                    return Err(format!(
+                        "{rule} where pairs must be col=val: {token}"
+                    ));
+                }
+                if spec
+                    .wheres
+                    .iter()
+                    .any(|(c, _)| c == col)
+                {
+                    return Err(format!("{rule} repeats where column {col}: {token}"));
+                }
+                spec.wheres.push((col.to_string(), val.to_string()));
+            } else if rule == "unique" && looks_like_uuid(tok) {
+                if spec.ignore_id.is_some() {
+                    return Err(format!("{rule} takes at most one ignore_id: {token}"));
+                }
+                spec.ignore_id = Some(tok.to_string());
+            } else if spec.column.is_some() {
+                return Err(format!("{rule} takes at most one column: {token}"));
+            } else {
+                spec.column = Some(tok.to_string());
+            }
+        }
+        Ok(spec)
     }
 }
 
@@ -861,6 +985,9 @@ pub struct ValidationContext<'a> {
     uploads: &'a [UploadMeta],
     verifier: Option<&'a PasswordVerifier>,
     policy: PasswordPolicy,
+    tenant: Option<keel_foundation::TenantId>,
+    probes: Option<&'a dyn crate::probe::DbProbeLookup>,
+    custom: Option<&'a dyn crate::custom::CustomRuleLookup>,
 }
 
 impl std::fmt::Debug for ValidationContext<'_> {
@@ -871,6 +998,9 @@ impl std::fmt::Debug for ValidationContext<'_> {
             .field("uploads", &self.uploads)
             .field("has_verifier", &self.verifier.is_some())
             .field("policy", &self.policy)
+            .field("tenant", &self.tenant)
+            .field("has_probes", &self.probes.is_some())
+            .field("has_custom", &self.custom.is_some())
             .finish()
     }
 }
@@ -884,6 +1014,9 @@ impl<'a> ValidationContext<'a> {
             uploads: &[],
             verifier: None,
             policy: PasswordPolicy::default(),
+            tenant: None,
+            probes: None,
+            custom: None,
         }
     }
 
@@ -911,6 +1044,26 @@ impl<'a> ValidationContext<'a> {
         self
     }
 
+    /// Carry the request tenant (`unique`/`exists` probes are tenant-scoped,
+    /// Phase 4).
+    pub fn with_tenant(mut self, tenant: Option<keel_foundation::TenantId>) -> Self {
+        self.tenant = tenant;
+        self
+    }
+
+    /// Carry the row-probe lookup for the database rules (Phase 4). With no
+    /// lookup attached, `unique`/`exists` fail closed (503, never a pass).
+    pub fn with_db_probes(mut self, probes: &'a dyn crate::probe::DbProbeLookup) -> Self {
+        self.probes = Some(probes);
+        self
+    }
+
+    /// Carry the custom-rule lookup (`custom = "<name>"`, Phase 4).
+    pub fn with_custom_rules(mut self, rules: &'a dyn crate::custom::CustomRuleLookup) -> Self {
+        self.custom = Some(rules);
+        self
+    }
+
     /// The full input object (field refs resolve against it).
     pub fn input(&self) -> &'a Value {
         self.input
@@ -919,6 +1072,21 @@ impl<'a> ValidationContext<'a> {
     /// Authenticated principal, when the request carried one.
     pub fn principal(&self) -> Option<PrincipalId> {
         self.principal
+    }
+
+    /// Request tenant for row probes (`unique`/`exists`).
+    pub fn tenant(&self) -> Option<keel_foundation::TenantId> {
+        self.tenant
+    }
+
+    /// Row-probe lookup attached by the edge (Phase 4).
+    pub fn probes(&self) -> Option<&dyn crate::probe::DbProbeLookup> {
+        self.probes
+    }
+
+    /// Custom-rule lookup attached by the edge (Phase 4).
+    pub fn custom_rules(&self) -> Option<&dyn crate::custom::CustomRuleLookup> {
+        self.custom
     }
 
     /// Upload parts attached to this request.
@@ -947,11 +1115,35 @@ impl<'a> ValidationContext<'a> {
     }
 }
 
-/// Rules bound to one field (dot paths allowed, e.g. address.city).
-#[derive(Debug, Clone)]
+/// Rules bound to one field (dot paths allowed, e.g. address.city; `*`
+/// wildcards expand per request input, Phase 4).
+#[derive(Debug, Clone, Default)]
 pub struct FieldSpec {
     pub field: String,
     pub rules: Vec<Rule>,
+    /// Manifest `messages` overrides keyed by rule name (Phase 4); a
+    /// template replaces the built-in message, `{attribute}` substitutes
+    /// the display name.
+    pub messages: std::collections::BTreeMap<String, String>,
+    /// Manifest `attribute` display name used by `{attribute}` (Phase 4);
+    /// `None` = the field path itself.
+    pub attribute: Option<String>,
+}
+
+impl FieldSpec {
+    /// Resolved display name for `{attribute}`: the manifest attribute or
+    /// the (possibly wildcard-expanded) field path.
+    pub fn display_attribute(&self) -> &str {
+        self.attribute.as_deref().unwrap_or(&self.field)
+    }
+
+    /// Apply the manifest message override for `rule`, when one exists.
+    pub fn resolve_message(&self, rule: &Rule, msg: String) -> String {
+        match self.messages.get(rule.name()) {
+            Some(tpl) => tpl.replace("{attribute}", self.display_attribute()),
+            None => msg,
+        }
+    }
 }
 
 /// Collect-all validator: binds rules to fields, validates a JSON object.
@@ -972,7 +1164,40 @@ impl Validator {
         if let Some(spec) = self.specs.iter_mut().find(|s| s.field == name) {
             spec.rules.extend(rules);
         } else {
-            self.specs.push(FieldSpec { field: name, rules });
+            self.specs.push(FieldSpec {
+                field: name,
+                rules,
+                ..Default::default()
+            });
+        }
+        self
+    }
+
+    /// Builder: bind rules plus the manifest's per-field message overrides
+    /// (`messages` + `attribute`, Phase 4). Merges like [`Validator::field`].
+    pub fn field_messages(
+        mut self,
+        name: impl Into<String>,
+        rules: impl Into<Vec<Rule>>,
+        messages: std::collections::BTreeMap<String, String>,
+        attribute: Option<String>,
+    ) -> Self {
+        let name = name.into();
+        let rules = rules.into();
+        match self.specs.iter_mut().find(|s| s.field == name) {
+            Some(spec) => {
+                spec.rules.extend(rules);
+                spec.messages.extend(messages);
+                if spec.attribute.is_none() {
+                    spec.attribute = attribute;
+                }
+            }
+            None => self.specs.push(FieldSpec {
+                field: name,
+                rules,
+                messages,
+                attribute,
+            }),
         }
         self
     }
@@ -1012,9 +1237,14 @@ impl Validator {
             return Err(report);
         }
         for spec in &self.specs {
+            // Phase 4: `items.*.name` expands against the concrete input to
+            // `items.0.name`, `items.1.name`, ... — each element validates
+            // and reports under its own path. An expansion with no matches
+            // (missing parent, empty array) skips the entry, Laravel-style.
+            for field in expand_field(input, &spec.field) {
             let rules = &spec.rules;
-            let json_value = lookup(input, &spec.field);
-            let upload = ctx.upload_for(&spec.field);
+            let json_value = lookup(input, &field);
+            let upload = ctx.upload_for(&field);
             // A stored part counts as a submitted value: presence rules must
             // see the file even though only its metadata is in context.
             let value = match json_value {
@@ -1043,8 +1273,8 @@ impl Validator {
                     if !is_implicit(rule) && implicit_only {
                         continue;
                     }
-                    if let Some(msg) = check_presence(rule, &spec.field, value, ctx) {
-                        report.push(&spec.field, msg);
+                    if let Some(msg) = check_presence(rule, &field, value, ctx) {
+                        report.push(&field, spec.resolve_message(rule, msg));
                         presence_failed = true;
                         if bail {
                             break;
@@ -1060,8 +1290,8 @@ impl Validator {
                         continue;
                     }
                     if let Some(v) = value {
-                        if let Some(msg) = check(rule, &spec.field, v, ctx) {
-                            report.push(&spec.field, msg);
+                        if let Some(msg) = check(rule, &field, v, ctx) {
+                            report.push(&field, spec.resolve_message(rule, msg));
                             if bail {
                                 break;
                             }
@@ -1075,13 +1305,33 @@ impl Validator {
                 // Format rules describe JSON values; the upload marker is
                 // presence-only and never reaches them.
                 if let Some(v) = json_value {
-                    if let Some(msg) = check(rule, &spec.field, v, ctx) {
-                        report.push(&spec.field, msg);
+                    // Phase 4 database rules carry the FATAL channel: a
+                    // store failure (or an unregistered probe) aborts into
+                    // report.fatal → 503 envelope, never a field pass.
+                    if matches!(rule, Rule::Unique(_) | Rule::Exists(_)) {
+                        match crate::checks::db_check(rule, &field, v, ctx) {
+                            Err(detail) => {
+                                report.fatal = Some(detail);
+                                return Err(report);
+                            }
+                            Ok(None) => {}
+                            Ok(Some(msg)) => {
+                                report.push(&field, spec.resolve_message(rule, msg));
+                                if bail {
+                                    break;
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    if let Some(msg) = check(rule, &field, v, ctx) {
+                        report.push(&field, spec.resolve_message(rule, msg));
                         if bail {
                             break;
                         }
                     }
                 }
+            }
             }
         }
         if report.is_empty() {
@@ -1175,6 +1425,10 @@ pub struct FieldViolation {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ValidationReport {
     pub violations: Vec<FieldViolation>,
+    /// Uncollectable failure (Phase 4): the row probe errored, or no probe
+    /// is registered for the model. The edge renders it as a `DB_ERROR`
+    /// 503 envelope — validation never passes when the store cannot answer.
+    pub fatal: Option<String>,
 }
 
 impl ValidationReport {
@@ -1186,7 +1440,7 @@ impl ValidationReport {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.violations.is_empty()
+        self.violations.is_empty() && self.fatal.is_none()
     }
 
     pub fn len(&self) -> usize {
@@ -1201,8 +1455,13 @@ impl ValidationReport {
     }
 
     /// Uniform error map: one validation AppError carrying a
-    /// fields meta object ({field}: [messages...]).
+    /// fields meta object ({field}: [messages...]). A fatal probe failure
+    /// wins over field violations: the request is refused with a
+    /// persistence error (503, `DB_ERROR`), never answered as 422.
     pub fn into_app_error(self) -> AppError {
+        if let Some(detail) = self.fatal {
+            return AppError::persistence(detail);
+        }
         let mut fields = serde_json::Map::new();
         for v in &self.violations {
             let entry = fields
@@ -1220,13 +1479,83 @@ impl ValidationReport {
     }
 }
 
-/// Dot-path lookup on nested JSON objects.
+/// Dot-path lookup on nested JSON objects (numeric segments index arrays:
+/// `items.0.name`).
 fn lookup<'a>(input: &'a Value, field: &str) -> Option<&'a Value> {
     let mut cur = input;
     for seg in field.split('.') {
-        cur = cur.get(seg)?;
+        cur = match cur {
+            Value::Array(items) => items.get(seg.parse::<usize>().ok()?)?,
+            other => other.get(seg)?,
+        };
     }
     Some(cur)
+}
+
+/// Canonical UUID form check for `unique`'s comma arguments: a hyphenated
+/// 8-4-4-4-12 hex string. Anything else in that position is a column name.
+fn looks_like_uuid(tok: &str) -> bool {
+    let parts: Vec<&str> = tok.split('-').collect();
+    parts.len() == 5
+        && parts[0].len() == 8
+        && parts[1].len() == 4
+        && parts[2].len() == 4
+        && parts[3].len() == 4
+        && parts[4].len() == 12
+        && tok.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+}
+
+/// Expand `*` segments against the concrete input (Phase 4): a wildcard
+/// over an array yields one path per element (`items.*.name` →
+/// `items.0.name`, `items.1.name`, ...), over an object one path per key.
+/// A wildcard whose parent is missing or is not a container expands to
+/// nothing — the entry validates zero element paths (Laravel's wildcard
+/// behavior; presence rules do not invent missing arrays). Paths without
+/// wildcards pass through untouched (`items.0.name` resolves at lookup).
+fn expand_field(input: &Value, field: &str) -> Vec<String> {
+    fn join(prefix: &str, seg: &str) -> String {
+        if prefix.is_empty() {
+            seg.to_string()
+        } else {
+            format!("{prefix}.{seg}")
+        }
+    }
+    if !field.contains('*') {
+        return vec![field.to_string()];
+    }
+    let mut paths = vec![String::new()];
+    for seg in field.split('.') {
+        let mut next = Vec::new();
+        for prefix in &paths {
+            let base = if prefix.is_empty() {
+                Some(input)
+            } else {
+                lookup(input, prefix)
+            };
+            let Some(base) = base else {
+                continue;
+            };
+            if seg == "*" {
+                match base {
+                    Value::Array(items) => {
+                        next.extend((0..items.len()).map(|i| join(prefix, &i.to_string())));
+                    }
+                    Value::Object(map) => {
+                        next.extend(map.keys().map(|k| join(prefix, k)));
+                    }
+                    // Scalar under a wildcard: no elements to validate.
+                    _ => {}
+                }
+            } else {
+                next.push(join(prefix, seg));
+            }
+        }
+        paths = next;
+        if paths.is_empty() {
+            return Vec::new();
+        }
+    }
+    paths
 }
 
 #[cfg(test)]
@@ -2429,5 +2758,391 @@ mod tests {
             .field("pw", vec![Rule::CurrentPassword])
             .validate_with(&ValidationContext::new(&none))
             .is_ok());
+    }
+
+    // ------------------------------------------- Wave 4 Phase 4 -----------
+
+    use crate::custom::{custom_rule_names, register_custom_rule, CustomRule};
+    use crate::probe::{DbProbe, DbProbeLookup};
+    use keel_foundation::TenantId;
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn wave4_phase4_probe_tokens_parse() {
+        let ignore = "550e8400-e29b-41d4-a716-446655440000";
+        let spec = |column: Option<&str>, ignore_id: Option<&str>, wheres: Vec<(&str, &str)>| ProbeSpec {
+            model: "Appointment".into(),
+            column: column.map(str::to_string),
+            ignore_id: ignore_id.map(str::to_string),
+            wheres: wheres
+                .into_iter()
+                .map(|(c, v)| (c.to_string(), v.to_string()))
+                .collect(),
+        };
+        let cases: Vec<(String, Rule)> = vec![
+            ("unique:Appointment".into(), Rule::Unique(spec(None, None, vec![]))),
+            (
+                format!("unique:Appointment,{ignore}"),
+                Rule::Unique(spec(None, Some(ignore), vec![])),
+            ),
+            (
+                "unique:Appointment,patient".into(),
+                Rule::Unique(spec(Some("patient"), None, vec![])),
+            ),
+            (
+                format!("unique:Appointment,patient,{ignore}"),
+                Rule::Unique(spec(Some("patient"), Some(ignore), vec![])),
+            ),
+            ("exists:Appointment".into(), Rule::Exists(spec(None, None, vec![]))),
+            (
+                "exists:Appointment,slot".into(),
+                Rule::Exists(spec(Some("slot"), None, vec![])),
+            ),
+            (
+                "exists:Appointment,status=booked".into(),
+                Rule::Exists(spec(None, None, vec![("status", "booked")])),
+            ),
+            (
+                "exists:Appointment,slot,status=booked".into(),
+                Rule::Exists(spec(Some("slot"), None, vec![("status", "booked")])),
+            ),
+        ];
+        for (token, rule) in cases {
+            assert_eq!(Rule::from_token(&token).unwrap(), rule, "{token}");
+        }
+        let bad: Vec<String> = vec![
+            "unique".into(),
+            "unique:".into(),
+            "unique:Appointment,".into(),
+            "unique:a b".into(),
+            "unique:Appointment,patient,patient".into(),
+            format!("unique:Appointment,{ignore},{ignore}"),
+            "unique:Appointment,status=".into(),
+            "unique:Appointment,=booked".into(),
+            "exists".into(),
+            "exists:".into(),
+            "exists:Appointment,status=booked,status=cancelled".into(),
+            "custom:some_name".into(),
+        ];
+        for bad in &bad {
+            assert!(Rule::from_token(bad).is_err(), "{bad} should fail");
+        }
+    }
+
+    /// One recorded `has_row` call: (tenant, column, value, wheres, ignore).
+    type SeenProbeCall = (Option<TenantId>, String, String, usize, Option<String>);
+
+    /// Answer stub: records every probe call, returns a canned outcome.
+    struct StubProbe {
+        answer: Mutex<Result<bool, String>>,
+        seen: Mutex<Vec<SeenProbeCall>>,
+    }
+
+    impl StubProbe {
+        fn answering(matched: bool) -> Self {
+            Self {
+                answer: Mutex::new(Ok(matched)),
+                seen: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn failing() -> Self {
+            Self {
+                answer: Mutex::new(Err("connection reset".into())),
+                seen: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl DbProbe for StubProbe {
+        fn has_row(
+            &self,
+            tenant: Option<TenantId>,
+            column: &str,
+            value: &str,
+            wheres: &[(String, String)],
+            ignore_id: Option<&str>,
+        ) -> Result<bool, String> {
+            self.seen.lock().unwrap().push((
+                tenant,
+                column.to_string(),
+                value.to_string(),
+                wheres.len(),
+                ignore_id.map(str::to_string),
+            ));
+            self.answer.lock().unwrap().clone()
+        }
+    }
+
+    struct StubLookup(BTreeMap<String, Arc<dyn DbProbe>>);
+
+    impl DbProbeLookup for StubLookup {
+        fn probe(&self, model: &str) -> Option<Arc<dyn DbProbe>> {
+            self.0.get(model).cloned()
+        }
+    }
+
+    fn probe_ctx<'a>(
+        input: &'a Value,
+        lookup: &'a dyn DbProbeLookup,
+        tenant: Option<TenantId>,
+    ) -> ValidationContext<'a> {
+        ValidationContext::new(input)
+            .with_db_probes(lookup)
+            .with_tenant(tenant)
+    }
+
+    #[test]
+    fn unique_and_exists_pass_fail_and_fail_closed() {
+        let lookup = StubLookup(BTreeMap::from([(
+            "Appointment".to_string(),
+            Arc::new(StubProbe::answering(true)) as Arc<dyn DbProbe>,
+        )]));
+        let tenant = TenantId::new();
+
+        // unique: a live row means taken.
+        let input = json!({ "patient": "A. Patient" });
+        let v = Validator::new().field("patient", vec![Rule::from_token("unique:Appointment").unwrap()]);
+        let report = v
+            .validate_with(&probe_ctx(&input, &lookup, Some(tenant)))
+            .expect_err("row exists");
+        assert_eq!(report.violations[0].message, "has already been taken");
+        assert_eq!(report.fatal, None);
+
+        // exists: no live row means invalid.
+        let missing = StubLookup(BTreeMap::from([(
+            "Appointment".to_string(),
+            Arc::new(StubProbe::answering(false)) as Arc<dyn DbProbe>,
+        )]));
+        let input = json!({ "slot": "2026-09-01T10:00Z" });
+        let v = Validator::new().field("slot", vec![Rule::from_token("exists:Appointment").unwrap()]);
+        let report = v
+            .validate_with(&probe_ctx(&input, &missing, None))
+            .expect_err("no row");
+        assert_eq!(report.violations[0].message, "is invalid");
+
+        // exists satisfied → passes.
+        let v = Validator::new().field("slot", vec![Rule::from_token("exists:Appointment").unwrap()]);
+        assert!(v
+            .validate_with(&probe_ctx(&input, &lookup, None))
+            .is_ok());
+
+        // column override, wheres, ignore_id and tenant reach the probe.
+        let probe = Arc::new(StubProbe::answering(false));
+        let lookup = StubLookup(BTreeMap::from([(
+            "Appointment".to_string(),
+            probe.clone() as Arc<dyn DbProbe>,
+        )]));
+        let v = Validator::new().field(
+            "anything",
+            vec![Rule::from_token(&format!(
+                "unique:Appointment,slot,{},status=booked",
+                "550e8400-e29b-41d4-a716-446655440000"
+            ))
+            .unwrap()],
+        );
+        let input = json!({ "anything": "x" });
+        assert!(v
+            .validate_with(&probe_ctx(&input, &lookup, Some(tenant)))
+            .is_ok());
+        let calls = probe.seen.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, Some(tenant));
+        assert_eq!(calls[0].1, "slot");
+        assert_eq!(calls[0].2, "x");
+        assert_eq!(calls[0].3, 1);
+        assert_eq!(
+            calls[0].4.as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440000")
+        );
+    }
+
+    #[test]
+    fn probe_failures_are_fatal_not_passes() {
+        let v = Validator::new().field("patient", vec![Rule::from_token("unique:Ghost").unwrap()]);
+        let input = json!({ "patient": "A. Patient" });
+
+        // No lookup attached → fatal (never a pass).
+        let report = v.validate(&input).expect_err("no probes wired");
+        assert!(report.fatal.is_some(), "fatal recorded: {report:?}");
+        assert!(report.violations.is_empty());
+        let err = report.into_app_error();
+        assert_eq!(err.category, keel_foundation::ErrorCategory::Persistence);
+
+        // Model without a registered probe → fatal.
+        let empty = StubLookup(BTreeMap::new());
+        let report = v
+            .validate_with(&probe_ctx(&input, &empty, None))
+            .expect_err("unregistered model");
+        assert!(report.fatal.unwrap().contains("Ghost"));
+
+        // Store error → fatal.
+        let broken = StubLookup(BTreeMap::from([(
+            "Ghost".to_string(),
+            Arc::new(StubProbe::failing()) as Arc<dyn DbProbe>,
+        )]));
+        let report = v
+            .validate_with(&probe_ctx(&input, &broken, None))
+            .expect_err("store down");
+        assert!(report.fatal.unwrap().contains("connection reset"));
+
+        // Non-string value fails as a field message (not a probe call).
+        let v = Validator::new().field("patient", vec![Rule::from_token("unique:Appointment").unwrap()]);
+        let numeric = json!({ "patient": 42 });
+        let lookup = StubLookup(BTreeMap::new());
+        let report = v
+            .validate_with(&probe_ctx(&numeric, &lookup, None))
+            .expect_err("non-string");
+        assert_eq!(report.fatal, None);
+        assert_eq!(report.violations[0].message, "must be a string");
+    }
+
+    #[test]
+    fn wildcard_paths_expand_and_report_per_element() {
+        let v = Validator::new().field("items.*.name", vec![Rule::Required, Rule::Max(4)]);
+
+        assert!(v.validate(&json!({ "items": [{ "name": "ab" }] })).is_ok());
+        // An empty or absent array validates zero element paths.
+        assert!(v.validate(&json!({ "items": [] })).is_ok());
+        assert!(v.validate(&json!({})).is_ok());
+
+        let report = v
+            .validate(&json!({ "items": [{ "name": "ab" }, { "name": "toolong" }] }))
+            .expect_err("element 1 exceeds max");
+        assert_eq!(report.len(), 1);
+        assert_eq!(report.violations[0].field, "items.1.name");
+
+        // Presence fires per element under its concrete path.
+        let report = v
+            .validate(&json!({ "items": [{}] }))
+            .expect_err("element 0 lacks name");
+        assert_eq!(report.violations[0].field, "items.0.name");
+        assert!(report.violations[0].message.contains("required"));
+
+        // `bail` stops each ELEMENT at its first failure, not the whole set.
+        let v = Validator::new().field("items.*.name", vec![Rule::Bail, Rule::Required, Rule::Max(4)]);
+        let report = v
+            .validate(&json!({ "items": [{ "name": "" }, { "name": "toolong" }] }))
+            .expect_err("both elements fail");
+        assert_eq!(report.len(), 2, "{report:?}");
+
+        // Direct numeric paths resolve through the array-aware lookup.
+        let v = Validator::new().field("items.0.name", vec![Rule::Required]);
+        assert!(v.validate(&json!({ "items": [{ "name": "x" }] })).is_ok());
+        let report = v.validate(&json!({})).expect_err("index 0 missing");
+        assert_eq!(report.violations[0].field, "items.0.name");
+    }
+
+    struct UpperRule;
+
+    impl CustomRule for UpperRule {
+        fn check(&self, _field: &str, value: &Value, _input: &Value) -> Option<String> {
+            match value.as_str() {
+                Some(s) if s == s.to_uppercase() => None,
+                Some(_) => Some("must be uppercase".into()),
+                None => Some("must be a string".into()),
+            }
+        }
+    }
+
+    #[test]
+    fn custom_rules_resolve_through_the_context() {
+        register_custom_rule("wave4_phase4_upper", Arc::new(UpperRule));
+        assert!(custom_rule_names().contains(&"wave4_phase4_upper".to_string()));
+
+        let v = Validator::new().field("code", vec![Rule::Custom("wave4_phase4_upper".into())]);
+        let good = json!({ "code": "ABC" });
+        assert!(v
+            .validate_with(
+                &ValidationContext::new(&good).with_custom_rules(&crate::custom::GLOBAL_CUSTOM_RULES)
+            )
+            .is_ok());
+
+        let bad = json!({ "code": "abc" });
+        let report = v
+            .validate_with(
+                &ValidationContext::new(&bad).with_custom_rules(&crate::custom::GLOBAL_CUSTOM_RULES)
+            )
+            .expect_err("lowercase");
+        assert_eq!(report.violations[0].message, "must be uppercase");
+
+        // Unregistered name (or no lookup at all) fails closed as a field
+        // message — never a silent pass.
+        let report = v
+            .validate(&bad)
+            .expect_err("no lookup attached");
+        assert_eq!(
+            report.violations[0].message,
+            "custom rule wave4_phase4_upper is not registered"
+        );
+        let ghost = json!({ "code": "ABC" });
+        let v = Validator::new().field("code", vec![Rule::Custom("wave4_phase4_never".into())]);
+        let report = v
+            .validate_with(
+                &ValidationContext::new(&ghost).with_custom_rules(&crate::custom::GLOBAL_CUSTOM_RULES)
+            )
+            .expect_err("unregistered custom rule");
+        assert_eq!(
+            report.violations[0].message,
+            "custom rule wave4_phase4_never is not registered"
+        );
+
+        // Absent field: custom rules are non-implicit and skip.
+        assert!(v.validate(&json!({})).is_ok());
+    }
+
+    #[test]
+    fn messages_override_and_attribute_substitution() {
+        let mut messages = BTreeMap::new();
+        messages.insert("required".to_string(), "the {attribute} is mandatory".to_string());
+        let v = Validator::new().field_messages(
+            "patient",
+            vec![Rule::Required, Rule::Max(3)],
+            messages.clone(),
+            Some("Patient name".into()),
+        );
+        let report = v.validate(&json!({})).expect_err("required");
+        assert_eq!(report.violations[0].message, "the Patient name is mandatory");
+
+        // Rules without an override keep the built-in message.
+        let report = v
+            .validate(&json!({ "patient": "toolong" }))
+            .expect_err("max");
+        assert_eq!(report.violations[0].message, "must be at most 3");
+
+        // `{attribute}` defaults to the field path when no attribute is set.
+        let v = Validator::new().field_messages(
+            "patient",
+            vec![Rule::Required],
+            messages,
+            None,
+        );
+        let report = v.validate(&json!({})).expect_err("required");
+        assert_eq!(report.violations[0].message, "the patient is mandatory");
+    }
+
+    #[test]
+    fn rule_names_cover_parsed_tokens() {
+        // Every token in the Phase 4 battery parses to a name the manifest
+        // `messages` vocabulary knows.
+        for token in [
+            "required", "min:1", "max:120", "email", "date", "before:2030-01-01",
+            "date_format:Y-m-d", "file", "mimes:jpg", "password", "current_password",
+            "unique:Appointment", "exists:Appointment", "nullable", "bail", "sometimes",
+            "confirmed", "distinct", "decimal:2", "digits:4", "multiple_of:3",
+            "required_if:kind,vip", "same:other", "in_array:others", "dimensions:min_w=1",
+        ] {
+            let rules = parse_rules(&[token.to_string()]).expect(token);
+            for rule in rules {
+                assert!(
+                    is_known_rule_name(rule.name()),
+                    "name {} of token {token} missing from RULE_NAMES",
+                    rule.name()
+                );
+            }
+        }
+        assert!(is_known_rule_name("custom"));
+        assert!(!is_known_rule_name("no_such_rule"));
     }
 }

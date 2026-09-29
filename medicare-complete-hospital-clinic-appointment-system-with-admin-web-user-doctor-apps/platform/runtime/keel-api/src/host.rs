@@ -478,6 +478,14 @@ impl Provider for PersistenceProvider {
                 keel_models::RouteBindingRegistry::new(),
             ))),
         )?;
+        // Wave 4 Phase 4: well-known model.probes registry — modules
+        // register one row probe per model in Provider::init; the
+        // `unique`/`exists` validation rules fail closed (503) when their
+        // model has no probe.
+        r.insert(
+            "model.probes",
+            Arc::new(keel_models::ProbeRegistryRef::default()),
+        )?;
         // Wave 3 Phase 6: well-known model.prune registry — modules register
         // `with_prunable` runtimes; `keel model:prune` sweeps them through
         // this store (empty registry → the CLI reports "none").

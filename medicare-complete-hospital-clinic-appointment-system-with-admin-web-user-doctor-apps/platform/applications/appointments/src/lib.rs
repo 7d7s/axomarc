@@ -344,6 +344,17 @@ impl Provider for ModuleProvider {
                 .0
                 .register(Arc::new(AppointmentBindingResolver::new(store.clone())));
         }
+        // Wave 4 Phase 4: model.probes — register the Appointment row probe
+        // for the `unique`/`exists` validation rules when the platform
+        // provides the registry (same tolerance posture as route.bindings).
+        if let Ok(probes) = registry.get::<keel_models::ProbeRegistryRef>() {
+            probes
+                .0
+                .register(Arc::new(keel_models::StoreProbe::new(
+                    appointment_model(),
+                    backend.0.clone(),
+                )));
+        }
         registry.insert("module.appointments.handlers", Arc::new(handlers(store)))?;
         Ok(())
     }

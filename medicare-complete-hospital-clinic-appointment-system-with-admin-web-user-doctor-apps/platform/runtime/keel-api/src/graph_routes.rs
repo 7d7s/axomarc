@@ -250,21 +250,58 @@ fn cached_plan<'a>(plans: &'a [RoutePlan], module: &str, spec: &RouteSpec) -> Op
     })
 }
 
+/// Wave 4 Phase 4: adapt the `model.probes` registry (keel-models) behind
+/// the foundation's `DbProbeLookup`, so the validator evaluates `unique`/
+/// `exists` without the data layer leaking downward. An unregistered model
+/// yields `None` → the rule fails closed with a 503, never a pass.
+struct EdgeProbes<'a>(&'a keel_models::ProbeRegistry);
+
+impl keel_validation::DbProbeLookup for EdgeProbes<'_> {
+    fn probe(&self, model: &str) -> Option<Arc<dyn keel_validation::DbProbe>> {
+        struct Adapter(Arc<dyn keel_models::ModelProbe>);
+        impl keel_validation::DbProbe for Adapter {
+            fn has_row(
+                &self,
+                tenant: Option<keel_foundation::TenantId>,
+                column: &str,
+                value: &str,
+                wheres: &[(String, String)],
+                ignore_id: Option<&str>,
+            ) -> Result<bool, String> {
+                self.0.has_row(tenant, column, value, wheres, ignore_id)
+            }
+        }
+        self.0
+            .get(model)
+            .map(|probe| Arc::new(Adapter(probe)) as Arc<dyn keel_validation::DbProbe>)
+    }
+}
+
 /// Compile manifest validation entries into one collect-all Validator.
 /// None when the operation declares no rules. Rule parse errors fail the
 /// route registration (the GRAPH-VALIDATION-RULE boot gate rejects them in
-/// production; the live path degrades with a warning).
+/// production; the live path degrades with a warning). Phase 4 also wires
+/// the entry's `custom` rule (evaluated through the context lookup) and the
+/// `messages`/`attribute` overrides (per-field message templates).
 fn compile_validator(
-    entries: &[(String, Vec<String>)],
+    entries: &[keel_registry::ValidationSpec],
 ) -> Result<Option<Arc<keel_validation::Validator>>, String> {
     if entries.is_empty() {
         return Ok(None);
     }
     let mut validator = keel_validation::Validator::new();
-    for (field, tokens) in entries {
-        let rules = keel_validation::parse_rules(tokens)
-            .map_err(|errs| format!("field {field}: {}", errs.join("; ")))?;
-        validator = validator.field(field.clone(), rules);
+    for entry in entries {
+        let mut rules = keel_validation::parse_rules(&entry.rules)
+            .map_err(|errs| format!("field {}: {}", entry.field, errs.join("; ")))?;
+        if let Some(name) = &entry.custom {
+            rules.push(keel_validation::Rule::Custom(name.clone()));
+        }
+        validator = validator.field_messages(
+            entry.field.clone(),
+            rules,
+            entry.messages.clone(),
+            entry.attribute.clone(),
+        );
     }
     Ok(Some(Arc::new(validator)))
 }
@@ -353,13 +390,13 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
                 },
             };
 
-            let validation_entries: Vec<(String, Vec<String>)> = match cached {
+            let validation_entries: Vec<keel_registry::ValidationSpec> = match cached {
                 Some(plan) => plan.validation.clone(),
                 None => module
                     .validation
                     .iter()
                     .filter(|s| s.operation == spec.operation)
-                    .map(|s| (s.field.clone(), s.rules.clone()))
+                    .cloned()
                     .collect(),
             };
             let validator = match compile_validator(&validation_entries) {
@@ -1611,6 +1648,9 @@ async fn graph_dispatch(
     // Wave 4 Phase 3: the context carries the principal, the credential
     // verifier (`current_password`) and any multipart upload parts (`file`
     // family) — all read-only, all fail-closed when absent.
+    // Wave 4 Phase 4: plus the request tenant + row probes (`unique`/
+    // `exists`, probe failure → 503 via the fatal channel) and the
+    // process-global custom-rule registry (`custom = "<name>"`).
     if let Some(validator) = &dispatch.validator {
         let credentials = state.credentials.clone();
         let for_principal = principal;
@@ -1624,9 +1664,13 @@ async fn graph_dispatch(
                 _ => false,
             }
         };
+        let probes = EdgeProbes(&state.probes);
         let mut ctx = keel_validation::ValidationContext::new(&input)
             .with_principal(principal)
-            .with_verifier(&verifier);
+            .with_verifier(&verifier)
+            .with_tenant(Some(tenant))
+            .with_db_probes(&probes)
+            .with_custom_rules(&keel_validation::GLOBAL_CUSTOM_RULES);
         if !uploads.is_empty() {
             ctx = ctx.with_uploads(&uploads);
         }

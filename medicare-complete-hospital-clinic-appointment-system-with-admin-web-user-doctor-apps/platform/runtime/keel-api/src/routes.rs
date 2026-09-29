@@ -52,6 +52,9 @@ pub struct AppState {
     pub middleware_catalog: keel_http::MiddlewareCatalog,
     /// route.bindings service: model name -> tenant-scoped resolver.
     pub route_bindings: Arc<keel_models::RouteBindingRegistry>,
+    /// model.probes service (Wave 4 Phase 4): model name -> row probe for
+    /// the `unique`/`exists` validation rules (fail-closed when missing).
+    pub probes: Arc<keel_models::ProbeRegistry>,
     /// Shared token-bucket state for throttle groups (one bucket per
     /// group+client across all routes).
     pub throttle_buckets:

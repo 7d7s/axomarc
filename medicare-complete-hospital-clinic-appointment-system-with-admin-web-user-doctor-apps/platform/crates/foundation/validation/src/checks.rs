@@ -404,6 +404,70 @@ pub(crate) fn check(
             |s| s.chars().any(|c| c.is_uppercase()) && s.chars().any(|c| c.is_lowercase()),
             "must contain uppercase and lowercase letters",
         ),
+
+        // ------------------------------------------- Wave 4 Phase 4: DB ---
+        // `unique`/`exists` are intercepted by `validate_with`, which owns
+        // the fatal (503) channel; this arm fails closed defensively if a
+        // future call path ever reaches them through `check` directly.
+        Rule::Unique(_) | Rule::Exists(_) => Some("database probe unavailable".into()),
+
+        // Module-registered rule (manifest `custom = "<name>"`), resolved
+        // through the context's lookup. An unregistered name fails closed
+        // as a field message — never a silent pass (the GRAPH-RULE-UNKNOWN
+        // boot gate should make it unreachable in production).
+        Rule::Custom(name) => match ctx.custom_rules().and_then(|l| l.rule(name)) {
+            Some(custom) => custom.check(field, v, ctx.input()),
+            None => Some(format!("custom rule {name} is not registered")),
+        },
+    }
+}
+
+/// Phase 4 database rules — the one evaluation with an ERROR channel.
+/// `Ok(None)` passes; `Ok(Some(msg))` is the field failure ("has already
+/// been taken" / "is invalid"); `Err(detail)` is a store failure or an
+/// unregistered probe, which [`crate::Validator::validate_with`] turns into
+/// [`crate::ValidationReport::fatal`] → 503 envelope (docs/19: DB errors
+/// never pass validation).
+///
+/// The validated value must be a JSON string: columns compare as text (the
+/// models store their wire values as declared), so anything else fails
+/// closed with a field message instead of guessing a coercion.
+pub(crate) fn db_check(
+    rule: &Rule,
+    field: &str,
+    v: &Value,
+    ctx: &ValidationContext<'_>,
+) -> Result<Option<String>, String> {
+    let (probe, unique) = match rule {
+        Rule::Unique(p) => (p, true),
+        Rule::Exists(p) => (p, false),
+        _ => return Ok(None),
+    };
+    let Value::String(value) = v else {
+        return Ok(Some("must be a string".into()));
+    };
+    let missing = format!("no row probe registered for model {}", probe.model);
+    let lookup = ctx.probes().ok_or_else(|| missing.clone())?;
+    let registered = lookup.probe(&probe.model).ok_or(missing)?;
+    // Match column: explicit override, else the final segment of the
+    // validated field path (`profile.email` → `email`).
+    let column = probe
+        .column
+        .as_deref()
+        .unwrap_or_else(|| field.rsplit('.').next().unwrap_or(field));
+    let matched = registered
+        .has_row(
+            ctx.tenant(),
+            column,
+            value,
+            &probe.wheres,
+            probe.ignore_id.as_deref(),
+        )
+        .map_err(|e| format!("row probe failed for model {}: {e}", probe.model))?;
+    if unique {
+        Ok(matched.then(|| "has already been taken".to_string()))
+    } else {
+        Ok((!matched).then(|| "is invalid".to_string()))
     }
 }
 

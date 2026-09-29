@@ -125,7 +125,12 @@ fn field_constraints(tokens: &[String]) -> (serde_json::Map<String, serde_json::
             | keel_validation::Rule::Letters
             | keel_validation::Rule::Numbers
             | keel_validation::Rule::Symbols
-            | keel_validation::Rule::MixedCase => {}
+            | keel_validation::Rule::MixedCase
+            // Wave 4 Phase 4: DB membership + custom rules carry no type
+            // information (they constrain rows/values, not the wire shape).
+            | keel_validation::Rule::Unique(_)
+            | keel_validation::Rule::Exists(_)
+            | keel_validation::Rule::Custom(_) => {}
             keel_validation::Rule::MultipleOf(n) => {
                 schema.insert("multipleOf".into(), json!(n));
             }

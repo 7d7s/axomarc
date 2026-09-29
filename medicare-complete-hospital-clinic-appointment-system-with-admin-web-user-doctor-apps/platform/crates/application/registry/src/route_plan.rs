@@ -16,8 +16,8 @@ use sha2::{Digest, Sha256};
 
 use crate::middleware_catalog::{BuiltinMw, MiddlewareCatalog};
 use crate::{
-    GraphViolation, ModulePlane, PlatformGraph, ResolvedConstraint, ResponseKind, BindingSpec,
-    RoutePlane, MODULE_ABI,
+    BindingSpec, GraphViolation, ModulePlane, PlatformGraph, ResolvedConstraint, ResponseKind,
+    RoutePlane, ValidationSpec, MODULE_ABI,
 };
 
 /// Fully-resolved dispatch plan for one route (route-cache artifact content).
@@ -45,8 +45,10 @@ pub struct RoutePlan {
     /// Resolved middleware chain (first = outermost).
     pub chain: Vec<BuiltinMw>,
     pub bindings: Vec<BindingSpec>,
-    /// Manifest validation specs for this route's operation: (field, rule tokens).
-    pub validation: Vec<(String, Vec<String>)>,
+    /// Manifest validation specs for this route's operation (full spec,
+    /// Wave 4 Phase 4: the cache pin carries `custom`/`messages`/`attribute`
+    /// too — cache-hit and live-compiled routes must validate identically).
+    pub validation: Vec<ValidationSpec>,
     pub name: Option<String>,
     /// GET routes parse `page`/`per_page` and inject `_page` (Wave 1 pagination).
     pub inject_page: bool,
@@ -112,11 +114,11 @@ pub fn resolve_route_plans(
                 .get(&r.operation)
                 .map(|c| c.profile)
                 .unwrap_or(ExecutionProfileKind::Command);
-            let validation: Vec<(String, Vec<String>)> = m
+            let validation: Vec<ValidationSpec> = m
                 .validation
                 .iter()
                 .filter(|s| s.operation == r.operation)
-                .map(|s| (s.field.clone(), s.rules.clone()))
+                .cloned()
                 .collect();
             let route_plane = r
                 .plane
@@ -309,7 +311,14 @@ rules = ["required", "max:10"]
         assert!(!post.inject_page);
         assert_eq!(
             post.validation,
-            vec![("name".to_string(), vec!["required".to_string(), "max:10".to_string()])]
+            vec![ValidationSpec {
+                operation: "create".into(),
+                field: "name".into(),
+                rules: vec!["required".into(), "max:10".into()],
+                custom: None,
+                attribute: None,
+                messages: Default::default(),
+            }]
         );
     }
 

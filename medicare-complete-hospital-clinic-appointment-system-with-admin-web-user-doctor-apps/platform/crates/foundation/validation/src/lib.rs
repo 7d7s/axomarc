@@ -5,16 +5,24 @@
 //!
 //! Wave 4: `validator::Rule` is the 1:1 manifest grammar (types, strings,
 //! numeric incl. field refs, conditionals/cross-field, dates, files and auth
-//! as of Phase 3; wildcard/DB/custom rules land in the following phases),
-//! evaluated by the private `checks` module against a `ValidationContext`
-//! supplied by the transport edge.
+//! as of Phase 3; DB rules, wildcards, custom rules and per-field messages
+//! as of Phase 4), evaluated by the private `checks` module against a
+//! `ValidationContext` supplied by the transport edge.
 
 mod checks;
+pub mod custom;
+pub mod probe;
 pub mod validator;
 
+pub use custom::{
+    custom_rule_names, register_custom_rule, CustomRule, CustomRuleLookup, GlobalCustomRules,
+    GLOBAL_CUSTOM_RULES,
+};
+pub use probe::{DbProbe, DbProbeLookup};
 pub use validator::{
-    parse_rules, DateTarget, DimBound, FieldSpec, FieldViolation, NumTarget, PasswordPolicy,
-    PasswordVerifier, Rule, UploadMeta, ValidationContext, ValidationReport, Validator,
+    is_known_rule_name, parse_rules, DateTarget, DimBound, FieldSpec, FieldViolation, NumTarget,
+    PasswordPolicy, PasswordVerifier, ProbeSpec, Rule, UploadMeta, ValidationContext,
+    ValidationReport, Validator, RULE_NAMES,
 };
 
 use keel_foundation::AppError;

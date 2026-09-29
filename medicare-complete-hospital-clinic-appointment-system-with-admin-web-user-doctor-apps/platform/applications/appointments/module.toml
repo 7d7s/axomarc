@@ -8,10 +8,14 @@ plane = "tenant"
 description = "Clinic appointments: book, cancel, list"
 
 [capabilities]
-book = { profile = "COMMAND" }
-cancel = { profile = "COMMAND" }
-list = { profile = "READ" }
-availability = { profile = "READ" }
+# Wave 4 Phase 4: `inputs` declares each operation's input shape — the
+# GRAPH-VALIDATION-FIELD gate refuses [[validation]] fields outside it
+# (absent/empty inputs = shape undeclared → gate skipped; the `_`-prefixed
+# injection namespace is never checked).
+book = { profile = "COMMAND", inputs = ["patient", "slot", "photo"] }
+cancel = { profile = "COMMAND", inputs = ["password"] }
+list = { profile = "READ", inputs = ["page"] }
+availability = { profile = "READ", inputs = ["date"] }
 
 [dependencies]
 contracts = []
@@ -76,10 +80,15 @@ operation = "book"
 field = "patient"
 rules = ["required", "max:120"]
 
+# Wave 4 Phase 4: `unique:Appointment` probes the model.probes row probe for
+# another live appointment at the same slot (no double-booking). Cancel flips
+# status without soft-deleting, so a cancelled appointment keeps its slot;
+# only `deleted_at` rows (prune) release it. A missing probe or store failure
+# fails closed as a 503, never a pass.
 [[validation]]
 operation = "book"
 field = "slot"
-rules = ["required", "date", "before:2030-01-01"]
+rules = ["required", "date", "before:2030-01-01", "unique:Appointment"]
 
 # Wave 4 Phase 3: optional attachment — the multipart intake stores the part
 # and the file rules read its metadata (absent JSON key + absent part skips,

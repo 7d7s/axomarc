@@ -59,6 +59,12 @@ pub struct CapabilitySpec {
     pub audit: Requirement,
     #[serde(default)]
     pub idempotency: Requirement,
+    /// Declared operation input shape (Wave 4 Phase 4): the
+    /// GRAPH-VALIDATION-FIELD gate checks each `[[validation]]` field's
+    /// first path segment against it. Empty (default) = shape undeclared →
+    /// the gate skips, per docs/19's "when the shape is declared".
+    #[serde(default)]
+    pub inputs: Vec<String>,
 }
 
 /// One `{param}` path binding resolved at the HTTP edge (Wave 1 model
@@ -563,12 +569,29 @@ impl ModulePlane {
 /// these into a collect-all Validator per operation and enforces them before
 /// CommandBus dispatch (422 envelope with `fields` meta). Rule grammar lives
 /// in keel_validation::Rule::from_token; the graph gate GRAPH-VALIDATION-RULE
-/// rejects unparseable rules at boot (fail closed).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// rejects unparseable rules at boot (fail closed). Wave 4 Phase 4 adds the
+/// `custom` rule reference, the `messages`/`attribute` overrides and (via
+/// `CapabilitySpec::inputs`) the GRAPH-VALIDATION-FIELD shape declaration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ValidationSpec {
     pub operation: String,
     pub field: String,
     pub rules: Vec<String>,
+    /// Module-registered custom rule referenced by name (Wave 4 Phase 4):
+    /// evaluated through the process registry at request time; an unknown
+    /// name is a GRAPH-RULE-UNKNOWN boot violation.
+    #[serde(default)]
+    pub custom: Option<String>,
+    /// Display name substituted into `messages` templates' `{attribute}`
+    /// placeholder (Phase 4); absent = the field path itself.
+    #[serde(default)]
+    pub attribute: Option<String>,
+    /// Message overrides keyed by rule name (Phase 4): a template replaces
+    /// the rule's built-in message; an unknown key is a
+    /// GRAPH-VALIDATION-RULE boot violation (a typo would silently never
+    /// fire otherwise).
+    #[serde(default)]
+    pub messages: BTreeMap<String, String>,
 }
 /// module.toml — the immutable contract shape of a module (11-SPEC §7).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -925,7 +948,7 @@ impl PlatformGraph {
                 }
             }
             for spec in &m.validation {
-                if !m.capabilities.contains_key(spec.operation.as_str()) {
+                let Some(cap) = m.capabilities.get(spec.operation.as_str()) else {
                     violations.push(GraphViolation {
                         code: "GRAPH-VALIDATION-OP".into(),
                         message: format!(
@@ -935,7 +958,7 @@ impl PlatformGraph {
                         ),
                     });
                     continue;
-                }
+                };
                 if let Err(errs) = keel_validation::parse_rules(&spec.rules) {
                     violations.push(GraphViolation {
                         code: "GRAPH-VALIDATION-RULE".into(),
@@ -947,6 +970,57 @@ impl PlatformGraph {
                             errs.join("; ")
                         ),
                     });
+                }
+                // Wave 4 Phase 4 gates (fail closed, collect-all): an
+                // unregistered `custom` name (GRAPH-RULE-UNKNOWN), an unknown
+                // `messages` key (a typo would silently never fire), and a
+                // field outside the declared input shape
+                // (GRAPH-VALIDATION-FIELD).
+                if let Some(name) = &spec.custom {
+                    if !keel_validation::custom_rule_names().iter().any(|n| n == name) {
+                        violations.push(GraphViolation {
+                            code: "GRAPH-RULE-UNKNOWN".into(),
+                            message: format!(
+                                "module {}: validation for {}.{} references unregistered custom rule {} (register it before graph compile)",
+                                m.name(),
+                                spec.operation,
+                                spec.field,
+                                name
+                            ),
+                        });
+                    }
+                }
+                for key in spec.messages.keys() {
+                    if !keel_validation::is_known_rule_name(key) {
+                        violations.push(GraphViolation {
+                            code: "GRAPH-VALIDATION-RULE".into(),
+                            message: format!(
+                                "module {}: validation for {}.{}: messages key {key} is not a known rule name",
+                                m.name(),
+                                spec.operation,
+                                spec.field
+                            ),
+                        });
+                    }
+                }
+                // Declared shape only: an undeclared (empty) input list skips
+                // the gate, and the `_`-prefixed injection namespace
+                // (_bindings/_auth/_page) is edge-injected, never part of
+                // the declared operation input.
+                if !cap.inputs.is_empty() {
+                    let first = spec.field.split('.').next().unwrap_or(&spec.field);
+                    if !first.starts_with('_') && !cap.inputs.iter().any(|i| i == first) {
+                        violations.push(GraphViolation {
+                            code: "GRAPH-VALIDATION-FIELD".into(),
+                            message: format!(
+                                "module {}: validation field {} on operation {} is not in the declared input shape (inputs: {})",
+                                m.name(),
+                                spec.field,
+                                spec.operation,
+                                cap.inputs.join(", ")
+                            ),
+                        });
+                    }
                 }
             }
         }
@@ -1856,6 +1930,174 @@ rules = ["range:1"]
             .filter(|x| x.code == "GRAPH-VALIDATION-RULE")
             .collect();
         assert_eq!(rule_errors.len(), 2, "collect-all reports both specs");
+    }
+
+    // ------------------------------------------- Wave 4 Phase 4: new gates
+
+    #[test]
+    fn validation_field_gate_checks_the_declared_input_shape() {
+        // Declared shape covers the field (and its wildcard first segment).
+        let good = r#"
+[module]
+name = "alpha"
+version = "0.1.0"
+
+[capabilities]
+"create" = { profile = "COMMAND", inputs = ["patient", "tags"] }
+
+[[validation]]
+operation = "create"
+field = "patient"
+rules = ["required"]
+
+[[validation]]
+operation = "create"
+field = "tags.*.name"
+rules = ["required"]
+"#;
+        let m = ModuleManifest::from_toml(good).expect("parses");
+        PlatformGraph::compile(vec![m]).expect("declared fields compile");
+
+        // A field outside the declared shape is a boot violation.
+        let bad = r#"
+[module]
+name = "alpha"
+version = "0.1.0"
+
+[capabilities]
+"create" = { profile = "COMMAND", inputs = ["patient"] }
+
+[[validation]]
+operation = "create"
+field = "ghost"
+rules = ["required"]
+"#;
+        let m = ModuleManifest::from_toml(bad).expect("parses");
+        let v = PlatformGraph::compile(vec![m]).unwrap_err();
+        assert!(
+            v.iter().any(|x| x.code == "GRAPH-VALIDATION-FIELD"),
+            "{v:?}"
+        );
+
+        // Undeclared shape (inputs absent/empty) → the gate skips.
+        let undeclared = r#"
+[module]
+name = "alpha"
+version = "0.1.0"
+
+[capabilities]
+"create" = { profile = "COMMAND" }
+
+[[validation]]
+operation = "create"
+field = "ghost"
+rules = ["required"]
+"#;
+        let m = ModuleManifest::from_toml(undeclared).expect("parses");
+        PlatformGraph::compile(vec![m]).expect("undeclared shape skips the gate");
+
+        // The `_`-prefixed injection namespace is never checked against the
+        // declared input (the edge injects _bindings/_auth itself).
+        let injected = r#"
+[module]
+name = "alpha"
+version = "0.1.0"
+
+[capabilities]
+"create" = { profile = "COMMAND", inputs = ["patient"] }
+
+[[validation]]
+operation = "create"
+field = "_bindings.id"
+rules = ["required"]
+"#;
+        let m = ModuleManifest::from_toml(injected).expect("parses");
+        PlatformGraph::compile(vec![m]).expect("injected fields skip the shape gate");
+    }
+
+    #[test]
+    fn unknown_custom_rule_names_are_refused() {
+        struct Noop;
+        impl keel_validation::CustomRule for Noop {
+            fn check(
+                &self,
+                _field: &str,
+                _value: &serde_json::Value,
+                _input: &serde_json::Value,
+            ) -> Option<String> {
+                None
+            }
+        }
+
+        let toml = r#"
+[module]
+name = "alpha"
+version = "0.1.0"
+
+[capabilities]
+"create" = { profile = "COMMAND" }
+
+[[validation]]
+operation = "create"
+field = "code"
+rules = ["required"]
+custom = "unregistered_phase4_rule"
+"#;
+        let m = ModuleManifest::from_toml(toml).expect("parses");
+        let v = PlatformGraph::compile(vec![m]).unwrap_err();
+        assert!(
+            v.iter().any(|x| x.code == "GRAPH-RULE-UNKNOWN"),
+            "{v:?}"
+        );
+
+        // Registered names pass (modules register before graph compile).
+        keel_validation::register_custom_rule("registered_phase4_rule", std::sync::Arc::new(Noop));
+        let toml = toml.replace("unregistered_phase4_rule", "registered_phase4_rule");
+        let m = ModuleManifest::from_toml(&toml).expect("parses");
+        PlatformGraph::compile(vec![m]).expect("registered custom rule compiles");
+    }
+
+    #[test]
+    fn messages_keys_must_be_known_rule_names() {
+        let good = r#"
+[module]
+name = "alpha"
+version = "0.1.0"
+
+[capabilities]
+"create" = { profile = "COMMAND" }
+
+[[validation]]
+operation = "create"
+field = "patient"
+rules = ["required"]
+messages = { required = "the {attribute} is mandatory" }
+attribute = "Patient name"
+"#;
+        let m = ModuleManifest::from_toml(good).expect("parses");
+        PlatformGraph::compile(vec![m]).expect("known messages key compiles");
+
+        let bad = r#"
+[module]
+name = "alpha"
+version = "0.1.0"
+
+[capabilities]
+"create" = { profile = "COMMAND" }
+
+[[validation]]
+operation = "create"
+field = "patient"
+rules = ["required"]
+messages = { requird = "typo never fires" }
+"#;
+        let m = ModuleManifest::from_toml(bad).expect("parses");
+        let v = PlatformGraph::compile(vec![m]).unwrap_err();
+        assert!(
+            v.iter().any(|x| x.code == "GRAPH-VALIDATION-RULE"
+                && x.message.contains("requird")),
+            "{v:?}"
+        );
     }
 
     // ------------------------------------------------ Wave 1: bindings

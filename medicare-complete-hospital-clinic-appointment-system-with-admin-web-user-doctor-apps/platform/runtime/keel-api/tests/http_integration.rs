@@ -1945,6 +1945,66 @@ async fn cancel_route_reauthenticates_with_current_password() {
     assert_eq!(ok.data()["status"], "cancelled");
 }
 
+/// Wave 4 Phase 4: `unique:Appointment` on book.slot — the row probe finds
+/// the first live booking at that slot, so a second booking (even for a
+/// different patient) is a 422 with the per-field message: no double-booking
+/// reaches dispatch, and only the first row was written.
+#[tokio::test]
+async fn booking_the_same_slot_twice_is_rejected_as_a_unique_violation() {
+    let app = app();
+    let email = format!("unique-{}@clinic.test", uuid::Uuid::now_v7());
+    let cookie = register(&app, &email).await.session_cookie().unwrap();
+
+    let first = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/api/v1/appointments",
+            serde_json::json!({ "patient": "A. Patient", "slot": "2026-09-02T10:00Z" }),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+
+    // Same slot, another patient: the probe answers "taken" (uniqueness is
+    // on the slot column alone).
+    let second = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/api/v1/appointments",
+            serde_json::json!({ "patient": "B. Patient", "slot": "2026-09-02T10:00Z" }),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        second.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        second.body
+    );
+    assert_eq!(second.error_code(), "KER_VALIDATION");
+    let slot = second.body["error"]["meta"]["fields"]["slot"]
+        .as_array()
+        .expect("slot errors");
+    assert!(
+        slot.iter().any(|m| m.as_str() == Some("has already been taken")),
+        "{}",
+        second.body
+    );
+    assert_eq!(
+        app.store
+            .count(app.state.default_tenant_id.unwrap())
+            .unwrap(),
+        1,
+        "only the first booking was written"
+    );
+}
+
 /// Wave 1 public routes: `public = true` strips the implicit auth/verified
 /// stages (throttle stays), and the handler plan opts out of authorization —
 /// anonymous callers get a 200 envelope.

@@ -203,16 +203,6 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         None => None,
     };
 
-    // Platform graph compile is a BOOT GATE (parity with `keel check`): a
-    // broken manifest never produces a serving edge (S7 C1).
-    let graph =
-        graph_routes::compile_graph(&root).map_err(|e| format!("platform graph rejected: {e}"))?;
-    tracing::info!(
-        modules = graph.modules.len(),
-        routes = graph.modules.iter().map(|m| m.routes.len()).sum::<usize>(),
-        "platform graph compiled"
-    );
-
     // Wave 1 route cache: a present artifact must match the current
     // manifests + middleware.toml (and module ABI) or boot is refused with a
     // pointer to `keel route:cache`; absent artifact = live compile.
@@ -312,6 +302,21 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     *health.services.lock().unwrap() = host.registry().service_names();
     tracing::info!(services = ?host.registry().service_names(), "keel-api booted");
 
+    // Platform graph compile is a BOOT GATE (parity with `keel check`): a
+    // broken manifest never produces a serving edge (S7 C1). It runs AFTER
+    // provider boot on purpose (Wave 4 Phase 4): module providers register
+    // their custom validation rules from `Provider::init`, and the
+    // GRAPH-RULE-UNKNOWN gate consults that registry — compiling before
+    // boot would refuse every manifest that names a legitimately
+    // registered rule.
+    let graph =
+        graph_routes::compile_graph(&root).map_err(|e| format!("platform graph rejected: {e}"))?;
+    tracing::info!(
+        modules = graph.modules.len(),
+        routes = graph.modules.iter().map(|m| m.routes.len()).sum::<usize>(),
+        "platform graph compiled"
+    );
+
     let bus = host
         .registry()
         .get::<keel_command::CommandBus>()
@@ -385,6 +390,14 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let route_bindings = host
         .registry()
         .get::<keel_models::RouteBindingsRef>()
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?
+        .0
+        .clone();
+    // Wave 4 Phase 4: model.probes — row probes for the `unique`/`exists`
+    // validation rules (modules register one per model during boot).
+    let probes = host
+        .registry()
+        .get::<keel_models::ProbeRegistryRef>()
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?
         .0
         .clone();
@@ -487,6 +500,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         route_inventory,
         middleware_catalog,
         route_bindings,
+        probes,
         throttle_buckets: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         route_plans,
         metrics: metrics.clone(),
@@ -768,9 +782,10 @@ pub fn build_app_state(
         Arc::new(InMemoryIdempotency::new()),
     ));
 
-    let appt_store = Arc::new(keel_mod_appointments::AppointmentStore::new(Arc::new(
-        keel_models::InMemoryModelStore::new(),
-    )));
+    let appt_backend = Arc::new(keel_models::InMemoryModelStore::new());
+    let appt_store = Arc::new(keel_mod_appointments::AppointmentStore::new(
+        appt_backend.clone(),
+    ));
     let mut bus = keel_command::CommandBus::new(engine);
     bus.register(Arc::new(host::EchoHandler::new()))
         .expect("demo handler registers");
@@ -850,6 +865,16 @@ pub fn build_app_state(
         keel_mod_appointments::AppointmentBindingResolver::new(appt_store.clone()),
     ));
 
+    // Wave 4 Phase 4: model.probes — the harness registers the appointments
+    // row probe directly (production wires it through the module provider +
+    // the well-known service instead), so `unique`/`exists` rules run
+    // against the same store the handlers write to.
+    let probes = Arc::new(keel_models::ProbeRegistry::new());
+    probes.register(Arc::new(keel_models::StoreProbe::new(
+        keel_mod_appointments::appointment_model(),
+        appt_backend,
+    )));
+
     // Wave 2 views: the harness points the engine at <storage_root>/views so
     // tests can drop fixture templates, and keeps the compiled cache off disk
     // (each harness gets a fresh temp dir). `@asset` is registered against
@@ -907,6 +932,7 @@ pub fn build_app_state(
         route_inventory: graph_routes::route_inventory(&graph),
         middleware_catalog: keel_http::MiddlewareCatalog::builtin(),
         route_bindings,
+        probes,
         throttle_buckets: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         route_plans: None,
         metrics: Arc::new(keel_metrics::MetricsRegistry::new(4096)),
