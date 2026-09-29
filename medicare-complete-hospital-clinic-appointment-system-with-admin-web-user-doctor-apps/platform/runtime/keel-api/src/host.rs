@@ -173,6 +173,10 @@ impl Provider for PlatformProvider {
             }
             None => memory,
         };
+        r.insert(
+            "cache.service",
+            Arc::new(keel_caching::CacheService::new(port.clone())),
+        )?;
         r.insert("cache.port", Arc::new(CachePortRef(port)))?;
         r.insert(
             "notify.hub",

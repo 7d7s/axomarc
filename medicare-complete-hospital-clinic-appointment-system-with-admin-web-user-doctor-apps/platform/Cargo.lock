@@ -1279,6 +1279,7 @@ name = "keel-caching"
 version = "0.1.0"
 dependencies = [
  "keel-foundation",
+ "serde_json",
 ]
 
 [[package]]

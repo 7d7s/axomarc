@@ -5,6 +5,11 @@
 
 use keel_foundation::{AuthorizationRevision, FeatureRevision, PrincipalId, TenantId};
 
+/// Wave 4 Phase 6: value-level `CacheService` (remember/tags/locks) over the
+/// unchanged port — see the module docs.
+pub mod service;
+pub use service::{CacheGuard, CacheService, TaggedCache};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CacheName {
     Identity,
