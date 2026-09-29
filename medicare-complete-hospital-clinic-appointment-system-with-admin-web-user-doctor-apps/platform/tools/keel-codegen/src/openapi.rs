@@ -273,6 +273,10 @@ pub fn emit_openapi(graph: &PlatformGraph, title: &str, version: &str) -> serde_
             if route.deprecated {
                 operation.insert("deprecated".into(), json!(true));
             }
+            // Wave 4 Phase 8 (docs/19 L223): the route's declared API
+            // version rides alongside the deprecation marker as an OpenAPI
+            // vendor extension (`version` is not an operation field).
+            operation.insert("x-keel-version".into(), json!(route.version));
             operation.insert("responses".into(), responses());
             paths
                 .entry(route.path.clone())
@@ -432,10 +436,13 @@ rules = ["one_of:personal,work"]
         assert_eq!(create["requestBody"]["required"], true);
 
         // Deprecated route carries the OpenAPI-native marker; GET routes
-        // carry no request body.
+        // carry no request body. Both carry their declared route version as
+        // an operation extension (Wave 4 Phase 8, docs/19 L223).
         let legacy = &doc["paths"]["/api/v1/notes/legacy"]["get"];
         assert_eq!(legacy["deprecated"], true);
         assert!(legacy.get("requestBody").is_none());
+        assert_eq!(create["x-keel-version"], "v1");
+        assert_eq!(legacy["x-keel-version"], "v1");
     }
 
     /// Wave 4 Phase 1: type rules override the default `"type": "string"`

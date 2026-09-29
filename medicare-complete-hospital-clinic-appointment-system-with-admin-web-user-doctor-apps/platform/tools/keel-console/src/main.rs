@@ -1,5 +1,6 @@
 //! keel — the platform CLI (11-SPEC §34, item 29). Implemented: doctor,
-//! check, graph/modules/route:list/event:list/capabilities, make:module,
+//! about, check, graph/modules/route:list/event:list/capabilities,
+//! make:module,
 //! make:migration, migrate/migrate:status/migrate:fresh, seed, key:generate,
 //! config:dump, cache:clear, up/down, job:list, queue:work/failed/retry,
 //! schedule:list/run, db:inspect, shell (v1.1 B-29 interactive console).
@@ -34,6 +35,10 @@ enum Cmd {
     Doctor,
     /// Architecture gate G07: dependency matrix + budget analyzer.
     Check,
+    /// Laravel-style environment report (docs/19 L222): framework/app
+    /// version, env/debug, database/cache/queue/session drivers, flag
+    /// snapshot, graph counts, dependency budget.
+    About,
     /// Scaffold a new domain module (applications/<name>); prompts when the name is omitted.
     #[command(name = "make:module")]
     MakeModule {
@@ -372,6 +377,7 @@ fn main() -> ExitCode {
     let result = match cli.cmd {
         Cmd::Doctor => doctor(),
         Cmd::Check => check(),
+        Cmd::About => rt(about()),
         Cmd::MakeModule {
             name,
             plane,
@@ -545,6 +551,194 @@ fn doctor() -> anyhow::Result<ExitCode> {
     }
     println!("doctor complete.");
     Ok(ExitCode::SUCCESS)
+}
+
+/// Wave 4 Phase 8 (docs/19 L222): `keel about` — the Laravel-style report.
+/// Config + flag registry/store + compiled graph + the workspace dependency
+/// table, all read-only. The database server version is a best-effort
+/// `SELECT version()`: an absent or unreachable database degrades to a note,
+/// never a failure.
+async fn about() -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    let db_version = db_server_version(&root).await;
+    print!("{}", about_report(&root, db_version.as_deref())?);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Build the `keel about` report for an explicit workspace root.
+/// `db_version` is the best-effort server-version ping (None = no database
+/// configured or unreachable); the golden-fields test drives this directly.
+fn about_report(root: &Path, db_version: Option<&str>) -> anyhow::Result<String> {
+    let cfg = load_config(root)?;
+    let mut out = String::from("keel about\n\n");
+    out.push_str(&format!(
+        "  Framework           {}\n",
+        env!("CARGO_PKG_VERSION")
+    ));
+    out.push_str(&format!("  Application         {}\n", cfg.app.name));
+    out.push_str(&format!(
+        "  Application version {}\n",
+        workspace_version(root)
+    ));
+    out.push_str(&format!("  Environment         {}\n", cfg.app.env.as_str()));
+    out.push_str(&format!("  Debug               {}\n", cfg.app.debug));
+
+    match cfg.database.as_ref().filter(|db| !db.url.is_empty()) {
+        None => out.push_str("  Database            none (no database configured)\n"),
+        Some(db) => {
+            let driver = db_url_scheme(&db.url);
+            match db_version {
+                Some(version) => {
+                    out.push_str(&format!("  Database            {driver} - {version}\n"))
+                }
+                None => out.push_str(&format!(
+                    "  Database            {driver} - server version unreachable\n"
+                )),
+            }
+        }
+    }
+
+    // Driver selection mirrors the runtime: REDIS_URL present + reachable
+    // picks redis for the cache port (keel-api run) and the job store
+    // (keel-worker, which falls back to the database queue, then memory).
+    let has_db = cfg
+        .database
+        .as_ref()
+        .is_some_and(|db| !db.url.is_empty());
+    let redis = std::env::var("REDIS_URL").is_ok();
+    out.push_str(&format!(
+        "  Cache driver        {}\n",
+        if redis { "redis" } else { "memory" }
+    ));
+    out.push_str(&format!(
+        "  Queue driver        {}\n",
+        if redis {
+            "redis"
+        } else if has_db {
+            "database"
+        } else {
+            "memory"
+        }
+    ));
+
+    // Flag snapshot through the same registry/store/evaluation path boot
+    // uses; sessions are on exactly when the `app.sessions` flag evaluates.
+    let (registered, enabled) = flag_snapshot(root, cfg.app.env.as_str())?;
+    out.push_str(&format!(
+        "  Session driver      {}\n",
+        if enabled.contains("app.sessions") {
+            "cookie"
+        } else {
+            "disabled"
+        }
+    ));
+    out.push_str(&format!(
+        "  Flags               {registered} registered, {} enabled\n",
+        enabled.len()
+    ));
+
+    // Compiled graph counts; a broken graph still reports — `keel check`
+    // carries the violations.
+    let compiled = discover_manifests(root).and_then(|manifests| {
+        keel_registry::PlatformGraph::compile(manifests)
+            .map_err(|v| anyhow::anyhow!("{} violation(s)", v.len()))
+    });
+    match compiled {
+        Ok(graph) => {
+            let routes: usize = graph.modules.iter().map(|m| m.routes.len()).sum();
+            out.push_str(&format!(
+                "  Graph               {} modules, {routes} routes, {} operations\n",
+                graph.modules.len(),
+                graph.operations.len()
+            ));
+        }
+        Err(e) => out.push_str(&format!("  Graph               unavailable ({e})\n")),
+    }
+
+    match external_deps(root) {
+        Some((external, _, _)) => {
+            let state = if external > 25 {
+                "OVER BUDGET"
+            } else {
+                "within budget"
+            };
+            out.push_str(&format!(
+                "  Dependencies        {external}/25 direct external ({state})\n"
+            ));
+        }
+        None => out.push_str("  Dependencies        (workspace Cargo.toml unreadable)\n"),
+    }
+    Ok(out)
+}
+
+/// Best-effort database server version for `about`: configured and
+/// reachable -> the `SELECT version()` string; anything else -> None (the
+/// report degrades, it never fails on an absent or unreachable database).
+async fn db_server_version(root: &Path) -> Option<String> {
+    let cfg = load_config(root).ok()?;
+    let db = cfg.database.as_ref()?;
+    if db.url.is_empty() {
+        return None;
+    }
+    let pool = db_pool(root).await.ok()?;
+    let version: String = sqlx::query_scalar("SELECT version()")
+        .fetch_one(&pool)
+        .await
+        .ok()?;
+    Some(version)
+}
+
+/// `[workspace.package] version` from the root Cargo.toml (the application
+/// version), falling back to the framework's own version.
+fn workspace_version(root: &Path) -> String {
+    std::fs::read_to_string(root.join("Cargo.toml"))
+        .ok()
+        .and_then(|raw| raw.parse::<toml::Value>().ok())
+        .and_then(|v| {
+            v.get("workspace")?
+                .get("package")?
+                .get("version")?
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+}
+
+/// URL scheme of a database DSN (`postgres://...` -> `postgres`); an opaque
+/// URL without a scheme reports `unknown`.
+fn db_url_scheme(url: &str) -> &str {
+    url.split_once("://")
+        .map(|(scheme, _)| scheme)
+        .unwrap_or("unknown")
+}
+
+/// Flag facts for `about`: (registered definitions, enabled set), resolved
+/// through the same registry/store/evaluation path boot uses. The actor is
+/// the fixed nil principal so percentage stages never reshuffle the report.
+fn flag_snapshot(
+    root: &Path,
+    environment: &str,
+) -> anyhow::Result<(usize, std::collections::BTreeSet<String>)> {
+    let registry = Arc::new(keel_feature_flags::platform_registry());
+    let registered = registry.definitions().len();
+    let store: Arc<dyn keel_feature_flags::FlagStore> =
+        Arc::new(keel_feature_flags::FileFlagStore::new(
+            keel_feature_flags::default_flags_path(root),
+        ));
+    let capabilities = std::collections::BTreeSet::new();
+    let input = keel_feature_flags::FlagInput {
+        environment,
+        tenant: None,
+        region: None,
+        capabilities: &capabilities,
+        actor: keel_foundation::PrincipalId::from_uuid(uuid::Uuid::nil()),
+        internal_actor: true,
+    };
+    let service = keel_feature_flags::FlagService::new(registry, store);
+    let snapshot = service
+        .snapshot(&input)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok((registered, snapshot.flags))
 }
 
 fn check() -> anyhow::Result<ExitCode> {
@@ -3760,6 +3954,105 @@ capability = "index"
             ExitCode::SUCCESS
         );
         route_list_at(&dir, "yaml", None, None, None).expect_err("unknown format refuses");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Wave 4 Phase 8 (docs/19 L222): `keel about` golden fields — every
+    /// section the Laravel-style report promises, built from config + the
+    /// compiled graph + the workspace dependency table. The database line
+    /// reports the driver from the DSN scheme and degrades (the server
+    /// version ping is absent here) instead of failing; secrets are never
+    /// rendered.
+    #[test]
+    fn about_report_carries_the_golden_fields() {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "keel-console-about-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(dir.join("config")).unwrap();
+        std::fs::create_dir_all(dir.join("applications").join("alpha")).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            r#"[workspace]
+members = ["tools/keel-console"]
+
+[workspace.package]
+version = "9.9.9"
+
+[workspace.dependencies]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("config").join("dev.toml"),
+            r#"[app]
+name = "golden-clinic"
+env = "dev"
+debug = true
+
+[database]
+url = "postgres://user:db-password@localhost:5432/keel"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("applications").join("alpha").join("module.toml"),
+            r#"[module]
+name = "alpha"
+version = "0.1.0"
+
+[capabilities]
+"index" = { profile = "READ" }
+
+[[routes]]
+method = "GET"
+path = "/api/v1/notes"
+operation = "index"
+capability = "index"
+
+[[routes]]
+method = "POST"
+path = "/api/v1/notes"
+operation = "index"
+capability = "index"
+deprecated = true
+"#,
+        )
+        .unwrap();
+
+        let text = about_report(&dir, None).expect("report builds");
+        assert!(text.contains("keel about"), "{text}");
+        assert!(text.contains("Framework"), "{text}");
+        assert!(text.contains(env!("CARGO_PKG_VERSION")), "{text}");
+        assert!(text.contains("golden-clinic"), "{text}");
+        assert!(
+            text.contains("Application version 9.9.9"),
+            "workspace.package version: {text}"
+        );
+        assert!(text.contains("Environment         dev"), "{text}");
+        assert!(text.contains("Debug               true"), "{text}");
+        // Driver from the DSN scheme; without a ping the server version
+        // degrades to a note instead of failing the report.
+        assert!(
+            text.contains("Database            postgres - server version unreachable"),
+            "{text}"
+        );
+        assert!(text.contains("Cache driver"), "{text}");
+        assert!(text.contains("Queue driver"), "{text}");
+        assert!(text.contains("Session driver"), "{text}");
+        let registered = keel_feature_flags::platform_registry().definitions().len();
+        assert!(text.contains(&format!("{registered} registered")), "{text}");
+        assert!(
+            text.contains("Graph               1 modules, 2 routes, 1 operations"),
+            "{text}"
+        );
+        assert!(
+            text.contains("0/25 direct external (within budget)"),
+            "{text}"
+        );
+        assert!(!text.contains("db-password"), "secrets never rendered");
         std::fs::remove_dir_all(&dir).ok();
     }
 

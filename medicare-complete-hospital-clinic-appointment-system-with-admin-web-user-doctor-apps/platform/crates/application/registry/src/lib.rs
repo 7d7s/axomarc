@@ -752,9 +752,20 @@ pub struct GraphViolation {
     /// Stable code: GRAPH-DUP-MODULE, GRAPH-DUP-OP, GRAPH-DUP-ROUTE, GRAPH-MISSING-DEP,
     /// GRAPH-CYCLE, GRAPH-ROUTE-OP, GRAPH-CAP-MISSING, GRAPH-MANIFEST, plus Wave 2:
     /// GRAPH-PLANE, GRAPH-GROUP-UNKNOWN, GRAPH-CONSTRAINT-PARAM, GRAPH-CONSTRAINT-KIND,
-    /// GRAPH-FALLBACK-DUP, GRAPH-ROUTEFILE-OP, GRAPH-CHANNEL-CAP.
+    /// GRAPH-FALLBACK-DUP, GRAPH-ROUTEFILE-OP, GRAPH-CHANNEL-CAP, plus Wave 4:
+    /// GRAPH-VERSION-SEMVER.
     pub code: String,
     pub message: String,
+}
+
+/// Wave 4 Phase 8: a `v<N>` version token (`v1`, `v12`, ...). Lowercase `v`
+/// followed by one or more ASCII digits — `V1`, `1`, `v1.2`, and `v` alone
+/// are all rejected by GRAPH-VERSION-SEMVER. Path segments that pass this
+/// check are version-looking and must match the route's declared version.
+fn is_version_token(segment: &str) -> bool {
+    segment
+        .strip_prefix('v')
+        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Compiled, frozen platform graph. Runtime serves lookups against it; it never
@@ -928,6 +939,44 @@ impl PlatformGraph {
                             r.operation
                         ),
                     });
+                }
+            }
+        }
+
+        // Wave 4 Phase 8 gate GRAPH-VERSION-SEMVER (docs/19 L223): every
+        // route's `version` parses as `v<N>` (lowercase `v` + digits), and a
+        // version-looking path segment (e.g. `/api/v1/...`) must agree with
+        // the declared version. The `deprecated` flag rides separately (the
+        // Deprecation header/meta, route:list columns, and OpenAPI marker).
+        // Collect-all, boot-refusing.
+        for m in &modules {
+            for r in &m.routes {
+                if !is_version_token(&r.version) {
+                    violations.push(GraphViolation {
+                        code: "GRAPH-VERSION-SEMVER".into(),
+                        message: format!(
+                            "module {}: route {} {} declares version {:?} which must parse as v<N> (e.g. v1)",
+                            m.name(),
+                            r.method.to_uppercase(),
+                            r.path,
+                            r.version
+                        ),
+                    });
+                    continue;
+                }
+                for segment in r.path.split('/') {
+                    if segment != r.version && is_version_token(segment) {
+                        violations.push(GraphViolation {
+                            code: "GRAPH-VERSION-SEMVER".into(),
+                            message: format!(
+                                "module {}: route {} {} declares version {} but its path carries conflicting version segment {segment}",
+                                m.name(),
+                                r.method.to_uppercase(),
+                                r.path,
+                                r.version
+                            ),
+                        });
+                    }
                 }
             }
         }
@@ -2546,6 +2595,69 @@ capability = "ghost.cap"
         .unwrap_err();
         assert!(v.iter().any(|x| x.code == "GRAPH-ROUTEFILE-OP"), "{v:?}");
         assert!(v.iter().any(|x| x.code == "GRAPH-CHANNEL-CAP"), "{v:?}");
+    }
+
+    /// Wave 4 Phase 8 (docs/19 L223): GRAPH-VERSION-SEMVER — every route's
+    /// `version` parses as `v<N>`, and a version-looking path segment must
+    /// agree with it. The matching v2 route and the segment-less routes pass;
+    /// the unparseable token and the mismatched segment are both reported
+    /// (collect-all).
+    #[test]
+    fn graph_version_semver_gate_rejects_bad_tokens_and_segment_mismatches() {
+        let routes = r#"
+[[routes]]
+method = "GET"
+path = "/api/v2/alpha"
+operation = "create"
+version = "v2"
+
+[[routes]]
+method = "POST"
+path = "/beta"
+operation = "create"
+version = "1.0"
+
+[[routes]]
+method = "GET"
+path = "/api/v2/gamma"
+operation = "create"
+version = "v1"
+
+[[routes]]
+method = "DELETE"
+path = "/delta"
+operation = "create"
+"#;
+        let v: Vec<_> = PlatformGraph::compile(vec![manifest("alpha", routes)])
+            .expect_err("two version violations refuse the graph")
+            .into_iter()
+            .filter(|x| x.code == "GRAPH-VERSION-SEMVER")
+            .collect();
+        assert_eq!(v.len(), 2, "{v:?}");
+        assert!(
+            v.iter().any(|x| x.message.contains("1.0")),
+            "bad token reported: {v:?}"
+        );
+        assert!(
+            v.iter()
+                .any(|x| x.message.contains("conflicting version segment")),
+            "segment mismatch reported: {v:?}"
+        );
+
+        // Routes whose versions parse and agree compile clean.
+        let ok = r#"
+[[routes]]
+method = "GET"
+path = "/api/v2/alpha"
+operation = "create"
+version = "v2"
+
+[[routes]]
+method = "GET"
+path = "/notes"
+operation = "create"
+"#;
+        PlatformGraph::compile(vec![manifest("alpha", ok)]).expect("clean versions compile");
     }
 
     #[test]
