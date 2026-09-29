@@ -581,6 +581,32 @@ impl Select {
         self
     }
 
+    /// `OR EXISTS (subquery)` — existence filter OR-joined to the preceding
+    /// clause (`orWhereHas`); the first clause of a list stays implicit.
+    pub fn or_where_exists(mut self, subquery: Select) -> Self {
+        self.clauses.push((
+            Junction::Or,
+            Clause::Exists {
+                negated: false,
+                subquery: Box::new(subquery),
+            },
+        ));
+        self
+    }
+
+    /// `OR NOT EXISTS (subquery)` — negated existence OR-joined to the
+    /// preceding clause (`orWhereDoesntHave`).
+    pub fn or_where_not_exists(mut self, subquery: Select) -> Self {
+        self.clauses.push((
+            Junction::Or,
+            Clause::Exists {
+                negated: true,
+                subquery: Box::new(subquery),
+            },
+        ));
+        self
+    }
+
     /// Composite row comparison for keyset pagination: `(a, b) > ($1, $2)`.
     /// Columns and values must be non-empty and equal in length; ordering
     /// operators only (`=`, `<>`, `<`, `<=`, `>`, `>=`) — checked at build.
@@ -1655,6 +1681,46 @@ mod tests {
         assert_eq!(
             q.sql,
             "SELECT * FROM t WHERE NOT EXISTS (SELECT * FROM u WHERE u.t_id = $1)"
+        );
+    }
+
+    #[test]
+    fn or_where_exists_joins_the_preceding_clause() {
+        let q = Select::from_table(id("patients"))
+            .where_eq(id("status"), "active")
+            .or_where_exists(
+                Select::from_table(id("appointments"))
+                    .where_column(id("appointments.patient_id"), id("patients.id")),
+            )
+            .build()
+            .unwrap();
+        assert_eq!(
+            q.sql,
+            "SELECT * FROM patients WHERE status = $1 OR EXISTS (SELECT * FROM appointments WHERE appointments.patient_id = patients.id)"
+        );
+
+        let q = Select::from_table(id("patients"))
+            .where_eq(id("status"), "active")
+            .or_where_not_exists(
+                Select::from_table(id("appointments"))
+                    .where_column(id("appointments.patient_id"), id("patients.id"))
+                    .where_eq(id("appointments.status"), "booked"),
+            )
+            .build()
+            .unwrap();
+        assert_eq!(
+            q.sql,
+            "SELECT * FROM patients WHERE status = $1 OR NOT EXISTS (SELECT * FROM appointments WHERE appointments.patient_id = patients.id AND appointments.status = $2)"
+        );
+        // The first clause's junction is implicit: a leading or_where_exists
+        // renders without a dangling OR.
+        let q = Select::from_table(id("patients"))
+            .or_where_exists(Select::from_table(id("appointments")))
+            .build()
+            .unwrap();
+        assert_eq!(
+            q.sql,
+            "SELECT * FROM patients WHERE EXISTS (SELECT * FROM appointments)"
         );
     }
 

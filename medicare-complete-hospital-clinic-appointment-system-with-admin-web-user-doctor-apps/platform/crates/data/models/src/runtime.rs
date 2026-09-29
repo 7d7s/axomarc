@@ -27,9 +27,10 @@ use serde_json::Value as Json;
 use uuid::Uuid;
 
 use crate::store::{
-    now_rfc3339, validate_counter, FieldFilter, ListOpts, ModelStore, Record,
+    fold_aggregate_values, now_rfc3339, sort_records, validate_aggregate, validate_counter,
+    AggregateOp, ExistsFilter, FieldFilter, ListOpts, ModelStore, Record,
 };
-use crate::{FieldDef, FieldType, ModelDef, ModelRegistry, RelationKind};
+use crate::{FieldDef, FieldType, ModelDef, ModelRegistry, RelationDef, RelationKind};
 
 // ------------------------------------------------------------------ events
 
@@ -441,19 +442,26 @@ impl ModelRuntime {
                 .ok_or_else(|| AppError::validation(format!("unknown scope {name:?}")))?;
             filters = scope(filters);
         }
-        for filter in &filters {
-            if filter.field != "id" && self.model.field_named(&filter.field).is_none() {
-                return Err(AppError::validation(format!(
-                    "filter on unknown field {:?}",
-                    filter.field
-                )));
-            }
-        }
+        self.validate_predicates(&filters)?;
         let opts = ListOpts {
             page,
             include_deleted: false,
+            ..Default::default()
         };
         store.list(&self.model, tenant, &filters, &opts)
+    }
+
+    /// Fetch with full [`ListOpts`] (sort/limit/trash) — the eager-load
+    /// entry point; same field validation as [`Self::list`], no scopes.
+    fn list_with_opts(
+        &self,
+        store: &dyn ModelStore,
+        tenant: Option<TenantId>,
+        filters: Vec<FieldFilter>,
+        opts: &ListOpts,
+    ) -> Result<keel_query::Page<Record>, AppError> {
+        self.validate_predicates(&filters)?;
+        store.list(&self.model, tenant, &filters, opts)
     }
 
     pub fn update(
@@ -517,13 +525,16 @@ impl ModelRuntime {
     // ------------------------------------------------------------- finders
 
     /// Predicate guard shared by the finder family (same rule as `list`).
+    /// Field terms are checked against this model; existence terms were
+    /// validated when built (relation exists, sub fields on the target).
     fn validate_predicates(&self, predicates: &[FieldFilter]) -> Result<(), AppError> {
         for filter in predicates {
-            if filter.field != "id" && self.model.field_named(&filter.field).is_none() {
-                return Err(AppError::validation(format!(
-                    "filter on unknown field {:?}",
-                    filter.field
-                )));
+            if let FieldFilter::Cmp { field, .. } = filter {
+                if field != "id" && self.model.field_named(field).is_none() {
+                    return Err(AppError::validation(format!(
+                        "filter on unknown field {field:?}"
+                    )));
+                }
             }
         }
         Ok(())
@@ -1117,9 +1128,772 @@ impl ModelRuntime {
         parents: &mut [Record],
         tenant: Option<TenantId>,
     ) -> Result<(), AppError> {
-        let registry = self.registry.clone().ok_or_else(|| {
-            AppError::validation("relation loading needs a model registry")
+        self.load_relation_constrained(
+            store,
+            relation_name,
+            parents,
+            tenant,
+            &EagerConstraint::default(),
+        )
+    }
+
+    /// One constrained eager load — the primitive behind [`Self::load_relation`]
+    /// and each level of [`Self::with`].
+    fn load_relation_constrained(
+        &self,
+        store: &dyn ModelStore,
+        relation_name: &str,
+        parents: &mut [Record],
+        tenant: Option<TenantId>,
+        constraint: &EagerConstraint,
+    ) -> Result<(), AppError> {
+        // MorphTo resolves per stored TYPE — it branches before the
+        // single-target path.
+        if let Some(relation) = self
+            .model
+            .relations
+            .iter()
+            .find(|r| r.name == relation_name && r.kind == RelationKind::MorphTo)
+        {
+            return self.load_morph_to(store, relation, parents, tenant, constraint);
+        }
+        let (relation, target, _) = self.resolve_relation(relation_name)?;
+        let related = self.collect_resolved(store, &relation, &target, parents, tenant, constraint)?;
+        let single = matches!(
+            relation.kind,
+            RelationKind::BelongsTo | RelationKind::HasOne
+        );
+        for (parent, rows) in parents.iter_mut().zip(related) {
+            let attached = if single {
+                rows.first()
+                    .cloned()
+                    .map(Json::Object)
+                    .unwrap_or(Json::Null)
+            } else {
+                Json::Array(rows.into_iter().map(Json::Object).collect())
+            };
+            parent.insert(relation.name.clone(), attached);
+        }
+        Ok(())
+    }
+
+    /// Eloquent `morphTo` eager load: group parents by their stored type,
+    /// resolve each type through the morph map (unmapped = model name),
+    /// fetch each distinct type in ONE query (at most one per type, as in
+    /// Eloquent), attach `Object`/`Null`.
+    fn load_morph_to(
+        &self,
+        store: &dyn ModelStore,
+        relation: &RelationDef,
+        parents: &mut [Record],
+        tenant: Option<TenantId>,
+        constraint: &EagerConstraint,
+    ) -> Result<(), AppError> {
+        if !constraint.filters.is_empty()
+            || constraint.sort.is_some()
+            || constraint.limit.is_some()
+        {
+            return Err(AppError::validation(format!(
+                "morph-to relation {:?} cannot take eager constraints (the target model varies per row)",
+                relation.name
+            )));
+        }
+        let registry = self
+            .registry
+            .clone()
+            .ok_or_else(|| AppError::validation("relation loading needs a model registry"))?;
+        let type_col = relation.morph_type.clone().ok_or_else(|| {
+            AppError::validation(format!(
+                "morph-to relation {:?} needs a type column",
+                relation.name
+            ))
         })?;
+        let id_col = &relation.foreign_key;
+        let owner_key = relation.target_key.clone().unwrap_or_else(|| "id".into());
+        for parent in parents.iter_mut() {
+            parent.insert(relation.name.clone(), Json::Null);
+        }
+        let mut by_type: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for (i, parent) in parents.iter().enumerate() {
+            let Some(type_value) = parent.get(&type_col).and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if let Some(id) = parent.get(id_col) {
+                if !id.is_null() {
+                    by_type.entry(type_value.to_string()).or_default().push(i);
+                }
+            }
+        }
+        for (type_value, indices) in by_type {
+            let model_name = registry
+                .morph_map
+                .get(&type_value)
+                .cloned()
+                .unwrap_or_else(|| type_value.clone());
+            let target = registry.get(&model_name).cloned().ok_or_else(|| {
+                AppError::validation(format!(
+                    "morph type {type_value:?} resolves to unknown model {model_name:?}"
+                ))
+            })?;
+            let target_rt = ModelRuntime::new(target).with_registry(registry.clone());
+            let ids: Vec<Json> = indices
+                .iter()
+                .map(|&i| parents[i].get(id_col).cloned().unwrap_or(Json::Null))
+                .collect();
+            let loaded = fetch_keyed(
+                store,
+                &target_rt,
+                &owner_key,
+                ids,
+                tenant,
+                &EagerConstraint::default(),
+            )?;
+            for i in indices {
+                let id = parents[i].get(id_col).cloned().unwrap_or(Json::Null);
+                let attached = loaded
+                    .get(&id.to_string())
+                    .and_then(|rows| rows.first().cloned())
+                    .map(Json::Object)
+                    .unwrap_or(Json::Null);
+                parents[i].insert(relation.name.clone(), attached);
+            }
+        }
+        Ok(())
+    }
+
+    /// Eloquent `with('post.comments.author')`: eager-load a nested relation
+    /// path level by level — each level stays at most 2 store queries (no
+    /// N+1 at any depth).
+    pub fn with(
+        &self,
+        store: &dyn ModelStore,
+        parents: &mut [Record],
+        tenant: Option<TenantId>,
+        path: &str,
+    ) -> Result<(), AppError> {
+        self.with_constrained(store, parents, tenant, path, &mut |_, _, _| {})
+    }
+
+    /// `with` + per-level constraint closures: `constraints` runs once per
+    /// level with `(depth, relation name, &mut constraint)` BEFORE that
+    /// level's fetch, so each level can filter/sort/limit independently.
+    pub fn with_constrained(
+        &self,
+        store: &dyn ModelStore,
+        parents: &mut [Record],
+        tenant: Option<TenantId>,
+        path: &str,
+        constraints: &mut dyn FnMut(usize, &str, &mut EagerConstraint),
+    ) -> Result<(), AppError> {
+        let parts: Vec<&str> = path
+            .split('.')
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .collect();
+        if parts.is_empty() {
+            return Err(AppError::validation(format!(
+                "with() needs a dotted relation path, got {path:?}"
+            )));
+        }
+        self.with_parts(store, parents, tenant, &parts, constraints, 0)
+    }
+
+    /// Recursive descent for [`Self::with_constrained`]: load `parts[level]`
+    /// onto `parents`, then clone the attached children out, load the next
+    /// level onto them, and write the enriched children back.
+    fn with_parts(
+        &self,
+        store: &dyn ModelStore,
+        parents: &mut [Record],
+        tenant: Option<TenantId>,
+        parts: &[&str],
+        constraints: &mut dyn FnMut(usize, &str, &mut EagerConstraint),
+        level: usize,
+    ) -> Result<(), AppError> {
+        let relation = parts[level];
+        let mut constraint = EagerConstraint::default();
+        constraints(level, relation, &mut constraint);
+        self.load_relation_constrained(store, relation, parents, tenant, &constraint)?;
+        if level + 1 >= parts.len() {
+            return Ok(());
+        }
+        // Pull this level's children out (arrays keep their slots), recurse
+        // on the CHILD model's runtime (the next part is its relation), then
+        // write the enriched children back in the same shape.
+        let mut children: Vec<Record> = Vec::new();
+        let mut owners: Vec<(usize, Option<usize>)> = Vec::new();
+        for (i, parent) in parents.iter().enumerate() {
+            match parent.get(relation) {
+                Some(Json::Array(items)) => {
+                    for (j, item) in items.iter().enumerate() {
+                        if let Json::Object(obj) = item {
+                            owners.push((i, Some(j)));
+                            children.push(obj.clone());
+                        }
+                    }
+                }
+                Some(Json::Object(obj)) => {
+                    owners.push((i, None));
+                    children.push(obj.clone());
+                }
+                _ => {}
+            }
+        }
+        let (_, target, registry) = self.resolve_relation(relation)?;
+        let child_rt = ModelRuntime::new(target).with_registry(registry);
+        child_rt.with_parts(store, &mut children, tenant, parts, constraints, level + 1)?;
+        let mut rebuilt: BTreeMap<usize, (Option<Json>, Vec<Json>)> = BTreeMap::new();
+        for ((i, slot), child) in owners.into_iter().zip(children.into_iter()) {
+            let entry = rebuilt.entry(i).or_insert((None, Vec::new()));
+            match slot {
+                Some(_) => entry.1.push(Json::Object(child)),
+                None => entry.0 = Some(Json::Object(child)),
+            }
+        }
+        for (i, (object, items)) in rebuilt {
+            let attached = object.unwrap_or(Json::Array(items));
+            parents[i].insert(relation.to_string(), attached);
+        }
+        Ok(())
+    }
+
+    // ------------------------------------------------------------- pivots
+
+    /// Resolve a ManyToMany relation and its pivot model (registered
+    /// `through`, or synthesized from `pivot_table`).
+    fn resolve_pivot(
+        &self,
+        relation_name: &str,
+    ) -> Result<(RelationDef, ModelDef, ModelDef), AppError> {
+        let (relation, target, registry) = self.resolve_relation(relation_name)?;
+        if !matches!(
+            relation.kind,
+            RelationKind::ManyToMany | RelationKind::MorphToMany
+        ) {
+            return Err(AppError::validation(format!(
+                "relation {relation_name:?} on {} is not many-to-many",
+                self.model.name
+            )));
+        }
+        let pivot = match &relation.through {
+            Some(name) => registry.get(name).cloned().ok_or_else(|| {
+                AppError::validation(format!("unknown pivot model {name:?}"))
+            })?,
+            None => synthesize_pivot(&relation)?,
+        };
+        Ok((relation, target, pivot))
+    }
+
+    /// The pivot FK column pointing at the target model.
+    fn pivot_target_key(relation: &RelationDef) -> Result<String, AppError> {
+        relation.target_key.clone().ok_or_else(|| {
+            AppError::validation(format!(
+                "relation {:?} needs a pivot target key",
+                relation.name
+            ))
+        })
+    }
+
+    /// Target ids currently linked to `parent_id` on the pivot (pinned to
+    /// this owner's morph type for morph relations).
+    fn pivot_links(
+        &self,
+        store: &dyn ModelStore,
+        pivot: &ModelDef,
+        relation: &RelationDef,
+        parent_id: &Json,
+        target_key: &str,
+        tenant: Option<TenantId>,
+    ) -> Result<Vec<Json>, AppError> {
+        let mut filters = vec![FieldFilter::eq(&relation.foreign_key, parent_id.clone())];
+        if let Some(type_col) = &relation.morph_type {
+            filters.push(FieldFilter::eq(
+                type_col.clone(),
+                Json::String(self.morph_alias(relation)?),
+            ));
+        }
+        let rows = store
+            .list(pivot, tenant, &filters, &ListOpts::default())?
+            .items;
+        Ok(rows
+            .iter()
+            .filter_map(|r| r.get(target_key).cloned())
+            .filter(|v| !v.is_null())
+            .collect())
+    }
+
+    /// Eloquent `attach`: link `target_ids` to `parent_id` on the pivot —
+    /// pairs already present are left alone (idempotent), so the return is
+    /// the number of pivot rows added.
+    pub fn attach(
+        &self,
+        store: &dyn ModelStore,
+        relation_name: &str,
+        parent_id: Json,
+        target_ids: Vec<Json>,
+        tenant: Option<TenantId>,
+    ) -> Result<u64, AppError> {
+        let (relation, _target, pivot) = self.resolve_pivot(relation_name)?;
+        let target_key = Self::pivot_target_key(&relation)?;
+        let current =
+            self.pivot_links(store, &pivot, &relation, &parent_id, &target_key, tenant)?;
+        // Morph pivots carry this owner's type value alongside the FK.
+        let morph_value = if relation.morph_type.is_some() {
+            Some(self.morph_alias(&relation)?)
+        } else {
+            None
+        };
+        let pivot_rt = ModelRuntime::new(pivot);
+        let mut inserted = 0u64;
+        for id in target_ids {
+            if id.is_null() || current.contains(&id) {
+                continue;
+            }
+            let mut row = Record::new();
+            row.insert(relation.foreign_key.clone(), parent_id.clone());
+            row.insert(target_key.clone(), id);
+            if let (Some(type_col), Some(alias)) = (&relation.morph_type, &morph_value) {
+                row.insert(type_col.clone(), Json::String(alias.clone()));
+            }
+            pivot_rt.insert(store, &row, tenant)?;
+            inserted += 1;
+        }
+        Ok(inserted)
+    }
+
+    /// Eloquent `detach`: unlink `target_ids` from `parent_id` (empty list
+    /// = every link for that parent) — returns the pivot rows removed.
+    pub fn detach(
+        &self,
+        store: &dyn ModelStore,
+        relation_name: &str,
+        parent_id: Json,
+        target_ids: Vec<Json>,
+        tenant: Option<TenantId>,
+    ) -> Result<u64, AppError> {
+        let (relation, _target, pivot) = self.resolve_pivot(relation_name)?;
+        let mut filters = vec![FieldFilter::eq(&relation.foreign_key, parent_id)];
+        if let Some(type_col) = &relation.morph_type {
+            filters.push(FieldFilter::eq(
+                type_col.clone(),
+                Json::String(self.morph_alias(&relation)?),
+            ));
+        }
+        if !target_ids.is_empty() {
+            filters.push(FieldFilter::is_in(
+                Self::pivot_target_key(&relation)?,
+                target_ids,
+            ));
+        }
+        let rows = store.delete_filtered(&pivot, tenant, &filters)?;
+        Ok(rows.len() as u64)
+    }
+
+    /// Eloquent `sync`: make the pivot links EXACTLY `target_ids` — missing
+    /// pairs attached, stale pairs detached; returns both sides.
+    pub fn sync(
+        &self,
+        store: &dyn ModelStore,
+        relation_name: &str,
+        parent_id: Json,
+        target_ids: Vec<Json>,
+        tenant: Option<TenantId>,
+    ) -> Result<PivotSync, AppError> {
+        let (relation, _target, pivot) = self.resolve_pivot(relation_name)?;
+        let target_key = Self::pivot_target_key(&relation)?;
+        let current =
+            self.pivot_links(store, &pivot, &relation, &parent_id, &target_key, tenant)?;
+        let mut desired: Vec<Json> = Vec::new();
+        for id in target_ids {
+            if !id.is_null() && !desired.contains(&id) {
+                desired.push(id);
+            }
+        }
+        let attached: Vec<Json> = desired
+            .iter()
+            .filter(|id| !current.contains(id))
+            .cloned()
+            .collect();
+        let detached: Vec<Json> = current
+            .iter()
+            .filter(|id| !desired.contains(id))
+            .cloned()
+            .collect();
+        if !attached.is_empty() {
+            self.attach(
+                store,
+                relation_name,
+                parent_id.clone(),
+                attached.clone(),
+                tenant,
+            )?;
+        }
+        if !detached.is_empty() {
+            self.detach(store, relation_name, parent_id, detached.clone(), tenant)?;
+        }
+        Ok(PivotSync { attached, detached })
+    }
+
+    /// Eloquent `toggle`: flip each listed id — unlinked pairs attached,
+    /// linked pairs detached.
+    pub fn toggle(
+        &self,
+        store: &dyn ModelStore,
+        relation_name: &str,
+        parent_id: Json,
+        target_ids: Vec<Json>,
+        tenant: Option<TenantId>,
+    ) -> Result<PivotSync, AppError> {
+        let (relation, _target, pivot) = self.resolve_pivot(relation_name)?;
+        let target_key = Self::pivot_target_key(&relation)?;
+        let current =
+            self.pivot_links(store, &pivot, &relation, &parent_id, &target_key, tenant)?;
+        let mut attached: Vec<Json> = Vec::new();
+        let mut detached: Vec<Json> = Vec::new();
+        for id in target_ids {
+            if id.is_null() {
+                continue;
+            }
+            if current.contains(&id) {
+                detached.push(id);
+            } else {
+                attached.push(id);
+            }
+        }
+        if !attached.is_empty() {
+            self.attach(
+                store,
+                relation_name,
+                parent_id.clone(),
+                attached.clone(),
+                tenant,
+            )?;
+        }
+        if !detached.is_empty() {
+            self.detach(store, relation_name, parent_id, detached.clone(), tenant)?;
+        }
+        Ok(PivotSync { attached, detached })
+    }
+
+    /// Eloquent `updateExistingPivot`: apply `changes` to the single pivot
+    /// row linking `parent_id` to `target_id`.
+    pub fn update_existing_pivot(
+        &self,
+        store: &dyn ModelStore,
+        relation_name: &str,
+        parent_id: Json,
+        target_id: Json,
+        changes: &Record,
+        tenant: Option<TenantId>,
+    ) -> Result<Record, AppError> {
+        let (relation, _target, pivot) = self.resolve_pivot(relation_name)?;
+        let target_key = Self::pivot_target_key(&relation)?;
+        let mut filters = vec![
+            FieldFilter::eq(&relation.foreign_key, parent_id),
+            FieldFilter::eq(target_key, target_id.clone()),
+        ];
+        if let Some(type_col) = &relation.morph_type {
+            filters.push(FieldFilter::eq(
+                type_col.clone(),
+                Json::String(self.morph_alias(&relation)?),
+            ));
+        }
+        let mut rows = store.update_filtered(&pivot, tenant, &filters, changes)?;
+        rows.pop()
+            .ok_or_else(|| AppError::not_found(format!("pivot row linking {target_id}")))
+    }
+
+    /// One eager pass over a resolved relation: query the related rows (at
+    /// most 2 queries) and return them grouped per parent, aligned with
+    /// `parents`. Both [`Self::load_relation`] and the eager aggregate
+    /// family ([`Self::with_aggregate`]) attach/fold from this same shape.
+    fn collect_resolved(
+        &self,
+        store: &dyn ModelStore,
+        relation: &RelationDef,
+        target: &ModelDef,
+        parents: &[Record],
+        tenant: Option<TenantId>,
+        constraint: &EagerConstraint,
+    ) -> Result<Vec<Vec<Record>>, AppError> {
+        // Callers resolve through [`Self::resolve_relation`], which already
+        // requires the registry — reuse it rather than threading a 8th arg.
+        let registry = self
+            .registry
+            .clone()
+            .ok_or_else(|| AppError::validation("relation loading needs a model registry"))?;
+        let target_rt = ModelRuntime::new(target.clone()).with_registry(registry.clone());
+        Ok(match relation.kind {
+            RelationKind::BelongsTo => {
+                let target_key = relation.target_key.clone().unwrap_or_else(|| "id".into());
+                let ids = distinct_values(parents, &relation.foreign_key);
+                let loaded = fetch_keyed(store, &target_rt, &target_key, ids, tenant, constraint)?;
+                parents
+                    .iter()
+                    .map(|parent| {
+                        parent
+                            .get(&relation.foreign_key)
+                            .and_then(|k| loaded.get(&k.to_string()))
+                            .and_then(|rows| rows.first().cloned())
+                            .into_iter()
+                            .collect()
+                    })
+                    .collect()
+            }
+            RelationKind::HasMany | RelationKind::HasOne | RelationKind::MorphMany => {
+                let parent_ids = distinct_values(parents, "id");
+                let mut effective = constraint.clone();
+                if relation.kind == RelationKind::MorphMany {
+                    // Pin the fetch to THIS owner's morph type — the id
+                    // column alone would match sibling owners' rows.
+                    let type_col = relation.morph_type.clone().ok_or_else(|| {
+                        AppError::validation(format!(
+                            "morph relation {:?} needs a type column",
+                            relation.name
+                        ))
+                    })?;
+                    let alias = self.morph_alias(relation)?;
+                    effective
+                        .filters
+                        .push(FieldFilter::eq(type_col, Json::String(alias)));
+                }
+                let by_fk = fetch_keyed(
+                    store,
+                    &target_rt,
+                    &relation.foreign_key,
+                    parent_ids,
+                    tenant,
+                    &effective,
+                )?;
+                parents
+                    .iter()
+                    .map(|parent| {
+                        parent
+                            .get("id")
+                            .and_then(|k| by_fk.get(&k.to_string()))
+                            .cloned()
+                            .unwrap_or_default()
+                    })
+                    .collect()
+            }
+            RelationKind::ManyThrough
+            | RelationKind::ManyToMany
+            | RelationKind::MorphToMany => {
+                // Query 1: join/pivot rows for all parent ids; Query 2:
+                // target rows for the far-side ids found on the join.
+                let through = match &relation.through {
+                    Some(name) => registry.get(name).cloned().ok_or_else(|| {
+                        AppError::validation(format!("unknown join model {name:?}"))
+                    })?,
+                    None => synthesize_pivot(relation)?,
+                };
+                // FK on the join table pointing at the target model.
+                let far_fk = relation.target_key.clone().unwrap_or_else(|| {
+                    format!(
+                        "{}_id",
+                        target.table.to_lowercase().trim_end_matches('s')
+                    )
+                });
+                let parent_ids = distinct_values(parents, "id");
+                let mut join_filters =
+                    vec![FieldFilter::is_in(&relation.foreign_key, parent_ids)];
+                if relation.kind == RelationKind::MorphToMany {
+                    // Pin the pivot rows to THIS owner's morph type.
+                    let type_col = relation.morph_type.clone().ok_or_else(|| {
+                        AppError::validation(format!(
+                            "morph relation {:?} needs a type column",
+                            relation.name
+                        ))
+                    })?;
+                    let alias = self.morph_alias(relation)?;
+                    join_filters.push(FieldFilter::eq(type_col, Json::String(alias)));
+                }
+                let join_rows = store
+                    .list(&through, tenant, &join_filters, &ListOpts::default())?
+                    .items;
+                let far_ids = distinct_values(&join_rows, &far_fk);
+                let loaded = fetch_keyed(store, &target_rt, "id", far_ids, tenant, constraint)?;
+                parents
+                    .iter()
+                    .map(|parent| {
+                        let Some(pid) = parent.get("id") else {
+                            return Vec::new();
+                        };
+                        let mut rows: Vec<Record> = join_rows
+                            .iter()
+                            .filter(|r| r.get(&relation.foreign_key) == Some(pid))
+                            .filter_map(|r| {
+                                r.get(&far_fk)
+                                    .and_then(|k| loaded.get(&k.to_string()))
+                                    .and_then(|rows| rows.first().cloned())
+                            })
+                            .collect();
+                        // Assembly follows join order — honor the level's
+                        // sort once rows are grouped per parent.
+                        if let Some((field, desc)) = &constraint.sort {
+                            sort_records(&mut rows, field, *desc);
+                        }
+                        rows
+                    })
+                    .collect()
+            }
+            RelationKind::MorphTo => {
+                // Defensive: load_relation_constrained branches before
+                // single-target resolution.
+                return Err(AppError::validation(format!(
+                    "morph-to relation {:?} loads per stored type, not through one target",
+                    relation.name
+                )));
+            }
+        })
+    }
+
+    // ------------------------------------------------------- eager aggregates
+
+    /// Eloquent `withCount`/`withSum`/`withMin`/`withMax`/`withAvg`:
+    /// attach one aggregate of the related rows to each parent under
+    /// `<relation>_count` (COUNT) or `<relation>_<op>_<field>` — one eager
+    /// fetch per relation, never N+1. Landing note: the value is folded at
+    /// runtime from the same related rows `load_relation` would attach
+    /// (documented divergence — no inlined `SELECT` subquery); empty sets
+    /// fold to `0` for COUNT and SQL `NULL` for the rest, on both stores.
+    pub fn with_aggregate(
+        &self,
+        store: &dyn ModelStore,
+        relation_name: &str,
+        parents: &mut [Record],
+        tenant: Option<TenantId>,
+        op: &AggregateOp,
+    ) -> Result<(), AppError> {
+        let (relation, target, _) = self.resolve_relation(relation_name)?;
+        validate_aggregate(&target, op)?;
+        if parents.is_empty() {
+            return Ok(());
+        }
+        let related = self.collect_resolved(
+            store,
+            &relation,
+            &target,
+            parents,
+            tenant,
+            &EagerConstraint::default(),
+        )?;
+        let alias = aggregate_alias(relation_name, op);
+        for (parent, rows) in parents.iter_mut().zip(related) {
+            let value = match op {
+                AggregateOp::Count => Json::from(rows.len() as u64),
+                other => {
+                    let name = other
+                        .field()
+                        .expect("non-count aggregate carries a field");
+                    let values: Vec<&Json> = rows
+                        .iter()
+                        .filter_map(|r| r.get(name))
+                        .filter(|v| !matches!(v, Json::Null))
+                        .collect();
+                    fold_aggregate_values(&values, name, other)?
+                }
+            };
+            parent.insert(alias.clone(), value);
+        }
+        Ok(())
+    }
+
+    /// Eloquent `withCount('relation')` -> `<relation>_count`.
+    pub fn with_count(
+        &self,
+        store: &dyn ModelStore,
+        relation_name: &str,
+        parents: &mut [Record],
+        tenant: Option<TenantId>,
+    ) -> Result<(), AppError> {
+        self.with_aggregate(store, relation_name, parents, tenant, &AggregateOp::Count)
+    }
+
+    /// Eloquent `withSum('relation', 'field')` -> `<relation>_sum_<field>`.
+    pub fn with_sum(
+        &self,
+        store: &dyn ModelStore,
+        relation_name: &str,
+        parents: &mut [Record],
+        tenant: Option<TenantId>,
+        field: &str,
+    ) -> Result<(), AppError> {
+        self.with_aggregate(
+            store,
+            relation_name,
+            parents,
+            tenant,
+            &AggregateOp::Sum(field.into()),
+        )
+    }
+
+    /// Eloquent `withAvg` -> `<relation>_avg_<field>`.
+    pub fn with_avg(
+        &self,
+        store: &dyn ModelStore,
+        relation_name: &str,
+        parents: &mut [Record],
+        tenant: Option<TenantId>,
+        field: &str,
+    ) -> Result<(), AppError> {
+        self.with_aggregate(
+            store,
+            relation_name,
+            parents,
+            tenant,
+            &AggregateOp::Avg(field.into()),
+        )
+    }
+
+    /// Eloquent `withMin` -> `<relation>_min_<field>`.
+    pub fn with_min(
+        &self,
+        store: &dyn ModelStore,
+        relation_name: &str,
+        parents: &mut [Record],
+        tenant: Option<TenantId>,
+        field: &str,
+    ) -> Result<(), AppError> {
+        self.with_aggregate(
+            store,
+            relation_name,
+            parents,
+            tenant,
+            &AggregateOp::Min(field.into()),
+        )
+    }
+
+    /// Eloquent `withMax` -> `<relation>_max_<field>`.
+    pub fn with_max(
+        &self,
+        store: &dyn ModelStore,
+        relation_name: &str,
+        parents: &mut [Record],
+        tenant: Option<TenantId>,
+        field: &str,
+    ) -> Result<(), AppError> {
+        self.with_aggregate(
+            store,
+            relation_name,
+            parents,
+            tenant,
+            &AggregateOp::Max(field.into()),
+        )
+    }
+
+    // ---------------------------------------------------- existence filters
+
+    /// Resolve a declared relation, its target model, and the registry
+    /// (shared by filter builds, eager loading, and aggregates).
+    fn resolve_relation(
+        &self,
+        relation_name: &str,
+    ) -> Result<(RelationDef, ModelDef, Arc<ModelRegistry>), AppError> {
+        let registry = self
+            .registry
+            .clone()
+            .ok_or_else(|| AppError::validation("relation access needs a model registry"))?;
         let relation = self
             .model
             .relations
@@ -1132,88 +1906,185 @@ impl ModelRuntime {
                 ))
             })?
             .clone();
+        if relation.kind == RelationKind::MorphTo {
+            return Err(AppError::validation(format!(
+                "morph-to relation {relation_name:?} has no single target model \
+                 (loads and filters resolve per stored type)"
+            )));
+        }
         let target = registry.get(&relation.target).cloned().ok_or_else(|| {
             AppError::validation(format!(
                 "relation {} targets unknown model {}",
                 relation.name, relation.target
             ))
         })?;
-        let target_rt = ModelRuntime::new(target.clone()).with_registry(registry.clone());
+        Ok((relation, target, registry))
+    }
 
-        match relation.kind {
-            RelationKind::BelongsTo => {
-                let target_key = relation.target_key.clone().unwrap_or_else(|| "id".into());
-                let ids = distinct_values(parents, &relation.foreign_key);
-                let loaded = fetch_keyed(store, &target_rt, &target_key, ids, tenant)?;
-                for parent in parents.iter_mut() {
-                    let related = parent
-                        .get(&relation.foreign_key)
-                        .and_then(|k| loaded.get(&k.to_string()))
-                        .cloned()
-                        .unwrap_or(Json::Null);
-                    parent.insert(relation.name.clone(), related);
+    /// Resolve a declared relation and its target model (filter builds need
+    /// the target's table and posture, not the registry).
+    fn filter_relation(&self, relation_name: &str) -> Result<(RelationDef, ModelDef), AppError> {
+        let (relation, target, _registry) = self.resolve_relation(relation_name)?;
+        Ok((relation, target))
+    }
+
+    /// The morph-type value THIS model stores in `relation.morph_type`:
+    /// the registered morph-map alias for this model, else the model name
+    /// (Laravel's default with no morph map).
+    fn morph_alias(&self, relation: &RelationDef) -> Result<String, AppError> {
+        if relation.morph_type.is_none() {
+            return Err(AppError::validation(format!(
+                "relation {:?} needs a morph type column",
+                relation.name
+            )));
+        }
+        let registry = self
+            .registry
+            .clone()
+            .ok_or_else(|| AppError::validation("morph relations need a model registry"))?;
+        Ok(registry
+            .morph_map
+            .iter()
+            .find(|(_, model)| model.as_str() == self.model.name)
+            .map(|(alias, _)| alias.clone())
+            .unwrap_or_else(|| self.model.name.clone()))
+    }
+
+    /// Eloquent `has`: keep parents whose relation resolves to at least one
+    /// related row — a correlated `EXISTS` over the relation's key columns.
+    /// `sub_filters` run against the TARGET model's rows (comparison terms
+    /// only, e.g. [`FieldFilter::eq`]).
+    pub fn has(
+        &self,
+        relation_name: &str,
+        sub_filters: Vec<FieldFilter>,
+    ) -> Result<FieldFilter, AppError> {
+        self.exists_filter(relation_name, false, false, sub_filters)
+    }
+
+    /// Eloquent `doesntHave`: `NOT EXISTS`.
+    pub fn doesnt_have(
+        &self,
+        relation_name: &str,
+        sub_filters: Vec<FieldFilter>,
+    ) -> Result<FieldFilter, AppError> {
+        self.exists_filter(relation_name, true, false, sub_filters)
+    }
+
+    /// Eloquent `orWhereHas`: `EXISTS` OR-joined to the preceding term in
+    /// the filter list (SQL precedence still groups adjacent ANDs first —
+    /// both stores render/evaluate identically).
+    pub fn or_where_has(
+        &self,
+        relation_name: &str,
+        sub_filters: Vec<FieldFilter>,
+    ) -> Result<FieldFilter, AppError> {
+        self.exists_filter(relation_name, false, true, sub_filters)
+    }
+
+    /// Eloquent `whereRelation`: the related row's `field` equals `value`.
+    pub fn where_relation(
+        &self,
+        relation_name: &str,
+        field: &str,
+        value: impl Into<Json>,
+    ) -> Result<FieldFilter, AppError> {
+        self.has(relation_name, vec![FieldFilter::eq(field, value)])
+    }
+
+    /// Eloquent `whereDoesntHaveRelation`: `NOT EXISTS` with the condition.
+    pub fn where_doesnt_have_relation(
+        &self,
+        relation_name: &str,
+        field: &str,
+        value: impl Into<Json>,
+    ) -> Result<FieldFilter, AppError> {
+        self.doesnt_have(relation_name, vec![FieldFilter::eq(field, value)])
+    }
+
+    /// Assemble the correlated existence term: key columns from the relation
+    /// kind, sub conditions validated against the target model, tenant/soft
+    /// posture carried as flags (the stores apply them — they hold no
+    /// registry). Only direct (single-join) kinds correlate here; join-walk
+    /// and polymorphic kinds belong to eager loading.
+    fn exists_filter(
+        &self,
+        relation_name: &str,
+        negated: bool,
+        or: bool,
+        sub_filters: Vec<FieldFilter>,
+    ) -> Result<FieldFilter, AppError> {
+        let (relation, target) = self.filter_relation(relation_name)?;
+        for filter in &sub_filters {
+            match filter {
+                FieldFilter::Cmp { field, .. } => {
+                    if field != "id" && target.field_named(field).is_none() {
+                        return Err(AppError::validation(format!(
+                            "filter on unknown field {field:?} on {}",
+                            target.name
+                        )));
+                    }
                 }
-            }
-            RelationKind::HasMany | RelationKind::HasOne => {
-                let parent_ids = distinct_values(parents, "id");
-                let by_fk = fetch_keyed(store, &target_rt, &relation.foreign_key, parent_ids, tenant)?;
-                let mut grouped: BTreeMap<String, Vec<Json>> = BTreeMap::new();
-                for (fk, row) in by_fk {
-                    grouped.entry(fk).or_default().push(row);
-                }
-                let single = relation.kind == RelationKind::HasOne;
-                for parent in parents.iter_mut() {
-                    let Some(pid) = parent.get("id").cloned() else {
-                        continue;
-                    };
-                    let children = grouped.remove(&pid.to_string()).unwrap_or_default();
-                    let attached = if single {
-                        children.first().cloned().unwrap_or(Json::Null)
-                    } else {
-                        Json::Array(children)
-                    };
-                    parent.insert(relation.name.clone(), attached);
-                }
-            }
-            RelationKind::ManyThrough => {
-                // Query 1: join rows for all parent ids; Query 2: target rows
-                // for the far-side ids found on the join table.
-                let through_name = relation.through.clone().ok_or_else(|| {
-                    AppError::validation("ManyThrough relation needs a join model")
-                })?;
-                let through = registry.get(&through_name).cloned().ok_or_else(|| {
-                    AppError::validation(format!("unknown join model {through_name:?}"))
-                })?;
-                // FK on the join table pointing at the target model.
-                let far_fk = relation
-                    .target_key
-                    .clone()
-                    .unwrap_or_else(|| format!("{}_id", target.table.to_lowercase().trim_end_matches('s')));
-                let parent_ids = distinct_values(parents, "id");
-                let join_rows = store
-                    .list(
-                        &through,
-                        tenant,
-                        &[FieldFilter::is_in(&relation.foreign_key, parent_ids)],
-                        &ListOpts::default(),
-                    )?
-                    .items;
-                let far_ids = distinct_values(&join_rows, &far_fk);
-                let loaded = fetch_keyed(store, &target_rt, "id", far_ids, tenant)?;
-                for parent in parents.iter_mut() {
-                    let Some(pid) = parent.get("id").cloned() else {
-                        continue;
-                    };
-                    let attached: Vec<Json> = join_rows
-                        .iter()
-                        .filter(|r| r.get(&relation.foreign_key) == Some(&pid))
-                        .filter_map(|r| r.get(&far_fk).and_then(|k| loaded.get(&k.to_string())).cloned())
-                        .collect();
-                    parent.insert(relation.name.clone(), Json::Array(attached));
+                FieldFilter::Exists(_) => {
+                    return Err(AppError::validation(
+                        "relation filters cannot nest inside a relation filter (not supported)",
+                    ));
                 }
             }
         }
-        Ok(())
+        let (sub_table, sub_key, outer_key, injected) = match relation.kind {
+            RelationKind::BelongsTo => (
+                target.table.clone(),
+                relation
+                    .target_key
+                    .clone()
+                    .unwrap_or_else(|| "id".into()),
+                relation.foreign_key.clone(),
+                None,
+            ),
+            RelationKind::HasMany | RelationKind::HasOne => (
+                target.table.clone(),
+                relation.foreign_key.clone(),
+                "id".into(),
+                None,
+            ),
+            RelationKind::MorphMany => {
+                let type_col = relation.morph_type.clone().ok_or_else(|| {
+                    AppError::validation(format!(
+                        "morph relation {relation_name:?} needs a type column"
+                    ))
+                })?;
+                // Pin the subquery to THIS owner's morph type — the
+                // correlated id alone would match sibling owners' rows.
+                (
+                    target.table.clone(),
+                    relation.foreign_key.clone(),
+                    "id".into(),
+                    Some((type_col, self.morph_alias(&relation)?)),
+                )
+            }
+            other => {
+                return Err(AppError::validation(format!(
+                    "existence filter unsupported for {other:?} relation {relation_name:?} \
+                     (only BelongsTo/HasMany/HasOne/MorphMany correlate directly)"
+                )));
+            }
+        };
+        let mut sub_filters = sub_filters;
+        if let Some((col, alias)) = injected {
+            sub_filters.push(FieldFilter::eq(col, Json::String(alias)));
+        }
+        Ok(FieldFilter::Exists(ExistsFilter {
+            negated,
+            or,
+            sub_table,
+            sub_key,
+            outer_table: self.model.table.clone(),
+            outer_key,
+            sub_tenant_scoped: target.tenant_scoped,
+            sub_soft_deletes: target.soft_deletes,
+            filters: sub_filters,
+        }))
     }
 }
 
@@ -1291,23 +2162,98 @@ fn distinct_values(records: &[Record], key: &str) -> Vec<Json> {
     seen.into_values().collect()
 }
 
-/// One unbounded IN query against `target`, keyed by the stringified
-/// `column` value.
+/// Laravel's eager-aggregate alias: `withCount('posts')` -> `posts_count`,
+/// `withSum('posts', 'votes')` -> `posts_sum_votes`.
+pub fn aggregate_alias(relation: &str, op: &AggregateOp) -> String {
+    match op {
+        AggregateOp::Count => format!("{relation}_count"),
+        AggregateOp::Sum(f) => format!("{relation}_sum_{f}"),
+        AggregateOp::Avg(f) => format!("{relation}_avg_{f}"),
+        AggregateOp::Min(f) => format!("{relation}_min_{f}"),
+        AggregateOp::Max(f) => format!("{relation}_max_{f}"),
+    }
+}
+
+/// Per-level constraint for nested eager paths — `filters`/`sort`/`limit`
+/// applied to ONE relation level's fetch (Laravel's
+/// `with(['a.b' => fn ($q) => $q->where(...)])` closure constraints, without
+/// the query-builder object). `filters` land in the store WHERE (both
+/// backends), `sort` orders the target fetch (assembly order for
+/// many_through is re-sorted too), and `limit` caps the fetch — the eager
+/// subquery limit, applied to the whole fetch like Laravel's documented
+/// behavior, not per parent.
+#[derive(Debug, Clone, Default)]
+pub struct EagerConstraint {
+    pub filters: Vec<FieldFilter>,
+    pub sort: Option<(String, bool)>,
+    pub limit: Option<u32>,
+}
+
+/// Result of [`ModelRuntime::sync`] / [`ModelRuntime::toggle`]: the pivot
+/// rows added and removed (Laravel's `[attached => [...], detached => [...]]`
+/// map, counts omitted).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PivotSync {
+    pub attached: Vec<Json>,
+    pub detached: Vec<Json>,
+}
+
+/// Synthesize the pivot [`ModelDef`] for a ManyToMany relation declared
+/// without a registered join model: `pivot_table` + id + both FK columns.
+fn synthesize_pivot(relation: &RelationDef) -> Result<ModelDef, AppError> {
+    let table = relation.pivot_table.clone().ok_or_else(|| {
+        AppError::validation(format!(
+            "relation {:?} has neither a join model nor a pivot table",
+            relation.name
+        ))
+    })?;
+    let target_key = relation.target_key.clone().ok_or_else(|| {
+        AppError::validation(format!(
+            "relation {:?} needs a pivot target key",
+            relation.name
+        ))
+    })?;
+    Ok({
+        let mut model = ModelDef::new(table.clone(), table)
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new(&relation.foreign_key, FieldType::Uuid))
+            .field(FieldDef::new(&target_key, FieldType::Uuid));
+        if let Some(type_col) = &relation.morph_type {
+            model = model.field(FieldDef::new(type_col, FieldType::Text));
+        }
+        model
+    })
+}
+
+/// One unbounded IN query against `target`, grouped by the stringified
+/// `column` value (every matching row is kept — a has_many key maps to ALL
+/// of its children, never just one).
 fn fetch_keyed(
     store: &dyn ModelStore,
     target: &ModelRuntime,
     column: &str,
     ids: Vec<Json>,
     tenant: Option<TenantId>,
-) -> Result<BTreeMap<String, Json>, AppError> {
-    let mut out = BTreeMap::new();
+    constraint: &EagerConstraint,
+) -> Result<BTreeMap<String, Vec<Record>>, AppError> {
+    let mut out: BTreeMap<String, Vec<Record>> = BTreeMap::new();
     if ids.is_empty() {
         return Ok(out);
     }
-    let page = target.list(store, tenant, vec![FieldFilter::is_in(column, ids)], &[], None)?;
+    let mut filters = vec![FieldFilter::is_in(column, ids)];
+    filters.extend(constraint.filters.iter().cloned());
+    let opts = ListOpts {
+        page: None,
+        include_deleted: false,
+        sort: constraint.sort.clone(),
+        limit: constraint.limit,
+    };
+    let page = target.list_with_opts(store, tenant, filters, &opts)?;
     for row in page.items {
         if let Some(key) = row.get(column).cloned() {
-            out.insert(key.to_string(), Json::Object(row));
+            if !key.is_null() {
+                out.entry(key.to_string()).or_default().push(row);
+            }
         }
     }
     Ok(out)
@@ -1613,6 +2559,1161 @@ mod tests {
             .load_relation(&store, "patient", &mut children, None)
             .unwrap();
         assert_eq!(children[0]["patient"]["name"], Json::String("P1".into()));
+    }
+
+    // ------------------------------------------ Wave 4 (phase 4): relations
+
+    /// Patients (has_many appointments) + appointments (belongs_to patient)
+    /// over a shared registry and store.
+    fn rel_fixture() -> (ModelRuntime, ModelRuntime, Arc<InMemoryModelStore>) {
+        let mut registry = ModelRegistry::new();
+        let patient = ModelDef::new("Patient", "patients")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("name", FieldType::Text).required())
+            .relation(RelationDef::has_many("appointments", "Appointment", "patient_id"));
+        let appointment = ModelDef::new("Appointment", "appointments")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("patient_id", FieldType::Uuid))
+            .field(FieldDef::new("status", FieldType::Text).required())
+            .field(FieldDef::new("visits", FieldType::Int64))
+            .relation(RelationDef::belongs_to("patient", "Patient", "patient_id"));
+        registry.register(patient.clone()).unwrap();
+        registry.register(appointment.clone()).unwrap();
+        registry.validate_graph().unwrap();
+        let registry = Arc::new(registry);
+        (
+            ModelRuntime::new(patient).with_registry(registry.clone()),
+            ModelRuntime::new(appointment).with_registry(registry),
+            InMemoryModelStore::new(),
+        )
+    }
+
+    fn patient_named(rt: &ModelRuntime, store: &InMemoryModelStore, name: &str) -> Record {
+        let mut r = Record::new();
+        r.insert("name".into(), Json::String(name.into()));
+        rt.insert(store, &r, None).unwrap()
+    }
+
+    fn appt(
+        rt: &ModelRuntime,
+        store: &InMemoryModelStore,
+        patient_id: &Json,
+        status: &str,
+    ) -> Record {
+        let mut r = Record::new();
+        r.insert("patient_id".into(), patient_id.clone());
+        r.insert("status".into(), Json::String(status.into()));
+        rt.insert(store, &r, None).unwrap()
+    }
+
+    fn listed_names(page: keel_query::Page<Record>) -> Vec<String> {
+        page.items
+            .iter()
+            .map(|r| r["name"].as_str().unwrap_or("?").to_string())
+            .collect()
+    }
+
+    #[test]
+    fn has_and_doesnt_have_filter_on_relation_existence() {
+        let (patient_rt, appointment_rt, store) = rel_fixture();
+        let alice = patient_named(&patient_rt, &store, "Alice");
+        let bob = patient_named(&patient_rt, &store, "Bob");
+        let _carol = patient_named(&patient_rt, &store, "Carol");
+        appt(&appointment_rt, &store, &alice["id"], "booked");
+        appt(&appointment_rt, &store, &alice["id"], "cancelled");
+        appt(&appointment_rt, &store, &bob["id"], "cancelled");
+
+        // Any related row.
+        let page = patient_rt
+            .list(
+                &store,
+                None,
+                vec![patient_rt.has("appointments", vec![]).unwrap()],
+                &[],
+                None,
+            )
+            .unwrap();
+        assert_eq!(listed_names(page), vec!["Alice", "Bob"]);
+
+        // Sub conditions run against the RELATED rows.
+        let page = patient_rt
+            .list(
+                &store,
+                None,
+                vec![patient_rt
+                    .has("appointments", vec![FieldFilter::eq("status", "booked")])
+                    .unwrap()],
+                &[],
+                None,
+            )
+            .unwrap();
+        assert_eq!(listed_names(page), vec!["Alice"]);
+
+        // NOT EXISTS: no cancelled appointment (Carol has none at all).
+        let page = patient_rt
+            .list(
+                &store,
+                None,
+                vec![patient_rt
+                    .doesnt_have("appointments", vec![FieldFilter::eq("status", "cancelled")])
+                    .unwrap()],
+                &[],
+                None,
+            )
+            .unwrap();
+        assert_eq!(listed_names(page), vec!["Carol"]);
+    }
+
+    #[test]
+    fn or_where_has_ors_with_the_preceding_terms() {
+        let (patient_rt, appointment_rt, store) = rel_fixture();
+        let alice = patient_named(&patient_rt, &store, "Alice");
+        let _bob = patient_named(&patient_rt, &store, "Bob");
+        let _carol = patient_named(&patient_rt, &store, "Carol");
+        appt(&appointment_rt, &store, &alice["id"], "booked");
+
+        // `name = Bob OR EXISTS(...)` — Alice qualifies through EXISTS,
+        // Bob through the comparison, Carol through neither.
+        let page = patient_rt
+            .list(
+                &store,
+                None,
+                vec![
+                    FieldFilter::eq("name", "Bob"),
+                    patient_rt.or_where_has("appointments", vec![]).unwrap(),
+                ],
+                &[],
+                None,
+            )
+            .unwrap();
+        assert_eq!(listed_names(page), vec!["Alice", "Bob"]);
+
+        // Plain `has` stays AND-joined: name AND existence.
+        let page = patient_rt
+            .list(
+                &store,
+                None,
+                vec![
+                    FieldFilter::eq("name", "Carol"),
+                    patient_rt.has("appointments", vec![]).unwrap(),
+                ],
+                &[],
+                None,
+            )
+            .unwrap();
+        assert!(page.items.is_empty());
+    }
+
+    #[test]
+    fn where_relation_filters_on_related_columns() {
+        let (patient_rt, appointment_rt, store) = rel_fixture();
+        let alice = patient_named(&patient_rt, &store, "Alice");
+        let bob = patient_named(&patient_rt, &store, "Bob");
+        appt(&appointment_rt, &store, &alice["id"], "booked");
+        let b_appt = appt(&appointment_rt, &store, &bob["id"], "booked");
+
+        let page = appointment_rt
+            .list(
+                &store,
+                None,
+                vec![appointment_rt
+                    .where_relation("patient", "name", "Alice")
+                    .unwrap()],
+                &[],
+                None,
+            )
+            .unwrap();
+        assert_eq!(page.total, Some(1));
+        assert_eq!(page.items[0]["patient_id"], alice["id"]);
+
+        let page = appointment_rt
+            .list(
+                &store,
+                None,
+                vec![appointment_rt
+                    .where_doesnt_have_relation("patient", "name", "Alice")
+                    .unwrap()],
+                &[],
+                None,
+            )
+            .unwrap();
+        assert_eq!(page.total, Some(1));
+        assert_eq!(page.items[0]["id"], b_appt["id"]);
+    }
+
+    #[test]
+    fn existence_filters_scope_tenant_and_soft_deletes() {
+        let mut registry = ModelRegistry::new();
+        let patient = ModelDef::new("Patient", "patients")
+            .tenant_scoped()
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("tenant_id", FieldType::Uuid).required())
+            .field(FieldDef::new("name", FieldType::Text).required())
+            .relation(RelationDef::has_many("appointments", "Appointment", "patient_id"));
+        let appointment = ModelDef::new("Appointment", "appointments")
+            .tenant_scoped()
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("tenant_id", FieldType::Uuid).required())
+            .field(FieldDef::new("patient_id", FieldType::Uuid))
+            .field(FieldDef::new("status", FieldType::Text).required());
+        registry.register(patient.clone()).unwrap();
+        registry.register(appointment.clone()).unwrap();
+        registry.validate_graph().unwrap();
+        let registry = Arc::new(registry);
+        let patient_rt = ModelRuntime::new(patient).with_registry(registry.clone());
+        let appointment_rt = ModelRuntime::new(appointment).with_registry(registry);
+        let store = InMemoryModelStore::new();
+
+        let t = TenantId::new();
+        let foreign = TenantId::new();
+        let mut name = Record::new();
+        name.insert("name".into(), Json::String("P".into()));
+        let p = patient_rt.insert(&store, &name, Some(t)).unwrap();
+
+        // Cross-tenant child must not satisfy the existence filter.
+        let mut cross = Record::new();
+        cross.insert("patient_id".into(), p["id"].clone());
+        cross.insert("status".into(), Json::String("booked".into()));
+        appointment_rt.insert(&store, &cross, Some(foreign)).unwrap();
+        let page = patient_rt
+            .list(
+                &store,
+                Some(t),
+                vec![patient_rt.has("appointments", vec![]).unwrap()],
+                &[],
+                None,
+            )
+            .unwrap();
+        assert!(page.items.is_empty(), "cross-tenant child leaked into EXISTS");
+
+        // Same-tenant child qualifies...
+        let mut same = Record::new();
+        same.insert("patient_id".into(), p["id"].clone());
+        same.insert("status".into(), Json::String("booked".into()));
+        let child = appointment_rt.insert(&store, &same, Some(t)).unwrap();
+        let page = patient_rt
+            .list(
+                &store,
+                Some(t),
+                vec![patient_rt.has("appointments", vec![]).unwrap()],
+                &[],
+                None,
+            )
+            .unwrap();
+        assert_eq!(page.total, Some(1));
+
+        // ...until it is trashed: soft-deleted children never satisfy EXISTS.
+        appointment_rt.delete(&store, rid(&child), Some(t)).unwrap();
+        let page = patient_rt
+            .list(
+                &store,
+                Some(t),
+                vec![patient_rt.has("appointments", vec![]).unwrap()],
+                &[],
+                None,
+            )
+            .unwrap();
+        assert!(page.items.is_empty(), "trashed child still satisfied EXISTS");
+    }
+
+    #[test]
+    fn existence_filter_guards_reject_bad_relations() {
+        let (patient_rt, appointment_rt, _store) = rel_fixture();
+
+        let err = patient_rt.has("nope", vec![]).unwrap_err();
+        assert!(err.public_message.contains("no relation"), "{}", err.public_message);
+
+        let err = patient_rt
+            .has("appointments", vec![FieldFilter::eq("bogus", 1)])
+            .unwrap_err();
+        assert!(err.public_message.contains("unknown field"), "{}", err.public_message);
+
+        // Nesting an existence term inside another is refused at build.
+        let inner = appointment_rt.has("patient", vec![]).unwrap();
+        let err = patient_rt.has("appointments", vec![inner]).unwrap_err();
+        assert!(err.public_message.contains("nest"), "{}", err.public_message);
+
+        // A relation declared but no registry wired: filter build needs it.
+        let bare_patient = ModelDef::new("Patient", "patients")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("name", FieldType::Text).required())
+            .relation(RelationDef::has_many("appointments", "Appointment", "patient_id"));
+        let err = ModelRuntime::new(bare_patient)
+            .has("appointments", vec![])
+            .unwrap_err();
+        assert!(
+            err.public_message.contains("model registry"),
+            "{}",
+            err.public_message
+        );
+
+        // Join-walk kinds don't correlate directly.
+        let mut registry = ModelRegistry::new();
+        let patient = ModelDef::new("Patient", "patients")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .relation(RelationDef::many_through(
+                "visits",
+                "Visit",
+                "VisitLink",
+                "patient_id",
+            ));
+        let visit = ModelDef::new("Visit", "visits")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique());
+        let link = ModelDef::new("VisitLink", "visit_links")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique());
+        registry.register(patient.clone()).unwrap();
+        registry.register(visit).unwrap();
+        registry.register(link).unwrap();
+        registry.validate_graph().unwrap();
+        let rt = ModelRuntime::new(patient).with_registry(Arc::new(registry));
+        let err = rt.has("visits", vec![]).unwrap_err();
+        assert!(
+            err.public_message.contains("unsupported"),
+            "{}",
+            err.public_message
+        );
+    }
+
+    #[test]
+    fn has_many_load_keeps_every_child_per_parent() {
+        let (patient_rt, appointment_rt, store) = rel_fixture();
+        let alice = patient_named(&patient_rt, &store, "Alice");
+        let bob = patient_named(&patient_rt, &store, "Bob");
+        appt(&appointment_rt, &store, &alice["id"], "booked");
+        appt(&appointment_rt, &store, &alice["id"], "cancelled");
+        appt(&appointment_rt, &store, &bob["id"], "booked");
+
+        let mut parents = vec![alice, bob];
+        patient_rt
+            .load_relation(&store, "appointments", &mut parents, None)
+            .unwrap();
+        // Regression: the grouped fetch once collapsed each parent's
+        // children to a single row (map-key overwrite).
+        assert_eq!(parents[0]["appointments"].as_array().unwrap().len(), 2);
+        assert_eq!(parents[1]["appointments"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn with_count_and_friends_fold_related_rows() {
+        let (patient_rt, appointment_rt, store) = rel_fixture();
+        let alice = patient_named(&patient_rt, &store, "Alice");
+        let bob = patient_named(&patient_rt, &store, "Bob");
+
+        for visits in [3i64, 5] {
+            let mut a = Record::new();
+            a.insert("patient_id".into(), alice["id"].clone());
+            a.insert("status".into(), Json::String("booked".into()));
+            a.insert("visits".into(), Json::from(visits));
+            appointment_rt.insert(&store, &a, None).unwrap();
+        }
+        // An appointment with no patient (belongs_to side, count 0).
+        let mut orphan = Record::new();
+        orphan.insert("status".into(), Json::String("booked".into()));
+        appointment_rt.insert(&store, &orphan, None).unwrap();
+
+        let mut parents = vec![alice, bob];
+        patient_rt.with_count(&store, "appointments", &mut parents, None).unwrap();
+        patient_rt
+            .with_sum(&store, "appointments", &mut parents, None, "visits")
+            .unwrap();
+        patient_rt
+            .with_min(&store, "appointments", &mut parents, None, "visits")
+            .unwrap();
+        patient_rt
+            .with_max(&store, "appointments", &mut parents, None, "visits")
+            .unwrap();
+        patient_rt
+            .with_avg(&store, "appointments", &mut parents, None, "visits")
+            .unwrap();
+
+        // Laravel aliases: `<rel>_count`, `<rel>_<op>_<field>`.
+        assert_eq!(parents[0]["appointments_count"], Json::from(2u64));
+        assert_eq!(parents[0]["appointments_sum_visits"], Json::from(8));
+        assert_eq!(parents[0]["appointments_min_visits"], Json::from(3));
+        assert_eq!(parents[0]["appointments_max_visits"], Json::from(5));
+        assert_eq!(parents[0]["appointments_avg_visits"], Json::from(4.0));
+        // Empty set: COUNT = 0, the rest SQL NULL.
+        assert_eq!(parents[1]["appointments_count"], Json::from(0u64));
+        assert_eq!(parents[1]["appointments_sum_visits"], Json::Null);
+        assert_eq!(parents[1]["appointments_min_visits"], Json::Null);
+
+        // belongs_to folds the single related row: 1 when the FK resolves,
+        // 0 when it does not.
+        let mut appts = appointment_rt
+            .list(&store, None, vec![], &[], None)
+            .unwrap()
+            .items;
+        appointment_rt
+            .with_count(&store, "patient", &mut appts, None)
+            .unwrap();
+        let counts: Vec<u64> = appts
+            .iter()
+            .map(|r| r["patient_count"].as_u64().unwrap())
+            .collect();
+        assert_eq!(counts, vec![1, 1, 0]);
+    }
+
+    #[test]
+    fn aggregate_eager_guards_reject_bad_targets() {
+        let (patient_rt, _appointment_rt, store) = rel_fixture();
+        let mut parents: Vec<Record> = Vec::new();
+
+        let err = patient_rt
+            .with_count(&store, "nope", &mut parents, None)
+            .unwrap_err();
+        assert!(err.public_message.contains("no relation"), "{}", err.public_message);
+
+        let err = patient_rt
+            .with_sum(&store, "appointments", &mut parents, None, "status")
+            .unwrap_err();
+        assert!(err.public_message.contains("numeric"), "{}", err.public_message);
+
+        let err = patient_rt
+            .with_sum(&store, "appointments", &mut parents, None, "missing")
+            .unwrap_err();
+        assert!(err.public_message.contains("not on model"), "{}", err.public_message);
+    }
+
+    #[test]
+    fn many_through_eager_load_and_aggregates() {
+        let mut registry = ModelRegistry::new();
+        let patient = ModelDef::new("Patient", "patients")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("name", FieldType::Text).required())
+            .relation(RelationDef::many_through(
+                "visits",
+                "Visit",
+                "VisitLink",
+                "patient_id",
+            ));
+        let visit = ModelDef::new("Visit", "visits")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("duration_min", FieldType::Int64));
+        let link = ModelDef::new("VisitLink", "visit_links")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("patient_id", FieldType::Uuid))
+            .field(FieldDef::new("visit_id", FieldType::Uuid));
+        registry.register(patient.clone()).unwrap();
+        registry.register(visit.clone()).unwrap();
+        registry.register(link.clone()).unwrap();
+        registry.validate_graph().unwrap();
+        let registry = Arc::new(registry);
+        let patient_rt = ModelRuntime::new(patient).with_registry(registry.clone());
+        let visit_rt = ModelRuntime::new(visit).with_registry(registry.clone());
+        let link_rt = ModelRuntime::new(link).with_registry(registry);
+        let store = InMemoryModelStore::new();
+
+        let p1 = patient_named(&patient_rt, &store, "P1");
+        let p2 = patient_named(&patient_rt, &store, "P2");
+        let p3 = patient_named(&patient_rt, &store, "P3");
+        let mut durations = Vec::new();
+        for (patient_id, minutes) in [
+            (p1["id"].clone(), 30i64),
+            (p1["id"].clone(), 10),
+            (p2["id"].clone(), 5),
+        ] {
+            let mut v = Record::new();
+            v.insert("duration_min".into(), Json::from(minutes));
+            let stored = visit_rt.insert(&store, &v, None).unwrap();
+            let mut l = Record::new();
+            l.insert("patient_id".into(), patient_id);
+            l.insert("visit_id".into(), stored["id"].clone());
+            link_rt.insert(&store, &l, None).unwrap();
+            durations.push(minutes);
+        }
+        assert_eq!(durations.len(), 3);
+
+        let mut parents = vec![p1, p2, p3];
+        patient_rt
+            .load_relation(&store, "visits", &mut parents, None)
+            .unwrap();
+        assert_eq!(parents[0]["visits"].as_array().unwrap().len(), 2);
+        assert_eq!(parents[1]["visits"].as_array().unwrap().len(), 1);
+        assert_eq!(parents[2]["visits"].as_array().unwrap().len(), 0);
+
+        patient_rt
+            .with_count(&store, "visits", &mut parents, None)
+            .unwrap();
+        patient_rt
+            .with_sum(&store, "visits", &mut parents, None, "duration_min")
+            .unwrap();
+        assert_eq!(parents[0]["visits_count"], Json::from(2u64));
+        assert_eq!(parents[0]["visits_sum_duration_min"], Json::from(40));
+        assert_eq!(parents[1]["visits_count"], Json::from(1u64));
+        assert_eq!(parents[1]["visits_sum_duration_min"], Json::from(5));
+        assert_eq!(parents[2]["visits_count"], Json::from(0u64));
+        assert_eq!(parents[2]["visits_sum_duration_min"], Json::Null);
+    }
+
+    /// Posts -> comments (has_many) -> author (belongs_to): a 3-model
+    /// chain for nested `with` paths.
+    fn comment_fixture() -> (
+        ModelRuntime,
+        ModelRuntime,
+        ModelRuntime,
+        Arc<InMemoryModelStore>,
+    ) {
+        let mut registry = ModelRegistry::new();
+        let user = ModelDef::new("User", "users")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("name", FieldType::Text).required());
+        let post = ModelDef::new("Post", "posts")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("title", FieldType::Text).required())
+            .relation(RelationDef::has_many("comments", "Comment", "post_id"));
+        let comment = ModelDef::new("Comment", "comments")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("post_id", FieldType::Uuid))
+            .field(FieldDef::new("author_id", FieldType::Uuid))
+            .field(FieldDef::new("body", FieldType::Text).required())
+            .relation(RelationDef::belongs_to("author", "User", "author_id"));
+        registry.register(user.clone()).unwrap();
+        registry.register(post.clone()).unwrap();
+        registry.register(comment.clone()).unwrap();
+        registry.validate_graph().unwrap();
+        let registry = Arc::new(registry);
+        (
+            ModelRuntime::new(post).with_registry(registry.clone()),
+            ModelRuntime::new(comment).with_registry(registry.clone()),
+            ModelRuntime::new(user).with_registry(registry),
+            InMemoryModelStore::new(),
+        )
+    }
+
+    fn comment_seed(
+        post_rt: &ModelRuntime,
+        comment_rt: &ModelRuntime,
+        user_rt: &ModelRuntime,
+        store: &InMemoryModelStore,
+    ) -> (Record, Record) {
+        let mut users = Vec::new();
+        for name in ["Ada", "Grace"] {
+            let mut u = Record::new();
+            u.insert("name".into(), Json::String(name.into()));
+            users.push(user_rt.insert(store, &u, None).unwrap());
+        }
+        let mut posts = Vec::new();
+        for title in ["P1", "P2"] {
+            let mut p = Record::new();
+            p.insert("title".into(), Json::String(title.into()));
+            posts.push(post_rt.insert(store, &p, None).unwrap());
+        }
+        for (post, author, body) in [
+            (&posts[0], &users[0], "alpha"),
+            (&posts[0], &users[1], "beta"),
+            (&posts[1], &users[0], "gamma"),
+        ] {
+            let mut c = Record::new();
+            c.insert("post_id".into(), post["id"].clone());
+            c.insert("author_id".into(), author["id"].clone());
+            c.insert("body".into(), Json::String(body.into()));
+            comment_rt.insert(store, &c, None).unwrap();
+        }
+        (posts[0].clone(), posts[1].clone())
+    }
+
+    #[test]
+    fn with_loads_a_nested_path_level_by_level() {
+        let (post_rt, comment_rt, user_rt, store) = comment_fixture();
+        let (p1, p2) = comment_seed(&post_rt, &comment_rt, &user_rt, &store);
+
+        let mut posts = vec![p1, p2];
+        post_rt.with(&store, &mut posts, None, "comments.author").unwrap();
+
+        let p1_comments = posts[0]["comments"].as_array().unwrap();
+        assert_eq!(p1_comments.len(), 2);
+        assert_eq!(p1_comments[0]["body"], Json::String("alpha".into()));
+        assert_eq!(p1_comments[0]["author"]["name"], Json::String("Ada".into()));
+        assert_eq!(p1_comments[1]["body"], Json::String("beta".into()));
+        assert_eq!(
+            p1_comments[1]["author"]["name"],
+            Json::String("Grace".into())
+        );
+        let p2_comments = posts[1]["comments"].as_array().unwrap();
+        assert_eq!(p2_comments.len(), 1);
+        assert_eq!(p2_comments[0]["author"]["name"], Json::String("Ada".into()));
+    }
+
+    #[test]
+    fn with_constrained_applies_per_level_constraints() {
+        let (post_rt, comment_rt, user_rt, store) = comment_fixture();
+
+        // Level 0 sorts its fetch; level 1 stays unconstrained.
+        let (p1, p2) = comment_seed(&post_rt, &comment_rt, &user_rt, &store);
+        let mut posts = vec![p1, p2];
+        let mut seen: Vec<(usize, String)> = Vec::new();
+        post_rt
+            .with_constrained(
+                &store,
+                &mut posts,
+                None,
+                "comments.author",
+                &mut |level, name, constraint| {
+                    seen.push((level, name.to_string()));
+                    if level == 0 {
+                        constraint.sort = Some(("body".into(), true));
+                    }
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            seen,
+            vec![(0, "comments".to_string()), (1, "author".to_string())]
+        );
+        let bodies: Vec<String> = posts[0]["comments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["body"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(bodies, vec!["beta", "alpha"]);
+        // Sorted fetch still cascades into the level-1 load.
+        assert_eq!(
+            posts[0]["comments"][0]["author"]["name"],
+            Json::String("Grace".into())
+        );
+
+        // Level-0 filter narrows which rows load at all.
+        let (p1, p2) = comment_seed(&post_rt, &comment_rt, &user_rt, &store);
+        let mut posts = vec![p1, p2];
+        post_rt
+            .with_constrained(
+                &store,
+                &mut posts,
+                None,
+                "comments.author",
+                &mut |level, _name, constraint| {
+                    if level == 0 {
+                        constraint.filters.push(FieldFilter::eq("body", "alpha"));
+                    }
+                },
+            )
+            .unwrap();
+        let p1_comments = posts[0]["comments"].as_array().unwrap();
+        assert_eq!(p1_comments.len(), 1);
+        assert_eq!(p1_comments[0]["body"], Json::String("alpha".into()));
+        assert!(posts[1]["comments"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn with_rejects_an_empty_path() {
+        let (post_rt, comment_rt, user_rt, store) = comment_fixture();
+        let (p1, _p2) = comment_seed(&post_rt, &comment_rt, &user_rt, &store);
+        let mut posts = vec![p1];
+        let err = post_rt.with(&store, &mut posts, None, " . ").unwrap_err();
+        assert!(err.public_message.contains("relation path"), "{}", err.public_message);
+    }
+
+    /// Patient <-> Doctor through a pivot: the Patient side goes through a
+    /// REGISTERED join model (extra `role` column); the Doctor side uses
+    /// the pivot synthesized from `pivot_table`.
+    fn pairing_fixture() -> (ModelRuntime, ModelRuntime, Arc<InMemoryModelStore>) {
+        let mut registry = ModelRegistry::new();
+        let mut doctors = RelationDef::many_to_many(
+            "doctors",
+            "Doctor",
+            RelationDef::pivot_table_for("Patient", "Doctor"),
+            "patient_id",
+            "doctor_id",
+        );
+        doctors.through = Some("Pairing".into());
+        let patient = ModelDef::new("Patient", "patients")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("name", FieldType::Text).required())
+            .relation(doctors);
+        let doctor = ModelDef::new("Doctor", "doctors")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("name", FieldType::Text).required())
+            .relation(RelationDef::many_to_many(
+                "patients",
+                "Patient",
+                RelationDef::pivot_table_for("Doctor", "Patient"),
+                "doctor_id",
+                "patient_id",
+            ));
+        let pairing = ModelDef::new("Pairing", "doctor_patient")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("patient_id", FieldType::Uuid))
+            .field(FieldDef::new("doctor_id", FieldType::Uuid))
+            .field(FieldDef::new("role", FieldType::Text));
+        registry.register(patient.clone()).unwrap();
+        registry.register(doctor.clone()).unwrap();
+        registry.register(pairing).unwrap();
+        registry.validate_graph().unwrap();
+        let registry = Arc::new(registry);
+        (
+            ModelRuntime::new(patient).with_registry(registry.clone()),
+            ModelRuntime::new(doctor).with_registry(registry),
+            InMemoryModelStore::new(),
+        )
+    }
+
+    fn pairing_seed(
+        patient_rt: &ModelRuntime,
+        doctor_rt: &ModelRuntime,
+        store: &InMemoryModelStore,
+    ) -> (Vec<Record>, Vec<Record>) {
+        let mut patients = Vec::new();
+        for name in ["Alice", "Bob"] {
+            let mut p = Record::new();
+            p.insert("name".into(), Json::String(name.into()));
+            patients.push(patient_rt.insert(store, &p, None).unwrap());
+        }
+        let mut doctors = Vec::new();
+        for name in ["House", "Chase", "Wilson"] {
+            let mut d = Record::new();
+            d.insert("name".into(), Json::String(name.into()));
+            doctors.push(doctor_rt.insert(store, &d, None).unwrap());
+        }
+        (patients, doctors)
+    }
+
+    #[test]
+    fn many_to_many_eager_loads_and_aggregates() {
+        let (patient_rt, doctor_rt, store) = pairing_fixture();
+        let (patients, doctors) = pairing_seed(&patient_rt, &doctor_rt, &store);
+        let (alice, bob) = (&patients[0], &patients[1]);
+
+        // attach counts fresh pairs only — repeats are idempotent.
+        assert_eq!(
+            patient_rt
+                .attach(
+                    &store,
+                    "doctors",
+                    alice["id"].clone(),
+                    vec![doctors[0]["id"].clone(), doctors[1]["id"].clone()],
+                    None,
+                )
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            patient_rt
+                .attach(
+                    &store,
+                    "doctors",
+                    alice["id"].clone(),
+                    vec![doctors[0]["id"].clone()],
+                    None,
+                )
+                .unwrap(),
+            0
+        );
+        patient_rt
+            .attach(
+                &store,
+                "doctors",
+                bob["id"].clone(),
+                vec![doctors[0]["id"].clone()],
+                None,
+            )
+            .unwrap();
+
+        let mut parents = vec![alice.clone(), bob.clone()];
+        patient_rt
+            .load_relation(&store, "doctors", &mut parents, None)
+            .unwrap();
+        assert_eq!(parents[0]["doctors"].as_array().unwrap().len(), 2);
+        assert_eq!(parents[1]["doctors"].as_array().unwrap().len(), 1);
+
+        patient_rt
+            .with_count(&store, "doctors", &mut parents, None)
+            .unwrap();
+        assert_eq!(parents[0]["doctors_count"], Json::from(2u64));
+        assert_eq!(parents[1]["doctors_count"], Json::from(1u64));
+
+        // The reverse direction reads the same pivot via the SYNTHESIZED
+        // model (Doctor declares no `through`).
+        let mut docs = vec![doctors[0].clone(), doctors[1].clone()];
+        doctor_rt
+            .load_relation(&store, "patients", &mut docs, None)
+            .unwrap();
+        assert_eq!(docs[0]["patients"].as_array().unwrap().len(), 2);
+        assert_eq!(docs[1]["patients"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn pivot_sync_detach_toggle_and_update() {
+        let (patient_rt, doctor_rt, store) = pairing_fixture();
+        let (patients, doctors) = pairing_seed(&patient_rt, &doctor_rt, &store);
+        let alice = &patients[0];
+        let (d1, d2, d3) = (&doctors[0], &doctors[1], &doctors[2]);
+        patient_rt
+            .attach(
+                &store,
+                "doctors",
+                alice["id"].clone(),
+                vec![d1["id"].clone(), d2["id"].clone()],
+                None,
+            )
+            .unwrap();
+
+        // sync converges to EXACTLY the desired set.
+        let sync = patient_rt
+            .sync(
+                &store,
+                "doctors",
+                alice["id"].clone(),
+                vec![d2["id"].clone(), d3["id"].clone()],
+                None,
+            )
+            .unwrap();
+        assert_eq!(sync.attached, vec![d3["id"].clone()]);
+        assert_eq!(sync.detached, vec![d1["id"].clone()]);
+
+        // toggle flips each listed id: d1 in -> attached, d2 out -> detached.
+        let sync = patient_rt
+            .toggle(
+                &store,
+                "doctors",
+                alice["id"].clone(),
+                vec![d1["id"].clone(), d2["id"].clone()],
+                None,
+            )
+            .unwrap();
+        assert_eq!(sync.attached, vec![d1["id"].clone()]);
+        assert_eq!(sync.detached, vec![d2["id"].clone()]);
+
+        let mut parents = vec![alice.clone()];
+        patient_rt
+            .load_relation(&store, "doctors", &mut parents, None)
+            .unwrap();
+        assert_eq!(parents[0]["doctors"].as_array().unwrap().len(), 2);
+
+        // detach with no ids removes EVERY link for that parent.
+        let removed = patient_rt
+            .detach(&store, "doctors", alice["id"].clone(), vec![], None)
+            .unwrap();
+        assert_eq!(removed, 2);
+        patient_rt
+            .load_relation(&store, "doctors", &mut parents, None)
+            .unwrap();
+        assert!(parents[0]["doctors"].as_array().unwrap().is_empty());
+
+        // updateExistingPivot edits through the REGISTERED pivot model
+        // (its `role` column is what makes the join model necessary).
+        patient_rt
+            .attach(
+                &store,
+                "doctors",
+                alice["id"].clone(),
+                vec![d1["id"].clone()],
+                None,
+            )
+            .unwrap();
+        let mut changes = Record::new();
+        changes.insert("role".into(), Json::String("attending".into()));
+        let row = patient_rt
+            .update_existing_pivot(
+                &store,
+                "doctors",
+                alice["id"].clone(),
+                d1["id"].clone(),
+                &changes,
+                None,
+            )
+            .unwrap();
+        assert_eq!(row["role"], Json::String("attending".into()));
+
+        // A pair that is not linked is a typed 404.
+        let err = patient_rt
+            .update_existing_pivot(
+                &store,
+                "doctors",
+                alice["id"].clone(),
+                d2["id"].clone(),
+                &changes,
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(err.code, "KER_NOT_FOUND");
+    }
+
+    #[test]
+    fn pivot_ops_reject_non_many_to_many_and_existence_stays_refused() {
+        // A has_many relation refuses pivot ops with a typed error.
+        let (patient_rt, _appointment_rt, store) = rel_fixture();
+        let err = patient_rt
+            .attach(&store, "appointments", Json::Null, vec![], None)
+            .unwrap_err();
+        assert!(
+            err.public_message.contains("not many-to-many"),
+            "{}",
+            err.public_message
+        );
+
+        // Existence filters over a pivot relation remain a documented gap.
+        let (patient_rt, _doctor_rt, _store) = pairing_fixture();
+        let err = patient_rt.has("doctors", vec![]).unwrap_err();
+        assert!(
+            err.public_message.contains("unsupported"),
+            "{}",
+            err.public_message
+        );
+    }
+
+    /// Polymorphic fixture: `Image` morphTo's its imageable (Post/Video via
+    /// a morph map); `Post` morphMany's Comments and morphToMany's Tags
+    /// through a synthesized `taggables` pivot.
+    #[allow(clippy::type_complexity)]
+    fn morph_fixture()
+    -> (
+        ModelRuntime,
+        ModelRuntime,
+        ModelRuntime,
+        ModelRuntime,
+        ModelRuntime,
+        Arc<InMemoryModelStore>,
+    ) {
+        let mut registry = ModelRegistry::new();
+        let post = ModelDef::new("Post", "posts")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("title", FieldType::Text).required())
+            .relation(RelationDef::morph_many(
+                "comments",
+                "Comment",
+                "commentable_type",
+                "commentable_id",
+            ))
+            .relation(RelationDef::morph_to_many(
+                "tags",
+                "Tag",
+                "taggables",
+                "taggable_type",
+                "taggable_id",
+                "tag_id",
+            ));
+        let video = ModelDef::new("Video", "videos")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("duration", FieldType::Int64));
+        let image = ModelDef::new("Image", "images")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("url", FieldType::Text).required())
+            .field(FieldDef::new("imageable_type", FieldType::Text))
+            .field(FieldDef::new("imageable_id", FieldType::Uuid))
+            .relation(RelationDef::morph_to(
+                "imageable",
+                "imageable_type",
+                "imageable_id",
+            ));
+        let comment = ModelDef::new("Comment", "comments")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("body", FieldType::Text).required())
+            .field(FieldDef::new("commentable_type", FieldType::Text))
+            .field(FieldDef::new("commentable_id", FieldType::Uuid));
+        let tag = ModelDef::new("Tag", "tags")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("label", FieldType::Text).required());
+        registry.register(post.clone()).unwrap();
+        registry.register(video.clone()).unwrap();
+        registry.register(image.clone()).unwrap();
+        registry.register(comment.clone()).unwrap();
+        registry.register(tag.clone()).unwrap();
+        registry.register_morph("post", "Post").unwrap();
+        registry.register_morph("video", "Video").unwrap();
+        registry.validate_graph().unwrap();
+        let registry = Arc::new(registry);
+        (
+            ModelRuntime::new(post).with_registry(registry.clone()),
+            ModelRuntime::new(image).with_registry(registry.clone()),
+            ModelRuntime::new(video).with_registry(registry.clone()),
+            ModelRuntime::new(comment).with_registry(registry.clone()),
+            ModelRuntime::new(tag).with_registry(registry),
+            InMemoryModelStore::new(),
+        )
+    }
+
+    #[test]
+    fn morph_to_loads_each_type_through_the_morph_map() {
+        let (post_rt, image_rt, video_rt, _comment_rt, _tag_rt, store) = morph_fixture();
+        let mut p = Record::new();
+        p.insert("title".into(), Json::String("Hello".into()));
+        let post = post_rt.insert(&store, &p, None).unwrap();
+        let mut v = Record::new();
+        v.insert("duration".into(), Json::from(120));
+        let video = video_rt.insert(&store, &v, None).unwrap();
+
+        let image = |type_value: Option<&str>, id: Option<Json>| {
+            let mut r = Record::new();
+            r.insert("url".into(), Json::String("u".into()));
+            if let Some(t) = type_value {
+                r.insert("imageable_type".into(), Json::String(t.into()));
+            }
+            if let Some(id) = id {
+                r.insert("imageable_id".into(), id);
+            }
+            image_rt.insert(&store, &r, None).unwrap()
+        };
+        let i1 = image(Some("post"), Some(post["id"].clone()));
+        let i2 = image(Some("video"), Some(video["id"].clone()));
+        let i3 = image(None, None);
+        let mut parents = vec![i1, i2, i3];
+        image_rt
+            .load_relation(&store, "imageable", &mut parents, None)
+            .unwrap();
+        // Stored aliases resolve through the morph map; a blank morph is Null.
+        assert_eq!(parents[0]["imageable"]["title"], Json::String("Hello".into()));
+        assert_eq!(parents[1]["imageable"]["duration"], Json::from(120));
+        assert_eq!(parents[2]["imageable"], Json::Null);
+
+        // An unmapped stored type is a typed error, not a silent miss.
+        let ghost = image(Some("ghost"), Some(post["id"].clone()));
+        let mut parents = vec![ghost];
+        let err = image_rt
+            .load_relation(&store, "imageable", &mut parents, None)
+            .unwrap_err();
+        assert!(
+            err.public_message.contains("unknown model"),
+            "{}",
+            err.public_message
+        );
+    }
+
+    #[test]
+    fn morph_many_pins_owner_type_on_load_and_exists() {
+        let (post_rt, _image_rt, video_rt, comment_rt, _tag_rt, store) = morph_fixture();
+        let mk_post = |title: &str| {
+            let mut r = Record::new();
+            r.insert("title".into(), Json::String(title.into()));
+            post_rt.insert(&store, &r, None).unwrap()
+        };
+        let p1 = mk_post("A");
+        let p2 = mk_post("B");
+        let _ = video_rt;
+        let mk_comment = |kind: &str, owner: &Json, body: &str| {
+            let mut r = Record::new();
+            r.insert("body".into(), Json::String(body.into()));
+            r.insert("commentable_type".into(), Json::String(kind.into()));
+            r.insert("commentable_id".into(), owner.clone());
+            comment_rt.insert(&store, &r, None).unwrap()
+        };
+        mk_comment("post", &p1["id"], "one");
+        mk_comment("post", &p1["id"], "two");
+        // Sibling-owner traps: same id column, DIFFERENT morph type.
+        mk_comment("video", &p1["id"], "leak-1");
+        mk_comment("video", &p2["id"], "leak-2");
+
+        let mut parents = vec![p1.clone(), p2.clone()];
+        post_rt
+            .load_relation(&store, "comments", &mut parents, None)
+            .unwrap();
+        assert_eq!(parents[0]["comments"].as_array().unwrap().len(), 2);
+        assert_eq!(parents[1]["comments"].as_array().unwrap().len(), 0);
+
+        // EXISTS carries the same type pin: p2's video-typed row must not
+        // make the post look commented-on.
+        let filter = post_rt.has("comments", vec![]).unwrap();
+        let found = store
+            .list(&post_rt.model, None, &[filter], &ListOpts::default())
+            .unwrap()
+            .items;
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0]["id"], p1["id"]);
+    }
+
+    #[test]
+    fn morph_to_many_eager_loads_and_pivots_stay_type_pinned() {
+        let (post_rt, _image_rt, _video_rt, _comment_rt, tag_rt, store) = morph_fixture();
+        let mk_post = |title: &str| {
+            let mut r = Record::new();
+            r.insert("title".into(), Json::String(title.into()));
+            post_rt.insert(&store, &r, None).unwrap()
+        };
+        let p1 = mk_post("A");
+        let p2 = mk_post("B");
+        let mk_tag = |label: &str| {
+            let mut r = Record::new();
+            r.insert("label".into(), Json::String(label.into()));
+            tag_rt.insert(&store, &r, None).unwrap()
+        };
+        let t1 = mk_tag("rust");
+        let t2 = mk_tag("web");
+
+        assert_eq!(
+            post_rt
+                .attach(
+                    &store,
+                    "tags",
+                    p1["id"].clone(),
+                    vec![t1["id"].clone(), t2["id"].clone()],
+                    None,
+                )
+                .unwrap(),
+            2
+        );
+        post_rt
+            .attach(&store, "tags", p2["id"].clone(), vec![t2["id"].clone()], None)
+            .unwrap();
+
+        // A pivot row for ANOTHER owner type sharing the id must not leak.
+        let taggables = ModelDef::new("Taggable", "taggables")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("taggable_id", FieldType::Uuid))
+            .field(FieldDef::new("taggable_type", FieldType::Text))
+            .field(FieldDef::new("tag_id", FieldType::Uuid));
+        let mut rogue = Record::new();
+        rogue.insert("id".into(), Json::String(Uuid::now_v7().to_string()));
+        rogue.insert("taggable_id".into(), p1["id"].clone());
+        rogue.insert("taggable_type".into(), Json::String("video".into()));
+        rogue.insert("tag_id".into(), t1["id"].clone());
+        store.insert(&taggables, &rogue).unwrap();
+
+        let mut parents = vec![p1.clone(), p2.clone()];
+        post_rt
+            .load_relation(&store, "tags", &mut parents, None)
+            .unwrap();
+        assert_eq!(parents[0]["tags"].as_array().unwrap().len(), 2);
+        assert_eq!(parents[1]["tags"].as_array().unwrap().len(), 1);
+
+        // sync/detach touch only THIS owner's rows: the video row survives.
+        let sync = post_rt
+            .sync(
+                &store,
+                "tags",
+                p1["id"].clone(),
+                vec![t2["id"].clone()],
+                None,
+            )
+            .unwrap();
+        assert_eq!(sync.detached, vec![t1["id"].clone()]);
+        assert!(sync.attached.is_empty());
+        let removed = post_rt
+            .detach(&store, "tags", p1["id"].clone(), vec![], None)
+            .unwrap();
+        assert_eq!(removed, 1);
+        let remaining = store
+            .list(&taggables, None, &[], &ListOpts::default())
+            .unwrap()
+            .items;
+        // p2's own row and the video-typed rogue survive — nothing
+        // Post-typed tagged to p1 does.
+        assert_eq!(remaining.len(), 2);
+        assert!(remaining
+            .iter()
+            .any(|r| r["taggable_type"] == Json::String("video".into())));
+        assert!(!remaining.iter().any(|r| {
+            r["taggable_id"] == p1["id"] && r["taggable_type"] == Json::String("post".into())
+        }));
+    }
+
+    #[test]
+    fn morph_guards_refuse_single_target_resolution_and_constraints() {
+        let (_post_rt, image_rt, _video_rt, _comment_rt, _tag_rt, store) = morph_fixture();
+        // MorphTo has no single target: existence builders refuse it...
+        let err = image_rt.has("imageable", vec![]).unwrap_err();
+        assert!(err.public_message.contains("morph-to"), "{}", err.public_message);
+        // ...and per-level eager constraints cannot apply (targets vary).
+        let mut images: Vec<Record> = Vec::new();
+        let err = image_rt
+            .with_constrained(&store, &mut images, None, "imageable", &mut |_, _, c| {
+                c.limit = Some(1);
+            })
+            .unwrap_err();
+        assert!(
+            err.public_message.contains("eager constraints"),
+            "{}",
+            err.public_message
+        );
     }
 
     // ---------------------------------------------------- Wave 3 (phase 3)

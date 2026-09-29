@@ -10,7 +10,7 @@
 //! columns are nested JSON. Both stores speak this same shape, so a module
 //! can swap backends without touching domain code.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use keel_foundation::{AppError, TenantId};
@@ -33,17 +33,58 @@ pub enum FilterOp {
     NotNull,
 }
 
-/// One field-level filter (tenant-safe: stores apply tenant scope separately).
+/// One query filter: a field-level comparison (tenant-safe: stores apply
+/// tenant scope separately) or a correlated relation-existence condition.
+/// A filter list evaluates with SQL precedence — adjacent AND terms form
+/// groups split at OR-tagged [`FieldFilter::Exists`] terms and the groups OR
+/// together (the first term's junction is implicit, mirroring
+/// [`keel_query::Select`]'s clause rendering).
 #[derive(Debug, Clone)]
-pub struct FieldFilter {
-    pub field: String,
-    pub op: FilterOp,
-    pub value: Json,
+pub enum FieldFilter {
+    /// Column comparison against a declared field.
+    Cmp {
+        field: String,
+        op: FilterOp,
+        value: Json,
+    },
+    /// `EXISTS` / `NOT EXISTS` over a related table, correlated through the
+    /// relation's key columns. Built by [`crate::ModelRuntime`] from a
+    /// declared relation; both stores apply the sub model's tenant scope and
+    /// soft-delete veil from the flags (no registry lookup at evaluation).
+    Exists(ExistsFilter),
+}
+
+/// Correlated existence condition: `EXISTS (SELECT * FROM sub_table WHERE
+/// sub_table.sub_key = outer_table.outer_key [AND sub_filters...])`.
+/// Nested existence (`Exists` inside `filters`) is refused by both stores —
+/// keep the sub conditions field-level.
+#[derive(Debug, Clone)]
+pub struct ExistsFilter {
+    /// `NOT EXISTS` instead of `EXISTS` (`doesnt_have` semantics).
+    pub negated: bool,
+    /// OR-join the preceding clause instead of AND (`or_where_has`); the
+    /// first term of a list stays implicitly joined.
+    pub or: bool,
+    /// Related model's table.
+    pub sub_table: String,
+    /// Column on the sub table carrying the correlation value.
+    pub sub_key: String,
+    /// Owning table — the model the filter list belongs to.
+    pub outer_table: String,
+    /// Column on the outer table the correlation value comes from.
+    pub outer_key: String,
+    /// Sub model is tenant-scoped: sub rows must sit in the query's tenant.
+    pub sub_tenant_scoped: bool,
+    /// Sub model soft-deletes: trashed sub rows never satisfy `EXISTS`.
+    pub sub_soft_deletes: bool,
+    /// Field conditions evaluated against each sub row (ANDed) — field
+    /// names live on the sub model.
+    pub filters: Vec<FieldFilter>,
 }
 
 impl FieldFilter {
     pub fn eq(field: impl Into<String>, value: impl Into<Json>) -> Self {
-        Self {
+        Self::Cmp {
             field: field.into(),
             op: FilterOp::Eq,
             value: value.into(),
@@ -51,7 +92,7 @@ impl FieldFilter {
     }
 
     pub fn is_in(field: impl Into<String>, values: Vec<Json>) -> Self {
-        Self {
+        Self::Cmp {
             field: field.into(),
             op: FilterOp::In,
             value: Json::Array(values),
@@ -105,12 +146,18 @@ impl AggregateOp {
     }
 }
 
-/// List options: pagination (`None` = unbounded, for eager loads) and the
-/// soft-delete trash toggle.
+/// List options: pagination (`None` = unbounded, for eager loads), the
+/// soft-delete trash toggle, and (for eager fetches) a sort + row cap.
 #[derive(Debug, Clone, Default)]
 pub struct ListOpts {
     pub page: Option<PageReq>,
     pub include_deleted: bool,
+    /// Sort by `(field, desc)` — applied BEFORE pagination (stable JSON
+    /// ordering in memory, `ORDER BY` in pg).
+    pub sort: Option<(String, bool)>,
+    /// Row cap — the eager "subquery limit". Mutually exclusive with
+    /// `page` (validated by [`validate_list_opts`]).
+    pub limit: Option<u32>,
 }
 
 /// Semantic CRUD port over a [`ModelDef`].
@@ -420,29 +467,146 @@ fn is_deleted(record: &Record) -> bool {
 }
 
 fn tenant_matches(model: &ModelDef, record: &Record, tenant: Option<TenantId>) -> bool {
-    if !model.tenant_scoped {
+    tenant_row_ok(model.tenant_scoped, record, tenant)
+}
+
+/// Tenant posture check without a `ModelDef` — existence sub rows carry
+/// their posture as flags on [`ExistsFilter`].
+fn tenant_row_ok(tenant_scoped: bool, record: &Record, tenant: Option<TenantId>) -> bool {
+    if !tenant_scoped {
         return true;
     }
     let Some(tenant) = tenant else {
-        // Tenant-scoped models queried without a tenant see nothing.
+        // Tenant-scoped rows queried without a tenant see nothing.
         return false;
     };
     uuid_str(record, "tenant_id") == Some(*tenant.as_uuid())
 }
 
-fn filter_matches(record: &Record, filter: &FieldFilter) -> bool {
-    let actual = record.get(&filter.field);
-    match filter.op {
-        FilterOp::Eq => actual == Some(&filter.value),
-        FilterOp::Ne => actual != Some(&filter.value),
-        FilterOp::In => filter
-            .value
+fn cmp_matches(record: &Record, field: &str, op: FilterOp, value: &Json) -> bool {
+    let actual = record.get(field);
+    match op {
+        FilterOp::Eq => actual == Some(value),
+        FilterOp::Ne => actual != Some(value),
+        FilterOp::In => value
             .as_array()
             .map(|list| actual.map(|a| list.contains(a)).unwrap_or(false))
             .unwrap_or(false),
         FilterOp::IsNull => matches!(actual, None | Some(Json::Null)),
         FilterOp::NotNull => !matches!(actual, None | Some(Json::Null)),
     }
+}
+
+/// A filter list compiled for in-memory evaluation: comparison terms borrow
+/// from the caller's list; existence terms are pre-resolved against the
+/// store's tables (one lock, outside the row cursor) into qualifying-key
+/// sets.
+struct FilterPlan<'a> {
+    terms: Vec<PlannedTerm<'a>>,
+}
+
+enum PlannedTerm<'a> {
+    Cmp {
+        field: &'a str,
+        op: FilterOp,
+        value: &'a Json,
+    },
+    Exists {
+        /// Column on the OUTER row carrying the correlation value.
+        outer_key: &'a str,
+        negated: bool,
+        or: bool,
+        /// Stringified sub-key values of sub rows satisfying tenant scope,
+        /// the soft-delete veil, and every sub condition.
+        qualifying: HashSet<String>,
+    },
+}
+
+impl FilterPlan<'_> {
+    /// SQL-precedence evaluation: adjacent AND terms form groups split at
+    /// OR-tagged existence terms, groups OR together, and the first term's
+    /// junction is implicit (mirrors the SQL builder's rendering). An empty
+    /// list matches every row — the filters are the WHERE clause, tenant and
+    /// soft-delete scope are applied separately by the caller.
+    fn matches(&self, row: &Record) -> bool {
+        let mut groups_or = false;
+        let mut group: Option<bool> = None;
+        for term in &self.terms {
+            let (hit, or) = match term {
+                PlannedTerm::Cmp { field, op, value } => (cmp_matches(row, field, *op, value), false),
+                PlannedTerm::Exists {
+                    outer_key,
+                    negated,
+                    or,
+                    qualifying,
+                } => {
+                    let linked = row
+                        .get(*outer_key)
+                        .filter(|v| !v.is_null())
+                        .map(|v| qualifying.contains(&v.to_string()))
+                        .unwrap_or(false);
+                    (*negated != linked, *or)
+                }
+            };
+            if or && group.is_some() {
+                groups_or |= group.take().expect("group was Some");
+            }
+            group = Some(match group {
+                None => hit,
+                Some(acc) => acc && hit,
+            });
+        }
+        groups_or | group.unwrap_or(true)
+    }
+}
+
+/// Resolve one filter into a planned term; existence terms scan the sub
+/// table for rows passing tenant scope + soft veil + sub conditions.
+fn resolve_exists<'a>(
+    tables: &HashMap<String, Vec<Record>>,
+    tenant: Option<TenantId>,
+    ex: &'a ExistsFilter,
+) -> Result<PlannedTerm<'a>, AppError> {
+    if ex
+        .filters
+        .iter()
+        .any(|f| matches!(f, FieldFilter::Exists(_)))
+    {
+        return Err(AppError::validation(
+            "relation filters cannot nest inside a relation filter (not supported)",
+        ));
+    }
+    let mut qualifying = HashSet::new();
+    if let Some(rows) = tables.get(&ex.sub_table) {
+        for row in rows {
+            if !tenant_row_ok(ex.sub_tenant_scoped, row, tenant) {
+                continue;
+            }
+            if ex.sub_soft_deletes && is_deleted(row) {
+                continue;
+            }
+            let sub_ok = ex.filters.iter().all(|f| {
+                matches!(
+                    f,
+                    FieldFilter::Cmp { field, op, value } if cmp_matches(row, field, *op, value)
+                )
+            });
+            if !sub_ok {
+                continue;
+            }
+            if let Some(key) = row.get(&ex.sub_key) {
+                if !key.is_null() {
+                    qualifying.insert(key.to_string());
+                }
+            }
+        }
+    }
+    Ok(PlannedTerm::Exists {
+        outer_key: ex.outer_key.as_str(),
+        negated: ex.negated,
+        or: ex.or,
+        qualifying,
+    })
 }
 
 /// Validate an aggregate against the model (shared by both backends):
@@ -486,11 +650,144 @@ pub fn validate_aggregate<'m>(
     Ok(Some(&field.field_type))
 }
 
+/// Fold extracted non-null values for SUM/AVG/MIN/MAX — shared by the
+/// in-memory store's `aggregate` and the runtime's eager aggregate family
+/// (`with_sum`/`with_avg`/...), so both compute byte-identical values.
+/// COUNT never reaches here (it counts rows, not values). Empty input folds
+/// to SQL NULL.
+pub fn fold_aggregate_values(
+    values: &[&Json],
+    name: &str,
+    op: &AggregateOp,
+) -> Result<Json, AppError> {
+    if values.is_empty() {
+        // SQL NULL semantics: no rows to aggregate.
+        return Ok(Json::Null);
+    }
+    let finite = |f: f64| {
+        serde_json::Number::from_f64(f)
+            .map(Json::Number)
+            .ok_or_else(|| AppError::validation("aggregate produced a non-finite number"))
+    };
+    match op {
+        AggregateOp::Count => Err(AppError::validation(
+            "COUNT folds rows, not values — count at the call site",
+        )),
+        AggregateOp::Sum(_) => {
+            let mut int_sum: Option<i64> = Some(0);
+            let mut float_sum = 0f64;
+            for v in values {
+                let Json::Number(n) = v else {
+                    return Err(AppError::validation(format!(
+                        "field {name:?} holds a non-numeric value"
+                    )));
+                };
+                match (int_sum.as_mut(), n.as_i64()) {
+                    (Some(acc), Some(i)) => {
+                        *acc += i;
+                        float_sum += i as f64;
+                    }
+                    _ => {
+                        float_sum += n.as_f64().ok_or_else(|| {
+                            AppError::validation(format!(
+                                "field {name:?} holds a non-numeric value"
+                            ))
+                        })?;
+                        int_sum = None;
+                    }
+                }
+            }
+            match int_sum {
+                Some(total) => Ok(Json::from(total)),
+                None => finite(float_sum),
+            }
+        }
+        AggregateOp::Avg(_) => {
+            let mut sum = 0f64;
+            for v in values {
+                let Json::Number(n) = v else {
+                    return Err(AppError::validation(format!(
+                        "field {name:?} holds a non-numeric value"
+                    )));
+                };
+                sum += n.as_f64().ok_or_else(|| {
+                    AppError::validation(format!("field {name:?} holds a non-numeric value"))
+                })?;
+            }
+            finite(sum / values.len() as f64)
+        }
+        AggregateOp::Min(_) | AggregateOp::Max(_) => {
+            let want_min = matches!(op, AggregateOp::Min(_));
+            let mut best = values[0];
+            for v in &values[1..] {
+                let ord = json_order(best, v).ok_or_else(|| {
+                    AppError::validation(format!("min/max on {name:?} needs comparable values"))
+                })?;
+                let take = (want_min && ord == std::cmp::Ordering::Greater)
+                    || (!want_min && ord == std::cmp::Ordering::Less);
+                if take {
+                    best = v;
+                }
+            }
+            Ok(best.clone())
+        }
+    }
+}
+
+/// Shared `ListOpts` validation for both stores: `sort` must name a field
+/// on the model, and `page`/`limit` are mutually exclusive (pagination vs
+/// eager-fetch row cap).
+pub fn validate_list_opts(model: &ModelDef, opts: &ListOpts) -> Result<(), AppError> {
+    if opts.page.is_some() && opts.limit.is_some() {
+        return Err(AppError::validation(
+            "list: page and limit are mutually exclusive",
+        ));
+    }
+    if let Some((field, _)) = &opts.sort {
+        if field != "id" && model.field_named(field).is_none() {
+            return Err(AppError::validation(format!(
+                "sort on unknown field {field:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Stable sort of records by `field` using JSON ordering (missing keys
+/// compare as null); `desc` reverses. Shared by the in-memory store's
+/// `list` and the runtime's eager assembly.
+pub fn sort_records(rows: &mut [Record], field: &str, desc: bool) {
+    rows.sort_by(|a, b| {
+        let ord = json_order(a.get(field).unwrap_or(&Json::Null), b.get(field).unwrap_or(&Json::Null))
+            .unwrap_or(std::cmp::Ordering::Equal);
+        if desc {
+            ord.reverse()
+        } else {
+            ord
+        }
+    });
+}
+
 /// Unfiltered-write guard for the filter-keyed store operations.
 pub fn require_filters(op: &str, filters: &[FieldFilter]) -> Result<(), AppError> {
     if filters.is_empty() {
         return Err(AppError::validation(format!(
             "{op} requires at least one filter"
+        )));
+    }
+    Ok(())
+}
+
+/// Write-path filter guard: `update_filtered`/`delete_filtered` accept
+/// comparison terms only. The UPDATE/DELETE builders render WHERE from
+/// plain conditions (no EXISTS/group clauses), so relation-existence terms
+/// are refused on both backends — they live on the read surface
+/// (list/find/aggregate/exists).
+pub fn require_write_filters(op: &str, filters: &[FieldFilter]) -> Result<(), AppError> {
+    require_filters(op, filters)?;
+    if filters.iter().any(|f| matches!(f, FieldFilter::Exists(_))) {
+        return Err(AppError::validation(format!(
+            "{op} does not accept relation-existence filters (read-side only)"
         )));
     }
     Ok(())
@@ -559,6 +856,30 @@ impl InMemoryModelStore {
     fn clone_row(row: &Record) -> Record {
         row.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
+
+    /// Compile a filter list for row evaluation. Existence terms resolve
+    /// against the tables here (single lock, dropped before any row cursor)
+    /// into qualifying-key sets; comparison terms borrow. Refuses existence
+    /// nested inside existence.
+    fn filter_plan<'a>(
+        &'a self,
+        tenant: Option<TenantId>,
+        filters: &'a [FieldFilter],
+    ) -> Result<FilterPlan<'a>, AppError> {
+        let tables = self.tables.lock().expect("model store poisoned");
+        let mut terms = Vec::with_capacity(filters.len());
+        for filter in filters {
+            terms.push(match filter {
+                FieldFilter::Cmp { field, op, value } => PlannedTerm::Cmp {
+                    field: field.as_str(),
+                    op: *op,
+                    value,
+                },
+                FieldFilter::Exists(ex) => resolve_exists(&tables, tenant, ex)?,
+            });
+        }
+        Ok(FilterPlan { terms })
+    }
 }
 
 impl ModelStore for InMemoryModelStore {
@@ -569,16 +890,24 @@ impl ModelStore for InMemoryModelStore {
         filters: &[FieldFilter],
         opts: &ListOpts,
     ) -> Result<keel_query::Page<Record>, AppError> {
-        let matched: Vec<Record> = self.with_table(&model.table, |rows| {
+        validate_list_opts(model, opts)?;
+        let plan = self.filter_plan(tenant, filters)?;
+        let mut matched: Vec<Record> = self.with_table(&model.table, |rows| {
             Ok(rows
                 .iter()
                 .filter(|r| tenant_matches(model, r, tenant))
                 .filter(|r| opts.include_deleted || !is_deleted(r))
-                .filter(|r| filters.iter().all(|f| filter_matches(r, f)))
+                .filter(|r| plan.matches(r))
                 .map(Self::clone_row)
                 .collect())
         })?;
         let total = matched.len() as u64;
+        if let Some((field, desc)) = &opts.sort {
+            sort_records(&mut matched, field, *desc);
+        }
+        if let Some(n) = opts.limit {
+            matched.truncate(n as usize);
+        }
         let (items, page, per_page) = match opts.page {
             Some(req) => {
                 let req = req.validate()?;
@@ -720,12 +1049,13 @@ impl ModelStore for InMemoryModelStore {
         op: AggregateOp,
     ) -> Result<Json, AppError> {
         validate_aggregate(model, &op)?;
+        let plan = self.filter_plan(tenant, filters)?;
         self.with_table(&model.table, |rows| {
             let matched: Vec<&Record> = rows
                 .iter()
                 .filter(|r| tenant_matches(model, r, tenant))
                 .filter(|r| !is_deleted(r))
-                .filter(|r| filters.iter().all(|f| filter_matches(r, f)))
+                .filter(|r| plan.matches(r))
                 .collect();
             match op {
                 AggregateOp::Count => Ok(Json::from(matched.len() as u64)),
@@ -736,82 +1066,7 @@ impl ModelStore for InMemoryModelStore {
                         .filter_map(|r| r.get(name))
                         .filter(|v| !matches!(v, Json::Null))
                         .collect();
-                    if values.is_empty() {
-                        // SQL NULL semantics: no rows to aggregate.
-                        return Ok(Json::Null);
-                    }
-                    let finite = |f: f64| {
-                        serde_json::Number::from_f64(f).map(Json::Number).ok_or_else(|| {
-                            AppError::validation("aggregate produced a non-finite number")
-                        })
-                    };
-                    match other {
-                        AggregateOp::Sum(_) => {
-                            let mut int_sum: Option<i64> = Some(0);
-                            let mut float_sum = 0f64;
-                            for v in &values {
-                                let Json::Number(n) = v else {
-                                    return Err(AppError::validation(format!(
-                                        "field {name:?} holds a non-numeric value"
-                                    )));
-                                };
-                                match (int_sum.as_mut(), n.as_i64()) {
-                                    (Some(acc), Some(i)) => {
-                                        *acc += i;
-                                        float_sum += i as f64;
-                                    }
-                                    _ => {
-                                        float_sum += n.as_f64().ok_or_else(|| {
-                                            AppError::validation(format!(
-                                                "field {name:?} holds a non-numeric value"
-                                            ))
-                                        })?;
-                                        int_sum = None;
-                                    }
-                                }
-                            }
-                            match int_sum {
-                                Some(total) => Ok(Json::from(total)),
-                                None => finite(float_sum),
-                            }
-                        }
-                        AggregateOp::Avg(_) => {
-                            let mut sum = 0f64;
-                            for v in &values {
-                                let Json::Number(n) = v else {
-                                    return Err(AppError::validation(format!(
-                                        "field {name:?} holds a non-numeric value"
-                                    )));
-                                };
-                                sum += n.as_f64().ok_or_else(|| {
-                                    AppError::validation(format!(
-                                        "field {name:?} holds a non-numeric value"
-                                    ))
-                                })?;
-                            }
-                            finite(sum / values.len() as f64)
-                        }
-                        AggregateOp::Min(_) | AggregateOp::Max(_) => {
-                            let want_min = matches!(other, AggregateOp::Min(_));
-                            let mut best = values[0];
-                            for v in &values[1..] {
-                                let ord = json_order(best, v).ok_or_else(|| {
-                                    AppError::validation(format!(
-                                        "min/max on {name:?} needs comparable values"
-                                    ))
-                                })?;
-                                let take = (want_min && ord == std::cmp::Ordering::Greater)
-                                    || (!want_min && ord == std::cmp::Ordering::Less);
-                                if take {
-                                    best = v;
-                                }
-                            }
-                            Ok(best.clone())
-                        }
-                        AggregateOp::Count => {
-                            unreachable!("count handled before field aggregation")
-                        }
-                    }
+                    fold_aggregate_values(&values, name, other)
                 }
             }
         })
@@ -823,11 +1078,10 @@ impl ModelStore for InMemoryModelStore {
         tenant: Option<TenantId>,
         filters: &[FieldFilter],
     ) -> Result<bool, AppError> {
+        let plan = self.filter_plan(tenant, filters)?;
         self.with_table(&model.table, |rows| {
             Ok(rows.iter().any(|r| {
-                tenant_matches(model, r, tenant)
-                    && !is_deleted(r)
-                    && filters.iter().all(|f| filter_matches(r, f))
+                tenant_matches(model, r, tenant) && !is_deleted(r) && plan.matches(r)
             }))
         })
     }
@@ -839,13 +1093,14 @@ impl ModelStore for InMemoryModelStore {
         filters: &[FieldFilter],
         include_deleted: bool,
     ) -> Result<Option<Record>, AppError> {
+        let plan = self.filter_plan(tenant, filters)?;
         self.with_table(&model.table, |rows| {
             Ok(rows
                 .iter()
                 .find(|r| {
                     tenant_matches(model, r, tenant)
                         && (include_deleted || !is_deleted(r))
-                        && filters.iter().all(|f| filter_matches(r, f))
+                        && plan.matches(r)
                 })
                 .map(Self::clone_row))
         })
@@ -901,14 +1156,12 @@ impl ModelStore for InMemoryModelStore {
         filters: &[FieldFilter],
         changes: &Record,
     ) -> Result<Vec<Record>, AppError> {
-        require_filters("update_filtered", filters)?;
+        require_write_filters("update_filtered", filters)?;
+        let plan = self.filter_plan(tenant, filters)?;
         self.with_table(&model.table, |rows| {
             let mut updated = Vec::new();
             for row in rows.iter_mut() {
-                if tenant_matches(model, row, tenant)
-                    && !is_deleted(row)
-                    && filters.iter().all(|f| filter_matches(row, f))
-                {
+                if tenant_matches(model, row, tenant) && !is_deleted(row) && plan.matches(row) {
                     for (key, value) in changes {
                         row.insert(key.clone(), value.clone());
                     }
@@ -925,20 +1178,18 @@ impl ModelStore for InMemoryModelStore {
         tenant: Option<TenantId>,
         filters: &[FieldFilter],
     ) -> Result<Vec<Record>, AppError> {
-        require_filters("delete_filtered", filters)?;
+        require_write_filters("delete_filtered", filters)?;
         if model.soft_deletes {
             let mut changes = Record::new();
             changes.insert("deleted_at".into(), Json::String(now_rfc3339()));
             return self.update_filtered(model, tenant, filters, &changes);
         }
+        let plan = self.filter_plan(tenant, filters)?;
         self.with_table(&model.table, |rows| {
             let mut removed = Vec::new();
             let mut kept = Vec::new();
             for row in rows.drain(..) {
-                if tenant_matches(model, &row, tenant)
-                    && !is_deleted(&row)
-                    && filters.iter().all(|f| filter_matches(&row, f))
-                {
+                if tenant_matches(model, &row, tenant) && !is_deleted(&row) && plan.matches(&row) {
                     removed.push(row);
                 } else {
                     kept.push(row);
@@ -1635,5 +1886,253 @@ mod tests {
             .increment(&model, foreign_id, Some(b), "id", 1, &Record::new())
             .unwrap_err();
         assert!(err.public_message.contains("immutable"), "{}", err.public_message);
+    }
+
+    /// Correlated-existence fixture: `votes.widget_id -> widgets.id`.
+    fn vote_model() -> ModelDef {
+        ModelDef::new("Vote", "votes")
+            .tenant_scoped()
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("tenant_id", FieldType::Uuid).required())
+            .field(FieldDef::new("widget_id", FieldType::Uuid))
+            .field(FieldDef::new("kind", FieldType::Text))
+            .field(FieldDef::new("deleted_at", FieldType::Timestamp))
+    }
+
+    fn vote(tenant: TenantId, widget_id: &Json, kind: &str) -> Record {
+        let mut r = Record::new();
+        r.insert("id".into(), Json::String(Uuid::now_v7().to_string()));
+        r.insert("tenant_id".into(), Json::String(tenant.as_uuid().to_string()));
+        r.insert("widget_id".into(), widget_id.clone());
+        r.insert("kind".into(), Json::String(kind.into()));
+        r
+    }
+
+    fn votes_exists(negated: bool, or: bool, sub: Vec<FieldFilter>) -> FieldFilter {
+        FieldFilter::Exists(ExistsFilter {
+            negated,
+            or,
+            sub_table: "votes".into(),
+            sub_key: "widget_id".into(),
+            outer_table: "widgets".into(),
+            outer_key: "id".into(),
+            sub_tenant_scoped: true,
+            sub_soft_deletes: true,
+            filters: sub,
+        })
+    }
+
+    fn names(page: keel_query::Page<Record>) -> Vec<String> {
+        page.items
+            .iter()
+            .map(|r| r["name"].as_str().unwrap_or("?").to_string())
+            .collect()
+    }
+
+    #[test]
+    fn list_applies_correlated_existence_filters() {
+        let store = InMemoryModelStore::new();
+        let widgets = widget_model();
+        let votes = vote_model();
+        let t = TenantId::new();
+        let foreign = TenantId::new();
+
+        let w1 = store.insert(&widgets, &widget(t, "w1")).unwrap();
+        let w2 = store.insert(&widgets, &widget(t, "w2")).unwrap();
+        let _w3 = store.insert(&widgets, &widget(t, "w3")).unwrap();
+        // w1's only "up" vote sits in ANOTHER tenant; w2's is in `t`.
+        store
+            .insert(&votes, &vote(foreign, &w1["id"], "up"))
+            .unwrap();
+        let w2_up = store.insert(&votes, &vote(t, &w2["id"], "up")).unwrap();
+
+        // EXISTS: only w2 qualifies (sub tenant scope enforced).
+        let page = store
+            .list(
+                &widgets,
+                Some(t),
+                &[votes_exists(false, false, vec![])],
+                &ListOpts::default(),
+            )
+            .unwrap();
+        assert_eq!(names(page), vec!["w2"]);
+
+        // NOT EXISTS: everything without an in-tenant vote.
+        let page = store
+            .list(
+                &widgets,
+                Some(t),
+                &[votes_exists(true, false, vec![])],
+                &ListOpts::default(),
+            )
+            .unwrap();
+        assert_eq!(names(page), vec!["w1", "w3"]);
+
+        // Sub conditions run against the related rows.
+        let page = store
+            .list(
+                &widgets,
+                Some(t),
+                &[votes_exists(
+                    false,
+                    false,
+                    vec![FieldFilter::eq("kind", "down")],
+                )],
+                &ListOpts::default(),
+            )
+            .unwrap();
+        assert!(page.items.is_empty());
+
+        // OR junction: `name = w1 OR EXISTS(...)`.
+        let page = store
+            .list(
+                &widgets,
+                Some(t),
+                &[
+                    FieldFilter::eq("name", "w1"),
+                    votes_exists(false, true, vec![]),
+                ],
+                &ListOpts::default(),
+            )
+            .unwrap();
+        assert_eq!(names(page), vec!["w1", "w2"]);
+
+        // Soft-deleted related rows never satisfy EXISTS.
+        store
+            .delete(&votes, uuid_str(&w2_up, "id").unwrap(), Some(t))
+            .unwrap();
+        let page = store
+            .list(
+                &widgets,
+                Some(t),
+                &[votes_exists(false, false, vec![])],
+                &ListOpts::default(),
+            )
+            .unwrap();
+        assert!(page.items.is_empty());
+    }
+
+    #[test]
+    fn write_filters_refuse_existence_terms() {
+        let store = InMemoryModelStore::new();
+        let model = widget_model();
+        let exists = [votes_exists(false, false, vec![])];
+        let mut changes = Record::new();
+        changes.insert("name".into(), Json::String("x".into()));
+
+        let err = store
+            .update_filtered(&model, None, &exists, &changes)
+            .unwrap_err();
+        assert!(
+            err.public_message.contains("relation-existence"),
+            "{}",
+            err.public_message
+        );
+        let err = store.delete_filtered(&model, None, &exists).unwrap_err();
+        assert!(
+            err.public_message.contains("relation-existence"),
+            "{}",
+            err.public_message
+        );
+    }
+
+    #[test]
+    fn nested_existence_filters_refused_on_both_sides_of_the_plan() {
+        let store = InMemoryModelStore::new();
+        let widgets = widget_model();
+        let outer = FieldFilter::Exists(ExistsFilter {
+            negated: false,
+            or: false,
+            sub_table: "votes".into(),
+            sub_key: "widget_id".into(),
+            outer_table: "widgets".into(),
+            outer_key: "id".into(),
+            sub_tenant_scoped: true,
+            sub_soft_deletes: true,
+            filters: vec![votes_exists(false, false, vec![])],
+        });
+        let err = store
+            .list(&widgets, None, &[outer], &ListOpts::default())
+            .unwrap_err();
+        assert!(err.public_message.contains("nest"), "{}", err.public_message);
+    }
+
+    #[test]
+    fn list_sorts_limits_and_validates_opts() {
+        let store = InMemoryModelStore::new();
+        let model = widget_model();
+        let t = TenantId::new();
+        store.insert(&model, &widget(t, "b")).unwrap();
+        store.insert(&model, &widget(t, "a")).unwrap();
+        store.insert(&model, &widget(t, "c")).unwrap();
+
+        let page = store
+            .list(
+                &model,
+                Some(t),
+                &[],
+                &ListOpts {
+                    sort: Some(("name".into(), true)),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(names(page), vec!["c", "b", "a"]);
+
+        // Limit caps rows AFTER sorting; total stays pre-limit.
+        let page = store
+            .list(
+                &model,
+                Some(t),
+                &[],
+                &ListOpts {
+                    sort: Some(("name".into(), false)),
+                    limit: Some(2),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let total = page.total;
+        assert_eq!(names(page), vec!["a", "b"]);
+        assert_eq!(total, Some(3));
+
+        // page XOR limit — pagination and eager row caps never mix.
+        let err = store
+            .list(
+                &model,
+                Some(t),
+                &[],
+                &ListOpts {
+                    page: Some(PageReq {
+                        page: 1,
+                        per_page: 1,
+                    }),
+                    limit: Some(1),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(
+            err.public_message.contains("mutually exclusive"),
+            "{}",
+            err.public_message
+        );
+
+        let err = store
+            .list(
+                &model,
+                Some(t),
+                &[],
+                &ListOpts {
+                    sort: Some(("bogus".into(), false)),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(
+            err.public_message.contains("sort on unknown field"),
+            "{}",
+            err.public_message
+        );
     }
 }

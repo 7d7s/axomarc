@@ -5,11 +5,13 @@
 
 use keel_foundation::{AppError, TenantId};
 use keel_models::{
-    json_value_to_bind, record_to_columns, FieldFilter, FieldType, FilterOp, ListOpts,
-    ModelDef, ModelStore, Record,
+    json_value_to_bind, record_to_columns, ExistsFilter, FieldFilter, FieldType, FilterOp,
+    ListOpts, ModelDef, ModelStore, Record,
 };
-use keel_models::store::{require_filters, validate_aggregate, validate_counter};
-use keel_query::select::{Condition, Ident, Operator};
+use keel_models::store::{
+    require_write_filters, validate_aggregate, validate_counter, validate_list_opts,
+};
+use keel_query::select::{Condition, Direction, Ident, Operator};
 use keel_query::{CompiledSelect, CompiledWrite, Delete, Insert, ConflictPolicy, Select, Update, Value as Bind};
 use serde_json::Value as Json;
 use sqlx::postgres::{PgArguments, PgPool, PgRow};
@@ -204,30 +206,37 @@ fn decode_typed_value(row: &PgRow, field_type: &FieldType) -> Result<Json, AppEr
     })
 }
 
-/// Semantic filter -> typed WHERE condition.
-fn filter_condition(model: &ModelDef, filter: &FieldFilter) -> Result<Condition, AppError> {
-    let column = ident(&filter.field)?;
-    let field = model.field_named(&filter.field);
+/// Semantic filter -> typed WHERE condition. `model` types the bind when the
+/// field is declared on it; `None` (conditions inside an existence subquery,
+/// whose model the store never sees) falls back to untyped JSON bind
+/// detection (uuid/timestamp/number strings).
+fn filter_condition(model: Option<&ModelDef>, filter: &FieldFilter) -> Result<Condition, AppError> {
+    let FieldFilter::Cmp { field, op, value } = filter else {
+        return Err(AppError::validation(
+            "existence filters compose through base_select, never as a bare condition",
+        ));
+    };
+    let column = ident(field)?;
+    let field_def = model.and_then(|m| m.field_named(field));
     let bind_of = |value: &Json| -> Result<Bind, AppError> {
-        match field {
+        match field_def {
             Some(f) => keel_models::json_to_bind(value, f),
             None => json_value_to_bind(value),
         }
     };
-    Ok(match filter.op {
+    Ok(match op {
         FilterOp::Eq => Condition {
             column,
             operator: Operator::Eq,
-            values: vec![bind_of(&filter.value)?],
+            values: vec![bind_of(value)?],
         },
         FilterOp::Ne => Condition {
             column,
             operator: Operator::Ne,
-            values: vec![bind_of(&filter.value)?],
+            values: vec![bind_of(value)?],
         },
         FilterOp::In => {
-            let list = filter
-                .value
+            let list = value
                 .as_array()
                 .ok_or_else(|| AppError::validation("IN filter needs an array value"))?;
             if list.is_empty() {
@@ -277,20 +286,104 @@ fn base_select(
     if model.soft_deletes && !include_deleted {
         select = select.where_null(ident("deleted_at")?);
     }
-    for filter in filters {
-        let cond = filter_condition(model, filter)?;
-        select = match cond.operator {
-            Operator::In => select.where_in(cond.column, cond.values),
-            Operator::IsNull => select.where_null(cond.column),
-            Operator::NotNull => select.where_not_null(cond.column),
-            other => select.where_op(
+    push_filters(select, model, tenant, filters)
+}
+
+/// Append the filter list as WHERE clauses. Every filter is prepared into a
+/// clause pusher first (Ident/bind errors surface outside the group
+/// closure); a list containing an OR-tagged existence term wraps in ONE
+/// parenthesized group so OR can never escape the tenant/soft-delete scope
+/// ahead of it — `tenant AND (a OR EXISTS (...))`.
+fn push_filters(
+    select: Select,
+    model: &ModelDef,
+    tenant: Option<TenantId>,
+    filters: &[FieldFilter],
+) -> Result<Select, AppError> {
+    let pushers: Vec<Box<dyn FnOnce(Select) -> Select>> = filters
+        .iter()
+        .map(|filter| -> Result<Box<dyn FnOnce(Select) -> Select>, AppError> {
+            match filter {
+                FieldFilter::Cmp { .. } => {
+                    let cond = filter_condition(Some(model), filter)?;
+                    Ok(Box::new(move |select| match cond.operator {
+                        Operator::In => select.where_in(cond.column, cond.values),
+                        Operator::IsNull => select.where_null(cond.column),
+                        Operator::NotNull => select.where_not_null(cond.column),
+                        other => select.where_op(
+                            cond.column,
+                            other,
+                            cond.values.into_iter().next().unwrap_or(Bind::Null),
+                        ),
+                    }))
+                }
+                FieldFilter::Exists(ex) => {
+                    let sub = exists_select(tenant, ex)?;
+                    let (negated, or) = (ex.negated, ex.or);
+                    Ok(Box::new(move |select| match (negated, or) {
+                        (false, false) => select.where_exists(sub),
+                        (true, false) => select.where_not_exists(sub),
+                        (false, true) => select.or_where_exists(sub),
+                        (true, true) => select.or_where_not_exists(sub),
+                    }))
+                }
+            }
+        })
+        .collect::<Result<_, _>>()?;
+    let has_or = filters
+        .iter()
+        .any(|f| matches!(f, FieldFilter::Exists(ex) if ex.or));
+    if has_or {
+        Ok(select
+            .group(move |inner| pushers.into_iter().fold(inner, |acc, push| push(acc))))
+    } else {
+        Ok(pushers
+            .into_iter()
+            .fold(select, |acc, push| push(acc)))
+    }
+}
+
+/// The correlated subquery for an existence term: sub table + tenant scope +
+/// soft veil + key correlation + field conditions.
+fn exists_select(tenant: Option<TenantId>, ex: &ExistsFilter) -> Result<Select, AppError> {
+    if ex
+        .filters
+        .iter()
+        .any(|f| matches!(f, FieldFilter::Exists(_)))
+    {
+        return Err(AppError::validation(
+            "relation filters cannot nest inside a relation filter (not supported)",
+        ));
+    }
+    let mut sub = Select::from_table(ident(&ex.sub_table)?);
+    if ex.sub_tenant_scoped {
+        if let Some(t) = tenant {
+            sub = sub.tenant_scope(ident("tenant_id")?, t);
+        } else {
+            sub = sub.where_eq(ident("tenant_id")?, Bind::Null);
+        }
+    }
+    if ex.sub_soft_deletes {
+        sub = sub.where_null(ident("deleted_at")?);
+    }
+    sub = sub.where_column(
+        ident(&format!("{}.{}", ex.sub_table, ex.sub_key))?,
+        ident(&format!("{}.{}", ex.outer_table, ex.outer_key))?,
+    );
+    for filter in &ex.filters {
+        let cond = filter_condition(None, filter)?;
+        sub = match cond.operator {
+            Operator::In => sub.where_in(cond.column, cond.values),
+            Operator::IsNull => sub.where_null(cond.column),
+            Operator::NotNull => sub.where_not_null(cond.column),
+            other => sub.where_op(
                 cond.column,
                 other,
                 cond.values.into_iter().next().unwrap_or(Bind::Null),
             ),
         };
     }
-    Ok(select)
+    Ok(sub)
 }
 
 
@@ -331,14 +424,26 @@ impl ModelStore for PgModelStore {
         filters: &[FieldFilter],
         opts: &ListOpts,
     ) -> Result<keel_query::Page<Record>, AppError> {
+        validate_list_opts(model, opts)?;
         let mut select = base_select(model, tenant, filters, opts.include_deleted)?;
+        if let Some((field, desc)) = &opts.sort {
+            select = select.order_by(
+                ident(field)?,
+                if *desc { Direction::Desc } else { Direction::Asc },
+            );
+        }
         let (page, per_page) = match opts.page {
             Some(req) => {
                 let req = req.validate()?;
                 select = select.limit(u64::from(req.per_page)).offset(u64::from(req.offset()));
                 (req.page, req.per_page)
             }
-            None => (1, 0),
+            None => {
+                if let Some(n) = opts.limit {
+                    select = select.limit(u64::from(n));
+                }
+                (1, 0)
+            }
         };
         let compiled = select.build()?;
         let rows = fetch_rows(&self.pool, &compiled)?;
@@ -606,7 +711,7 @@ impl ModelStore for PgModelStore {
         filters: &[FieldFilter],
         changes: &Record,
     ) -> Result<Vec<Record>, AppError> {
-        require_filters("update_filtered", filters)?;
+        require_write_filters("update_filtered", filters)?;
         if changes.is_empty() {
             // Nothing to write: return the matching rows (mirrors `update`).
             return Ok(self.list(model, tenant, filters, &ListOpts::default())?.items);
@@ -622,7 +727,7 @@ impl ModelStore for PgModelStore {
             update = update.where_is_null(ident("deleted_at")?);
         }
         for filter in filters {
-            let cond = filter_condition(model, filter)?;
+            let cond = filter_condition(Some(model), filter)?;
             update = match cond.operator {
                 Operator::In => update.where_in(cond.column, cond.values),
                 Operator::IsNull => update.where_is_null(cond.column),
@@ -652,7 +757,7 @@ impl ModelStore for PgModelStore {
         tenant: Option<TenantId>,
         filters: &[FieldFilter],
     ) -> Result<Vec<Record>, AppError> {
-        require_filters("delete_filtered", filters)?;
+        require_write_filters("delete_filtered", filters)?;
         if model.soft_deletes {
             let mut changes = Record::new();
             changes.insert("deleted_at".into(), Json::String(keel_models::now_rfc3339()));
@@ -666,7 +771,7 @@ impl ModelStore for PgModelStore {
             }
         }
         for filter in filters {
-            let cond = filter_condition(model, filter)?;
+            let cond = filter_condition(Some(model), filter)?;
             delete = match cond.operator {
                 Operator::In => delete.where_in(cond.column, cond.values),
                 Operator::IsNull => delete.where_is_null(cond.column),

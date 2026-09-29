@@ -12,6 +12,7 @@
 
 use keel_foundation::AppError;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub mod bindings;
 pub mod runtime;
@@ -19,12 +20,12 @@ pub mod store;
 
 pub use bindings::{RouteBindingRegistry, RouteBindingResolver, RouteBindingsRef};
 pub use runtime::{
-    json_to_bind, json_value_to_bind, parse_timestamp, record_to_columns, ModelEvent,
-    ModelObserver, ModelPhase, ModelRuntime,
+    json_to_bind, json_value_to_bind, parse_timestamp, record_to_columns, EagerConstraint,
+    ModelEvent, ModelObserver, ModelPhase, ModelRuntime, PivotSync,
 };
 pub use store::{
-    now_rfc3339, AggregateOp, FieldFilter, FilterOp, InMemoryModelStore, ListOpts, ModelStore,
-    Record,
+    now_rfc3339, AggregateOp, ExistsFilter, FieldFilter, FilterOp, InMemoryModelStore,
+    ListOpts, ModelStore, Record,
 };
 
 use std::sync::Arc;
@@ -138,6 +139,20 @@ pub enum RelationKind {
     HasOne,
     /// Join model carries both FKs (N:M).
     ManyThrough,
+    /// Pivot table carries both FKs (N:M) — Laravel `belongsToMany`. The
+    /// pivot is a registered join model (`through`) or synthesized from
+    /// `pivot_table` (id + both FK columns).
+    ManyToMany,
+    /// `<name>_type` + `<name>_id` name the target per ROW (N:1 poly) —
+    /// Laravel `morphTo`; no single target model, resolved per stored type
+    /// through the registry's morph map.
+    MorphTo,
+    /// Target holds `<type>_type` + `<id>` pointing back at THIS model
+    /// (1:N poly) — Laravel `morphMany`.
+    MorphMany,
+    /// Pivot rows carry a type column naming the owning side (N:M poly) —
+    /// Laravel `morphToMany`.
+    MorphToMany,
 }
 
 /// One declared relationship.
@@ -154,6 +169,14 @@ pub struct RelationDef {
     pub target_key: Option<String>,
     /// Join model name, REQUIRED for ManyThrough.
     pub through: Option<String>,
+    /// Pivot table for ManyToMany (Laravel's alphabetical `<a>_<b>`
+    /// convention — see [`RelationDef::pivot_table_for`]). Optional when
+    /// `through` names a registered join model.
+    pub pivot_table: Option<String>,
+    /// Type column for morph relations (`<name>_type`): which model the
+    /// id column points at (MorphTo), which owner a target row serves
+    /// (MorphMany), or which side a pivot row links (MorphToMany).
+    pub morph_type: Option<String>,
 }
 
 impl RelationDef {
@@ -169,6 +192,8 @@ impl RelationDef {
             foreign_key: foreign_key.into(),
             target_key: None,
             through: None,
+            pivot_table: None,
+            morph_type: None,
         }
     }
 
@@ -184,6 +209,8 @@ impl RelationDef {
             foreign_key: foreign_key.into(),
             target_key: None,
             through: None,
+            pivot_table: None,
+            morph_type: None,
         }
     }
 
@@ -199,6 +226,8 @@ impl RelationDef {
             foreign_key: foreign_key.into(),
             target_key: None,
             through: None,
+            pivot_table: None,
+            morph_type: None,
         }
     }
 
@@ -215,6 +244,109 @@ impl RelationDef {
             foreign_key: foreign_key.into(),
             target_key: None,
             through: Some(through.into()),
+            pivot_table: None,
+            morph_type: None,
+        }
+    }
+
+    /// Laravel `belongsToMany`: both sides meet in a pivot table carrying
+    /// `foreign_key` (-> this model) and `target_key` (-> target). Pass the
+    /// pivot table name (convention: [`RelationDef::pivot_table_for`]); set
+    /// `through` afterwards to a registered join model when the pivot has
+    /// extra columns — otherwise it is synthesized per load.
+    pub fn many_to_many(
+        name: impl Into<String>,
+        target: impl Into<String>,
+        pivot_table: impl Into<String>,
+        foreign_key: impl Into<String>,
+        target_key: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            kind: RelationKind::ManyToMany,
+            target: target.into(),
+            foreign_key: foreign_key.into(),
+            target_key: Some(target_key.into()),
+            through: None,
+            pivot_table: Some(pivot_table.into()),
+            morph_type: None,
+        }
+    }
+
+    /// Pivot-table naming convention: two SINGULAR model names, lowercased
+    /// and stripped of a trailing `s`, joined alphabetically —
+    /// `Doctor` + `Patient` -> `doctor_patient`.
+    pub fn pivot_table_for(a: &str, b: &str) -> String {
+        let norm = |name: &str| name.to_lowercase().trim_end_matches('s').to_string();
+        let (x, y) = (norm(a), norm(b));
+        if x <= y {
+            format!("{x}_{y}")
+        } else {
+            format!("{y}_{x}")
+        }
+    }
+
+    /// Laravel `morphTo`: `type_column` names the model and `id_column`
+    /// carries its key on THIS row — there is no single target; loads and
+    /// filters resolve through the stored type (registry morph map).
+    pub fn morph_to(
+        name: impl Into<String>,
+        type_column: impl Into<String>,
+        id_column: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            kind: RelationKind::MorphTo,
+            // Per-row — see the morph map; never registry-resolved.
+            target: String::new(),
+            foreign_key: id_column.into(),
+            target_key: None,
+            through: None,
+            pivot_table: None,
+            morph_type: Some(type_column.into()),
+        }
+    }
+
+    /// Laravel `morphMany`: the target carries `type_column` naming THIS
+    /// model plus `id_column` pointing back at its key.
+    pub fn morph_many(
+        name: impl Into<String>,
+        target: impl Into<String>,
+        type_column: impl Into<String>,
+        id_column: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            kind: RelationKind::MorphMany,
+            target: target.into(),
+            foreign_key: id_column.into(),
+            target_key: None,
+            through: None,
+            pivot_table: None,
+            morph_type: Some(type_column.into()),
+        }
+    }
+
+    /// Laravel `morphToMany`: pivot rows carry `type_column` naming THIS
+    /// side; `foreign_key` links the pivot to this model, `target_key` to
+    /// the target.
+    pub fn morph_to_many(
+        name: impl Into<String>,
+        target: impl Into<String>,
+        pivot_table: impl Into<String>,
+        type_column: impl Into<String>,
+        foreign_key: impl Into<String>,
+        target_key: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            kind: RelationKind::MorphToMany,
+            target: target.into(),
+            foreign_key: foreign_key.into(),
+            target_key: Some(target_key.into()),
+            through: None,
+            pivot_table: Some(pivot_table.into()),
+            morph_type: Some(type_column.into()),
         }
     }
 }
@@ -275,6 +407,9 @@ impl ModelDef {
 #[derive(Debug, Clone, Default)]
 pub struct ModelRegistry {
     models: Vec<ModelDef>,
+    /// Laravel `Relation::morphMap`: stored polymorphic type value ->
+    /// registered model name. Empty = the stored value IS the model name.
+    pub morph_map: BTreeMap<String, String>,
 }
 
 /// Identifier charset shared with [`keel_query::Ident`]: lowercase, digits,
@@ -326,6 +461,18 @@ impl ModelRegistry {
         Ok(())
     }
 
+    /// Laravel `Relation::morphMap`: map the stored polymorphic type value
+    /// (`<name>_type` column) to a registered model. Aliases are checked
+    /// against registered models by [`Self::validate_graph`].
+    pub fn register_morph(
+        &mut self,
+        alias: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Result<(), AppError> {
+        self.morph_map.insert(alias.into(), model.into());
+        Ok(())
+    }
+
     /// Standalone model-shape validation (names, enums, unique-field count).
     fn validate_model(&self, model: &ModelDef) -> Result<(), AppError> {
         validate_pascal(&model.name, "model")?;
@@ -369,15 +516,76 @@ impl ModelRegistry {
                     model.name, rel.name
                 )));
             }
+            if rel.kind == RelationKind::ManyToMany
+                && rel.pivot_table.is_none()
+                && rel.through.is_none()
+            {
+                return Err(AppError::validation(format!(
+                    "relation {}.{} is many-to-many but has no pivot table or join model",
+                    model.name, rel.name
+                )));
+            }
+            if matches!(
+                rel.kind,
+                RelationKind::MorphTo | RelationKind::MorphMany | RelationKind::MorphToMany
+            ) && rel.morph_type.is_none()
+            {
+                return Err(AppError::validation(format!(
+                    "relation {}.{} is {:?} but has no morph type column",
+                    model.name, rel.name, rel.kind
+                )));
+            }
+            if rel.kind == RelationKind::MorphToMany
+                && rel.pivot_table.is_none()
+                && rel.through.is_none()
+            {
+                return Err(AppError::validation(format!(
+                    "relation {}.{} is morph-to-many but has no pivot table or join model",
+                    model.name, rel.name
+                )));
+            }
+            if let Some(pivot) = &rel.pivot_table {
+                validate_ident(
+                    pivot,
+                    &format!("relation {}.{} pivot table", model.name, rel.name),
+                )?;
+            }
+            if let Some(type_col) = &rel.morph_type {
+                validate_ident(
+                    type_col,
+                    &format!("relation {}.{} morph type column", model.name, rel.name),
+                )?;
+            }
         }
         Ok(())
     }
 
     /// Cross-model validation: every relation target (and `through`) must be
-    /// a registered model; BelongsTo FKs must exist as fields on this model.
+    /// a registered model; BelongsTo FKs must exist as fields on this model;
+    /// morph-map aliases must name registered models.
     pub fn validate_graph(&self) -> Result<(), AppError> {
+        for (alias, model_name) in &self.morph_map {
+            if self.get(model_name).is_none() {
+                return Err(AppError::validation(format!(
+                    "morph map alias {alias:?} targets unknown model {model_name:?}"
+                )));
+            }
+        }
         for model in &self.models {
             for rel in &model.relations {
+                if rel.kind == RelationKind::MorphTo {
+                    // No single target: the type/id columns live on THIS row.
+                    let type_col = rel.morph_type.clone().unwrap_or_default();
+                    if model.field_named(&type_col).is_none()
+                        || model.field_named(&rel.foreign_key).is_none()
+                    {
+                        return Err(AppError::validation(format!(
+                            "MorphTo {}.{}: columns {type_col:?}/{} missing on {}",
+                            model.name, rel.name, rel.foreign_key, model.name
+                        )));
+                    }
+                    continue;
+                }
                 let target = self.get(&rel.target).ok_or_else(|| {
                     AppError::validation(format!(
                         "relation {}.{} targets unknown model {}",
@@ -392,28 +600,53 @@ impl ModelRegistry {
                         model.name, rel.name, rel.foreign_key, model.name
                     )));
                 }
-                if matches!(rel.kind, RelationKind::HasMany | RelationKind::HasOne)
-                    && target.field_named(&rel.foreign_key).is_none()
-                {
-                    return Err(AppError::validation(format!(
-                        "{} {}.{}: foreign_key {} missing on target {}",
-                        if rel.kind == RelationKind::HasMany {
-                            "HasMany"
-                        } else {
-                            "HasOne"
-                        },
-                        model.name,
-                        rel.name,
-                        rel.foreign_key,
-                        target.name
-                    )));
+                if matches!(
+                    rel.kind,
+                    RelationKind::HasMany | RelationKind::HasOne | RelationKind::MorphMany
+                ) {
+                    if target.field_named(&rel.foreign_key).is_none() {
+                        let label = match rel.kind {
+                            RelationKind::HasMany => "HasMany",
+                            RelationKind::MorphMany => "MorphMany",
+                            _ => "HasOne",
+                        };
+                        return Err(AppError::validation(format!(
+                            "{} {}.{}: foreign_key {} missing on target {}",
+                            label, model.name, rel.name, rel.foreign_key, target.name
+                        )));
+                    }
+                    if let Some(type_col) = &rel.morph_type {
+                        if target.field_named(type_col).is_none() {
+                            return Err(AppError::validation(format!(
+                                "MorphMany {}.{}: morph type column {type_col:?} missing on target {}",
+                                model.name, rel.name, target.name
+                            )));
+                        }
+                    }
                 }
                 if let Some(through) = &rel.through {
-                    if self.get(through).is_none() {
-                        return Err(AppError::validation(format!(
+                    let pivot = self.get(through).ok_or_else(|| {
+                        AppError::validation(format!(
                             "relation {}.{} uses unknown join model {}",
                             model.name, rel.name, through
-                        )));
+                        ))
+                    })?;
+                    if rel.kind == RelationKind::MorphToMany {
+                        for col in [
+                            Some(&rel.foreign_key),
+                            rel.target_key.as_ref(),
+                            rel.morph_type.as_ref(),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        {
+                            if pivot.field_named(col).is_none() {
+                                return Err(AppError::validation(format!(
+                                    "MorphToMany {}.{}: pivot column {col:?} missing on {through}",
+                                    model.name, rel.name
+                                )));
+                            }
+                        }
                     }
                 }
             }
@@ -576,8 +809,53 @@ mod tests {
                 foreign_key: "tag_id".into(),
                 target_key: None,
                 through: None,
+                pivot_table: None,
+                morph_type: None,
             });
         assert!(ModelRegistry::new().register(no_through).is_err());
+    }
+
+    #[test]
+    fn many_to_many_requires_a_pivot_table_or_join_model() {
+        let no_pivot = ModelDef::new("Patient", "patients")
+            .field(FieldDef::new("id", FieldType::Uuid))
+            .relation(RelationDef {
+                name: "doctors".into(),
+                kind: RelationKind::ManyToMany,
+                target: "Doctor".into(),
+                foreign_key: "patient_id".into(),
+                target_key: Some("doctor_id".into()),
+                through: None,
+                pivot_table: None,
+                morph_type: None,
+            });
+        assert!(ModelRegistry::new().register(no_pivot).is_err());
+    }
+
+    #[test]
+    fn pivot_table_for_is_alphabetical_and_singular() {
+        assert_eq!(
+            RelationDef::pivot_table_for("Doctor", "Patient"),
+            "doctor_patient"
+        );
+        // Order-insensitive: both directions name the same table.
+        assert_eq!(
+            RelationDef::pivot_table_for("Patient", "Doctor"),
+            RelationDef::pivot_table_for("Doctor", "Patient")
+        );
+    }
+
+    #[test]
+    fn morph_map_aliases_must_target_registered_models() {
+        let mut reg = ModelRegistry::new();
+        reg.register(
+            ModelDef::new("Post", "posts").field(FieldDef::new("id", FieldType::Uuid)),
+        )
+        .unwrap();
+        reg.register_morph("post", "Post").unwrap();
+        assert!(reg.validate_graph().is_ok());
+        reg.register_morph("ghost", "Missing").unwrap();
+        assert!(reg.validate_graph().is_err());
     }
 
     #[test]
