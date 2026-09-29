@@ -2,10 +2,19 @@
 //! Boundary validation: small composable primitives PLUS the collect-all
 //! Validator (S2 item 17, FormRequest role). Error-uniform (AppError).
 //! Used by Request ViewModels; domain invariants stay in the domain.
+//!
+//! Wave 4: `validator::Rule` is the 1:1 manifest grammar (types, strings,
+//! numeric incl. field refs; conditionals/cross-field/date/file/auth/DB
+//! rules land in the following phases), evaluated by the private `checks`
+//! module against a `ValidationContext` supplied by the transport edge.
 
+mod checks;
 pub mod validator;
 
-pub use validator::{parse_rules, FieldSpec, FieldViolation, Rule, ValidationReport, Validator};
+pub use validator::{
+    parse_rules, FieldSpec, FieldViolation, NumTarget, Rule, UploadMeta, ValidationContext,
+    ValidationReport, Validator,
+};
 
 use keel_foundation::AppError;
 

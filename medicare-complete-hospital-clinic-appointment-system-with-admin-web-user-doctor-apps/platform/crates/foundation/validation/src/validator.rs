@@ -1,16 +1,32 @@
 //! Collect-all field validation (S2 item 17, L08/L11): the FormRequest-role engine.
 //!
-//! Rules: required / min / max / email / url / uuid / e164 / one_of / range / date.
-//! All violations are collected (never fail-fast) and reported as ONE AppError with
-//! a \`fields\` meta map (field -> messages[]) so transports get a stable wire shape.
-//! Domain invariants stay in the domain; these rules check input shape only.
+//! The manifest rule grammar is 1:1 with the [`Rule`] enum: [`Rule::from_token`]
+//! parses tokens, the registry gate `GRAPH-VALIDATION-RULE` rejects anything
+//! outside the grammar at boot, and the HTTP edge compiles the survivors into
+//! a [`Validator`]. Wave 4 Phase 1 grew the grammar from the Wave 1 core to
+//! the type / string / numeric battery (incl. `gt:<n|field>` field refs);
+//! conditionals, cross-field, date/file/auth and DB rules land in the
+//! following phases of the wave.
+//!
+//! All violations are collected (never fail-fast) and reported as ONE AppError
+//! with a `fields` meta map (field -> messages[]) so transports get a stable
+//! wire shape. Domain invariants stay in the domain; these rules check input
+//! shape only. Regex rules are deliberately SUPERSEDED by closed grammars
+//! (same stance as route constraints): there is no `regex:` token by design.
+//!
+//! Presence semantics mirror Laravel: an absent key skips every rule unless
+//! `required`; a present `null` skips the other rules ONLY when the field
+//! declares `nullable` — otherwise type/format rules run and fail.
 
-use keel_foundation::AppError;
+use keel_foundation::{AppError, PrincipalId};
 use serde_json::Value;
 
+use crate::checks::check;
+
 /// One validation rule applied to a field.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Rule {
+    // ------------------------------------------------------- Wave 1 core --
     /// Present, non-null, non-empty (whitespace-only strings and empty arrays fail).
     Required,
     /// Minimum size: string char count, array length, or numeric value.
@@ -31,6 +47,114 @@ pub enum Rule {
     Range(i64, i64),
     /// RFC-3339 timestamp or plain YYYY-MM-DD date.
     Date,
+    // --------------------------------------------------- Wave 4: types ----
+    /// Present-null skips every other rule (structural, never `check`ed).
+    Nullable,
+    /// JSON bool, `0`/`1` or `"0"`/`"1"` (Laravel's non-strict set).
+    Boolean,
+    /// Integer-valued number, or a string that parses as an integer.
+    Integer,
+    /// Any JSON number, or a finite numeric string.
+    Numeric,
+    /// JSON string (grammar token `string`).
+    String,
+    /// JSON array.
+    Array,
+    /// String payloads must decode as JSON; structured values already are
+    /// JSON. `null` fails unless the field is `nullable`.
+    Json,
+    /// Every char in the ASCII range (empty passes).
+    Ascii,
+    // ------------------------------------------------ Wave 4: strings -----
+    /// Non-empty Unicode letters only.
+    Alpha,
+    /// Non-empty letters + numbers (integer numbers pass too, as in Laravel).
+    AlphaNum,
+    /// Letters + numbers + `-`/`_`.
+    AlphaDash,
+    /// String equals its own Unicode lowercase.
+    Lowercase,
+    /// String equals its own Unicode uppercase.
+    Uppercase,
+    /// String starts with the given prefix.
+    StartsWith(String),
+    /// String ends with the given suffix.
+    EndsWith(String),
+    /// String contains the given substring (docs/19 string family — Laravel's
+    /// own `contains` rule tests array membership instead).
+    Contains(String),
+    /// String does NOT start with the given prefix.
+    DoesntStartWith(String),
+    /// String does NOT end with the given suffix.
+    DoesntEndWith(String),
+    /// String does NOT contain the given substring.
+    DoesntContain(String),
+    /// `#` + 3/4/6/8 hex digits (the `#` is required).
+    HexColor,
+    /// Six octets of two hex digits separated by `:` or `-`.
+    MacAddress,
+    /// Member of the curated IANA timezone list (bounded subset of tzdata).
+    Timezone,
+    /// 26-char Crockford base32, uppercase (I, L, O, U excluded).
+    Ulid,
+    // ----------------------------------------------- Wave 4: numeric ------
+    /// Numeric with EXACTLY n decimal places (Laravel 12 semantics).
+    Decimal(u8),
+    /// Pure digit string of exactly n digits.
+    Digits(u64),
+    /// Pure digit string with length in the inclusive bounds.
+    DigitsBetween(u64, u64),
+    /// Value is an integer multiple of n (n > 0).
+    MultipleOf(f64),
+    /// Strictly greater than a literal or a sibling field's value.
+    Gt(NumTarget),
+    /// Greater than or equal to a literal or a sibling field's value.
+    Gte(NumTarget),
+    /// Strictly less than a literal or a sibling field's value.
+    Lt(NumTarget),
+    /// Less than or equal to a literal or a sibling field's value.
+    Lte(NumTarget),
+}
+
+/// Target of the `gt`/`gte`/`lt`/`lte` family: a literal number or another
+/// validated field (field refs resolve other validated values from the shared
+/// input at check time).
+#[derive(Debug, Clone, PartialEq)]
+pub enum NumTarget {
+    /// Numeric literal from the rule token (`gt:18`).
+    Literal(f64),
+    /// Sibling field path (`gt:min_age`).
+    Field(String),
+}
+
+impl NumTarget {
+    /// Parse the token argument: finite numbers are literals, otherwise the
+    /// argument must look like a field path (letters, digits, `_`, `.`).
+    /// Anything else is a boot-time parse error (fail-closed, tighter than
+    /// Laravel which silently resolves unmatchable field names at runtime).
+    pub fn parse(arg: &str, token: &str, rule: &str) -> Result<Self, String> {
+        let t = arg.trim();
+        if t.is_empty() {
+            return Err(format!("{rule} requires <n|field>: {token}"));
+        }
+        if let Ok(n) = t.parse::<f64>() {
+            if n.is_finite() {
+                return Ok(NumTarget::Literal(n));
+            }
+        }
+        // A leading digit plus a dot is a malformed number (`1.2.3`), never a
+        // field path — reject at boot instead of resolving a dead sibling.
+        let malformed_number = t.starts_with(|c: char| c.is_ascii_digit()) && t.contains('.');
+        if !malformed_number
+            && t.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+        {
+            return Ok(NumTarget::Field(t.to_string()));
+        }
+        Err(format!(
+            "{rule} value must be a number or a field name: {token}"
+        ))
+    }
 }
 
 impl Rule {
@@ -46,16 +170,62 @@ impl Rule {
             Rule::OneOf(_) => "one_of",
             Rule::Range(_, _) => "range",
             Rule::Date => "date",
+            Rule::Nullable => "nullable",
+            Rule::Boolean => "boolean",
+            Rule::Integer => "integer",
+            Rule::Numeric => "numeric",
+            Rule::String => "string",
+            Rule::Array => "array",
+            Rule::Json => "json",
+            Rule::Ascii => "ascii",
+            Rule::Alpha => "alpha",
+            Rule::AlphaNum => "alpha_num",
+            Rule::AlphaDash => "alpha_dash",
+            Rule::Lowercase => "lowercase",
+            Rule::Uppercase => "uppercase",
+            Rule::StartsWith(_) => "starts_with",
+            Rule::EndsWith(_) => "ends_with",
+            Rule::Contains(_) => "contains",
+            Rule::DoesntStartWith(_) => "doesnt_start_with",
+            Rule::DoesntEndWith(_) => "doesnt_end_with",
+            Rule::DoesntContain(_) => "doesnt_contain",
+            Rule::HexColor => "hex_color",
+            Rule::MacAddress => "mac_address",
+            Rule::Timezone => "timezone",
+            Rule::Ulid => "ulid",
+            Rule::Decimal(_) => "decimal",
+            Rule::Digits(_) => "digits",
+            Rule::DigitsBetween(_, _) => "digits_between",
+            Rule::MultipleOf(_) => "multiple_of",
+            Rule::Gt(_) => "gt",
+            Rule::Gte(_) => "gte",
+            Rule::Lt(_) => "lt",
+            Rule::Lte(_) => "lte",
         }
     }
 }
 
 impl Rule {
+    /// Non-empty argument required by a parameterised token.
+    fn arg<'a>(arg: Option<&'a str>, token: &str, rule: &str) -> Result<&'a str, String> {
+        match arg {
+            Some(a) if !a.is_empty() => Ok(a),
+            _ => Err(format!("{rule} requires a value: {token}")),
+        }
+    }
+
     /// Parse one manifest rule token into a [`Rule`]. Grammar (1:1 with the
-    /// enum, Wave 1 FormRequest wiring): "required", "min:<n>", "max:<n>",
-    /// "email", "url", "uuid", "e164", "one_of:<a,b,c>", "range:<lo,hi>",
-    /// "date". Used by the registry GRAPH-VALIDATION-RULE gate and by the
-    /// HTTP edge to compile manifest rules into a collect-all Validator.
+    /// enum): "required", "min:<n>", "max:<n>", "email", "url", "uuid",
+    /// "e164", "one_of:<a,b,c>", "range:<lo>,<hi>", "date" (Wave 1) plus the
+    /// Wave 4 battery — types: "nullable", "boolean", "integer", "numeric",
+    /// "string", "array", "json", "ascii"; strings: "alpha", "alpha_num",
+    /// "alpha_dash", "lowercase", "uppercase", "starts_with:<s>",
+    /// "ends_with:<s>", "contains:<s>", "doesnt_start_with:<s>",
+    /// "doesnt_end_with:<s>", "doesnt_contain:<s>", "hex_color",
+    /// "mac_address", "timezone", "ulid"; numeric: "decimal:<n>",
+    /// "digits:<n>", "digits_between:<a>,<b>", "multiple_of:<n>",
+    /// "gt:<n|field>", "gte:<n|field>", "lt:<n|field>", "lte:<n|field>".
+    /// Used by the registry GRAPH-VALIDATION-RULE gate and by the HTTP edge.
     pub fn from_token(token: &str) -> Result<Rule, String> {
         let token = token.trim();
         let (head, arg) = match token.split_once(':') {
@@ -69,22 +239,39 @@ impl Rule {
             "uuid" => Rule::Uuid,
             "e164" => Rule::E164,
             "date" => Rule::Date,
+            "nullable" => Rule::Nullable,
+            "boolean" => Rule::Boolean,
+            "integer" => Rule::Integer,
+            "numeric" => Rule::Numeric,
+            "string" => Rule::String,
+            "array" => Rule::Array,
+            "json" => Rule::Json,
+            "ascii" => Rule::Ascii,
+            "alpha" => Rule::Alpha,
+            "alpha_num" => Rule::AlphaNum,
+            "alpha_dash" => Rule::AlphaDash,
+            "lowercase" => Rule::Lowercase,
+            "uppercase" => Rule::Uppercase,
+            "hex_color" => Rule::HexColor,
+            "mac_address" => Rule::MacAddress,
+            "timezone" => Rule::Timezone,
+            "ulid" => Rule::Ulid,
             "min" => {
-                let n = arg.ok_or_else(|| format!("min requires a value: {token}"))?;
+                let n = Rule::arg(arg, token, "min")?;
                 Rule::Min(
                     n.parse::<u64>()
                         .map_err(|_| format!("min value must be an unsigned integer: {token}"))?,
                 )
             }
             "max" => {
-                let n = arg.ok_or_else(|| format!("max requires a value: {token}"))?;
+                let n = Rule::arg(arg, token, "max")?;
                 Rule::Max(
                     n.parse::<u64>()
                         .map_err(|_| format!("max value must be an unsigned integer: {token}"))?,
                 )
             }
             "one_of" => {
-                let a = arg.ok_or_else(|| format!("one_of requires values: {token}"))?;
+                let a = Rule::arg(arg, token, "one_of")?;
                 let values: Vec<String> = a
                     .split(',')
                     .map(|v| v.trim().to_string())
@@ -96,7 +283,7 @@ impl Rule {
                 Rule::OneOf(values)
             }
             "range" => {
-                let a = arg.ok_or_else(|| format!("range requires lo,hi: {token}"))?;
+                let a = Rule::arg(arg, token, "range")?;
                 let mut parts = a.split(',');
                 let lo = parts.next().and_then(|v| v.trim().parse::<i64>().ok());
                 let hi = parts.next().and_then(|v| v.trim().parse::<i64>().ok());
@@ -105,6 +292,77 @@ impl Rule {
                     _ => return Err(format!("range must be range:<lo>,<hi>: {token}")),
                 }
             }
+            "starts_with" => Rule::StartsWith(Rule::arg(arg, token, "starts_with")?.to_string()),
+            "ends_with" => Rule::EndsWith(Rule::arg(arg, token, "ends_with")?.to_string()),
+            "contains" => Rule::Contains(Rule::arg(arg, token, "contains")?.to_string()),
+            "doesnt_start_with" => Rule::DoesntStartWith(
+                Rule::arg(arg, token, "doesnt_start_with")?.to_string(),
+            ),
+            "doesnt_end_with" => {
+                Rule::DoesntEndWith(Rule::arg(arg, token, "doesnt_end_with")?.to_string())
+            }
+            "doesnt_contain" => {
+                Rule::DoesntContain(Rule::arg(arg, token, "doesnt_contain")?.to_string())
+            }
+            "decimal" => {
+                let n = Rule::arg(arg, token, "decimal")?;
+                Rule::Decimal(
+                    n.parse::<u8>()
+                        .map_err(|_| format!("decimal value must be an unsigned integer: {token}"))?,
+                )
+            }
+            "digits" => {
+                let n = Rule::arg(arg, token, "digits")?;
+                Rule::Digits(
+                    n.parse::<u64>()
+                        .map_err(|_| format!("digits value must be an unsigned integer: {token}"))?,
+                )
+            }
+            "digits_between" => {
+                let a = Rule::arg(arg, token, "digits_between")?;
+                let mut parts = a.split(',');
+                let lo = parts.next().and_then(|v| v.trim().parse::<u64>().ok());
+                let hi = parts.next().and_then(|v| v.trim().parse::<u64>().ok());
+                match (lo, hi) {
+                    (Some(lo), Some(hi)) => Rule::DigitsBetween(lo, hi),
+                    _ => {
+                        return Err(format!(
+                            "digits_between must be digits_between:<a>,<b>: {token}"
+                        ))
+                    }
+                }
+            }
+            "multiple_of" => {
+                let a = Rule::arg(arg, token, "multiple_of")?;
+                let n = a
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|n| n.is_finite() && *n > 0.0)
+                    .ok_or_else(|| {
+                        format!("multiple_of value must be a positive number: {token}")
+                    })?;
+                Rule::MultipleOf(n)
+            }
+            "gt" => Rule::Gt(NumTarget::parse(
+                Rule::arg(arg, token, "gt")?,
+                token,
+                "gt",
+            )?),
+            "gte" => Rule::Gte(NumTarget::parse(
+                Rule::arg(arg, token, "gte")?,
+                token,
+                "gte",
+            )?),
+            "lt" => Rule::Lt(NumTarget::parse(
+                Rule::arg(arg, token, "lt")?,
+                token,
+                "lt",
+            )?),
+            "lte" => Rule::Lte(NumTarget::parse(
+                Rule::arg(arg, token, "lte")?,
+                token,
+                "lte",
+            )?),
             other => return Err(format!("unknown validation rule: {other}")),
         })
     }
@@ -127,6 +385,75 @@ pub fn parse_rules(tokens: &[String]) -> Result<Vec<Rule>, Vec<String>> {
         Err(errors)
     }
 }
+
+/// Upload part metadata visible to file rules (Wave 4 Phase 3). The edge's
+/// `StoredUpload` lives in keel-http, which foundation crates cannot depend
+/// on, so the descriptor shape is declared here and mapped at the edge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadMeta {
+    /// Form field the file arrived under.
+    pub field: String,
+    /// Sanitized basename of the upload.
+    pub filename: String,
+    /// Declared content type of the part.
+    pub content_type: String,
+    /// Size in bytes.
+    pub size: u64,
+}
+
+/// Everything a rule may need beyond the value under test. Built by the HTTP
+/// edge and passed to [`Validator::validate_with`]; plain shape rules need
+/// none of it, so [`Validator::validate`] constructs an empty context.
+#[derive(Debug, Clone, Copy)]
+pub struct ValidationContext<'a> {
+    input: &'a Value,
+    principal: Option<PrincipalId>,
+    uploads: &'a [UploadMeta],
+}
+
+impl<'a> ValidationContext<'a> {
+    /// Context over the input being validated, no principal, no uploads.
+    pub fn new(input: &'a Value) -> Self {
+        Self {
+            input,
+            principal: None,
+            uploads: &[],
+        }
+    }
+
+    /// Carry the authenticated principal (`current_password`, Phase 3).
+    pub fn with_principal(mut self, principal: PrincipalId) -> Self {
+        self.principal = Some(principal);
+        self
+    }
+
+    /// Carry the upload part metadata (`file`/`image`/`mimes`, Phase 3).
+    pub fn with_uploads(mut self, uploads: &'a [UploadMeta]) -> Self {
+        self.uploads = uploads;
+        self
+    }
+
+    /// The full input object (field refs resolve against it).
+    pub fn input(&self) -> &'a Value {
+        self.input
+    }
+
+    /// Authenticated principal, when the request carried one.
+    pub fn principal(&self) -> Option<PrincipalId> {
+        self.principal
+    }
+
+    /// Upload parts attached to this request.
+    pub fn uploads(&self) -> &'a [UploadMeta] {
+        self.uploads
+    }
+
+    /// Dot-path lookup into the shared input (`items.0.name` style segments).
+    pub fn resolve(&self, path: &str) -> Option<&'a Value> {
+        lookup(self.input, path)
+    }
+}
+
 /// Rules bound to one field (dot paths allowed, e.g. address.city).
 #[derive(Debug, Clone)]
 pub struct FieldSpec {
@@ -161,8 +488,16 @@ impl Validator {
         self.specs.iter().map(|s| s.field.as_str()).collect()
     }
 
-    /// Validate input (must be a JSON object). Collects every violation.
+    /// Validate input (must be a JSON object) with an empty context. For
+    /// rules that need request state (principal, uploads, row probes) build a
+    /// [`ValidationContext`] and call [`Validator::validate_with`].
     pub fn validate(&self, input: &Value) -> Result<(), ValidationReport> {
+        self.validate_with(&ValidationContext::new(input))
+    }
+
+    /// Validate under a context: collects every violation across all fields.
+    pub fn validate_with(&self, ctx: &ValidationContext<'_>) -> Result<(), ValidationReport> {
+        let input = ctx.input();
         let mut report = ValidationReport::default();
         if !input.is_object() {
             report.push("_", "input must be a JSON object");
@@ -171,12 +506,33 @@ impl Validator {
         for spec in &self.specs {
             let value = lookup(input, &spec.field);
             let required = spec.rules.iter().any(|r| matches!(r, Rule::Required));
+            let nullable = spec.rules.iter().any(|r| matches!(r, Rule::Nullable));
             match value {
-                None | Some(Value::Null) => {
+                // Absent keys run only `required` (implicit) rules.
+                None => {
                     if required {
                         report.push(&spec.field, format!("{} is required", spec.field));
                     }
                     continue;
+                }
+                // Present null: `required` still fails; `nullable` skips the
+                // rest; otherwise the rules run and type/format rules reject.
+                Some(Value::Null) => {
+                    if required {
+                        report.push(&spec.field, format!("{} is required", spec.field));
+                        continue;
+                    }
+                    if nullable {
+                        continue;
+                    }
+                    for rule in &spec.rules {
+                        if matches!(rule, Rule::Required | Rule::Nullable) {
+                            continue;
+                        }
+                        if let Some(msg) = check(rule, &Value::Null, ctx) {
+                            report.push(&spec.field, msg);
+                        }
+                    }
                 }
                 Some(v) => {
                     if required && is_blank(v) {
@@ -184,10 +540,10 @@ impl Validator {
                         continue;
                     }
                     for rule in &spec.rules {
-                        if matches!(rule, Rule::Required) {
+                        if matches!(rule, Rule::Required | Rule::Nullable) {
                             continue;
                         }
-                        if let Some(msg) = check(rule, v) {
+                        if let Some(msg) = check(rule, v, ctx) {
                             report.push(&spec.field, msg);
                         }
                     }
@@ -275,130 +631,10 @@ fn is_blank(v: &Value) -> bool {
     }
 }
 
-/// Size of a value for min/max: string chars, array length, numeric value.
-fn measure(v: &Value) -> Option<f64> {
-    match v {
-        Value::String(s) => Some(s.chars().count() as f64),
-        Value::Array(a) => Some(a.len() as f64),
-        Value::Number(_) => v.as_f64(),
-        _ => None,
-    }
-}
-
-/// Apply one rule; returns a violation message when the value fails.
-fn check(rule: &Rule, v: &Value) -> Option<String> {
-    match rule {
-        Rule::Required => unreachable!("handled before rule checks"),
-        Rule::Min(n) => match measure(v) {
-            Some(size) if size >= *n as f64 => None,
-            Some(_) => Some(format!("must be at least {n}")),
-            None => Some("size rules need a string, array or number".into()),
-        },
-        Rule::Max(n) => match measure(v) {
-            Some(size) if size <= *n as f64 => None,
-            Some(_) => Some(format!("must be at most {n}")),
-            None => Some("size rules need a string, array or number".into()),
-        },
-        Rule::Email => match v.as_str() {
-            Some(s) if is_email(s) => None,
-            Some(_) => Some("must be a valid email".into()),
-            None => Some("must be a string email".into()),
-        },
-        Rule::Url => match v.as_str() {
-            Some(s) if is_url(s) => None,
-            Some(_) => Some("must be an http(s) URL".into()),
-            None => Some("must be a string URL".into()),
-        },
-        Rule::Uuid => match v.as_str() {
-            Some(s) if uuid::Uuid::parse_str(s).is_ok() => None,
-            Some(_) => Some("must be a valid UUID".into()),
-            None => Some("must be a string UUID".into()),
-        },
-        Rule::E164 => match v.as_str() {
-            Some(s) if is_e164(s) => None,
-            Some(_) => Some("must be E.164 (+919876543210)".into()),
-            None => Some("must be a string phone".into()),
-        },
-        Rule::OneOf(allowed) => match v.as_str() {
-            Some(s) if allowed.iter().any(|a| a == s) => None,
-            Some(_) => Some(format!("must be one of: {}", allowed.join(", "))),
-            None => Some("must be a string choice".into()),
-        },
-        Rule::Range(lo, hi) => match v.as_f64() {
-            Some(x) if x >= *lo as f64 && x <= *hi as f64 => None,
-            Some(_) => Some(format!("must be {lo}..={hi}")),
-            None => Some("must be a number".into()),
-        },
-        Rule::Date => match v.as_str() {
-            Some(s) if is_date(s) => None,
-            Some(_) => Some("must be RFC-3339 or YYYY-MM-DD".into()),
-            None => Some("must be a string date".into()),
-        },
-    }
-}
-
-fn is_email(s: &str) -> bool {
-    let mut parts = s.split('@');
-    let local = parts.next().unwrap_or("");
-    let domain = parts.next().unwrap_or("");
-    parts.next().is_none()
-        && !local.is_empty()
-        && local.chars().count() <= 64
-        && !local.starts_with('.')
-        && !local.ends_with('.')
-        && !local.contains(char::is_whitespace)
-        && domain.chars().count() >= 3
-        && domain.contains('.')
-        && !domain.starts_with('.')
-        && !domain.ends_with('.')
-        && !domain.contains(char::is_whitespace)
-}
-
-fn is_url(s: &str) -> bool {
-    let rest = match s
-        .strip_prefix("http://")
-        .or_else(|| s.strip_prefix("https://"))
-    {
-        Some(r) => r,
-        None => return false,
-    };
-    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
-    !host.is_empty() && !host.contains(char::is_whitespace)
-}
-
-fn is_e164(s: &str) -> bool {
-    s.starts_with('+') && (8..=16).contains(&s.len()) && s[1..].chars().all(|c| c.is_ascii_digit())
-}
-
-fn is_date(s: &str) -> bool {
-    if time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).is_ok() {
-        return true;
-    }
-    // RFC 3339 strictly requires seconds; also accept minute-precision
-    // timestamps (T10:00Z / T10:00+05:30), the shape appointment slots use.
-    if let Ok(fmt) =
-        time::format_description::parse_borrowed::<2>("[year]-[month]-[day]T[hour]:[minute]Z")
-    {
-        if time::PrimitiveDateTime::parse(s, &fmt).is_ok() {
-            return true;
-        }
-    }
-    if let Ok(fmt) = time::format_description::parse_borrowed::<2>(
-        "[year]-[month]-[day]T[hour]:[minute][offset_hour sign:mandatory]:[offset_minute]",
-    ) {
-        if time::OffsetDateTime::parse(s, &fmt).is_ok() {
-            return true;
-        }
-    }
-    match time::format_description::parse_borrowed::<2>("[year]-[month]-[day]") {
-        Ok(fmt) => time::Date::parse(s, &fmt).is_ok(),
-        Err(_) => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checks::{is_date, is_e164, is_email, is_url};
     use serde_json::json;
 
     #[test]
@@ -439,6 +675,37 @@ mod tests {
         let v = Validator::new().field("nick", vec![Rule::Email]);
         assert!(v.validate(&json!({})).is_ok());
         assert!(v.validate(&json!({ "nick": "not-an-email" })).is_err());
+    }
+
+    #[test]
+    fn present_null_needs_nullable_to_skip_other_rules() {
+        // Laravel presence model: null only skips when `nullable` is declared.
+        let strict = Validator::new().field("nick", vec![Rule::Email]);
+        let report = strict
+            .validate(&json!({ "nick": null }))
+            .expect_err("null fails a non-nullable field");
+        assert_eq!(report.len(), 1);
+
+        let soft = Validator::new().field("nick", vec![Rule::Nullable, Rule::Email]);
+        assert!(soft.validate(&json!({ "nick": null })).is_ok());
+
+        // `required` still fails on null even with `nullable`.
+        let both = Validator::new().field("nick", vec![Rule::Required, Rule::Nullable]);
+        assert!(both.validate(&json!({ "nick": null })).is_err());
+
+        // Absent stays absent: only `required` reacts.
+        assert!(soft.validate(&json!({})).is_ok());
+        assert!(both.validate(&json!({})).is_err());
+
+        // One violation, not two, when required rejects null.
+        assert_eq!(
+            Validator::new()
+                .field("nick", vec![Rule::Required, Rule::Email])
+                .validate(&json!({ "nick": null }))
+                .unwrap_err()
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -507,6 +774,37 @@ mod tests {
     }
 
     #[test]
+    fn field_ref_rules_resolve_through_the_context() {
+        let v = Validator::new()
+            .field("start", vec![Rule::Required, Rule::Numeric])
+            .field("end", vec![Rule::Required, Rule::Gt(NumTarget::Field("start".into()))]);
+        assert!(v
+            .validate(&json!({ "start": "09:00", "end": "10:00" }))
+            .is_err(), "non-numeric sibling fails closed");
+        assert!(v
+            .validate(&json!({ "start": 9, "end": 10 }))
+            .is_ok());
+        let report = v
+            .validate(&json!({ "start": 10, "end": 9 }))
+            .unwrap_err();
+        assert!(report.violations[0].message.contains("start"));
+    }
+
+    #[test]
+    fn context_exposes_request_state() {
+        let input = json!({ "age": 21 });
+        let ctx = ValidationContext::new(&input);
+        assert_eq!(ctx.resolve("age"), Some(&json!(21)));
+        assert_eq!(ctx.resolve("absent"), None);
+        assert!(ctx.principal().is_none());
+        assert!(ctx.uploads().is_empty());
+
+        let principal = keel_foundation::PrincipalId::new();
+        let ctx = ctx.with_principal(principal);
+        assert_eq!(ctx.principal(), Some(principal));
+    }
+
+    #[test]
     fn rule_tokens_parse() {
         assert_eq!(Rule::from_token("required").unwrap(), Rule::Required);
         assert_eq!(Rule::from_token("min:3").unwrap(), Rule::Min(3));
@@ -525,13 +823,155 @@ mod tests {
     }
 
     #[test]
+    fn wave4_tokens_parse() {
+        // types
+        for (token, rule) in [
+            ("nullable", Rule::Nullable),
+            ("boolean", Rule::Boolean),
+            ("integer", Rule::Integer),
+            ("numeric", Rule::Numeric),
+            ("string", Rule::String),
+            ("array", Rule::Array),
+            ("json", Rule::Json),
+            ("ascii", Rule::Ascii),
+        ] {
+            assert_eq!(Rule::from_token(token).unwrap(), rule, "{token}");
+        }
+        // strings
+        for (token, rule) in [
+            ("alpha", Rule::Alpha),
+            ("alpha_num", Rule::AlphaNum),
+            ("alpha_dash", Rule::AlphaDash),
+            ("lowercase", Rule::Lowercase),
+            ("uppercase", Rule::Uppercase),
+            ("hex_color", Rule::HexColor),
+            ("mac_address", Rule::MacAddress),
+            ("timezone", Rule::Timezone),
+            ("ulid", Rule::Ulid),
+        ] {
+            assert_eq!(Rule::from_token(token).unwrap(), rule, "{token}");
+        }
+        assert_eq!(
+            Rule::from_token("starts_with:ab").unwrap(),
+            Rule::StartsWith("ab".into())
+        );
+        assert_eq!(
+            Rule::from_token("ends_with:ab").unwrap(),
+            Rule::EndsWith("ab".into())
+        );
+        assert_eq!(
+            Rule::from_token("contains:ab").unwrap(),
+            Rule::Contains("ab".into())
+        );
+        assert_eq!(
+            Rule::from_token("doesnt_start_with:ab").unwrap(),
+            Rule::DoesntStartWith("ab".into())
+        );
+        assert_eq!(
+            Rule::from_token("doesnt_end_with:ab").unwrap(),
+            Rule::DoesntEndWith("ab".into())
+        );
+        assert_eq!(
+            Rule::from_token("doesnt_contain:ab").unwrap(),
+            Rule::DoesntContain("ab".into())
+        );
+        // parameterised strings keep colons in their argument
+        assert_eq!(
+            Rule::from_token("starts_with:https://").unwrap(),
+            Rule::StartsWith("https://".into())
+        );
+        // numeric
+        assert_eq!(Rule::from_token("decimal:2").unwrap(), Rule::Decimal(2));
+        assert_eq!(Rule::from_token("digits:4").unwrap(), Rule::Digits(4));
+        assert_eq!(
+            Rule::from_token("digits_between:4,6").unwrap(),
+            Rule::DigitsBetween(4, 6)
+        );
+        assert_eq!(
+            Rule::from_token("multiple_of:0.5").unwrap(),
+            Rule::MultipleOf(0.5)
+        );
+        assert_eq!(
+            Rule::from_token("gt:18").unwrap(),
+            Rule::Gt(NumTarget::Literal(18.0))
+        );
+        assert_eq!(
+            Rule::from_token("gte:min_age").unwrap(),
+            Rule::Gte(NumTarget::Field("min_age".into()))
+        );
+        assert_eq!(
+            Rule::from_token("lt:max_age").unwrap(),
+            Rule::Lt(NumTarget::Field("max_age".into()))
+        );
+        assert_eq!(
+            Rule::from_token("lte:64.5").unwrap(),
+            Rule::Lte(NumTarget::Literal(64.5))
+        );
+    }
+
+    #[test]
     fn rule_tokens_reject_malformed() {
         for bad in [
             "min", "min:x", "max:-1", "one_of", "one_of:", "one_of: ,", "range:1", "range:a,b",
             "nope", "min:3:4", "",
+            // Wave 4: missing arguments
+            "starts_with",
+            "starts_with:",
+            "ends_with",
+            "contains:",
+            "doesnt_start_with",
+            "doesnt_end_with",
+            "doesnt_contain:",
+            "decimal",
+            "decimal:x",
+            "digits",
+            "digits:4.5",
+            "digits_between:1",
+            "digits_between:a,b",
+            "multiple_of",
+            "multiple_of:0",
+            "multiple_of:-1",
+            "gt",
+            "gt:",
+            "gte:1.2.3",
+            "lt:x y",
+            "lte:",
         ] {
             assert!(Rule::from_token(bad).is_err(), "{bad} should fail");
         }
+    }
+
+    #[test]
+    fn num_target_parse_is_fail_closed() {
+        assert_eq!(
+            NumTarget::parse("18", "gt:18", "gt").unwrap(),
+            NumTarget::Literal(18.0)
+        );
+        assert_eq!(
+            NumTarget::parse("min_age", "gt:min_age", "gt").unwrap(),
+            NumTarget::Field("min_age".into())
+        );
+        assert_eq!(
+            NumTarget::parse("items.0.qty", "gt:items.0.qty", "gt").unwrap(),
+            NumTarget::Field("items.0.qty".into())
+        );
+        // field-path charset rejects punctuation garbage at boot
+        assert!(NumTarget::parse("a-b", "gt:a-b", "gt").is_err());
+        assert!(NumTarget::parse("", "gt:", "gt").is_err());
+        // non-finite literals are not numbers
+        assert_eq!(
+            NumTarget::parse("nan", "gt:nan", "gt").unwrap(),
+            NumTarget::Field("nan".into())
+        );
+    }
+
+    #[test]
+    fn names_match_the_grammar_tokens() {
+        assert_eq!(Rule::String.name(), "string");
+        assert_eq!(Rule::DigitsBetween(1, 2).name(), "digits_between");
+        assert_eq!(Rule::Gt(NumTarget::Literal(1.0)).name(), "gt");
+        assert_eq!(Rule::Nullable.name(), "nullable");
+        assert_eq!(Rule::StartsWith("x".into()).name(), "starts_with");
     }
 
     #[test]
@@ -541,5 +981,43 @@ mod tests {
         assert_eq!(errs.len(), 2);
         let ok = parse_rules(&["required".into(), "email".into()]).unwrap();
         assert_eq!(ok.len(), 2);
+        // the whole Wave 4 battery parses as one manifest entry
+        let battery: Vec<String> = [
+            "nullable",
+            "boolean",
+            "integer",
+            "numeric",
+            "string",
+            "array",
+            "json",
+            "ascii",
+            "alpha",
+            "alpha_num",
+            "alpha_dash",
+            "lowercase",
+            "uppercase",
+            "starts_with:a",
+            "ends_with:z",
+            "contains:m",
+            "doesnt_start_with:x",
+            "doesnt_end_with:y",
+            "doesnt_contain:q",
+            "hex_color",
+            "mac_address",
+            "timezone",
+            "ulid",
+            "decimal:2",
+            "digits:4",
+            "digits_between:4,6",
+            "multiple_of:3",
+            "gt:0",
+            "gte:floor",
+            "lt:100",
+            "lte:ceiling",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(parse_rules(&battery).unwrap().len(), battery.len());
     }
 }

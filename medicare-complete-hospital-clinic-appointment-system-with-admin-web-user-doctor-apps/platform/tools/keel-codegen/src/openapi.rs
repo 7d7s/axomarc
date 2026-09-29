@@ -10,14 +10,18 @@ use keel_registry::PlatformGraph;
 use serde_json::json;
 
 /// Wave 1: compile one field's manifest rule tokens into OpenAPI schema
-/// constraints (required/min/max/one_of, plus format hints for the format
-/// rules). Tokens speak the same grammar as the HTTP edge
+/// constraints (required/min/max/one_of, type + format hints, numeric
+/// comparisons). Tokens speak the same grammar as the HTTP edge
 /// (keel_validation::Rule), so the SDK contract cannot drift from the
-/// enforced validation.
+/// enforced validation. Emission stays exhaustive over the Rule enum —
+/// new grammar lands here in the same commit.
 fn field_constraints(tokens: &[String]) -> (serde_json::Map<String, serde_json::Value>, bool) {
     let mut schema = serde_json::Map::new();
-    schema.insert("type".into(), json!("string"));
     let mut required = false;
+    // Type declaration tracked separately so `nullable` can widen it to a
+    // 3.1 type array (["string", "null"]) instead of a separate keyword.
+    let mut declared: Option<&'static str> = None;
+    let mut nullable = false;
     let rules = keel_validation::parse_rules(tokens).unwrap_or_default();
     for rule in &rules {
         match rule {
@@ -48,8 +52,64 @@ fn field_constraints(tokens: &[String]) -> (serde_json::Map<String, serde_json::
                 schema.insert("format".into(), json!("date-time"));
             }
             keel_validation::Rule::E164 => {}
+            // Wave 4 types -> JSON Schema types (OpenAPI 3.1).
+            keel_validation::Rule::Nullable => nullable = true,
+            keel_validation::Rule::Boolean => declared = Some("boolean"),
+            keel_validation::Rule::Integer => declared = Some("integer"),
+            keel_validation::Rule::Numeric => declared = Some("number"),
+            keel_validation::Rule::String => declared = Some("string"),
+            keel_validation::Rule::Array => declared = Some("array"),
+            // No standard JSON Schema hint for these; runtime enforces them.
+            keel_validation::Rule::Json
+            | keel_validation::Rule::Ascii
+            | keel_validation::Rule::Alpha
+            | keel_validation::Rule::AlphaNum
+            | keel_validation::Rule::AlphaDash
+            | keel_validation::Rule::Lowercase
+            | keel_validation::Rule::Uppercase
+            | keel_validation::Rule::StartsWith(_)
+            | keel_validation::Rule::EndsWith(_)
+            | keel_validation::Rule::Contains(_)
+            | keel_validation::Rule::DoesntStartWith(_)
+            | keel_validation::Rule::DoesntEndWith(_)
+            | keel_validation::Rule::DoesntContain(_)
+            | keel_validation::Rule::HexColor
+            | keel_validation::Rule::MacAddress
+            | keel_validation::Rule::Timezone
+            | keel_validation::Rule::Ulid
+            | keel_validation::Rule::Decimal(_)
+            | keel_validation::Rule::Digits(_)
+            | keel_validation::Rule::DigitsBetween(_, _) => {}
+            keel_validation::Rule::MultipleOf(n) => {
+                schema.insert("multipleOf".into(), json!(n));
+            }
+            // Numeric comparisons: 3.1 uses numeric exclusiveMinimum/Maximum.
+            // Field-ref targets cannot be expressed statically — skipped.
+            keel_validation::Rule::Gt(keel_validation::NumTarget::Literal(n)) => {
+                schema.insert("exclusiveMinimum".into(), json!(n));
+            }
+            keel_validation::Rule::Gte(keel_validation::NumTarget::Literal(n)) => {
+                schema.insert("minimum".into(), json!(n));
+            }
+            keel_validation::Rule::Lt(keel_validation::NumTarget::Literal(n)) => {
+                schema.insert("exclusiveMaximum".into(), json!(n));
+            }
+            keel_validation::Rule::Lte(keel_validation::NumTarget::Literal(n)) => {
+                schema.insert("maximum".into(), json!(n));
+            }
+            keel_validation::Rule::Gt(_)
+            | keel_validation::Rule::Gte(_)
+            | keel_validation::Rule::Lt(_)
+            | keel_validation::Rule::Lte(_) => {}
         }
     }
+    let ty = match (declared, nullable) {
+        (Some(t), true) => json!([t, "null"]),
+        (Some(t), false) => json!(t),
+        (None, true) => json!(["string", "null"]),
+        (None, false) => json!("string"),
+    };
+    schema.insert("type".into(), ty);
     (schema, required)
 }
 
@@ -325,5 +385,67 @@ rules = ["one_of:personal,work"]
         let legacy = &doc["paths"]["/api/v1/notes/legacy"]["get"];
         assert_eq!(legacy["deprecated"], true);
         assert!(legacy.get("requestBody").is_none());
+    }
+
+    /// Wave 4 Phase 1: type rules override the default `"type": "string"`
+    /// (3.1 type arrays with `nullable`), numeric comparisons emit the
+    /// JSON-Schema-2020-12 numeric keywords, and `multipleOf` carries over.
+    #[test]
+    fn openapi_emits_wave4_type_and_numeric_hints() {
+        let manifest = ModuleManifest::from_toml(
+            r#"
+[module]
+name = "ledger"
+version = "0.1.0"
+maturity = "L0"
+plane = "tenant"
+description = "Ledger"
+
+[capabilities]
+create = { profile = "COMMAND" }
+
+[[routes]]
+method = "POST"
+path = "/api/v1/ledger"
+operation = "create"
+capability = "create"
+
+[[validation]]
+operation = "create"
+field = "amount"
+rules = ["required", "numeric", "gt:0", "lte:1000", "multiple_of:0.5"]
+
+[[validation]]
+operation = "create"
+field = "note"
+rules = ["nullable", "string", "max:64"]
+
+[[validation]]
+operation = "create"
+field = "kind"
+rules = ["string", "max:16"]
+"#,
+        )
+        .expect("manifest parses");
+
+        let graph = PlatformGraph::compile(vec![manifest]).expect("graph compiles");
+        let doc = emit_openapi(&graph, "keel-platform", "0.1.0");
+        let schema = &doc["paths"]["/api/v1/ledger"]["post"]["requestBody"]["content"]
+            ["application/json"]["schema"];
+
+        let amount = &schema["properties"]["amount"];
+        assert_eq!(amount["type"], "number");
+        assert_eq!(amount["exclusiveMinimum"], json!(0.0));
+        assert_eq!(amount["maximum"], json!(1000.0));
+        assert_eq!(amount["multipleOf"], json!(0.5));
+
+        // nullable widens the type to a 3.1 type array; without it the
+        // declared (or default) type stays a plain string.
+        assert_eq!(json!(["string", "null"]), schema["properties"]["note"]["type"]);
+        assert_eq!(json!("string"), schema["properties"]["kind"]["type"]);
+
+        let required = schema["required"].as_array().expect("required list");
+        assert!(required.contains(&json!("amount")));
+        assert!(!required.contains(&json!("note")));
     }
 }
