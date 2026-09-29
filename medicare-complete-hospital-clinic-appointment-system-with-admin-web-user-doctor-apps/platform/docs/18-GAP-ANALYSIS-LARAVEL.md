@@ -161,17 +161,17 @@ The matrix below is deliberately granular. A subsystem cannot be called `MATCHED
 | SSE | MATCHED | platform/crates/services/realtime/src/lib.rs:69,187 | Realtime service exposes streaming path | P2 |
 | WebSockets | MATCHED | platform/crates/services/realtime/src/lib.rs:69,187 | Flag-gated realtime router | P2 |
 | Controllers | EQUIVALENT | `RequestViewModel` / `ResponseViewModel` supplied in audit facts | Typed controller boundary exists | P1 |
-| FormRequest | PARTIAL | Validator / Rule enum supplied in audit facts | Validation engine is not wired into HTTP request lifecycle | P1 |
+| FormRequest | MATCHED | platform/runtime/keel-api/src/graph_routes.rs (`[[validation]]` enforced before dispatch); `validation_edge_integration` + `http_integration` batteries | Manifest `[[validation]]` answers 422 + `fields` at the edge since Wave 1; the Wave 4 rule battery proves per-rule pass/fail (regex SUPERSEDED by the closed grammar — documented divergence) | P1 |
 | Views | EQUIVALENT | platform/crates/web/views/src/engine.rs; platform/crates/web/views/src/parser.rs | Interpreted-AST template engine renders SSR views from `[views].paths` with a compiled-AST cache (`keel view:cache`); SPA-first remains the default web story (Wave 2; S9 preserved) | P2 |
 | Blade | EQUIVALENT | platform/crates/web/views/src/parser.rs (is_known ledger) | Blade-familiar syntax over the full directive ledger; PHP eval, `@php` and `@while` are deliberately SUPERSEDED (19-PARITY-PROGRAM policy); unimplemented directives flip to MISSING below (Wave 2) | P2 |
-| Sessions | PARTIAL | platform/crates/security/sessions/src/lib.rs:197-279 | In-memory session manager only | P0 |
-| PgSessionStore | MISSING | no PgSessionStore in supplied evidence | Durable horizontal session store absent | P0 |
-| Cookies | MISSING | repo evidence identifies C6 cookie layer | Cookie glue absent | P0 |
+| Sessions | EQUIVALENT | platform/crates/security/sessions/src/lib.rs (SessionManager: TTLs, regeneration, remember-me bag); platform/runtime/keel-api/src/auth_routes.rs | Full login/verify/regenerate/logout lifecycle over the SessionStore port; Wave 4 remember-me (cookie `Max-Age` + bag flag) — the server-side remember bound stays open | P0 |
+| PgSessionStore | EQUIVALENT | platform/crates/data/postgres/src/sessionstore.rs (table `http_sessions`) | Durable horizontal session store behind the SessionStore port | P0 |
+| Cookies | EQUIVALENT | platform/crates/web/http (typed cookie layer, D-62); platform/runtime/keel-api/src/auth_routes.rs (cookie issuance) | Cookie layer ships with the session middleware (`keel_session` = `session_id.hmac_tag`); posture `Path=/ HttpOnly SameSite=Lax`, `Secure` in prod (docs/04) | P0 |
 | Authentication primitives | EQUIVALENT | platform/crates/security/identity/src/lib.rs:129-152 | Argon2 / OTP primitives exist | P1 |
-| HTTP auth flows | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214 | Login/register/logout/token issuance not wired through HTTP edge | P0 |
+| HTTP auth flows | MATCHED | platform/runtime/keel-api/src/auth_routes.rs | Full edge auth surface: register/login/logout/me + password-reset + email-verification + `/auth/confirm` (Wave 4), session cookie or hashed PAT, rate-limited attempts (docs/04) | P0 |
 | JWT | EQUIVALENT (future add-on) | JWT absent; hashed PAT + HMAC sessions | Intentional non-default design; add-on later | P2 |
 | Authorization | SUPERSEDED | kernel capability authz supplied by audit facts | Capability model exceeds basic role-only framework authorization | P1 |
-| Validation | EQUIVALENT | Validator / Rule enum supplied | Rule engine exists; HTTP wiring incomplete | P1 |
+| Validation | EQUIVALENT | platform/crates/foundation/validation (rule battery); platform/crates/application/registry (`GRAPH-VALIDATION-RULE`/`GRAPH-VALIDATION-FIELD`/`GRAPH-RULE-UNKNOWN`) | Engine wired to HTTP since Wave 1; Wave 4 grows the battery ~45 rules with tenant-scoped DB probes (error → 503, never pass) | P1 |
 | Error handling | EQUIVALENT | typed envelope/error architecture supplied | Structured Rust errors vs Laravel exception helpers | P1 |
 | Logging | EQUIVALENT | platform/crates/observability/logging/src/logsys.rs:88,219,249 | Init/redaction/file mirror | P1 |
 | Request tracing | EQUIVALENT | platform/crates/observability/logging/src/logsys.rs:249 | Request spans | P1 |
@@ -192,8 +192,8 @@ The matrix below is deliberately granular. A subsystem cannot be called `MATCHED
 | Migrations | MATCHED | platform/database/migrations/*.sql | keel migrate / seed and 18 framework tables | P1 |
 | Seeders | MATCHED | keel seed; framework migrations | Seed command exists | P1 |
 | Factories | MATCHED | platform/tools/keel-codegen/src/generators.rs (FACTORY_TEMPLATE; tests factory_build_is_real_and_deterministic, generated_code_contains_no_placeholder_macros) | Real `build()` with no `todo!`/`unimplemented!` - the snapshot's "build() contains todo!" claim is stale (S8 reality per sec. 25.3; row reconciled with Wave 3) | P2 |
-| Cache | EQUIVALENT | platform/crates/services/cache/src/lib.rs:47,62 | moka cache + lock primitive | P2 |
-| Redis cache driver | MISSING | no Redis driver supplied | Production distributed cache path missing | P2 |
+| Cache | EQUIVALENT | platform/crates/services/cache/src/service.rs (CacheService: remember/tags/locks/stampede; recording-port battery) | CacheService over the unchanged CachePort (Wave 4): remember/remember_forever/add/forever/pull/many/put_many/counters/flush, tag namespaces, atomic locks, stampede single-flight; values serde_json-serialized at the service layer | P2 |
+| Redis cache driver | EQUIVALENT | platform/adapters/keel-cache-redis/src/lib.rs (`RedisCache`; SET-backed tags, `FLUSHDB` flush) | Distributed cache behind the same port (memory stays the dev default; `REDIS_URL` selects redis for cache + queue) | P2 |
 | Queue | MATCHED | platform/runtime/keel-worker/src/main.rs | Worker, batches, chains, scheduler | P1 |
 | Redis queue driver | MISSING | no Redis queue driver supplied | Queue backend choice limited | P2 |
 | Events / outbox | MATCHED | platform/crates/async/events/src/lib.rs:135,236 | Outbox store/pump | P1 |
@@ -234,8 +234,8 @@ The matrix below is deliberately granular. A subsystem cannot be called `MATCHED
 | Serve dev command | MISSING | no keel serve supplied | Local app loop broken | P1 |
 | Vendor publish | MISSING | no vendor:publish equivalent supplied | Package resource publishing absent | P3 |
 | Route cache | MATCHED | platform/crates/application/registry/src/route_plan.rs; platform/tools/keel-console/src/main.rs (route:cache) | storage/framework/routes.json artifact pinned to a SHA-256 manifest hash; stale artifact refuses boot (Wave 1; stricter than Laravel) | P2 |
-| Config cache | MISSING | no config cache command supplied | Deployment optimization absent | P2 |
-| View cache | UNKNOWN | views undecided | Cannot establish until S9 | P3 |
+| Config cache | MATCHED | platform/crates/application/registry/src/config_cache.rs; platform/tools/keel-console/src/main.rs (config:cache); test `config_cache_cycle_pins_and_clears_the_artifact` | storage/framework/config.json + content hash; boot `config_cache_check` refuses drift (Wave 4; stricter than Laravel) | P2 |
+| View cache | MATCHED | platform/tools/keel-console/src/main.rs (view:cache/view:clear); test `view_cache_cycle_compiles_and_clears` | `[views].cache_dir` artifacts (mtime + content hash); boot recompiles on demand (Wave 2) | P3 |
 | Horizon equivalent | MISSING | dashboard gap | Queue dashboard absent | P3 |
 | Telescope equivalent | SUPERSEDED | keel inspect/replay | Operational introspection is more general | P2 |
 | Breeze/Starter Kit | MISSING | no starter kit supplied | Adoption friction | P2 |
@@ -482,23 +482,23 @@ This ledger intentionally enumerates individual operations so a broad `Database`
 | Query Builder | sum | MATCHED | platform/crates/execution/query/src/select.rs (sum) | Aggregate compiles to SQL with tested shape (Wave 3 Phase 1) |
 | Query Builder | exists | MATCHED | platform/crates/execution/query/src/select.rs (exists) | EXISTS compiles with tested shape (Wave 3 Phase 1) |
 | Query Builder | doesntExist | MATCHED | platform/crates/execution/query/src/select.rs (doesnt_exist) | NOT EXISTS compiles with tested shape (Wave 3 Phase 1) |
-| Cache | get | EQUIVALENT | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
-| Cache | put | EQUIVALENT | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
-| Cache | add | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
-| Cache | remember | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
-| Cache | rememberForever | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
-| Cache | forever | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
-| Cache | forget | EQUIVALENT | platform/crates/services/cache/src/lib.rs:47,62 | moka cache/lock exists; exact Laravel semantics require compatibility tests |
-| Cache | flush | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
-| Cache | increment | EQUIVALENT | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
-| Cache | decrement | EQUIVALENT | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
-| Cache | pull | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
-| Cache | many | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
-| Cache | putMany | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
-| Cache | getMultiple | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
+| Cache | get | EQUIVALENT | platform/crates/services/cache/src/service.rs (`CacheService::get`; test `values_roundtrip_and_pull_deletes`) | CacheService over the unchanged port; recording-port battery (Wave 4), adapters keep their own backend suites |
+| Cache | put | EQUIVALENT | platform/crates/services/cache/src/service.rs (`CacheService::put`; test `values_roundtrip_and_pull_deletes`) | CacheService over the unchanged port; recording-port battery (Wave 4), adapters keep their own backend suites |
+| Cache | add | EQUIVALENT | platform/crates/services/cache/src/service.rs (`CacheService::add` via `put_if_absent`; test `add_is_atomic_and_forever_skips_the_ttl`) | CacheService over the unchanged port; recording-port battery (Wave 4), adapters keep their own backend suites |
+| Cache | remember | EQUIVALENT | platform/crates/services/cache/src/service.rs (`CacheService::remember`; tests `remember_caches_the_miss_and_recomputes_after_removal`, `remember_waiter_collapses_onto_the_leader_result`) | CacheService over the unchanged port; stampede single-flight proven (Wave 4) |
+| Cache | rememberForever | EQUIVALENT | platform/crates/services/cache/src/service.rs (`CacheService::remember_forever`; remember-family tests `remember_falls_back_when_the_leader_never_appears`) | CacheService over the unchanged port (Wave 4) |
+| Cache | forever | EQUIVALENT | platform/crates/services/cache/src/service.rs (`CacheService::forever` skips the TTL; test `add_is_atomic_and_forever_skips_the_ttl`) | CacheService over the unchanged port; recording-port battery (Wave 4), adapters keep their own backend suites |
+| Cache | forget | EQUIVALENT | platform/crates/services/cache/src/service.rs (`CacheService::delete` — Laravel `forget` mapping; `keel cache:forget` CLI) | CacheService over the unchanged port (Wave 4) |
+| Cache | flush | EQUIVALENT | platform/crates/services/cache/src/service.rs (test `flush_clears_every_entry_at_once`) | CacheService over the unchanged port; memory clear / Redis `FLUSHDB` (Wave 4) |
+| Cache | increment | EQUIVALENT | platform/crates/services/cache/src/service.rs (test `increment_and_decrement_track_integer_counters`) | CacheService over the unchanged port; recording-port battery (Wave 4), adapters keep their own backend suites |
+| Cache | decrement | EQUIVALENT | platform/crates/services/cache/src/service.rs (test `increment_and_decrement_track_integer_counters`) | CacheService over the unchanged port; recording-port battery (Wave 4), adapters keep their own backend suites |
+| Cache | pull | EQUIVALENT | platform/crates/services/cache/src/service.rs (test `values_roundtrip_and_pull_deletes` — get+delete once) | CacheService over the unchanged port (Wave 4) |
+| Cache | many | EQUIVALENT | platform/crates/services/cache/src/service.rs (test `many_and_put_many_cover_hits_and_misses_in_order`) | CacheService over the unchanged port (Wave 4) |
+| Cache | putMany | EQUIVALENT | platform/crates/services/cache/src/service.rs (`put_many`; same test) | CacheService over the unchanged port (Wave 4) |
+| Cache | getMultiple | EQUIVALENT | platform/crates/services/cache/src/service.rs (`many` covers the multiple-get shape; same test) | CacheService over the unchanged port (Wave 4) |
 | Cache | flexible | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
-| Cache | lock | EQUIVALENT | platform/crates/services/cache/src/lib.rs:47,62 | moka cache/lock exists; exact Laravel semantics require compatibility tests |
-| Cache | forceRelease | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
+| Cache | lock | EQUIVALENT | platform/crates/services/cache/src/service.rs (`CacheGuard`; tests `guard_acquire_closure_release_and_force_release`, `with_lock` closure form) | Atomic lock over the port primitive, exposed as a service (Wave 4) |
+| Cache | forceRelease | EQUIVALENT | platform/crates/services/cache/src/service.rs (`CacheGuard::force_release`; test `guard_acquire_closure_release_and_force_release`) | Atomic lock over the port primitive (Wave 4) |
 | Cache | restoreLock | UNKNOWN | No function-level evidence | moka cache/lock exists; exact Laravel semantics require compatibility tests |
 | Queues / Scheduler | dispatch | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
 | Queues / Scheduler | dispatchSync | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
@@ -554,27 +554,27 @@ This ledger intentionally enumerates individual operations so a broad `Database`
 | Filesystem / Storage | allDirectories | UNKNOWN | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
 | Filesystem / Storage | checksum | UNKNOWN | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
 | Filesystem / Storage | visibility | UNKNOWN | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
-| Auth / Session | login | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
-| Auth / Session | logout | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
-| Auth / Session | register | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
-| Auth / Session | attempt | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
-| Auth / Session | guard | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
-| Auth / Session | user | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
-| Auth / Session | id | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
-| Auth / Session | check | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
-| Auth / Session | guest | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
-| Auth / Session | remember | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
-| Auth / Session | viaRemember | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
-| Auth / Session | validate | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
-| Auth / Session | authenticate | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
-| Auth / Session | password reset | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
-| Auth / Session | verify email | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
-| Auth / Session | session regenerate | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
-| Auth / Session | session invalidate | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
-| Auth / Session | session flash | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
-| Auth / Session | session forget | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
-| Auth / Session | token create | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
-| Auth / Session | token revoke | PARTIAL | platform/crates/security/tokens/src/lib.rs:137-214; platform/crates/security/sessions/src/lib.rs:197-279 | Primitives exist but HTTP glue/durable session layer is incomplete |
+| Auth / Session | login | EQUIVALENT | platform/runtime/keel-api/src/auth_routes.rs (`POST /auth/login`: session cookie or `mode:"token"` PAT, rate-limited per IP+identifier) | Edge login landed (S7); Wave 4 remember-me rides it |
+| Auth / Session | logout | EQUIVALENT | platform/runtime/keel-api/src/auth_routes.rs (`POST /auth/logout` invalidates the session) | Edge logout landed (S7) |
+| Auth / Session | register | EQUIVALENT | platform/runtime/keel-api/src/auth_routes.rs (`POST /auth/register`, dev/test or `KEEL_ALLOW_REGISTER`) | Edge register landed (S7) |
+| Auth / Session | attempt | EQUIVALENT | platform/runtime/keel-api/src/auth_routes.rs (credential verify + access-snapshot install on success) | `Auth::attempt`-equivalent on the edge (S7) |
+| Auth / Session | guard | EQUIVALENT | platform/crates/web/http (session middleware guard over `keel_session`) | Guard resolves the session cookie to the caller (S7) |
+| Auth / Session | user | EQUIVALENT | platform/runtime/keel-api/src/auth_routes.rs (`/auth/me` resolves the principal + tenant) | Session user resolution on the edge (S7) |
+| Auth / Session | id | EQUIVALENT | platform/crates/security/sessions (session id carried as `session_id.hmac_tag`) | (S7) |
+| Auth / Session | check | EQUIVALENT | platform/runtime/keel-api/src/auth_routes.rs + session middleware (presence → 200 `/auth/me`, absence → 401/public) | (S7) |
+| Auth / Session | guest | EQUIVALENT | platform/crates/web/http session middleware (inverse of check; `guest`-style route gating rides `auth`/public policy) | (S7) |
+| Auth / Session | remember | EQUIVALENT | platform/runtime/keel-api/src/auth_routes.rs (`remember: bool` → cookie `Max-Age = remember_ttl` + bag flag; `/auth/me` reports it) | Wave 4: cookie-`Max-Age` only — server-side idle/absolute session bounds unchanged |
+| Auth / Session | viaRemember | EQUIVALENT | platform/runtime/keel-api/src/auth_routes.rs (`/auth/me` `remember` flag read from the resolved session bag) | Wave 4: identity still resolves through the single session cookie; the flag reports remembered sessions |
+| Auth / Session | validate | EQUIVALENT | platform/crates/security/sessions (HMAC-tag + TTL validation at the edge) | (S7) |
+| Auth / Session | authenticate | EQUIVALENT | platform/runtime/keel-api/src/auth_routes.rs (verify credentials + install the policy snapshot) | (S7) |
+| Auth / Session | password reset | EQUIVALENT | platform/runtime/keel-api/src/auth_routes.rs (`/auth/password-reset/request|complete`, single-use token) | B-23 |
+| Auth / Session | verify email | EQUIVALENT | platform/runtime/keel-api/src/auth_routes.rs (`/auth/email-verification/request|confirm`, `dev_token` in dev/test) | B-23 |
+| Auth / Session | session regenerate | EQUIVALENT | platform/crates/security/sessions (regeneration on login); Wave 4 proves `remember` survives it | (S7 + Wave 4) |
+| Auth / Session | session invalidate | EQUIVALENT | platform/crates/security/sessions (invalidate on logout) | (S7) |
+| Auth / Session | session flash | EQUIVALENT | platform/runtime/keel-api/src/graph_routes.rs (redirect `flash` payload, one-request semantics) | Wave 2 one-request flash through the session bag |
+| Auth / Session | session forget | PARTIAL | platform/crates/security/sessions (bag removal exists) | Not pinned as a distinct Laravel-parity API; conservative until proven |
+| Auth / Session | token create | EQUIVALENT | platform/crates/security/tokens (hashed 30-day PAT on `mode:"token"` login) | (S7) |
+| Auth / Session | token revoke | PARTIAL | platform/crates/security/tokens (purpose-scoped single-use redemption exists) | Logout invalidates the session; a distinct PAT revoke endpoint is not established |
 | HTTP Request / Response | json response | MATCHED | platform/runtime/keel-api/tests/http_integration.rs; platform/runtime/keel-api/tests/error_rendering_integration.rs | Envelope end-to-end on the api plane; RFC-7807 `problem+json` opt-in; web-plane clients get error views (Wave 2) |
 | HTTP Request / Response | redirect | MATCHED | platform/runtime/keel-api/src/graph_routes.rs (redirect_response unit tests) | `Location` + validated status + one-request flash (Wave 2) |
 | HTTP Request / Response | download | MATCHED | platform/runtime/keel-api/src/graph_routes.rs (download_response unit tests) | StoragePort object served as an attachment with sanitized filename + explicit content type (Wave 2) |
@@ -991,10 +991,10 @@ The CLI is one of the most important Laravel parity surfaces because it compress
 
 | Laravel command | Keel command | Status | Evidence / gap | Priority |
 |---|---|---|---|---|
-| about | about | MISSING | No mapped equivalent supplied | P3 |
+| about | about | MATCHED | `keel about` golden-fields report: framework/app version, env, debug, DB driver + server version, cache/queue/session drivers, flag snapshot, graph module/route/operation counts, dep-budget state (test `about_report_carries_the_golden_fields`) (Wave 4) | P3 |
 | clear-compiled | optimize:clear | PARTIAL | No Laravel compiled-artifact model | P3 |
 | down | down | EQUIVALENT | Maintenance mode capability | P2 |
-| env | env | UNKNOWN | Depth not locked by evidence | P3 |
+| env | env | MATCHED | `keel env` environment summary: resolved config file, redacted key facts, config-cache pin state (test `env_summary...`) (Wave 4) | P3 |
 | inspire | — | DELIBERATELY EXCLUDED | Not a framework capability | P4 |
 | list | list | MATCHED | CLI command surface exists | P2 |
 | optimize | optimize | PARTIAL | Optimization semantics incomplete | P2 |
@@ -1002,12 +1002,12 @@ The CLI is one of the most important Laravel parity surfaces because it compress
 | up | up | EQUIVALENT | Maintenance disable path | P2 |
 | version | version | MATCHED | CLI binary exists | P2 |
 | cache:clear | cache:clear | PARTIAL | Cache command surface not fully mapped | P2 |
-| cache:forget | cache:forget | PARTIAL | Depends on command implementation | P2 |
-| cache:table | cache:table | MISSING | DB cache migration not established | P3 |
-| config:cache | config:cache | MISSING | Config deployment cache absent | P2 |
-| config:clear | config:clear | MISSING | No config cache clear command supplied | P2 |
-| config:publish | config:publish | MISSING | Package resource publish absent | P3 |
-| config:show | config:show | MISSING | No config inspection command supplied | P3 |
+| cache:forget | cache:forget | MATCHED | `keel cache:forget <key>` removes one key through the CacheService (Wave 4) | P2 |
+| cache:table | cache:table | MISSING | DB cache migration not established (deliberate: memory + Redis only, docs/19 §5) | P3 |
+| config:cache | config:cache | MATCHED | `keel config:cache` pins the frozen effective config + content hash; boot refuses drift via `config_cache_check` (tests `config_cache_cycle_pins_and_clears_the_artifact` + the `keel-registry::config_cache` units) (Wave 4) | P2 |
+| config:clear | config:clear | MATCHED | `keel config:clear` drops the artifact (same test) (Wave 4) | P2 |
+| config:publish | config:publish | MISSING | Package resource publish absent (lands with Wave 8 `keel publish`) | P3 |
+| config:show | config:show | MATCHED | `keel config:show <key> [--json]` renders one redacted section (test `config_show_renders_one_redacted_section`) (Wave 4) | P3 |
 | db | db | MATCHED | CLI/runtime exists at database layer | P2 |
 | db:monitor | db:monitor | UNKNOWN | No locked evidence | P3 |
 | db:seed | seed | MATCHED | keel seed | P1 |
@@ -1078,8 +1078,8 @@ The CLI is one of the most important Laravel parity surfaces because it compress
 | vendor:publish | vendor:publish | MISSING | Package resource publish absent | P3 |
 | horizon | inspect/queue | MISSING | No Horizon-equivalent dashboard | P3 |
 | telescope | inspect/replay | SUPERSEDED | Keel inspect/replay model is broader | P2 |
-| tinker | shell | MISSING | No interactive application shell | P3 |
-| serve | serve | MISSING | Critical local development loop gap | P1 |
+| tinker | shell | MATCHED | `keel shell` REPL (v1.1: login/whoami/ops/routes/run under the caller principal, capability denial enforced; Wave 4 adds `caps` + `models`) | P3 |
+| serve | serve | MATCHED | `keel serve [--worker]` one-command local loop (S7 B-08; `tools/keel-console`) | P1 |
 
 ### Current verified command maturity
 
@@ -1474,19 +1474,19 @@ This table assigns the final strategic decision, not merely today's runtime stat
 | Middleware | EQUIVALENT |
 | CSRF | EQUIVALENT |
 | Controllers | EQUIVALENT |
-| Requests/FormRequest | EQUIVALENT future HTTP wiring |
+| Requests/FormRequest | EQUIVALENT (landed: manifest `[[validation]]` at the edge since Wave 1; Wave 4 rule battery) |
 | Responses | MATCHED (Wave 2 response kinds at the edge) |
 | Views | EQUIVALENT (Wave 2 template engine) |
 | Blade | EQUIVALENT / SUPERSEDED (Wave 2 directive ledger) |
 | URL generation | EQUIVALENT (landed: resolve_url + [url] defaults) |
-| Sessions | EQUIVALENT future durable implementation |
-| Cookies | EQUIVALENT future |
-| Validation | EQUIVALENT |
+| Sessions | EQUIVALENT (landed: SessionStore port + PgSessionStore; Wave 4 remember-me) |
+| Cookies | EQUIVALENT (landed: typed cookie layer + `keel_session`; docs/04) |
+| Validation | EQUIVALENT (landed: wired since Wave 1; Wave 4 battery, regex SUPERSEDED) |
 | Errors | EQUIVALENT |
 | Logging | EQUIVALENT |
-| Artisan/CLI | EQUIVALENT |
+| Artisan/CLI | EQUIVALENT (Wave 4 adds about/env/profile + config/cache rows; full matrix lands Wave 5) |
 | Broadcasting | EQUIVALENT |
-| Cache | EQUIVALENT |
+| Cache | EQUIVALENT (landed: CacheService — Wave 4) |
 | Collections | DELIBERATELY EXCLUDED |
 | Concurrency | SUPERSEDED |
 | Context | SUPERSEDED |
@@ -1711,7 +1711,7 @@ section, this section governs.
 | Octane | SUPERSEDED by native runtime | Unchanged |
 | Views / Blade / Folio / Livewire / Inertia | EQUIVALENT (Wave 2 views engine) | SPA-first stays the default web story; the Wave 2 template engine covers Blade-equivalent views (full directive ledger, compiled cache). Folio/Livewire/Inertia stay out of scope under the S9 SPA-first policy |
 | Passport (OAuth2) | EQUIVALENT future | Unchanged: post-v1.0 add-on |
-| Metrics (D-68) | MISSING | Scoped delivery (S10): runtime metrics live (/metrics); profiling remains deferred per D-68 |
+| Metrics (D-68) | MISSING | Scoped delivery (S10): runtime metrics live (/metrics); the profiling remainder landed Wave 4 (B-27): `keel profile` samply wrapper + flamegraph workflow in 13-OPERATIONS (out-of-process, zero workspace deps) |
 
 ### 25.4 Deliberate v1.0 deferrals and exclusions (unchanged policy)
 
@@ -1752,6 +1752,8 @@ Wave 2 completion entry (2026-09-29): Wave 2 - routing completion, web plane, vi
 
 Wave 3 completion entry (2026-09-29): Wave 3 — Eloquent & query parity + API resources is DONE per `19-PARITY-PROGRAM.md`: full keel-query read-builder surface (clause-tree rendering, unions, group/having, aggregates + existence compile, locks, date family, correlated `where_exists` — 33 rendering tests; execution rides ModelRuntime as documented), ModelStore port growth (aggregate/exists/find_for_update/filtered updates + deletes/force_delete/restore/truncate), ModelRuntime finders & mutations (`first_or_create`, `update_or_create`, `force_create`, `create_many`, `insert_get_id`, `insert_or_ignore`, `increment`/`decrement`, `replicate`, `refresh`/`fresh`, `load_missing`, `touch`, `push`, `pluck`/`value`/`chunk`/`each`/`cursor`), relation parity (eager aggregates, `has`/`where_relation`, nested `with` + per-level constraints, `attach`/`sync`/`toggle`, polymorphic morph-map), casts + serialization visibility + strict mode, soft-delete trio + route-binding `with_trashed` + global scopes, optimistic locking (`version_column` -> `STALE_RECORD` -> 409), `RecordChanges` dirty tracking, `without_timestamps`, `PruneRegistry` + `keel model:prune`, and the typed `Resource` transformer (`when`-conditional fields, wrapping key, `ResourceCollection` + pagination-meta passthrough) with `make resource` rewired to a compiling trait impl. Evidence: CHANGELOG `[Unreleased]`; keel-models runtime/store/prune/binding suites; keel-query rendering suites; keel-http resource suites; keel-codegen template gates; soft-delete veil roundtrip in the pg modelstore suite (DATABASE_URL-gated); 932 workspace tests with dep-rules + clippy clean. Deferred honestly: the Wave 3 live-pg matrix additions (aggregates/exists/restore + force_delete/version column/`insert_or_ignore`/chunk streaming vs PostgreSQL 16) were not added — B-19 stays open and the affected rows carry conservative wire-proof notes; the join rows (join/leftJoin/rightJoin/crossJoin/joinSub) are untouched Wave-3-out-of-scope. The section 4 rows (Query builder, Eloquent ORM, Relations, Casts, Accessors/mutators, Scopes, Soft deletes, Model events/observers, Factories, PostgreSQL integration tests), the query-builder and Eloquent function-ledger rows, the section 12 ORM matrix, the section 11 CLI rows (model:prune, make:factory, make:resource) and backlog B-05/B-10/B-11 are flipped accordingly.
 
+Wave 4 completion entry (2026-09-30): Wave 4 — Validation expansion + config + cache + parity residuals is DONE per `19-PARITY-PROGRAM.md`: ~45 new validation rules (types/strings/numeric/conditionals/cross-field/dates/files/composable `password` + tenant-scoped `unique`/`exists` ModelStore probes with DB error -> 503) with `bail`, dot-path wildcards and custom messages behind the collect-all boot gates `GRAPH-VALIDATION-RULE`/`GRAPH-VALIDATION-FIELD`/`GRAPH-RULE-UNKNOWN` (docs/19's earlier line named the token gate `GRAPH-RULE-UNKNOWN` — corrected: the code reserves that name for unregistered custom rules); `PlatformConfig::freeze()` + `GRAPH-CONFIG-SCHEMA` + the xtask env lint + `keel env`/`config:cache`/`config:clear`/`config:show`/`cache:forget` with hash-pinned drift refusal; `CacheService` (remember + stampede single-flight, atomic `add`, tags, locks, counters; serde_json values — `keel-caching` gains the workspace-budgeted `serde_json`, no budget change); session remember-me (cookie `Max-Age` + bag flag, regeneration-persistent, `/auth/me`-reported) and `POST /auth/confirm` + `confirmed` middleware; `keel about`; `GRAPH-VERSION-SEMVER` + route version columns + OpenAPI `x-keel-version`; shell `caps`/`models`; the `keel profile` samply wrapper; and the Playwright smoke kit at `templates/starter-template/e2e/`. Evidence: CHANGELOG `[Unreleased]`; the validation rule battery + `validation_edge_integration`; the keel-caching recording-port suite; keel-console config/about/profile/env tests; shell `caps_and_models_introspect_grants_and_registries`; registry `graph_version_semver_gate_rejects_bad_tokens_and_segment_mismatches`; the `openapi_emits_validation_constraints_and_deprecation` `x-keel-version` asserts; 1023 workspace tests with dep-rules + clippy clean; publish dry-run count=61 deferred=58. Deferred honestly: the web-plane password-confirm redirect was not implemented (both planes answer the 403 envelope — same precedent as `verified`); remember-me is cookie-`Max-Age` only (server-side idle/absolute session bounds unchanged); the Playwright kit executes out-of-band on external tooling (npm + browsers — not a workspace gate) and the profiling record runs only where samply is installed (the absent-samply path is unit-proven); no dedicated live-pg `unique`/`exists` wire tests were added (B-19 stays open). The §4 rows (FormRequest, Sessions, PgSessionStore, Cookies, HTTP auth flows, Validation, Cache, Redis cache driver, Config cache, View cache), the cache function-ledger rows (get/put/add/remember/rememberForever/forever/forget/flush/increment/decrement/pull/many/putMany/getMultiple/lock/forceRelease), the Auth/Session function-ledger rows (every row except `session forget` + `token revoke`, which stay conservative), the §11 CLI rows (about, env, cache:forget, config:cache/clear/show, tinker, serve), the §22 parity-gate annotations (Requests/FormRequest, Sessions, Cookies, Validation, Artisan/CLI, Cache) and backlog B-27/B-28/B-29 are flipped accordingly.
+
 | ID | Domain | Feature | Status | Priority | Evidence | Dependencies | Complexity | Risk | Reason | Acceptance criteria |
 |---|---|---|---|---|---|---|---|---|---|---|
 | B-21 | Auth | OAuth2 authorization-server module (Passport-class): authorization code + PKCE, refresh tokens, client registry, revocation; ships as a module, never core; PAT + session stays the default | MISSING (add-on) | P2 | sec.22 Passport row; runtime/keel-api/src/auth_routes.rs; crates/security/tokens | v1.0 stable; module ABI gate | High | High (security surface) | third-party API integration; parity commitment | Module registers via ABI gate; code+PKCE/refresh/revocation flows HTTP-tested; zero-new-dep build on existing crypto (sha2/argon2/SignedUrls pattern) or recorded D-62 amendment; 06-SECURITY + 16-MIGRATION updated |
@@ -1760,9 +1762,9 @@ Wave 3 completion entry (2026-09-29): Wave 3 — Eloquent & query parity + API r
 | B-24 | Ecosystem | Package registry + discovery: registry index, keel pkg:list/add, manifest + API-ID compatibility validation at graph compile, fail-closed | PARTIAL (ABI gate + API-ID registry landed S10); discovery MISSING (D-69) | P2 | S10 module ABI gate (module.toml [module].api, MODULE_ABI=1); 15-EXTENSION | continued ABI contract stability | High | Medium | third-party extension at scale without framework edits | third-party manifest-only package installs and registers routes/commands/config; graph-compile validation fails closed; publishing story documented |
 | B-25 | Ecosystem/DX | Package resource publishing (vendor:publish-class): keel publish materializes a package's migrations/config/assets into the host app | MISSING | P3 | parity matrix row (vendor publish) | B-24 | Medium | Low | packages need a first-class way to ship resources | publish is idempotent with conflict reporting; tested against a sample package; 15-EXTENSION updated |
 | B-26 | Web | SSR/template-engine decision gate (v2.0): adopt a template engine (layouts/components/escaping/compiled cache) dual-mode with the SPA story, or formally defer again | DONE Wave 2 (template engine `crates/web/views` + HTML routes + `keel view:cache`/`view:clear`; directive ledger + G17 facets green; parity rows flipped) | P2 (decision) | sec.25.3 views rows; 19-PARITY-PROGRAM Wave 2 (B-26 moved earlier) | zero-new-dep (no budget amendment needed) | decision Low; impl High | Medium | server-rendered Laravel-class web story | decision doc with budget impact; if adopted: engine crate passes G17 facets, dual-mode starter, parity rows updated; if deferred: rationale recorded |
-| B-27 | Observability | Profiling workflow (D-68 remainder): documented CPU/alloc flamegraph path for keel-api + keel-worker | MISSING (D-68 scoped to runtime metrics) | P3 | D-68 decision; 13-OPERATIONS | none (samply runs out-of-process: zero workspace deps) | Medium | Low | performance investigation workflow | flamegraph workflow documented and runnable for both runtimes; no runtime impact when not attached; optional keel profile wrapper |
-| B-28 | Testing | Browser/E2E smoke kit: Playwright-based smoke suite against the starter template (external tooling, zero workspace deps) | MISSING (Dusk-class left to ecosystem per parity gate) | P3 | parity matrix browser/E2E row; templates/starter-template | starter kit | Medium | Low | user-facing regression confidence | starter smoke suite covers auth + one domain flow; documented in 11-TESTING; CI-optional job |
-| B-29 | DX | keel shell (Tinker-class): typed interactive console over the app graph/stores under the caller principal | DONE v1.1 (`keel shell` spawns `keel-api --shell` per dep-rules topology; REPL over the production boot: login (argon2, same as POST /auth/login), whoami, ops, routes, run <module.operation> [json] through the CommandBus under the caller principal; capability denial enforced by the policy engine and tested (denied run writes nothing); prod refused unless KEEL_SHELL_ALLOW=1) | P3 | sec.19 B-16 | model runtime (S8) | Medium | Low | exploration/ops developer experience | REPL executes operations through the engine under a principal; capability denial enforced and tested |
+| B-27 | Observability | Profiling workflow (D-68 remainder): documented CPU/alloc flamegraph path for keel-api + keel-worker | DONE Wave 4 (`keel profile api\|worker`: builds the package, then `samply record target/debug/<bin>`; missing samply fails closed with `cargo install samply` + the docs/13 workflow — test `profile_cli_parses_and_missing_samply_fails_closed`; out-of-process, zero workspace deps) | P3 | D-68 decision; 13-OPERATIONS Profiling section; tools/keel-console profile | none (samply runs out-of-process: zero workspace deps) | Medium | Low | performance investigation workflow | flamegraph workflow documented and runnable for both runtimes; no runtime impact when not attached; optional keel profile wrapper |
+| B-28 | Testing | Browser/E2E smoke kit: Playwright-based smoke suite against the starter template (external tooling, zero workspace deps) | DONE Wave 4 (templates/starter-template/e2e/: package.json + playwright.config.ts + auth.spec.ts (register/login/me + bad-password envelope) + notes.spec.ts (create/list roundtrip + anonymous refusal); rendered with the template; CI-optional, executed out-of-band on external tooling) | P3 | parity matrix browser/E2E row; templates/starter-template/e2e; 11-TESTING Playwright section | starter kit | Medium | Low | user-facing regression confidence | starter smoke suite covers auth + one domain flow; documented in 11-TESTING; CI-optional job |
+| B-29 | DX | keel shell (Tinker-class): typed interactive console over the app graph/stores under the caller principal | DONE v1.1 (`keel shell` spawns `keel-api --shell` per dep-rules topology; REPL over the production boot: login (argon2, same as POST /auth/login), whoami, ops, routes, run <module.operation> [json] through the CommandBus under the caller principal; capability denial enforced by the policy engine and tested (denied run writes nothing); prod refused unless KEEL_SHELL_ALLOW=1; Wave 4 adds `caps` (declared catalog + session grants) and `models` (binding/probe registries) — test `caps_and_models_introspect_grants_and_registries`) | P3 | sec.19 B-16 | model runtime (S8) | Medium | Low | exploration/ops developer experience | REPL executes operations through the engine under a principal; capability denial enforced and tested |
 | B-30 | Ecosystem | WASM plugin runtime decision gate (v2.0): sandboxed third-party modules over the capability ABI | DEFERRED (DoD v2.0 row; D-69) | P3 (decision) | DoD v2.0; D-69 roadmap | B-24; scope + budget decision | Very High | High | sandboxed third-party code without native compilation | decision doc first; if adopted: minimal wasm host passes G07 and the capability ABI; budget amendment recorded |
 | B-31 | Data | Multi-database driver decision gate (v2.0): second first-class driver behind the existing store ports | DELIBERATELY EXCLUDED v1 (D-62); DoD v2.0 roadmap | P3 (decision) | D-62; DoD v2.0 | D-62 amendment | Very High | High | ecosystem expansion | decision doc first; if adopted: second driver passes the full store matrix (CRUD/tenant/transactions); migrations remain SQL-first |
 

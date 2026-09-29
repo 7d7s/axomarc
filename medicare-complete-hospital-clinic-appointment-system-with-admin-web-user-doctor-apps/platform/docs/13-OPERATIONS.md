@@ -108,6 +108,26 @@ keel job:list --status running --limit 50
 regressions beyond the budget (default 10% per phase): routing, authorization, delta-write, read, serialization, startup, memory — and `telemetry-emit` (Sentinel S5: ingest overhead of the bounded telemetry bus against a live runtime with a file exporter + WAL). Promote new numbers deliberately with
 `--save-baseline`. A phase without a baseline entry is reported but does not gate until it is baselined.
 
+## Profiling (B-27)
+
+CPU/alloc flamegraphs for the two long-running runtimes, out-of-process: samply attaches
+to a child process, so nothing joins the workspace dependency budget and nothing runs
+when you do not ask for it.
+
+```bash
+cargo install samply
+keel profile api        # cargo build -p keel-api, then samply record target/debug/keel-api
+keel profile worker     # the same for keel-worker
+```
+
+Each subcommand builds its package first so the recording captures a fresh binary;
+stopping the recording opens the flamegraph in the browser. If samply is not on PATH the
+wrapper fails closed with the install line and this workflow — it never silently skips.
+Manual equivalent without the wrapper: `cargo build -p keel-api` then
+`samply record target/debug/keel-api` from the workspace root (set `KEEL_CONFIG` when
+recording against a non-default config). Flamegraphs are a local diagnostic; production
+metrics stay on `/metrics` (D-68 scope).
+
 ## Security posture
 
 ```bash

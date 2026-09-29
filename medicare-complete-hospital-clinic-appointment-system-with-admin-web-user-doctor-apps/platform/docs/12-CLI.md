@@ -53,9 +53,12 @@ against the same workspace/config the runtime uses.
 | `keel schedule:list` / `schedule:run` | schedules |
 | `keel key:generate` | new application key into config |
 | `keel config:dump` | effective config, secrets redacted |
+| `keel config:cache` / `keel config:clear` | pin the frozen effective config to `storage/framework/config.json` + content hash / drop it; boot hash-check refuses drift (Wave 4) |
+| `keel config:show <key> [--json]` | print one config section with secrets redacted (Wave 4) |
 | `keel serve [--worker]` | one-command local loop: spawns keel-api (and keel-worker), streams logs (S7) |
-| `keel shell` | interactive platform console (v1.1 B-29): REPL over the booted engine, dispatches under your principal |
+| `keel shell` | interactive platform console (v1.1 B-29): REPL over the booted engine — login/whoami/ops/routes/caps/models/run under your principal (Wave 4 adds `caps` + `models`) |
 | `keel cache:clear` | clear the app cache |
+| `keel cache:forget <key>` | remove one cache key (Wave 4) |
 | `keel view:cache` / `keel view:clear` | precompile every template under `[views].paths` into `[views].cache_dir` (mtime + content hash) / drop the compiled view artifacts; boot recompiles on demand (Wave 2 views engine) |
 | `keel flag:list` / `flag:set <name> <stage> [--tenant id]` | feature flag rollout |
 
@@ -68,6 +71,9 @@ against the same workspace/config the runtime uses.
 | `keel benchmark [--save-baseline] [--budget pct] [--iterations n]` | G15 benchmark gate |
 | `keel build [--profile dev\|release]` | build + release manifest |
 | `keel release` | show the release manifest |
+| `keel about` | Laravel-style environment report: framework/app version, env, debug, DB driver + server version (best-effort `SELECT version()`), cache/queue/session drivers, flag snapshot, graph module/route/operation counts, dep-budget state (Wave 4) |
+| `keel env` | environment summary: the config file the layering resolved, redacted key facts, config-cache pin state (Wave 4) |
+| `keel profile <api\|worker>` | B-27 profiling wrapper: builds the package, then `samply record target/debug/<bin>` when samply is installed; a missing samply fails closed with `cargo install samply` + the docs/13 workflow (Wave 4) |
 
 ## Telemetry (Sentinel)
 

@@ -5,8 +5,20 @@ local disk) implement ports and are wired only by runtime binaries.
 
 ## Cache (+ locks)
 
-`services/cache` with a memory adapter. `CacheLock` provides atomic delete-if-equals locks for
-critical sections.
+`services/cache` with a memory adapter; `adapters/keel-cache-redis` (RedisCache) picks up
+`REDIS_URL` for the distributed path. `CacheLock` provides atomic delete-if-equals locks
+for critical sections.
+
+Wave 4 adds `CacheService` over the unchanged `CachePort`: `remember(key, ttl, f)` /
+`remember_forever`, `add` (atomic `put_if_absent`), `forever`, `pull`, `many`/`put_many`,
+`has`, `increment`/`decrement`, `flush` (memory: clear; Redis: `FLUSHDB`); cache tags —
+`tags([...]).get/put/flush` (memory: key-prefix namespaces; Redis: SET-backed membership);
+atomic locks `lock(key, ttl)` → `get`/`release`/`force_release` plus the closure form
+`lock.get(|| ...)`; stampede protection collapses concurrent `remember` misses onto one
+leader under a per-key lock with jittered wait. Values are serde_json-serialized at the
+service layer — `keel-caching` gains the workspace-budgeted `serde_json` dependency for
+it (crate-level addition, no `[workspace.dependencies]` budget change); ports and
+adapters are untouched.
 
 ## Storage
 

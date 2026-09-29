@@ -146,11 +146,17 @@ to `MAX_PER_PAGE` (100). The parsed pair is injected into the operation input as
 `{ page, per_page, total, has_more }` — alongside the collection key (see appointments `list`).
 Stores may omit `total`; `has_more` then falls back to the full-page heuristic.
 
-## Deprecated routes (Wave 1, L72)
+## Deprecated routes and API versioning (Wave 1/4, L72)
 
 `deprecated = true` on a route keeps it fully functional and advertises the sunset: success
 responses carry a `Deprecation: true` header and `meta.deprecated = true` in the envelope.
 `keel sdk:openapi` emits OpenAPI-native `deprecated: true` for the same routes.
+
+Wave 4 completes versioning (L72 ◐ → done): every route's `version` (default `v1`) must
+parse as `v<N>` (lowercase `v` + digits) and must agree with any version-looking path
+segment (`/api/v2/...`), enforced by the boot-refusing `GRAPH-VERSION-SEMVER` gate.
+`keel route:list` prints the VERSION and DEPRECATED columns, and OpenAPI carries the
+per-route version as the `x-keel-version` operation extension beside `deprecated: true`.
 
 ## Route cache (Wave 1)
 
@@ -171,6 +177,12 @@ feature-flag gated (`app.sessions`, default disabled — `keel flag:set app.sess
 the `SessionStore` port (in-memory or `PgSessionStore` table `http_sessions`), touch on activity,
 and are swept by policy.
 
+Remember-me (Wave 4): login accepts `remember: bool`; true extends the cookie `Max-Age` to
+`SessionPolicy.remember_ttl` (30d default vs the 8h session TTL), records `remember: true`
+in the session bag, survives session regeneration, and `/auth/me` reports the flag. Honest
+gap: the extension is cookie-`Max-Age` only — server-side idle/absolute session bounds are
+unchanged, so a remembered session is still swept by policy.
+
 ## Uploads (S7)
 
 `POST /api/v1/uploads` accepts `multipart/form-data` behind authentication. Hard limits enforced
@@ -181,9 +193,17 @@ the `StoragePort` under `uploads/<principal>/`.
 ## Platform auth endpoints (S7)
 
 `/auth/register` (dev/test or `KEEL_ALLOW_REGISTER`), `/auth/login`, `/auth/logout`, `/auth/me`,
-`/auth/password-reset/request|complete`, `/auth/email-verification/request|confirm` (B-23).
+`/auth/password-reset/request|complete`, `/auth/email-verification/request|confirm` (B-23),
+`/auth/confirm` (Wave 4).
 Login mode: session cookie by default, `mode:"token"` (or
 sessions disabled) issues a hashed 30-day PAT; login attempts are rate-limited per IP+identifier.
+
+Password re-confirmation (Wave 4): `POST /auth/confirm` re-verifies the current password and
+stamps `confirmed_at` in the session bag; the `confirmed` middleware alias (added to the
+catalog) gates routes on freshness (default window 15 min, `auth.confirm_timeout_secs`) and
+answers 403 `CONFIRMATION_REQUIRED` on expiry — including the unauthenticated-style envelope
+when no confirmation ever happened. Honest gap: the web-plane redirect to a confirm view was
+not implemented; both planes answer the envelope (same precedent as the `verified` gate).
 
 Email verification (B-23): `request` issues a single-use 60-minute `verify` token for the
 principal owning the address (enumeration-safe: unknown addresses get the same `sent:true`

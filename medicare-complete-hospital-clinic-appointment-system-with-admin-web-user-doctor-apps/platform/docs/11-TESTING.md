@@ -44,3 +44,28 @@ violations. These are regressions gates, not style checks.
 `examples/minimal` is the executable specification of the kernel invariants (one stone per command,
 idempotent replay, denial writes nothing). `examples/reference` extends it across the full module
 surface. Both run in CI (G09).
+
+## Playwright smoke kit (B-28)
+
+`templates/starter-template/e2e/` ships a browser smoke kit with its own `package.json`
+(external tooling — it never joins the Rust workspace or the dependency budget):
+
+- `auth.spec.ts` — register → `/auth/me` resolves the principal; login rejects a bad
+  password with the envelope error; login round-trips the same principal.
+- `notes.spec.ts` — session create + list roundtrip through the graph routes (the notes
+  path is read from `../module.toml`, so it follows any project name `keel new` rendered)
+  and anonymous create is refused.
+- `playwright.config.ts` — `baseURL` defaults to `http://127.0.0.1:8180`
+  (`PLAYWRIGHT_BASE_URL` overrides); traces retained on failure.
+
+Run it against a live `keel serve` from the rendered project:
+
+```bash
+cd applications/<name>/e2e
+npm install && npx playwright install
+npm test                      # PLAYWRIGHT_BASE_URL to aim elsewhere
+```
+
+The kit is CI-optional by design: it needs npm + browsers, so it runs out-of-band (locally
+or an opt-in job), never as a workspace gate. Coverage claim stays honest: auth
+register/login + one domain flow (notes create/list) — a smoke suite, not a full E2E net.
