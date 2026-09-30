@@ -538,11 +538,18 @@ impl __TYPE__Mail {
 }
 "##;
 
-const NOTIFICATION_TEMPLATE: &str = r##"//! Notification: __TYPE__Notification with per-channel renderers.
-//! Wave 6 ships the framework NotificationDef (fan-out across mail, sms,
-//! push and database channels with locale fallback); these renderers
-//! compile standalone and map 1:1 onto those channels.
+const NOTIFICATION_TEMPLATE: &str = r##"//! Notification: __TYPE__Notification — Wave 6 P5 implements the REAL
+//! `keel_notifications::NotificationDef` (the notify hub dispatches these
+//! per-channel renderers across mail, sms, push and the database inbox).
+//! Needs `keel-notifications = { workspace = true }` in this module's
+//! Cargo.toml.
+//!
+//! `type_key()` doubles as the database `type` column. Mail HTML: drop
+//! `resources/views/notifications/__NAME__.html` and return
+//! `Some("notifications.__NAME__".into())` from `template()` — `None`
+//! (until then) keeps the mail text-only.
 
+use keel_notifications::{Mailable, NotificationDef};
 use serde_json::{json, Value};
 
 #[derive(Debug, Clone)]
@@ -555,24 +562,55 @@ impl __TYPE__Notification {
         Self { data }
     }
 
-    /// Mail channel: (subject, plain-text body).
-    pub fn to_mail(&self) -> (String, String) {
+    /// Mail pieces: (subject, plain-text body). The hub fills `to` from the
+    /// delivery target and renders `template()` into `html` when wired.
+    fn mail_parts(&self) -> (String, String) {
         (format!("__NAME__ update"), self.data.to_string())
     }
+}
 
-    /// SMS channel: one short segment (keep it under 160 chars).
-    pub fn to_sms(&self) -> String {
+impl NotificationDef for __TYPE__Notification {
+    fn type_key(&self) -> &str {
+        "__NAME__"
+    }
+
+    fn to_mail(&self) -> Mailable {
+        let (subject, text) = self.mail_parts();
+        Mailable {
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            from: None,
+            reply_to: None,
+            subject,
+            text: Some(text),
+            html: None,
+            headers: Vec::new(),
+            attachments: Vec::new(),
+        }
+    }
+
+    /// SMS channel: one short segment (keep it under 160 chars) — or a
+    /// message-catalog key the hub resolves with locale fallback.
+    fn to_sms(&self) -> String {
         format!("__NAME__: {}", self.data)
     }
 
-    /// Push channel: title + payload.
-    pub fn to_push(&self) -> Value {
-        json!({ "title": "__NAME__ update", "data": self.data })
+    /// Push channel: nudge-only signal (D-17 nudge-not-payload — the hub
+    /// forwards `signal` plus an optional `delta_cursor`, never this data).
+    fn to_push(&self) -> Value {
+        json!({ "signal": "__NAME__" })
     }
 
-    /// Database channel: the persisted inbox row payload.
-    pub fn to_database(&self) -> Value {
+    /// Database channel: the persisted inbox row payload — also the view
+    /// context the HTML mail body receives.
+    fn to_database(&self) -> Value {
         json!({ "type": "__NAME__", "data": self.data })
+    }
+
+    /// HTML mail view; `None` = text-only until the view file exists.
+    fn template(&self) -> Option<String> {
+        None
     }
 }
 "##;
@@ -815,8 +853,9 @@ mod tests {
     /// Wave 5 Phase 9: the new templates point at REAL platform surface —
     /// the traits and APIs they claim (Cast, ModelObserver, CustomRule,
     /// FieldFilter scopes, the axum middleware shape, routes/channels.toml)
-    /// rather than invented ones; the Wave 6-pending definitions (mail,
-    /// notification) stay standalone and say so.
+    /// rather than invented ones; the Wave 6 P5 notification scaffold
+    /// implements the real `NotificationDef`, and the Wave 6 mail scaffold
+    /// stays standalone and says so.
     #[test]
     fn wave5_templates_reference_real_platform_surface() {
         let trait_refs = [
@@ -831,6 +870,10 @@ mod tests {
             ("channel", "routes/channels.toml"),
             ("exception", "impl From<SampleThingError> for AppError"),
             ("job-middleware", "keel_jobs::{BoxFuture, DurableJob}"),
+            (
+                "notification",
+                "impl NotificationDef for SampleThingNotification",
+            ),
         ];
         for (kind, needle) in trait_refs {
             let (_, content) = generate(kind, "demo", "sample_thing").unwrap();

@@ -52,6 +52,12 @@ pub struct AppState {
     /// Wave 6 P2: named disk registry built from `[storage]` — the upload
     /// edge resolves `?disk=` through it (default = `storage.default`).
     pub disks: Arc<keel_storage::DiskRegistry>,
+    // --- Wave 6 P5 notifications -------------------------------------------
+    /// Database-channel inbox store behind `GET /api/v1/notifications` and
+    /// `POST /api/v1/notifications/read` (postgres at full boot,
+    /// in-memory on degraded hosts — D-52). The notify hub dispatches
+    /// rows through this very instance.
+    pub notifications: Arc<dyn keel_notifications::NotificationStore>,
     pub route_inventory: Vec<RouteEntry>,
     // --- Wave 1 middleware model ------------------------------------------
     /// Named middleware catalog (middleware.toml or the builtin).

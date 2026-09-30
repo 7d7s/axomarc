@@ -51,7 +51,8 @@ surface. Both run in CI (G09).
 lines, and tallies every `test result:` line into a final `PASS`/`FAIL` verdict with suite and
 test counts — the same tally the parity gates report. `--pg` adds `--features pg-tests` (the
 pg-gated matrix: migration pairs apply/rollback/reset round trip, advisory-lock contention,
-modelstore CRUD/tenant isolation, sessions/tokens, pgvector search) and fails closed with a
+modelstore CRUD/tenant isolation, sessions/tokens, notification inbox round trip (Wave 6 P5),
+pgvector search) and fails closed with a
 `DATABASE_URL` pointer when the compose database is not configured — so `keel test` alone stays
 hermetic, `keel test --pg` is the full local matrix (backlog B-19 keeps the pg matrix out of the
 shared CI).

@@ -13,9 +13,12 @@ description = "Keel framework: notification ports — SMS / mail / push."
 keel-foundation = { workspace = true }
 keel-storage = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }
+tokio = { workspace = true }
 
 [package.metadata.docs.rs]
 all-features = true

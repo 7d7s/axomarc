@@ -1642,6 +1642,9 @@ dependencies = [
  "keel-storage",
  "serde",
  "serde_json",
+ "time",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -1715,6 +1718,7 @@ dependencies = [
  "keel-integrity",
  "keel-jobs",
  "keel-models",
+ "keel-notifications",
  "keel-query",
  "keel-session",
  "keel-tokens",

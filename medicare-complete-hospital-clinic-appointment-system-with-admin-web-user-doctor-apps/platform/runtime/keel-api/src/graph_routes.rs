@@ -859,7 +859,7 @@ pub(crate) fn resolve_jwt_token(
 
 /// Query parser: a=1&b=2 -> ordered pairs. Tolerant: malformed pairs are
 /// skipped (never a request failure).
-fn query_pairs(query: Option<&str>) -> Vec<(String, String)> {
+pub(crate) fn query_pairs(query: Option<&str>) -> Vec<(String, String)> {
     let Some(query) = query else {
         return Vec::new();
     };

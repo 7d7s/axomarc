@@ -5,11 +5,13 @@
 
 #![cfg(feature = "pg-tests")]
 
-use keel_foundation::PrincipalId;
+use keel_foundation::{PrincipalId, TenantId};
 use keel_identity::store::{CredentialStore, PrincipalStore};
 use keel_identity::{Credential, CredentialKind, Principal, PrincipalStatus, Secret};
+use keel_notifications::{NotificationRow, NotificationStore};
 use keel_postgres::{
-    create_pool, run_migrations, PgCredentialStore, PgPool, PgPrincipalStore, PgSessionStore,
+    create_pool, run_migrations, PgCredentialStore, PgNotificationStore, PgPool, PgPrincipalStore,
+    PgSessionStore,
 };
 use keel_session::{SessionPolicy, SessionStore};
 use time::OffsetDateTime;
@@ -241,4 +243,101 @@ async fn pg_email_verification_timestamp_roundtrip() {
 
     // Unknown principal is NOT_FOUND.
     assert!(principals.mark_email_verified(PrincipalId::new()).is_err());
+}
+
+/// Wave 6 P5: the notifications table round trip — insert through the FK
+/// constraints (principal required, tenant recorded), newest-first
+/// principal-scoped listing with feed counts, and idempotent principal-only
+/// mark-read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pg_notification_store_roundtrip() {
+    let Some(pool) = pool().await else { return };
+    let principals = PgPrincipalStore::new(pool.clone());
+    let notifications = PgNotificationStore::new(pool.clone());
+
+    let owner = principals
+        .create(principal(&format!(
+            "pg-notif-{}@it.test",
+            uuid::Uuid::now_v7()
+        )))
+        .expect("principal inserts");
+    let noise = principals
+        .create(principal(&format!(
+            "pg-notif-noise-{}@it.test",
+            uuid::Uuid::now_v7()
+        )))
+        .expect("noise principal inserts");
+    let tenant_id = uuid::Uuid::now_v7();
+    keel_postgres::seed_tenant(&pool, tenant_id, &format!("notif-{}", uuid::Uuid::now_v7()), "Notifications Tenant")
+        .await
+        .expect("tenant seeds");
+    let tenant = Some(TenantId::from_uuid(tenant_id));
+
+    let row_for = |principal_id: PrincipalId, patient: &str| NotificationRow {
+        id: uuid::Uuid::now_v7(),
+        principal_id,
+        tenant_id: tenant,
+        kind: "appointment.booked".into(),
+        data: serde_json::json!({ "patient": patient }),
+        read_at: None,
+        created_at: OffsetDateTime::now_utc(),
+    };
+
+    notifications
+        .insert(row_for(owner.id, "Ada"))
+        .await
+        .expect("row inserts");
+    notifications
+        .insert(row_for(owner.id, "Grace"))
+        .await
+        .expect("row inserts");
+    notifications
+        .insert(row_for(noise.id, "Noise"))
+        .await
+        .expect("foreign row inserts");
+
+    let feed = notifications.list(owner.id, 0, 10).await.expect("lists");
+    assert_eq!(feed.total, 2, "foreign principal rows never count");
+    assert_eq!(feed.unread, 2);
+    assert_eq!(feed.rows.len(), 2);
+    assert!(
+        feed.rows[0].created_at >= feed.rows[1].created_at,
+        "newest first"
+    );
+    assert!(feed
+        .rows
+        .iter()
+        .all(|r| r.kind == "appointment.booked" && r.tenant_id == tenant));
+    assert!(feed
+        .rows
+        .iter()
+        .any(|r| r.data["patient"].as_str() == Some("Ada")));
+
+    // Page 2 of a limit-1 listing yields exactly the older row.
+    let second = notifications.list(owner.id, 1, 1).await.expect("pages");
+    assert_eq!(second.rows.len(), 1);
+    assert_eq!(second.total, 2);
+
+    // Mark-read: another principal cannot apply it; the owner's mark is
+    // counted once and never again.
+    let target: Vec<uuid::Uuid> = feed.rows.iter().take(1).map(|r| r.id).collect();
+    let foreign = notifications
+        .mark_read(noise.id, target.clone())
+        .await
+        .expect("attempt");
+    assert_eq!(foreign, 0, "principal scoping holds");
+    let updated = notifications
+        .mark_read(owner.id, target.clone())
+        .await
+        .expect("marks");
+    assert_eq!(updated, 1);
+    let again = notifications
+        .mark_read(owner.id, target)
+        .await
+        .expect("re-marks");
+    assert_eq!(again, 0, "idempotent");
+
+    let feed = notifications.list(owner.id, 0, 10).await.expect("counts");
+    assert_eq!(feed.total, 2);
+    assert_eq!(feed.unread, 1);
 }

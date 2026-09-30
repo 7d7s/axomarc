@@ -227,6 +227,22 @@ graph module operations answer 403 `AUTH_DENIED` until the address is proven; au
 stay open so verification itself can complete. Delivery of the token rides the notification
 layer in production; dev/test surfaces it as `dev_token`, mirroring password reset.
 
+## Notification inbox (Wave 6 P5)
+
+`GET /api/v1/notifications` returns the caller's inbox, newest first: rows of
+`{ id, type, data, read_at, created_at }` (no principal/tenant columns — the store scopes by the
+resolved identity) behind the standard `data` + `meta` envelope; `meta` is the pagination block
+(`page`, `per_page`, `total`, `has_more`) plus `unread`. `?page` / `?per_page` validate like
+every other list edge (422 envelope).
+
+`POST /api/v1/notifications/read` marks ids read and answers `{ updated }`. The body validates
+ids: non-empty, at most 500 per call, each a UUID — anything else is a 422 with the shared
+`fields` shape. Ids belonging to another principal report `updated: 0` (scoping, never a leak).
+Both endpoints authenticate through the shared identity resolver (session cookie or bearer PAT);
+the mark additionally requires the `notifications.mark_read` capability, chained into the
+login-time grant set (`FRAMEWORK_CAPABILITIES` in `notification_routes.rs`) — self-service, but
+still a real gate a snapshot can revoke (403 `AUTH_DENIED`).
+
 ## Stateless JWT bearer interop (B-22, v1.1)
 
 Opt-in and non-default (report R5): with the `app.jwt` feature flag on

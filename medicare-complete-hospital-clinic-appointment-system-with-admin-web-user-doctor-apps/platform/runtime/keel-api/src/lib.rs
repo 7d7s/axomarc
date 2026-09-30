@@ -9,6 +9,7 @@ pub mod edge;
 pub mod graph_routes;
 pub mod host;
 pub mod i18n;
+pub mod notification_routes;
 pub mod routes;
 pub mod shell;
 pub mod static_assets;
@@ -255,6 +256,13 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(pool) => Arc::new(keel_postgres::PgSessionStore::new(pool.clone())),
         None => keel_session::InMemorySessionStore::shared(),
     };
+    // Wave 6 P5: the database-channel inbox store — postgres when reachable,
+    // in-memory otherwise (D-52, the session-store posture). Built before the
+    // providers so the notify hub and the HTTP feed share ONE instance.
+    let notification_store: Arc<dyn keel_notifications::NotificationStore> = match &pool {
+        Some(pool) => Arc::new(keel_postgres::PgNotificationStore::new(pool.clone())),
+        None => Arc::new(keel_notifications::InMemoryNotificationStore::new()),
+    };
 
     let mut host = ApplicationHost::new();
     // Wave 2 error rendering: one registry per boot, published to every
@@ -297,6 +305,19 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let metrics = Arc::new(keel_metrics::MetricsRegistry::new(4096));
     let booted_at = std::time::Instant::now();
 
+    // Wave 2 views: engine built from the `[views]` section. Roots and the
+    // compiled cache resolve against the workspace root, so the same templates
+    // are served regardless of the cwd the host was started from. The
+    // `@asset("...")` URL helper is registered here (once per engine) so
+    // templates see production behaviour in every harness too. Built BEFORE
+    // the providers (Wave 6 P5): the platform phase wires the engine into
+    // the notify hub for notification HTML mail bodies.
+    let assets = load_asset_manifest(&root.join("public"));
+    let views_engine =
+        keel_views::ViewsEngine::new(views_config(cfg.views(), &root, env.as_str()));
+    register_asset_directive(&views_engine, assets.clone());
+    let views = Some(Arc::new(views_engine));
+
     host.add_provider(Box::new(ConfigProvider {
         config: cfg.clone(),
         health: health.clone(),
@@ -305,6 +326,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     host.add_provider(Box::new(PlatformProvider {
         redis: redis_cache,
         messages: messages.clone(),
+        notifications: notification_store.clone(),
+        views: views.clone(),
     }));
     host.add_provider(Box::new(FeatureFlagsProvider {
         registry: flags_registry,
@@ -403,11 +426,18 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Capabilities granted to authenticated principals at login: every
-    // capability declared by a graph module (`module.capability`).
+    // capability declared by a graph module (`module.capability`) plus the
+    // framework capabilities (Wave 6 P5 notification read-marking —
+    // self-service but still a real, revocable gate).
     let granted_capabilities: Vec<String> = graph
         .modules
         .iter()
         .flat_map(|m| m.capabilities.keys().map(|c| format!("{}.{}", m.name(), c)))
+        .chain(
+            notification_routes::FRAMEWORK_CAPABILITIES
+                .iter()
+                .map(|c| (*c).to_string()),
+        )
         .collect();
     let route_inventory = graph_routes::route_inventory(&graph);
     // Dev/test convenience tenant (host's stable dev uuid); prod requires an
@@ -455,17 +485,6 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .join("; ");
         return Err(format!("platform graph rejected by boot gates: {report}").into());
     }
-
-    // Wave 2 views: engine built from the `[views]` section. Roots and the
-    // compiled cache resolve against the workspace root, so the same templates
-    // are served regardless of the cwd the host was started from. The
-    // `@asset("...")` URL helper is registered here (once per engine) so
-    // templates see production behaviour in every harness too.
-    let assets = load_asset_manifest(&root.join("public"));
-    let views_engine =
-        keel_views::ViewsEngine::new(views_config(cfg.views(), &root, env.as_str()));
-    register_asset_directive(&views_engine, assets.clone());
-    let views = Some(Arc::new(views_engine));
 
     // Wave 2 static assets (19-PARITY "Static assets"): `public/` answers
     // real files through the router fallback installed below. The directory
@@ -540,6 +559,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         body_limit: 1024 * 1024,
         storage,
         disks,
+        notifications: notification_store,
         route_inventory,
         middleware_catalog,
         route_bindings,
@@ -629,7 +649,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .merge(graph_routes::graph_router(state.clone(), &graph))
         .merge(auth_routes::router(state.clone()))
         .merge(upload_routes::router(state.clone()))
-        .merge(telemetry_routes::router(state.clone()));
+        .merge(telemetry_routes::router(state.clone()))
+        .merge(notification_routes::router(state.clone()));
     let router = if realtime_enabled {
         let hub = host
             .registry()
@@ -961,6 +982,11 @@ pub fn build_app_state(
         .modules
         .iter()
         .flat_map(|m| m.capabilities.keys().map(|c| format!("{}.{}", m.name(), c)))
+        .chain(
+            notification_routes::FRAMEWORK_CAPABILITIES
+                .iter()
+                .map(|c| (*c).to_string()),
+        )
         .collect();
 
     let tokens = Arc::new(keel_tokens::TokenService::new(Arc::new(
@@ -1056,6 +1082,11 @@ pub fn build_app_state(
             .expect("harness message catalog loads"),
     );
 
+    // Wave 6 P5: fresh in-memory inbox store per harness (the D-52 backend
+    // only — tests seed rows directly or through the hub dispatch).
+    let notification_store: Arc<dyn keel_notifications::NotificationStore> =
+        Arc::new(keel_notifications::InMemoryNotificationStore::new());
+
     let state = routes::AppState {
         bus: Arc::new(bus),
         health: host::SystemHealth::new(false, "ok"),
@@ -1077,6 +1108,7 @@ pub fn build_app_state(
         body_limit: 1024 * 1024,
         storage,
         disks: Arc::new(disks),
+        notifications: notification_store,
         route_inventory: graph_routes::route_inventory(&graph),
         middleware_catalog: keel_http::MiddlewareCatalog::builtin(),
         route_bindings,
@@ -1191,6 +1223,159 @@ mod wave6_mail_tests {
             keel_notifications::DEFAULT_MAX_ATTACHMENT_BYTES as usize,
             keel_http::UploadLimits::default().max_file_bytes
         );
+    }
+
+    /// Wave 6 P5: notification HTML bodies render through the REAL Wave 2
+    /// views engine — a fixture `views/notifications/<type>.html` receives
+    /// the `to_database()` payload as context, and a template that cannot
+    /// render fails the dispatch (fail-closed once a view port is wired).
+    #[tokio::test]
+    async fn notification_html_mail_renders_through_the_views_engine() {
+        use keel_notifications::{
+            Channel, Mailable, MailPort, NotificationContext, NotificationDef, NotifyHub,
+            ResolvedMailAttachment,
+        };
+
+        let root = std::env::temp_dir().join(format!("keel-notif-views-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(root.join("notifications/appointment")).expect("view dirs");
+        std::fs::write(
+            root.join("notifications/appointment/booked.html"),
+            "<p>Booked for {{ patient }} ({{ slots }} slot(s))</p>",
+        )
+        .expect("fixture template");
+        let engine = std::sync::Arc::new(keel_views::ViewsEngine::new(keel_views::ViewsConfig {
+            paths: vec![root.clone()],
+            cache_dir: None,
+            env: "test".into(),
+        }));
+        let mut hub = NotifyHub::empty().with_view_renderer(std::sync::Arc::new(
+            crate::host::ViewsNotificationRenderer(engine),
+        ));
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        hub.mail = Some(Box::new(LogMail {
+            sent: log.clone(),
+        }));
+        let ctx = NotificationContext {
+            principal_id: keel_foundation::PrincipalId::new(),
+            tenant_id: None,
+            locale: None,
+        };
+
+        struct Booked {
+            patient: &'static str,
+            slots: u32,
+        }
+        impl NotificationDef for Booked {
+            fn type_key(&self) -> &str {
+                "appointment.booked"
+            }
+            fn to_mail(&self) -> Mailable {
+                Mailable {
+                    to: vec![],
+                    cc: vec![],
+                    bcc: vec![],
+                    from: None,
+                    reply_to: None,
+                    subject: format!("Booked for {}", self.patient),
+                    text: Some("text body".into()),
+                    html: None,
+                    headers: vec![],
+                    attachments: vec![],
+                }
+            }
+            fn to_sms(&self) -> String {
+                unreachable!("mail path only")
+            }
+            fn to_push(&self) -> serde_json::Value {
+                unreachable!("mail path only")
+            }
+            fn to_database(&self) -> serde_json::Value {
+                serde_json::json!({ "patient": self.patient, "slots": self.slots })
+            }
+        }
+
+        hub.dispatch_notification(
+            &Booked {
+                patient: "Ada",
+                slots: 2,
+            },
+            Channel::Email,
+            Some("ada@example.com"),
+            &ctx,
+        )
+        .await
+        .expect("dispatches through the real engine");
+        {
+            let sent = log.lock().unwrap();
+            assert_eq!(sent.len(), 1);
+            assert_eq!(
+                sent[0].html.as_deref(),
+                Some("<p>Booked for Ada (2 slot(s))</p>"),
+                "fixture template renders the database payload as context"
+            );
+            assert_eq!(sent[0].to, vec!["ada@example.com".to_string()]);
+        }
+
+        // A declared template with no file on disk refuses the dispatch —
+        // no silent text-only fallback once the view port is wired.
+        struct Ghost;
+        impl NotificationDef for Ghost {
+            fn type_key(&self) -> &str {
+                "ghost.notice"
+            }
+            fn to_mail(&self) -> Mailable {
+                Mailable {
+                    to: vec![],
+                    cc: vec![],
+                    bcc: vec![],
+                    from: None,
+                    reply_to: None,
+                    subject: "ghost".into(),
+                    text: Some("text body".into()),
+                    html: None,
+                    headers: vec![],
+                    attachments: vec![],
+                }
+            }
+            fn to_sms(&self) -> String {
+                unreachable!("mail path only")
+            }
+            fn to_push(&self) -> serde_json::Value {
+                unreachable!("mail path only")
+            }
+            fn to_database(&self) -> serde_json::Value {
+                serde_json::json!({})
+            }
+        }
+        let err = hub
+            .dispatch_notification(&Ghost, Channel::Email, Some("ops@example.com"), &ctx)
+            .await
+            .expect_err("missing template refuses");
+        assert_eq!(err.code, keel_foundation::codes::INTERNAL);
+        assert_eq!(log.lock().unwrap().len(), 1, "nothing was sent");
+
+        struct LogMail {
+            sent: std::sync::Arc<std::sync::Mutex<Vec<Mailable>>>,
+        }
+        impl MailPort for LogMail {
+            fn send(
+                &self,
+                _msg: &keel_notifications::NotifyMessage,
+                _subject: &str,
+            ) -> Result<(), keel_foundation::AppError> {
+                Ok(())
+            }
+            fn send_mailable(
+                &self,
+                mail: &Mailable,
+                _attachments: &[ResolvedMailAttachment],
+            ) -> Result<(), keel_foundation::AppError> {
+                mail.validate()?;
+                self.sent.lock().unwrap().push(mail.clone());
+                Ok(())
+            }
+        }
+        std::fs::remove_dir_all(&root).ok();
     }
 }
 

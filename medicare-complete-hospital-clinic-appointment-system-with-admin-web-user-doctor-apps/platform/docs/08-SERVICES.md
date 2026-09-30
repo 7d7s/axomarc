@@ -71,6 +71,22 @@ of being dropped), and `enqueue_mailable` validates the `Mailable` and builds th
 through the registered def. The durable policy owns the rest: retry with backoff, then
 dead-letter.
 
+Notifications v2 (P5) turns the hub into a typed dispatch surface: modules implement
+`NotificationDef` (`type_key` + `to_mail() -> Mailable` / `to_sms()` / `to_push()` /
+`to_database()` / `template()`, default view `notifications.<type_key>` — dots map to directories)
+and `NotifyHub::dispatch_notification` renders the selected channel — mail (recipient filled from
+the delivery target; HTML body rendered through the Wave 2 views engine when the
+`NotificationViewRenderer` port is wired, a render failure fails closed and an absent port keeps
+the text body), SMS (`to_sms()` passed through the catalog path with locale fallback), push (D-17
+nudge-not-payload: `signal` + optional `delta_cursor` only, never free-form data) — and writes the
+database channel through the new `NotificationStore` port (in-memory reference + a pg
+implementation behind the same degradation posture, shared as ONE instance between the hub and the
+HTTP routes). The inbox edges (`GET /api/v1/notifications`, `POST /api/v1/notifications/read`)
+live in `keel-api/src/notification_routes.rs`; the mark is gated by the `notifications.mark_read`
+framework capability chained into the login-time grant set. Honest gaps: notification mail
+attachments are refused on this dispatch path (the P1 `not_implemented` seam) and producer
+dispatch (appointment module) lands in P6.
+
 ## Localization (i18n)
 
 `[i18n] { default = "en", paths = ["lang"] }` (serde-default, no new env vars) selects the

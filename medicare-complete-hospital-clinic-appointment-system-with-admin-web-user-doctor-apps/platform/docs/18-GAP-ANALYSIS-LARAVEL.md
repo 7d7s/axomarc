@@ -205,7 +205,7 @@ The matrix below is deliberately granular. A subsystem cannot be called `MATCHED
 | Mail | EQUIVALENT | mail adapter supplied in audit facts | Adapter surface exists; HTML/template depth remains incomplete | P2 |
 | SMS | EQUIVALENT | SMS adapter supplied in audit facts | Adapter surface exists | P3 |
 | Push notifications | EQUIVALENT | push adapter supplied in audit facts | Adapter surface exists | P3 |
-| Notifications | EQUIVALENT | platform/crates/services/notifications/src/lib.rs:42 | NotifyHub | P2 |
+| Notifications | EQUIVALENT | platform/crates/services/notifications/src/lib.rs (NotifyHub, NotificationDef, NotificationStore port); platform/crates/data/postgres/src/notificationstore.rs; platform/runtime/keel-api/src/notification_routes.rs | Typed per-channel renderers (mail/sms/push/database), `notifications` table + in-memory/pg stores behind one port, inbox `GET /api/v1/notifications` + capability-gated `POST /read` (docs/04; tests notifications_endpoints_require_authentication / feed_lists_newest_first_with_unread_meta / read_marks_rows_and_gates_the_capability) (Wave 6 P5); on-demand + queued producer dispatch ride P6 | P2 |
 | Search | PARTIAL | platform/crates/services/search/src/lib.rs | In-memory search only | P2 |
 | pgvector | MISSING | platform/crates/services/search/src/lib.rs | No pgvector adapter | P2 |
 | HTTP client | UNKNOWN | no locked evidence anchor supplied | Depth not proven in audit facts | P2 |
@@ -314,8 +314,8 @@ The matrix below is deliberately granular. A subsystem cannot be called `MATCHED
 | Component attributes | Laravel 13 | EQUIVALENT | platform/crates/web/views/src/parser.rs (Wave 2 directive ledger) | `@props` plus attribute helpers `@class`/`@style`/`@checked`/... |
 | View caching | Laravel 13 | EQUIVALENT | platform/crates/web/views/src/engine.rs (precompile_all/clear_cache); platform/tools/keel-console/src/main.rs (view_cache_at) | Compiled-AST cache under `[views].cache_dir`, invalidated by mtime + content hash; `keel view:cache`/`view:clear` (Wave 2) |
 | Compiled templates | Laravel 13 | UNKNOWN | S9 | Engine not selected |
-| Mail views | Laravel 13 | UNKNOWN | S9 | HTML mail template layer not established |
-| Notification views | Laravel 13 | UNKNOWN | S9 | Template engine pending |
+| Mail views | Laravel 13 | PARTIAL | platform/runtime/keel-api/src/host.rs (ViewsNotificationRenderer); `Mailable.html` | Notification mail bodies render from view templates (Wave 6 P5); generic mailables stay caller-supplied (P1 posture) |
+| Notification views | Laravel 13 | EQUIVALENT | platform/crates/web/views/src/engine.rs; platform/runtime/keel-api/src/host.rs (ViewsNotificationRenderer) | `views/notifications/<type>.html` renders the mail HTML body with the database payload as context; render failure fails closed, no view port = text-only (Wave 6 P5; test notification_html_mail_renders_through_the_views_engine). Plain views — no markdown layout kit (documented) |
 | Error views | Laravel 13 | UNKNOWN | S9 | Template engine pending |
 | Pagination views | Laravel 13 | UNKNOWN | S9 | Pagination is API-first currently |
 
@@ -1035,8 +1035,8 @@ The CLI is one of the most important Laravel parity surfaces because it compress
 | make:mail | make mail | PARTIAL | MAIL_TEMPLATE emits a standalone Mailable definition (test asserts it documents its Wave 6 landing); the Mailable send/transport surface is Wave 6 | P2 |
 | make:middleware | make middleware | PARTIAL | MIDDLEWARE_TEMPLATE emits a real axum `from_fn` layer (`pub async fn __NAME___middleware(request, next)` — test `wave5_templates_reference_real_platform_surface`); the platform admission chain stays framework-owned (middleware.toml aliases/groups, GRAPH-MW-UNKNOWN) and module-local layering is the only consumption path (Wave 5) | P2 |
 | make:model | make model | PARTIAL | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
-| make:notification | make notification | PARTIAL | NOTIFICATION_TEMPLATE emits a NotificationDef with per-channel renderers (test asserts its Wave 6 documentation); the notification dispatch surface is Wave 6 | P2 |
-| make:notifications-table | make notifications-table | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:notification | make notification | MATCHED | NOTIFICATION_TEMPLATE emits `impl NotificationDef` — type_key + mail/sms/push/database renderers + `template()` seam, compiled against the real keel-notifications trait (pinned by `wave5_templates_reference_real_platform_surface`); dispatch surface landed Wave 6 P5 (hub `dispatch_notification` + inbox endpoints), producer registration rides P6 | P2 |
+| make:notifications-table | make notifications-table | PARTIAL | platform/database/migrations/20261001000001_notifications.sql (Wave 6 P5) — the table ships as a framework migration (id, principal_id, tenant_id, type, data, read_at, created_at; pg round trip `pg_notification_store_roundtrip`); no generator kind — the table is framework-owned, apps never regenerate it | P2 |
 | make:observer | make observer | MATCHED | OBSERVER_TEMPLATE emits `impl ModelObserver for __TYPE__Observer` against the real `keel_models::ModelObserver` trait (tests wave5_adds_twelve_generator_kinds + wave5_templates_reference_real_platform_surface) (Wave 5) | P2 |
 | make:policy | make policy | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
 | make:provider | make provider | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
@@ -1660,7 +1660,7 @@ section, this section governs.
 | 6 | ORM is metadata, not a CRUD runtime | S8 C4: ModelRuntime (mass assignment, casts, scopes, accessors/mutators, events, eager loading) + Insert/Update/Delete/Upsert builders | `crates/data/models`, `crates/execution/query`, pg matrix |
 | 7 | Multipart uploads absent | S7 C5: bounded multipart pipeline (8 parts / 64 KB fields / 8 MB files), MIME hook, filename sanitization into StoragePort | `crates/web/http/src/upload.rs`; upload + part-bomb attack tests |
 | 8 | keel serve absent | S7 B-08: one-command local loop (api + optional worker) | `tools/keel-console` serve; 12-CLI.md |
-| 9 | No PostgreSQL integration matrix | S8 B-19 + v0.9: pg-tests feature; 19 tests green (15 against live PostgreSQL 16: bridge, sessions, tokens, principals, model store CRUD/tenant/upsert/soft-delete/eager-load, pgvector keyword/facet/vector/hybrid; 4 codec/SQL-shape unit tests) | `cargo test --features pg-tests`; v0.9 milestone read |
+| 9 | No PostgreSQL integration matrix | S8 B-19 + v0.9: pg-tests feature; 29 tests green under the feature — a live pass against PostgreSQL 16 covers bridge, sessions, tokens, principals, model store CRUD/tenant/upsert/soft-delete/eager-load, migration pairs, the Wave 6 P5 notification inbox round trip and pgvector keyword/facet/vector/hybrid (codec/SQL-shape unit slices alongside; every DB slice skips gracefully without `DATABASE_URL`) | `cargo test --features pg-tests`; v0.9 milestone read |
 | 10 | Web/view strategy undecided | S9 B-15: SPA-first frozen (named routes + signed URLs + redirects + flash + OpenAPI client + starter kit); SSR deliberately deferred to v2.0 | `templates/starter-template`; parity policy below |
 
 ### 25.2 Production-readiness gate (section 23): PASS
@@ -1675,7 +1675,7 @@ section, this section governs.
 | Sessions durable across restart and instances | GREEN | PgSessionStore + restart durability proof (v0.9 pg pass); KEEL_SESSION_SECRET stability documented |
 | Multipart uploads implemented and hardened | GREEN | limits/traversal/part-bomb/unauthenticated/non-multipart tests |
 | Real PostgreSQL stores for domain modules | GREEN | PgModelStore; appointments persists real rows |
-| PostgreSQL integration tests present and green | GREEN | pg-tests matrix: 19 tests (15 live-Pg incl. tenant isolation) |
+| PostgreSQL integration tests present and green | GREEN | pg-tests matrix: 29 tests (keel-postgres 20 + pgvector 9), live-green incl. tenant isolation and the Wave 6 P5 notification round trip |
 | ORM CRUD implemented and tested | GREEN | pg_modelstore CRUD/RETURNING/upsert tests |
 | Relation loading implemented and tested | GREEN | BelongsTo eager-load test; N+1 detector as guard |
 | Per-principal/tenant rate limiting | GREEN | bearer-principal keying (S7 B-09); login throttle test |

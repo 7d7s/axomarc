@@ -21,7 +21,8 @@ fn app() -> App {
     let router = keel_api::routes::router(state.clone())
         .merge(keel_api::graph_routes::graph_router(state.clone(), &graph))
         .merge(keel_api::auth_routes::router(state.clone()))
-        .merge(keel_api::upload_routes::router(state.clone()));
+        .merge(keel_api::upload_routes::router(state.clone()))
+        .merge(keel_api::notification_routes::router(state.clone()));
     let router = state
         .sessions
         .as_ref()
@@ -2512,4 +2513,310 @@ async fn password_confirm_stamps_the_session_and_fails_closed() {
     .await;
     assert_eq!(me.status, StatusCode::OK, "{}", me.body);
     assert_eq!(me.data()["remember"], false);
+}
+
+// ------------------------------------------------------------- Wave 6 P5
+
+/// Register, then resolve the caller's principal id through `/auth/me` — the
+/// same identity the feed scopes to.
+async fn inbox_owner(app: &App, email: &str) -> (String, keel_foundation::PrincipalId) {
+    let cookie = register(app, email)
+        .await
+        .session_cookie()
+        .expect("session cookie issued");
+    let me = send(
+        app,
+        json_req(Method::GET, "/auth/me", Value::Null, Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(me.status, StatusCode::OK, "{}", me.body);
+    let raw = me.data()["principal"]["principal_id"]
+        .as_str()
+        .expect("principal id")
+        .to_string();
+    let principal =
+        keel_foundation::PrincipalId::from_uuid(uuid::Uuid::parse_str(&raw).expect("uuid"));
+    (cookie, principal)
+}
+
+/// Seed rows through the very port the hub dispatches on; the first `read`
+/// arrive already marked so the feed counts exercise both states.
+async fn seed_notifications(
+    app: &App,
+    principal: keel_foundation::PrincipalId,
+    count: usize,
+    read: usize,
+) -> Vec<String> {
+    let mut ids = Vec::with_capacity(count);
+    for i in 0..count {
+        let id = uuid::Uuid::now_v7();
+        ids.push(id.to_string());
+        app.state
+            .notifications
+            .insert(keel_notifications::NotificationRow {
+                id,
+                principal_id: principal,
+                tenant_id: app.state.default_tenant_id,
+                kind: "appointment.booked".into(),
+                data: serde_json::json!({ "n": i }),
+                read_at: (i < read).then(time::OffsetDateTime::now_utc),
+                created_at: time::OffsetDateTime::now_utc(),
+            })
+            .await
+            .expect("seed row");
+    }
+    ids
+}
+
+#[tokio::test]
+async fn notifications_endpoints_require_authentication() {
+    let app = app();
+    let list = send(
+        &app,
+        json_req(Method::GET, "/api/v1/notifications", Value::Null, None, None),
+    )
+    .await;
+    assert_eq!(list.status, StatusCode::UNAUTHORIZED, "{}", list.body);
+    assert_eq!(list.error_code(), keel_foundation::codes::UNAUTHENTICATED);
+
+    let read = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/api/v1/notifications/read",
+            serde_json::json!({ "ids": ["01900000-0000-7000-8000-000000000000"] }),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(read.status, StatusCode::UNAUTHORIZED, "{}", read.body);
+    assert_eq!(read.error_code(), keel_foundation::codes::UNAUTHENTICATED);
+}
+
+#[tokio::test]
+async fn notifications_feed_lists_newest_first_with_unread_meta() {
+    let app = app();
+    let email = format!("inbox-{}@clinic.test", uuid::Uuid::now_v7());
+    let (cookie, principal) = inbox_owner(&app, &email).await;
+    seed_notifications(&app, principal, 3, 1).await;
+
+    let feed = send(
+        &app,
+        json_req(Method::GET, "/api/v1/notifications", Value::Null, Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(feed.status, StatusCode::OK, "{}", feed.body);
+    let data = feed.data();
+    let rows = data.as_array().expect("row array");
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["type"], "appointment.booked");
+    assert_eq!(rows[0]["data"]["n"], 2, "newest first");
+    assert_eq!(rows[1]["data"]["n"], 1);
+    assert_eq!(rows[2]["data"]["n"], 0);
+    assert!(rows[2]["read_at"].as_str().is_some(), "the pre-read row carries read_at");
+    assert!(rows[0]["read_at"].is_null());
+    assert!(rows[0]["id"].as_str().is_some());
+    assert!(rows[0]["created_at"].as_str().is_some());
+    // Self-scoped wire: no principal/tenant columns ever leave the edge.
+    assert!(rows[0].get("principal_id").is_none());
+    assert!(rows[0].get("tenant_id").is_none());
+
+    assert_eq!(feed.body["meta"]["page"], 1);
+    assert_eq!(feed.body["meta"]["per_page"], 25);
+    assert_eq!(feed.body["meta"]["total"], 3);
+    assert_eq!(feed.body["meta"]["unread"], 2);
+    assert_eq!(feed.body["meta"]["has_more"], false);
+
+    // A tight page proves has_more flips on (total outruns the window) …
+    let tight = send(
+        &app,
+        json_req(
+            Method::GET,
+            "/api/v1/notifications?per_page=2",
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(tight.status, StatusCode::OK, "{}", tight.body);
+    assert_eq!(tight.data().as_array().expect("rows").len(), 2);
+    assert_eq!(tight.body["meta"]["has_more"], true);
+    assert_eq!(tight.body["meta"]["total"], 3);
+
+    // … and page 2 lands on exactly the oldest row with counts intact.
+    let page2 = send(
+        &app,
+        json_req(
+            Method::GET,
+            "/api/v1/notifications?page=2&per_page=2",
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(page2.status, StatusCode::OK, "{}", page2.body);
+    let data = page2.data();
+    let rows = data.as_array().expect("row array");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["data"]["n"], 0);
+    assert_eq!(page2.body["meta"]["page"], 2);
+    assert_eq!(page2.body["meta"]["total"], 3);
+    assert_eq!(page2.body["meta"]["has_more"], false);
+
+    // The page query validates like every other list edge (422 envelope).
+    let bad = send(
+        &app,
+        json_req(
+            Method::GET,
+            "/api/v1/notifications?page=0",
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(bad.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", bad.body);
+    assert_eq!(bad.error_code(), keel_foundation::codes::VALIDATION);
+
+    // Another principal's rows exist — and never leak into this feed.
+    let other_email = format!("other-inbox-{}@clinic.test", uuid::Uuid::now_v7());
+    let (_other_cookie, other) = inbox_owner(&app, &other_email).await;
+    seed_notifications(&app, other, 2, 0).await;
+    let mine = send(
+        &app,
+        json_req(Method::GET, "/api/v1/notifications", Value::Null, Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(
+        mine.body["meta"]["total"], 3,
+        "someone else's rows never count"
+    );
+}
+
+#[tokio::test]
+async fn notifications_read_marks_rows_and_gates_the_capability() {
+    let app = app();
+    let email = format!("readmark-{}@clinic.test", uuid::Uuid::now_v7());
+    let (cookie, principal) = inbox_owner(&app, &email).await;
+    let ids = seed_notifications(&app, principal, 2, 0).await;
+
+    // Foreign ids report 0 changed — scoping, not a 403 leak.
+    let foreign = keel_foundation::PrincipalId::new();
+    let foreign_ids = seed_notifications(&app, foreign, 1, 0).await;
+    let res = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/api/v1/notifications/read",
+            serde_json::json!({ "ids": [foreign_ids[0].clone()] }),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.data()["updated"], 0, "another principal's rows never mark");
+
+    // Happy path: mark one → updated 1, unread drops 2 → 1.
+    let res = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/api/v1/notifications/read",
+            serde_json::json!({ "ids": [ids[0].clone()] }),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.data()["updated"], 1);
+    let feed = send(
+        &app,
+        json_req(Method::GET, "/api/v1/notifications", Value::Null, Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(feed.body["meta"]["unread"], 1);
+
+    // Re-marking the same id reports 0 (idempotent).
+    let res = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/api/v1/notifications/read",
+            serde_json::json!({ "ids": [ids[0].clone()] }),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(res.data()["updated"], 0, "already-read rows never recount");
+
+    // Body contract: empty, malformed and missing ids are 422 envelopes.
+    for body in [
+        serde_json::json!({ "ids": [] }),
+        serde_json::json!({ "ids": ["not-a-uuid"] }),
+        serde_json::json!({}),
+    ] {
+        let res = send(
+            &app,
+            json_req(
+                Method::POST,
+                "/api/v1/notifications/read",
+                body.clone(),
+                Some(&cookie),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(
+            res.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            res.body
+        );
+        assert_eq!(res.error_code(), keel_foundation::codes::VALIDATION);
+    }
+
+    // Capability gate: a snapshot WITHOUT notifications.mark_read refuses
+    // the mark (403) — the check exists and stays revocable — and the row
+    // it would have marked stays unread.
+    app.state
+        .policy
+        .install_snapshot(keel_policy::AccessSnapshot {
+            principal_id: principal,
+            tenant_id: app.state.default_tenant_id.expect("dev tenant"),
+            membership_active: true,
+            capabilities: ["appointments.list".to_string()].into_iter().collect(),
+            scope_paths: ["/".to_string()].into_iter().collect(),
+            authorization_revision: app.state.policy.revision(),
+            feature_revision: keel_foundation::FeatureRevision(1),
+            module_revision: keel_foundation::ModuleRevision(1),
+            computed_at: time::OffsetDateTime::now_utc(),
+        });
+    let res = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/api/v1/notifications/read",
+            serde_json::json!({ "ids": [ids[1].clone()] }),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::FORBIDDEN, "{}", res.body);
+    assert_eq!(res.error_code(), keel_foundation::codes::DENIED);
+    let feed = send(
+        &app,
+        json_req(Method::GET, "/api/v1/notifications", Value::Null, Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(
+        feed.body["meta"]["unread"], 1,
+        "the denied mark never landed"
+    );
 }

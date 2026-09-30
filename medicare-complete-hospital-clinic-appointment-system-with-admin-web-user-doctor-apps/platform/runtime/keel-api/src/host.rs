@@ -158,6 +158,25 @@ pub struct PlatformProvider {
     /// resolves notification strings through the same catalog as views
     /// and validation.
     pub messages: Arc<keel_foundation::MessageCatalog>,
+    /// Wave 6 P5: the boot's database-channel store — the hub writes rows
+    /// through it (the very instance the HTTP feed reads).
+    pub notifications: Arc<dyn keel_notifications::NotificationStore>,
+    /// Wave 6 P5: views engine for notification HTML mail bodies
+    /// (`views/notifications/...`); `None` keeps mail text-only.
+    pub views: Option<Arc<keel_views::ViewsEngine>>,
+}
+
+/// Wave 6 P5: the Wave 2 views engine behind the notification HTML port —
+/// the service layer cannot depend on the web layer, so the runtime
+/// adapts and maps render failures onto the error channel.
+pub(crate) struct ViewsNotificationRenderer(pub(crate) Arc<keel_views::ViewsEngine>);
+
+impl keel_notifications::NotificationViewRenderer for ViewsNotificationRenderer {
+    fn render(&self, template: &str, context: Value) -> Result<String, AppError> {
+        self.0
+            .render(template, context)
+            .map_err(|e| AppError::internal(format!("notification view render failed: {e}")))
+    }
 }
 
 impl Provider for PlatformProvider {
@@ -182,12 +201,12 @@ impl Provider for PlatformProvider {
             Arc::new(keel_caching::CacheService::new(port.clone())),
         )?;
         r.insert("cache.port", Arc::new(CachePortRef(port)))?;
-        r.insert(
-            "notify.hub",
-            Arc::new(keel_notifications::NotifyHub::with_catalog(
-                self.messages.clone(),
-            )),
-        )
+        let mut hub = keel_notifications::NotifyHub::with_catalog(self.messages.clone())
+            .with_store(self.notifications.clone());
+        if let Some(views) = &self.views {
+            hub = hub.with_view_renderer(Arc::new(ViewsNotificationRenderer(views.clone())));
+        }
+        r.insert("notify.hub", Arc::new(hub))
     }
 }
 

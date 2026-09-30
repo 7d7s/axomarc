@@ -12,6 +12,7 @@
 pub mod bridge;
 pub mod jobstore;
 pub mod modelstore;
+pub mod notificationstore;
 pub mod outboxstore;
 pub mod pairs;
 pub mod principalstore;
@@ -24,6 +25,7 @@ pub mod txport;
 
 pub use jobstore::PgJobStore;
 pub use modelstore::PgModelStore;
+pub use notificationstore::PgNotificationStore;
 pub use outboxstore::PgOutboxStore;
 pub use principalstore::{PgCredentialStore, PgPrincipalStore};
 pub use seeders::{DevTenantSeeder, SeedReport, Seeder, SeederRegistry};

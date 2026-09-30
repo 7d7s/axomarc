@@ -48,6 +48,13 @@ singles-before-pairs run order are documented in `database/migrations-pairs/READ
 pg-gated round trip (`pair_migrations_apply_rollback_and_reset_with_batches` in
 `crates/data/postgres/tests/pg_pairs.rs`) writes its own pair fixtures.
 
+**Notifications inbox (Wave 6 P5).** `20261001000001_notifications.sql` creates the `notifications`
+table (`id uuid PK, principal_id FK → principals, tenant_id FK → tenants NULL, type, data jsonb,
+read_at timestamptz NULL, created_at timestamptz`) with `principal_id + created_at DESC` for the
+feed and a partial `(principal_id) WHERE read_at IS NULL` index for the unread count; the same
+shape is served by `InMemoryNotificationStore` under degraded boot through the `NotificationStore`
+port.
+
 ## Roles
 
 `roles.sql` enforces two database identities: the migration **owner** (DDL) and the **runtime**
@@ -113,7 +120,8 @@ consume it at boot — a module cannot start without the port.
 ## PostgreSQL integration matrix
 
 `cargo test -p keel-postgres --features pg-tests` runs the live-DB matrix (skipped gracefully when
-`DATABASE_URL` is unset): principal/credential/token/session stores plus the model store suite —
+`DATABASE_URL` is unset): principal/credential/token/session/notification stores plus the model
+store suite —
 CRUD with RETURNING, tenant isolation end-to-end, upsert merge on conflict, soft-delete veil and
 trash, BelongsTo eager loading, and the appointments partial-unique index rejecting a second
 BOOKED row for the same (tenant, patient, slot) while allowing rebooking after cancel.
