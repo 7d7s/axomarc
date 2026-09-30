@@ -300,6 +300,14 @@ enum Cmd {
     /// Database inventory: tables + row counts.
     #[command(name = "db:inspect")]
     DbInspect,
+    /// Wave 5: server metadata (driver, server version, database) plus the
+    /// db:inspect table inventory with row counts.
+    #[command(name = "db:show")]
+    DbShow,
+    /// Wave 5: write a normalized DDL snapshot of the migrated schema to
+    /// database/schema.sql (review artifact — never executed by migrate).
+    #[command(name = "db:schema:dump")]
+    DbSchemaDump,
     /// Inspect recorded executions: what = execution|delta|authorization|n-plus-one.
     Inspect {
         /// execution | delta | authorization | n-plus-one.
@@ -494,6 +502,8 @@ fn main() -> ExitCode {
         Cmd::ScheduleList => schedule_info("schedule:list"),
         Cmd::ScheduleRun => schedule_info("schedule:run"),
         Cmd::DbInspect => rt(db_inspect()),
+        Cmd::DbShow => rt(db_show()),
+        Cmd::DbSchemaDump => rt(db_schema_dump()),
         Cmd::New {
             name,
             plane,
@@ -2134,24 +2144,279 @@ fn schedule_info(command: &str) -> anyhow::Result<ExitCode> {
 
 // -------------------------------------------------------------- db inspect
 
-async fn db_inspect() -> anyhow::Result<ExitCode> {
-    let root = workspace_root()?;
-    let pool = db_pool(&root).await?;
+/// Public tables with their row counts (shared by db:inspect and db:show).
+async fn table_row_counts(pool: &PgPool) -> anyhow::Result<Vec<(String, i64)>> {
     let tables: Vec<String> = sqlx::query_scalar(
         "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public' ORDER BY tablename",
     )
-    .fetch_all(&pool)
+    .fetch_all(pool)
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))?;
-    println!("public schema: {} table(s)", tables.len());
-    for table in &tables {
+    let mut out = Vec::with_capacity(tables.len());
+    for table in tables {
         let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM \"{table}\""))
-            .fetch_one(&pool)
+            .fetch_one(pool)
             .await
             .map_err(|e| anyhow::anyhow!("count {table}: {e}"))?;
+        out.push((table, count));
+    }
+    Ok(out)
+}
+
+async fn db_inspect() -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    let pool = db_pool(&root).await?;
+    let counts = table_row_counts(&pool).await?;
+    println!("public schema: {} table(s)", counts.len());
+    for (table, count) in &counts {
         println!("  {:<24} {count}", table);
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Server + schema facts behind `db:show`, kept as data so the rendering is
+/// unit-testable without a database.
+struct DbSummary {
+    driver: String,
+    server: String,
+    database: String,
+    tables: Vec<(String, i64)>,
+}
+
+/// Wave 5: `db:show` — driver, server version, database name, and the
+/// table inventory with row counts (db:inspect extended with server
+/// metadata).
+async fn db_show() -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    let cfg = load_config(&root)?;
+    let pool = db_pool(&root).await?;
+    let driver = cfg
+        .database
+        .as_ref()
+        .and_then(|db| db.url.split("://").next())
+        .filter(|scheme| !scheme.is_empty())
+        .unwrap_or("postgresql")
+        .to_string();
+    let server: String = sqlx::query_scalar("SELECT version()")
+        .fetch_one(&pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("server version: {e}"))?;
+    let database: String = sqlx::query_scalar("SELECT current_database()")
+        .fetch_one(&pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("current database: {e}"))?;
+    let summary = DbSummary {
+        driver,
+        server,
+        database,
+        tables: table_row_counts(&pool).await?,
+    };
+    print!("{}", render_db_show(&summary));
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Render `db:show` output (pure — unit-tested without a database).
+fn render_db_show(summary: &DbSummary) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("driver:   {}\n", summary.driver));
+    out.push_str(&format!("server:   {}\n", summary.server));
+    out.push_str(&format!("database: {}\n", summary.database));
+    out.push_str(&format!("tables:   {}\n", summary.tables.len()));
+    for (table, rows) in &summary.tables {
+        out.push_str(&format!("  {:<28} {rows:>10}\n", table));
+    }
+    out
+}
+
+// ---------------------------------------------------- schema dump (db:schema:dump)
+
+/// One column of the normalized snapshot (ordinal order upstream).
+struct SchemaColumn {
+    name: String,
+    data_type: String,
+    not_null: bool,
+    default_expr: Option<String>,
+}
+
+/// One table: columns in ordinal order, primary-key columns in key order,
+/// and full CREATE INDEX statements (PK indexes excluded — rendered inline).
+struct SchemaTable {
+    name: String,
+    columns: Vec<SchemaColumn>,
+    primary_key: Vec<String>,
+    indexes: Vec<String>,
+}
+
+/// Column catalog (public schema), sorted by table then ordinal.
+const SCHEMA_COLUMNS_SQL: &str = r#"SELECT c.relname AS table_name,
+       a.attnum AS ordinal,
+       a.attname AS column_name,
+       format_type(a.atttypid, a.atttypmod) AS data_type,
+       a.attnotnull AS not_null,
+       pg_get_expr(d.adbin, d.adrelid) AS default_expr
+  FROM pg_catalog.pg_class c
+  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+  JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid
+  LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+ WHERE n.nspname = 'public' AND c.relkind = 'r'
+   AND a.attnum > 0 AND NOT a.attisdropped
+ ORDER BY c.relname, a.attnum"#;
+
+/// Primary-key columns (public schema), sorted by table then key position.
+const SCHEMA_PRIMARY_KEYS_SQL: &str = r#"SELECT c.relname AS table_name, a.attname AS column_name
+  FROM pg_catalog.pg_index ix
+  JOIN pg_catalog.pg_class c ON c.oid = ix.indrelid
+  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+  JOIN LATERAL unnest(ix.indkey) WITH ORDINALITY AS k(attnum, ord) ON true
+  JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
+ WHERE n.nspname = 'public' AND ix.indisprimary AND k.attnum > 0
+ ORDER BY c.relname, k.ord"#;
+
+/// Secondary indexes (public schema; primary-key indexes excluded),
+/// sorted by table then index name.
+const SCHEMA_INDEXES_SQL: &str = r#"SELECT c.relname AS table_name, pg_get_indexdef(ix.indexrelid) AS index_def
+  FROM pg_catalog.pg_index ix
+  JOIN pg_catalog.pg_class c ON c.oid = ix.indrelid
+  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname = 'public' AND NOT ix.indisprimary
+ ORDER BY c.relname, ix.indexrelid::regclass::text"#;
+
+/// Fetch the migrated schema from the live catalog, assembled into
+/// [`SchemaTable`]s (tables without columns — impossible in practice — are
+/// skipped rather than rendered as empty DDL).
+async fn fetch_schema_tables(pool: &PgPool) -> anyhow::Result<Vec<SchemaTable>> {
+    #[derive(sqlx::FromRow)]
+    struct ColRow {
+        table_name: String,
+        column_name: String,
+        data_type: String,
+        not_null: bool,
+        default_expr: Option<String>,
+    }
+    #[derive(sqlx::FromRow)]
+    struct PkRow {
+        table_name: String,
+        column_name: String,
+    }
+    #[derive(sqlx::FromRow)]
+    struct IdxRow {
+        table_name: String,
+        index_def: String,
+    }
+
+    let mut tables: std::collections::BTreeMap<String, SchemaTable> =
+        std::collections::BTreeMap::new();
+    let cols: Vec<ColRow> = sqlx::query_as(SCHEMA_COLUMNS_SQL)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("schema columns: {e}"))?;
+    for row in cols {
+        tables
+            .entry(row.table_name.clone())
+            .or_insert_with(|| SchemaTable {
+                name: row.table_name.clone(),
+                columns: Vec::new(),
+                primary_key: Vec::new(),
+                indexes: Vec::new(),
+            })
+            .columns
+            .push(SchemaColumn {
+                name: row.column_name,
+                data_type: row.data_type,
+                not_null: row.not_null,
+                default_expr: row.default_expr,
+            });
+    }
+    let pks: Vec<PkRow> = sqlx::query_as(SCHEMA_PRIMARY_KEYS_SQL)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("schema primary keys: {e}"))?;
+    for row in pks {
+        if let Some(table) = tables.get_mut(&row.table_name) {
+            table.primary_key.push(row.column_name);
+        }
+    }
+    let idxs: Vec<IdxRow> = sqlx::query_as(SCHEMA_INDEXES_SQL)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("schema indexes: {e}"))?;
+    for row in idxs {
+        if let Some(table) = tables.get_mut(&row.table_name) {
+            table.indexes.push(row.index_def);
+        }
+    }
+    Ok(tables.into_values().collect())
+}
+
+/// Wave 5: `db:schema:dump` — normalized DDL snapshot of the migrated
+/// schema, written to database/schema.sql for review. The file is never
+/// executed by migrate (migrations stay the source of truth).
+async fn db_schema_dump() -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    let pool = db_pool(&root).await?;
+    let tables = fetch_schema_tables(&pool).await?;
+    let snapshot = render_schema_snapshot(&tables);
+    let path = root.join("database").join("schema.sql");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, &snapshot)
+        .map_err(|e| anyhow::anyhow!("schema snapshot write: {e}"))?;
+    let rel = path.strip_prefix(&root).unwrap_or(&path);
+    println!(
+        "  + {} ({} table(s), normalized DDL)",
+        rel.display(),
+        tables.len()
+    );
+    println!("database/schema.sql written — review artifact; migrate never executes it.");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Render the normalized snapshot (pure — unit-tested without a database):
+/// tables sorted by name, one statement per table, PK inline, secondary
+/// indexes after their table, deterministic formatting.
+fn render_schema_snapshot(tables: &[SchemaTable]) -> String {
+    let mut out = String::new();
+    out.push_str("-- keel normalized schema snapshot (generated by `keel db:schema:dump`)\n");
+    out.push_str("-- Review artifact: `keel migrate` never executes this file.\n");
+    if tables.is_empty() {
+        out.push_str("-- (no tables in schema public)\n");
+        return out;
+    }
+    let mut sorted: Vec<&SchemaTable> = tables.iter().collect();
+    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    for table in sorted {
+        out.push_str(&format!("CREATE TABLE \"{}\" (\n", table.name));
+        let mut lines: Vec<String> = table
+            .columns
+            .iter()
+            .map(|c| {
+                let mut line = format!("  \"{}\" {}", c.name, c.data_type);
+                if c.not_null {
+                    line.push_str(" NOT NULL");
+                }
+                if let Some(default) = &c.default_expr {
+                    line.push_str(&format!(" DEFAULT {default}"));
+                }
+                line
+            })
+            .collect();
+        if !table.primary_key.is_empty() {
+            let pk: Vec<String> = table
+                .primary_key
+                .iter()
+                .map(|c| format!("\"{c}\""))
+                .collect();
+            lines.push(format!("  PRIMARY KEY ({})", pk.join(", ")));
+        }
+        out.push_str(&lines.join(",\n"));
+        out.push_str("\n);\n");
+        for index in &table.indexes {
+            out.push_str(&format!("{index};\n"));
+        }
+        out.push('\n');
+    }
+    out
 }
 
 // -------------------------------------------------------- project and make
@@ -4158,6 +4423,130 @@ middleware = ["ghost"]
             !keel_postgres::MIGRATION_LOCK_TIMEOUT.is_zero(),
             "acquisition deadline is bounded (fail-closed, never a hang)"
         );
+    }
+
+    /// Wave 5 Phase 4: the db commands parse under their documented names.
+    #[test]
+    fn db_commands_parse_with_documented_names() {
+        assert!(
+            matches!(
+                Cli::try_parse_from(["keel", "db:show"]).expect("db:show parses").cmd,
+                Cmd::DbShow
+            ),
+            "db:show maps to DbShow"
+        );
+        assert!(
+            matches!(
+                Cli::try_parse_from(["keel", "db:schema:dump"])
+                    .expect("db:schema:dump parses")
+                    .cmd,
+                Cmd::DbSchemaDump
+            ),
+            "db:schema:dump maps to DbSchemaDump"
+        );
+    }
+
+    /// Wave 5 Phase 4: db:show renders driver, server, database and the
+    /// table inventory with row counts (pure render, no database needed).
+    #[test]
+    fn db_show_renders_server_metadata_and_inventory() {
+        let summary = DbSummary {
+            driver: "postgres".into(),
+            server: "PostgreSQL 16.4 on x86_64-pc-windows-msvc".into(),
+            database: "keel".into(),
+            tables: vec![("appointments".into(), 42), ("patients".into(), 7)],
+        };
+        let out = render_db_show(&summary);
+        assert!(out.contains("driver:   postgres"), "{out}");
+        assert!(out.contains("PostgreSQL 16.4"), "{out}");
+        assert!(out.contains("database: keel"), "{out}");
+        assert!(out.contains("tables:   2"), "{out}");
+        assert!(out.contains("appointments"), "{out}");
+        assert!(out.contains("42"), "row count rendered: {out}");
+        assert!(out.contains("patients"), "{out}");
+    }
+
+    /// Wave 5 Phase 4: the schema snapshot is normalized — tables sorted by
+    /// name, PK inline (including composite keys), NOT NULL/DEFAULT in a
+    /// fixed column order, secondary indexes terminated — and carries the
+    /// never-executed banner.
+    #[test]
+    fn schema_dump_renders_normalized_sorted_ddl() {
+        let tables = vec![
+            SchemaTable {
+                name: "zebras".into(),
+                columns: vec![
+                    SchemaColumn {
+                        name: "id".into(),
+                        data_type: "uuid".into(),
+                        not_null: true,
+                        default_expr: None,
+                    },
+                    SchemaColumn {
+                        name: "label".into(),
+                        data_type: "text".into(),
+                        not_null: false,
+                        default_expr: Some("'anon'::text".into()),
+                    },
+                ],
+                primary_key: vec!["id".into()],
+                indexes: vec![
+                    "CREATE UNIQUE INDEX zebras_label_idx ON public.zebras USING btree (label)"
+                        .into(),
+                ],
+            },
+            SchemaTable {
+                name: "apples".into(),
+                columns: vec![
+                    SchemaColumn {
+                        name: "id".into(),
+                        data_type: "integer".into(),
+                        not_null: true,
+                        default_expr: None,
+                    },
+                    SchemaColumn {
+                        name: "sku".into(),
+                        data_type: "text".into(),
+                        not_null: true,
+                        default_expr: None,
+                    },
+                ],
+                primary_key: vec!["id".into(), "sku".into()],
+                indexes: vec![],
+            },
+        ];
+        let out = render_schema_snapshot(&tables);
+        // Banner: generated artifact, never executed by migrate.
+        assert!(
+            out.contains("keel normalized schema snapshot")
+                && out.contains("never executes this file"),
+            "{out}"
+        );
+        // Tables sorted by name regardless of input order.
+        let apples = out.find("CREATE TABLE \"apples\"").expect("apples present");
+        let zebras = out.find("CREATE TABLE \"zebras\"").expect("zebras present");
+        assert!(apples < zebras, "sorted output:\n{out}");
+        // Column clauses: NOT NULL fixed before DEFAULT; nullable stays bare.
+        assert!(out.contains("\"id\" uuid NOT NULL"), "{out}");
+        assert!(out.contains("\"label\" text DEFAULT 'anon'::text"), "{out}");
+        // Composite PK rendered inline at the table level.
+        assert!(out.contains("PRIMARY KEY (\"id\", \"sku\")"), "{out}");
+        // Secondary index emitted as a terminated statement after its table.
+        assert!(
+            out.contains(
+                "CREATE UNIQUE INDEX zebras_label_idx ON public.zebras USING btree (label);"
+            ),
+            "{out}"
+        );
+    }
+
+    /// Wave 5 Phase 4: an empty schema still produces a valid, honest
+    /// snapshot (banner + marker) instead of a blank file.
+    #[test]
+    fn schema_dump_renders_an_empty_marker_for_an_empty_schema() {
+        let out = render_schema_snapshot(&[]);
+        assert!(out.contains("(no tables in schema public)"), "{out}");
+        assert!(out.contains("never executes this file"), "{out}");
     }
 
     /// Wave 4 Phase 5: temp workspace with a schema-clean config (secrets,
