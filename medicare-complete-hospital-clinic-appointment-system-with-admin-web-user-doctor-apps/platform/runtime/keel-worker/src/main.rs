@@ -310,7 +310,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match probe {
                 Ok(Ok(pool)) => {
                     if db.run_migrations {
-                        keel_postgres::run_migrations(&pool).await?;
+                        keel_postgres::run_migrations(&pool, &root).await?;
                     }
                     Some(pool)
                 }

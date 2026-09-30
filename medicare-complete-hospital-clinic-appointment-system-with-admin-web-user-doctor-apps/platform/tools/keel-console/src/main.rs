@@ -187,6 +187,31 @@ enum Cmd {
     /// Drop and recreate the schema, then migrate (dev/test only).
     #[command(name = "migrate:fresh")]
     MigrateFresh,
+    /// Wave 5: revert the last migration batch (default 1) in reverse
+    /// filename order — pair migrations only; forward-only single-file
+    /// migrations (database/migrations) never roll back.
+    #[command(name = "migrate:rollback")]
+    MigrateRollback {
+        /// Number of batches to revert (default 1).
+        #[arg(long, default_value_t = 1)]
+        step: u32,
+    },
+    /// Wave 5: revert every applied pair migration in reverse order
+    /// (dev/test only — the full-history revert is destructive).
+    #[command(name = "migrate:reset")]
+    MigrateReset,
+    /// Wave 5: revert `--step` batches (default 1) and re-apply pending
+    /// migrations (dev/test only — the rollback window is destructive).
+    #[command(name = "migrate:refresh")]
+    MigrateRefresh {
+        /// Number of batches to revert before re-applying (default 1).
+        #[arg(long, default_value_t = 1)]
+        step: u32,
+    },
+    /// Wave 5: create the pair bookkeeping table (keel_migrations) without
+    /// running any migration files.
+    #[command(name = "migrate:install")]
+    MigrateInstall,
     /// Run seeders (idempotent; comma-separated names with --only).
     Seed {
         #[arg(long)]
@@ -447,6 +472,10 @@ fn main() -> ExitCode {
         Cmd::Migrate => rt(migrate()),
         Cmd::MigrateStatus => rt(migrate_status()),
         Cmd::MigrateFresh => rt(migrate_fresh()),
+        Cmd::MigrateRollback { step } => rt(migrate_rollback(step)),
+        Cmd::MigrateReset => rt(migrate_reset()),
+        Cmd::MigrateRefresh { step } => rt(migrate_refresh(step)),
+        Cmd::MigrateInstall => rt(migrate_install()),
         Cmd::Seed { only } => rt(seed(only)),
         Cmd::KeyGenerate => key_generate(),
         Cmd::ConfigDump => config_dump(),
@@ -1302,6 +1331,17 @@ fn capabilities_list() -> anyhow::Result<ExitCode> {
 
 // -------------------------------------------------------------- migrations
 
+/// AppError rendered for CLI stderr: the internal detail (pair names, SQL
+/// text) when present. HTTP envelopes keep that detail out of responses —
+/// a terminal is the operator's own, and `[DB_ERROR] a database error
+/// occurred` would hide which migration broke.
+fn db_err(e: keel_foundation::AppError) -> anyhow::Error {
+    match e.internal {
+        Some(detail) => anyhow::anyhow!("{detail}"),
+        None => anyhow::anyhow!("{e}"),
+    }
+}
+
 fn migrator() -> &'static sqlx::migrate::Migrator {
     // Embedded from database/migrations, same source keel-postgres boots with.
     static MIGRATOR: std::sync::OnceLock<sqlx::migrate::Migrator> = std::sync::OnceLock::new();
@@ -1311,9 +1351,12 @@ fn migrator() -> &'static sqlx::migrate::Migrator {
 async fn migrate() -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
     let pool = db_pool(&root).await?;
-    keel_postgres::run_migrations(&pool)
+    let pair_applied = keel_postgres::run_migrations(&pool, &root)
         .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        .map_err(db_err)?;
+    for name in &pair_applied {
+        println!("  + {name}");
+    }
     println!("migrations applied.");
     Ok(ExitCode::SUCCESS)
 }
@@ -1340,6 +1383,25 @@ async fn migrate_status() -> anyhow::Result<ExitCode> {
             migration.description
         );
     }
+    // Wave 5: rollback-capable pairs (keel_migrations may not exist yet —
+    // status stays read-only, so a missing bookkeeping table just means
+    // every pair is pending).
+    let pair_applied: Vec<String> =
+        sqlx::query_scalar("SELECT migration FROM keel_migrations ORDER BY migration")
+            .fetch_all(&pool)
+            .await
+            .unwrap_or_default();
+    for pair in keel_postgres::pairs::scan_pairs(&root).map_err(db_err)? {
+        let is_applied = pair_applied.contains(&pair.migration);
+        if !is_applied {
+            pending += 1;
+        }
+        println!(
+            "  {:<8} {} (pair)",
+            if is_applied { "applied" } else { "PENDING" },
+            pair.migration
+        );
+    }
     println!("{pending} pending migration(s).");
     Ok(ExitCode::SUCCESS)
 }
@@ -1364,10 +1426,113 @@ async fn migrate_fresh() -> anyhow::Result<ExitCode> {
         .execute(&pool)
         .await
         .map_err(|e| anyhow::anyhow!("create schema: {e}"))?;
-    keel_postgres::run_migrations(&pool)
+    let pair_applied = keel_postgres::run_migrations(&pool, &root)
         .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        .map_err(db_err)?;
+    for name in &pair_applied {
+        println!("  + {name}");
+    }
     println!("schema dropped, recreated and migrated.");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Wave 5: revert the last `steps` migration batches (pair migrations only;
+/// legacy single-file migrations stay forward-only). Not env-gated: rollback
+/// is the bounded recovery op (`--step`, default 1).
+async fn migrate_rollback(steps: u32) -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    let pool = db_pool(&root).await?;
+    let reverted = keel_postgres::pairs::rollback(&pool, &root, steps)
+        .await
+        .map_err(db_err)?;
+    if reverted.is_empty() {
+        println!("nothing to roll back ({steps} batch(es) requested).");
+        return Ok(ExitCode::SUCCESS);
+    }
+    for name in &reverted {
+        println!("  - {name}");
+    }
+    println!(
+        "rolled back {} pair migration(s); forward-only singles untouched.",
+        reverted.len()
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Wave 5: revert every applied pair migration (dev/test only — mirrors
+/// migrate:fresh's gate; `migrate` rebuilds what this drops).
+async fn migrate_reset() -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    let cfg = load_config(&root)?;
+    if cfg.app.env.is_prod() || matches!(cfg.app.env, Environment::Staging) {
+        anyhow::bail!("migrate:reset refuses to run outside dev/test");
+    }
+    if std::env::var_os("KEEL_FORCE").is_none()
+        && !confirm("migrate:reset reverts EVERY applied pair migration (schema objects drop). Continue?")
+    {
+        anyhow::bail!("aborted (set KEEL_FORCE=1 to skip the prompt in scripts)");
+    }
+    let pool = db_pool(&root).await?;
+    let reverted = keel_postgres::pairs::reset(&pool, &root)
+        .await
+        .map_err(db_err)?;
+    for name in &reverted {
+        println!("  - {name}");
+    }
+    println!(
+        "reset: reverted {} pair migration(s); run migrate to rebuild.",
+        reverted.len()
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Wave 5: rollback `steps` batches then re-apply (dev/test only — the
+/// rollback window drops schema objects before recreating them).
+async fn migrate_refresh(steps: u32) -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    let cfg = load_config(&root)?;
+    if cfg.app.env.is_prod() || matches!(cfg.app.env, Environment::Staging) {
+        anyhow::bail!("migrate:refresh refuses to run outside dev/test");
+    }
+    if std::env::var_os("KEEL_FORCE").is_none()
+        && !confirm(&format!(
+            "migrate:refresh rolls back {steps} batch(es) (schema objects drop) and re-applies. Continue?"
+        ))
+    {
+        anyhow::bail!("aborted (set KEEL_FORCE=1 to skip the prompt in scripts)");
+    }
+    let pool = db_pool(&root).await?;
+    let reverted = keel_postgres::pairs::rollback(&pool, &root, steps)
+        .await
+        .map_err(db_err)?;
+    for name in &reverted {
+        println!("  - {name}");
+    }
+    let pair_applied = keel_postgres::run_migrations(&pool, &root)
+        .await
+        .map_err(db_err)?;
+    for name in &pair_applied {
+        println!("  + {name}");
+    }
+    println!(
+        "refresh: reverted {} migration(s), applied {} pair migration(s).",
+        reverted.len(),
+        pair_applied.len()
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Wave 5: create the pair bookkeeping table without running files.
+async fn migrate_install() -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    let pool = db_pool(&root).await?;
+    keel_postgres::pairs::install(&pool)
+        .await
+        .map_err(db_err)?;
+    println!(
+        "{} bookkeeping table ready (no migration files run).",
+        keel_postgres::pairs::PAIRS_TABLE
+    );
     Ok(ExitCode::SUCCESS)
 }
 
@@ -3904,6 +4069,47 @@ middleware = ["ghost"]
             .unwrap_or(0);
         assert_eq!(remaining, 0, "view cache cold");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Wave 5 Phase 2: the migration-pair commands parse with their
+    /// documented flags — `--step` defaults to 1 (the last batch only).
+    #[test]
+    fn migrate_pair_commands_parse_with_documented_defaults() {
+        let cli = Cli::try_parse_from(["keel", "migrate:rollback"]).expect("rollback parses");
+        match cli.cmd {
+            Cmd::MigrateRollback { step } => assert_eq!(step, 1, "default step is 1"),
+            _ => panic!("migrate:rollback maps to MigrateRollback"),
+        }
+        let cli = Cli::try_parse_from(["keel", "migrate:rollback", "--step", "3"])
+            .expect("explicit step parses");
+        match cli.cmd {
+            Cmd::MigrateRollback { step } => assert_eq!(step, 3),
+            _ => panic!("--step maps to MigrateRollback"),
+        }
+        let cli = Cli::try_parse_from(["keel", "migrate:refresh", "--step", "2"])
+            .expect("refresh parses");
+        match cli.cmd {
+            Cmd::MigrateRefresh { step } => assert_eq!(step, 2),
+            _ => panic!("migrate:refresh maps to MigrateRefresh"),
+        }
+        assert!(
+            matches!(
+                Cli::try_parse_from(["keel", "migrate:reset"])
+                    .expect("reset parses")
+                    .cmd,
+                Cmd::MigrateReset
+            ),
+            "migrate:reset maps to MigrateReset"
+        );
+        assert!(
+            matches!(
+                Cli::try_parse_from(["keel", "migrate:install"])
+                    .expect("install parses")
+                    .cmd,
+                Cmd::MigrateInstall
+            ),
+            "migrate:install maps to MigrateInstall"
+        );
     }
 
     /// Wave 4 Phase 5: temp workspace with a schema-clean config (secrets,

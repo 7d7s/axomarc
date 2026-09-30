@@ -179,7 +179,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             match probe {
                 Ok(Ok(pool)) => {
                     if db.run_migrations {
-                        keel_postgres::run_migrations(&pool).await?;
+                        keel_postgres::run_migrations(&pool, &root).await?;
                     }
                     // Dev bootstrap: register/login assign the fixed dev tenant, so a fresh
                     // database needs its tenants row to exist (FK target for domain writes).

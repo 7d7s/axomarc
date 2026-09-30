@@ -13,6 +13,7 @@ pub mod bridge;
 pub mod jobstore;
 pub mod modelstore;
 pub mod outboxstore;
+pub mod pairs;
 pub mod principalstore;
 pub mod seeders;
 pub mod sessionstore;
@@ -45,13 +46,23 @@ pub async fn create_pool(url: &str, max_connections: u32) -> Result<PgPool, AppE
         .map_err(|e| AppError::persistence(format!("pool connect: {e}")))
 }
 
-/// Embedded migrations from ../../../database/migrations (boot-time, idempotent).
-pub async fn run_migrations(pool: &PgPool) -> Result<(), AppError> {
+/// Migrations from ../../../database/migrations (boot-time, idempotent),
+/// then the Wave 5 rollback-capable pairs under `database/migrations-pairs`
+/// (validated fail-closed before any DDL; pairs carry the batch bookkeeping
+/// and return their applied names).
+pub async fn run_migrations(
+    pool: &PgPool,
+    root: &std::path::Path,
+) -> Result<Vec<String>, AppError> {
+    // Validate the pairs directory first: a broken pair shipment refuses
+    // the run before the first statement (sqlx singles included).
+    let _validated = pairs::scan_pairs(root)?;
     let migrator = sqlx::migrate!("../../../database/migrations");
     migrator
         .run(pool)
         .await
-        .map_err(|e| AppError::persistence(format!("migrate: {e}")))
+        .map_err(|e| AppError::persistence(format!("migrate: {e}")))?;
+    pairs::apply_pending(pool, root).await
 }
 
 /// Dev seeder: tenant row (platform plane writes — run with a platform context).

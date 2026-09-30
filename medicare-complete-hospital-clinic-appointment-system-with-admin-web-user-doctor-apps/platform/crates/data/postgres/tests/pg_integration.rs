@@ -24,7 +24,9 @@ async fn pool() -> Option<PgPool> {
     };
     match create_pool(&url, 4).await {
         Ok(pool) => {
-            run_migrations(&pool).await.expect("migrations apply");
+            run_migrations(&pool, std::path::Path::new("."))
+                .await
+                .expect("migrations apply");
             Some(pool)
         }
         Err(e) => {
