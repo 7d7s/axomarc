@@ -291,6 +291,51 @@ enum Cmd {
         /// Job id (uuid).
         id: String,
     },
+    /// Wave 5: purge every pending job (dev/test only — queued work is lost).
+    #[command(name = "queue:clear")]
+    QueueClear,
+    /// Wave 5: delete every dead job (their forensic rows are gone after).
+    #[command(name = "queue:flush")]
+    QueueFlush,
+    /// Wave 5: delete one dead job.
+    #[command(name = "queue:forget")]
+    QueueForget {
+        /// Dead job id (uuid).
+        id: String,
+    },
+    /// Wave 5: queue depth + oldest pending age snapshot (alerting).
+    #[command(name = "queue:monitor")]
+    QueueMonitor,
+    /// Wave 5: prune dead jobs that ended before --hours (default 168 = 7 days).
+    #[command(name = "queue:prune-failed")]
+    QueuePruneFailed {
+        /// Age cutoff in hours (jobs ended before now - hours are deleted).
+        #[arg(long, default_value_t = 168)]
+        hours: u64,
+    },
+    /// Wave 5: prune terminal batch records older than --hours (default 72).
+    /// The batch ledger is not persisted yet — reports an honest empty run.
+    #[command(name = "queue:prune-batches")]
+    QueuePruneBatches {
+        /// Age cutoff in hours (default 72).
+        #[arg(long, default_value_t = 72)]
+        hours: u64,
+    },
+    /// Wave 5: write the restart signal file running workers honor
+    /// (cooperative stop between jobs; supervisors then respawn them).
+    #[command(name = "queue:restart")]
+    QueueRestart,
+    /// Wave 5: supervise a keel-worker child and auto-restart it on exit
+    /// (with crash-loop backoff); Ctrl-C stops the supervisor.
+    #[command(name = "queue:listen")]
+    QueueListen,
+    /// Wave 5: requeue every failed member of a batch. The batch ledger is
+    /// not persisted yet — fails closed with the per-job alternative.
+    #[command(name = "queue:retry-batch")]
+    QueueRetryBatch {
+        /// Batch id (uuid).
+        id: String,
+    },
     /// List registered schedules.
     #[command(name = "schedule:list")]
     ScheduleList,
@@ -499,6 +544,15 @@ fn main() -> ExitCode {
         Cmd::QueueWork { once } => queue_work(once),
         Cmd::QueueFailed => rt(queue_failed()),
         Cmd::QueueRetry { id } => rt(queue_retry(&id)),
+        Cmd::QueueClear => rt(queue_clear()),
+        Cmd::QueueFlush => rt(queue_flush()),
+        Cmd::QueueForget { id } => rt(queue_forget(&id)),
+        Cmd::QueueMonitor => rt(queue_monitor()),
+        Cmd::QueuePruneFailed { hours } => rt(queue_prune_failed(hours)),
+        Cmd::QueuePruneBatches { hours } => rt(queue_prune_batches(hours)),
+        Cmd::QueueRestart => queue_restart(),
+        Cmd::QueueListen => queue_listen(),
+        Cmd::QueueRetryBatch { id } => rt(queue_retry_batch(&id)),
         Cmd::ScheduleList => schedule_info("schedule:list"),
         Cmd::ScheduleRun => schedule_info("schedule:run"),
         Cmd::DbInspect => rt(db_inspect()),
@@ -2107,7 +2161,9 @@ async fn queue_retry(id: &str) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn queue_work(once: bool) -> anyhow::Result<ExitCode> {
+/// Shared worker-binary resolution for queue:work and queue:listen: the
+/// keel-worker next to this keel executable.
+fn worker_binary() -> anyhow::Result<std::path::PathBuf> {
     let exe = std::env::current_exe()?;
     let dir = exe
         .parent()
@@ -2121,6 +2177,11 @@ fn queue_work(once: bool) -> anyhow::Result<ExitCode> {
     if !worker.exists() {
         anyhow::bail!("keel-worker not found next to keel ({binary}); build it with: cargo build -p keel-worker");
     }
+    Ok(worker)
+}
+
+fn queue_work(once: bool) -> anyhow::Result<ExitCode> {
+    let worker = worker_binary()?;
     let mut command = std::process::Command::new(&worker);
     if once {
         command.arg("--once");
@@ -2132,6 +2193,188 @@ fn queue_work(once: bool) -> anyhow::Result<ExitCode> {
     } else {
         ExitCode::FAILURE
     })
+}
+
+/// Wave 5: purge every pending job — dev/test + confirm gate (the
+/// migrate:fresh shape); queued work in prod goes through the queue's own
+/// lifecycle instead.
+async fn queue_clear() -> anyhow::Result<ExitCode> {
+    use keel_jobs::JobStoreAdmin;
+    let root = workspace_root()?;
+    let cfg = load_config(&root)?;
+    if cfg.app.env.is_prod() || matches!(cfg.app.env, Environment::Staging) {
+        anyhow::bail!("queue:clear refuses to run outside dev/test");
+    }
+    if std::env::var_os("KEEL_FORCE").is_none()
+        && !confirm("queue:clear deletes EVERY pending job (queued work is lost). Continue?")
+    {
+        anyhow::bail!("aborted (set KEEL_FORCE=1 to skip the prompt in scripts)");
+    }
+    let pool = db_pool(&root).await?;
+    let store = keel_postgres::PgJobStore::new(pool);
+    let purged = store.purge_pending().map_err(db_err)?;
+    println!("queue:clear: {purged} pending job(s) purged.");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Wave 5: delete every dead job (forensic rows are gone afterwards —
+/// queue:prune-failed is the age-bounded variant).
+async fn queue_flush() -> anyhow::Result<ExitCode> {
+    use keel_jobs::JobStoreAdmin;
+    let root = workspace_root()?;
+    let pool = db_pool(&root).await?;
+    let store = keel_postgres::PgJobStore::new(pool);
+    let pruned = store
+        .prune_dead(keel_jobs::flush_cutoff())
+        .map_err(db_err)?;
+    println!("queue:flush: {pruned} dead job(s) deleted.");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Wave 5: delete one dead job (unknown id or not dead = refusal).
+async fn queue_forget(id: &str) -> anyhow::Result<ExitCode> {
+    use keel_jobs::JobStoreAdmin;
+    let job_id = uuid::Uuid::parse_str(id).map_err(|e| anyhow::anyhow!("invalid job id: {e}"))?;
+    let root = workspace_root()?;
+    let pool = db_pool(&root).await?;
+    let store = keel_postgres::PgJobStore::new(pool);
+    if !store.delete_dead(job_id).map_err(db_err)? {
+        anyhow::bail!("job {job_id} is not a dead job (nothing forgotten)");
+    }
+    println!("job {job_id} forgotten.");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Wave 5: queue depth + oldest pending age snapshot.
+async fn queue_monitor() -> anyhow::Result<ExitCode> {
+    use keel_jobs::JobStoreAdmin;
+    let root = workspace_root()?;
+    let pool = db_pool(&root).await?;
+    let store = keel_postgres::PgJobStore::new(pool);
+    let snap = store.snapshot().map_err(db_err)?;
+    print!(
+        "{}",
+        render_queue_monitor(&snap, time::OffsetDateTime::now_utc())
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Render queue:monitor output (pure — unit-tested without a store).
+fn render_queue_monitor(snap: &keel_jobs::QueueSnapshot, now: time::OffsetDateTime) -> String {
+    let mut out = String::from("queue depth:\n");
+    out.push_str(&format!("  pending:   {}", snap.pending));
+    if let Some(oldest) = snap.oldest_pending {
+        out.push_str(&format!(" (oldest {})", format_age(now - oldest)));
+    }
+    out.push('\n');
+    out.push_str(&format!("  running:   {}\n", snap.running));
+    out.push_str(&format!("  dead:      {}\n", snap.dead));
+    out.push_str(&format!("  succeeded: {}\n", snap.succeeded));
+    out
+}
+
+/// Compact human age: 45s / 3m20s / 2h5m.
+fn format_age(age: time::Duration) -> String {
+    let total = age.whole_seconds().max(0);
+    let hours = total / 3600;
+    let minutes = (total % 3600) / 60;
+    let seconds = total % 60;
+    if hours > 0 {
+        format!("{hours}h{minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m{seconds}s")
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+/// Wave 5: prune dead jobs that ended before now - --hours (default 168).
+async fn queue_prune_failed(hours: u64) -> anyhow::Result<ExitCode> {
+    use keel_jobs::JobStoreAdmin;
+    let hours = i64::try_from(hours).map_err(|_| anyhow::anyhow!("--hours out of range"))?;
+    if hours < 1 {
+        anyhow::bail!("--hours must be at least 1");
+    }
+    let root = workspace_root()?;
+    let pool = db_pool(&root).await?;
+    let store = keel_postgres::PgJobStore::new(pool);
+    let cutoff = time::OffsetDateTime::now_utc() - time::Duration::hours(hours);
+    let pruned = store.prune_dead(cutoff).map_err(db_err)?;
+    println!("queue:prune-failed: {pruned} dead job(s) older than {hours}h deleted.");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Wave 5: prune terminal batch records older than --hours (default 72).
+/// Honest empty run: the batch ledger (BatchRuntime) is in-memory only, so
+/// no terminal batch records are persisted yet. Command, flag and default
+/// are real (docs/19 wire contract); output states exactly what happened.
+async fn queue_prune_batches(hours: u64) -> anyhow::Result<ExitCode> {
+    let hours = i64::try_from(hours).map_err(|_| anyhow::anyhow!("--hours out of range"))?;
+    if hours < 1 {
+        anyhow::bail!("--hours must be at least 1");
+    }
+    println!("queue:prune-batches: pruned 0 batch record(s) (cutoff {hours}h).");
+    println!(
+        "  the batch ledger is in-memory only (BatchRuntime); no terminal batch records are persisted yet."
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Wave 5: write the restart signal file running workers honor.
+fn queue_restart() -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    let path = keel_jobs::write_queue_restart_signal(&root)
+        .map_err(|e| anyhow::anyhow!("queue:restart signal write: {e}"))?;
+    let rel = path.strip_prefix(&root).unwrap_or(&path);
+    println!("  + {}", rel.display());
+    println!(
+        "restart signal written; running workers stop after their current job (supervisors respawn them — see queue:listen)."
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Wave 5: supervise keel-worker — respawn on every exit with a crash-loop
+/// backoff so an instantly-dying worker never spins the supervisor hot.
+/// Returns only through Ctrl-C (the OS default handler ends the supervisor
+/// and its console-attached child together).
+fn queue_listen() -> anyhow::Result<ExitCode> {
+    let worker = worker_binary()?;
+    println!(
+        "queue:listen: supervising {} (Ctrl-C stops the supervisor)",
+        worker.display()
+    );
+    let mut generation = 0u64;
+    loop {
+        generation += 1;
+        let started = std::time::Instant::now();
+        let status = match std::process::Command::new(&worker).status() {
+            Ok(status) => status,
+            Err(e) => {
+                eprintln!("queue:listen: cannot start the worker: {e}");
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                continue;
+            }
+        };
+        let how = status
+            .code()
+            .map(|c| format!("exit {c}"))
+            .unwrap_or_else(|| "signal".to_string());
+        println!("queue:listen: worker generation {generation} ended ({how}); restarting");
+        if started.elapsed() < std::time::Duration::from_secs(2) {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+    }
+}
+
+/// Wave 5: requeue every failed member of a batch — fails closed: batch
+/// membership cannot be resolved without a persisted ledger. The id is
+/// still validated so the wire contract holds when the ledger lands.
+async fn queue_retry_batch(id: &str) -> anyhow::Result<ExitCode> {
+    let _batch =
+        uuid::Uuid::parse_str(id).map_err(|e| anyhow::anyhow!("invalid batch id: {e}"))?;
+    anyhow::bail!(
+        "queue:retry-batch {id}: the batch ledger is not persisted (BatchRuntime keeps batches in memory; postgres persistence lands with the jobs-ledger follow-up) — requeue members individually with queue:retry <job-id>"
+    );
 }
 
 // ---------------------------------------------------------------- schedules
@@ -4547,6 +4790,84 @@ middleware = ["ghost"]
         let out = render_schema_snapshot(&[]);
         assert!(out.contains("(no tables in schema public)"), "{out}");
         assert!(out.contains("never executes this file"), "{out}");
+    }
+
+    /// Wave 5 Phase 5: queue:monitor renders every depth counter plus the
+    /// oldest pending age in compact form (pure render, no store needed).
+    #[test]
+    fn queue_monitor_renders_depth_and_oldest_age() {
+        let now = time::OffsetDateTime::now_utc();
+        let snap = keel_jobs::QueueSnapshot {
+            pending: 12,
+            running: 2,
+            dead: 1,
+            succeeded: 55,
+            oldest_pending: Some(now - time::Duration::seconds(200)),
+        };
+        let out = render_queue_monitor(&snap, now);
+        assert!(out.contains("queue depth:"), "{out}");
+        assert!(out.contains("pending:   12"), "{out}");
+        assert!(out.contains("(oldest 3m20s)"), "age: {out}");
+        assert!(out.contains("running:   2"), "{out}");
+        assert!(out.contains("dead:      1"), "{out}");
+        assert!(out.contains("succeeded: 55"), "{out}");
+
+        // No pending jobs -> no age clause; ages compose h/m/s compactly.
+        let empty = keel_jobs::QueueSnapshot {
+            oldest_pending: None,
+            ..snap
+        };
+        let out = render_queue_monitor(&empty, now);
+        assert!(!out.contains("oldest"), "{out}");
+        assert_eq!(format_age(time::Duration::seconds(45)), "45s");
+        assert_eq!(format_age(time::Duration::minutes(3) + time::Duration::seconds(20)), "3m20s");
+        assert_eq!(
+            format_age(time::Duration::hours(2) + time::Duration::minutes(5)),
+            "2h5m"
+        );
+    }
+
+    /// Wave 5 Phase 5: the queue admin commands parse under their documented
+    /// names with the documented cutoff defaults (72h batches / 168h failed).
+    #[test]
+    fn queue_admin_commands_parse_with_documented_defaults() {
+        let cli = Cli::try_parse_from(["keel", "queue:prune-failed"]).expect("parses");
+        match cli.cmd {
+            Cmd::QueuePruneFailed { hours } => assert_eq!(hours, 168, "default 168h"),
+            _ => panic!("queue:prune-failed maps to QueuePruneFailed"),
+        }
+        let cli =
+            Cli::try_parse_from(["keel", "queue:prune-failed", "--hours", "24"]).expect("parses");
+        match cli.cmd {
+            Cmd::QueuePruneFailed { hours } => assert_eq!(hours, 24),
+            _ => panic!("--hours maps to QueuePruneFailed"),
+        }
+        let cli = Cli::try_parse_from(["keel", "queue:prune-batches"]).expect("parses");
+        match cli.cmd {
+            Cmd::QueuePruneBatches { hours } => assert_eq!(hours, 72, "default 72h"),
+            _ => panic!("queue:prune-batches maps to QueuePruneBatches"),
+        }
+        let cli = Cli::try_parse_from(["keel", "queue:forget", "abc"]).expect("parses");
+        match cli.cmd {
+            Cmd::QueueForget { id } => assert_eq!(id, "abc"),
+            _ => panic!("queue:forget maps to QueueForget"),
+        }
+        let cli = Cli::try_parse_from(["keel", "queue:retry-batch", "b-1"]).expect("parses");
+        match cli.cmd {
+            Cmd::QueueRetryBatch { id } => assert_eq!(id, "b-1"),
+            _ => panic!("queue:retry-batch maps to QueueRetryBatch"),
+        }
+        // The flag-less commands parse under their documented names.
+        let cli = Cli::try_parse_from(["keel", "queue:clear"]).expect("parses");
+        assert!(matches!(cli.cmd, Cmd::QueueClear), "queue:clear");
+        let cli = Cli::try_parse_from(["keel", "queue:flush"]).expect("parses");
+        assert!(matches!(cli.cmd, Cmd::QueueFlush), "queue:flush");
+        let cli = Cli::try_parse_from(["keel", "queue:monitor"]).expect("parses");
+        assert!(matches!(cli.cmd, Cmd::QueueMonitor), "queue:monitor");
+        let cli = Cli::try_parse_from(["keel", "queue:restart"]).expect("parses");
+        assert!(matches!(cli.cmd, Cmd::QueueRestart), "queue:restart");
+        let cli = Cli::try_parse_from(["keel", "queue:listen"]).expect("parses");
+        assert!(matches!(cli.cmd, Cmd::QueueListen), "queue:listen");
     }
 
     /// Wave 4 Phase 5: temp workspace with a schema-clean config (secrets,

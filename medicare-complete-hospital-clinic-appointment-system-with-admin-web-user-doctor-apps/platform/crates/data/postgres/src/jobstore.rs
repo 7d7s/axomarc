@@ -225,4 +225,71 @@ impl JobStoreAdmin for PgJobStore {
             Ok(())
         })
     }
+
+    fn purge_pending(&self) -> Result<u64, AppError> {
+        let pool = self.pool.clone();
+        block_on(async move {
+            let done = sqlx::query("DELETE FROM jobs_queue WHERE status = 'pending'")
+                .execute(&pool)
+                .await
+                .map_err(pg)?;
+            Ok(done.rows_affected())
+        })
+    }
+
+    fn prune_dead(&self, before: time::OffsetDateTime) -> Result<u64, AppError> {
+        let pool = self.pool.clone();
+        block_on(async move {
+            let done = sqlx::query(
+                "DELETE FROM jobs_queue
+                 WHERE status = 'dead'
+                   AND COALESCE(finished_at, enqueued_at) < $1",
+            )
+            .bind(before)
+            .execute(&pool)
+            .await
+            .map_err(pg)?;
+            Ok(done.rows_affected())
+        })
+    }
+
+    fn delete_dead(&self, id: Uuid) -> Result<bool, AppError> {
+        let pool = self.pool.clone();
+        block_on(async move {
+            let done = sqlx::query("DELETE FROM jobs_queue WHERE id = $1 AND status = 'dead'")
+                .bind(id)
+                .execute(&pool)
+                .await
+                .map_err(pg)?;
+            Ok(done.rows_affected() == 1)
+        })
+    }
+
+    fn snapshot(&self) -> Result<keel_jobs::QueueSnapshot, AppError> {
+        let pool = self.pool.clone();
+        block_on(async move {
+            let row = sqlx::query(
+                "SELECT COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+                        COUNT(*) FILTER (WHERE status = 'running') AS running,
+                        COUNT(*) FILTER (WHERE status = 'dead') AS dead,
+                        COUNT(*) FILTER (WHERE status = 'succeeded') AS succeeded,
+                        MIN(enqueued_at) FILTER (WHERE status = 'pending') AS oldest_pending
+                   FROM jobs_queue",
+            )
+            .fetch_one(&pool)
+            .await
+            .map_err(pg)?;
+            let count = |col: &str| -> Result<usize, AppError> {
+                let n: i64 = row.try_get(col).map_err(pg)?;
+                Ok(n.max(0) as usize)
+            };
+            Ok(keel_jobs::QueueSnapshot {
+                pending: count("pending")?,
+                running: count("running")?,
+                dead: count("dead")?,
+                succeeded: count("succeeded")?,
+                oldest_pending: row.try_get("oldest_pending").map_err(pg)?,
+            })
+        })
+    }
 }

@@ -5,6 +5,7 @@
 //! retry/backoff semantics, registries and batch/chain types.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use keel_foundation::{AppError, CorrelationId, ExecutionId};
@@ -288,6 +289,30 @@ pub trait JobStoreAdmin: Send + Sync {
     fn list(&self, status: Option<JobStatus>, limit: usize) -> Result<Vec<DurableJob>, AppError>;
     /// Manual retry: put a failed/dead job back to pending.
     fn requeue(&self, id: Uuid) -> Result<(), AppError>;
+    /// Wave 5: purge every pending job (`queue:clear` — the CLI gates it to
+    /// dev/test). Returns the number purged.
+    fn purge_pending(&self) -> Result<u64, AppError>;
+    /// Wave 5: delete dead jobs whose job ended strictly before the cutoff
+    /// (`queue:flush` passes [`flush_cutoff()`] = every dead job;
+    /// `queue:prune-failed` passes now - hours). Returns the number deleted.
+    fn prune_dead(&self, before: OffsetDateTime) -> Result<u64, AppError>;
+    /// Wave 5: delete one dead job (`queue:forget`); false = nothing deleted
+    /// (unknown id or not dead).
+    fn delete_dead(&self, id: Uuid) -> Result<bool, AppError>;
+    /// Wave 5: queue depth + oldest pending age (`queue:monitor`).
+    fn snapshot(&self) -> Result<QueueSnapshot, AppError>;
+}
+
+/// Queue depth + age facts behind `keel queue:monitor`, kept as data so the
+/// rendering is unit-testable without a store.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct QueueSnapshot {
+    pub pending: usize,
+    pub running: usize,
+    pub dead: usize,
+    pub succeeded: usize,
+    /// Oldest pending job's enqueue time (age = now - this).
+    pub oldest_pending: Option<OffsetDateTime>,
 }
 
 /// Degraded-boot store (D-52): same semantics, no durability.
@@ -411,9 +436,104 @@ impl JobStoreAdmin for InMemoryJobStore {
         job.finished_at = None;
         Ok(())
     }
+
+    fn purge_pending(&self) -> Result<u64, AppError> {
+        let mut jobs = self.jobs.lock().unwrap();
+        let before = jobs.len();
+        jobs.retain(|j| j.status != JobStatus::Pending);
+        Ok((before - jobs.len()) as u64)
+    }
+
+    fn prune_dead(&self, before: OffsetDateTime) -> Result<u64, AppError> {
+        let mut jobs = self.jobs.lock().unwrap();
+        let len_before = jobs.len();
+        jobs.retain(|j| {
+            if j.status != JobStatus::Dead {
+                return true;
+            }
+            // Keep dead jobs that ended at or after the cutoff.
+            j.finished_at.unwrap_or(j.enqueued_at) >= before
+        });
+        Ok((len_before - jobs.len()) as u64)
+    }
+
+    fn delete_dead(&self, id: Uuid) -> Result<bool, AppError> {
+        let mut jobs = self.jobs.lock().unwrap();
+        let Some(idx) = jobs.iter().position(|j| j.id == id && j.status == JobStatus::Dead)
+        else {
+            return Ok(false);
+        };
+        jobs.remove(idx);
+        Ok(true)
+    }
+
+    fn snapshot(&self) -> Result<QueueSnapshot, AppError> {
+        let jobs = self.jobs.lock().unwrap();
+        let mut snap = QueueSnapshot::default();
+        for job in jobs.iter() {
+            match job.status {
+                JobStatus::Pending => {
+                    snap.pending += 1;
+                    let oldest = snap.oldest_pending.get_or_insert(job.enqueued_at);
+                    if job.enqueued_at < *oldest {
+                        *oldest = job.enqueued_at;
+                    }
+                }
+                JobStatus::Running => snap.running += 1,
+                JobStatus::Dead => snap.dead += 1,
+                JobStatus::Succeeded => snap.succeeded += 1,
+                // Failed lives between claim and the next fail() call.
+                JobStatus::Failed => {}
+            }
+        }
+        Ok(snap)
+    }
 }
 
 // ------------------------------------------------- batch/chain runtime (S3)
+
+/// Cutoff later than any real finish time (`Date::MAX`, year 9999):
+/// `queue:flush` passes this to [`JobStoreAdmin::prune_dead`] so the
+/// strictly-before rule ("ended before the cutoff") matches every dead job.
+/// (A UNIX-epoch cutoff would match none — prune keeps jobs *after* the
+/// cutoff and deletes jobs *before* it.)
+pub fn flush_cutoff() -> OffsetDateTime {
+    time::Date::MAX.midnight().assume_utc()
+}
+
+/// `keel queue:restart` signal file (storage/framework/queue.restart):
+/// running workers watch it and stop cooperatively between jobs; supervisors
+/// (queue:listen) then respawn them.
+pub fn queue_restart_path(root: &Path) -> PathBuf {
+    root.join("storage").join("framework").join("queue.restart")
+}
+
+/// Write the restart signal (creating parent directories); returns the path.
+pub fn write_queue_restart_signal(root: &Path) -> std::io::Result<PathBuf> {
+    let path = queue_restart_path(root);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(
+        &path,
+        format!("restart requested at {}\n", OffsetDateTime::now_utc()),
+    )?;
+    Ok(path)
+}
+
+/// True when the signal file exists AND was written at or after the worker
+/// started. Stale signals from before the start are ignored, so a worker
+/// spawned after `queue:restart` runs normally instead of exiting in a
+/// restart loop. A missing file (or unreadable timestamp) is no signal.
+pub fn queue_restart_requested(root: &Path, worker_started: std::time::SystemTime) -> bool {
+    let Ok(meta) = std::fs::metadata(queue_restart_path(root)) else {
+        return false;
+    };
+    match meta.modified() {
+        Ok(mtime) => mtime >= worker_started,
+        Err(_) => false,
+    }
+}
 
 /// Tracks a running fan-out batch: which members are still outstanding and
 /// whether any member died. Completed when `outstanding` is empty.
@@ -688,6 +808,113 @@ mod tests {
             enqueued_at: now,
             finished_at: None,
         }
+    }
+
+    /// Wave 5 Phase 5: the queue:clear / queue:flush / queue:forget /
+    /// queue:prune-failed / queue:monitor store maintenance — purge counts,
+    /// cutoff semantics (strictly-before), delete guard (dead only), and the
+    /// depth/age snapshot.
+    #[test]
+    fn admin_maintenance_purges_prunes_and_snapshots() {
+        let store = InMemoryJobStore::new();
+        let now = OffsetDateTime::now_utc();
+
+        let mut p_old = job(1, 3);
+        p_old.status = JobStatus::Pending;
+        p_old.enqueued_at = now - Duration::minutes(30);
+        let mut p_new = job(1, 3);
+        p_new.status = JobStatus::Pending;
+        p_new.enqueued_at = now - Duration::minutes(5);
+        let mut d_old = job(3, 3);
+        d_old.status = JobStatus::Dead;
+        d_old.enqueued_at = now - Duration::days(4);
+        d_old.finished_at = Some(now - Duration::days(4));
+        let mut d_new = job(3, 3);
+        d_new.status = JobStatus::Dead;
+        d_new.finished_at = Some(now - Duration::hours(1));
+        let mut running = job(1, 3);
+        running.status = JobStatus::Running;
+        let mut succeeded = job(1, 3);
+        succeeded.status = JobStatus::Succeeded;
+        succeeded.finished_at = Some(now);
+
+        for j in [&p_old, &p_new, &d_old, &d_new, &running, &succeeded] {
+            store.jobs.lock().unwrap().push((*j).clone());
+        }
+
+        // Snapshot: depths per status + the oldest pending enqueue time.
+        let snap = store.snapshot().expect("snapshot runs");
+        assert_eq!(
+            (snap.pending, snap.running, snap.dead, snap.succeeded),
+            (2, 1, 2, 1),
+            "{snap:?}"
+        );
+        assert_eq!(snap.oldest_pending, Some(p_old.enqueued_at));
+
+        // prune_dead with a 72h cutoff removes only the 4-day-old dead job
+        // (strictly-before semantics keep the 1h-old one at the boundary).
+        let pruned = store
+            .prune_dead(now - Duration::hours(72))
+            .expect("prune runs");
+        assert_eq!(pruned, 1, "only the old dead job");
+        // The flush cutoff (later than any real finish time) takes the rest
+        // of the dead jobs.
+        let flushed = store.prune_dead(flush_cutoff()).expect("flush runs");
+        assert_eq!(flushed, 1, "flush deletes every dead job");
+
+        // delete_dead: only dead rows count; pending ids report "not deleted".
+        assert!(!store.delete_dead(p_old.id).expect("delete guard"));
+        let mut d_extra = job(3, 3);
+        d_extra.status = JobStatus::Dead;
+        d_extra.finished_at = Some(now);
+        store.jobs.lock().unwrap().push(d_extra.clone());
+        assert!(store.delete_dead(d_extra.id).expect("delete dead"));
+
+        // purge_pending: both pending jobs go; running/succeeded survive.
+        assert_eq!(store.purge_pending().expect("purge"), 2);
+        let snap = store.snapshot().expect("snapshot runs");
+        assert_eq!(
+            (snap.pending, snap.running, snap.dead, snap.succeeded),
+            (0, 1, 0, 1),
+            "{snap:?}"
+        );
+        assert_eq!(snap.oldest_pending, None, "no pending left to age");
+    }
+
+    /// Wave 5 Phase 5: the queue:restart signal file stops workers that were
+    /// running when it was written — and is ignored by workers started after
+    /// it (no restart loop); missing file = no signal.
+    #[test]
+    fn restart_signal_is_ignored_when_older_than_the_worker_start() {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "keel-jobs-restart-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        // No signal file yet: nothing requested.
+        let started = std::time::SystemTime::now();
+        assert!(!queue_restart_requested(&root, started));
+
+        // Signal written now: a worker that started before it stops.
+        let path = write_queue_restart_signal(&root).expect("signal writes");
+        assert!(path.exists(), "signal file exists");
+        let earlier = std::time::SystemTime::now() - std::time::Duration::from_secs(10);
+        assert!(
+            queue_restart_requested(&root, earlier),
+            "signal newer than the worker start stops it"
+        );
+
+        // A worker spawned after the signal ignores the stale file — that is
+        // what keeps queue:listen respawns out of a restart loop.
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(10);
+        assert!(
+            !queue_restart_requested(&root, later),
+            "stale signal is ignored by a fresh worker"
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

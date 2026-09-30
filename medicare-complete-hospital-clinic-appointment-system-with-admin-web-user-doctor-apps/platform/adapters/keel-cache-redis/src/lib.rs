@@ -28,8 +28,8 @@ use std::sync::{Arc, Mutex};
 use keel_caching::CachePort;
 use keel_foundation::AppError;
 use keel_jobs::{
-    backoff_delay, DurableJob, JobStatus, JobStore, JobStoreAdmin, DEFAULT_BACKOFF_BASE_SECS,
-    DEFAULT_BACKOFF_MAX_SECS,
+    backoff_delay, DurableJob, JobStatus, JobStore, JobStoreAdmin, QueueSnapshot,
+    DEFAULT_BACKOFF_BASE_SECS, DEFAULT_BACKOFF_MAX_SECS,
 };
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
@@ -393,6 +393,21 @@ impl RedisJobStore {
         }
         Ok(out)
     }
+
+    /// Queue maintenance (purge/prune/forget): drop a job's item and its
+    /// membership in the given zset.
+    fn drop_job(&self, job: &DurableJob, which: &str) -> Result<(), AppError> {
+        let m = member(job.priority, job.id);
+        self.conn.with(|c| {
+            redis::cmd("ZREM")
+                .arg(self.zset(which))
+                .arg(&m)
+                .query::<u64>(c)
+        })?;
+        self.conn
+            .with(|c| redis::cmd("DEL").arg(self.item_key(job.id)).query::<u64>(c))?;
+        Ok(())
+    }
 }
 
 impl JobStore for RedisJobStore {
@@ -558,6 +573,58 @@ impl JobStoreAdmin for RedisJobStore {
                 .query::<u64>(c)
         })?;
         Ok(())
+    }
+
+    fn purge_pending(&self) -> Result<u64, AppError> {
+        let jobs = self.list_from(&self.zset("pending"), usize::MAX)?;
+        let mut purged = 0u64;
+        for job in jobs {
+            self.drop_job(&job, "pending")?;
+            purged += 1;
+        }
+        Ok(purged)
+    }
+
+    fn prune_dead(&self, before: OffsetDateTime) -> Result<u64, AppError> {
+        let jobs = self.list_from(&self.zset("dead"), usize::MAX)?;
+        let mut pruned = 0u64;
+        for job in jobs {
+            // Same strictly-before contract as the pg adapter: the job "ended"
+            // when it was marked dead, falling back to its enqueue time.
+            if job.finished_at.unwrap_or(job.enqueued_at) < before {
+                self.drop_job(&job, "dead")?;
+                pruned += 1;
+            }
+        }
+        Ok(pruned)
+    }
+
+    fn delete_dead(&self, id: Uuid) -> Result<bool, AppError> {
+        let Some(job) = self.read_item(id)? else {
+            return Ok(false);
+        };
+        if job.status != JobStatus::Dead {
+            return Ok(false);
+        }
+        self.drop_job(&job, "dead")?;
+        Ok(true)
+    }
+
+    fn snapshot(&self) -> Result<QueueSnapshot, AppError> {
+        let card = |which: &str| -> Result<usize, AppError> {
+            let n: u64 = self
+                .conn
+                .with(|c| redis::cmd("ZCARD").arg(self.zset(which)).query::<u64>(c))?;
+            Ok(n as usize)
+        };
+        let pending_jobs = self.list_from(&self.zset("pending"), usize::MAX)?;
+        Ok(QueueSnapshot {
+            pending: card("pending")?,
+            running: card("running")?,
+            dead: card("dead")?,
+            succeeded: card("done")?,
+            oldest_pending: pending_jobs.iter().map(|j| j.enqueued_at).min(),
+        })
     }
 }
 

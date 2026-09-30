@@ -289,6 +289,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // boot-time events flow through it; the provider boot() is idempotent.
     let root = std::env::current_dir()?;
     telemetry_config.rebase(&root);
+    // Wave 5: queue:restart signals written after this point stop the worker
+    // between jobs; stale files from before boot are ignored (no restart
+    // loop when queue:listen respawns us).
+    let worker_started = std::time::SystemTime::now();
     let telemetry_runtime = keel_observability::ObservabilityRuntime::new(
         telemetry_config,
         keel_observability::ServiceIdentity::new("keel-worker", env.as_str()),
@@ -480,6 +484,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         if stop.load(Ordering::SeqCst) {
+            break;
+        }
+        // Cooperative queue:restart stop — checked between jobs so an
+        // in-flight dispatch always finishes first.
+        if keel_jobs::queue_restart_requested(&root, worker_started) {
+            tracing::info!("queue:restart signal observed; stopping after the current job");
+            stop.store(true, Ordering::SeqCst);
             break;
         }
         match dispatch_once(&handlers, &*jobs, &worker_name, &batches, &chains).await {
