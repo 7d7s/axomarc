@@ -23,6 +23,7 @@
 use std::path::{Path, PathBuf};
 
 use keel_foundation::AppError;
+use sqlx::Connection as _; // `begin()` on the acquired connection
 
 /// Pair-migration directory, relative to the workspace root. Separate from
 /// `database/migrations` on purpose: sqlx's embedded migrator treats every
@@ -138,8 +139,13 @@ fn validate_base(base: &str) -> Result<(), AppError> {
 }
 
 /// Create the bookkeeping table if it does not exist (idempotent; runs no
-/// migration files — this is `keel migrate:install`).
-pub async fn install(pool: &sqlx::PgPool) -> Result<(), AppError> {
+/// migration files — this is `keel migrate:install`). Any executor works:
+/// a pool, the connection currently holding the migration lock, or a
+/// transaction.
+pub async fn install<'e, E>(exec: E) -> Result<(), AppError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
     sqlx::query(&format!(
         "CREATE TABLE IF NOT EXISTS {PAIRS_TABLE} (
              migration text PRIMARY KEY,
@@ -147,7 +153,7 @@ pub async fn install(pool: &sqlx::PgPool) -> Result<(), AppError> {
              applied_at timestamptz NOT NULL DEFAULT now()
          )"
     ))
-    .execute(pool)
+    .execute(exec)
     .await
     .map_err(|e| AppError::persistence(format!("migrate:install: {e}")))?;
     Ok(())
@@ -155,11 +161,14 @@ pub async fn install(pool: &sqlx::PgPool) -> Result<(), AppError> {
 
 /// Every applied pair as `(migration, batch)`, filename order. Requires the
 /// bookkeeping table (call [`install`] first).
-pub async fn applied(pool: &sqlx::PgPool) -> Result<Vec<(String, i32)>, AppError> {
+pub async fn applied<'e, E>(exec: E) -> Result<Vec<(String, i32)>, AppError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
     sqlx::query_as::<_, (String, i32)>(&format!(
         "SELECT migration, batch FROM {PAIRS_TABLE} ORDER BY migration"
     ))
-    .fetch_all(pool)
+    .fetch_all(exec)
     .await
     .map_err(|e| AppError::persistence(format!("{} read: {e}", PAIRS_TABLE)))
 }
@@ -200,11 +209,20 @@ pub fn rollback_order(applied: &[(String, i32)], steps: u32) -> Vec<String> {
 
 /// Apply every pending pair in filename order, each inside its own
 /// transaction (forward SQL + bookkeeping row commit together or not at
-/// all). All newly applied pairs share the next batch number. Returns the
-/// applied migration names.
-pub async fn apply_pending(pool: &sqlx::PgPool, root: &Path) -> Result<Vec<String>, AppError> {
-    install(pool).await?;
-    let applied = applied(pool).await?;
+/// all). All newly applied pairs share the next batch number. Accepts any
+/// Acquire (pool, or the connection holding the migration lock). Returns
+/// the applied migration names.
+pub async fn apply_pending<'a, A>(acquire: A, root: &Path) -> Result<Vec<String>, AppError>
+where
+    A: sqlx::Acquire<'a, Database = sqlx::Postgres>,
+    A::Connection: std::ops::DerefMut<Target = sqlx::PgConnection>,
+{
+    let mut conn = acquire
+        .acquire()
+        .await
+        .map_err(|e| AppError::persistence(format!("pair migrations: begin run: {e}")))?;
+    install(&mut *conn).await?;
+    let applied = applied(&mut *conn).await?;
     let scanned = scan_pairs(root)?;
     let queued = pending_pairs(&applied, &scanned);
     if queued.is_empty() {
@@ -213,9 +231,10 @@ pub async fn apply_pending(pool: &sqlx::PgPool, root: &Path) -> Result<Vec<Strin
     let next_batch = applied.iter().map(|(_, b)| *b).max().unwrap_or(0) + 1;
     let mut done = Vec::with_capacity(queued.len());
     for pair in queued {
-        let mut tx = pool.begin().await.map_err(|e| {
-            AppError::persistence(format!("{} (up): begin: {e}", pair.migration))
-        })?;
+        let mut tx = conn
+            .begin()
+            .await
+            .map_err(|e| AppError::persistence(format!("{} (up): begin: {e}", pair.migration)))?;
         sqlx::raw_sql(&pair.up_sql).execute(&mut *tx).await.map_err(|e| {
             AppError::persistence(format!("{} (up): {e}", pair.migration))
         })?;
@@ -242,13 +261,17 @@ pub async fn apply_pending(pool: &sqlx::PgPool, root: &Path) -> Result<Vec<Strin
 /// rows without a pair file on disk are refused (fail-closed — the down
 /// migration is missing, so reverting is impossible). Returns the reverted
 /// names in revert order.
-pub async fn rollback(
-    pool: &sqlx::PgPool,
-    root: &Path,
-    steps: u32,
-) -> Result<Vec<String>, AppError> {
-    install(pool).await?;
-    let applied = applied(pool).await?;
+pub async fn rollback<'a, A>(acquire: A, root: &Path, steps: u32) -> Result<Vec<String>, AppError>
+where
+    A: sqlx::Acquire<'a, Database = sqlx::Postgres>,
+    A::Connection: std::ops::DerefMut<Target = sqlx::PgConnection>,
+{
+    let mut conn = acquire
+        .acquire()
+        .await
+        .map_err(|e| AppError::persistence(format!("pair migrations: begin rollback: {e}")))?;
+    install(&mut *conn).await?;
+    let applied = applied(&mut *conn).await?;
     let order = rollback_order(&applied, steps);
     if order.is_empty() {
         return Ok(Vec::new());
@@ -263,9 +286,10 @@ pub async fn rollback(
                 "{name}: recorded as applied but no pair file present (rollback impossible)"
             )));
         };
-        let mut tx = pool.begin().await.map_err(|e| {
-            AppError::persistence(format!("{name} (down): begin: {e}"))
-        })?;
+        let mut tx = conn
+            .begin()
+            .await
+            .map_err(|e| AppError::persistence(format!("{name} (down): begin: {e}")))?;
         sqlx::raw_sql(&pair.down_sql)
             .execute(&mut *tx)
             .await
@@ -286,8 +310,12 @@ pub async fn rollback(
 }
 
 /// Revert every applied pair (`rollback` with the full-history sentinel).
-pub async fn reset(pool: &sqlx::PgPool, root: &Path) -> Result<Vec<String>, AppError> {
-    rollback(pool, root, u32::MAX).await
+pub async fn reset<'a, A>(acquire: A, root: &Path) -> Result<Vec<String>, AppError>
+where
+    A: sqlx::Acquire<'a, Database = sqlx::Postgres>,
+    A::Connection: std::ops::DerefMut<Target = sqlx::PgConnection>,
+{
+    rollback(acquire, root, u32::MAX).await
 }
 
 #[cfg(test)]

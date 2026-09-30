@@ -1418,6 +1418,10 @@ async fn migrate_fresh() -> anyhow::Result<ExitCode> {
         anyhow::bail!("aborted (set KEEL_FORCE=1 to skip the prompt in scripts)");
     }
     let pool = db_pool(&root).await?;
+    // The schema drop happens outside the advisory lock (fresh is dev/test
+    // only and confirmed); the migration run that follows locks inside
+    // run_migrations — locking here too would deadlock against it on a
+    // second connection.
     sqlx::query("DROP SCHEMA public CASCADE")
         .execute(&pool)
         .await
@@ -1442,9 +1446,20 @@ async fn migrate_fresh() -> anyhow::Result<ExitCode> {
 async fn migrate_rollback(steps: u32) -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
     let pool = db_pool(&root).await?;
-    let reverted = keel_postgres::pairs::rollback(&pool, &root, steps)
+    // The advisory lock is session-scoped: acquire, roll back, and release
+    // on one pooled connection (a concurrent migrate serializes instead of
+    // interleaving).
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|e| anyhow::anyhow!("migrate: connect: {e}"))?;
+    keel_postgres::acquire_migration_lock(&mut conn)
         .await
         .map_err(db_err)?;
+    let outcome = keel_postgres::pairs::rollback(&mut *conn, &root, steps).await;
+    let released = keel_postgres::release_migration_lock(&mut conn).await;
+    let reverted = outcome.map_err(db_err)?;
+    released.map_err(db_err)?;
     if reverted.is_empty() {
         println!("nothing to roll back ({steps} batch(es) requested).");
         return Ok(ExitCode::SUCCESS);
@@ -1473,9 +1488,17 @@ async fn migrate_reset() -> anyhow::Result<ExitCode> {
         anyhow::bail!("aborted (set KEEL_FORCE=1 to skip the prompt in scripts)");
     }
     let pool = db_pool(&root).await?;
-    let reverted = keel_postgres::pairs::reset(&pool, &root)
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|e| anyhow::anyhow!("migrate: connect: {e}"))?;
+    keel_postgres::acquire_migration_lock(&mut conn)
         .await
         .map_err(db_err)?;
+    let outcome = keel_postgres::pairs::reset(&mut *conn, &root).await;
+    let released = keel_postgres::release_migration_lock(&mut conn).await;
+    let reverted = outcome.map_err(db_err)?;
+    released.map_err(db_err)?;
     for name in &reverted {
         println!("  - {name}");
     }
@@ -1502,15 +1525,28 @@ async fn migrate_refresh(steps: u32) -> anyhow::Result<ExitCode> {
         anyhow::bail!("aborted (set KEEL_FORCE=1 to skip the prompt in scripts)");
     }
     let pool = db_pool(&root).await?;
-    let reverted = keel_postgres::pairs::rollback(&pool, &root, steps)
+    // One lock across rollback + re-apply so no run interleaves between the
+    // two phases.
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|e| anyhow::anyhow!("migrate: connect: {e}"))?;
+    keel_postgres::acquire_migration_lock(&mut conn)
         .await
         .map_err(db_err)?;
+    let outcome = match keel_postgres::pairs::rollback(&mut *conn, &root, steps).await {
+        Err(e) => Err(e),
+        Ok(reverted) => match keel_postgres::run_migrations_held(&mut conn, &root).await {
+            Ok(pair_applied) => Ok((reverted, pair_applied)),
+            Err(e) => Err(e),
+        },
+    };
+    let released = keel_postgres::release_migration_lock(&mut conn).await;
+    let (reverted, pair_applied) = outcome.map_err(db_err)?;
+    released.map_err(db_err)?;
     for name in &reverted {
         println!("  - {name}");
     }
-    let pair_applied = keel_postgres::run_migrations(&pool, &root)
-        .await
-        .map_err(db_err)?;
     for name in &pair_applied {
         println!("  + {name}");
     }
@@ -4109,6 +4145,18 @@ middleware = ["ghost"]
                 Cmd::MigrateInstall
             ),
             "migrate:install maps to MigrateInstall"
+        );
+    }
+
+    /// Wave 5 Phase 3: the advisory-lock key matches the program spec
+    /// (docs/19: `pg_advisory_lock(7259)`) and the fail-closed deadline is
+    /// actually bounded.
+    #[test]
+    fn migration_lock_key_matches_the_program_spec() {
+        assert_eq!(keel_postgres::MIGRATION_LOCK_KEY, 7259);
+        assert!(
+            !keel_postgres::MIGRATION_LOCK_TIMEOUT.is_zero(),
+            "acquisition deadline is bounded (fail-closed, never a hang)"
         );
     }
 

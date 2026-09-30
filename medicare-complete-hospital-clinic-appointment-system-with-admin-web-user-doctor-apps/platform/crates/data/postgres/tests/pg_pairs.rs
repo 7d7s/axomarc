@@ -8,7 +8,10 @@
 use keel_postgres::pairs::{
     apply_pending, applied, install, pairs_dir, reset, rollback, PAIRS_TABLE,
 };
-use keel_postgres::{create_pool, PgPool};
+use keel_postgres::{
+    acquire_migration_lock_within, create_pool, release_migration_lock, MIGRATION_LOCK_KEY, PgPool,
+};
+use std::time::Duration;
 
 async fn pool() -> Option<PgPool> {
     let url = match std::env::var("DATABASE_URL") {
@@ -169,4 +172,51 @@ async fn pair_migrations_apply_rollback_and_reset_with_batches() {
     assert!(!table_exists(&pool, gamma).await);
 
     std::fs::remove_dir_all(&root).ok();
+}
+
+/// The advisory migration lock serializes sessions: a held lock makes a
+/// second acquisition fail closed at its deadline (instead of hanging), and
+/// freeing it lets the waiter through — the `pg_advisory_lock(7259)`
+/// contract from docs/19 Wave 5.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn advisory_lock_serializes_runs_and_fails_closed_on_timeout() {
+    let Some(pool) = pool().await else {
+        return;
+    };
+
+    // Session A takes the lock.
+    let mut holder = pool.acquire().await.expect("holder connection");
+    let got: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+        .bind(MIGRATION_LOCK_KEY)
+        .fetch_one(&mut *holder)
+        .await
+        .expect("try lock");
+    assert!(got, "lock is free at the start of the test");
+
+    // Session B: fail-closed within a short deadline instead of hanging.
+    let mut waiter = pool.acquire().await.expect("waiter connection");
+    let err = acquire_migration_lock_within(
+        &mut waiter,
+        Duration::from_millis(250),
+        Duration::from_millis(50),
+    )
+    .await
+    .expect_err("held lock times out fail-closed");
+    let detail = err.internal.clone().unwrap_or_default();
+    assert!(detail.contains(&MIGRATION_LOCK_KEY.to_string()), "{detail}");
+    assert!(detail.contains("fail-closed"), "{detail}");
+
+    // Holder releases; the waiter acquires and releases cleanly.
+    let released: bool = sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
+        .bind(MIGRATION_LOCK_KEY)
+        .fetch_one(&mut *holder)
+        .await
+        .expect("holder unlock");
+    assert!(released, "holder owned the lock");
+    acquire_migration_lock_within(&mut waiter, Duration::from_secs(2), Duration::from_millis(50))
+        .await
+        .expect("waiter acquires once the lock is free");
+    release_migration_lock(&mut waiter)
+        .await
+        .expect("waiter release");
 }
