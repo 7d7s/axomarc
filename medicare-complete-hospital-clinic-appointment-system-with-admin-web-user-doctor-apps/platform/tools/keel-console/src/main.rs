@@ -64,7 +64,11 @@ enum Cmd {
     },
     /// Generate a scaffold file inside a module (item 30).
     Make {
-        /// Kind: migration|seeder|factory|job|event|listener|command|query|policy|workflow|model|test|resource|request|controller.
+        /// Kind: keel-codegen GENERATOR_KINDS — migration, seeder, factory,
+        /// job, event, listener, command, query, policy, workflow, model,
+        /// test, resource, request, controller + Wave 5's cast, channel,
+        /// component, exception, mail, notification, observer, rule, scope,
+        /// job-middleware, middleware, view.
         kind: String,
         /// Thing being generated (snake_case).
         name: String,
