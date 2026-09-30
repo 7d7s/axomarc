@@ -17,6 +17,11 @@ pub trait PrincipalStore: Send + Sync {
     fn update_status(&self, id: PrincipalId, status: PrincipalStatus) -> Result<(), AppError>;
     /// Record contact proof (B-23): set the email verification timestamp.
     fn mark_email_verified(&self, id: PrincipalId) -> Result<(), AppError>;
+    /// Wave 5 (`keel call`): the first ACTIVE principal in stable creation
+    /// order — the dev/test default operator. None when no active principal
+    /// exists yet. (There is no admin-role column yet: "first admin" is
+    /// first active — documented in docs/18 §11.)
+    fn first_active(&self) -> Result<Option<Principal>, AppError>;
 }
 
 /// Credential persistence port. One active password credential per principal.
@@ -112,6 +117,17 @@ impl PrincipalStore for InMemoryPrincipalStore {
             row.email_verified_at = Some(time::OffsetDateTime::now_utc());
         }
         Ok(())
+    }
+
+    fn first_active(&self) -> Result<Option<Principal>, AppError> {
+        // Insertion order == creation order for the in-memory store.
+        Ok(self
+            .inner
+            .read()
+            .unwrap()
+            .iter()
+            .find(|p| p.status == PrincipalStatus::Active)
+            .cloned())
     }
 }
 

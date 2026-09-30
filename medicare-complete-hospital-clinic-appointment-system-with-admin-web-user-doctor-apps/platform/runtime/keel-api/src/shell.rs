@@ -293,8 +293,9 @@ async fn run_operation(state: &AppState, session: &ShellSession, line: &str) -> 
 
 /// Context construction mirrors `graph_dispatch` (same plane/profile/tenant
 /// semantics); the plan comes from the registered handler, which is what the
-/// engine authorizes against.
-fn build_context(
+/// engine authorizes against. `keel call` (Wave 5) reuses it so one-shot
+/// dispatch builds the exact context the REPL does.
+pub(crate) fn build_context(
     plane: SecurityPlane,
     kind: ExecutionProfileKind,
     principal: PrincipalId,

@@ -3,6 +3,7 @@
 //! integration suite can drive the exact production wiring.
 
 pub mod auth_routes;
+pub mod call;
 pub mod dashboard;
 pub mod edge;
 pub mod graph_routes;
@@ -44,6 +45,15 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let prune_tenant: Option<TenantId> = flag_value("--tenant")
         .and_then(|v| uuid::Uuid::parse_str(&v).ok())
         .map(TenantId::from_uuid);
+    // Wave 5 Phase 7: one-shot console-route dispatch (`keel call <name> [json]`
+    // spawns `keel-api --call <name> [--input <json>] [--principal <uuid>]
+    // [--tenant <uuid>]`) — boots the graph, dispatches through the CommandBus
+    // under the operator principal, prints the JSON result and exits.
+    let call_mode = args.iter().any(|arg| arg == "--call");
+    let call_name = flag_value("--call").unwrap_or_default();
+    let call_input = flag_value("--input");
+    let call_principal = flag_value("--principal");
+    let call_tenant = flag_value("--tenant");
     let cfg = PlatformConfig::load(Some(std::path::Path::new(&cfg_path)))?.freeze();
     let env = cfg.app().env.clone();
     let listen = cfg.app().listen.clone();
@@ -85,9 +95,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     telemetry_config.apply_env(); // KEEL_TELEMETRY_* wins over the S1 knobs
-    if shell_mode || prune_mode {
-        // The REPL/sweep owns stdout: keep the console exporter from
-        // interleaving log lines with the printed output (file/OTLP still run).
+    if shell_mode || prune_mode || call_mode {
+        // The REPL/sweep/one-shot call owns stdout: keep the console
+        // exporter from interleaving log lines with the printed output
+        // (file/OTLP still run).
         telemetry_config.exporters.remove("console");
     }
 
@@ -566,6 +577,28 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         telemetry_runtime.shutdown(std::time::Duration::from_secs(5));
+        return Ok(());
+    }
+
+    // Wave 5 Phase 7: `keel call` — one-shot dispatch of a routes/console.toml
+    // command through the CommandBus under the operator principal (same boot
+    // as `--shell`; the JSON result owns stdout, failures go to stderr with a
+    // non-zero exit so scripts can branch on capability denial).
+    if call_mode {
+        let result = call::run(call::CallRequest {
+            state: &state,
+            graph: &graph,
+            name: &call_name,
+            input: call_input.as_deref(),
+            principal: call_principal.as_deref(),
+            tenant: call_tenant.as_deref(),
+        })
+        .await;
+        telemetry_runtime.shutdown(std::time::Duration::from_secs(5));
+        if let Err(message) = result {
+            eprintln!("keel call: {message}");
+            std::process::exit(1);
+        }
         return Ok(());
     }
 

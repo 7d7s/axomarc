@@ -186,6 +186,24 @@ enum Cmd {
         #[arg(long)]
         pg: bool,
     },
+    /// Wave 5: execute a routes/console.toml command through the CommandBus
+    /// under the operator principal (capability-checked; runs inside
+    /// keel-api — the dep-rules matrix keeps tools from linking runtime
+    /// crates, same posture as `keel shell`/`keel model:prune`).
+    #[command(name = "call")]
+    Call {
+        /// Command name from routes/console.toml.
+        name: String,
+        /// JSON input payload (default {}).
+        input: Option<String>,
+        /// Operator principal (uuid); defaults to the first active principal
+        /// in dev/test — staging/production refuse without it.
+        #[arg(long)]
+        principal: Option<String>,
+        /// Tenant (uuid); defaults to the dev/test fallback tenant.
+        #[arg(long)]
+        tenant: Option<String>,
+    },
     /// Apply pending database migrations.
     Migrate,
     /// Show migration status (applied vs pending).
@@ -576,6 +594,12 @@ fn main() -> ExitCode {
         Cmd::DbSchemaDump => rt(db_schema_dump()),
         Cmd::StorageLink { force } => storage_link(force),
         Cmd::Test { pg } => run_tests(pg),
+        Cmd::Call { name, input, principal, tenant } => call_command(
+            &name,
+            input.as_deref(),
+            principal.as_deref(),
+            tenant.as_deref(),
+        ),
         Cmd::New {
             name,
             plane,
@@ -4451,6 +4475,119 @@ fn serve(worker: bool) -> anyhow::Result<ExitCode> {
 
 // ------------------------------------------------------------------ shell
 
+// --------------------------------------------- console routes (`keel call`)
+
+/// `routes/console.toml` commands (the CLI-invokable surface, docs/19). An
+/// absent file means no commands — `keel call` then fails with the
+/// declaration hint. keel-api re-resolves against the compiled graph whose
+/// GRAPH-ROUTEFILE-OP gate refuses unknown operations at boot.
+fn console_route_commands(
+    root: &Path,
+) -> anyhow::Result<Vec<keel_registry::ConsoleCommandSpec>> {
+    let path = root.join("routes").join("console.toml");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let raw = std::fs::read_to_string(&path)?;
+    let manifest = keel_registry::RouteFileManifest::from_toml(&raw, "routes/console.toml", None)
+        .map_err(|v| anyhow::anyhow!("routes/console.toml: {}", v.message))?;
+    Ok(manifest.commands)
+}
+
+/// Fast pre-flight name lookup — fails before the keel-api boot, listing
+/// what routes/console.toml actually declares.
+fn resolve_console_route<'a>(
+    commands: &'a [keel_registry::ConsoleCommandSpec],
+    name: &str,
+) -> anyhow::Result<&'a keel_registry::ConsoleCommandSpec> {
+    commands.iter().find(|c| c.name == name).ok_or_else(|| {
+        let known = commands
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        if known.is_empty() {
+            anyhow::anyhow!("no commands declared — add a [[command]] entry to routes/console.toml")
+        } else {
+            anyhow::anyhow!("unknown console command {name:?} — declared: {known}")
+        }
+    })
+}
+
+/// Early payload validation (bad JSON fails before the keel-api boot).
+fn parse_call_input(input: Option<&str>) -> anyhow::Result<serde_json::Value> {
+    match input {
+        None | Some("") => Ok(serde_json::json!({})),
+        Some(raw) => {
+            serde_json::from_str(raw).map_err(|e| anyhow::anyhow!("invalid JSON input: {e}"))
+        }
+    }
+}
+
+/// The default operator exists in dev/test only (docs/19); staging and
+/// production must pass --principal (keel-api re-checks authoritatively).
+fn default_operator_allowed(env: &Environment) -> bool {
+    matches!(env, Environment::Dev | Environment::Test)
+}
+
+/// Wave 5: `keel call <name> [json]` — pre-flight the route, payload and
+/// env gate, then spawn `keel-api --call` (same posture as `keel shell`:
+/// Tools-class console, stdio inherited so the JSON result streams straight
+/// through) and propagate the exit code so capability denial is scriptable.
+fn call_command(
+    name: &str,
+    input: Option<&str>,
+    principal: Option<&str>,
+    tenant: Option<&str>,
+) -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    let commands = console_route_commands(&root)?;
+    resolve_console_route(&commands, name)?;
+    parse_call_input(input)?;
+    if principal.is_none() {
+        let cfg = load_config(&root)?;
+        if !default_operator_allowed(&cfg.app.env) {
+            anyhow::bail!(
+                "keel call refuses the default operator outside dev/test (env: {}) — pass --principal <uuid>",
+                cfg.app.env.as_str()
+            );
+        }
+    }
+    let config = config_path(&root);
+    let mut command = std::process::Command::new("cargo");
+    command
+        .arg("run")
+        .arg("--quiet")
+        .arg("-p")
+        .arg("keel-api")
+        .arg("--")
+        .arg("--call")
+        .arg(name);
+    if let Some(raw) = input {
+        if !raw.is_empty() {
+            command.args(["--input", raw]);
+        }
+    }
+    if let Some(raw) = principal {
+        command.args(["--principal", raw]);
+    }
+    if let Some(raw) = tenant {
+        command.args(["--tenant", raw]);
+    }
+    let status = command
+        .current_dir(&root)
+        .env("KEEL_CONFIG", &config)
+        .status()
+        .map_err(|e| anyhow::anyhow!("cannot spawn keel-api --call: {e}"))?;
+    let code = status.code().unwrap_or(1);
+    Ok(if code == 0 {
+        ExitCode::SUCCESS
+    } else {
+        // keel-api already printed the failure to stderr — just propagate.
+        ExitCode::from(code.clamp(0, 255) as u8)
+    })
+}
+
 /// B-29: interactive platform console. keel-console is a Tools-class crate and
 /// the dep-rules matrix keeps tools from linking runtime crates, so the REPL
 /// itself runs inside keel-api behind `--shell`; this spawns it exactly like
@@ -5221,6 +5358,81 @@ middleware = ["ghost"]
             Cmd::Test { pg } => assert!(pg, "--pg sets it"),
             _ => panic!("--pg maps to Test"),
         }
+    }
+
+    /// Wave 5 Phase 7: `keel call` parses under its documented syntax — name,
+    /// optional JSON payload and the --principal/--tenant flags.
+    #[test]
+    fn call_command_parses_with_documented_flags() {
+        let cli = Cli::try_parse_from(["keel", "call", "book"]).expect("parses");
+        match cli.cmd {
+            Cmd::Call {
+                name,
+                input,
+                principal,
+                tenant,
+            } => {
+                assert_eq!(name, "book");
+                assert!(input.is_none() && principal.is_none() && tenant.is_none());
+            }
+            _ => panic!("call maps to Call"),
+        }
+        let cli = Cli::try_parse_from([
+            "keel",
+            "call",
+            "list",
+            "{\"page\":2}",
+            "--principal",
+            "2f2f2f2f-2f2f-2f2f-2f2f-2f2f2f2f2f2f",
+            "--tenant",
+            "1f1f1f1f-1f1f-1f1f-1f1f-1f1f1f1f1f1f",
+        ])
+        .expect("parses");
+        match cli.cmd {
+            Cmd::Call {
+                name,
+                input,
+                principal,
+                tenant,
+            } => {
+                assert_eq!(name, "list");
+                assert_eq!(input.as_deref(), Some("{\"page\":2}"));
+                assert!(principal.is_some(), "principal flag");
+                assert!(tenant.is_some(), "tenant flag");
+            }
+            _ => panic!("call with flags maps to Call"),
+        }
+    }
+
+    /// Wave 5 Phase 7: route/payload pre-flight and the dev/test-only
+    /// default-operator gate (docs/19) — all pure, no keel-api spawn.
+    #[test]
+    fn call_pre_flight_resolves_routes_payloads_and_env_gate() {
+        let raw = "[[command]]\nname = \"book\"\noperation = \"appointments.book\"\n\n[[command]]\nname = \"list\"\noperation = \"appointments.list\"\n";
+        let manifest =
+            keel_registry::RouteFileManifest::from_toml(raw, "routes/console.toml", None)
+                .expect("route file parses");
+        let commands = manifest.commands;
+        let spec = resolve_console_route(&commands, "book").expect("resolves");
+        assert_eq!(spec.operation, "appointments.book");
+        let err = resolve_console_route(&commands, "boo").expect_err("refuses");
+        assert!(err.to_string().contains("book"), "{err}");
+        let err = resolve_console_route(&[], "book").expect_err("refuses");
+        assert!(err.to_string().contains("routes/console.toml"), "{err}");
+
+        assert_eq!(parse_call_input(None).unwrap(), serde_json::json!({}));
+        assert_eq!(parse_call_input(Some("")).unwrap(), serde_json::json!({}));
+        assert_eq!(
+            parse_call_input(Some("{\"page\":2}")).unwrap(),
+            serde_json::json!({ "page": 2 })
+        );
+        let err = parse_call_input(Some("{bad")).expect_err("refuses");
+        assert!(err.to_string().contains("JSON"), "{err}");
+
+        assert!(default_operator_allowed(&Environment::Dev));
+        assert!(default_operator_allowed(&Environment::Test));
+        assert!(!default_operator_allowed(&Environment::Staging));
+        assert!(!default_operator_allowed(&Environment::Prod));
     }
 
     /// Wave 4 Phase 5: temp workspace with a schema-clean config (secrets,

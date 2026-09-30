@@ -200,6 +200,21 @@ impl PrincipalStore for PgPrincipalStore {
             Ok(())
         })
     }
+
+    fn first_active(&self) -> Result<Option<Principal>, AppError> {
+        let pool = self.pool.clone();
+        block_on(async move {
+            let row = sqlx::query(
+                "SELECT * FROM principals WHERE status = $1
+                 ORDER BY created_at, id LIMIT 1",
+            )
+            .bind(status_text(PrincipalStatus::Active))
+            .fetch_optional(&pool)
+            .await
+            .map_err(pg)?;
+            row.map(principal_from_row).transpose()
+        })
+    }
 }
 
 impl CredentialStore for PgCredentialStore {
