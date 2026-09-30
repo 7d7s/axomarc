@@ -1339,6 +1339,7 @@ dependencies = [
  "keel-policy",
  "keel-postgres",
  "keel-registry",
+ "keel-scheduling",
  "keel-views",
  "serde",
  "serde_json",

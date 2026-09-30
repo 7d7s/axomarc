@@ -31,6 +31,7 @@ keel-observability = { workspace = true }
 keel-http = { workspace = true }
 keel-views = { workspace = true }
 keel-jobs = { workspace = true }
+keel-scheduling = { workspace = true }
 keel-deployment = { workspace = true }
 keel-feature-flags = { workspace = true }
 clap = { workspace = true }

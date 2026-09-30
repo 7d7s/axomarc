@@ -367,6 +367,18 @@ enum Cmd {
     /// Run due schedules once.
     #[command(name = "schedule:run")]
     ScheduleRun,
+    /// Wave 5: scheduler daemon — tick every 60s and run due items (each due
+    /// schedule fires as a durable job; last-fired state persists to
+    /// storage/framework/schedule-state.json so restarts do not re-fire).
+    #[command(name = "schedule:work")]
+    ScheduleWork {
+        /// Seconds between ticks (spec default 60).
+        #[arg(long, default_value_t = 60)]
+        every: u64,
+    },
+    /// Wave 5: dry-run — print what would fire now without executing.
+    #[command(name = "schedule:test")]
+    ScheduleTest,
     /// Database inventory: tables + row counts.
     #[command(name = "db:inspect")]
     DbInspect,
@@ -589,6 +601,8 @@ fn main() -> ExitCode {
         Cmd::QueueRetryBatch { id } => rt(queue_retry_batch(&id)),
         Cmd::ScheduleList => schedule_info("schedule:list"),
         Cmd::ScheduleRun => schedule_info("schedule:run"),
+        Cmd::ScheduleWork { every } => schedule_work(every),
+        Cmd::ScheduleTest => schedule_test(),
         Cmd::DbInspect => rt(db_inspect()),
         Cmd::DbShow => rt(db_show()),
         Cmd::DbSchemaDump => rt(db_schema_dump()),
@@ -2425,6 +2439,142 @@ fn schedule_info(command: &str) -> anyhow::Result<ExitCode> {
     println!("{command}: no module schedules registered yet.");
     println!("Schedules are declared by modules through ScheduleRegistry (keel-scheduling); the framework surface is in place, module content lands with S3.");
     Ok(ExitCode::SUCCESS)
+}
+
+/// The registry `schedule:work`/`schedule:test` consume (docs/19). Schedule
+/// items are registered by module boot code through the scheduler service;
+/// the CLI source starts EMPTY — no module registers schedules yet — the same
+/// honest posture as `schedule:list` and `keel model:prune` ("none"). This
+/// function is the single seam where a future declarative source lands.
+fn schedule_registry(
+    _root: &Path,
+) -> Result<keel_scheduling::ScheduleRegistry, keel_foundation::AppError> {
+    Ok(keel_scheduling::ScheduleRegistry::new())
+}
+
+/// What the `schedule:test` dry run would do: everything registered plus the
+/// subset due at `now` against the persisted last-fired state. Pure over the
+/// registry (the crate documents `due` as a pure function of items, state
+/// and now) — nothing fires, no state is written.
+fn schedule_test_plan(
+    registry: &keel_scheduling::ScheduleRegistry,
+    state: &[(String, time::OffsetDateTime)],
+    now: time::OffsetDateTime,
+) -> Result<SchedulePlan, keel_foundation::AppError> {
+    let due = registry
+        .due(state, now)?
+        .into_iter()
+        .map(|item| (item.name.clone(), item.operation.clone()))
+        .collect();
+    Ok(SchedulePlan {
+        registered: registry.names().into_iter().map(str::to_string).collect(),
+        due,
+    })
+}
+
+/// The plan rendered for the terminal (pure — asserted directly by tests).
+/// Disabled items appear in the registry list but never in the due set.
+fn schedule_test_lines(plan: &SchedulePlan) -> Vec<String> {
+    if plan.registered.is_empty() {
+        return vec![
+            "schedule:test: no schedules registered yet (nothing would fire).".to_string(),
+        ];
+    }
+    let mut lines = vec![format!(
+        "schedule:test: {} registered, {} due now.",
+        plan.registered.len(),
+        plan.due.len()
+    )];
+    for (name, operation) in &plan.due {
+        lines.push(format!("  would fire: {name} -> {operation}"));
+    }
+    let not_due = plan
+        .registered
+        .iter()
+        .filter(|name| !plan.due.iter().any(|(d, _)| d == *name))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !not_due.is_empty() {
+        lines.push(format!("  not due: {}", not_due.join(", ")));
+    }
+    lines
+}
+
+/// Registered names + due-now (name, operation) pairs: the dry-run answer.
+struct SchedulePlan {
+    registered: Vec<String>,
+    due: Vec<(String, String)>,
+}
+
+/// Wave 5: `keel schedule:test` — print what would fire now without
+/// executing (reads the persisted state, executes nothing, writes nothing).
+fn schedule_test() -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    let registry = schedule_registry(&root).map_err(db_err)?;
+    let state = keel_scheduling::load_state(&root).map_err(db_err)?;
+    let plan = schedule_test_plan(&registry, &state, time::OffsetDateTime::now_utc())
+        .map_err(db_err)?;
+    for line in schedule_test_lines(&plan) {
+        println!("{line}");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// One `schedule:work` pass: fire every due schedule as a durable job — the
+/// worker's L35 semantics (`item.operation`, `max_attempts = 1`, the item's
+/// payload; `queue:work` processes it) — then persist last-fired state so a
+/// restart or a `schedule:test` does not re-fire.
+fn schedule_tick(
+    runner: &keel_scheduling::SchedulerRunner,
+    store: &dyn keel_jobs::JobStore,
+    root: &Path,
+    now: time::OffsetDateTime,
+) -> Result<Vec<String>, keel_foundation::AppError> {
+    let fired = runner.tick(now, |item| {
+        let mut def = keel_jobs::JobDef::new(item.operation.clone());
+        def.max_attempts = 1;
+        store.enqueue(keel_jobs::build_from_def(&def, item.payload.clone(), now))?;
+        Ok(())
+    })?;
+    if !fired.is_empty() {
+        keel_scheduling::save_state(root, &runner.state())?;
+    }
+    Ok(fired)
+}
+
+/// Wave 5: `keel schedule:work` — the scheduler daemon (docs/19: tick every
+/// 60s, run due items). With nothing registered it reports the empty posture
+/// and exits before touching the database — a daemon over an empty registry
+/// would only spin (the `schedule:list`/`model:prune` "none" shape).
+/// Otherwise it ticks forever, firing due items as durable jobs and saving
+/// state after every firing pass; Ctrl-C stops the loop.
+fn schedule_work(every: u64) -> anyhow::Result<ExitCode> {
+    rt(async move {
+        let root = workspace_root()?;
+        let registry = schedule_registry(&root).map_err(db_err)?;
+        let count = registry.names().len();
+        if count == 0 {
+            println!("schedule:work: no schedules registered yet — nothing to fire.");
+            return Ok(ExitCode::SUCCESS);
+        }
+        let state = keel_scheduling::load_state(&root).map_err(db_err)?;
+        let runner = keel_scheduling::SchedulerRunner::with_state(Arc::new(registry), state);
+        let pool = db_pool(&root).await?;
+        let store = keel_postgres::PgJobStore::new(pool);
+        let every = every.max(1);
+        println!("schedule:work: {count} schedule(s) registered; ticking every {every}s (Ctrl-C stops; state saves after each firing pass)");
+        loop {
+            let now = time::OffsetDateTime::now_utc();
+            match schedule_tick(&runner, &store, &root, now) {
+                Ok(fired) if !fired.is_empty() => {
+                    println!("  [{}] fired: {}", rfc3339(now), fired.join(", "));
+                }
+                Ok(_) => {}
+                Err(e) => eprintln!("schedule:work: tick failed: {}", db_err(e)),
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(every)).await;
+        }
+    })
 }
 
 // -------------------------------------------------------------- db inspect
@@ -5433,6 +5583,152 @@ middleware = ["ghost"]
         assert!(default_operator_allowed(&Environment::Test));
         assert!(!default_operator_allowed(&Environment::Staging));
         assert!(!default_operator_allowed(&Environment::Prod));
+    }
+
+    /// Wave 5 Phase 8: schedule:work/test parse under their documented names —
+    /// work defaults to the spec's 60s tick, test takes no flags.
+    #[test]
+    fn schedule_work_and_test_commands_parse() {
+        let cli = Cli::try_parse_from(["keel", "schedule:work"]).expect("parses");
+        match cli.cmd {
+            Cmd::ScheduleWork { every } => assert_eq!(every, 60, "spec default tick"),
+            _ => panic!("schedule:work maps to ScheduleWork"),
+        }
+        let cli = Cli::try_parse_from(["keel", "schedule:work", "--every", "15"]).expect("parses");
+        match cli.cmd {
+            Cmd::ScheduleWork { every } => assert_eq!(every, 15, "--every overrides"),
+            _ => panic!("--every maps to ScheduleWork"),
+        }
+        let cli = Cli::try_parse_from(["keel", "schedule:test"]).expect("parses");
+        assert!(
+            matches!(cli.cmd, Cmd::ScheduleTest),
+            "schedule:test maps to ScheduleTest"
+        );
+    }
+
+    /// Wave 5 Phase 8: the dry-run plan is pure — due items come from
+    /// (registry, last-fired, now) with no execution and no state write, and
+    /// disabled items never enter the due set.
+    #[test]
+    fn schedule_test_plan_is_pure_and_skips_disabled() {
+        let mut registry = keel_scheduling::ScheduleRegistry::new();
+        for (name, enabled) in [("due-interval", true), ("recently-fired", true), ("disabled", false)] {
+            registry
+                .register(keel_scheduling::ScheduleItem {
+                    name: name.to_string(),
+                    operation: "demo.echo".to_string(),
+                    spec: keel_scheduling::ScheduleSpec::Interval { secs: 60 },
+                    payload: serde_json::json!({}),
+                    enabled,
+                })
+                .expect("registers");
+        }
+        let now = time::macros::datetime!(2026-03-01 12:00:00 UTC);
+        let state = vec![("recently-fired".to_string(), now - time::Duration::seconds(5))];
+        let plan = schedule_test_plan(&registry, &state, now).expect("plans");
+        assert_eq!(
+            plan.registered,
+            ["due-interval", "recently-fired", "disabled"],
+            "registry lists every item"
+        );
+        assert_eq!(plan.due.len(), 1, "only the never-fired enabled item");
+        assert_eq!(plan.due[0].0, "due-interval");
+
+        let lines = schedule_test_lines(&plan);
+        assert!(
+            lines[0].contains("3 registered, 1 due now"),
+            "{:?}",
+            lines
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("would fire: due-interval -> demo.echo")),
+            "{:?}",
+            lines
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("not due: recently-fired, disabled")),
+            "{:?}",
+            lines
+        );
+    }
+
+    /// Wave 5 Phase 8: an empty registry reports the documented "none"
+    /// posture (the schedule:list / model:prune shape).
+    #[test]
+    fn schedule_test_lines_report_the_empty_posture() {
+        let registry = keel_scheduling::ScheduleRegistry::new();
+        let plan =
+            schedule_test_plan(&registry, &[], time::OffsetDateTime::now_utc()).expect("plans");
+        let lines = schedule_test_lines(&plan);
+        assert_eq!(lines.len(), 1);
+        assert!(
+            lines[0].contains("no schedules registered yet"),
+            "{}",
+            lines[0]
+        );
+    }
+
+    /// Wave 5 Phase 8: one daemon pass fires due schedules as durable jobs,
+    /// persists last-fired state (so neither a re-tick nor a fresh runner
+    /// seeded from disk re-fires), and skips items whose interval has not
+    /// elapsed.
+    #[test]
+    fn schedule_tick_fires_due_items_and_persists_state() {
+        use keel_jobs::JobStore;
+        fn registry() -> keel_scheduling::ScheduleRegistry {
+            let mut registry = keel_scheduling::ScheduleRegistry::new();
+            registry
+                .register(keel_scheduling::ScheduleItem {
+                    name: "due-interval".to_string(),
+                    operation: "demo.echo".to_string(),
+                    spec: keel_scheduling::ScheduleSpec::Interval { secs: 60 },
+                    payload: serde_json::json!({"n": 1}),
+                    enabled: true,
+                })
+                .expect("registers");
+            registry
+        }
+        let root = phase5_root("schedule-tick");
+        let runner =
+            keel_scheduling::SchedulerRunner::with_state(Arc::new(registry()), Vec::new());
+        let store = keel_jobs::InMemoryJobStore::new();
+        let now = time::macros::datetime!(2026-03-01 12:00:00 UTC);
+
+        let fired = schedule_tick(&runner, &store, &root, now).expect("tick fires");
+        assert_eq!(fired, ["due-interval"]);
+        // The firing is a real durable job named after the operation.
+        let claimed = store
+            .claim("schedule-tick-worker")
+            .expect("claim works")
+            .expect("job enqueued");
+        assert_eq!(claimed.name, "demo.echo");
+
+        // Same runner, interval not elapsed: nothing fires.
+        let second = schedule_tick(&runner, &store, &root, now + time::Duration::seconds(1))
+            .expect("tick");
+        assert!(second.is_empty(), "interval not elapsed");
+
+        // State was persisted: a fresh runner seeded from disk does not
+        // re-fire either.
+        let state = keel_scheduling::load_state(&root).expect("state loads");
+        assert_eq!(state.len(), 1);
+        assert_eq!(state[0].0, "due-interval");
+        let fresh =
+            keel_scheduling::SchedulerRunner::with_state(Arc::new(registry()), state);
+        let third = schedule_tick(&fresh, &store, &root, now + time::Duration::seconds(10))
+            .expect("tick");
+        assert!(third.is_empty(), "persisted state prevents re-fire");
+    }
+
+    /// Wave 5 Phase 8: with the (always-empty today) registry both commands
+    /// report the none posture and exit successfully — schedule:work does so
+    /// BEFORE touching the database, schedule:test writes nothing.
+    #[test]
+    fn schedule_commands_exit_cleanly_when_nothing_is_registered() {
+        assert!(schedule_work(60).is_ok(), "work: none posture, no database");
+        assert!(schedule_test().is_ok(), "test: none posture, read-only");
     }
 
     /// Wave 4 Phase 5: temp workspace with a schema-clean config (secrets,
