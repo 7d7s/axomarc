@@ -1981,7 +1981,9 @@ name = "keel-worker"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "keel-cache-memory",
  "keel-cache-redis",
+ "keel-caching",
  "keel-config",
  "keel-event",
  "keel-foundation",

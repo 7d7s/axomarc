@@ -2545,14 +2545,17 @@ fn schedule_tick(
     root: &Path,
     now: time::OffsetDateTime,
 ) -> Result<Vec<String>, keel_foundation::AppError> {
+    let failures_seen = runner.failures().len();
     let fired = runner.tick(now, |item| {
         let mut def = keel_jobs::JobDef::new(item.operation.clone());
         def.max_attempts = 1;
         store.enqueue(keel_jobs::build_from_def(&def, item.payload.clone(), now))?;
         Ok(())
     })?;
-    if !fired.is_empty() {
-        keel_scheduling::save_state(root, &runner.state())?;
+    if !fired.is_empty() || runner.failures().len() > failures_seen {
+        // Wave 6 P4: persists last-fired AND failures — a failing item is
+        // recorded by the tick, never fatal to the pass.
+        keel_scheduling::save_state_doc(root, &runner.state_doc())?;
     }
     Ok(fired)
 }
@@ -2572,8 +2575,8 @@ fn schedule_work(every: u64) -> anyhow::Result<ExitCode> {
             println!("schedule:work: no schedules registered yet — nothing to fire.");
             return Ok(ExitCode::SUCCESS);
         }
-        let state = keel_scheduling::load_state(&root).map_err(db_err)?;
-        let runner = keel_scheduling::SchedulerRunner::with_state(Arc::new(registry), state);
+        let state = keel_scheduling::load_state_doc(&root).map_err(db_err)?;
+        let runner = keel_scheduling::SchedulerRunner::with_state_doc(Arc::new(registry), state);
         let pool = db_pool(&root).await?;
         let store = keel_postgres::PgJobStore::new(pool);
         let every = every.max(1);
@@ -5638,6 +5641,7 @@ middleware = ["ghost"]
                     spec: keel_scheduling::ScheduleSpec::Interval { secs: 60 },
                     payload: serde_json::json!({}),
                     enabled,
+                    ..Default::default()
                 })
                 .expect("registers");
         }
@@ -5704,6 +5708,7 @@ middleware = ["ghost"]
                     spec: keel_scheduling::ScheduleSpec::Interval { secs: 60 },
                     payload: serde_json::json!({"n": 1}),
                     enabled: true,
+                    ..Default::default()
                 })
                 .expect("registers");
             registry

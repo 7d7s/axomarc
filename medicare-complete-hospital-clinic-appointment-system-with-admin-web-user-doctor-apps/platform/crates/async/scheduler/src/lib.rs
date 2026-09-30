@@ -1,7 +1,15 @@
 //! # keel-scheduling
 //! Recurring execution contracts (11-SPEC §29): schedules declare WHEN; the jobs
-//! layer decides HOW (durable job enqueue). Next-run math is deterministic and
-//! UTC-only — no wall-clock ambiguity in the kernel.
+//! layer decides HOW (durable job enqueue). Next-run math is deterministic —
+//! UTC in the kernel, with optional per-item wall clocks (Wave 6 P4: a
+//! zero-dep cron parser, bundled timezones, overlap/one-server guards and
+//! hooks).
+
+pub mod cron;
+pub mod tz;
+
+pub use cron::{daily, daily_at, every_minutes, hourly, monthly, weekly, CronExpr};
+pub use tz::timezone_offset_secs;
 
 use keel_foundation::AppError;
 use serde::{Deserialize, Serialize};
@@ -70,7 +78,7 @@ impl ScheduleSpec {
 }
 /// One registered recurring schedule. Firing becomes a durable job enqueue —
 /// never an inline mutation (same engine, same context as any front door).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ScheduleItem {
     pub name: String,
     /// Target operation id (module-scoped), e.g. `billing.close-day`.
@@ -80,6 +88,209 @@ pub struct ScheduleItem {
     pub payload: serde_json::Value,
     #[serde(default)]
     pub enabled: bool,
+    /// Wave 6 P4: a 5-field cron expression; when set it takes precedence
+    /// over `spec` for next-run math (invalid → registration error).
+    #[serde(default)]
+    pub cron: Option<String>,
+    /// Wave 6 P4: IANA zone from the bundled static table (unknown →
+    /// registration error). Wall-clock specs (cron/daily/weekly) run in it;
+    /// `Interval` is absolute seconds and ignores it.
+    #[serde(default)]
+    pub timezone: Option<String>,
+    /// Wave 6 P4: hold a lock keyed to this item across a firing window so a
+    /// still-running pass skips instead of double-firing (Laravel
+    /// `withoutOverlapping` parity).
+    #[serde(default)]
+    pub without_overlapping: bool,
+    /// Wave 6 P4: serialize this item's firing across nodes — acquire, run,
+    /// release within one tick (Laravel `onOneServer` parity).
+    #[serde(default)]
+    pub on_one_server: bool,
+    /// Wave 6 P4: the overlap lock TTL in seconds = assumed max runtime
+    /// (default [`DEFAULT_OVERLAP_TTL_SECS`]).
+    #[serde(default)]
+    pub lock_ttl_secs: Option<u64>,
+}
+
+impl Default for ScheduleSpec {
+    fn default() -> Self {
+        ScheduleSpec::Interval { secs: 60 }
+    }
+}
+
+impl ScheduleItem {
+    /// Registration gate: spec ranges, the bundled timezone table, and the
+    /// cron parse plus a never-fires probe (an impossible date like
+    /// `0 0 31 2 *` refuses `register` instead of silently never running).
+    pub fn validate(&self) -> Result<(), AppError> {
+        self.spec.validate()?;
+        let offset_secs = self.offset_secs()?;
+        if let Some(expr) = &self.cron {
+            let parsed = CronExpr::parse(expr)?;
+            if parsed
+                .next_after(OffsetDateTime::now_utc(), offset_secs)
+                .is_none()
+            {
+                return Err(AppError::validation(format!(
+                    "cron expression never fires: `{expr}`"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Next run strictly after `from`. `cron` takes precedence over `spec`;
+    /// `Interval` is absolute seconds (timezone ignored); daily/weekly wall
+    /// clocks — like cron — run in the item's zone when one is set. UTC
+    /// items keep the original spec math byte-for-byte.
+    pub fn next_run(&self, from: OffsetDateTime) -> Result<OffsetDateTime, AppError> {
+        self.spec.validate()?;
+        let offset_secs = self.offset_secs()?;
+        if let Some(expr) = &self.cron {
+            let parsed = CronExpr::parse(expr)?;
+            return parsed
+                .next_after(from, offset_secs)
+                .ok_or_else(|| {
+                    AppError::validation(format!("cron expression never fires: `{expr}`"))
+                });
+        }
+        if offset_secs == 0 {
+            return self.spec.next_run(from);
+        }
+        match &self.spec {
+            ScheduleSpec::Interval { .. } => self.spec.next_run(from),
+            // Daily / Weekly: the same wall clock, in the item's zone.
+            _ => {
+                let expr = wall_clock_cron(&self.spec)?;
+                expr.next_after(from, offset_secs).ok_or_else(|| {
+                    AppError::validation("schedule never fires in this timezone")
+                })
+            }
+        }
+    }
+
+    fn offset_secs(&self) -> Result<i32, AppError> {
+        match &self.timezone {
+            Some(name) => timezone_offset_secs(name).ok_or_else(|| {
+                AppError::validation(format!(
+                    "unknown timezone `{name}` (bundled static table; see docs/19 P4)"
+                ))
+            }),
+            None => Ok(0),
+        }
+    }
+}
+
+/// The wall-clock cron equivalent of a non-interval spec (used only for
+/// zoned items; UTC items keep [`ScheduleSpec::next_run`]).
+fn wall_clock_cron(spec: &ScheduleSpec) -> Result<CronExpr, AppError> {
+    match spec {
+        ScheduleSpec::Daily { hour, minute } => {
+            CronExpr::parse(&format!("{minute} {hour} * * *"))
+        }
+        ScheduleSpec::Weekly { day, hour, minute } => CronExpr::parse(&format!(
+            "{minute} {hour} * * {}",
+            weekday_to_sunday_zero(*day)
+        )),
+        ScheduleSpec::Interval { .. } => {
+            Err(AppError::internal("interval schedules have no wall clock"))
+        }
+    }
+}
+
+fn weekday_to_sunday_zero(day: Weekday) -> u8 {
+    match day {
+        Weekday::Sunday => 0,
+        Weekday::Monday => 1,
+        Weekday::Tuesday => 2,
+        Weekday::Wednesday => 3,
+        Weekday::Thursday => 4,
+        Weekday::Friday => 5,
+        Weekday::Saturday => 6,
+    }
+}
+
+// ------------------------------------------------------------------ hooks ---
+
+/// A `before`/`after`/`on_success` hook: returning `Err` records a failure
+/// (`before` additionally skips the enqueue — the window is not fired).
+pub type ScheduleHook = Arc<dyn Fn(&ScheduleItem) -> Result<(), AppError> + Send + Sync>;
+/// An `on_failure` hook: observes the recorded failure (infallible by
+/// contract — a broken observer must not mask the original error).
+pub type ScheduleFailureHook = Arc<dyn Fn(&ScheduleItem, &AppError) + Send + Sync>;
+
+/// Per-item callbacks (docs/19 P4), registered alongside the item:
+/// `before` gates the run, `after` observes every attempt, `on_success` /
+/// `on_failure` split on the enqueue outcome. Hook errors are recorded in
+/// the scheduler state doc like any other failure.
+#[derive(Clone, Default)]
+pub struct ScheduleHooks {
+    pub before: Vec<ScheduleHook>,
+    pub after: Vec<ScheduleHook>,
+    pub on_success: Vec<ScheduleHook>,
+    pub on_failure: Vec<ScheduleFailureHook>,
+}
+
+impl std::fmt::Debug for ScheduleHooks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScheduleHooks")
+            .field("before", &self.before.len())
+            .field("after", &self.after.len())
+            .field("on_success", &self.on_success.len())
+            .field("on_failure", &self.on_failure.len())
+            .finish()
+    }
+}
+
+// ------------------------------------------------------------------ locks ---
+
+/// Guard port for the scheduler's windows (docs/19 P4). The runner default
+/// is the in-process [`MemoryScheduleLock`]; the worker wires a cache-backed
+/// impl over `CacheService::lock` (the Redis adapter when `REDIS_URL`
+/// connects, memory otherwise) so `on_one_server` spans nodes exactly when
+/// Redis is configured and silently degrades to a local lock when it is not
+/// (D-52 single-server posture).
+pub trait ScheduleLock: Send + Sync {
+    /// Try to hold `key` for `ttl_secs`; `false` = held elsewhere (skip).
+    fn try_acquire(&self, key: &str, ttl_secs: u64) -> bool;
+    /// Free `key` after a bounded window (`on_one_server`, and a failed
+    /// overlap run); overlap locks otherwise expire by TTL alone.
+    fn release(&self, key: &str);
+}
+
+/// In-process TTL lock — the runner default and the local-only degradation.
+/// Entries are purged lazily on acquisition, so an expired hold frees the
+/// window without a background task.
+#[derive(Default)]
+pub struct MemoryScheduleLock {
+    held: Mutex<HashMap<String, (std::time::Instant, u64)>>,
+}
+
+impl MemoryScheduleLock {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl ScheduleLock for MemoryScheduleLock {
+    fn try_acquire(&self, key: &str, ttl_secs: u64) -> bool {
+        let ttl = ttl_secs.max(1);
+        let now = std::time::Instant::now();
+        let mut held = self.held.lock().unwrap();
+        held.retain(|_, (acquired, entry_ttl)| {
+            now.duration_since(*acquired).as_secs() < (*entry_ttl).max(1)
+        });
+        if held.contains_key(key) {
+            false
+        } else {
+            held.insert(key.to_string(), (now, ttl));
+            true
+        }
+    }
+
+    fn release(&self, key: &str) {
+        self.held.lock().unwrap().remove(key);
+    }
 }
 
 /// In-memory registry with deterministic due-scan (persistence = postgres adapter,
@@ -87,6 +298,8 @@ pub struct ScheduleItem {
 #[derive(Debug, Default)]
 pub struct ScheduleRegistry {
     items: Vec<ScheduleItem>,
+    /// Wave 6 P4: hooks by item name (`register_hooks` after the item).
+    hooks: HashMap<String, ScheduleHooks>,
 }
 
 impl ScheduleRegistry {
@@ -95,7 +308,7 @@ impl ScheduleRegistry {
     }
 
     pub fn register(&mut self, item: ScheduleItem) -> Result<(), AppError> {
-        item.spec.validate()?;
+        item.validate()?;
         if self.items.iter().any(|i| i.name == item.name) {
             return Err(AppError::validation(format!(
                 "schedule registered twice: {}",
@@ -104,6 +317,27 @@ impl ScheduleRegistry {
         }
         self.items.push(item);
         Ok(())
+    }
+
+    /// Attach Wave 6 P4 hooks to an already-registered item (unknown name
+    /// or a second registration refuses — hooks are boot-time wiring).
+    pub fn register_hooks(&mut self, name: &str, hooks: ScheduleHooks) -> Result<(), AppError> {
+        if !self.items.iter().any(|i| i.name == name) {
+            return Err(AppError::validation(format!(
+                "hooks for unregistered schedule: {name}"
+            )));
+        }
+        if self.hooks.contains_key(name) {
+            return Err(AppError::validation(format!(
+                "hooks registered twice: {name}"
+            )));
+        }
+        self.hooks.insert(name.to_string(), hooks);
+        Ok(())
+    }
+
+    pub fn hooks_for(&self, name: &str) -> Option<&ScheduleHooks> {
+        self.hooks.get(name)
     }
 
     pub fn names(&self) -> Vec<&str> {
@@ -126,7 +360,7 @@ impl ScheduleRegistry {
                 .find(|(n, _)| n == &item.name)
                 .map(|(_, t)| *t)
                 .unwrap_or(now - Duration::days(365 * 10));
-            if item.spec.next_run(base)? <= now {
+            if item.next_run(base)? <= now {
                 out.push(item);
             }
         }
@@ -134,16 +368,33 @@ impl ScheduleRegistry {
     }
 }
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+
+/// Wave 6 P4: default `without_overlapping` TTL — the assumed max runtime
+/// of one firing window (per-item override: `lock_ttl_secs`).
+pub const DEFAULT_OVERLAP_TTL_SECS: u64 = 3600;
+/// Wave 6 P4: `on_one_server` lock TTL — a safety valve only (the lock is
+/// released right after the run attempt; it bounds a crashed holder).
+pub const ONE_SERVER_TTL_SECS: u64 = 300;
+/// Failures kept in the state doc (oldest evicted past the cap).
+const MAX_STATE_FAILURES: usize = 100;
 
 /// Scheduler runner (L35, S3): turns the pure `due` scan into worker ticks.
 /// The enqueue closure keeps this crate free of a jobs dependency — the
 /// worker wires it to `JobRegistry::build` + `JobStore::enqueue`, so a
 /// firing schedule is a durable execution like any other front door.
+/// Wave 6 P4 adds guard locks, hooks and failure recording: a failing item
+/// is recorded and skipped, never aborting the pass.
 pub struct SchedulerRunner {
     registry: Arc<ScheduleRegistry>,
     /// (schedule name, last fired instant); persisted optionally via JSON.
     last_fired: Mutex<Vec<(String, OffsetDateTime)>>,
+    /// Wave 6 P4: recorded run/hook failures (persisted in the state doc).
+    failures: Mutex<Vec<FailureEntry>>,
+    /// Wave 6 P4: guard port — in-process default; the worker swaps in a
+    /// cache-backed lock (Redis when configured).
+    lock: Arc<dyn ScheduleLock>,
 }
 
 impl SchedulerRunner {
@@ -151,6 +402,8 @@ impl SchedulerRunner {
         Self {
             registry,
             last_fired: Mutex::new(Vec::new()),
+            failures: Mutex::new(Vec::new()),
+            lock: Arc::new(MemoryScheduleLock::new()),
         }
     }
 
@@ -162,7 +415,30 @@ impl SchedulerRunner {
         Self {
             registry,
             last_fired: Mutex::new(state),
+            ..Self::new(Arc::new(ScheduleRegistry::new()))
         }
+    }
+
+    /// Wave 6 P4: seed the full persisted snapshot (last-fired + failures)
+    /// so a restart keeps previously recorded failures.
+    pub fn with_state_doc(registry: Arc<ScheduleRegistry>, doc: SchedulerStateDoc) -> Self {
+        let SchedulerStateDoc { last_fired, failures } = doc;
+        let state = last_fired
+            .into_iter()
+            .map(|entry| (entry.name, entry.at))
+            .collect();
+        Self {
+            registry,
+            last_fired: Mutex::new(state),
+            failures: Mutex::new(failures),
+            ..Self::new(Arc::new(ScheduleRegistry::new()))
+        }
+    }
+
+    /// Replace the guard port (worker: cache/Redis-backed).
+    pub fn with_lock(mut self, lock: Arc<dyn ScheduleLock>) -> Self {
+        self.lock = lock;
+        self
     }
 
     pub fn registry(&self) -> &Arc<ScheduleRegistry> {
@@ -174,29 +450,158 @@ impl SchedulerRunner {
         self.last_fired.lock().unwrap().clone()
     }
 
-    /// One tick: fire every due schedule through `enqueue`, record
-    /// last-fired. Returns the names fired, in registry order.
+    /// Wave 6 P4: recorded failures (newest last).
+    pub fn failures(&self) -> Vec<FailureEntry> {
+        self.failures.lock().unwrap().clone()
+    }
+
+    /// Wave 6 P4: the full persisted snapshot — last-fired plus failures.
+    pub fn state_doc(&self) -> SchedulerStateDoc {
+        SchedulerStateDoc {
+            last_fired: self
+                .state()
+                .into_iter()
+                .map(|(name, at)| FiredEntry { name, at })
+                .collect(),
+            failures: self.failures(),
+        }
+    }
+
+    /// One tick: fire every due schedule through `enqueue`, honoring the
+    /// item's guards and hooks. A failing item (enqueue or `before`) is
+    /// RECORDED and skipped — it does not abort the pass and does not
+    /// advance its last-fired stamp, so the next tick retries it. Returns
+    /// the names that actually fired, in registry order.
     pub fn tick(
         &self,
         now: OffsetDateTime,
-        enqueue: impl FnMut(&ScheduleItem) -> Result<(), AppError>,
+        mut enqueue: impl FnMut(&ScheduleItem) -> Result<(), AppError>,
     ) -> Result<Vec<String>, AppError> {
         let state = self.last_fired.lock().unwrap().clone();
         let due = self.registry.due(&state, now)?;
-        let mut fired = Vec::new();
-        let mut enqueue = enqueue;
-        let mut last_fired = self.last_fired.lock().unwrap();
+        let mut fired: Vec<String> = Vec::new();
+        let mut recorded: Vec<FailureEntry> = Vec::new();
         for item in due {
-            enqueue(item)?;
-            fired.push(item.name.clone());
-            if let Some(entry) = last_fired.iter_mut().find(|(n, _)| n == &item.name) {
-                entry.1 = now;
-            } else {
-                last_fired.push((item.name.clone(), now));
+            let one_key = format!("schedule:one-server:{}", item.name);
+            let overlap_key = format!("schedule:overlap:{}", item.name);
+            // Guards: a held lock means "another run/node owns this window"
+            // — skip silently, never double-fire.
+            if item.on_one_server && !self.lock.try_acquire(&one_key, ONE_SERVER_TTL_SECS) {
+                continue;
+            }
+            let mut overlap_acquired = false;
+            if item.without_overlapping {
+                let ttl = item
+                    .lock_ttl_secs
+                    .unwrap_or(DEFAULT_OVERLAP_TTL_SECS)
+                    .max(1);
+                if !self.lock.try_acquire(&overlap_key, ttl) {
+                    if item.on_one_server {
+                        self.lock.release(&one_key);
+                    }
+                    continue; // previous run still inside its max-runtime window
+                }
+                overlap_acquired = true;
+            }
+            let hooks = self.registry.hooks_for(&item.name);
+            // `before` gates the run: a rejecting hook fails this window.
+            let mut outcome: Result<(), AppError> = Ok(());
+            if let Some(hooks) = hooks {
+                for hook in &hooks.before {
+                    if let Err(e) = hook(item) {
+                        outcome = Err(e);
+                        break;
+                    }
+                }
+            }
+            if outcome.is_ok() {
+                outcome = enqueue(item);
+            }
+            let ok = outcome.is_ok();
+            match &outcome {
+                Ok(()) => {
+                    fired.push(item.name.clone());
+                    if let Some(hooks) = hooks {
+                        for hook in &hooks.after {
+                            if let Err(e) = hook(item) {
+                                recorded.push(hook_failure(item, "after", &e, now));
+                            }
+                        }
+                        for hook in &hooks.on_success {
+                            if let Err(e) = hook(item) {
+                                recorded.push(hook_failure(item, "on_success", &e, now));
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    recorded.push(FailureEntry {
+                        name: item.name.clone(),
+                        at: now,
+                        error: error_text(e),
+                    });
+                    if let Some(hooks) = hooks {
+                        for hook in &hooks.after {
+                            if let Err(err) = hook(item) {
+                                recorded.push(hook_failure(item, "after", &err, now));
+                            }
+                        }
+                        for hook in &hooks.on_failure {
+                            hook(item, e);
+                        }
+                    }
+                }
+            }
+            if overlap_acquired && !ok {
+                // A failed run is not "in flight" — free the window so the
+                // next tick can retry instead of waiting out the TTL.
+                self.lock.release(&overlap_key);
+            }
+            if item.on_one_server {
+                self.lock.release(&one_key);
+            }
+        }
+        if !fired.is_empty() || !recorded.is_empty() {
+            let mut last_fired = self.last_fired.lock().unwrap();
+            for name in &fired {
+                match last_fired.iter_mut().find(|(n, _)| n == name) {
+                    Some(entry) => entry.1 = now,
+                    None => last_fired.push((name.clone(), now)),
+                }
+            }
+            if !recorded.is_empty() {
+                let mut failures = self.failures.lock().unwrap();
+                failures.append(&mut recorded);
+                if failures.len() > MAX_STATE_FAILURES {
+                    let excess = failures.len() - MAX_STATE_FAILURES;
+                    failures.drain(0..excess);
+                }
             }
         }
         Ok(fired)
     }
+}
+
+fn hook_failure(
+    item: &ScheduleItem,
+    context: &str,
+    err: &AppError,
+    at: OffsetDateTime,
+) -> FailureEntry {
+    FailureEntry {
+        name: item.name.clone(),
+        at,
+        error: format!("{context}: {}", error_text(err)),
+    }
+}
+
+/// The recorded failure text: internal detail when present (this is an
+/// operator-facing local state file, never served through an endpoint),
+/// else the public message.
+fn error_text(err: &AppError) -> String {
+    err.internal
+        .clone()
+        .unwrap_or_else(|| err.public_message.clone())
 }
 
 /// Persisted tick state (storage/framework/schedule-state.json) so a CLI
@@ -208,51 +613,76 @@ pub struct FiredEntry {
     pub at: OffsetDateTime,
 }
 
+/// Wave 6 P4: one recorded run/hook failure (scheduler state doc).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FailureEntry {
+    pub name: String,
+    #[serde(with = "time::serde::iso8601")]
+    pub at: OffsetDateTime,
+    /// The captured failure text — internal detail when present (the state
+    /// file is operator-only), else the public message (hook failures
+    /// carry the hook context as a prefix).
+    pub error: String,
+}
+
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct SchedulerStateDoc {
     pub last_fired: Vec<FiredEntry>,
+    /// Wave 6 P4: recorded failures, capped (oldest evicted). `serde(default)`
+    /// keeps pre-P4 state files loading unchanged.
+    #[serde(default)]
+    pub failures: Vec<FailureEntry>,
 }
 
 pub fn state_path(root: &std::path::Path) -> std::path::PathBuf {
     root.join("storage/framework/schedule-state.json")
 }
 
-pub fn load_state(root: &std::path::Path) -> Result<Vec<(String, OffsetDateTime)>, AppError> {
+/// Wave 6 P4: read the whole state doc (last-fired plus failures).
+pub fn load_state_doc(root: &std::path::Path) -> Result<SchedulerStateDoc, AppError> {
     match std::fs::read_to_string(state_path(root)) {
-        Ok(raw) => {
-            let doc: SchedulerStateDoc = serde_json::from_str(&raw)
-                .map_err(|e| AppError::internal(format!("schedule state corrupt: {e}")))?;
-            Ok(doc
-                .last_fired
-                .into_iter()
-                .map(|entry| (entry.name, entry.at))
-                .collect())
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Ok(raw) => serde_json::from_str(&raw)
+            .map_err(|e| AppError::internal(format!("schedule state corrupt: {e}"))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(SchedulerStateDoc::default()),
         Err(e) => Err(AppError::internal(format!(
             "schedule state unreadable: {e}"
         ))),
     }
 }
 
-pub fn save_state(
-    root: &std::path::Path,
-    last_fired: &[(String, OffsetDateTime)],
-) -> Result<(), AppError> {
+pub fn load_state(root: &std::path::Path) -> Result<Vec<(String, OffsetDateTime)>, AppError> {
+    Ok(load_state_doc(root)?
+        .last_fired
+        .into_iter()
+        .map(|entry| (entry.name, entry.at))
+        .collect())
+}
+
+/// Wave 6 P4: persist the full doc (last-fired + failures).
+pub fn save_state_doc(root: &std::path::Path, doc: &SchedulerStateDoc) -> Result<(), AppError> {
     let path = state_path(root);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| AppError::internal(format!("schedule state dir: {e}")))?;
     }
-    let doc = SchedulerStateDoc {
-        last_fired: last_fired
-            .iter()
-            .cloned()
-            .map(|(name, at)| FiredEntry { name, at })
-            .collect(),
-    };
-    let raw = serde_json::to_string_pretty(&doc).map_err(|e| AppError::internal(e.to_string()))?;
+    let raw = serde_json::to_string_pretty(doc).map_err(|e| AppError::internal(e.to_string()))?;
     std::fs::write(&path, raw).map_err(|e| AppError::internal(format!("schedule state write: {e}")))
+}
+
+/// Persist last-fired state while preserving failures already on disk (the
+/// tuple-shaped path; Wave 6 P4 callers prefer [`save_state_doc`], which
+/// writes both halves of [`SchedulerRunner::state_doc`]).
+pub fn save_state(
+    root: &std::path::Path,
+    last_fired: &[(String, OffsetDateTime)],
+) -> Result<(), AppError> {
+    let mut doc = load_state_doc(root).unwrap_or_default();
+    doc.last_fired = last_fired
+        .iter()
+        .cloned()
+        .map(|(name, at)| FiredEntry { name, at })
+        .collect();
+    save_state_doc(root, &doc)
 }
 
 #[cfg(test)]
@@ -316,6 +746,7 @@ mod tests {
             },
             payload: serde_json::json!({}),
             enabled: true,
+            ..Default::default()
         })
         .unwrap();
         let due = reg.due(&[], datetime!(2026-08-19 10:00:00 UTC)).unwrap();
@@ -336,6 +767,7 @@ mod tests {
             spec: ScheduleSpec::Interval { secs: 60 },
             payload: serde_json::json!({}),
             enabled: true,
+            ..Default::default()
         })
         .unwrap();
         let runner = SchedulerRunner::new(Arc::new(reg));
@@ -378,6 +810,367 @@ mod tests {
         save_state(&root, &state).unwrap();
         let loaded = load_state(&root).unwrap();
         assert_eq!(loaded, state);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    // ------------------------------------------------- Wave 6 P4 (cron/tz)
+
+    fn item(name: &str, spec: ScheduleSpec) -> ScheduleItem {
+        ScheduleItem {
+            name: name.into(),
+            operation: "billing.close-day".into(),
+            spec,
+            payload: serde_json::json!({}),
+            enabled: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn registration_rejects_invalid_cron_and_unknown_timezones() {
+        let mut reg = ScheduleRegistry::new();
+
+        let mut bad_cron = item("bad-cron", ScheduleSpec::Interval { secs: 60 });
+        bad_cron.cron = Some("61 * * * *".into());
+        let err = reg.register(bad_cron).unwrap_err();
+        assert!(
+            err.public_message.contains("invalid cron expression"),
+            "{}",
+            err.public_message
+        );
+
+        let mut never = item("never", ScheduleSpec::Interval { secs: 60 });
+        never.cron = Some("0 0 31 2 *".into());
+        let err = reg.register(never).unwrap_err();
+        assert!(
+            err.public_message.contains("never fires"),
+            "{}",
+            err.public_message
+        );
+
+        let mut bad_tz = item("bad-tz", ScheduleSpec::Interval { secs: 60 });
+        bad_tz.timezone = Some("Mars/Olympus".into());
+        let err = reg.register(bad_tz).unwrap_err();
+        assert!(
+            err.public_message.contains("unknown timezone"),
+            "{}",
+            err.public_message
+        );
+
+        let mut ok = item("ok", ScheduleSpec::Interval { secs: 60 });
+        ok.cron = Some(hourly());
+        ok.timezone = Some("Asia/Kolkata".into());
+        reg.register(ok).unwrap();
+    }
+
+    #[test]
+    fn cron_items_take_precedence_over_the_spec() {
+        let mut scheduled = item("close-day", ScheduleSpec::Interval { secs: 60 });
+        scheduled.cron = Some("30 14 * * *".into());
+        let t0 = datetime!(2026-08-19 10:00:00 UTC);
+        assert_eq!(
+            scheduled.next_run(t0).unwrap(),
+            datetime!(2026-08-19 14:30:00 UTC)
+        );
+
+        let mut reg = ScheduleRegistry::new();
+        reg.register(scheduled).unwrap();
+        let runner = SchedulerRunner::new(Arc::new(reg));
+
+        // Never fired → due (today's slot is still ahead).
+        let fired = runner.tick(t0, |_| Ok(())).unwrap();
+        assert_eq!(fired, vec!["close-day".to_string()]);
+        // 60s later the Interval spec WOULD be due; the cron says tomorrow
+        // 14:30 — cron wins and the enqueue never runs.
+        let fired = runner
+            .tick(t0 + Duration::seconds(60), |_| {
+                panic!("cron takes precedence over the interval spec")
+            })
+            .unwrap();
+        assert!(fired.is_empty());
+    }
+
+    #[test]
+    fn zoned_items_run_in_the_item_wall_clock() {
+        // Daily 13:00 IST — from 10:00 UTC (15:30 IST): tomorrow's slot.
+        let mut daily = item("standup", ScheduleSpec::Daily {
+            hour: 13,
+            minute: 0,
+        });
+        daily.timezone = Some("Asia/Kolkata".into());
+        assert_eq!(
+            daily.next_run(datetime!(2026-09-30 10:00:00 UTC))
+                .unwrap(),
+            datetime!(2026-10-01 07:30:00 UTC)
+        );
+        // From 04:00 UTC (09:30 IST): the same day's slot.
+        assert_eq!(
+            daily.next_run(datetime!(2026-09-30 04:00:00 UTC))
+                .unwrap(),
+            datetime!(2026-09-30 07:30:00 UTC)
+        );
+
+        // A zoned cron resolves to the same instants.
+        let mut cron = item("standup-cron", ScheduleSpec::Interval { secs: 60 });
+        cron.cron = Some("0 13 * * *".into());
+        cron.timezone = Some("Asia/Kolkata".into());
+        assert_eq!(
+            cron.next_run(datetime!(2026-09-30 04:00:00 UTC))
+                .unwrap(),
+            datetime!(2026-09-30 07:30:00 UTC)
+        );
+
+        // The UTC item keeps the original spec math untouched.
+        let utc_daily = item("utc-daily", ScheduleSpec::Daily {
+            hour: 13,
+            minute: 0,
+        });
+        assert_eq!(
+            utc_daily.next_run(datetime!(2026-09-30 10:00:00 UTC))
+                .unwrap(),
+            datetime!(2026-09-30 13:00:00 UTC)
+        );
+    }
+
+    // ------------------------------------------------ Wave 6 P4 (guards/hook)
+
+    /// Scripted [`ScheduleLock`]: consumes canned `try_acquire` answers
+    /// (granted once exhausted) and records every call.
+    struct RecordingLock {
+        answers: Mutex<std::collections::VecDeque<bool>>,
+        log: Mutex<Vec<String>>,
+    }
+
+    impl RecordingLock {
+        fn new(answers: &[bool]) -> Self {
+            Self {
+                answers: Mutex::new(answers.iter().copied().collect()),
+                log: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn log(&self) -> Vec<String> {
+            self.log.lock().unwrap().clone()
+        }
+    }
+
+    impl ScheduleLock for RecordingLock {
+        fn try_acquire(&self, key: &str, _ttl_secs: u64) -> bool {
+            self.log.lock().unwrap().push(format!("acquire:{key}"));
+            self.answers.lock().unwrap().pop_front().unwrap_or(true)
+        }
+
+        fn release(&self, key: &str) {
+            self.log.lock().unwrap().push(format!("release:{key}"));
+        }
+    }
+
+    #[test]
+    fn overlap_guard_skips_while_the_window_is_held() {
+        let mut scheduled = item("close-day", ScheduleSpec::Interval { secs: 60 });
+        scheduled.without_overlapping = true;
+        let mut reg = ScheduleRegistry::new();
+        reg.register(scheduled).unwrap();
+
+        // Tick 1 acquires; tick 2 is refused (window held); tick 3 grants.
+        let lock = Arc::new(RecordingLock::new(&[true, false, true]));
+        let runner = SchedulerRunner::new(Arc::new(reg)).with_lock(lock.clone());
+        let t0 = datetime!(2026-08-19 10:00:00 UTC);
+
+        let fired = runner.tick(t0, |_| Ok(())).unwrap();
+        assert_eq!(fired, vec!["close-day".to_string()]);
+        // Held: the due window skips — no enqueue, no state advance.
+        let fired = runner
+            .tick(t0 + Duration::seconds(60), |_| {
+                panic!("enqueue must not run while the overlap lock is held")
+            })
+            .unwrap();
+        assert!(fired.is_empty());
+        // Granted again: fires.
+        let fired = runner.tick(t0 + Duration::seconds(120), |_| Ok(())).unwrap();
+        assert_eq!(fired, vec!["close-day".to_string()]);
+
+        let key = "acquire:schedule:overlap:close-day".to_string();
+        assert_eq!(lock.log(), vec![key.clone(), key.clone(), key]);
+        // Successes hold the window (TTL = max runtime); no release calls.
+    }
+
+    #[test]
+    fn one_server_guard_acquires_runs_and_releases() {
+        let mut scheduled = item("close-day", ScheduleSpec::Interval { secs: 60 });
+        scheduled.on_one_server = true;
+        let mut reg = ScheduleRegistry::new();
+        reg.register(scheduled).unwrap();
+
+        let lock = Arc::new(RecordingLock::new(&[false, true]));
+        let runner = SchedulerRunner::new(Arc::new(reg)).with_lock(lock.clone());
+        let t0 = datetime!(2026-08-19 10:00:00 UTC);
+
+        // Refused: another node owns this window — skip without enqueue.
+        let fired = runner
+            .tick(t0, |_| panic!("another node owns this window"))
+            .unwrap();
+        assert!(fired.is_empty());
+
+        // Granted: enqueue runs, then the lock releases within the tick.
+        let fired = runner.tick(t0 + Duration::seconds(60), |_| Ok(())).unwrap();
+        assert_eq!(fired, vec!["close-day".to_string()]);
+        assert_eq!(
+            lock.log(),
+            vec![
+                "acquire:schedule:one-server:close-day".to_string(),
+                "acquire:schedule:one-server:close-day".to_string(),
+                "release:schedule:one-server:close-day".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn hooks_gate_and_observe_successful_runs() {
+        let mut reg = ScheduleRegistry::new();
+        reg.register(item("close-day", ScheduleSpec::Interval { secs: 60 }))
+            .unwrap();
+
+        let calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut hooks = ScheduleHooks::default();
+        for label in ["before", "after", "on_success"] {
+            let calls = calls.clone();
+            let hook: ScheduleHook = Arc::new(move |_| {
+                calls.lock().unwrap().push(label.to_string());
+                Ok(())
+            });
+            match label {
+                "before" => hooks.before.push(hook),
+                "after" => hooks.after.push(hook),
+                _ => hooks.on_success.push(hook),
+            }
+        }
+        reg.register_hooks("close-day", hooks).unwrap();
+
+        let runner = SchedulerRunner::new(Arc::new(reg));
+        let fired = runner.tick(datetime!(2026-08-19 10:00:00 UTC), |_| Ok(())).unwrap();
+        assert_eq!(fired, vec!["close-day".to_string()]);
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            &[
+                "before".to_string(),
+                "after".to_string(),
+                "on_success".to_string()
+            ]
+        );
+        assert!(runner.failures().is_empty());
+    }
+
+    #[test]
+    fn before_hook_failures_gate_the_run_and_are_recorded() {
+        let mut reg = ScheduleRegistry::new();
+        reg.register(item("close-day", ScheduleSpec::Interval { secs: 60 }))
+            .unwrap();
+
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut hooks = ScheduleHooks::default();
+        hooks.before.push(Arc::new(|_| {
+            Err(AppError::validation("gate closed"))
+        }));
+        let seen2 = seen.clone();
+        hooks.on_failure.push(Arc::new(move |i, e| {
+            seen2
+                .lock()
+                .unwrap()
+                .push(format!("{}: {}", i.name, e.public_message));
+        }));
+        reg.register_hooks("close-day", hooks).unwrap();
+
+        let runner = SchedulerRunner::new(Arc::new(reg));
+        let fired = runner
+            .tick(datetime!(2026-08-19 10:00:00 UTC), |_| {
+                panic!("a rejecting before hook must skip the enqueue")
+            })
+            .unwrap();
+        assert!(fired.is_empty());
+        let failures = runner.failures();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].name, "close-day");
+        assert_eq!(failures[0].error, "gate closed");
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            &["close-day: gate closed".to_string()]
+        );
+
+        // Not advanced: the next tick retries (and records again).
+        let fired = runner
+            .tick(datetime!(2026-08-19 10:01:00 UTC), |_| Ok(()))
+            .unwrap();
+        assert!(fired.is_empty());
+        assert_eq!(runner.failures().len(), 2);
+    }
+
+    #[test]
+    fn enqueue_failures_are_recorded_and_the_pass_continues() {
+        let mut reg = ScheduleRegistry::new();
+        reg.register(item("bad", ScheduleSpec::Interval { secs: 60 }))
+            .unwrap();
+        reg.register(item("good", ScheduleSpec::Interval { secs: 60 }))
+            .unwrap();
+        let runner = SchedulerRunner::new(Arc::new(reg));
+        let t0 = datetime!(2026-08-19 10:00:00 UTC);
+
+        let fired = runner
+            .tick(t0, |i| {
+                if i.name == "bad" {
+                    Err(AppError::internal("store unavailable"))
+                } else {
+                    Ok(())
+                }
+            })
+            .unwrap();
+        // One bad item never aborts the pass: the healthy item fired.
+        assert_eq!(fired, vec!["good".to_string()]);
+        let failures = runner.failures();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].name, "bad");
+        assert_eq!(failures[0].error, "store unavailable");
+        // last_fired: only `good` advanced.
+        assert_eq!(runner.state().len(), 1);
+
+        // `bad` is retried next tick (still due, state untouched).
+        let fired = runner
+            .tick(t0 + Duration::seconds(30), |_| Ok(()))
+            .unwrap();
+        assert_eq!(fired, vec!["bad".to_string()]);
+    }
+
+    #[test]
+    fn failures_are_capped_and_persist_through_the_state_doc() {
+        let mut reg = ScheduleRegistry::new();
+        reg.register(item("bad", ScheduleSpec::Interval { secs: 60 }))
+            .unwrap();
+        let runner = SchedulerRunner::new(Arc::new(reg));
+        let now = datetime!(2026-08-19 10:00:00 UTC);
+        for _ in 0..(MAX_STATE_FAILURES as u32 + 5) {
+            runner
+                .tick(now, |_| Err(AppError::internal("down")))
+                .unwrap();
+        }
+        let failures = runner.failures();
+        assert_eq!(failures.len(), MAX_STATE_FAILURES);
+        assert_eq!(failures[0].error, "down");
+
+        // The state doc round-trips both halves.
+        let root = std::env::temp_dir().join(format!(
+            "keel-sched-doc-{}",
+            time::OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        save_state_doc(&root, &runner.state_doc()).unwrap();
+        let loaded = load_state_doc(&root).unwrap();
+        assert!(loaded.last_fired.is_empty()); // no successful fires
+        assert_eq!(loaded.failures.len(), MAX_STATE_FAILURES);
+
+        // Pre-P4 files (last_fired only) still load — failures default.
+        std::fs::write(state_path(&root), r#"{"last_fired":[]}"#).unwrap();
+        let legacy = load_state_doc(&root).unwrap();
+        assert!(legacy.failures.is_empty());
         std::fs::remove_dir_all(&root).ok();
     }
 }

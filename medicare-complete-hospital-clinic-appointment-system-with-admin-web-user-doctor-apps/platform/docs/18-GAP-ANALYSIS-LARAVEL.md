@@ -520,15 +520,15 @@ This ledger intentionally enumerates individual operations so a broad `Database`
 | Queues / Scheduler | queue:retry | UNKNOWN | platform/tools/keel-console/src/main.rs (queue_retry) | Implemented since Wave 2; no locked test evidence |
 | Queues / Scheduler | queue:failed | UNKNOWN | platform/tools/keel-console/src/main.rs (queue_failed) | Implemented since Wave 2; no locked test evidence |
 | Queues / Scheduler | schedule | MATCHED | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
-| Queues / Scheduler | cron | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
-| Queues / Scheduler | everyMinute | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
-| Queues / Scheduler | hourly | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
-| Queues / Scheduler | daily | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
-| Queues / Scheduler | weekly | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
-| Queues / Scheduler | monthly | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
-| Queues / Scheduler | timezone | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
-| Queues / Scheduler | withoutOverlapping | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
-| Queues / Scheduler | onOneServer | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | cron | MATCHED | platform/crates/async/scheduler/src/cron.rs | Zero-dep 5-field parser (`*`, lists, ranges, steps); `ScheduleItem.cron` takes precedence over `spec`, invalid/never-firing expressions refuse registration (tests `cron_items_take_precedence_over_the_spec` + `registration_rejects_invalid_cron_and_unknown_timezones`, parser matrix in `cron.rs`) (Wave 6 P4) |
+| Queues / Scheduler | everyMinute | MATCHED | platform/crates/async/scheduler/src/cron.rs (every_minutes) | `every_minutes(1..=59)` → `*/n * * * *`; out-of-range refuses (test `builder_helpers_refuse_bad_input`) (Wave 6 P4) |
+| Queues / Scheduler | hourly | MATCHED | platform/crates/async/scheduler/src/cron.rs (hourly) | `hourly()` → `0 * * * *` (test `builder_helpers_map_to_cron_strings`) (Wave 6 P4) |
+| Queues / Scheduler | daily | MATCHED | platform/crates/async/scheduler/src/cron.rs (daily/daily_at) | `daily()` → `0 0 * * *`, `daily_at("13:00")` → `0 13 * * *` (bad input refuses) (Wave 6 P4) |
+| Queues / Scheduler | weekly | MATCHED | platform/crates/async/scheduler/src/cron.rs (weekly) | `weekly()` → `0 0 * * 0` (Sunday) (Wave 6 P4) |
+| Queues / Scheduler | monthly | MATCHED | platform/crates/async/scheduler/src/cron.rs (monthly) | `monthly()` → `0 0 1 * *` (Wave 6 P4) |
+| Queues / Scheduler | timezone | MATCHED | platform/crates/async/scheduler/src/tz.rs | `ScheduleItem.timezone` (IANA name) validated against the bundled static table — unknown → registration error; zoned daily/weekly/cron `next_run` in the item's wall clock (test `zoned_items_run_in_the_item_wall_clock`); documented gap: fixed offsets, no DST transitions (DST zones at standard time) (Wave 6 P4) |
+| Queues / Scheduler | withoutOverlapping | MATCHED | platform/crates/async/scheduler/src/lib.rs (ScheduleLock) | `ScheduleItem.without_overlapping` holds `schedule:overlap:<name>` for `lock_ttl_secs` (default 3600 = max runtime); held → skip silently, failed run releases for retry (tests `overlap_guard_skips_while_the_window_is_held` + `one_server_guard_acquires_runs_and_releases`); runner default in-process lock (D-52), worker wires the Redis-backed port when `REDIS_URL` connects (Wave 6 P4) |
+| Queues / Scheduler | onOneServer | MATCHED | platform/crates/async/scheduler/src/lib.rs + platform/runtime/keel-worker/src/main.rs (CacheScheduleLock) | `ScheduleItem.on_one_server` acquires/runs/releases `schedule:one-server:<name>` within the tick (TTL 300s safety valve); cross-node when the worker's `CacheService::lock` port is Redis-backed, process-local otherwise (documented: console daemon cannot reach adapter crates, STAGE-0-SPEC §3) (Wave 6 P4) |
 
 | Filesystem / Storage | put | MATCHED | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
 | Filesystem / Storage | putFile | UNKNOWN | platform/crates/services/storage/src/lib.rs:23 | Local storage is present; S3 is stub; exact operation parity requires adapter tests |
@@ -1070,7 +1070,7 @@ The CLI is one of the most important Laravel parity surfaces because it compress
 | route:cache | route:cache | MATCHED | keel route:cache writes storage/framework/routes.json (resolved chains/bindings/validators + SHA-256 manifest hash); boot registers from a matching artifact and refuses a stale one (Wave 1) | P2 |
 | route:clear | route:clear | MATCHED | keel route:clear deletes the artifact; boot falls back to live compilation (Wave 1) | P2 |
 | route:list | route:list | MATCHED | table/json with plane/group/version/deprecation columns; `--name`/`--path`/`--plane` filters (Wave 2) | P2 |
-| schedule:clear-cache | schedule:clear-cache | UNKNOWN | No schedule cache exists to clear (the scheduler has no mutex/cache layer until Wave 6 cron guards) | P3 |
+| schedule:clear-cache | schedule:clear-cache | UNKNOWN | Guard locks exist since Wave 6 P4 (`ScheduleLock` — in-process/`CacheService`, TTL-expiring; no schedule plan cache is kept), but no clear command ships — stale lock keys free themselves by TTL | P4 |
 | schedule:list | schedule:list | PARTIAL | Information stub over the `schedule_registry()` seam: reports the registry's empty posture until module schedules land (Wave 6); implementation main.rs `schedule_info` (Wave 5 documented this posture) | P3 |
 | schedule:run | schedule:run | PARTIAL | Same `schedule_info` stub today — the runtime tick exists (schedule:work) but one-shot due runs await module schedules (Wave 6) | P1 |
 | schedule:test | schedule:test | MATCHED | `keel schedule:test` pure dry run (registered vs due-now, nothing fires or writes; tests `schedule_test_plan_is_pure_and_skips_disabled` + `schedule_test_lines_report_the_empty_posture`) (Wave 5) | P3 |

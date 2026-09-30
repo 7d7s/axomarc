@@ -18,7 +18,7 @@ use keel_jobs::{
     WorkerRegistry,
 };
 use keel_lifecycle::{ApplicationHost, BootError, Phase, Provider, ServiceRegistry};
-use keel_scheduling::{ScheduleItem, ScheduleRegistry, SchedulerRunner};
+use keel_scheduling::{ScheduleItem, ScheduleLock, ScheduleRegistry, SchedulerRunner};
 use time::OffsetDateTime;
 
 #[derive(Debug, Parser)]
@@ -131,6 +131,51 @@ impl Provider for ModulesProvider {
 /// Built-in smoke handler: logs the payload and succeeds. Real modules
 /// register their own handlers; this one proves the claim/dispatch path.
 struct DemoJobHandler;
+
+/// Wave 6 P4: the scheduler's guard port over `CacheService::lock` —
+/// `without_overlapping` / `on_one_server` keys are backend-held for their
+/// TTL (Redis when `REDIS_URL` connects, so `on_one_server` spans nodes;
+/// the in-memory port otherwise, D-52 process-local degradation).
+struct CacheScheduleLock {
+    cache: keel_caching::CacheService,
+}
+
+impl ScheduleLock for CacheScheduleLock {
+    fn try_acquire(&self, key: &str, ttl_secs: u64) -> bool {
+        // A fresh guard carries no token, so this is a plain backend
+        // acquire: free/expired → true, held anywhere → false. The token is
+        // dropped on purpose — overlap holds expire by TTL, never by drop.
+        self.cache.lock(key, ttl_secs).try_acquire()
+    }
+
+    fn release(&self, key: &str) {
+        // Token-free release: within a tick we just acquired this key, so
+        // `force_release` cannot free someone else's window.
+        self.cache.lock(key, 0).force_release();
+    }
+}
+
+/// The guard backend: `REDIS_URL` present + reachable → Redis (the same
+/// posture as the job store above); else the in-memory port.
+fn schedule_cache_port() -> Arc<dyn keel_caching::CachePort> {
+    let memory: Arc<dyn keel_caching::CachePort> = keel_cache_memory::MemoryCache::shared(4096);
+    match std::env::var("REDIS_URL") {
+        Ok(url) => match keel_cache_redis::RedisCache::connect(&url) {
+            Ok(redis) => {
+                tracing::info!("schedule guard: redis (distributed)");
+                Arc::new(redis)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e.public_message,
+                    "redis unreachable for schedule guard; guards stay process-local"
+                );
+                memory
+            }
+        },
+        Err(_) => memory,
+    }
+}
 
 impl JobHandler for DemoJobHandler {
     fn name(&self) -> &str {
@@ -472,7 +517,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut job_defs = JobRegistry::new();
     job_defs.register(mail_def)?;
     let job_defs = Arc::new(job_defs);
-    let scheduler = Arc::new(SchedulerRunner::new(schedules.clone()));
+    let scheduler = Arc::new(
+        SchedulerRunner::new(schedules.clone())
+            .with_lock(Arc::new(CacheScheduleLock {
+                cache: keel_caching::CacheService::new(schedule_cache_port()),
+            })),
+    );
 
     let listeners = Arc::new(ListenerRegistry::new());
     let outbox: Option<Arc<dyn OutboxStore>> = pool.as_ref().map(|pool| {
