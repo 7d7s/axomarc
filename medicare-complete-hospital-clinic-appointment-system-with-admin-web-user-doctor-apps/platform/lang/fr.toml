@@ -14,3 +14,4 @@ count = "zero=Aucun rendez-vous | one=Un rendez-vous | other={count} rendez-vous
 
 [notifications]
 appointment_booked = "Rendez-vous réservé pour {patient}"
+appointment_cancelled = "Rendez-vous annulé pour {patient}"

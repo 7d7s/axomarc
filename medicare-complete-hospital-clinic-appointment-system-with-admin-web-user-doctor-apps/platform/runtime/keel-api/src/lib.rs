@@ -263,6 +263,21 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(pool) => Arc::new(keel_postgres::PgNotificationStore::new(pool.clone())),
         None => Arc::new(keel_notifications::InMemoryNotificationStore::new()),
     };
+    // Wave 6 P6: the pool-gated enqueue seam — `PgJobStore` + the registered
+    // `notification.send` def, so `queue_via` defs build a durable job at
+    // dispatch (the worker drains it). No pool = no port = `queue_via`
+    // fail-closed (`not_implemented`), the D-52 posture.
+    let notification_queue = pool.as_ref().map(|pool| {
+        let store: Arc<dyn keel_jobs::JobStore> =
+            Arc::new(keel_postgres::PgJobStore::new(pool.clone()));
+        let mut registry = keel_jobs::JobRegistry::new();
+        registry
+            .register(keel_jobs::JobDef::new(
+                keel_notifications::NOTIFICATION_SEND_JOB,
+            ))
+            .expect("notification.send def registers");
+        (store, Arc::new(registry))
+    });
 
     let mut host = ApplicationHost::new();
     // Wave 2 error rendering: one registry per boot, published to every
@@ -328,6 +343,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         messages: messages.clone(),
         notifications: notification_store.clone(),
         views: views.clone(),
+        notification_queue,
     }));
     host.add_provider(Box::new(FeatureFlagsProvider {
         registry: flags_registry,
@@ -936,14 +952,36 @@ pub fn build_app_state(
     let appt_store = Arc::new(keel_mod_appointments::AppointmentStore::new(
         appt_backend.clone(),
     ));
+
+    // Wave 6 P3/P5/P6: the harness catalog (`<storage_root>/lang`, absent
+    // = the empty default catalog) and a fresh in-memory inbox store, plus
+    // the P6 producer hub sharing BOTH — the very store the HTTP feed
+    // reads — so a book dispatch is observable end to end over HTTP. Views
+    // for notification HTML ride the production `PlatformProvider` (this
+    // harness's producer dispatches the Database channel only).
+    let messages = Arc::new(
+        keel_config::load_messages(storage_root, &keel_config::I18nSection::default())
+            .expect("harness message catalog loads"),
+    );
+    let notification_store: Arc<dyn keel_notifications::NotificationStore> =
+        Arc::new(keel_notifications::InMemoryNotificationStore::new());
+    let notify_hub = Arc::new(
+        keel_notifications::NotifyHub::with_catalog(messages.clone())
+            .with_store(notification_store.clone()),
+    );
+
     let mut bus = keel_command::CommandBus::new(engine);
     bus.register(Arc::new(host::EchoHandler::new()))
         .expect("demo handler registers");
     let bundle: Vec<Arc<dyn OperationHandler>> = vec![
-        Arc::new(keel_mod_appointments::BookHandler::new(appt_store.clone())),
-        Arc::new(keel_mod_appointments::CancelHandler::new(
-            appt_store.clone(),
-        )),
+        Arc::new(
+            keel_mod_appointments::BookHandler::new(appt_store.clone())
+                .with_notifier(Some(notify_hub.clone())),
+        ),
+        Arc::new(
+            keel_mod_appointments::CancelHandler::new(appt_store.clone())
+                .with_notifier(Some(notify_hub.clone())),
+        ),
         Arc::new(keel_mod_appointments::ListHandler::new(appt_store.clone())),
         Arc::new(keel_mod_appointments::AvailabilityHandler::new(
             appt_store.clone(),
@@ -1074,18 +1112,9 @@ pub fn build_app_state(
         keel_tenancy::InMemoryTenantStore::new(),
     ))));
 
-    // Wave 6 P3: harness catalog from `<storage_root>/lang` (absent = the
-    // empty default catalog), so integration tests can drop fixture locale
-    // files exactly like fixture views.
-    let messages = Arc::new(
-        keel_config::load_messages(storage_root, &keel_config::I18nSection::default())
-            .expect("harness message catalog loads"),
-    );
-
-    // Wave 6 P5: fresh in-memory inbox store per harness (the D-52 backend
-    // only — tests seed rows directly or through the hub dispatch).
-    let notification_store: Arc<dyn keel_notifications::NotificationStore> =
-        Arc::new(keel_notifications::InMemoryNotificationStore::new());
+    // Wave 6 P3/P5: the catalog and the in-memory inbox store are built
+    // next to the producer hub at the top of this harness (one instance
+    // shared by the dispatch and the feed).
 
     let state = routes::AppState {
         bus: Arc::new(bus),
@@ -1376,6 +1405,217 @@ mod wave6_mail_tests {
             }
         }
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Wave 6 P6: the REAL localization chain end to end — the shipped
+    /// `platform/lang` catalogs load through the boot loader, the real
+    /// `i18n::resolve` picks `fr` from `Accept-Language` (the edge's
+    /// resolution, unchanged), and the REAL producer def
+    /// (`keel-mod-appointments::AppointmentBooked`) renders subject and
+    /// text through the hub catalog with `{patient}` interpolated from
+    /// the payload: FR bytes out of an FR request locale.
+    #[tokio::test]
+    async fn producer_mail_localizes_through_the_shipped_catalog_and_resolver() {
+        use keel_notifications::{
+            Channel, Mailable, MailPort, NotificationContext, NotifyHub, ResolvedMailAttachment,
+        };
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let catalog = std::sync::Arc::new(
+            keel_config::load_messages(&root, &keel_config::I18nSection::default())
+                .expect("shipped lang files load"),
+        );
+        let locale = crate::i18n::resolve(&catalog, None, Some("fr"));
+        assert_eq!(locale, "fr");
+
+        struct RecordingMail {
+            sent: std::sync::Arc<std::sync::Mutex<Vec<Mailable>>>,
+        }
+        impl MailPort for RecordingMail {
+            fn send(
+                &self,
+                _msg: &keel_notifications::NotifyMessage,
+                _subject: &str,
+            ) -> Result<(), keel_foundation::AppError> {
+                Ok(())
+            }
+            fn send_mailable(
+                &self,
+                mail: &Mailable,
+                _attachments: &[ResolvedMailAttachment],
+            ) -> Result<(), keel_foundation::AppError> {
+                mail.validate()?;
+                self.sent.lock().unwrap().push(mail.clone());
+                Ok(())
+            }
+        }
+
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut hub = NotifyHub::with_catalog(catalog);
+        hub.mail = Some(Box::new(RecordingMail { sent: log.clone() }));
+
+        let def = keel_mod_appointments::AppointmentBooked {
+            patient: "Ada".into(),
+            slot: "2026-09-01T10:00Z".into(),
+            locale: Some(locale.clone()),
+        };
+        hub.dispatch_notification(
+            &def,
+            Channel::Email,
+            Some("ada@example.com"),
+            &NotificationContext {
+                principal_id: keel_foundation::PrincipalId::new(),
+                tenant_id: None,
+                locale: Some(locale),
+            },
+        )
+        .await
+        .expect("dispatches");
+
+        let sent = log.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].subject, "Rendez-vous réservé pour Ada");
+        assert_eq!(
+            sent[0].text.as_deref(),
+            Some("Rendez-vous réservé pour Ada"),
+            "the catalog key resolves to FR text with the patient interpolated"
+        );
+        assert_eq!(sent[0].to, vec!["ada@example.com".to_string()]);
+    }
+
+    /// Wave 6 P6: the queued-delivery seam end to end — a `queue_via` def
+    /// renders at dispatch (the producer's catalog resolves the FR key;
+    /// the hub carries NO mail port, so an accidental inline path would
+    /// fail loudly) and enqueues through the runtime's port over the
+    /// in-memory job store; the claim surface reads the pre-rendered
+    /// envelope back, and the drain hub (no catalog — I/O only) delivers
+    /// the FR mail.
+    #[tokio::test]
+    async fn queue_via_enqueues_a_drainable_envelope_round_trip() {
+        use keel_jobs::JobStore as _;
+        use keel_notifications::{
+            Channel, Mailable, MailPort, NotificationContext, NotificationDef, NotifyHub,
+            ResolvedMailAttachment,
+        };
+
+        // Enqueue side: the port over the in-memory job store + the
+        // registered `notification.send` def (what serve() wires pool-gated).
+        let jobs = std::sync::Arc::new(keel_jobs::InMemoryJobStore::new());
+        let mut registry = keel_jobs::JobRegistry::new();
+        registry
+            .register(keel_jobs::JobDef::new(
+                keel_notifications::NOTIFICATION_SEND_JOB,
+            ))
+            .expect("def registers");
+        let port = crate::host::JobQueuePort::new(jobs.clone(), std::sync::Arc::new(registry));
+
+        struct QueuedNotice;
+        impl NotificationDef for QueuedNotice {
+            fn type_key(&self) -> &str {
+                "notice.queued"
+            }
+            fn to_mail(&self) -> Mailable {
+                Mailable {
+                    to: vec![],
+                    cc: vec![],
+                    bcc: vec![],
+                    from: None,
+                    reply_to: None,
+                    subject: "notifications.appointment_booked".into(),
+                    text: Some("notifications.appointment_booked".into()),
+                    html: None,
+                    headers: vec![],
+                    attachments: vec![],
+                }
+            }
+            fn to_sms(&self) -> String {
+                unreachable!("mail channel only")
+            }
+            fn to_push(&self) -> serde_json::Value {
+                unreachable!("mail channel only")
+            }
+            fn to_database(&self) -> serde_json::Value {
+                serde_json::json!({ "patient": "Ada" })
+            }
+            fn queue_via(&self) -> Option<&str> {
+                Some(keel_notifications::NOTIFICATION_SEND_JOB)
+            }
+        }
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let catalog = std::sync::Arc::new(
+            keel_config::load_messages(&root, &keel_config::I18nSection::default())
+                .expect("shipped lang files load"),
+        );
+        let producer_hub = NotifyHub::with_catalog(catalog).with_queue(Box::new(port));
+        producer_hub
+            .dispatch_notification(
+                &QueuedNotice,
+                Channel::Email,
+                Some("ada@example.com"),
+                &NotificationContext {
+                    principal_id: keel_foundation::PrincipalId::new(),
+                    tenant_id: None,
+                    locale: Some("fr".into()),
+                },
+            )
+            .await
+            .expect("queued, never delivered inline");
+
+        // The claim surface reads the durable job back …
+        let job = jobs
+            .claim("drain-worker")
+            .expect("store claims")
+            .expect("one job enqueued");
+        assert_eq!(job.name, keel_notifications::NOTIFICATION_SEND_JOB);
+        let envelope: keel_notifications::QueuedNotificationDelivery =
+            serde_json::from_value(job.payload).expect("envelope payload");
+        assert_eq!(
+            envelope.v,
+            keel_notifications::QueuedNotificationDelivery::VERSION
+        );
+        assert_eq!(envelope.type_key, "notice.queued");
+        // … with the FR subject already baked in at enqueue.
+        let pre_rendered = match &envelope.payload {
+            keel_notifications::DeliveryPayload::Mail(mail) => mail.clone(),
+            other => panic!("mail payload expected, got {other:?}"),
+        };
+
+        // Drain side: a fresh hub with NO catalog — only I/O.
+        struct RecordingMail {
+            sent: std::sync::Arc<std::sync::Mutex<Vec<Mailable>>>,
+        }
+        impl MailPort for RecordingMail {
+            fn send(
+                &self,
+                _msg: &keel_notifications::NotifyMessage,
+                _subject: &str,
+            ) -> Result<(), keel_foundation::AppError> {
+                Ok(())
+            }
+            fn send_mailable(
+                &self,
+                mail: &Mailable,
+                _attachments: &[ResolvedMailAttachment],
+            ) -> Result<(), keel_foundation::AppError> {
+                mail.validate()?;
+                self.sent.lock().unwrap().push(mail.clone());
+                Ok(())
+            }
+        }
+        assert_eq!(pre_rendered.subject, "Rendez-vous réservé pour Ada");
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut drain_hub = NotifyHub::empty();
+        drain_hub.mail = Some(Box::new(RecordingMail { sent: log.clone() }));
+        drain_hub
+            .deliver_queued(envelope)
+            .await
+            .expect("drain delivers");
+
+        let sent = log.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].subject, "Rendez-vous réservé pour Ada");
+        assert_eq!(sent[0].to, vec!["ada@example.com".to_string()]);
     }
 }
 

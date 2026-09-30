@@ -23,6 +23,7 @@ keel-lifecycle = { workspace = true }
 keel-jobs = { workspace = true }
 keel-event = { workspace = true }
 keel-mail-smtp = { workspace = true }
+keel-notifications = { workspace = true }
 keel-storage = { workspace = true }
 keel-storage-local = { workspace = true }
 keel-storage-s3 = { workspace = true }
@@ -30,6 +31,7 @@ keel-scheduling = { workspace = true }
 keel-postgres = { workspace = true }
 keel-observability = { workspace = true }
 clap = { workspace = true }
+serde_json = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

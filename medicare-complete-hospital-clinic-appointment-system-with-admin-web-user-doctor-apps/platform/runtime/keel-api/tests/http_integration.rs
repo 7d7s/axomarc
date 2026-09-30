@@ -2820,3 +2820,96 @@ async fn notifications_read_marks_rows_and_gates_the_capability() {
         "the denied mark never landed"
     );
 }
+
+// ------------------------------------------------------------- Wave 6 P6
+
+/// The harness reads `<dir>/lang` at build time — seed the locales BEFORE
+/// `build_app_state` so the edge's `Accept-Language` negotiation runs
+/// against a real catalog (mirrors the views suite's fixture pattern).
+fn app_with_lang() -> App {
+    let dir = std::env::temp_dir().join(format!("keel-api-p6-{}", uuid::Uuid::now_v7()));
+    let lang = dir.join("lang");
+    std::fs::create_dir_all(&lang).expect("lang fixture dir");
+    std::fs::write(
+        lang.join("en.toml"),
+        "[notifications]\nappointment_booked = \"Appointment booked for {patient}\"\n",
+    )
+    .expect("en lang fixture writes");
+    std::fs::write(
+        lang.join("fr.toml"),
+        "[notifications]\nappointment_booked = \"Rendez-vous réservé pour {patient}\"\n",
+    )
+    .expect("fr lang fixture writes");
+    let (state, graph, store) = keel_api::build_app_state(&dir, true, true);
+    let router = keel_api::routes::router(state.clone())
+        .merge(keel_api::graph_routes::graph_router(state.clone(), &graph))
+        .merge(keel_api::auth_routes::router(state.clone()))
+        .merge(keel_api::upload_routes::router(state.clone()))
+        .merge(keel_api::notification_routes::router(state.clone()));
+    let router = state
+        .sessions
+        .as_ref()
+        .expect("sessions enabled")
+        .as_ref()
+        .clone()
+        .apply(router);
+    App {
+        router,
+        state,
+        store,
+    }
+}
+
+/// Wave 6 P6: producer dispatch over HTTP — a booking with
+/// `Accept-Language: fr` resolves the request locale at the edge, the
+/// book handler dispatches `appointment.booked` through the hub, and the
+/// row appears in the very `/api/v1/notifications` feed the edge reads,
+/// carrying `data.locale == "fr"` (self-scoped wire, unread meta).
+#[tokio::test]
+async fn booked_appointment_lands_in_the_inbox_in_the_request_locale() {
+    let app = app_with_lang();
+    let email = format!("p6-{}@clinic.test", uuid::Uuid::now_v7());
+    let (cookie, _) = inbox_owner(&app, &email).await;
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/appointments")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::COOKIE, &cookie)
+        .header(header::ACCEPT_LANGUAGE, "fr")
+        .body(Body::from(
+            serde_json::json!({ "patient": "A. Patient", "slot": "2026-09-01T10:00Z" })
+                .to_string(),
+        ))
+        .unwrap();
+    let book = send(&app, req).await;
+    assert_eq!(book.status, StatusCode::OK, "book: {}", book.body);
+    assert_eq!(book.data()["status"], "booked");
+
+    let feed = send(
+        &app,
+        json_req(
+            Method::GET,
+            "/api/v1/notifications",
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(feed.status, StatusCode::OK, "{}", feed.body);
+    let data = feed.data();
+    let rows = data.as_array().expect("row array");
+    assert_eq!(rows.len(), 1, "one producer row for one booking");
+    assert_eq!(rows[0]["type"], "appointment.booked");
+    assert_eq!(rows[0]["data"]["patient"], "A. Patient");
+    assert_eq!(rows[0]["data"]["slot"], "2026-09-01T10:00Z");
+    assert_eq!(
+        rows[0]["data"]["locale"], "fr",
+        "the request locale rides the dispatch payload"
+    );
+    assert!(rows[0]["read_at"].is_null());
+    assert!(rows[0].get("principal_id").is_none(), "self-scoped wire");
+    assert_eq!(feed.body["meta"]["total"], 1);
+    assert_eq!(feed.body["meta"]["unread"], 1);
+}

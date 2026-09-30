@@ -164,6 +164,11 @@ pub struct PlatformProvider {
     /// Wave 6 P5: views engine for notification HTML mail bodies
     /// (`views/notifications/...`); `None` keeps mail text-only.
     pub views: Option<Arc<keel_views::ViewsEngine>>,
+    /// Wave 6 P6: the pool-gated enqueue seam — `PgJobStore` + the
+    /// registered `notification.send` def, present only when a database
+    /// pool exists. `None` leaves `queue_via` fail-closed
+    /// (`not_implemented`) — the D-52 degradation posture.
+    pub notification_queue: Option<(Arc<dyn keel_jobs::JobStore>, Arc<keel_jobs::JobRegistry>)>,
 }
 
 /// Wave 6 P5: the Wave 2 views engine behind the notification HTML port —
@@ -176,6 +181,41 @@ impl keel_notifications::NotificationViewRenderer for ViewsNotificationRenderer 
         self.0
             .render(template, context)
             .map_err(|e| AppError::internal(format!("notification view render failed: {e}")))
+    }
+}
+
+/// Wave 6 P6: the enqueue half of the queued-delivery seam — the runtime
+/// owns it because the service crate cannot depend on the job store (19-PARITY
+/// "queued delivery"). Renders happen at dispatch (request-time locale,
+/// target, views); this port only durable-enqueues the pre-rendered
+/// envelope under the def's `queue_via` name. `registry.build` refuses an
+/// unregistered name, so a typo is a loud dispatch error, never a silent
+/// drop. Wired pool-gated: `PgJobStore` + the registered
+/// `notification.send` def when a database pool exists; no pool leaves
+/// `queue_via` fail-closed (`not_implemented`).
+pub(crate) struct JobQueuePort {
+    store: Arc<dyn keel_jobs::JobStore>,
+    registry: Arc<keel_jobs::JobRegistry>,
+}
+
+impl JobQueuePort {
+    pub(crate) fn new(store: Arc<dyn keel_jobs::JobStore>, registry: Arc<keel_jobs::JobRegistry>) -> Self {
+        Self { store, registry }
+    }
+}
+
+impl keel_notifications::NotificationQueuePort for JobQueuePort {
+    fn enqueue(
+        &self,
+        job_type: &str,
+        delivery: &keel_notifications::QueuedNotificationDelivery,
+    ) -> Result<(), AppError> {
+        let payload = serde_json::to_value(delivery)
+            .map_err(|e| AppError::validation(format!("notification.send payload: {e}")))?;
+        let job = self
+            .registry
+            .build(job_type, payload, time::OffsetDateTime::now_utc())?;
+        self.store.enqueue(job).map(|_| ())
     }
 }
 
@@ -205,6 +245,12 @@ impl Provider for PlatformProvider {
             .with_store(self.notifications.clone());
         if let Some(views) = &self.views {
             hub = hub.with_view_renderer(Arc::new(ViewsNotificationRenderer(views.clone())));
+        }
+        if let Some((store, registry)) = &self.notification_queue {
+            hub = hub.with_queue(Box::new(JobQueuePort::new(
+                store.clone(),
+                registry.clone(),
+            )));
         }
         r.insert("notify.hub", Arc::new(hub))
     }

@@ -14,3 +14,4 @@ count = "zero=لا مواعيد | one=موعد واحد | two=موعدان | few
 
 [notifications]
 appointment_booked = "تم حجز الموعد لـ {patient}"
+appointment_cancelled = "تم إلغاء الموعد لـ {patient}"

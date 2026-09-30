@@ -20,6 +20,7 @@ use keel_lifecycle::{BootError, Phase, Provider, ServiceRegistry};
 use keel_models::{
     FieldDef, FieldFilter, FieldType, ModelDef, ModelRuntime, ModelStore, ModelStoreRef, Record,
 };
+use keel_notifications::{Channel, Mailable, NotificationContext, NotificationDef, NotifyHub};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -310,11 +311,118 @@ impl keel_models::RouteBindingResolver for AppointmentBindingResolver {
     }
 }
 
+/// Wave 6 P6: `appointment.booked` — the producer notification the book
+/// handler dispatches on the Database channel (the caller's inbox row).
+/// Mail/SMS text resolves `notifications.appointment_booked` through the
+/// hub catalog with `{patient}`/`{slot}` interpolated from the payload
+/// scalars; the payload also carries the dispatch locale so readers see
+/// which language the row was produced in. `template()` stays `None`: no
+/// view file ships yet, so mail stays text-only instead of failing closed
+/// on a missing view once a view port is wired.
+#[derive(Debug, Clone)]
+pub struct AppointmentBooked {
+    pub patient: String,
+    pub slot: String,
+    pub locale: Option<String>,
+}
+
+impl NotificationDef for AppointmentBooked {
+    fn type_key(&self) -> &str {
+        EVENT_BOOKED
+    }
+
+    fn to_mail(&self) -> Mailable {
+        Mailable {
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            from: None,
+            reply_to: None,
+            subject: "notifications.appointment_booked".into(),
+            text: Some("notifications.appointment_booked".into()),
+            html: None,
+            headers: Vec::new(),
+            attachments: Vec::new(),
+        }
+    }
+
+    fn to_sms(&self) -> String {
+        "notifications.appointment_booked".into()
+    }
+
+    fn to_push(&self) -> serde_json::Value {
+        json!({})
+    }
+
+    fn to_database(&self) -> serde_json::Value {
+        json!({ "patient": self.patient, "slot": self.slot, "locale": self.locale })
+    }
+
+    fn template(&self) -> Option<String> {
+        None
+    }
+}
+
+/// Wave 6 P6: `appointment.cancelled` — the cancel handler's producer
+/// notification (same posture as [`AppointmentBooked`], keyed
+/// `notifications.appointment_cancelled`).
+#[derive(Debug, Clone)]
+pub struct AppointmentCancelled {
+    pub patient: String,
+    pub slot: String,
+    pub locale: Option<String>,
+}
+
+impl NotificationDef for AppointmentCancelled {
+    fn type_key(&self) -> &str {
+        EVENT_CANCELLED
+    }
+
+    fn to_mail(&self) -> Mailable {
+        Mailable {
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            from: None,
+            reply_to: None,
+            subject: "notifications.appointment_cancelled".into(),
+            text: Some("notifications.appointment_cancelled".into()),
+            html: None,
+            headers: Vec::new(),
+            attachments: Vec::new(),
+        }
+    }
+
+    fn to_sms(&self) -> String {
+        "notifications.appointment_cancelled".into()
+    }
+
+    fn to_push(&self) -> serde_json::Value {
+        json!({})
+    }
+
+    fn to_database(&self) -> serde_json::Value {
+        json!({ "patient": self.patient, "slot": self.slot, "locale": self.locale })
+    }
+
+    fn template(&self) -> Option<String> {
+        None
+    }
+}
+
 /// All operation handlers of this module (host builds a CommandBus from these).
-pub fn handlers(store: Arc<AppointmentStore>) -> Vec<Arc<dyn OperationHandler>> {
+/// `notifier` is the Wave 6 P6 producer hub: `None` (hosts that never wired
+/// the platform notify hub) leaves the dispatch silent — the `Option`
+/// degradation posture every optional service follows.
+pub fn handlers(
+    store: Arc<AppointmentStore>,
+    notifier: Option<Arc<NotifyHub>>,
+) -> Vec<Arc<dyn OperationHandler>> {
     vec![
-        Arc::new(BookHandler::new(store.clone())),
-        Arc::new(CancelHandler::new(store.clone())),
+        Arc::new(
+            BookHandler::new(store.clone()).with_notifier(notifier.clone()),
+        ),
+        Arc::new(CancelHandler::new(store.clone()).with_notifier(notifier)),
         Arc::new(ListHandler::new(store.clone())),
         Arc::new(AvailabilityHandler::new(store)),
     ]
@@ -355,7 +463,14 @@ impl Provider for ModuleProvider {
                     backend.0.clone(),
                 )));
         }
-        registry.insert("module.appointments.handlers", Arc::new(handlers(store)))?;
+        // Wave 6 P6: the notify hub arrives in the Platform phase (before
+        // Modules); a host that never wired one leaves the producer silent
+        // (the same tolerance posture as route.bindings).
+        let notifier = registry.get::<NotifyHub>().ok();
+        registry.insert(
+            "module.appointments.handlers",
+            Arc::new(handlers(store, notifier)),
+        )?;
         Ok(())
     }
 }
@@ -380,6 +495,7 @@ fn require_tenant(ctx: &ExecutionContext) -> Result<TenantId, AppError> {
 pub struct BookHandler {
     plan: ExecutionPlan,
     store: Arc<AppointmentStore>,
+    notifier: Option<Arc<NotifyHub>>,
 }
 
 impl BookHandler {
@@ -391,7 +507,18 @@ impl BookHandler {
             )
             .with_capability(OP_BOOK),
             store,
+            notifier: None,
         }
+    }
+
+    /// Wave 6 P6: attach the producer hub (kept out of `new` so host and
+    /// test construction stay unchanged). With it wired, a successful
+    /// booking dispatches the `appointment.booked` inbox row before the
+    /// operation returns; dispatch failures fail the booking (fail-closed,
+    /// never a silent drop).
+    pub fn with_notifier(mut self, notifier: Option<Arc<NotifyHub>>) -> Self {
+        self.notifier = notifier;
+        self
     }
 }
 
@@ -406,7 +533,8 @@ impl OperationHandler for BookHandler {
         input: serde_json::Value,
         unit: &mut dyn ExecutionUnit,
     ) -> BoxFuture<'static, Result<serde_json::Value, AppError>> {
-        let outcome = (|| -> Result<serde_json::Value, AppError> {
+        let notifier = self.notifier.clone();
+        let outcome = (|| -> Result<(serde_json::Value, String, String), AppError> {
             let tenant = require_tenant(&ctx)?;
             let patient = text_field(&input, "patient");
             let slot = text_field(&input, "slot");
@@ -444,9 +572,40 @@ impl OperationHandler for BookHandler {
                 topic: "appointments".into(),
                 payload: json!({ "id": stored.id.to_string(), "patient": patient, "slot": slot }),
             });
-            Ok(json!({ "id": stored.id.to_string(), "status": "booked" }))
+            Ok((
+                json!({ "id": stored.id.to_string(), "status": "booked" }),
+                patient,
+                slot,
+            ))
         })();
-        Box::pin(async move { outcome })
+        Box::pin(async move {
+            let (value, patient, slot) = outcome?;
+            // Wave 6 P6 producer dispatch: the `appointment.booked` inbox
+            // row lands through the notification store port at the end of
+            // the handler, before the unit commits (the documented
+            // pre-commit posture — same database, same health). The
+            // request locale rides both the dispatch context and the row
+            // payload.
+            if let Some(hub) = notifier.as_ref() {
+                let locale = ctx.locale.lang.clone();
+                hub.dispatch_notification(
+                    &AppointmentBooked {
+                        patient,
+                        slot,
+                        locale: Some(locale.clone()),
+                    },
+                    Channel::Database,
+                    None,
+                    &NotificationContext {
+                        principal_id: ctx.principal.id,
+                        tenant_id: Some(require_tenant(&ctx)?),
+                        locale: Some(locale),
+                    },
+                )
+                .await?;
+            }
+            Ok(value)
+        })
     }
 }
 
@@ -454,6 +613,7 @@ impl OperationHandler for BookHandler {
 pub struct CancelHandler {
     plan: ExecutionPlan,
     store: Arc<AppointmentStore>,
+    notifier: Option<Arc<NotifyHub>>,
 }
 
 impl CancelHandler {
@@ -465,7 +625,15 @@ impl CancelHandler {
             )
             .with_capability(OP_CANCEL),
             store,
+            notifier: None,
         }
+    }
+
+    /// Wave 6 P6: attach the producer hub (see [`BookHandler::with_notifier`]);
+    /// a successful cancel dispatches `appointment.cancelled` the same way.
+    pub fn with_notifier(mut self, notifier: Option<Arc<NotifyHub>>) -> Self {
+        self.notifier = notifier;
+        self
     }
 }
 
@@ -480,7 +648,8 @@ impl OperationHandler for CancelHandler {
         input: serde_json::Value,
         unit: &mut dyn ExecutionUnit,
     ) -> BoxFuture<'static, Result<serde_json::Value, AppError>> {
-        let outcome = (|| -> Result<serde_json::Value, AppError> {
+        let notifier = self.notifier.clone();
+        let outcome = (|| -> Result<(serde_json::Value, String, String), AppError> {
             let tenant = require_tenant(&ctx)?;
             let id = text_field(&input, "id")
                 .parse::<Uuid>()
@@ -499,9 +668,36 @@ impl OperationHandler for CancelHandler {
                 topic: "appointments".into(),
                 payload: json!({ "id": after.id.to_string() }),
             });
-            Ok(json!({ "id": after.id.to_string(), "status": "cancelled" }))
+            Ok((
+                json!({ "id": after.id.to_string(), "status": "cancelled" }),
+                after.patient,
+                after.slot,
+            ))
         })();
-        Box::pin(async move { outcome })
+        Box::pin(async move {
+            let (value, patient, slot) = outcome?;
+            // Wave 6 P6 producer dispatch — same pre-commit, fail-closed
+            // posture as the book handler, keyed `appointment.cancelled`.
+            if let Some(hub) = notifier.as_ref() {
+                let locale = ctx.locale.lang.clone();
+                hub.dispatch_notification(
+                    &AppointmentCancelled {
+                        patient,
+                        slot,
+                        locale: Some(locale.clone()),
+                    },
+                    Channel::Database,
+                    None,
+                    &NotificationContext {
+                        principal_id: ctx.principal.id,
+                        tenant_id: Some(require_tenant(&ctx)?),
+                        locale: Some(locale),
+                    },
+                )
+                .await?;
+            }
+            Ok(value)
+        })
     }
 }
 
@@ -620,6 +816,7 @@ impl OperationHandler for AvailabilityHandler {
 mod tests {
     use super::*;
     use keel_context::{PrincipalContext, ScopeSnapshot, TenantContext};
+    use keel_notifications::NotificationStore;
     use keel_foundation::{AuthorizationRevision, FeatureRevision, ModuleRevision, PrincipalId};
     use keel_execution::{Engine, IdempotencyKey, InMemoryBackend, InMemoryIdempotency};
     use keel_policy::{AccessSnapshot, PolicyAuthz, PolicyEngine};
@@ -996,5 +1193,123 @@ mod tests {
             host.boot().await.is_err(),
             "module must refuse to boot without the ModelStore port"
         );
+    }
+
+    // ------------------------------------------------- Wave 6 P6: producer dispatch
+
+    /// Same shape as [`ctx`] with a pinned request locale — the P6 e2e
+    /// asserts the producer carries it into the row payload.
+    fn ctx_lang(principal: PrincipalId, tenant: TenantId, lang: &str) -> Arc<ExecutionContext> {
+        ExecutionContext::builder(ExecutionProfileKind::Command, OffsetDateTime::now_utc())
+            .principal(PrincipalContext {
+                id: principal,
+                display: Some("appointments-test".into()),
+            })
+            .tenant(TenantContext {
+                id: tenant,
+                slug: "clinic".into(),
+                plan: "standard".into(),
+            })
+            .scope(ScopeSnapshot {
+                nodes: vec![],
+                revision: AuthorizationRevision(1),
+                computed_at: OffsetDateTime::now_utc(),
+            })
+            .locale(keel_foundation::Locale {
+                lang: lang.into(),
+                timezone: "UTC".into(),
+            })
+            .build()
+            .unwrap()
+    }
+
+    /// Wave 6 P6: a successful booking dispatches the `appointment.booked`
+    /// inbox row through the hub — addressed to the caller's principal in
+    /// the caller's locale (the payload carries it), landing in the very
+    /// store shape the HTTP feed reads.
+    #[tokio::test]
+    async fn producer_dispatches_the_inbox_row_and_carries_the_locale() {
+        let (engine, store, principal, tenant) = fixture(&[OP_BOOK, OP_LIST]);
+        let context = ctx_lang(principal, tenant, "fr");
+        let inbox = Arc::new(keel_notifications::InMemoryNotificationStore::new());
+        let hub = Arc::new(keel_notifications::NotifyHub::empty().with_store(inbox.clone()));
+        let handler = BookHandler::new(store.clone()).with_notifier(Some(hub));
+
+        book(&engine, &context, &handler, "A. Patient", "2026-09-01T10:00Z")
+            .await
+            .expect("booking succeeds");
+
+        let page = inbox.list(principal, 0, 10).await.expect("inbox reads");
+        assert_eq!(page.total, 1);
+        assert_eq!(page.unread, 1);
+        let row = &page.rows[0];
+        assert_eq!(row.kind, "appointment.booked");
+        assert_eq!(row.principal_id, principal);
+        assert_eq!(row.tenant_id, Some(tenant));
+        assert_eq!(row.data["patient"], "A. Patient");
+        assert_eq!(row.data["slot"], "2026-09-01T10:00Z");
+        assert_eq!(row.data["locale"], "fr", "request locale rides the row");
+        assert!(row.read_at.is_none());
+    }
+
+    /// Wave 6 P6: cancellation dispatches its own `appointment.cancelled`
+    /// row alongside the booking's — two events, two inbox rows.
+    #[tokio::test]
+    async fn cancel_dispatches_the_cancelled_inbox_row() {
+        let (engine, store, principal, tenant) = fixture(&[OP_BOOK, OP_CANCEL]);
+        let context = ctx(principal, tenant);
+        let inbox = Arc::new(keel_notifications::InMemoryNotificationStore::new());
+        let hub = Arc::new(keel_notifications::NotifyHub::empty().with_store(inbox.clone()));
+        let book_handler = BookHandler::new(store.clone()).with_notifier(Some(hub.clone()));
+        let outcome = book(
+            &engine,
+            &context,
+            &book_handler,
+            "B. Patient",
+            "2026-09-02T11:00Z",
+        )
+        .await
+        .expect("booking succeeds");
+        let id = outcome.result["id"].as_str().unwrap().to_string();
+
+        let cancel = CancelHandler::new(store.clone()).with_notifier(Some(hub));
+        engine
+            .execute(
+                context.clone(),
+                &cancel,
+                json!({ "id": id }),
+                Some(IdempotencyKey("cancel-p6-1".into())),
+            )
+            .await
+            .expect("cancel succeeds");
+
+        let page = inbox.list(principal, 0, 10).await.expect("inbox reads");
+        assert_eq!(page.total, 2);
+        assert_eq!(page.rows[0].kind, "appointment.cancelled", "newest first");
+        assert_eq!(page.rows[1].kind, "appointment.booked");
+        assert_eq!(page.rows[0].data["patient"], "B. Patient");
+    }
+
+    /// Wave 6 P6: a wired hub that cannot store the row fails the
+    /// operation (fail-closed) — the producer never drops its dispatch
+    /// silently; a host with no hub at all stays on the degraded path
+    /// the untouched booking tests already prove.
+    #[tokio::test]
+    async fn producer_dispatch_failure_fails_the_operation() {
+        let (engine, store, principal, tenant) = fixture(&[OP_BOOK]);
+        let context = ctx(principal, tenant);
+        let hub = Arc::new(keel_notifications::NotifyHub::empty());
+        let handler = BookHandler::new(store.clone()).with_notifier(Some(hub));
+
+        let err = book(
+            &engine,
+            &context,
+            &handler,
+            "C. Patient",
+            "2026-09-03T12:00Z",
+        )
+        .await
+        .expect_err("dispatch failure fails the booking");
+        assert_eq!(err.code, keel_foundation::codes::NOT_IMPLEMENTED);
     }
 }

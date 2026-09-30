@@ -83,9 +83,38 @@ database channel through the new `NotificationStore` port (in-memory reference +
 implementation behind the same degradation posture, shared as ONE instance between the hub and the
 HTTP routes). The inbox edges (`GET /api/v1/notifications`, `POST /api/v1/notifications/read`)
 live in `keel-api/src/notification_routes.rs`; the mark is gated by the `notifications.mark_read`
-framework capability chained into the login-time grant set. Honest gaps: notification mail
-attachments are refused on this dispatch path (the P1 `not_implemented` seam) and producer
-dispatch (appointment module) lands in P6.
+framework capability chained into the login-time grant set.
+
+Notifications P6 completes the v2 surface — on-demand notifiables, queued delivery, producer
+dispatch. `NotifyHub::dispatch_on_demand(n, channel, target, ctx)` delivers to a raw email/phone
+with no principal record (the same channel ports; `Channel::Database` is refused up front because
+a row is addressed by principal; a def's `queue_via` still applies) and returns
+`OnDemandAudit { type_key, channel, target_hash, at }` — the target is rendered and delivered
+inside the call, and only its sha256 leaves it; there is no persistence port (D-74: callers
+persist the audit through their execution unit's `record_audit`). The queue seam:
+`NotificationDef::queue_via -> Option<&str>` names a job; a def that opts in is rendered at
+dispatch (request-time locale, filled target, view HTML) and handed to
+`NotificationQueuePort::enqueue(job_type, &QueuedNotificationDelivery)` — a v1-versioned envelope
+whose `DeliveryPayload` is adjacently tagged Mail/Sms/Push/Database. The drain refuses an unknown
+envelope version loudly (retry → dead-letter, never a guess), and `queue_via` with no port fails
+closed (`not_implemented`). Both halves are runtime-owned (the layer matrix keeps Async off
+Services): keel-api enqueues pool-gated (`PgJobStore` + the registered `notification.send` def
+wired onto the hub through `PlatformProvider.notification_queue`; no pool = no port =
+fail-closed), keel-worker drains (`notification_job` builds the hub over the boot catalog, the
+pg/in-memory database store and a `ChainMail` adapter over the P1 `MailChain` — the chain does
+not implement `MailPort`; `NotificationDeliveryHandler` → `hub.deliver_queued`, registered beside
+`mail.send`). Producer dispatch: the appointments Book/Cancel handlers dispatch
+`AppointmentBooked`/`AppointmentCancelled` on the Database channel at the end of the handler —
+pre-commit posture, and a refused dispatch fails the operation (fail-closed) — through
+`with_notifier()` (the `ModuleProvider` fetches the hub from the registry; Platform phase
+precedes Modules, an absent hub degrades silently). Rows carry `{patient, slot, locale}` plus the
+request principal/tenant; `lang/{en,fr,ar}` gained `appointment_cancelled`; the defs' 
+`template() -> None` keeps dispatched mail text-only (no view file ships). Honest gaps
+carried: notification mail attachments still refuse on this dispatch path (the P1
+`not_implemented` seam); no in-repo def opts into `queue_via` yet (the seam is wired and
+round-tripped hermetically — producers opt in when a channel must outlive the request);
+`dispatch_on_demand` has no in-repo producer (the auth verification mail rides the dev_token
+path); and push remains nudge-only (D-17).
 
 ## Localization (i18n)
 
@@ -113,7 +142,10 @@ Notification strings ride the same catalog: `NotifyHub::with_catalog` (wired at 
 catalog) resolves `NotifyMessage.template` as a key with `vars` as interpolation params when a
 producer sets the message's request `locale` (`serde(default)` — pre-catalog queued payloads
 load unchanged); literal templates and catalog-less hubs stand exactly as before. End-to-end
-notification localization is exercised at P5/P6.
+notification localization landed at P6: the shipped `platform/lang` catalog through
+`load_messages` + the edge's `i18n::resolve` renders `AppointmentBooked` into FR mail
+(`Rendez-vous réservé pour Ada`), and an `Accept-Language: fr` booking lands a
+`data.locale == "fr"` row in the inbox feed.
 
 ## Realtime
 

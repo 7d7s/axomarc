@@ -319,6 +319,95 @@ fn mail_job(
     Ok((JobDef::new(keel_mail_smtp::MAIL_SEND_JOB), handler))
 }
 
+/// Wave 6 P6: the worker hub's mail port — `MailChain` speaks its own
+/// failover API and does not implement the hub's `MailPort`, so the
+/// runtime adapts: the rich path delegates untouched (the mailable
+/// validator runs before the transport) and the simple sync path becomes
+/// a text-only mailable. The chain itself is the P1-tested component;
+/// this wrapper is the layer-matrix seam (runtime owns both sides).
+struct ChainMail(keel_mail_smtp::MailChain);
+
+impl keel_notifications::MailPort for ChainMail {
+    fn send(
+        &self,
+        msg: &keel_notifications::NotifyMessage,
+        subject: &str,
+    ) -> Result<(), AppError> {
+        let mail = keel_notifications::Mailable {
+            to: vec![msg.to.clone()],
+            cc: vec![],
+            bcc: vec![],
+            from: None,
+            reply_to: None,
+            subject: subject.to_string(),
+            text: Some(msg.template.clone()),
+            html: None,
+            headers: vec![],
+            attachments: vec![],
+        };
+        mail.validate()?;
+        self.0.send_mailable(&mail, &[])
+    }
+
+    fn send_mailable(
+        &self,
+        mail: &keel_notifications::Mailable,
+        attachments: &[keel_notifications::ResolvedMailAttachment],
+    ) -> Result<(), AppError> {
+        self.0.send_mailable(mail, attachments)
+    }
+}
+
+/// Wave 6 P6: the queued-notification def + drain handler — the
+/// counterpart to [`mail_job`], built from the frozen config so the
+/// registration surface stays unit-testable. The envelope is pre-rendered
+/// at enqueue (request-time locale, target, views); this hub performs I/O
+/// only: the `[mail]` failover chain behind the hub's `MailPort`, the
+/// database-channel store (postgres when reachable, in-memory otherwise)
+/// for `Database` payloads, and the boot catalog for shape parity with
+/// the api hub (drain never re-resolves — text was rendered at enqueue;
+/// a malformed `[i18n]` source refuses boot here the same way serve()
+/// refuses it). The database store arrives from `main` so tests inject
+/// their own observable instance.
+fn notification_job(
+    cfg: &FrozenConfig,
+    i18n_root: &std::path::Path,
+    store: Arc<dyn keel_notifications::NotificationStore>,
+) -> Result<(JobDef, NotificationDeliveryHandler), AppError> {
+    let messages = Arc::new(keel_config::load_messages(i18n_root, cfg.i18n())?);
+    let mut hub = keel_notifications::NotifyHub::with_catalog(messages).with_store(store);
+    hub.mail = Some(Box::new(ChainMail(mail_chain(cfg.mail())?)));
+    Ok((
+        JobDef::new(keel_notifications::NOTIFICATION_SEND_JOB),
+        NotificationDeliveryHandler { hub },
+    ))
+}
+
+/// Wave 6 P6: `notification.send` drain — deserialize the v1 envelope (a
+/// version this build does not know refuses the attempt: retry →
+/// dead-letter, never a guess) and hand it to the hub. Any Err maps to
+/// `JobStore::fail` (retry with backoff, then dead-letter), the
+/// `mail.send` posture.
+struct NotificationDeliveryHandler {
+    hub: keel_notifications::NotifyHub,
+}
+
+impl JobHandler for NotificationDeliveryHandler {
+    fn name(&self) -> &str {
+        keel_notifications::NOTIFICATION_SEND_JOB
+    }
+
+    fn handle<'a>(&'a self, job: &'a DurableJob) -> BoxFuture<'a, Result<(), AppError>> {
+        Box::pin(async move {
+            let delivery: keel_notifications::QueuedNotificationDelivery =
+                serde_json::from_value(job.payload.clone()).map_err(|e| {
+                    AppError::validation(format!("notification.send payload: {e}"))
+                })?;
+            self.hub.deliver_queued(delivery).await
+        })
+    }
+}
+
 /// One claim+dispatch pass. Returns the claimed job, if any. Batch/chain
 /// runtimes are notified on terminal outcomes (L33/L34, S3).
 async fn dispatch_once(
@@ -510,12 +599,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the disk registry (an unknown chain member, a malformed mailer, or a
     // bad `[storage]` section refuses boot right here).
     let (mail_def, mail_handler) = mail_job(&cfg, &root.join("storage").join("local"))?;
+    // Wave 6 P6: the queued-notification def + drain handler — the
+    // database-channel store mirrors keel-api's inbox (postgres when
+    // reachable, in-memory otherwise, D-52), so a `Database` envelope
+    // drained here lands in the same table the HTTP feed reads.
+    let notification_store: Arc<dyn keel_notifications::NotificationStore> = match &pool {
+        Some(pool) => Arc::new(keel_postgres::PgNotificationStore::new(pool.clone())),
+        None => Arc::new(keel_notifications::InMemoryNotificationStore::new()),
+    };
+    let (notification_def, notification_handler) =
+        notification_job(&cfg, &root, notification_store)?;
     // Modules register schedules + job defs here at boot; the framework ships
     // the runner so the first module only adds entries, not machinery. The
-    // def registration makes `mail.send` buildable through the registry
-    // (def-owned retry budget) for queued-send producers.
+    // def registration makes `mail.send` and `notification.send` buildable
+    // through the registry (def-owned retry budget) for queued producers.
     let mut job_defs = JobRegistry::new();
     job_defs.register(mail_def)?;
+    job_defs.register(notification_def)?;
     let job_defs = Arc::new(job_defs);
     let scheduler = Arc::new(
         SchedulerRunner::new(schedules.clone())
@@ -538,6 +638,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // disk port, so attachment refs resolve through the same registry the
     // upload edge uses.
     handlers.register(Arc::new(mail_handler))?;
+    // Wave 6 P6: `notification.send` dispatch — pre-rendered envelope in,
+    // I/O out (mail chain / database store).
+    handlers.register(Arc::new(notification_handler))?;
     let handlers = Arc::new(handlers);
 
     let mut host = ApplicationHost::new();
@@ -891,5 +994,210 @@ mod tests {
         );
         let err = disk_registry(&bad, &root).expect_err("unknown default");
         assert!(err.public_message.contains("nope"), "{}", err.public_message);
+    }
+
+    // ------------------------------------------- Wave 6 P6: notification drain
+
+    /// Per-process i18n root for the notification job — a directory that
+    /// (deliberately) does not exist yields the empty default catalog,
+    /// exactly like a fresh deploy with no `lang/` yet.
+    fn i18n_root() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("keel-worker-i18n-{}", std::process::id()))
+    }
+
+    /// Wave 6 P6: the default config boots the notification job (built-in
+    /// `log` chain; the database store is injected by the caller) and the
+    /// def + handler register exactly once each — the boot-time guard both
+    /// registries enforce (duplicates refuse), mirroring `mail.send`.
+    #[test]
+    fn notification_job_boots_and_registers_once() {
+        let cfg = PlatformConfig::default().freeze();
+        let store: Arc<dyn keel_notifications::NotificationStore> =
+            Arc::new(keel_notifications::InMemoryNotificationStore::new());
+        let (def, handler) = notification_job(&cfg, &i18n_root(), store)
+            .expect("default config builds the notification job");
+        assert_eq!(def.name, keel_notifications::NOTIFICATION_SEND_JOB);
+        assert_eq!(def.max_attempts, 3, "job policy owns retry/backoff/dead");
+        assert_eq!(handler.name(), keel_notifications::NOTIFICATION_SEND_JOB);
+
+        let mut defs = JobRegistry::new();
+        defs.register(def).unwrap();
+        let mut handlers = WorkerRegistry::new();
+        handlers.register(Arc::new(handler)).unwrap();
+        assert_eq!(
+            defs.names(),
+            vec![keel_notifications::NOTIFICATION_SEND_JOB]
+        );
+        assert_eq!(
+            handlers.names(),
+            vec![keel_notifications::NOTIFICATION_SEND_JOB]
+        );
+
+        let store: Arc<dyn keel_notifications::NotificationStore> =
+            Arc::new(keel_notifications::InMemoryNotificationStore::new());
+        let (dup_def, dup_handler) = notification_job(&cfg, &i18n_root(), store).unwrap();
+        assert!(defs.register(dup_def).is_err(), "def refuses duplicates");
+        assert!(
+            handlers.register(Arc::new(dup_handler)).is_err(),
+            "handler refuses duplicates"
+        );
+    }
+
+    /// Wave 6 P6: the drain round trip — a serialized v1 envelope (exactly
+    /// what keel-api's enqueue port builds) deserializes and delivers
+    /// through the worker hub: the `Database` payload lands as a row in
+    /// the very store the caller injected (the HTTP feed's twin in
+    /// production), addressed to the envelope's principal under the
+    /// envelope's type.
+    #[tokio::test]
+    async fn notification_drain_lands_a_database_envelope_in_the_store() {
+        use keel_notifications::{
+            DeliveryPayload, NotificationRow, NotificationStore, QueuedNotificationDelivery,
+        };
+
+        let cfg = PlatformConfig::default().freeze();
+        let store = Arc::new(keel_notifications::InMemoryNotificationStore::new());
+        let (_def, handler) =
+            notification_job(&cfg, &i18n_root(), store.clone()).expect("builds the drain");
+
+        let principal = keel_foundation::PrincipalId::new();
+        let envelope = QueuedNotificationDelivery {
+            v: QueuedNotificationDelivery::VERSION,
+            type_key: "appointment.booked".into(),
+            locale: Some("fr".into()),
+            principal_id: Some(principal),
+            tenant_id: None,
+            at: OffsetDateTime::now_utc(),
+            payload: DeliveryPayload::Database(NotificationRow {
+                id: *principal.as_uuid(),
+                principal_id: principal,
+                tenant_id: None,
+                kind: "appointment.booked".into(),
+                data: serde_json::json!({ "patient": "Ada", "locale": "fr" }),
+                read_at: None,
+                created_at: OffsetDateTime::now_utc(),
+            }),
+        };
+        // The durable job exactly as the enqueue side builds it …
+        let mut defs = JobRegistry::new();
+        defs.register(JobDef::new(keel_notifications::NOTIFICATION_SEND_JOB))
+            .unwrap();
+        let job = defs
+            .build(
+                keel_notifications::NOTIFICATION_SEND_JOB,
+                serde_json::to_value(&envelope).unwrap(),
+                OffsetDateTime::now_utc(),
+            )
+            .unwrap();
+        // … and the drain performs the I/O.
+        handler.handle(&job).await.expect("drains the envelope");
+
+        let page = store.list(principal, 0, 10).await.expect("inbox reads");
+        assert_eq!(page.total, 1);
+        let row = &page.rows[0];
+        assert_eq!(row.kind, "appointment.booked");
+        assert_eq!(row.principal_id, principal);
+        assert_eq!(row.data["patient"], "Ada");
+        assert_eq!(row.data["locale"], "fr");
+        assert!(row.read_at.is_none());
+    }
+
+    /// Wave 6 P6: an envelope version this build does not know refuses
+    /// the attempt (retry → dead-letter) instead of being guessed at.
+    #[tokio::test]
+    async fn notification_drain_refuses_unknown_envelope_versions() {
+        use keel_notifications::{DeliveryPayload, QueuedNotificationDelivery};
+
+        let cfg = PlatformConfig::default().freeze();
+        let store: Arc<dyn keel_notifications::NotificationStore> =
+            Arc::new(keel_notifications::InMemoryNotificationStore::new());
+        let (_def, handler) = notification_job(&cfg, &i18n_root(), store).unwrap();
+
+        let principal = keel_foundation::PrincipalId::new();
+        let envelope = QueuedNotificationDelivery {
+            v: 99,
+            type_key: "appointment.booked".into(),
+            locale: None,
+            principal_id: Some(principal),
+            tenant_id: None,
+            at: OffsetDateTime::now_utc(),
+            payload: DeliveryPayload::Mail(keel_notifications::Mailable {
+                to: vec!["ada@example.com".into()],
+                cc: vec![],
+                bcc: vec![],
+                from: None,
+                reply_to: None,
+                subject: "x".into(),
+                text: Some("x".into()),
+                html: None,
+                headers: vec![],
+                attachments: vec![],
+            }),
+        };
+        let mut defs = JobRegistry::new();
+        defs.register(JobDef::new(keel_notifications::NOTIFICATION_SEND_JOB))
+            .unwrap();
+        let job = defs
+            .build(
+                keel_notifications::NOTIFICATION_SEND_JOB,
+                serde_json::to_value(&envelope).unwrap(),
+                OffsetDateTime::now_utc(),
+            )
+            .unwrap();
+
+        let err = handler.handle(&job).await.expect_err("v99 refuses");
+        assert!(err.public_message.contains("v99"), "{}", err.public_message);
+    }
+
+    /// Wave 6 P6: the worker's `MailPort` adapter over the P1 failover
+    /// chain — the rich path delegates (the mailable validator refuses an
+    /// empty recipient list and an address without `@` BEFORE the
+    /// transport), and the simple sync path becomes a text-only mailable.
+    /// The chain's own behaviour is the P1 suite's contract; this pins
+    /// the seam.
+    #[test]
+    fn chain_mail_adapts_the_failover_chain() {
+        use keel_notifications::{Channel, MailPort, Mailable, NotifyMessage};
+
+        let port = ChainMail(mail_chain(&section("log")).expect("builtin log chain"));
+
+        let mail = Mailable {
+            to: vec!["ada@example.com".into()],
+            cc: vec![],
+            bcc: vec![],
+            from: None,
+            reply_to: None,
+            subject: "Rendez-vous réservé pour Ada".into(),
+            text: Some("Rendez-vous réservé pour Ada".into()),
+            html: None,
+            headers: vec![],
+            attachments: vec![],
+        };
+        port.send_mailable(&mail, &[])
+            .expect("delegates to the chain");
+
+        let no_recipients = Mailable {
+            to: vec![],
+            ..mail.clone()
+        };
+        assert!(
+            port.send_mailable(&no_recipients, &[]).is_err(),
+            "validate refuses before the transport"
+        );
+
+        let msg = NotifyMessage {
+            channel: Channel::Email,
+            to: "ada@example.com".into(),
+            template: "subject and body".into(),
+            vars: Default::default(),
+            tenant_id: None,
+            locale: None,
+        };
+        port.send(&msg, "subject and body").expect("simple path delegates");
+        let bad_msg = NotifyMessage {
+            to: "nope".into(),
+            ..msg.clone()
+        };
+        assert!(port.send(&bad_msg, "s").is_err(), "recipient validation first");
     }
 }

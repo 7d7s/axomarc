@@ -33,6 +33,7 @@ keel-metrics = { workspace = true }
 keel-policy = { workspace = true }
 keel-scope = { workspace = true }
 keel-models = { workspace = true }
+keel-jobs = { workspace = true }
 keel-postgres = { workspace = true }
 keel-observability = { workspace = true }
 keel-notifications = { workspace = true }
