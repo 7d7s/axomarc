@@ -178,7 +178,14 @@ enum Cmd {
         #[arg(long, default_value = "release")]
         profile: String,
     },
-    Test,
+    /// Wave 5: cargo-test wrapper — streams the harness output and prints a
+    /// pass/fail summary.
+    Test {
+        /// Add --features pg-tests (requires the compose database:
+        /// DATABASE_URL in the environment or <root>/.env).
+        #[arg(long)]
+        pg: bool,
+    },
     /// Apply pending database migrations.
     Migrate,
     /// Show migration status (applied vs pending).
@@ -353,6 +360,15 @@ enum Cmd {
     /// database/schema.sql (review artifact — never executed by migrate).
     #[command(name = "db:schema:dump")]
     DbSchemaDump,
+    /// Wave 5: create the public/storage symlink to the local disk root
+    /// (storage/local). Refuses to overwrite; --force replaces an existing
+    /// link or file (a real directory is never deleted automatically).
+    #[command(name = "storage:link")]
+    StorageLink {
+        /// Replace an existing link/file at public/storage.
+        #[arg(long)]
+        force: bool,
+    },
     /// Inspect recorded executions: what = execution|delta|authorization|n-plus-one.
     Inspect {
         /// execution | delta | authorization | n-plus-one.
@@ -558,6 +574,8 @@ fn main() -> ExitCode {
         Cmd::DbInspect => rt(db_inspect()),
         Cmd::DbShow => rt(db_show()),
         Cmd::DbSchemaDump => rt(db_schema_dump()),
+        Cmd::StorageLink { force } => storage_link(force),
+        Cmd::Test { pg } => run_tests(pg),
         Cmd::New {
             name,
             plane,
@@ -2779,6 +2797,183 @@ fn make_kind(kind: &str, name: &str, module: Option<String>) -> anyhow::Result<E
     println!("{kind} {name} scaffolded. Wire it into the module mod tree to compile it.");
     Ok(ExitCode::SUCCESS)
 }
+// -------------------------------------------------- storage + testing (W5)
+
+/// `keel storage:link` paths: <root>/public/storage -> <root>/storage/local
+/// (the local disk root the platform StorageProvider serves — see the
+/// `StorageProvider` in keel-api's host).
+fn storage_link_paths(root: &Path) -> (PathBuf, PathBuf) {
+    (
+        root.join("public").join("storage"),
+        root.join("storage").join("local"),
+    )
+}
+
+#[cfg(unix)]
+fn make_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn make_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(target, link)
+}
+
+/// Wave 5: create public/storage -> storage/local. Refuses to overwrite
+/// (docs/19); `--force` replaces an existing link or file — a real
+/// directory at the link path is never deleted automatically.
+fn storage_link_at(root: &Path, force: bool) -> anyhow::Result<()> {
+    let (link, target) = storage_link_paths(root);
+    let link_disp = link.strip_prefix(root).unwrap_or(&link);
+    match std::fs::symlink_metadata(&link) {
+        // Fresh create.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => anyhow::bail!("cannot inspect {}: {e}", link_disp.display()),
+        // A real directory at the link path may hold real files: never
+        // delete it, even with --force (honest refusal beats data loss).
+        Ok(meta) if meta.is_dir() => anyhow::bail!(
+            "{} is a real directory, not a link — remove it manually if you are sure (never deleted automatically)",
+            link_disp.display()
+        ),
+        // Existing link (including a dangling one) or plain file.
+        Ok(_) => {
+            if !force {
+                anyhow::bail!(
+                    "the {} link already exists (use --force to replace it)",
+                    link_disp.display()
+                );
+            }
+            std::fs::remove_file(&link)
+                .map_err(|e| anyhow::anyhow!("cannot replace {}: {e}", link_disp.display()))?;
+        }
+    }
+    if let Some(parent) = link.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| anyhow::anyhow!("cannot create {}: {e}", parent.display()))?;
+    }
+    // A dangling link is useless: make sure the disk root exists first
+    // (LocalDisk::new would create it at boot anyway).
+    std::fs::create_dir_all(&target).map_err(|e| {
+        anyhow::anyhow!("cannot create storage root {}: {e}", target.display())
+    })?;
+    make_symlink(&target, &link).map_err(|e| {
+        #[cfg(windows)]
+        let msg = format!(
+            "cannot create {}: {e} (Windows needs Developer Mode or an elevated shell for symlinks)",
+            link_disp.display()
+        );
+        #[cfg(not(windows))]
+        let msg = format!("cannot create {}: {e}", link_disp.display());
+        anyhow::anyhow!(msg)
+    })?;
+    let target_disp = target.strip_prefix(root).unwrap_or(&target);
+    println!("  + {} -> {}", link_disp.display(), target_disp.display());
+    Ok(())
+}
+
+fn storage_link(force: bool) -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    storage_link_at(&root, force)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Extract `(ok, passed, failed)` from a harness `test result:` line
+/// (`test result: ok. 12 passed; 0 failed; ...` or `... FAILED. 12 passed;
+/// 1 failed; ...`); unrelated lines report None.
+fn parse_test_result(line: &str) -> Option<(bool, u64, u64)> {
+    let rest = line.split("test result: ").nth(1)?;
+    let mut fields = rest.split(';');
+    let outcome = fields.next()?;
+    let failed_field = fields.next().unwrap_or_default();
+    let ok = outcome.starts_with("ok.");
+    let passed = first_count(outcome)?;
+    let failed = first_count(failed_field).unwrap_or(0);
+    Some((ok, passed, failed))
+}
+
+/// First whitespace token that parses as a count (`"ok. 12 passed"` -> 12).
+fn first_count(field: &str) -> Option<u64> {
+    field.split_whitespace().find_map(|t| t.parse::<u64>().ok())
+}
+
+/// Wave 5: cargo-test wrapper — streams the harness output (test lines to
+/// stdout, compile output straight through on stderr) and prints a pass/fail
+/// summary. `--pg` adds `--features pg-tests` and requires the compose
+/// database (DATABASE_URL in the environment or <root>/.env).
+fn run_tests(pg: bool) -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    if pg && !has_database_url(&root) {
+        anyhow::bail!(
+            "keel test --pg requires the compose database: set DATABASE_URL (environment or <root>/.env) — see docs/05-DATABASE.md"
+        );
+    }
+    let mut command = std::process::Command::new("cargo");
+    command.arg("test").args(["--workspace", "--locked"]);
+    if pg {
+        command.args(["--features", "pg-tests"]);
+    }
+    command
+        .current_dir(&root)
+        .stdout(std::process::Stdio::piped());
+    println!("keel test{} ...", if pg { " --pg" } else { "" });
+    let mut child = command
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("cannot start cargo: {e}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("cannot capture cargo output"))?;
+    let (mut ok_suites, mut failed_suites, mut passed, mut failed) = (0u64, 0u64, 0u64, 0u64);
+    for line in std::io::BufRead::lines(std::io::BufReader::new(stdout)) {
+        let line = line?;
+        if let Some((ok, p, f)) = parse_test_result(&line) {
+            if ok {
+                ok_suites += 1;
+            } else {
+                failed_suites += 1;
+            }
+            passed += p;
+            failed += f;
+        }
+        println!("{line}");
+    }
+    let status = child.wait()?;
+    let verdict = if status.success() && failed == 0 && failed_suites == 0 {
+        "PASS"
+    } else {
+        "FAIL"
+    };
+    println!(
+        "keel test: {verdict} — {passed} passed, {failed} failed ({ok_suites} ok / {failed_suites} failed suite result line(s))"
+    );
+    Ok(if verdict == "PASS" {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+/// DATABASE_URL from the environment, falling back to <root>/.env (the
+/// compose database lands there in dev).
+fn has_database_url(root: &Path) -> bool {
+    if std::env::var_os("DATABASE_URL").is_some_and(|v| !v.is_empty()) {
+        return true;
+    }
+    let Ok(text) = std::fs::read_to_string(root.join(".env")) else {
+        return false;
+    };
+    text.lines().any(|line| {
+        line.trim()
+            .strip_prefix("DATABASE_URL=")
+            .is_some_and(|value| {
+                !value
+                    .trim()
+                    .trim_matches(|c: char| c == '"' || c == '\'')
+                    .is_empty()
+            })
+    })
+}
+
 // ------------------------------------------------------------------- build
 
 fn rustc_version() -> String {
@@ -4124,7 +4319,7 @@ fn cmd_name(cmd: &Cmd) -> String {
     match cmd {
         Cmd::Dev => "dev",
         Cmd::Serve { .. } => "serve",
-        Cmd::Test => "test",
+        Cmd::Test { .. } => "test",
         _ => "?",
     }
     .to_string()
@@ -4868,6 +5063,164 @@ middleware = ["ghost"]
         assert!(matches!(cli.cmd, Cmd::QueueRestart), "queue:restart");
         let cli = Cli::try_parse_from(["keel", "queue:listen"]).expect("parses");
         assert!(matches!(cli.cmd, Cmd::QueueListen), "queue:listen");
+    }
+
+    /// Unique temp root per test (Windows-safe: no forward-slash asserts).
+    fn fresh_temp(tag: &str) -> PathBuf {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "keel-console-{tag}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&dir).expect("temp root");
+        dir
+    }
+
+    /// Wave 5 Phase 6: storage:link points public/storage at the local disk
+    /// root (storage/local — the host's StorageProvider), whatever the OS
+    /// path separator.
+    #[test]
+    fn storage_link_paths_point_at_the_local_disk_root() {
+        let root = fresh_temp("link-paths");
+        let (link, target) = storage_link_paths(&root);
+        assert_eq!(link, root.join("public").join("storage"));
+        assert_eq!(target, root.join("storage").join("local"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Wave 5 Phase 6: refuses to overwrite without --force; --force replaces
+    /// an existing file with the link (skips the symlink assertion where the
+    /// environment cannot create symlinks — no Developer Mode on Windows).
+    #[test]
+    fn storage_link_refuses_to_overwrite_without_force() {
+        let root = fresh_temp("link-refuse");
+        let (link, target) = storage_link_paths(&root);
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::fs::write(&link, b"occupied").unwrap();
+
+        let err = storage_link_at(&root, false).expect_err("refuses without --force");
+        assert!(err.to_string().contains("--force"), "{err}");
+        assert_eq!(std::fs::read(&link).unwrap(), b"occupied", "untouched");
+
+        match storage_link_at(&root, true) {
+            Ok(()) => {
+                let meta = std::fs::symlink_metadata(&link).expect("link exists");
+                assert!(meta.file_type().is_symlink(), "--force replaces with a link");
+                assert_eq!(std::fs::read_link(&link).unwrap(), target);
+            }
+            Err(e) => eprintln!("skipping symlink assertion: {e}"),
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Wave 5 Phase 6: a real directory at the link path is refused even
+    /// with --force (data-loss guard) and survives the attempt.
+    #[test]
+    fn storage_link_never_deletes_a_real_directory() {
+        let root = fresh_temp("link-dir");
+        let (link, _) = storage_link_paths(&root);
+        std::fs::create_dir_all(&link).unwrap();
+        std::fs::write(link.join("keep.txt"), b"precious").unwrap();
+
+        let err = storage_link_at(&root, true).expect_err("real dir refused even with --force");
+        assert!(err.to_string().contains("real directory"), "{err}");
+        assert!(link.is_dir(), "directory untouched");
+        assert!(link.join("keep.txt").exists(), "contents untouched");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Wave 5 Phase 6: creates public/storage -> storage/local when missing
+    /// (creates the target too); skips where symlinks are not permitted.
+    #[test]
+    fn storage_link_creates_a_missing_link() {
+        let root = fresh_temp("link-create");
+        let (link, target) = storage_link_paths(&root);
+        match storage_link_at(&root, false) {
+            Ok(()) => {
+                let meta = std::fs::symlink_metadata(&link).expect("link exists");
+                assert!(meta.file_type().is_symlink(), "created as a symlink");
+                assert_eq!(std::fs::read_link(&link).unwrap(), target);
+                assert!(target.is_dir(), "target disk root created");
+            }
+            Err(e) => eprintln!("skipping: this environment cannot create symlinks: {e}"),
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Wave 5 Phase 6: the test wrapper's line parser counts harness results
+    /// (plain, doc-test and FAILED shapes) and ignores unrelated lines.
+    #[test]
+    fn test_result_lines_parse_pass_and_fail() {
+        let (ok, passed, failed) = parse_test_result(
+            "test result: ok. 1038 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 123.45s",
+        )
+        .expect("ok line parses");
+        assert!((ok, passed, failed) == (true, 1038, 0));
+
+        let (ok, passed, failed) = parse_test_result(
+            "test result: FAILED. 12 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        )
+        .expect("failed line parses");
+        assert!((ok, passed, failed) == (false, 12, 1));
+
+        let (ok, passed, failed) =
+            parse_test_result("test result: ok. 3 passed; 0 failed; 0 ignored; ...").expect("doc");
+        assert!((ok, passed, failed) == (true, 3, 0));
+
+        assert!(parse_test_result("running 42 tests").is_none(), "unrelated");
+        assert!(parse_test_result("").is_none(), "empty");
+    }
+
+    /// Wave 5 Phase 6: the DATABASE_URL fallback reads <root>/.env (the env
+    /// branch is skipped when the variable is already set).
+    #[test]
+    fn database_url_falls_back_to_dotenv() {
+        if std::env::var_os("DATABASE_URL").is_some() {
+            eprintln!("skipping: DATABASE_URL already set in the environment");
+            return;
+        }
+        let root = fresh_temp("dburl");
+        assert!(!has_database_url(&root), "no env, no .env -> missing");
+        std::fs::write(root.join(".env"), "# comment\nOTHER=x\n").unwrap();
+        assert!(!has_database_url(&root), "no DATABASE_URL line -> missing");
+        std::fs::write(
+            root.join(".env"),
+            "OTHER=x\nDATABASE_URL=postgres://user:pw@localhost/keel\n",
+        )
+        .unwrap();
+        assert!(has_database_url(&root), "plain value");
+        std::fs::write(root.join(".env"), "DATABASE_URL=\"\"\n").unwrap();
+        assert!(!has_database_url(&root), "empty value is not a URL");
+        std::fs::write(root.join(".env"), "DATABASE_URL='postgres://x/y'\n").unwrap();
+        assert!(has_database_url(&root), "quoted value");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Wave 5 Phase 6: storage:link and test parse under their documented
+    /// names with the --force / --pg flags (both default off).
+    #[test]
+    fn storage_link_and_test_commands_parse() {
+        let cli = Cli::try_parse_from(["keel", "storage:link"]).expect("parses");
+        match cli.cmd {
+            Cmd::StorageLink { force } => assert!(!force, "force defaults off"),
+            _ => panic!("storage:link maps to StorageLink"),
+        }
+        let cli = Cli::try_parse_from(["keel", "storage:link", "--force"]).expect("parses");
+        match cli.cmd {
+            Cmd::StorageLink { force } => assert!(force, "--force sets it"),
+            _ => panic!("--force maps to StorageLink"),
+        }
+        let cli = Cli::try_parse_from(["keel", "test"]).expect("parses");
+        match cli.cmd {
+            Cmd::Test { pg } => assert!(!pg, "pg defaults off"),
+            _ => panic!("test maps to Test"),
+        }
+        let cli = Cli::try_parse_from(["keel", "test", "--pg"]).expect("parses");
+        match cli.cmd {
+            Cmd::Test { pg } => assert!(pg, "--pg sets it"),
+            _ => panic!("--pg maps to Test"),
+        }
     }
 
     /// Wave 4 Phase 5: temp workspace with a schema-clean config (secrets,
