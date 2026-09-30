@@ -1878,9 +1878,14 @@ fn env_summary_text(root: &Path) -> anyhow::Result<String> {
         None => out.push_str("database: not configured\n"),
     }
     out.push_str(&format!("otp: {}\n", cfg.otp.provider));
+    let disks = if cfg.storage.disks.is_empty() {
+        "(none)".to_string()
+    } else {
+        cfg.storage.disks.keys().cloned().collect::<Vec<_>>().join(",")
+    };
     out.push_str(&format!(
-        "storage: endpoint={} bucket={}\n",
-        cfg.storage.endpoint, cfg.storage.bucket
+        "storage: endpoint={} bucket={} default={} disks={}\n",
+        cfg.storage.endpoint, cfg.storage.bucket, cfg.storage.default, disks
     ));
     out.push_str(&format!(
         "limits: default_monthly_operations={}\n",
@@ -4360,8 +4365,11 @@ fn gitignore_covers(root: &Path, pattern: &str) -> bool {
         return false;
     };
     raw.lines().any(|l| {
-        let t = l.trim();
-        t == pattern || t.trim_start_matches('/') == pattern || t == format!("{pattern}/")
+        // Normalize: a leading `/` anchors the rule to the workspace root —
+        // exactly what this check means — and a trailing `/` marks a
+        // directory (both spellings must count as coverage).
+        let t = l.trim().trim_start_matches('/');
+        t == pattern || t == format!("{pattern}/")
     })
 }
 
@@ -5879,6 +5887,12 @@ cache_dir = "storage/framework/views"
         );
         assert!(text.contains("config cache: not cached"), "{text}");
         assert!(!text.contains("db-password"), "database URL masked: {text}");
+        // Wave 6 P2: the disk registry surface (`storage.default`, disk names).
+        assert!(
+            text.contains("storage: endpoint=") && text.contains("default=local"),
+            "{text}"
+        );
+        assert!(text.contains("disks=(none)"), "{text}");
 
         config_cache_at(&dir).expect("config cache runs");
         let text = env_summary_text(&dir).expect("summary renders");

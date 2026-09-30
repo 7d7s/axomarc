@@ -156,12 +156,76 @@ impl Default for OtpConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageConfig {
     #[serde(default)]
     pub endpoint: String,
     #[serde(default)]
     pub bucket: String,
+    /// Default disk for the upload pipeline (`storage.default`, Wave 6 P2).
+    #[serde(default = "default_storage_disk")]
+    pub default: String,
+    /// Named disks (`[storage.disks.<name>]`, Wave 6 P2): the runtime disk
+    /// registry resolves each entry to a `StoragePort` adapter at boot.
+    #[serde(default)]
+    pub disks: BTreeMap<String, DiskConfig>,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: String::new(),
+            bucket: String::new(),
+            default: default_storage_disk(),
+            disks: BTreeMap::new(),
+        }
+    }
+}
+
+fn default_storage_disk() -> String {
+    "local".into()
+}
+
+/// Wave 6 P2: disk driver (`[storage.disks.<name>].driver`). Unknown values
+/// fail the typed parse — a bad driver refuses boot, it never falls through
+/// to a different adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiskDriver {
+    Local,
+    S3,
+}
+
+/// Wave 6 P2: object visibility — private objects are served only through
+/// signed URLs; public ones resolve through the disk's `url` base (or the
+/// `storage:link` path for local disks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiskVisibility {
+    Public,
+    Private,
+}
+
+fn default_disk_visibility() -> DiskVisibility {
+    DiskVisibility::Private
+}
+
+/// Wave 6 P2: one `[storage.disks.<name>]` entry. `driver` is required;
+/// `local` needs `root`, `s3` needs `bucket` (both checked by the runtime
+/// disk-registry builder — adapter constructors stay runtime-side per the
+/// layer matrix).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiskConfig {
+    pub driver: DiskDriver,
+    #[serde(default)]
+    pub root: Option<String>,
+    #[serde(default)]
+    pub bucket: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default = "default_disk_visibility")]
+    pub visibility: DiskVisibility,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -359,7 +423,10 @@ pub const CONFIG_SCHEMA: &[(&str, &[&str])] = &[
     ("limits", &["default_monthly_operations"]),
     ("mail", &["default", "mailers"]),
     ("otp", &["provider", "code_ttl_secs", "max_attempts"]),
-    ("storage", &["endpoint", "bucket"]),
+    (
+        "storage",
+        &["endpoint", "bucket", "default", "disks"],
+    ),
     ("telemetry", &[]),
     ("views", &["paths", "cache_dir", "env"]),
 ];
@@ -369,19 +436,26 @@ pub const CONFIG_SCHEMA: &[(&str, &[&str])] = &[
 /// P1; `[storage.disks.<name>]` reuses this in Wave 6 P2). The level-2 walk
 /// in [`schema_violations`] cannot see inside these — this closes that gap
 /// with the same collect-all `GRAPH-CONFIG-SCHEMA` reporting.
-pub const CONFIG_SCHEMA_MAPS: &[(&str, &str, &[&str])] = &[(
-    "mail",
-    "mailers",
-    &[
-        "transport",
-        "host",
-        "port",
-        "username",
-        "password",
-        "from",
-        "timeout_ms",
-    ],
-)];
+pub const CONFIG_SCHEMA_MAPS: &[(&str, &str, &[&str])] = &[
+    (
+        "mail",
+        "mailers",
+        &[
+            "transport",
+            "host",
+            "port",
+            "username",
+            "password",
+            "from",
+            "timeout_ms",
+        ],
+    ),
+    (
+        "storage",
+        "disks",
+        &["driver", "root", "bucket", "url", "visibility"],
+    ),
+];
 
 /// Sections whose inner keys are validated elsewhere: `telemetry` is an
 /// opaque JSON pass-through (see `PlatformConfig::telemetry`) — the
@@ -1137,5 +1211,96 @@ mod phase5_freeze_tests {
         // cache_json (the pin input) keeps the real value: drift on secrets
         // must refuse boot too.
         assert_eq!(frozen.cache_json()["app"]["key"], "base64:super-secret");
+    }
+}
+
+#[cfg(test)]
+mod wave6_storage_config_tests {
+    use super::*;
+
+    /// Wave 6 P2 (GRAPH-CONFIG-SCHEMA): `[storage]` declares the disk keys
+    /// at level 2 and each `[storage.disks.<name>]` at level 3 (the shared
+    /// CONFIG_SCHEMA_MAPS walk).
+    #[test]
+    fn storage_disk_keys_are_declared_at_both_levels() {
+        let raw = r#"
+        [storage]
+        default = "assets"
+        [storage.disks.assets]
+        driver = "local"
+        root = "storage/app"
+        visibility = "public"
+        url = "/storage"
+        "#;
+        assert_eq!(schema_violations(raw), Vec::new());
+
+        // Level-2 typo.
+        let raw = "[storage]\ndefualt = \"local\"\n";
+        assert_eq!(schema_violations(raw)[0].key, "storage.defualt");
+
+        // Level-3 typo inside a named disk (the CONFIG_SCHEMA_MAPS walk).
+        let raw = "[storage.disks.local]\nroot = \"storage/app\"\nrrot = \"x\"\n";
+        assert_eq!(
+            schema_violations(raw)[0].key,
+            "storage.disks.local.rrot"
+        );
+    }
+
+    /// The typed parse is the fail-closed layer for disks: `driver` is
+    /// required, unknown values and unknown keys refuse the load, and every
+    /// optional key has its default.
+    #[test]
+    fn typed_parse_refuses_unknown_disk_fields_and_drivers() {
+        let err = toml::from_str::<PlatformConfig>(
+            "[storage.disks.local]\ndriver = \"local\"\nroot = \"r\"\nnope = 1\n",
+        )
+        .expect_err("unknown disk field refuses the parse");
+        assert!(err.to_string().contains("nope"), "{err}");
+
+        let err = toml::from_str::<PlatformConfig>("[storage.disks.legacy]\ndriver = \"gcs\"\n")
+            .expect_err("unknown driver refuses the parse");
+        assert!(err.to_string().contains("gcs"), "{err}");
+
+        let err = toml::from_str::<PlatformConfig>("[storage.disks.nameless]\nroot = \"x\"\n")
+            .expect_err("driver is required");
+        assert!(err.to_string().contains("driver"), "{err}");
+
+        let cfg: PlatformConfig = toml::from_str(
+            r#"
+            [storage]
+            default = "assets"
+            [storage.disks.assets]
+            driver = "local"
+            root = "storage/app"
+            [storage.disks.cdn]
+            driver = "s3"
+            bucket = "keel"
+            url = "https://cdn.example.com"
+            visibility = "public"
+            "#,
+        )
+        .expect("valid disk section loads");
+        assert_eq!(cfg.storage.default, "assets");
+        let assets = &cfg.storage.disks["assets"];
+        assert_eq!(assets.driver, DiskDriver::Local);
+        assert_eq!(assets.root.as_deref(), Some("storage/app"));
+        assert_eq!(assets.visibility, DiskVisibility::Private); // default
+        let cdn = &cfg.storage.disks["cdn"];
+        assert_eq!(cdn.driver, DiskDriver::S3);
+        assert_eq!(cdn.bucket.as_deref(), Some("keel"));
+        assert_eq!(cdn.visibility, DiskVisibility::Public);
+        assert!(cdn.root.is_none() && cdn.url.is_some());
+    }
+
+    /// Out of the box: one default disk name (`local`), nothing declared —
+    /// the runtime registry then builds the synthetic local disk.
+    #[test]
+    fn default_storage_section_is_local_with_no_disks() {
+        assert_eq!(StorageConfig::default().default, "local");
+        assert!(StorageConfig::default().disks.is_empty());
+        // The env override surface is unchanged (endpoint/bucket only, no
+        // new sanctioned variables).
+        let cfg = PlatformConfig::default().freeze();
+        assert_eq!(cfg.storage().default, "local");
     }
 }

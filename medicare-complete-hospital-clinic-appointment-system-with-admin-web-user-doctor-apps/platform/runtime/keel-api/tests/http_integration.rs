@@ -594,6 +594,9 @@ async fn upload_happy_path_roundtrips_through_storage() {
     assert_eq!(files.len(), 1);
     assert_eq!(files[0]["filename"], "report.csv");
     assert_eq!(files[0]["size"], payload.len() as i64);
+    // Wave 6 P2: the stored record names the disk it landed on (the
+    // harness registry's synthetic default).
+    assert_eq!(files[0]["disk"], "local");
 
     // Storage round-trip through the same port the edge wrote to.
     let object = keel_storage::ObjectRef {
@@ -602,6 +605,47 @@ async fn upload_happy_path_roundtrips_through_storage() {
     };
     let bytes = app.state.storage.get(&object).expect("object stored");
     assert_eq!(bytes, payload);
+}
+
+/// Wave 6 P2: `?disk=` resolves through the registry — an explicit
+/// `local` records itself, and an unknown disk is a 422 that never
+/// silently falls back to the default disk.
+#[tokio::test]
+async fn upload_disk_query_resolves_and_unknown_disk_is_422() {
+    let app = app();
+    let email = format!("disk-{}@clinic.test", uuid::Uuid::now_v7());
+    let cookie = register(&app, &email).await.session_cookie().unwrap();
+
+    let res = send(
+        &app,
+        multipart_request(
+            "/api/v1/uploads?disk=local",
+            &cookie,
+            "note.txt",
+            "text/plain",
+            b"on local",
+        ),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "upload: {}", res.body);
+    let upload_data = res.data();
+    let files = upload_data["files"].as_array().expect("files");
+    assert_eq!(files[0]["disk"], "local");
+
+    let res = send(
+        &app,
+        multipart_request(
+            "/api/v1/uploads?disk=nope",
+            &cookie,
+            "note.txt",
+            "text/plain",
+            b"never stored",
+        ),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", res.body);
+    let body = res.body.to_string();
+    assert!(body.contains("nope"), "{body}");
 }
 
 #[tokio::test]

@@ -379,6 +379,11 @@ pub struct CredentialStoreRef(pub Arc<dyn keel_identity::CredentialStore>);
 #[derive(Clone)]
 pub struct StorageRef(pub Arc<dyn keel_storage::StoragePort>);
 
+/// Wave 6 P2: the named-disk registry carrier — one registry per boot,
+/// built from `[storage]` by `crate::disk_registry`.
+#[derive(Clone)]
+pub struct DiskRegistryRef(pub Arc<keel_storage::DiskRegistry>);
+
 /// Carrier for the active cache port (memory or redis; S10 B-12).
 #[derive(Clone)]
 pub struct CachePortRef(pub Arc<dyn keel_caching::CachePort>);
@@ -428,10 +433,15 @@ impl Provider for IdentityProvider {
     }
 }
 
-/// Platform phase: local object storage for the upload edge (S7 C5).
-/// Objects live under <root>/storage/local.
+/// Platform phase: object storage for the upload edge (S7 C5). Wave 6 P2:
+/// the disk registry is built from `[storage]` — declared disks resolve to
+/// their adapters, or one synthetic `local` disk under
+/// <root>/storage/local when nothing is declared. The default disk's port
+/// also rides as `storage.port`; the full registry as `storage.registry`.
+/// An invalid section (missing root/bucket, unknown default) refuses boot.
 pub struct StorageProvider {
     pub root: std::path::PathBuf,
+    pub disks: keel_config::StorageConfig,
 }
 
 impl Provider for StorageProvider {
@@ -442,13 +452,26 @@ impl Provider for StorageProvider {
         Phase::Platform
     }
     fn init(&self, r: &mut ServiceRegistry) -> Result<(), BootError> {
-        let disk = keel_storage_local::LocalDisk::new(self.root.join("storage").join("local"))
+        let registry =
+            crate::disk_registry(&self.disks, &self.root.join("storage").join("local")).map_err(
+                |e| BootError::ProviderFailed {
+                    provider: "platform.storage".into(),
+                    source: e.public_message.clone(),
+                },
+            )?;
+        let port = registry
+            .get(registry.default_name())
             .map_err(|e| BootError::ProviderFailed {
                 provider: "platform.storage".into(),
                 source: e.public_message.clone(),
-            })?;
-        let storage: Arc<dyn keel_storage::StoragePort> = Arc::new(disk);
-        r.insert("storage.port", Arc::new(StorageRef(storage)))
+            })?
+            .port
+            .clone();
+        r.insert("storage.port", Arc::new(StorageRef(port)))?;
+        r.insert(
+            "storage.registry",
+            Arc::new(DiskRegistryRef(Arc::new(registry))),
+        )
     }
 }
 

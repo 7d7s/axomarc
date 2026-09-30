@@ -17,9 +17,9 @@ pub mod upload_routes;
 use std::sync::Arc;
 
 use host::{
-    ConfigProvider, CredentialStoreRef, DemoModuleProvider, FeatureFlagsProvider, IdentityProvider,
-    KernelProvider, PersistenceProvider, PlatformProvider, PrincipalStoreRef, RealtimeProvider,
-    SessionsProvider, StorageProvider, StorageRef, SystemHealth,
+    ConfigProvider, CredentialStoreRef, DemoModuleProvider, DiskRegistryRef, FeatureFlagsProvider,
+    IdentityProvider, KernelProvider, PersistenceProvider, PlatformProvider, PrincipalStoreRef,
+    RealtimeProvider, SessionsProvider, StorageProvider, StorageRef, SystemHealth,
 };
 use keel_config::{Environment, PlatformConfig};
 use keel_foundation::{PrincipalId, TenantId};
@@ -300,7 +300,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         store: flags_store,
     }));
     host.add_provider(Box::new(IdentityProvider { pool: pool.clone() }));
-    host.add_provider(Box::new(StorageProvider { root: root.clone() }));
+    host.add_provider(Box::new(StorageProvider {
+        root: root.clone(),
+        disks: cfg.storage().clone(),
+    }));
     host.add_provider(Box::new(PersistenceProvider { pool: pool.clone() }));
     if sessions_enabled {
         host.add_provider(Box::new(SessionsProvider {
@@ -365,6 +368,12 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let storage = host
         .registry()
         .get::<StorageRef>()
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?
+        .0
+        .clone();
+    let disks = host
+        .registry()
+        .get::<DiskRegistryRef>()
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?
         .0
         .clone();
@@ -519,6 +528,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         jwt,
         body_limit: 1024 * 1024,
         storage,
+        disks,
         route_inventory,
         middleware_catalog,
         route_bindings,
@@ -797,6 +807,69 @@ fn session_secret() -> Vec<u8> {
     bytes.extend_from_slice(uuid::Uuid::now_v7().as_bytes());
     bytes
 }
+
+/// Wave 6 P2: build the named-disk registry from the `[storage]` section.
+///
+/// Declared `[storage.disks.<name>]` entries materialize through their
+/// adapters (`local` -> `LocalDisk` at `root`, `s3` -> the in-memory
+/// sandbox); with nothing declared the registry holds one synthetic
+/// `local` disk at `fallback_root`, preserving the pre-disk dev/test
+/// behavior. Failures refuse boot: a `local` disk without `root`, an `s3`
+/// disk without `bucket`, or a `storage.default` naming no registered
+/// disk. (Driver typos are already refused by the typed config parse.)
+/// The runtime owns this mapping because the layer matrix keeps adapter
+/// constructors out of the application config and service crates.
+pub fn disk_registry(
+    section: &keel_config::StorageConfig,
+    fallback_root: &std::path::Path,
+) -> Result<keel_storage::DiskRegistry, keel_foundation::AppError> {
+    use keel_foundation::AppError;
+
+    let mut registry = keel_storage::DiskRegistry::new(section.default.clone());
+    if section.disks.is_empty() {
+        let port: Arc<dyn keel_storage::StoragePort> =
+            Arc::new(keel_storage_local::LocalDisk::new(fallback_root)?);
+        registry.register(
+            "local",
+            keel_storage::DiskEntry {
+                port,
+                visibility: keel_storage::Visibility::Private,
+                base_url: None,
+            },
+        )?;
+    }
+    for (name, disk) in &section.disks {
+        let port: Arc<dyn keel_storage::StoragePort> = match disk.driver {
+            keel_config::DiskDriver::Local => {
+                let root = disk.root.as_deref().ok_or_else(|| {
+                    AppError::validation(format!("storage disk {name:?} (local) needs a `root`"))
+                })?;
+                Arc::new(keel_storage_local::LocalDisk::new(root)?)
+            }
+            keel_config::DiskDriver::S3 => {
+                let _bucket = disk.bucket.as_deref().ok_or_else(|| {
+                    AppError::validation(format!("storage disk {name:?} (s3) needs a `bucket`"))
+                })?;
+                Arc::new(keel_storage_s3::S3Sandbox::new())
+            }
+        };
+        let visibility = match disk.visibility {
+            keel_config::DiskVisibility::Public => keel_storage::Visibility::Public,
+            keel_config::DiskVisibility::Private => keel_storage::Visibility::Private,
+        };
+        registry.register(
+            name,
+            keel_storage::DiskEntry {
+                port,
+                visibility,
+                base_url: disk.url.clone(),
+            },
+        )?;
+    }
+    registry.validate_default()?;
+    Ok(registry)
+}
+
 // ------------------------------------------------------------ test harness
 
 /// In-memory application state for the integration suite (S7 test plan) and
@@ -898,8 +971,17 @@ pub fn build_app_state(
     } else {
         None
     };
-    let storage: Arc<dyn keel_storage::StoragePort> =
-        Arc::new(keel_storage_local::LocalDisk::new(storage_root).expect("storage root works"));
+    // Wave 6 P2: the harness fills the same disk registry the storage
+    // provider builds — the default config's synthetic `local` disk rooted
+    // at the harness storage root — so the upload edge and registry resolve
+    // identically to production.
+    let disks = disk_registry(&keel_config::StorageConfig::default(), storage_root)
+        .expect("synthetic harness disk");
+    let storage: Arc<dyn keel_storage::StoragePort> = disks
+        .get(disks.default_name())
+        .expect("synthetic local disk registered")
+        .port
+        .clone();
 
     // Wave 1 route binding registry: fresh per harness, with the
     // appointments reference resolver registered (production boot wires it
@@ -974,6 +1056,7 @@ pub fn build_app_state(
         jwt: None,
         body_limit: 1024 * 1024,
         storage,
+        disks: Arc::new(disks),
         route_inventory: graph_routes::route_inventory(&graph),
         middleware_catalog: keel_http::MiddlewareCatalog::builtin(),
         route_bindings,
@@ -1087,5 +1170,130 @@ mod wave6_mail_tests {
             keel_notifications::DEFAULT_MAX_ATTACHMENT_BYTES as usize,
             keel_http::UploadLimits::default().max_file_bytes
         );
+    }
+}
+
+#[cfg(test)]
+mod wave6_disk_tests {
+    use super::disk_registry;
+
+    /// Wave 6 P2: an empty `[storage]` section yields exactly one synthetic
+    /// `local` disk at the fallback root (dev/test parity with the
+    /// pre-disk wiring), and objects round-trip through the port.
+    #[test]
+    fn synthetic_local_disk_fills_an_empty_storage_section() {
+        let root = std::env::temp_dir().join(format!("keel-disks-synth-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&root).expect("temp root");
+        let registry = disk_registry(&keel_config::StorageConfig::default(), &root).unwrap();
+        assert_eq!(registry.default_name(), "local");
+        assert_eq!(registry.names(), vec!["local"]);
+        registry.validate_default().unwrap();
+        let (name, entry) = registry.resolve(None).unwrap();
+        assert_eq!(name, "local");
+        assert!(matches!(
+            entry.visibility,
+            keel_storage::Visibility::Private
+        ));
+        let obj = entry.port.put("uploads", "a.txt", b"x".to_vec()).unwrap();
+        assert_eq!(entry.port.get(&obj).unwrap(), b"x");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Declared disks map drivers to adapters and carry visibility/url into
+    /// the registry entry; malformed sections refuse boot (missing
+    /// root/bucket, an unknown `storage.default`).
+    #[test]
+    fn declared_disks_map_to_adapters_and_bad_sections_refuse_boot() {
+        let root = std::env::temp_dir().join(format!("keel-disks-decl-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&root).expect("temp root");
+        let mut section = keel_config::StorageConfig {
+            default: "cdn".into(),
+            ..Default::default()
+        };
+        section.disks.insert(
+            "assets".into(),
+            keel_config::DiskConfig {
+                driver: keel_config::DiskDriver::Local,
+                root: Some("storage/app".into()),
+                bucket: None,
+                url: None,
+                visibility: keel_config::DiskVisibility::Private,
+            },
+        );
+        section.disks.insert(
+            "cdn".into(),
+            keel_config::DiskConfig {
+                driver: keel_config::DiskDriver::S3,
+                root: None,
+                bucket: Some("keel".into()),
+                url: Some("https://cdn.example.com".into()),
+                visibility: keel_config::DiskVisibility::Public,
+            },
+        );
+        let registry = disk_registry(&section, &root).unwrap();
+        assert_eq!(registry.names(), vec!["assets", "cdn"]);
+        registry.validate_default().unwrap();
+        // Public issuance resolves through the `url` base (`{base}/{bucket}/{key}`).
+        let obj = keel_storage::ObjectRef {
+            bucket: "b".into(),
+            key: "k/f.png".into(),
+        };
+        assert_eq!(
+            registry.url_for("cdn", &obj, 30).unwrap(),
+            "https://cdn.example.com/b/k/f.png"
+        );
+
+        // local without `root` refuses boot.
+        let mut bad = keel_config::StorageConfig::default();
+        bad.disks.insert(
+            "d".into(),
+            keel_config::DiskConfig {
+                driver: keel_config::DiskDriver::Local,
+                root: None,
+                bucket: None,
+                url: None,
+                visibility: keel_config::DiskVisibility::Private,
+            },
+        );
+        let err = disk_registry(&bad, &root).unwrap_err();
+        assert!(err.public_message.contains("root"), "{}", err.public_message);
+
+        // s3 without `bucket` refuses boot.
+        let mut bad = keel_config::StorageConfig::default();
+        bad.disks.insert(
+            "d".into(),
+            keel_config::DiskConfig {
+                driver: keel_config::DiskDriver::S3,
+                root: None,
+                bucket: None,
+                url: None,
+                visibility: keel_config::DiskVisibility::Private,
+            },
+        );
+        let err = disk_registry(&bad, &root).unwrap_err();
+        assert!(
+            err.public_message.contains("bucket"),
+            "{}",
+            err.public_message
+        );
+
+        // A `storage.default` naming no registered disk refuses boot.
+        let mut bad = keel_config::StorageConfig {
+            default: "nope".into(),
+            ..Default::default()
+        };
+        bad.disks.insert(
+            "d".into(),
+            keel_config::DiskConfig {
+                driver: keel_config::DiskDriver::S3,
+                root: None,
+                bucket: Some("b".into()),
+                url: None,
+                visibility: keel_config::DiskVisibility::Private,
+            },
+        );
+        let err = disk_registry(&bad, &root).unwrap_err();
+        assert!(err.public_message.contains("nope"), "{}", err.public_message);
+        std::fs::remove_dir_all(&root).ok();
     }
 }

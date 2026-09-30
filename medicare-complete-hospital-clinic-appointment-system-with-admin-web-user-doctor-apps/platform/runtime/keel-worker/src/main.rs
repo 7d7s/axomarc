@@ -202,15 +202,75 @@ fn mail_chain(section: &keel_config::MailSection) -> Result<keel_mail_smtp::Mail
     keel_mail_smtp::MailChain::new(&section.default, specs)
 }
 
-/// Wave 6 P1: the queued-mail job def + handler every worker boots with,
+/// Wave 6 P2: build the named-disk registry from `[storage]` — a mirror of
+/// keel-api's builder (each runtime owns this mapping because the layer
+/// matrix keeps adapter constructors out of the config and service crates).
+/// No declared disks yields one synthetic `local` disk at `fallback_root`;
+/// a `local` disk without `root`, an `s3` disk without `bucket`, or a
+/// `storage.default` naming no registered disk refuses boot.
+fn disk_registry(
+    section: &keel_config::StorageConfig,
+    fallback_root: &std::path::Path,
+) -> Result<keel_storage::DiskRegistry, AppError> {
+    let mut registry = keel_storage::DiskRegistry::new(section.default.clone());
+    if section.disks.is_empty() {
+        let port: std::sync::Arc<dyn keel_storage::StoragePort> =
+            std::sync::Arc::new(keel_storage_local::LocalDisk::new(fallback_root)?);
+        registry.register(
+            "local",
+            keel_storage::DiskEntry {
+                port,
+                visibility: keel_storage::Visibility::Private,
+                base_url: None,
+            },
+        )?;
+    }
+    for (name, disk) in &section.disks {
+        let port: std::sync::Arc<dyn keel_storage::StoragePort> = match disk.driver {
+            keel_config::DiskDriver::Local => {
+                let root = disk.root.as_deref().ok_or_else(|| {
+                    AppError::validation(format!("storage disk {name:?} (local) needs a `root`"))
+                })?;
+                std::sync::Arc::new(keel_storage_local::LocalDisk::new(root)?)
+            }
+            keel_config::DiskDriver::S3 => {
+                let _bucket = disk.bucket.as_deref().ok_or_else(|| {
+                    AppError::validation(format!("storage disk {name:?} (s3) needs a `bucket`"))
+                })?;
+                std::sync::Arc::new(keel_storage_s3::S3Sandbox::new())
+            }
+        };
+        let visibility = match disk.visibility {
+            keel_config::DiskVisibility::Public => keel_storage::Visibility::Public,
+            keel_config::DiskVisibility::Private => keel_storage::Visibility::Private,
+        };
+        registry.register(
+            name,
+            keel_storage::DiskEntry {
+                port,
+                visibility,
+                base_url: disk.url.clone(),
+            },
+        )?;
+    }
+    registry.validate_default()?;
+    Ok(registry)
+}
+
+/// Wave 6 P1/P2: the queued-mail job def + handler every worker boots with,
 /// built from the frozen config. Kept out of `main` so the registration
-/// surface is unit-testable. Storage is `None` until the disk registry
-/// lands (P2): a `mail.send` carrying attachments then fails explicitly at
-/// run time instead of silently dropping them.
+/// surface is unit-testable. P2: the handler reads attachments through the
+/// default disk of the registry built from `[storage]` — `mail.send`
+/// object refs resolve against the same disk the upload edge writes to,
+/// and a missing object still fails the attempt explicitly (retry, then
+/// dead) instead of being dropped.
 fn mail_job(
     cfg: &FrozenConfig,
+    storage_root: &std::path::Path,
 ) -> Result<(JobDef, keel_mail_smtp::MailSendHandler), AppError> {
-    let handler = keel_mail_smtp::MailSendHandler::new(mail_chain(cfg.mail())?, None);
+    let disks = disk_registry(cfg.storage(), storage_root)?;
+    let storage = disks.get(disks.default_name())?.port.clone();
+    let handler = keel_mail_smtp::MailSendHandler::new(mail_chain(cfg.mail())?, Some(storage));
     Ok((JobDef::new(keel_mail_smtp::MAIL_SEND_JOB), handler))
 }
 
@@ -401,9 +461,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let batches = Arc::new(BatchRuntime::new(jobs.clone()));
     let chains = Arc::new(ChainRuntime::new(jobs.clone()));
     let schedules = Arc::new(ScheduleRegistry::new());
-    // Wave 6 P1: the queued-mail def + handler, built from `[mail]` (an
-    // unknown chain member or a malformed mailer refuses boot right here).
-    let (mail_def, mail_handler) = mail_job(&cfg)?;
+    // Wave 6 P1/P2: the queued-mail def + handler, built from `[mail]` and
+    // the disk registry (an unknown chain member, a malformed mailer, or a
+    // bad `[storage]` section refuses boot right here).
+    let (mail_def, mail_handler) = mail_job(&cfg, &root.join("storage").join("local"))?;
     // Modules register schedules + job defs here at boot; the framework ships
     // the runner so the first module only adds entries, not machinery. The
     // def registration makes `mail.send` buildable through the registry
@@ -423,8 +484,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut handlers = WorkerRegistry::new();
     handlers.register(Arc::new(DemoJobHandler))?;
-    // Wave 6 P1: `mail.send` dispatch; storage stays `None` until the disk
-    // registry lands (P2), so attachment mail fails explicitly at run time.
+    // Wave 6 P2: `mail.send` dispatch — the handler carries the default
+    // disk port, so attachment refs resolve through the same registry the
+    // upload edge uses.
     handlers.register(Arc::new(mail_handler))?;
     let handlers = Arc::new(handlers);
 
@@ -614,6 +676,13 @@ mod tests {
         }
     }
 
+    /// Per-process temp storage root for the mail job's disk registry —
+    /// `LocalDisk` creates it, and `create_dir_all` is idempotent under
+    /// parallel tests.
+    fn mail_storage_root() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("keel-worker-mail-disk-{}", std::process::id()))
+    }
+
     /// Wave 6 P1: the default config boots the mail job (built-in `log`
     /// chain), the def carries the job-policy retry budget, and declared
     /// mailers convert field-for-field. A log-transport mailer with no host
@@ -622,7 +691,8 @@ mod tests {
     #[test]
     fn mail_job_boots_from_default_config_and_converts_mailers() {
         let cfg = PlatformConfig::default().freeze();
-        let (def, handler) = mail_job(&cfg).expect("default config builds the mail job");
+        let (def, handler) =
+            mail_job(&cfg, &mail_storage_root()).expect("default config builds the mail job");
         assert_eq!(def.name, keel_mail_smtp::MAIL_SEND_JOB);
         assert_eq!(def.max_attempts, 3, "job policy owns retry/backoff/dead");
         assert_eq!(handler.name(), keel_mail_smtp::MAIL_SEND_JOB);
@@ -665,7 +735,7 @@ mod tests {
     #[test]
     fn registries_accept_the_mail_job_once() {
         let cfg = PlatformConfig::default().freeze();
-        let (def, handler) = mail_job(&cfg).unwrap();
+        let (def, handler) = mail_job(&cfg, &mail_storage_root()).unwrap();
 
         let mut defs = JobRegistry::new();
         defs.register(def).unwrap();
@@ -674,11 +744,102 @@ mod tests {
         assert_eq!(defs.names(), vec![keel_mail_smtp::MAIL_SEND_JOB]);
         assert_eq!(handlers.names(), vec![keel_mail_smtp::MAIL_SEND_JOB]);
 
-        let (dup_def, dup_handler) = mail_job(&cfg).unwrap();
+        let (dup_def, dup_handler) = mail_job(&cfg, &mail_storage_root()).unwrap();
         assert!(defs.register(dup_def).is_err(), "def refuses duplicates");
         assert!(
             handlers.register(Arc::new(dup_handler)).is_err(),
             "handler refuses duplicates"
         );
+    }
+
+    /// Wave 6 P2: the worker's copy of the disk-registry builder — an empty
+    /// `[storage]` yields the synthetic `local` disk (mail-job parity with
+    /// the pre-P2 behavior), declared disks map drivers to adapters with
+    /// their visibility/url policy, and malformed sections refuse boot.
+    #[test]
+    fn disk_registry_builds_synthetic_default_and_refuses_bad_sections() {
+        let root = std::env::temp_dir().join(format!("keel-worker-disks-{}", std::process::id()));
+        let registry = disk_registry(&keel_config::StorageConfig::default(), &root)
+            .expect("synthetic local disk");
+        assert_eq!(registry.default_name(), "local");
+        let (name, _) = registry.resolve(None).expect("default resolves");
+        assert_eq!(name, "local");
+
+        // Declared disks: driver -> adapter mapping + url/visibility policy.
+        let mut section = keel_config::StorageConfig {
+            default: "cdn".into(),
+            ..Default::default()
+        };
+        section.disks.insert(
+            "cdn".into(),
+            keel_config::DiskConfig {
+                driver: keel_config::DiskDriver::S3,
+                root: None,
+                bucket: Some("keel".into()),
+                url: Some("https://cdn.example.com".into()),
+                visibility: keel_config::DiskVisibility::Public,
+            },
+        );
+        let registry = disk_registry(&section, &root).expect("declared s3 disk");
+        let obj = keel_storage::ObjectRef {
+            bucket: "b".into(),
+            key: "k".into(),
+        };
+        assert_eq!(
+            registry.url_for("cdn", &obj, 30).unwrap(),
+            "https://cdn.example.com/b/k"
+        );
+
+        // local without `root` refuses boot.
+        let mut bad = keel_config::StorageConfig::default();
+        bad.disks.insert(
+            "d".into(),
+            keel_config::DiskConfig {
+                driver: keel_config::DiskDriver::Local,
+                root: None,
+                bucket: None,
+                url: None,
+                visibility: keel_config::DiskVisibility::Private,
+            },
+        );
+        let err = disk_registry(&bad, &root).expect_err("root missing");
+        assert!(err.public_message.contains("root"), "{}", err.public_message);
+
+        // s3 without `bucket` refuses boot.
+        let mut bad = keel_config::StorageConfig::default();
+        bad.disks.insert(
+            "d".into(),
+            keel_config::DiskConfig {
+                driver: keel_config::DiskDriver::S3,
+                root: None,
+                bucket: None,
+                url: None,
+                visibility: keel_config::DiskVisibility::Private,
+            },
+        );
+        let err = disk_registry(&bad, &root).expect_err("bucket missing");
+        assert!(
+            err.public_message.contains("bucket"),
+            "{}",
+            err.public_message
+        );
+
+        // A `storage.default` naming no registered disk refuses boot.
+        let mut bad = keel_config::StorageConfig {
+            default: "nope".into(),
+            ..Default::default()
+        };
+        bad.disks.insert(
+            "d".into(),
+            keel_config::DiskConfig {
+                driver: keel_config::DiskDriver::S3,
+                root: None,
+                bucket: Some("b".into()),
+                url: None,
+                visibility: keel_config::DiskVisibility::Private,
+            },
+        );
+        let err = disk_registry(&bad, &root).expect_err("unknown default");
+        assert!(err.public_message.contains("nope"), "{}", err.public_message);
     }
 }

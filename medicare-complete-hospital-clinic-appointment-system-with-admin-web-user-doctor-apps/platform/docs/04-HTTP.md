@@ -190,6 +190,11 @@ mid-stream (8 parts / 64 KiB fields / 8 MiB per file by default), optional MIME 
 sanitized to a safe basename (last path segment, no control chars/path separators), storage through
 the `StoragePort` under `uploads/<principal>/`.
 
+Storage disk (Wave 6 P2): `?disk=<name>` selects the disk from the registry built at boot from
+`[storage]` (absent = `storage.default`, `local` out of the box); an unknown name answers a 422
+validation envelope naming the miss and never silently falls back. The response's `files[]`
+entries record the resolved disk name alongside the object ref.
+
 ## Platform auth endpoints (S7)
 
 `/auth/register` (dev/test or `KEEL_ALLOW_REGISTER`), `/auth/login`, `/auth/logout`, `/auth/me`,

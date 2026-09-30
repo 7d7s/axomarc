@@ -46,6 +46,9 @@ pub struct StoredUpload {
     pub content_type: String,
     pub size: usize,
     pub object: ObjectRef,
+    /// Wave 6 P2: the disk this object was stored on (the upload pipeline's
+    /// `disk` parameter; `storage.default` when the request names none).
+    pub disk: String,
     /// Sniffed pixel width (images only); omitted from JSON when unknown.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<u32>,
@@ -176,10 +179,14 @@ pub fn sanitize_filename(raw: &str) -> String {
 /// (name, utf-8 value) pairs, file parts as [`StoredUpload`]s with sniffed
 /// image dimensions. Zero file parts is valid here (unlike
 /// [`ingest_multipart`]); every size/MIME limit still applies while reading.
+/// Wave 6 P2: `disk` is the resolved disk name (`storage.default` when the
+/// request names none) recorded on every stored object — the port itself
+/// is resolved by the caller through the disk registry.
 pub async fn ingest_multipart_mixed(
     mut multipart: Multipart,
     limits: &UploadLimits,
     storage: &dyn StoragePort,
+    disk: &str,
     bucket: &str,
     key_prefix: &str,
 ) -> Result<(Vec<(String, String)>, Vec<StoredUpload>), AppError> {
@@ -263,6 +270,7 @@ pub async fn ingest_multipart_mixed(
                     content_type,
                     size,
                     object,
+                    disk: disk.to_string(),
                     width,
                     height,
                 });
@@ -273,16 +281,26 @@ pub async fn ingest_multipart_mixed(
 }
 
 /// Parse + validate + store every file part. Returns the stored file list.
-/// Non-file fields are consumed and size-checked but not retained.
+/// Non-file fields are consumed and size-checked but not retained. Wave 6
+/// P2: `disk` records the resolved disk name on every stored object (see
+/// [`ingest_multipart_mixed`]).
 pub async fn ingest_multipart(
     multipart: Multipart,
     limits: &UploadLimits,
     storage: &dyn StoragePort,
+    disk: &str,
     bucket: &str,
     key_prefix: &str,
 ) -> Result<Vec<StoredUpload>, AppError> {
-    let (_fields, stored) =
-        ingest_multipart_mixed(multipart, limits, storage, bucket, key_prefix).await?;
+    let (_fields, stored) = ingest_multipart_mixed(
+        multipart,
+        limits,
+        storage,
+        disk,
+        bucket,
+        key_prefix,
+    )
+    .await?;
     if stored.is_empty() {
         return Err(AppError::validation(
             "no file parts found in the multipart body",
@@ -452,7 +470,7 @@ mod multipart_tests {
         let store = MemStore::default();
         let mut limits = limits.clone();
         limits.allowed_mime = allowed;
-        ingest_multipart(mp, &limits, &store, "uploads", "pfx/")
+        ingest_multipart(mp, &limits, &store, "local", "uploads", "pfx/")
             .await
             .inspect(|stored| {
                 // Round-trip proof: every stored object is retrievable.
@@ -474,6 +492,8 @@ mod multipart_tests {
         assert_eq!(stored[0].filename, "a b.txt");
         assert_eq!(stored[0].size, 5);
         assert!(stored[0].object.key.starts_with("pfx/"));
+        // Wave 6 P2: the stored record carries the resolved disk name.
+        assert_eq!(stored[0].disk, "local");
     }
 
     #[tokio::test]
@@ -491,10 +511,16 @@ mod multipart_tests {
         ]);
         let mp = Multipart::from_request(req, &()).await.expect("parses");
         let store = MemStore::default();
-        let (fields, stored) =
-            ingest_multipart_mixed(mp, &UploadLimits::default(), &store, "uploads", "pfx/")
-                .await
-                .unwrap();
+        let (fields, stored) = ingest_multipart_mixed(
+            mp,
+            &UploadLimits::default(),
+            &store,
+            "s3",
+            "uploads",
+            "pfx/",
+        )
+        .await
+        .unwrap();
         assert_eq!(
             fields,
             vec![
@@ -506,6 +532,7 @@ mod multipart_tests {
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].field, "photo");
         assert_eq!((stored[0].width, stored[0].height), (Some(300), Some(200)));
+        assert_eq!(stored[0].disk, "s3");
         assert!(store.get(&stored[0].object).is_ok());
     }
 

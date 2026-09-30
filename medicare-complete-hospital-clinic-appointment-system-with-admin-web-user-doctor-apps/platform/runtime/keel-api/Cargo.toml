@@ -44,6 +44,7 @@ keel-tenancy = { workspace = true }
 keel-identity = { workspace = true }
 keel-storage = { workspace = true }
 keel-storage-local = { workspace = true }
+keel-storage-s3 = { workspace = true }
 keel-views = { workspace = true }
 keel-mod-appointments = { workspace = true }
 axum = { workspace = true }

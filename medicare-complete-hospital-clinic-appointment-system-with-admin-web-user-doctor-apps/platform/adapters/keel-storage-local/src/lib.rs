@@ -56,6 +56,19 @@ impl LocalDisk {
         }
         Ok(candidate)
     }
+
+    /// Wave 6 P2: resolve a directory prefix under the root (shared guard +
+    /// defense-in-depth containment, same posture as [`Self::resolve`]).
+    fn dir_path(&self, prefix: &str) -> Result<PathBuf, AppError> {
+        keel_storage::validate_dir_prefix(prefix)?;
+        let path = self.root.join(prefix.trim_end_matches('/'));
+        if !path.starts_with(&self.root) {
+            return Err(AppError::validation(
+                "storage prefix escapes the disk root",
+            ));
+        }
+        Ok(path)
+    }
 }
 
 fn validate_segment(kind: &str, value: &str) -> Result<(), AppError> {
@@ -171,6 +184,71 @@ impl StoragePort for LocalDisk {
         }
         Ok(buf)
     }
+
+    /// Wave 6 P2: walk the tree under the prefix and return the objects
+    /// (`bucket/key` from the on-disk layout, `/`-separated on every
+    /// platform, sorted). A missing directory lists as empty.
+    fn list(&self, prefix: &str) -> Result<Vec<ObjectRef>, AppError> {
+        let dir = self.dir_path(prefix)?;
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        let mut stack = vec![dir];
+        while let Some(dir) = stack.pop() {
+            let entries = std::fs::read_dir(&dir)
+                .map_err(|e| AppError::persistence(format!("cannot list {}: {e}", dir.display())))?;
+            for entry in entries {
+                let entry = entry.map_err(|e| {
+                    AppError::persistence(format!("cannot list {}: {e}", dir.display()))
+                })?;
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let rel = path
+                    .strip_prefix(&self.root)
+                    .expect("listed path is under the disk root");
+                let key = rel.to_string_lossy().replace('\\', "/");
+                let Some((bucket, key)) = key.split_once('/') else {
+                    continue; // files directly under the root are not objects
+                };
+                if bucket.is_empty() || key.is_empty() {
+                    continue;
+                }
+                out.push(ObjectRef {
+                    bucket: bucket.to_string(),
+                    key: key.to_string(),
+                });
+            }
+        }
+        out.sort_by(|a, b| (&a.bucket, &a.key).cmp(&(&b.bucket, &b.key)));
+        Ok(out)
+    }
+
+    /// Wave 6 P2: create the directory (idempotent through
+    /// `create_dir_all`).
+    fn make_dir(&self, prefix: &str) -> Result<(), AppError> {
+        let dir = self.dir_path(prefix)?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| AppError::persistence(format!("cannot create {}: {e}", dir.display())))?;
+        Ok(())
+    }
+
+    /// Wave 6 P2: remove the tree under the prefix; a missing directory is
+    /// success (idempotent).
+    fn delete_dir(&self, prefix: &str) -> Result<(), AppError> {
+        let dir = self.dir_path(prefix)?;
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(AppError::persistence(format!(
+                "cannot delete {}: {e}",
+                dir.display()
+            ))),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -267,6 +345,47 @@ mod tests {
         };
         let err = disk.get_capped(&missing, 100).unwrap_err();
         assert_eq!(err.code, keel_foundation::codes::NOT_FOUND);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Wave 6 P2: list/make/delete over the tree — boundary-scoped
+    /// listings, `/`-separated keys on every platform, idempotent deletes,
+    /// and the shared traversal guard.
+    #[test]
+    fn directory_ops_list_make_delete() {
+        let (disk, dir) = disk();
+        disk.put("uploads", "abc/one.png", vec![1]).unwrap();
+        disk.put("uploads", "abc/nested/two.png", vec![2]).unwrap();
+        disk.put("uploads", "other/three.png", vec![3]).unwrap();
+        disk.put("exports", "abc/four.csv", vec![4]).unwrap();
+
+        // Prefix boundary: `uploads/` never leaks the exports bucket, and
+        // `abc/` only matches at the `/` boundary (sorted, nested included).
+        let uploads = disk.list("uploads/").unwrap();
+        assert_eq!(uploads.len(), 3);
+        assert!(uploads.iter().all(|o| o.bucket == "uploads"));
+        let abc = disk.list("uploads/abc/").unwrap();
+        assert_eq!(
+            abc.iter().map(|o| o.key.as_str()).collect::<Vec<_>>(),
+            vec!["abc/nested/two.png", "abc/one.png"]
+        );
+
+        // Missing directories are empty/success, not errors.
+        assert!(disk.list("uploads/gone/").unwrap().is_empty());
+        disk.delete_dir("uploads/gone/").unwrap();
+
+        disk.make_dir("uploads/fresh/").unwrap();
+        assert!(dir.join("uploads/fresh").is_dir());
+
+        disk.delete_dir("uploads/abc/").unwrap();
+        assert!(disk.list("uploads/abc/").unwrap().is_empty());
+        assert_eq!(disk.list("uploads/").unwrap().len(), 1); // other/ only
+        assert!(dir.join("uploads/other").exists(), "siblings survive");
+
+        // The shared prefix guard refuses traversal before any path work.
+        assert!(disk.list("../").is_err());
+        assert!(disk.make_dir("a/../b").is_err());
+        assert!(disk.delete_dir("/abs/").is_err());
         std::fs::remove_dir_all(dir).ok();
     }
 }

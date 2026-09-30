@@ -49,6 +49,9 @@ pub struct AppState {
     /// Body ceiling matched to the admission pipeline.
     pub body_limit: usize,
     pub storage: Arc<dyn keel_storage::StoragePort>,
+    /// Wave 6 P2: named disk registry built from `[storage]` — the upload
+    /// edge resolves `?disk=` through it (default = `storage.default`).
+    pub disks: Arc<keel_storage::DiskRegistry>,
     pub route_inventory: Vec<RouteEntry>,
     // --- Wave 1 middleware model ------------------------------------------
     /// Named middleware catalog (middleware.toml or the builtin).

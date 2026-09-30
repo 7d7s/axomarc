@@ -25,6 +25,25 @@ adapters are untouched.
 `services/storage` defines the object port; adapters: local disk (dev) and S3-compatible (minio in
 docker-compose). Guards enforce size/type policies.
 
+Wave 6 P2 adds the disk registry. `[storage]` carries `default` (default disk name, `local`) and
+`[storage.disks.<name>] { driver = "local"|"s3", root|bucket, visibility = "public"|"private",
+url }`. Runtime builders (keel-api's `StorageProvider`, keel-worker's `mail_job` — each runtime
+owns the conversion because the layer matrix keeps adapter constructors out of config and
+service crates) turn the section into a `DiskRegistry` at boot: a driver typo or level-3 key typo
+is caught by the typed parse / `CONFIG_SCHEMA_MAPS` walk, while a `local` disk without `root`, an
+`s3` disk without `bucket`, or a `storage.default` naming no registered disk refuses boot. With
+nothing declared the registry holds one synthetic `local` disk rooted at `<root>/storage/local`
+(dev/test parity with the pre-disk wiring). The port gains `list(prefix)` / `make_dir` /
+`delete_dir`: prefix matching is boundary-scoped (`uploads` never matches `uploads2`), listings
+are sorted, deletes are idempotent, and the shared `validate_dir_prefix` guard refuses traversal
+before any path work — the default impls answer `NOT_IMPLEMENTED`, both adapters override (local
+walks the tree; the S3 sandbox tracks virtual directory markers, since S3 has no real
+directories). URL issuance is visibility-gated: private objects only ever get a signed URL from
+the port, public ones resolve through the disk's `url` base as `{base}/{bucket}/{key}` (local
+public files go through the `storage:link` symlink path). The upload edge resolves `?disk=`
+through the registry (`storage.default` when absent; an unknown name is a 422, never a silent
+fallback), and every stored record names the disk it landed on.
+
 ## Notifications (multi-channel)
 
 `services/notifications` is a hub: mail (sandbox in dev, SMTP live via lettre), SMS (MSG91), push
@@ -45,9 +64,10 @@ mailer password.
 `MailChain` (keel-mail-smtp) selects the first healthy transport per send — health is a TCP
 connect probe bounded by the mailer's timeout (`log` never probes) — and an all-unhealthy chain
 is a retryable external error whose detail lands in `last_error`. Queued sends ride the
-`mail.send` job: keel-worker registers the def + `MailSendHandler` at boot (storage `None`
-until the P2 disk registry, so attachment mail fails explicitly instead of dropping
-attachments), and `enqueue_mailable` validates the `Mailable` and builds the refs-only payload
+`mail.send` job: keel-worker registers the def + `MailSendHandler` at boot (P2: the handler
+carries the registry's default disk port, so attachment `ObjectRef`s resolve against the same
+disk the upload edge writes to, and a missing object still fails the attempt explicitly instead
+of being dropped), and `enqueue_mailable` validates the `Mailable` and builds the refs-only payload
 through the registered def. The durable policy owns the rest: retry with backoff, then
 dead-letter.
 

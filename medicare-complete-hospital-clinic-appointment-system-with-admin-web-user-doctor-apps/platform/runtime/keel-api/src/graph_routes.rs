@@ -1513,6 +1513,7 @@ async fn graph_dispatch(
             multipart,
             &keel_http::UploadLimits::default(),
             &*state.storage,
+            state.disks.default_name(),
             "uploads",
             &prefix,
         )

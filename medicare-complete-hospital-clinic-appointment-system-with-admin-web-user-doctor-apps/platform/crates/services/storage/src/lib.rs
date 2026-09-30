@@ -4,6 +4,42 @@
 
 use keel_foundation::AppError;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+/// Maximum directory-prefix length (mirrors the object-key bound).
+pub const MAX_PREFIX_LEN: usize = 1024;
+
+/// Wave 6 P2: shared directory-prefix guard for [`StoragePort`]'s directory
+/// ops. One trailing `/` is allowed (directories are addressed like paths);
+/// everything else follows the object-key rules — relative, no dot/empty
+/// segments, bounded length.
+pub fn validate_dir_prefix(prefix: &str) -> Result<(), AppError> {
+    let core = prefix.strip_suffix('/').unwrap_or(prefix);
+    if core.is_empty() || core.len() > MAX_PREFIX_LEN {
+        return Err(AppError::validation(format!(
+            "storage directory prefix must be 1..={MAX_PREFIX_LEN} characters"
+        )));
+    }
+    if core.contains('\\') || core.contains(':') {
+        return Err(AppError::validation(
+            "storage directory prefix must not contain backslashes or colons",
+        ));
+    }
+    if core.starts_with('/') || core.starts_with('~') {
+        return Err(AppError::validation(
+            "storage directory prefix must be relative",
+        ));
+    }
+    for segment in core.split('/') {
+        if segment.is_empty() || segment == "." || segment == ".." {
+            return Err(AppError::validation(
+                "storage directory prefix has an empty or relative segment",
+            ));
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -42,6 +78,153 @@ pub trait StoragePort: Send + Sync {
         }
         Ok(bytes)
     }
+
+    /// Wave 6 P2 (directory ops): every object under a prefix, sorted by
+    /// `bucket/key` where `bucket/key` starts with the prefix at a `/`
+    /// boundary. The default is `NOT_IMPLEMENTED` — adapters that can walk
+    /// their backing store override it (`keel-storage-local`,
+    /// `keel-storage-s3`).
+    fn list(&self, _prefix: &str) -> Result<Vec<ObjectRef>, AppError> {
+        Err(AppError::not_implemented("list"))
+    }
+
+    /// Wave 6 P2 (directory ops): create a directory marker under the
+    /// prefix (idempotent). Default: `NOT_IMPLEMENTED` (see [`Self::list`]).
+    fn make_dir(&self, _prefix: &str) -> Result<(), AppError> {
+        Err(AppError::not_implemented("make_dir"))
+    }
+
+    /// Wave 6 P2 (directory ops): delete every object under the prefix,
+    /// recursively; a missing directory is success (idempotent). Default:
+    /// `NOT_IMPLEMENTED` (see [`Self::list`]).
+    fn delete_dir(&self, _prefix: &str) -> Result<(), AppError> {
+        Err(AppError::not_implemented("delete_dir"))
+    }
+}
+
+/// Wave 6 P2: disk visibility. Private objects are served only through
+/// signed URLs; public ones resolve through the disk's `url` base (or the
+/// `storage:link` path for local disks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Visibility {
+    Public,
+    Private,
+}
+
+/// One registered disk: its adapter plus the URL-issuance policy.
+pub struct DiskEntry {
+    pub port: Arc<dyn StoragePort>,
+    pub visibility: Visibility,
+    /// Public base URL (`[storage.disks.<name>].url`); required to issue a
+    /// public URL, ignored for private disks.
+    pub base_url: Option<String>,
+}
+
+/// Wave 6 P2: named disk registry — resolves a configured disk name to its
+/// [`StoragePort`] and owns the visibility policy for URL issuance. The
+/// runtime builders (keel-api, keel-worker) fill it from `[storage]`; the
+/// registry itself stays adapter-agnostic per the layer matrix.
+pub struct DiskRegistry {
+    disks: BTreeMap<String, DiskEntry>,
+    default: String,
+}
+
+/// Ports are not `Debug`; show the shape (default + registered names)
+/// instead so `unwrap_err`/asserts on builder results stay usable.
+impl std::fmt::Debug for DiskRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiskRegistry")
+            .field("default", &self.default)
+            .field("disks", &self.names())
+            .finish()
+    }
+}
+
+impl DiskRegistry {
+    pub fn new(default: impl Into<String>) -> Self {
+        Self {
+            disks: BTreeMap::new(),
+            default: default.into(),
+        }
+    }
+
+    pub fn register(&mut self, name: &str, entry: DiskEntry) -> Result<(), AppError> {
+        if name.is_empty() {
+            return Err(AppError::validation(
+                "storage disk name must not be empty",
+            ));
+        }
+        if self.disks.contains_key(name) {
+            return Err(AppError::conflict(format!(
+                "storage disk {name:?} is already registered"
+            )));
+        }
+        self.disks.insert(name.to_string(), entry);
+        Ok(())
+    }
+
+    pub fn get(&self, name: &str) -> Result<&DiskEntry, AppError> {
+        self.disks.get(name).ok_or_else(|| {
+            let configured = self.names().join(", ");
+            AppError::validation(format!(
+                "unknown storage disk {name:?} (configured: {})",
+                if configured.is_empty() {
+                    "none".into()
+                } else {
+                    configured
+                }
+            ))
+        })
+    }
+
+    /// Resolve a request-supplied disk name against the default
+    /// (`storage.default` when the caller names none).
+    pub fn resolve<'a>(
+        &'a self,
+        requested: Option<&'a str>,
+    ) -> Result<(&'a str, &'a DiskEntry), AppError> {
+        let name = requested.unwrap_or(self.default.as_str());
+        let entry = self.get(name)?;
+        Ok((name, entry))
+    }
+
+    pub fn default_name(&self) -> &str {
+        &self.default
+    }
+
+    pub fn names(&self) -> Vec<&str> {
+        self.disks.keys().map(String::as_str).collect()
+    }
+
+    /// Boot check: the default disk must be registered (call once the
+    /// registry is filled — an unknown `storage.default` refuses boot).
+    pub fn validate_default(&self) -> Result<(), AppError> {
+        self.get(self.default_name()).map(|_| ())
+    }
+
+    /// Wave 6 P2: visibility policy for URL issuance. Private objects only
+    /// ever get a signed URL from the port; public objects resolve through
+    /// the disk's `url` base as `{base}/{bucket}/{key}`.
+    pub fn url_for(&self, disk: &str, obj: &ObjectRef, ttl_secs: u64) -> Result<String, AppError> {
+        let entry = self.get(disk)?;
+        match entry.visibility {
+            Visibility::Private => entry.port.presigned_url(obj, ttl_secs),
+            Visibility::Public => {
+                let base = entry.base_url.as_deref().ok_or_else(|| {
+                    AppError::validation(format!(
+                        "public storage disk {disk:?} needs a `url` base for issuance"
+                    ))
+                })?;
+                Ok(format!(
+                    "{}/{}/{}",
+                    base.trim_end_matches('/'),
+                    obj.bucket,
+                    obj.key
+                ))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -78,5 +261,168 @@ mod tests {
         assert_eq!(port.get_capped(&obj, 64).unwrap().len(), 64);
         let err = port.get_capped(&obj, 63).unwrap_err();
         assert_eq!(err.code, keel_foundation::codes::CAP_LIMIT);
+    }
+
+    /// Wave 6 P2: adapters that cannot walk a backing store report
+    /// `NOT_IMPLEMENTED` for the directory ops (the port stays implementable
+    /// with the core four methods).
+    #[test]
+    fn directory_ops_default_to_not_implemented() {
+        let port = Blob(vec![]);
+        let err = port.list("uploads/").unwrap_err();
+        assert_eq!(err.code, keel_foundation::codes::NOT_IMPLEMENTED);
+        assert!(err.public_message.contains("list"), "{}", err.public_message);
+        assert_eq!(
+            port.make_dir("uploads/").unwrap_err().code,
+            keel_foundation::codes::NOT_IMPLEMENTED
+        );
+        assert_eq!(
+            port.delete_dir("uploads/").unwrap_err().code,
+            keel_foundation::codes::NOT_IMPLEMENTED
+        );
+    }
+
+    /// Wave 6 P2: the shared prefix guard accepts path-like directory
+    /// addresses and refuses traversal (mirrors the object-key rules).
+    #[test]
+    fn validate_dir_prefix_guards_traversal() {
+        for ok in ["uploads/", "uploads/abc/", "a/b/c", "tenant_1"] {
+            validate_dir_prefix(ok).unwrap_or_else(|e| panic!("{ok}: {}", e.public_message));
+        }
+        for bad in [
+            "",
+            "/",
+            "/abs/",
+            "a/../b",
+            "a\\b",
+            "a:z",
+            "~user",
+            "a//b",
+            "..",
+            "a/./b",
+        ] {
+            assert!(
+                validate_dir_prefix(bad).is_err(),
+                "prefix accepted: {bad:?}"
+            );
+        }
+    }
+
+    /// Presign-capable fake for the registry policy tests.
+    struct Signed;
+
+    impl StoragePort for Signed {
+        fn put(&self, _bucket: &str, _key: &str, _bytes: Vec<u8>) -> Result<ObjectRef, AppError> {
+            Err(AppError::not_implemented("test put"))
+        }
+        fn get(&self, _obj: &ObjectRef) -> Result<Vec<u8>, AppError> {
+            Ok(Vec::new())
+        }
+        fn delete(&self, _obj: &ObjectRef) -> Result<(), AppError> {
+            Ok(())
+        }
+        fn presigned_url(&self, obj: &ObjectRef, ttl_secs: u64) -> Result<String, AppError> {
+            Ok(format!("signed://{}/{}?t={ttl_secs}", obj.bucket, obj.key))
+        }
+    }
+
+    fn obj() -> ObjectRef {
+        ObjectRef {
+            bucket: "uploads".into(),
+            key: "2026/q3.png".into(),
+        }
+    }
+
+    /// Wave 6 P2: name resolution (default vs explicit), duplicate/unknown
+    /// refusals, and the visibility policy — private ports only ever sign,
+    /// public ones resolve through the `url` base.
+    #[test]
+    fn registry_resolves_disks_and_enforces_visibility() {
+        let mut registry = DiskRegistry::new("private");
+        registry
+            .register(
+                "private",
+                DiskEntry {
+                    port: Arc::new(Signed),
+                    visibility: Visibility::Private,
+                    base_url: None,
+                },
+            )
+            .unwrap();
+        registry
+            .register(
+                "cdn",
+                DiskEntry {
+                    port: Arc::new(Signed),
+                    visibility: Visibility::Public,
+                    base_url: Some("https://cdn.example.com/".into()),
+                },
+            )
+            .unwrap();
+        registry.validate_default().unwrap();
+
+        // Request-supplied name vs default.
+        let (name, _) = registry.resolve(None).unwrap();
+        assert_eq!(name, "private");
+        let (name, _) = registry.resolve(Some("cdn")).unwrap();
+        assert_eq!(name, "cdn");
+        assert_eq!(registry.default_name(), "private");
+        assert_eq!(registry.names(), vec!["cdn", "private"]); // sorted
+
+        // Private -> signed by the port; public -> base + bucket/key.
+        assert_eq!(
+            registry.url_for("private", &obj(), 60).unwrap(),
+            "signed://uploads/2026/q3.png?t=60"
+        );
+        assert_eq!(
+            registry.url_for("cdn", &obj(), 60).unwrap(),
+            "https://cdn.example.com/uploads/2026/q3.png"
+        );
+
+        // Unknown disk names the miss and lists what exists.
+        let err = registry.url_for("nope", &obj(), 60).unwrap_err();
+        assert!(err.public_message.contains("nope"), "{}", err.public_message);
+        assert!(err.public_message.contains("cdn"), "{}", err.public_message);
+
+        // Public without a base is a config gap surfaced at issuance.
+        registry
+            .register(
+                "bare",
+                DiskEntry {
+                    port: Arc::new(Signed),
+                    visibility: Visibility::Public,
+                    base_url: None,
+                },
+            )
+            .unwrap();
+        let err = registry.url_for("bare", &obj(), 60).unwrap_err();
+        assert!(err.public_message.contains("url"), "{}", err.public_message);
+
+        // Duplicates refuse; an unregistered default fails the boot check.
+        let dup = registry
+            .register(
+                "cdn",
+                DiskEntry {
+                    port: Arc::new(Signed),
+                    visibility: Visibility::Public,
+                    base_url: None,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(dup.code, keel_foundation::codes::CONFLICT);
+
+        let mut empty_name = DiskRegistry::new("");
+        let err = empty_name
+            .register(
+                "",
+                DiskEntry {
+                    port: Arc::new(Signed),
+                    visibility: Visibility::Private,
+                    base_url: None,
+                },
+            )
+            .unwrap_err();
+        assert!(err.public_message.contains("empty"), "{}", err.public_message);
+        assert!(empty_name.validate_default().is_err());
     }
 }
