@@ -988,6 +988,12 @@ pub struct ValidationContext<'a> {
     tenant: Option<keel_foundation::TenantId>,
     probes: Option<&'a dyn crate::probe::DbProbeLookup>,
     custom: Option<&'a dyn crate::custom::CustomRuleLookup>,
+    /// Wave 6 P3: localized `validation.<rule>` messages (the boot-loaded
+    /// catalog); `None` keeps the built-in English wording.
+    messages: Option<&'a keel_foundation::MessageCatalog>,
+    /// Wave 6 P3: request locale for the catalog lookup (defaults to the
+    /// catalog's own default when absent).
+    locale: Option<&'a str>,
 }
 
 impl std::fmt::Debug for ValidationContext<'_> {
@@ -1001,6 +1007,8 @@ impl std::fmt::Debug for ValidationContext<'_> {
             .field("tenant", &self.tenant)
             .field("has_probes", &self.probes.is_some())
             .field("has_custom", &self.custom.is_some())
+            .field("has_messages", &self.messages.is_some())
+            .field("locale", &self.locale)
             .finish()
     }
 }
@@ -1017,7 +1025,22 @@ impl<'a> ValidationContext<'a> {
             tenant: None,
             probes: None,
             custom: None,
+            messages: None,
+            locale: None,
         }
+    }
+
+    /// Wave 6 P3: carry the message catalog + request locale so violations
+    /// word themselves through `validation.<rule>` keys (missing keys keep
+    /// the built-in wording through the normal fallback chain).
+    pub fn with_messages(
+        mut self,
+        messages: &'a keel_foundation::MessageCatalog,
+        locale: &'a str,
+    ) -> Self {
+        self.messages = Some(messages);
+        self.locale = Some(locale);
+        self
     }
 
     /// Carry the authenticated principal (`current_password`, Phase 3).
@@ -1144,6 +1167,31 @@ impl FieldSpec {
             None => msg,
         }
     }
+}
+
+/// Wave 6 P3: final message wording per violation, most specific first —
+/// a manifest `messages` override, then the localized `validation.<rule>`
+/// catalog entry (when the request context carries a catalog + locale),
+/// then the built-in English message. Catalog templates substitute
+/// `{attribute}` exactly like manifest ones.
+fn message_for(
+    spec: &FieldSpec,
+    rule: &Rule,
+    msg: String,
+    ctx: &ValidationContext<'_>,
+) -> String {
+    if spec.messages.contains_key(rule.name()) {
+        return spec.resolve_message(rule, msg);
+    }
+    if let Some(catalog) = ctx.messages {
+        let locale = ctx.locale.unwrap_or_else(|| catalog.default_locale());
+        let key = format!("validation.{}", rule.name());
+        let out = keel_foundation::translate(catalog, locale, &key, &[]);
+        if out.locale_used.is_some() {
+            return out.text.replace("{attribute}", spec.display_attribute());
+        }
+    }
+    msg
 }
 
 /// Collect-all validator: binds rules to fields, validates a JSON object.
@@ -1274,7 +1322,7 @@ impl Validator {
                         continue;
                     }
                     if let Some(msg) = check_presence(rule, &field, value, ctx) {
-                        report.push(&field, spec.resolve_message(rule, msg));
+                        report.push(&field, message_for(spec, rule, msg, ctx));
                         presence_failed = true;
                         if bail {
                             break;
@@ -1291,7 +1339,7 @@ impl Validator {
                     }
                     if let Some(v) = value {
                         if let Some(msg) = check(rule, &field, v, ctx) {
-                            report.push(&field, spec.resolve_message(rule, msg));
+                            report.push(&field, message_for(spec, rule, msg, ctx));
                             if bail {
                                 break;
                             }
@@ -1316,7 +1364,7 @@ impl Validator {
                             }
                             Ok(None) => {}
                             Ok(Some(msg)) => {
-                                report.push(&field, spec.resolve_message(rule, msg));
+                                report.push(&field, message_for(spec, rule, msg, ctx));
                                 if bail {
                                     break;
                                 }
@@ -1325,7 +1373,7 @@ impl Validator {
                         continue;
                     }
                     if let Some(msg) = check(rule, &field, v, ctx) {
-                        report.push(&field, spec.resolve_message(rule, msg));
+                        report.push(&field, message_for(spec, rule, msg, ctx));
                         if bail {
                             break;
                         }
@@ -3120,6 +3168,53 @@ mod tests {
         );
         let report = v.validate(&json!({})).expect_err("required");
         assert_eq!(report.violations[0].message, "the patient is mandatory");
+    }
+
+    /// Wave 6 P3: `validation.<rule>` catalog entries word violations when
+    /// the context carries the boot-loaded catalog + request locale; a
+    /// manifest override still wins over localization, and no catalog at
+    /// all keeps the built-in wording (non-regression).
+    #[test]
+    fn catalog_localizes_messages_with_manifest_precedence() {
+        let mut catalog = keel_foundation::MessageCatalog::new("en");
+        catalog
+            .load(
+                "en",
+                &[(
+                    "validation.required",
+                    "{attribute} is required (en)",
+                )],
+            )
+            .unwrap();
+        catalog
+            .define("fr", "validation.required", "{attribute} est requis")
+            .unwrap();
+
+        let input = json!({});
+        let plain = Validator::new().field("patient", vec![Rule::Required]);
+
+        // Request locale fr → localized wording with the display attribute.
+        let ctx = ValidationContext::new(&input).with_messages(&catalog, "fr");
+        let report = plain.validate_with(&ctx).expect_err("required");
+        assert_eq!(report.violations[0].message, "patient est requis");
+
+        // The configured default locale hits the en entry.
+        let ctx = ValidationContext::new(&input).with_messages(&catalog, "en");
+        let report = plain.validate_with(&ctx).expect_err("required");
+        assert_eq!(report.violations[0].message, "patient is required (en)");
+
+        // A manifest per-field override beats the catalog.
+        let mut messages = BTreeMap::new();
+        messages.insert("required".to_string(), "manifest: {attribute}".to_string());
+        let overridden =
+            Validator::new().field_messages("patient", vec![Rule::Required], messages, None);
+        let ctx = ValidationContext::new(&input).with_messages(&catalog, "fr");
+        let report = overridden.validate_with(&ctx).expect_err("required");
+        assert_eq!(report.violations[0].message, "manifest: patient");
+
+        // No catalog in context → built-in English, exactly as before.
+        let report = plain.validate(&input).expect_err("required");
+        assert_eq!(report.violations[0].message, "patient is required");
     }
 
     #[test]

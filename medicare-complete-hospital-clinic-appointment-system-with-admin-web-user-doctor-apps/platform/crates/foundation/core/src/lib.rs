@@ -38,7 +38,10 @@ pub use revision::{
 pub use secret::{open_for_key, Envelope, Sealer, Secret};
 pub use strings::{to_camel_case, to_kebab_case, to_slug, to_snake_case, to_studly_case};
 pub use telemetry::{TelemetryContext, MAX_BAGGAGE_ENTRIES};
-pub use translate::{translate, MessageCatalog, Translated};
+pub use translate::{
+    plural_bucket, trans_choice, translate, validate_locale, MessageCatalog, Translated,
+    CHOICE_BUCKETS,
+};
 
 #[cfg(test)]
 mod tests {

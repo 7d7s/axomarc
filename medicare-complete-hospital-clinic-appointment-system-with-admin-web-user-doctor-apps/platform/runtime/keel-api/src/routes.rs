@@ -84,6 +84,12 @@ pub struct AppState {
     /// harnesses that opt out: HTML routes and web-plane error views then
     /// degrade to JSON envelopes instead of failing the request.
     pub views: Option<Arc<keel_views::ViewsEngine>>,
+    // --- Wave 6 P3 i18n ----------------------------------------------------
+    /// Boot-loaded message catalog (`lang/<locale>.toml`, `[i18n] paths`).
+    /// Feeds the view `_locale`/`_lang` injections, localized
+    /// `validation.<rule>` wording and notification string resolution;
+    /// an empty catalog degrades every key to itself.
+    pub messages: Arc<keel_foundation::MessageCatalog>,
     // --- Wave 2 error rendering -------------------------------------------
     /// Typed error → status/view/reportable registry plus per-code custom
     /// renderers. Shared with the boot `ServiceRegistry`, so modules extend

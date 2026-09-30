@@ -1,0 +1,16 @@
+# Wave 6 P3: messages françaises — the `fr` locale for locale
+# negotiation (`Accept-Language: fr`, session preference `fr`).
+
+[validation]
+required = "{attribute} est requis"
+present = "{attribute} doit être présent"
+email = "doit être une adresse e-mail valide"
+string = "doit être une chaîne"
+integer = "doit être un entier"
+boolean = "doit être un booléen"
+
+[appointments]
+count = "zero=Aucun rendez-vous | one=Un rendez-vous | other={count} rendez-vous"
+
+[notifications]
+appointment_booked = "Rendez-vous réservé pour {patient}"

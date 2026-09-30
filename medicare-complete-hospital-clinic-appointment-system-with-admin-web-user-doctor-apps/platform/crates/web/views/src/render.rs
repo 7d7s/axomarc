@@ -19,8 +19,8 @@ use serde_json::{Map, Value};
 use crate::ast::{ForSpec, Node, Template};
 use crate::engine::{ViewError, ViewsEngine, VIEW_LOOP, VIEW_RENDER};
 use crate::expr::{
-    apply_filters, compare_values, html_escape, is_empty_value, is_truthy, lit_value,
-    resolve_path, to_display, Cond, Expr, Operand, Segment,
+    apply_filter, compare_values, html_escape, is_empty_value, is_truthy, lit_value,
+    resolve_path, to_display, trans_filter, Cond, Expr, Operand, Segment,
 };
 use crate::MAX_LOOP_ITERATIONS;
 
@@ -139,7 +139,30 @@ impl<'e> Renderer<'e> {
     }
 
     fn eval_expr(&self, expr: &Expr) -> Value {
-        apply_filters(self.lookup(&expr.path), &expr.filters)
+        let mut value = match &expr.literal {
+            Some(lit) => Value::String(lit.clone()),
+            None => self.lookup(&expr.path),
+        };
+        for filter in &expr.filters {
+            value = if filter.name == "trans" {
+                // Wave 6 P3: catalog-backed key lookup through the injected
+                // `_lang` flat map (scope-aware, the `@lang` source).
+                trans_filter(value, filter, |key| {
+                    let found = self.lookup(&[
+                        Segment::Key("_lang".into()),
+                        Segment::Key(key.to_string()),
+                    ]);
+                    if matches!(found, Value::String(_)) {
+                        Some(found)
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                apply_filter(value, filter)
+            };
+        }
+        value
     }
 
     fn eval_cond(&self, cond: &Cond) -> bool {

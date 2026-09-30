@@ -580,6 +580,42 @@ mod tests {
         assert_eq!(out, "ADA/x, y/n/a");
     }
 
+    /// Wave 6 P3: the renderer's `trans` filter resolves literal keys,
+    /// path values and explicit arguments through the injected `_lang`
+    /// flat map; with no map every key degrades to itself.
+    #[test]
+    fn trans_filter_renders_through_lang_map() {
+        let (_dir, engine) = engine_with(&[(
+            "page",
+            "{{ \"dashboard.title\" | trans }}|{{ status_key | trans }}|{{ \"missing.key\" | trans }}|{{ \"a.b\" | upper | trans(\"page.title\") }}",
+        )]);
+        let out = render(
+            &engine,
+            "page",
+            json!({
+                "_lang": {
+                    "dashboard.title": "Dashboard",
+                    "appointments.booked": "Booked",
+                    "page.title": "Title"
+                },
+                "status_key": "appointments.booked"
+            }),
+        );
+        assert_eq!(out, "Dashboard|Booked|missing.key|Title");
+
+        // No `_lang` map injected: everything degrades safely.
+        let bare = render(&engine, "page", json!({ "status_key": "k2" }));
+        assert_eq!(bare, "dashboard.title|k2|missing.key|page.title");
+    }
+
+    /// Wave 6 P3: a quoted literal echoes through the normal escape path
+    /// (Blade parity for `{{ "text" }}`), filters included.
+    #[test]
+    fn quoted_literal_echo_escapes() {
+        let (_dir, engine) = engine_with(&[("page", "{{ \"hello <b>\" }}/{{ \"x\" | upper }}")]);
+        assert_eq!(render(&engine, "page", json!({})), "hello &lt;b&gt;/X");
+    }
+
     #[test]
     fn conditionals_if_elseif_else_unless() {
         let (_dir, engine) = engine_with(&[(

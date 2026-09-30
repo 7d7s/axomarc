@@ -956,6 +956,7 @@ fn error_view_response(
     err: &keel_foundation::AppError,
     path: &str,
     pinned: Option<&str>,
+    locale: &str,
 ) -> Option<axum::response::Response> {
     let engine = state.views.as_ref()?;
     let by_status = match status {
@@ -976,6 +977,18 @@ fn error_view_response(
         "code": err.code,
         "path": path,
     });
+    // Wave 6 P3: the same locale injections as success views so error
+    // pages can use `@lang` / the `trans` filter too.
+    if let Some(obj) = context.as_object_mut() {
+        obj.insert(
+            "_locale".into(),
+            serde_json::Value::String(locale.to_string()),
+        );
+        obj.insert(
+            "_lang".into(),
+            serde_json::to_value(state.messages.flat(locale)).unwrap_or_default(),
+        );
+    }
     if state.debug {
         if let Some(debug) = crate::routes::debug_detail(err) {
             if let Some(obj) = context.as_object_mut() {
@@ -1012,8 +1025,20 @@ fn dispatch_error(
         && !expects_json(headers)
         && !keel_http::wants_problem(accept, false)
     {
+        // Wave 6 P3: error views carry the same locale injections as
+        // success views; no session rides this path, so resolution is
+        // Accept-Language -> configured default.
+        let locale = crate::i18n::resolve(
+            &state.messages,
+            None,
+            headers
+                .get(header::ACCEPT_LANGUAGE)
+                .and_then(|v| v.to_str().ok()),
+        );
         let pinned = state.error_renders.plan(err).view;
-        if let Some(response) = error_view_response(state, status, err, path, pinned.as_deref()) {
+        if let Some(response) =
+            error_view_response(state, status, err, path, pinned.as_deref(), &locale)
+        {
             return response;
         }
         return (
@@ -1049,6 +1074,7 @@ fn html_response(
     dispatch: &RouteDispatch,
     headers: &HeaderMap,
     path: &str,
+    locale: &str,
     authed: Option<String>,
     result: serde_json::Value,
 ) -> (axum::response::Response, Option<Vec<u8>>) {
@@ -1071,6 +1097,17 @@ fn html_response(
     if let Some(obj) = context.as_object_mut() {
         obj.entry("_errors")
             .or_insert_with(|| serde_json::json!({}));
+        // Wave 6 P3: resolved locale + chain-merged messages, so `@lang`
+        // and the `trans` filter resolve in-request (exact locale overlay
+        // over the language part over the configured default).
+        obj.insert(
+            "_locale".into(),
+            serde_json::Value::String(locale.to_string()),
+        );
+        obj.insert(
+            "_lang".into(),
+            serde_json::to_value(state.messages.flat(locale)).unwrap_or_default(),
+        );
         if let Some(who) = authed {
             obj.insert("_auth".into(), serde_json::Value::String(who));
         }
@@ -1112,9 +1149,20 @@ fn render_success(
 ) -> Result<(axum::response::Response, Option<Vec<u8>>), keel_foundation::AppError> {
     use keel_foundation::AppError;
     match dispatch.response {
-        ResponseKind::Html => Ok(html_response(
-            state, dispatch, headers, path, view_auth, result,
-        )),
+        ResponseKind::Html => {
+            // Wave 6 P3: same pure resolution the dispatcher ran for
+            // validation/context (session + headers ⇒ identical outcome).
+            let locale = crate::i18n::resolve(
+                &state.messages,
+                crate::i18n::session_locale(session.as_ref()),
+                headers
+                    .get(header::ACCEPT_LANGUAGE)
+                    .and_then(|v| v.to_str().ok()),
+            );
+            Ok(html_response(
+                state, dispatch, headers, path, &locale, view_auth, result,
+            ))
+        }
         ResponseKind::NoContent => Ok((StatusCode::NO_CONTENT.into_response(), None)),
         ResponseKind::Redirect => Ok((redirect_response(state, session, result)?, None)),
         ResponseKind::Download => Ok((download_response(state, result)?, None)),
@@ -1653,6 +1701,18 @@ async fn graph_dispatch(
     // Wave 4 Phase 4: plus the request tenant + row probes (`unique`/
     // `exists`, probe failure → 503 via the fatal channel) and the
     // process-global custom-rule registry (`custom = "<name>"`).
+    // Wave 6 P3: resolve the request locale once — session preference ->
+    // Accept-Language (first supported, quality-ordered) -> configured
+    // default — and carry it through validation wording, the execution
+    // context, and the view `_locale`/`_lang` injections below.
+    let locale = crate::i18n::resolve(
+        &state.messages,
+        crate::i18n::session_locale(resolved_session.as_ref()),
+        headers
+            .get(header::ACCEPT_LANGUAGE)
+            .and_then(|v| v.to_str().ok()),
+    );
+
     if let Some(validator) = &dispatch.validator {
         let credentials = state.credentials.clone();
         let for_principal = principal;
@@ -1672,7 +1732,8 @@ async fn graph_dispatch(
             .with_verifier(&verifier)
             .with_tenant(Some(tenant))
             .with_db_probes(&probes)
-            .with_custom_rules(&keel_validation::GLOBAL_CUSTOM_RULES);
+            .with_custom_rules(&keel_validation::GLOBAL_CUSTOM_RULES)
+            .with_messages(&state.messages, &locale);
         if !uploads.is_empty() {
             ctx = ctx.with_uploads(&uploads);
         }
@@ -1699,6 +1760,13 @@ async fn graph_dispatch(
         .principal(PrincipalContext {
             id: principal,
             display: None,
+        })
+        // Wave 6 P3: the resolved request locale rides the context; the
+        // timezone stays the bootstrap default so business-day semantics
+        // never change with language negotiation.
+        .locale(keel_foundation::Locale {
+            lang: locale.clone(),
+            timezone: keel_foundation::Locale::default().timezone,
         });
     if let Some(request_id) = request_id {
         builder = builder.request_id(request_id);

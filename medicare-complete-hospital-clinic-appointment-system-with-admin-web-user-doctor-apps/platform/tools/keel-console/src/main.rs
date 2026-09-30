@@ -1818,6 +1818,7 @@ fn config_clear_at(root: &Path) -> anyhow::Result<ExitCode> {
 /// Known top-level config sections for `keel config:show` lookups.
 const CONFIG_SECTIONS: &[&str] = &[
     "app", "database", "auth", "otp", "storage", "limits", "telemetry", "views", "http", "mail",
+    "i18n",
 ];
 
 /// Wave 4 Phase 5: print one config section with every secret redacted
@@ -1899,6 +1900,11 @@ fn env_summary_text(root: &Path) -> anyhow::Result<String> {
     out.push_str(&format!(
         "http: problem_json={} encrypt_cookies={}\n",
         cfg.http.problem_json, cfg.http.encrypt_cookies
+    ));
+    out.push_str(&format!(
+        "i18n: default={} paths={}\n",
+        cfg.i18n.default,
+        cfg.i18n.paths.join(",")
     ));
     out.push_str(&format!(
         "gates: require_verified_email={} debug={}\n",
@@ -5893,6 +5899,11 @@ cache_dir = "storage/framework/views"
             "{text}"
         );
         assert!(text.contains("disks=(none)"), "{text}");
+        // Wave 6 P3: the i18n surface (default locale + message roots).
+        assert!(
+            text.contains("i18n: default=en paths=lang"),
+            "{text}"
+        );
 
         config_cache_at(&dir).expect("config cache runs");
         let text = env_summary_text(&dir).expect("summary renders");

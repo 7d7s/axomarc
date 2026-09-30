@@ -8,6 +8,7 @@ pub mod dashboard;
 pub mod edge;
 pub mod graph_routes;
 pub mod host;
+pub mod i18n;
 pub mod routes;
 pub mod shell;
 pub mod static_assets;
@@ -233,6 +234,13 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // file = builtin catalog); malformed files refuse boot (fail closed).
     let middleware_catalog = keel_http::MiddlewareCatalog::load(&root)
         .map_err(|e| format!("middleware catalog rejected: {e}"))?;
+    // Wave 6 P3: the message catalog (`lang/<locale>.toml` at the discovery
+    // root, `[i18n] paths`) — absent roots are empty catalogs, malformed
+    // files or invalid locales refuse boot (the middleware.toml posture).
+    let messages = Arc::new(
+        keel_config::load_messages(&root, cfg.i18n())
+            .map_err(|e| format!("message catalog rejected: {}", e.public_message))?,
+    );
 
     let health = SystemHealth::new(
         pool.is_none(),
@@ -294,7 +302,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         health: health.clone(),
     }));
     host.add_provider(Box::new(KernelProvider { pool: pool.clone() }));
-    host.add_provider(Box::new(PlatformProvider { redis: redis_cache }));
+    host.add_provider(Box::new(PlatformProvider {
+        redis: redis_cache,
+        messages: messages.clone(),
+    }));
     host.add_provider(Box::new(FeatureFlagsProvider {
         registry: flags_registry,
         store: flags_store,
@@ -540,6 +551,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         dashboard_enabled,
         telemetry: Some(telemetry_runtime.clone()),
         views,
+        messages,
         error_renders,
         debug: cfg.app().debug,
         problem_json: cfg.http().problem_json,
@@ -1036,6 +1048,14 @@ pub fn build_app_state(
         keel_tenancy::InMemoryTenantStore::new(),
     ))));
 
+    // Wave 6 P3: harness catalog from `<storage_root>/lang` (absent = the
+    // empty default catalog), so integration tests can drop fixture locale
+    // files exactly like fixture views.
+    let messages = Arc::new(
+        keel_config::load_messages(storage_root, &keel_config::I18nSection::default())
+            .expect("harness message catalog loads"),
+    );
+
     let state = routes::AppState {
         bus: Arc::new(bus),
         health: host::SystemHealth::new(false, "ok"),
@@ -1086,6 +1106,7 @@ pub fn build_app_state(
             .expect("telemetry runtime constructs"),
         ),
         views,
+        messages,
         error_renders,
         debug: false,
         problem_json: false,

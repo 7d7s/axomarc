@@ -71,6 +71,34 @@ of being dropped), and `enqueue_mailable` validates the `Mailable` and builds th
 through the registered def. The durable policy owns the rest: retry with backoff, then
 dead-letter.
 
+## Localization (i18n)
+
+`[i18n] { default = "en", paths = ["lang"] }` (serde-default, no new env vars) selects the
+catalog the boot loader builds: `load_messages` reads `<root>/<paths>/<locale>.toml` from each
+configured directory. An absent directory yields an empty catalog; a malformed file, a
+non-string value, an empty file, an invalid locale filename, or a `default` naming no catalog
+refuses boot with the offending file in the message. Keys are flat dotted names — nested TOML
+tables and dotted keys flatten identically (`validation.required = "…"`). Shipped locales:
+`lang/en.toml`, `fr.toml`, `ar.toml` (ar carries the full zero/one/two/few/many/other choice
+matrix).
+
+The edge resolves the locale once per request (session `locale` bag → `Accept-Language`,
+quality-ordered first supported → default) and carries it everywhere strings surface: 422
+violations use `validation.<rule>` keys with `{attribute}` substituted (manifest messages and
+the built-in English wording keep precedence around the catalog), `ExecutionContext.locale`
+reports it (timezone stays the bootstrap default), and every HTML view receives `_locale` +
+`_lang` — the chain-merged flat map behind `@lang("key")` and `{{ "key" | trans }}` (a miss
+renders the key itself, so missing files degrade instead of breaking pages).
+`trans_choice(key, n)` picks pipe-separated named forms (`zero=… | one=… | other=…`, `{count}`
+substituted) with the plural bucket chosen from the requested locale, even when the message
+itself resolves through the fallback chain.
+
+Notification strings ride the same catalog: `NotifyHub::with_catalog` (wired at boot with the
+catalog) resolves `NotifyMessage.template` as a key with `vars` as interpolation params when a
+producer sets the message's request `locale` (`serde(default)` — pre-catalog queued payloads
+load unchanged); literal templates and catalog-less hubs stand exactly as before. End-to-end
+notification localization is exercised at P5/P6.
+
 ## Realtime
 
 `services/realtime`: BroadcastHub with SSE and WebSocket carriers. Feature-flag gated rollout;

@@ -154,6 +154,10 @@ pub struct PlatformProvider {
     /// Optional Redis cache (S10 B-12). When absent, the cache port stays on
     /// the in-memory adapter (single node; degraded boot, D-52).
     pub redis: Option<Arc<keel_cache_redis::RedisCache>>,
+    /// Wave 6 P3: the boot-loaded message catalog — the notify hub
+    /// resolves notification strings through the same catalog as views
+    /// and validation.
+    pub messages: Arc<keel_foundation::MessageCatalog>,
 }
 
 impl Provider for PlatformProvider {
@@ -180,7 +184,9 @@ impl Provider for PlatformProvider {
         r.insert("cache.port", Arc::new(CachePortRef(port)))?;
         r.insert(
             "notify.hub",
-            Arc::new(keel_notifications::NotifyHub::empty()),
+            Arc::new(keel_notifications::NotifyHub::with_catalog(
+                self.messages.clone(),
+            )),
         )
     }
 }

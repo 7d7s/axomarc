@@ -111,9 +111,18 @@ resolved middleware chain as a per-route layer. The dispatcher then:
 3. GET routes parse `page`/`per_page` and inject `_page` (pagination, below).
 4. Resolves `route.bindings` and injects `_bindings.<param>` AFTER the merge, so request bodies
    cannot forge bindings (model binding, below).
-5. Runs the route's manifest `[[validation]]` specs collect-all over the merged input; failures
-   answer a 422 envelope with a `fields` meta block before any dispatch.
-6. Builds an `ExecutionContext` and dispatches `<module>.<operation>` through the CommandBus;
+5. Resolves the request locale once: session `locale` preference → first supported
+   `Accept-Language` candidate (quality-ordered, `q=0` and `*` skipped, language-part matching)
+   → the configured `[i18n].default`. The locale rides the `ExecutionContext`, picks the
+   wording of localized validation failures, and — for HTML responses — lands in the view
+   context as `_locale` plus `_lang` (the chain-merged catalog map behind `@lang` and the
+   `trans` filter).
+6. Runs the route's manifest `[[validation]]` specs collect-all over the merged input; failures
+   answer a 422 envelope with a `fields` meta block before any dispatch. Each violation renders
+   the manifest's per-field message when present, else the catalog's `validation.<rule>` key in
+   the resolved locale (`{attribute}` substituted with the display name), else the built-in
+   English wording — the `fields` meta shape is identical either way.
+7. Builds an `ExecutionContext` and dispatches `<module>.<operation>` through the CommandBus;
    capability denial → 403 envelope, unknown token → 401.
 
 `/meta/routes` lists the live route inventory.

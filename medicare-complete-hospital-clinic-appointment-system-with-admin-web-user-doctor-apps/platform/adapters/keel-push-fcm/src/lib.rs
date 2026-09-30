@@ -170,6 +170,7 @@ mod tests {
             template: signal.into(),
             vars,
             tenant_id: None,
+            locale: None,
         }
     }
 

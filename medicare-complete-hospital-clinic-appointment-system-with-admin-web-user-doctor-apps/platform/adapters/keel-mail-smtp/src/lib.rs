@@ -615,6 +615,7 @@ mod tests {
             template: template.into(),
             vars: std::collections::BTreeMap::new(),
             tenant_id: None,
+            locale: None,
         }
     }
 

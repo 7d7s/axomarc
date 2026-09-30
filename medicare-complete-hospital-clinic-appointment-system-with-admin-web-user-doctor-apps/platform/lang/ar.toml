@@ -1,0 +1,16 @@
+# Wave 6 P3: الرسائل العربية — the `ar` locale; the six-bucket CLDR
+# subset (`trans_choice` reaches zero/one/two/few/many/other through it).
+
+[validation]
+required = "{attribute} مطلوب"
+present = "يجب أن يكون {attribute} موجودًا"
+email = "يجب أن يكون بريدًا إلكترونيًا صالحًا"
+string = "يجب أن يكون نصًا"
+integer = "يجب أن يكون رقمًا صحيحًا"
+boolean = "يجب أن يكون قيمة منطقية"
+
+[appointments]
+count = "zero=لا مواعيد | one=موعد واحد | two=موعدان | few={count} مواعيد | many={count} موعدًا | other={count} موعد"
+
+[notifications]
+appointment_booked = "تم حجز الموعد لـ {patient}"

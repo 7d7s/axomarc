@@ -367,6 +367,131 @@ fn default_mailer_timeout_ms() -> u64 {
     2000
 }
 
+/// i18n section (Wave 6 P3, `[i18n]`): the configured default locale plus
+/// the message roots scanned at boot for `<locale>.toml` catalogs. Plain
+/// data like [`ViewsSection`] — [`load_messages`] turns it into a
+/// `keel_foundation::MessageCatalog`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct I18nSection {
+    /// Configured default locale — the last stop of locale resolution
+    /// (session preference -> `Accept-Language` -> this).
+    #[serde(default = "default_i18n_locale")]
+    pub default: String,
+    /// Message roots resolved against the workspace root (`lang` by
+    /// default). A missing directory is an empty catalog, never a boot
+    /// failure.
+    #[serde(default = "default_i18n_paths")]
+    pub paths: Vec<String>,
+}
+
+fn default_i18n_locale() -> String {
+    "en".into()
+}
+
+fn default_i18n_paths() -> Vec<String> {
+    vec!["lang".into()]
+}
+
+impl Default for I18nSection {
+    fn default() -> Self {
+        Self {
+            default: default_i18n_locale(),
+            paths: default_i18n_paths(),
+        }
+    }
+}
+
+/// Wave 6 P3: build the message catalog from `<root>/<path>/<locale>.toml`
+/// files (spec: `lang/<locale>.toml` loaded at boot). Dotted TOML keys and
+/// nested tables both flatten into the catalog's flat dotted keys
+/// (`validation.required = "..."` and `[validation] required = "..."`).
+/// Fail-closed like `middleware.toml`: a missing root is an empty catalog,
+/// while a malformed file, a non-string message, a file without messages,
+/// or an invalid locale/default refuses boot. Later roots overlay earlier
+/// ones key-by-key.
+pub fn load_messages(
+    root: &std::path::Path,
+    section: &I18nSection,
+) -> Result<keel_foundation::MessageCatalog, AppError> {
+    keel_foundation::validate_locale(&section.default).map_err(|e| {
+        AppError::validation(format!("i18n.default: {}", e.public_message))
+    })?;
+    let mut catalog = keel_foundation::MessageCatalog::new(section.default.clone());
+    for path in &section.paths {
+        let dir = root.join(path);
+        if !dir.is_dir() {
+            continue;
+        }
+        let mut files: Vec<std::path::PathBuf> = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries
+                .filter_map(|entry| entry.ok().map(|e| e.path()))
+                .filter(|p| p.extension().is_some_and(|ext| ext == "toml"))
+                .collect(),
+            Err(e) => {
+                return Err(AppError::validation(format!("{}: {e}", dir.display())));
+            }
+        };
+        files.sort();
+        for file in files {
+            let locale = file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            keel_foundation::validate_locale(locale).map_err(|e| {
+                AppError::validation(format!("{}: {}", file.display(), e.public_message))
+            })?;
+            let raw = std::fs::read_to_string(&file)
+                .map_err(|e| AppError::validation(format!("{}: {e}", file.display())))?;
+            let parsed: toml::Value = raw
+                .parse()
+                .map_err(|e| AppError::validation(format!("{}: {e}", file.display())))?;
+            let table = parsed.as_table().ok_or_else(|| {
+                AppError::validation(format!(
+                    "{}: messages must be a [table] at the top level",
+                    file.display()
+                ))
+            })?;
+            let mut entries = Vec::new();
+            flatten_messages("", table, &mut entries)?;
+            if entries.is_empty() {
+                return Err(AppError::validation(format!(
+                    "{}: no messages (every locale file needs at least one string)",
+                    file.display()
+                )));
+            }
+            for (key, template) in entries {
+                catalog.define(locale, &key, template).map_err(|e| {
+                    AppError::validation(format!("{}: {}", file.display(), e.public_message))
+                })?;
+            }
+        }
+    }
+    Ok(catalog)
+}
+
+/// Flatten nested TOML tables into dotted catalog keys; non-string leaves
+/// are refused (a message is a string, never a number/bool/array).
+fn flatten_messages(
+    prefix: &str,
+    table: &toml::Table,
+    out: &mut Vec<(String, String)>,
+) -> Result<(), AppError> {
+    for (key, value) in table {
+        let full = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        match value {
+            toml::Value::String(text) => out.push((full, text.clone())),
+            toml::Value::Table(inner) => flatten_messages(&full, inner, out)?,
+            other => {
+                return Err(AppError::validation(format!(
+                    "message `{full}` must be a string, found {other}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Root platform configuration (all sections optional in file; filled from defaults).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PlatformConfig {
@@ -398,6 +523,9 @@ pub struct PlatformConfig {
     /// Mail section (Wave 6 P1): named mailers + default failover chain.
     #[serde(default)]
     pub mail: MailSection,
+    /// i18n section (Wave 6 P3): default locale + message-file roots.
+    #[serde(default)]
+    pub i18n: I18nSection,
 }
 
 /// Wave 4 Phase 5 (docs/19 L210): the declared config schema — the keys the
@@ -420,6 +548,7 @@ pub const CONFIG_SCHEMA: &[(&str, &[&str])] = &[
     ("auth", &["jwt_secret", "confirm_timeout_secs"]),
     ("database", &["url", "max_connections", "run_migrations", "required"]),
     ("http", &["problem_json", "encrypt_cookies"]),
+    ("i18n", &["default", "paths"]),
     ("limits", &["default_monthly_operations"]),
     ("mail", &["default", "mailers"]),
     ("otp", &["provider", "code_ttl_secs", "max_attempts"]),
@@ -726,6 +855,10 @@ impl FrozenConfig {
 
     pub fn mail(&self) -> &MailSection {
         &self.0.mail
+    }
+
+    pub fn i18n(&self) -> &I18nSection {
+        &self.0.i18n
     }
 
     pub fn database_url(&self) -> Option<&str> {
@@ -1302,5 +1435,126 @@ mod wave6_storage_config_tests {
         // new sanctioned variables).
         let cfg = PlatformConfig::default().freeze();
         assert_eq!(cfg.storage().default, "local");
+    }
+}
+
+#[cfg(test)]
+mod wave6_i18n_config_tests {
+    use super::*;
+
+    /// Unique temp dir (no uuid dep in this crate): pid + nanos.
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "keel-config-{label}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    /// Wave 6 P3: `[i18n]` is serde-default additive — an empty config
+    /// yields `en` + `lang`, the schema declares both keys, and a typo is
+    /// caught by the shared walk.
+    #[test]
+    fn i18n_section_defaults_and_schema_keys() {
+        let cfg = PlatformConfig::default().freeze();
+        assert_eq!(cfg.i18n().default, "en");
+        assert_eq!(cfg.i18n().paths, vec!["lang".to_string()]);
+
+        let cfg: PlatformConfig = toml::from_str("[i18n]\ndefault = \"fr\"\npaths = [\"i18n\"]\n")
+            .expect("explicit [i18n] parses");
+        assert_eq!(cfg.i18n.default, "fr");
+        assert_eq!(cfg.i18n.paths, vec!["i18n".to_string()]);
+
+        // Declared keys pass; a typo is refused by the schema walk.
+        assert_eq!(schema_violations("[i18n]\ndefault = \"fr\"\n"), Vec::new());
+        assert_eq!(
+            schema_violations("[i18n]\ndefualt = \"fr\"\n")[0].key,
+            "i18n.defualt"
+        );
+    }
+
+    /// The boot loader flattens nested tables and dotted keys alike, merges
+    /// roots, and treats a missing directory as an empty catalog.
+    #[test]
+    fn load_messages_flattens_nested_and_dotted_keys() {
+        let root = temp_dir("lang-load");
+        let lang = root.join("lang");
+        std::fs::create_dir_all(&lang).unwrap();
+        // Nested table + top-level flat key + a regional tag filename.
+        std::fs::write(
+            lang.join("en.toml"),
+            "[validation]\nrequired = \"{attribute} is required\"\nwelcome = \"Hello\"\n",
+        )
+        .unwrap();
+        // Dotted key form (TOML parses `a.b = "x"` into a nested table too).
+        std::fs::write(lang.join("fr.toml"), "welcome = \"Bonjour\"\n").unwrap();
+
+        let catalog = load_messages(&root, &I18nSection::default()).expect("catalog loads");
+        assert_eq!(catalog.default_locale(), "en");
+        assert_eq!(catalog.locales(), vec!["en", "fr"]);
+        assert_eq!(
+            catalog.get("en", "validation.required"),
+            Some("{attribute} is required")
+        );
+        assert_eq!(catalog.get("fr", "welcome"), Some("Bonjour"));
+        // Missing keys fall back through the chain (fr -> en).
+        assert_eq!(
+            keel_foundation::translate(&catalog, "fr", "validation.required", &[]).text,
+            "{attribute} is required"
+        );
+
+        // A root that does not exist is an empty catalog, never a failure.
+        let missing = load_messages(&root.join("nowhere"), &I18nSection::default())
+            .expect("missing dir is empty");
+        assert!(missing.locales().is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Fail-closed (the middleware.toml posture): malformed TOML, a
+    /// non-string message, an empty file, an invalid locale filename, and
+    /// an invalid configured default all refuse the boot-time load.
+    #[test]
+    fn load_messages_refuses_malformed_files() {
+        let root = temp_dir("lang-refuse");
+        let lang = root.join("lang");
+        std::fs::create_dir_all(&lang).unwrap();
+
+        // Malformed TOML.
+        std::fs::write(lang.join("en.toml"), "welcome = \"unterminated\n").unwrap();
+        let err = load_messages(&root, &I18nSection::default()).expect_err("malformed refuses");
+        assert!(err.public_message.contains("en.toml"), "{}", err.public_message);
+
+        // Non-string leaf.
+        std::fs::write(lang.join("en.toml"), "count = 3\n").unwrap();
+        let err = load_messages(&root, &I18nSection::default()).expect_err("number refuses");
+        assert!(err.public_message.contains("must be a string"), "{}", err.public_message);
+
+        // A file with no messages.
+        std::fs::write(lang.join("en.toml"), "[validation]\n").unwrap();
+        let err = load_messages(&root, &I18nSection::default()).expect_err("empty refuses");
+        assert!(err.public_message.contains("no messages"), "{}", err.public_message);
+
+        // Locale-named file that fails validation (space in the tag).
+        std::fs::write(lang.join("en.toml"), "welcome = \"Hi\"\n").unwrap();
+        std::fs::write(lang.join("bad locale.toml"), "welcome = \"Hi\"\n").unwrap();
+        let err = load_messages(&root, &I18nSection::default()).expect_err("locale refuses");
+        assert!(err.public_message.contains("bad locale.toml"), "{}", err.public_message);
+        std::fs::remove_file(lang.join("bad locale.toml")).unwrap();
+
+        // The configured default itself must be a valid tag.
+        let section = I18nSection {
+            default: "EN_US".into(),
+            ..Default::default()
+        };
+        let err = load_messages(&root, &section).expect_err("bad default refuses");
+        assert!(err.public_message.contains("i18n.default"), "{}", err.public_message);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

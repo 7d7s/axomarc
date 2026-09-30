@@ -212,6 +212,7 @@ mod tests {
             template: template.into(),
             vars,
             tenant_id: None,
+            locale: None,
         }
     }
 

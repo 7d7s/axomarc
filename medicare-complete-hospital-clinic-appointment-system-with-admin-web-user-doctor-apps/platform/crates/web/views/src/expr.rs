@@ -27,6 +27,10 @@ pub struct Filter {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Expr {
     pub path: Vec<Segment>,
+    /// Wave 6 P3: quoted-string echo (`{{ "key" | trans }}`) — the literal
+    /// seeds the filter chain instead of a context lookup. `None` = path.
+    #[serde(default)]
+    pub literal: Option<String>,
     pub filters: Vec<Filter>,
 }
 
@@ -255,10 +259,18 @@ fn parse_filter_arg(cur: &mut Cursor) -> Result<String, String> {
     }
 }
 
-/// Parse an echo expression: user.name | upper | default("n/a").
+/// Parse an echo expression: user.name | upper | default("n/a"), or a
+/// quoted literal with filters (`{{ "key" | trans }}`, Wave 6 P3).
 pub fn parse_echo(input: &str) -> Result<Expr, String> {
     let mut cur = Cursor::new(input.trim());
-    let path = parse_segments_inner(&mut cur);
+    cur.skip_ws();
+    // A leading quoted string is a literal echo value; everything else is
+    // a dot-path (as before).
+    let (path, literal) = if matches!(cur.peek(), Some(b'"' | b'\'')) {
+        (Vec::new(), Some(parse_quoted(&mut cur)?))
+    } else {
+        (parse_segments_inner(&mut cur), None)
+    };
     let mut filters = Vec::new();
     loop {
         cur.skip_ws();
@@ -272,7 +284,37 @@ pub fn parse_echo(input: &str) -> Result<Expr, String> {
     if !cur.eof() {
         return Err(format!("trailing characters in expression: {input:?}"));
     }
-    Ok(Expr { path, filters })
+    Ok(Expr {
+        path,
+        literal,
+        filters,
+    })
+}
+
+/// Consume a single- or double-quoted string literal (backslash escapes
+/// drop the backslash, mirroring filter arguments and condition operands).
+fn parse_quoted(cur: &mut Cursor) -> Result<String, String> {
+    let Some(q) = cur.peek() else {
+        return Err("expected string literal".into());
+    };
+    if q != b'"' && q != b'\'' {
+        return Err("expected string literal".into());
+    }
+    cur.pos += 1;
+    let mut out = String::new();
+    loop {
+        match cur.bump() {
+            None => return Err("unterminated string literal".into()),
+            Some(b'\\') => {
+                if let Some(c) = cur.bump() {
+                    out.push(c as char);
+                }
+            }
+            Some(c) if c == q => break,
+            Some(c) => out.push(c as char),
+        }
+    }
+    Ok(out)
 }
 
 fn parse_operand(cur: &mut Cursor) -> Result<Operand, String> {
@@ -521,7 +563,30 @@ pub fn resolve_path<'v>(root: &'v Value, path: &[Segment]) -> Option<&'v Value> 
     Some(cur)
 }
 
-fn apply_filter(value: Value, filter: &Filter) -> Value {
+/// Wave 6 P3: the `trans` filter core — the key is the explicit filter
+/// argument (`| trans("page.title")`) or the input string, resolved
+/// through the injected `_lang` flat map via `lookup` (the catalog with
+/// the fallback chain pre-merged). A miss degrades exactly like `@lang`:
+/// the key itself; a non-string input with no argument is untouched.
+pub(crate) fn trans_filter(
+    value: Value,
+    filter: &Filter,
+    lookup: impl Fn(&str) -> Option<Value>,
+) -> Value {
+    let key = match filter.args.first() {
+        Some(arg) => arg.clone(),
+        None => match value {
+            Value::String(s) => s,
+            other => return other,
+        },
+    };
+    match lookup(&key) {
+        Some(Value::String(text)) => Value::String(text),
+        _ => Value::String(key),
+    }
+}
+
+pub(crate) fn apply_filter(value: Value, filter: &Filter) -> Value {
     match filter.name.as_str() {
         "upper" => Value::String(to_display(&value).to_uppercase()),
         "lower" => Value::String(to_display(&value).to_lowercase()),
@@ -597,10 +662,24 @@ pub fn apply_filters(mut value: Value, filters: &[Filter]) -> Value {
 
 /// Evaluate an echo expression against a single JSON context root.
 pub fn eval_expr(expr: &Expr, ctx: &Value) -> Value {
-    apply_filters(
-        resolve_path(ctx, &expr.path).cloned().unwrap_or(Value::Null),
-        &expr.filters,
-    )
+    let mut value = match &expr.literal {
+        Some(lit) => Value::String(lit.clone()),
+        None => resolve_path(ctx, &expr.path).cloned().unwrap_or(Value::Null),
+    };
+    for filter in &expr.filters {
+        value = if filter.name == "trans" {
+            trans_filter(value, filter, |key| {
+                resolve_path(
+                    ctx,
+                    &[Segment::Key("_lang".into()), Segment::Key(key.to_string())],
+                )
+                .cloned()
+            })
+        } else {
+            apply_filter(value, filter)
+        };
+    }
+    value
 }
 
 /// Convert a literal operand to a JSON value.
@@ -781,6 +860,54 @@ mod tests {
         );
         assert_eq!(e.filters.len(), 1);
         assert_eq!(e.filters[0].name, "upper");
+        assert!(e.literal.is_none());
+    }
+
+    /// Wave 6 P3: a leading quoted string parses into `literal` (feeding
+    /// the filter chain instead of a context lookup), and expressions
+    /// serialized before the field existed still deserialize (the views
+    /// disk cache keeps old ASTs).
+    #[test]
+    fn quoted_literal_parses_and_old_json_still_loads() {
+        let e = parse_echo("\"a.b\" | trans").unwrap();
+        assert_eq!(e.literal.as_deref(), Some("a.b"));
+        assert!(e.path.is_empty());
+        assert_eq!(e.filters[0].name, "trans");
+
+        // Trailing junk after a literal still fails closed.
+        assert!(parse_echo("\"a\" bogus").is_err());
+
+        // Cache entries written before `literal` existed.
+        let old: Expr =
+            serde_json::from_str("{\"path\":[{\"Key\":\"user\"}],\"filters\":[]}").unwrap();
+        assert!(old.literal.is_none());
+        assert_eq!(old.path.len(), 1);
+    }
+
+    /// Wave 6 P3: the `trans` filter resolves literal and path keys
+    /// through the `_lang` flat map; a miss degrades to the key itself.
+    #[test]
+    fn trans_filter_resolves_lang_map_and_degrades() {
+        let ctx = json!({
+            "_lang": { "dashboard.title": "Dashboard", "appointments.booked": "Booked" },
+            "status_key": "appointments.booked"
+        });
+        // Literal key.
+        let e = parse_echo("\"dashboard.title\" | trans").unwrap();
+        assert_eq!(to_display(&eval_expr(&e, &ctx)), "Dashboard");
+        // Path value used as the key.
+        let e = parse_echo("status_key | trans").unwrap();
+        assert_eq!(to_display(&eval_expr(&e, &ctx)), "Booked");
+        // Miss → the key itself (same contract as @lang).
+        let e = parse_echo("\"missing.key\" | trans").unwrap();
+        assert_eq!(to_display(&eval_expr(&e, &ctx)), "missing.key");
+        // Explicit argument wins over the input and still resolves.
+        let e = parse_echo("status_key | trans(\"dashboard.title\")").unwrap();
+        assert_eq!(to_display(&eval_expr(&e, &ctx)), "Dashboard");
+        // Without an injected `_lang` map everything degrades safely.
+        let bare = json!({ "status_key": "k2" });
+        let e = parse_echo("status_key | trans").unwrap();
+        assert_eq!(to_display(&eval_expr(&e, &bare)), "k2");
     }
 
     #[test]

@@ -25,6 +25,11 @@ pub struct NotifyMessage {
     pub template: String,
     pub vars: BTreeMap<String, String>,
     pub tenant_id: Option<TenantId>,
+    /// Wave 6 P3: locale for catalog resolution of `template` (`None` =
+    /// the catalog default). Serde-default additive: queued payloads from
+    /// before the field still load.
+    #[serde(default)]
+    pub locale: Option<String>,
 }
 
 /// Wave 6 P1 attachment: the bytes live in storage, the Mailable (and the
@@ -161,6 +166,9 @@ pub struct NotifyHub {
     pub sms: Option<Box<dyn SmsPort>>,
     pub mail: Option<Box<dyn MailPort>>,
     pub push: Option<Box<dyn PushPort>>,
+    /// Wave 6 P3: the boot-loaded message catalog for localized
+    /// notification strings; `None` (`empty()`) keeps templates literal.
+    messages: Option<std::sync::Arc<keel_foundation::MessageCatalog>>,
 }
 
 impl NotifyHub {
@@ -169,10 +177,25 @@ impl NotifyHub {
             sms: None,
             mail: None,
             push: None,
+            messages: None,
+        }
+    }
+
+    /// Wave 6 P3: a hub that resolves notification strings through the
+    /// boot-loaded catalog (producers carry the request locale per
+    /// message; `None` falls back to the catalog default locale).
+    pub fn with_catalog(messages: std::sync::Arc<keel_foundation::MessageCatalog>) -> Self {
+        Self {
+            sms: None,
+            mail: None,
+            push: None,
+            messages: Some(messages),
         }
     }
 
     pub fn dispatch(&self, msg: &NotifyMessage) -> Result<(), AppError> {
+        let localized = self.localized(msg);
+        let msg = localized.as_ref().unwrap_or(msg);
         match msg.channel {
             Channel::Sms => self
                 .sms
@@ -191,6 +214,32 @@ impl NotifyHub {
                 .send(msg),
         }
     }
+
+    /// Wave 6 P3: resolve `template` as a catalog key when the hub carries
+    /// the boot-loaded catalog — `vars` ride as interpolation params, so a
+    /// translated template reaches the adapter fully rendered. A template
+    /// that is not a catalog key stands exactly as given (literal
+    /// templates never change meaning).
+    fn localized(&self, msg: &NotifyMessage) -> Option<NotifyMessage> {
+        let catalog = self.messages.as_ref()?;
+        let locale = msg
+            .locale
+            .as_deref()
+            .unwrap_or_else(|| catalog.default_locale());
+        let params: Vec<(&str, &str)> = msg
+            .vars
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
+        let out = keel_foundation::translate(catalog, locale, &msg.template, &params);
+        // No locale hit (key miss → `locale_used` stays `None`) → the
+        // literal template stands as-is.
+        out.locale_used.as_ref()?;
+        Some(NotifyMessage {
+            template: out.text,
+            ..msg.clone()
+        })
+    }
 }
 
 #[cfg(test)]
@@ -206,9 +255,55 @@ mod tests {
             template: "otp".into(),
             vars: BTreeMap::new(),
             tenant_id: None,
+            locale: None,
         };
         let err = hub.dispatch(&msg).unwrap_err();
         assert_eq!(err.code, keel_foundation::codes::NOT_IMPLEMENTED);
+    }
+
+    /// Wave 6 P3: a catalog-carrying hub resolves notification templates
+    /// as keys (vars interpolated, per-message locale winning over the
+    /// catalog default); literal templates and catalog-less hubs are
+    /// untouched.
+    #[test]
+    fn hub_localizes_template_keys_through_the_catalog() {
+        let mut catalog = keel_foundation::MessageCatalog::new("en");
+        catalog
+            .load("en", &[("notify.booked", "Booked for {patient}")])
+            .unwrap();
+        catalog
+            .define("fr", "notify.booked", "Réservé pour {patient}")
+            .unwrap();
+        let hub = NotifyHub::with_catalog(std::sync::Arc::new(catalog));
+
+        let msg = NotifyMessage {
+            channel: Channel::Sms,
+            to: "+1".into(),
+            template: "notify.booked".into(),
+            vars: BTreeMap::from([("patient".to_string(), "Ada".into())]),
+            tenant_id: None,
+            locale: Some("fr".into()),
+        };
+        let localized = hub.localized(&msg).expect("key resolves");
+        assert_eq!(localized.template, "Réservé pour Ada");
+
+        // No per-message locale → the catalog default locale.
+        let msg = NotifyMessage {
+            locale: None,
+            ..msg.clone()
+        };
+        let localized = hub.localized(&msg).expect("key resolves");
+        assert_eq!(localized.template, "Booked for Ada");
+
+        // A literal template (not a key) stands exactly as given.
+        let msg = NotifyMessage {
+            template: "literal-body".into(),
+            ..msg
+        };
+        assert!(hub.localized(&msg).is_none());
+
+        // No catalog → never localized (the `empty()` posture).
+        assert!(NotifyHub::empty().localized(&msg).is_none());
     }
 
     /// Minimal storage stand-in whose `get` returns a fixed blob — the default

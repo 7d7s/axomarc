@@ -369,3 +369,145 @@ async fn html_route_without_an_engine_degrades_to_a_private_500_envelope() {
     // The public message never leaks the internal detail.
     assert!(!reply.body.contains("views are not configured"));
 }
+
+// ------------------------------------------------------- i18n (Wave 6 P3)
+
+/// Wave 6 P3: the availability page localized — `_locale` is the negotiated
+/// locale injected at the edge, and `@lang` / the `trans` filter resolve
+/// through the catalog loaded from the fixture `<temp>/lang` directory.
+const I18N_AVAILABILITY_VIEW: &str = r#"<!doctype html>
+<html lang="{{ _locale }}">
+<head><meta charset="utf-8"><title>Availability</title></head>
+<body>
+  <p class="locale">{{ _locale }}</p>
+  <p class="msg">{{ "validation.string" | trans }}</p>
+  <p class="lang">@lang("notifications.appointment_booked")</p>
+  <p class="date">{{ date }}</p>
+</body>
+</html>
+"#;
+
+/// Same graph as `fixture`, plus locale files dropped BEFORE the app builds
+/// (`build_app_state` reads `<dir>/lang`, absent = empty catalog) and a view
+/// that consumes the locale injections.
+fn i18n_fixture() -> Fixture {
+    let dir = std::env::temp_dir().join(format!("keel-i18n-it-{}", uuid::Uuid::now_v7()));
+    let pages = dir.join("views").join("pages");
+    std::fs::create_dir_all(&pages).expect("views fixture dir");
+    std::fs::write(pages.join("availability.html"), I18N_AVAILABILITY_VIEW).expect("view writes");
+    let lang = dir.join("lang");
+    std::fs::create_dir_all(&lang).expect("lang fixture dir");
+    std::fs::write(
+        lang.join("en.toml"),
+        "[validation]\nrequired = \"{attribute} is required\"\nstring = \"must be a string\"\n\n[notifications]\nappointment_booked = \"Appointment booked for {patient}\"\n",
+    )
+    .expect("en lang fixture writes");
+    std::fs::write(
+        lang.join("fr.toml"),
+        "[validation]\nrequired = \"{attribute} est requis\"\nstring = \"doit être une chaîne\"\n\n[notifications]\nappointment_booked = \"Rendez-vous réservé pour {patient}\"\n",
+    )
+    .expect("fr lang fixture writes");
+    let (state, _, _) = keel_api::build_app_state(&dir, true, true);
+    let raw = format!(
+        "{}{EXTRA_ROUTES}",
+        include_str!("../../../applications/appointments/module.toml")
+    );
+    let manifest = keel_registry::ModuleManifest::from_toml(&raw).expect("fixture manifest parses");
+    let graph =
+        keel_registry::PlatformGraph::compile(vec![manifest]).expect("fixture graph compiles");
+    Fixture { state, graph }
+}
+
+/// GET with an `Accept-Language` header (the negotiation input).
+async fn get_lang(router: &axum::Router, uri: &str, accept_language: &str) -> Reply {
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(uri)
+        .header(header::ACCEPT_LANGUAGE, accept_language)
+        .body(Body::empty())
+        .expect("request builds");
+    send(router, req).await
+}
+
+/// Wave 6 P3: `Accept-Language` reaches the view layer — `_locale` carries
+/// the negotiated locale and both lookup forms resolve through it; an
+/// unsupported language and no header at all fall back to the default.
+#[tokio::test]
+async fn accept_language_negotiates_the_view_locale_and_messages() {
+    let fx = i18n_fixture();
+    let router = router(&fx);
+
+    let fr = get_lang(
+        &router,
+        "/web/availability?date=2026-09-01",
+        "fr-CA, fr;q=0.9, en;q=0.5",
+    )
+    .await;
+    assert_eq!(fr.status, StatusCode::OK, "{}", fr.body);
+    assert!(fr.body.contains(r#"<html lang="fr">"#), "{}", fr.body);
+    assert!(fr.body.contains("doit être une chaîne"), "{}", fr.body);
+    assert!(
+        fr.body.contains("Rendez-vous réservé pour {patient}"),
+        "{}",
+        fr.body
+    );
+
+    // No preference → configured default (en), same keys resolved.
+    let en = get(&router, "/web/availability?date=2026-09-01", None).await;
+    assert_eq!(en.status, StatusCode::OK, "{}", en.body);
+    assert!(en.body.contains(r#"<html lang="en">"#), "{}", en.body);
+    assert!(en.body.contains("must be a string"), "{}", en.body);
+
+    // Unsupported language → default, never a broken render.
+    let de = get_lang(&router, "/web/availability?date=2026-09-01", "de").await;
+    assert_eq!(de.status, StatusCode::OK, "{}", de.body);
+    assert!(de.body.contains(r#"<html lang="en">"#), "{}", de.body);
+}
+
+/// Wave 6 P3: edge validation wording follows the negotiated locale — the
+/// manifest's `required` failure renders the catalog's `validation.required`
+/// for `Accept-Language: fr` and the English default without it (the 422
+/// `fields` wire shape itself is unchanged).
+#[tokio::test]
+async fn validation_messages_follow_the_negotiated_locale() {
+    let fx = i18n_fixture();
+    let router = router(&fx);
+    let email = format!("i18n-{}@clinic.test", uuid::Uuid::now_v7());
+    let cookie = register(&router, &email).await;
+
+    let post = |accept_language: Option<&str>| {
+        let mut builder = Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/appointments")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::COOKIE, cookie.as_str());
+        if let Some(lang) = accept_language {
+            builder = builder.header(header::ACCEPT_LANGUAGE, lang);
+        }
+        builder
+            .body(Body::from(
+                serde_json::json!({ "slot": "2026-09-01T10:00Z" }).to_string(),
+            ))
+            .expect("request builds")
+    };
+
+    let fr = send(&router, post(Some("fr"))).await;
+    assert_eq!(fr.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", fr.body);
+    assert_eq!(fr.json()["error"]["code"].as_str(), Some("KER_VALIDATION"));
+    assert_eq!(
+        fr.json()["error"]["meta"]["fields"]["patient"][0].as_str(),
+        Some("patient est requis"),
+        "{}",
+        fr.body
+    );
+
+    // No header → the English default, byte-identical to the built-in.
+    let en = send(&router, post(None)).await;
+    assert_eq!(en.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", en.body);
+    assert_eq!(
+        en.json()["error"]["meta"]["fields"]["patient"][0].as_str(),
+        Some("patient is required"),
+        "{}",
+        en.body
+    );
+}
