@@ -97,10 +97,21 @@ Recording is a dev/test concern; production keeps the trace recorder off unless 
 ## Queue triage
 
 ```bash
+keel queue:monitor                    # depth + oldest pending age (start here)
 keel queue:failed            # dead jobs awaiting human decision
 keel queue:retry <job-id>    # requeue after fixing the cause
+keel queue:forget <job-id>   # drop one dead job (Wave 5)
+keel queue:prune-failed --hours 168    # age-bounded dead-letter pruning (Wave 5)
 keel job:list --status running --limit 50
+keel queue:restart            # stop workers after their current job (Wave 5)
 ```
+
+Wave 5 added the admin surface on top of the Wave 2 dead-letter flow: `queue:monitor` for the
+depth/age snapshot, `queue:clear`/`queue:flush` for bulk purges (clear refuses prod/staging and
+prompts unless `KEEL_FORCE=1`), `queue:listen` to supervise the worker, and `queue:prune-*` for
+age-bounded cleanup. Two honest limits: `queue:prune-batches` reports an honest empty run and
+`queue:retry-batch <id>` fails closed — the batch ledger is in-memory only until B-32 lands, so
+requeue batch members individually with `queue:retry`.
 
 ## Benchmark gate (G15)
 
@@ -182,6 +193,11 @@ hash-pinned route artifact for deployments:
 - **Secrets across restarts.** `KEEL_SESSION_SECRET` must be set to a stable value for sessions to
   survive restarts and to be shared across instances; when unset, each boot derives a fresh random
   secret (acceptable for the in-memory session store, which never survives a restart anyway).
+- **Release warm-up (Wave 5).** `keel optimize` warms all three boot-pinning artifacts in order
+  (route:cache → config:cache → view:cache) and aborts at the first refusal;
+  `keel optimize:clear` drops all three, attempting every step so a failed delete never strands one
+  artifact behind. Both are thin orchestrations over the same commands above — the artifacts remain
+  deployment pins, never correctness dependencies.
 - **If boot-time compilation ever became a measurable cost** (it is bounded by the manifest count
   and verified by the benchmark gate), a serialized graph snapshot would be a startup optimization
   only — never a correctness dependency — because the live compile path remains the source of

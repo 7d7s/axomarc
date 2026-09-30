@@ -16,13 +16,37 @@ config/dev.toml  [database] url, max_connections, run_migrations
 
 ```bash
 keel make:migration add_appointment_status   # timestamped SQL scaffold
-keel migrate                                 # apply pending
-keel migrate:status                          # applied vs pending
+keel migrate                                 # apply pending (advisory-lock guarded)
+keel migrate:status                          # applied vs pending (incl. pair bookkeeping)
 keel migrate:fresh                           # drop + recreate (dev/test only)
+keel migrate:rollback [--step n]             # revert last n batches, reverse filename order
+keel migrate:reset                           # revert everything (dev/test only)
+keel migrate:refresh [--step n]              # rollback n batches, then re-apply (dev/test only)
+keel migrate:install                         # create the keel_migrations bookkeeping table only
 keel db:inspect                              # tables + row counts
+keel db:show                                 # driver, server version, database + inventory
+keel db:schema:dump                          # normalized DDL snapshot → database/schema.sql
 ```
 
 Gate G08 checks migrations are ordered and present. `migrate:fresh` refuses production postures.
+
+**Advisory lock (Wave 5).** Every `keel migrate` run first takes `pg_advisory_lock(7259)` and
+fails closed on timeout, so concurrent migrators serialize instead of interleaving DDL — asserted
+by the pg-gated `advisory_lock_serializes_runs_and_fails_closed_on_timeout`
+(`crates/data/postgres/tests/pg_pairs.rs`, skipped without `DATABASE_URL`).
+
+**Revertible pairs (Wave 5).** Migrations that come in `NNN_name.up.sql` / `NNN_name.down.sql`
+pairs are revertible: `migrate:rollback` walks batches newest-first and applies the `.down.sql`
+in reverse filename order (default `--step 1`; batches group every file sharing a timestamp).
+The pairs table (`keel_migrations` bookkeeping rows) tracks applied pairs — every pair applied in one
+`keel migrate` run shares the next batch number — so status and rollback agree. Single-file forward-only migrations are **not** revertible — rollback skips them and the
+command says so (documented divergence from Laravel, where all migrations must be reversible).
+`migrate:reset`/`migrate:refresh` carry the same destructive window as `migrate:fresh`
+(dev/test-only, refuse production). Directory conventions, fail-closed scan rules (missing
+`.down.sql`, orphan `.down.sql`, bad base name, applied-but-deleted files all refuse) and the
+singles-before-pairs run order are documented in `database/migrations-pairs/README.md`; the
+pg-gated round trip (`pair_migrations_apply_rollback_and_reset_with_batches` in
+`crates/data/postgres/tests/pg_pairs.rs`) writes its own pair fixtures.
 
 ## Roles
 

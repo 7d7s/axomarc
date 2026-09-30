@@ -79,7 +79,7 @@ The verified repository inventory supplied for this audit is:
 | Feature flags | `platform/crates/enterprise/feature-flags/src/lib.rs:431,472` | Feature flag runtime. |
 | Observability | `platform/crates/observability/logging/src/logsys.rs:88,219,249` | Redaction, init, request spans. |
 | Localization | `platform/crates/foundation/core/src/translate.rs:151` | Translation catalog primitive. |
-| Factory gap | `platform/tools/keel-codegen/src/generators.rs:126` | `todo!` in generated factory build path. |
+| Factory gap (reconciled) | `platform/tools/keel-codegen/src/generators.rs` | Historical: `todo!` once sat in the generated factory build path; FACTORY_TEMPLATE now builds for real (test `factory_build_is_real_and_deterministic`, no `todo!` — see the make:factory row in §11). |
 | Domain store anti-pattern | `platform/applications/appointments/src/lib.rs:45-46` | `Mutex<BTreeMap>` persistence, not a durable Pg store. |
 | Pg test gap | repository-wide zero `sqlx::test` | No PostgreSQL-backed integration matrix. |
 | Architecture gates | `platform/tests/architecture/tests/architecture.rs` | G07 dependency matrix, topology, graph compile tests. |
@@ -516,9 +516,9 @@ This ledger intentionally enumerates individual operations so a broad `Database`
 | Queues / Scheduler | maxAttempts | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
 | Queues / Scheduler | failed | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
 | Queues / Scheduler | queue:work | MATCHED | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
-| Queues / Scheduler | queue:restart | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
-| Queues / Scheduler | queue:retry | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
-| Queues / Scheduler | queue:failed | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
+| Queues / Scheduler | queue:restart | MATCHED | platform/tools/keel-console/src/main.rs (queue_restart) + runtime/keel-worker/src/main.rs | Restart-signal file written by `keel queue:restart`; the worker ignores a signal older than its start (test `restart_signal_is_ignored_when_older_than_the_worker_start`) (Wave 5) |
+| Queues / Scheduler | queue:retry | UNKNOWN | platform/tools/keel-console/src/main.rs (queue_retry) | Implemented since Wave 2; no locked test evidence |
+| Queues / Scheduler | queue:failed | UNKNOWN | platform/tools/keel-console/src/main.rs (queue_failed) | Implemented since Wave 2; no locked test evidence |
 | Queues / Scheduler | schedule | MATCHED | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
 | Queues / Scheduler | cron | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
 | Queues / Scheduler | everyMinute | UNKNOWN | platform/runtime/keel-worker/src/main.rs | Worker/batches/chains/scheduler exist; exact API parity not established |
@@ -992,13 +992,13 @@ The CLI is one of the most important Laravel parity surfaces because it compress
 | Laravel command | Keel command | Status | Evidence / gap | Priority |
 |---|---|---|---|---|
 | about | about | MATCHED | `keel about` golden-fields report: framework/app version, env, debug, DB driver + server version, cache/queue/session drivers, flag snapshot, graph module/route/operation counts, dep-budget state (test `about_report_carries_the_golden_fields`) (Wave 4) | P3 |
-| clear-compiled | optimize:clear | PARTIAL | No Laravel compiled-artifact model | P3 |
+| clear-compiled | optimize:clear | MATCHED | `keel optimize:clear` drops all three boot-pinning artifacts (route/config/view), attempting every step and reporting the first error (test `optimize_cycle_warms_and_clears_all_three_artifacts`) (Wave 5) | P3 |
 | down | down | EQUIVALENT | Maintenance mode capability | P2 |
 | env | env | MATCHED | `keel env` environment summary: resolved config file, redacted key facts, config-cache pin state (test `env_summary...`) (Wave 4) | P3 |
 | inspire | — | DELIBERATELY EXCLUDED | Not a framework capability | P4 |
 | list | list | MATCHED | CLI command surface exists | P2 |
-| optimize | optimize | PARTIAL | Optimization semantics incomplete | P2 |
-| optimize:clear | optimize:clear | PARTIAL | Clear path needs subsystem caches | P2 |
+| optimize | optimize | MATCHED | `keel optimize` warms route:cache → config:cache → view:cache in order, aborting at the first refusal (test `optimize_cycle_warms_and_clears_all_three_artifacts`) (Wave 5) | P2 |
+| optimize:clear | optimize:clear | MATCHED | same test: all three artifacts cleared, no partial clear left behind (Wave 5) | P2 |
 | up | up | EQUIVALENT | Maintenance disable path | P2 |
 | version | version | MATCHED | CLI binary exists | P2 |
 | cache:clear | cache:clear | PARTIAL | Cache command surface not fully mapped | P2 |
@@ -1011,68 +1011,71 @@ The CLI is one of the most important Laravel parity surfaces because it compress
 | db | db | MATCHED | CLI/runtime exists at database layer | P2 |
 | db:monitor | db:monitor | UNKNOWN | No locked evidence | P3 |
 | db:seed | seed | MATCHED | keel seed | P1 |
-| db:show | db:show | UNKNOWN | No locked evidence | P3 |
+| db:show | db:show | MATCHED | `keel db:show` renders driver, server version, database + the `db:inspect` table/row inventory (test `db_show_renders_server_metadata_and_inventory`) (Wave 5) | P3 |
 | db:table | db:table | UNKNOWN | No locked evidence | P3 |
-| event:cache | event:cache | MISSING | No separate event discovery cache | P3 |
+| event:cache | event:cache | MISSING | No separate event discovery cache (events are manifest-declared; no runtime discovery to cache) | P3 |
 | event:clear | event:clear | MISSING | No event cache command | P3 |
 | event:list | event:list | UNKNOWN | Event runtime exists but list command not proven | P3 |
 | key:generate | key:generate | UNKNOWN | No locked evidence | P3 |
-| make:cast | make cast | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
-| make:channel | make channel | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:cast | make cast | MATCHED | platform/tools/keel-codegen/src/generators.rs CAST_TEMPLATE emits `impl Cast for __TYPE__Cast` against the real `keel_models::Cast` trait (tests wave5_adds_twelve_generator_kinds + wave5_templates_reference_real_platform_surface) (Wave 5) | P2 |
+| make:channel | make channel | PARTIAL | platform/tools/keel-codegen/src/generators.rs CHANNEL_TEMPLATE points at the real `routes/channels.toml` capability registry (same test); broadcast auth enforcement is Wave 6 | P2 |
 | make:class | make class | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
 | make:command | make command | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
-| make:component | make component | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:component | make component | MATCHED | COMPONENT_TEMPLATE renders under the module's real view root with `@props` (test asserts the components/ path + `@props`) (Wave 5) | P2 |
 | make:controller | make controller | PARTIAL | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
 | make:event | make event | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
-| make:exception | make exception | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:exception | make exception | MATCHED | EXCEPTION_TEMPLATE emits `impl From<__TYPE__Error> for AppError` (test `wave5_templates_reference_real_platform_surface`) (Wave 5) | P2 |
 | make:factory | make factory | PARTIAL | platform/tools/keel-codegen/src/generators.rs (FACTORY_TEMPLATE; test factory_build_is_real_and_deterministic) - real build() with no todo! (stale STUB claim reconciled) | P2 |
 | make:interface | make interface | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
 | make:job | make job | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
-| make:job-middleware | make job-middleware | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:job-middleware | make job-middleware | PARTIAL | JOB_MIDDLEWARE_TEMPLATE wraps `keel_jobs::{BoxFuture, DurableJob}` (test) — a compiling hook, but worker-side middleware composition (dispatch wrapping) is Wave 6 | P2 |
 | make:listener | make listener | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
-| make:mail | make mail | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
-| make:middleware | make middleware | PARTIAL | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:mail | make mail | PARTIAL | MAIL_TEMPLATE emits a standalone Mailable definition (test asserts it documents its Wave 6 landing); the Mailable send/transport surface is Wave 6 | P2 |
+| make:middleware | make middleware | PARTIAL | MIDDLEWARE_TEMPLATE emits a real axum `from_fn` layer (`pub async fn __NAME___middleware(request, next)` — test `wave5_templates_reference_real_platform_surface`); the platform admission chain stays framework-owned (middleware.toml aliases/groups, GRAPH-MW-UNKNOWN) and module-local layering is the only consumption path (Wave 5) | P2 |
 | make:model | make model | PARTIAL | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
-| make:notification | make notification | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:notification | make notification | PARTIAL | NOTIFICATION_TEMPLATE emits a NotificationDef with per-channel renderers (test asserts its Wave 6 documentation); the notification dispatch surface is Wave 6 | P2 |
 | make:notifications-table | make notifications-table | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:observer | make observer | MATCHED | OBSERVER_TEMPLATE emits `impl ModelObserver for __TYPE__Observer` against the real `keel_models::ModelObserver` trait (tests wave5_adds_twelve_generator_kinds + wave5_templates_reference_real_platform_surface) (Wave 5) | P2 |
 | make:policy | make policy | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
 | make:provider | make provider | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
 | make:request | make request | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
 | make:resource | make resource | PARTIAL | platform/tools/keel-codegen/src/generators.rs (RESOURCE_TEMPLATE emits a compiling `impl keel_http::Resource`; tests resource_template_emits_the_trait_impl + the keel-http doctest build proof, Wave 3); no end-to-end CLI verification yet | P2 |
-| make:rule | make rule | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
-| make:scope | make scope | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
+| make:rule | make rule | MATCHED | RULE_TEMPLATE registers through the real `register_custom_rule("sample_thing", ...)` validation API (test `wave5_templates_reference_real_platform_surface`) (Wave 5) | P2 |
+| make:scope | make scope | MATCHED | SCOPE_TEMPLATE emits `pub fn __NAME___scope(filters: Vec<FieldFilter>)` over the real keel-models filter surface (same test) (Wave 5) | P2 |
 | make:seeder | make seeder | PARTIAL | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
 | make:test | make test | PARTIAL | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
-| make:view | make view | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
-| migrate | migrate | MATCHED | 2 framework migration files / 18 tables | P1 |
-| migrate:fresh | migrate:fresh | MISSING | Fresh workflow not supplied | P2 |
-| migrate:install | migrate:install | UNKNOWN | No locked evidence | P3 |
-| migrate:refresh | migrate:refresh | MISSING | Refresh workflow not supplied | P2 |
-| migrate:reset | migrate:reset | MISSING | Reset workflow not supplied | P2 |
-| migrate:rollback | migrate:rollback | UNKNOWN | Rollback depth not locked | P2 |
-| migrate:status | migrate:status | UNKNOWN | Status command not locked | P3 |
+| make:view | make view | MATCHED | VIEW_TEMPLATE lands under the module's real view root (`applications/<m>/resources/views/<name>.html`) and documents `@include` resolution; renders in the Wave 2 views engine (test asserts the path + `@include`) (Wave 5) | P2 |
+| migrate | migrate | MATCHED | 6 framework migration files / 20 tables (advisory-lock guarded; pair bookkeeping in `keel_migrations`) | P1 |
+| migrate:fresh | migrate:fresh | PARTIAL | `keel migrate:fresh` drop + recreate implemented with the dev/test-only refusal (main.rs `migrate_fresh`, docs/05); no dedicated locked test — the Wave 5 parse lock covers the pairs family, not fresh | P2 |
+| migrate:install | migrate:install | MATCHED | `keel migrate:install` creates the `keel_migrations` bookkeeping table without running files (test `migrate_pair_commands_parse_with_documented_defaults`; pg round trip `pair_migrations_apply_rollback_and_reset_with_batches`) (Wave 5) | P3 |
+| migrate:refresh | migrate:refresh | MATCHED | `keel migrate:refresh [--step n]` = rollback then re-apply; dev/test-only destructive window (same test) (Wave 5) | P2 |
+| migrate:reset | migrate:reset | MATCHED | `keel migrate:reset` reverts every batch; dev/test-only (same test + the pg round trip) (Wave 5) | P2 |
+| migrate:rollback | migrate:rollback | MATCHED | `keel migrate:rollback [--step n]` (default 1): batches newest-first, reverse filename order, pair `.down.sql` only — forward-only singles untouched (tests `rollback_order_walks_batches_newest_first_in_reverse_filename_order` + `migrate_pair_commands_parse_with_documented_defaults`; pg-gated `pair_migrations_apply_rollback_and_reset_with_batches`) (Wave 5) | P2 |
+| migrate:status | migrate:status | PARTIAL | `keel migrate:status` reports applied vs pending incl. `keel_migrations` pair bookkeeping (main.rs `migrate_status`, docs/05); no dedicated locked test (Wave 5) | P3 |
 | model:prune | model:prune | MATCHED | PruneRegistry sweep through ModelRuntime; `--tenant`/`--chunk` flags, chunked passes (test model_prune_cli_parses) (Wave 3) | P3 |
-| queue:clear | queue:clear | UNKNOWN | Worker runtime exists; command not locked | P3 |
-| queue:failed | queue:failed | UNKNOWN | No locked command evidence | P3 |
-| queue:flush | queue:flush | UNKNOWN | No locked command evidence | P3 |
-| queue:forget | queue:forget | UNKNOWN | No locked command evidence | P3 |
-| queue:listen | queue:listen | MATCHED | keel-worker runtime | P2 |
-| queue:monitor | queue:monitor | MISSING | No monitoring command | P3 |
-| queue:prune-batches | queue:prune-batches | UNKNOWN | Batches exist, command not locked | P3 |
-| queue:prune-failed | queue:prune-failed | UNKNOWN | No locked evidence | P3 |
-| queue:restart | queue:restart | UNKNOWN | No locked evidence | P3 |
-| queue:retry | queue:retry | UNKNOWN | No locked evidence | P3 |
-| queue:retry-batch | queue:retry-batch | UNKNOWN | No locked evidence | P3 |
+| queue:clear | queue:clear | MATCHED | `keel queue:clear` purges pending jobs; refuses prod/staging + `KEEL_FORCE` confirm (test `queue_admin_commands_parse_with_documented_defaults` + the env gate) (Wave 5) | P3 |
+| queue:failed | queue:failed | UNKNOWN | Implemented since Wave 2 (main.rs `queue_failed`); no locked test evidence | P3 |
+| queue:flush | queue:flush | MATCHED | `keel queue:flush` deletes every dead job via `prune_dead(flush_cutoff())` (same parse test + jobs `admin_maintenance_purges_prunes_and_snapshots`) (Wave 5) | P3 |
+| queue:forget | queue:forget | MATCHED | `keel queue:forget <id>` deletes one dead job; unknown/non-dead id refuses (same parse test) (Wave 5) | P3 |
+| queue:listen | queue:listen | MATCHED | supervisor spawning `keel-worker`, respawn on exit with crash-loop backoff (test `queue_admin_commands_parse_with_documented_defaults`) (Wave 5) | P2 |
+| queue:monitor | queue:monitor | MATCHED | `keel queue:monitor` renders pending (+ oldest age), running, dead, succeeded (tests `queue_monitor_renders_depth_and_oldest_age` + the parse test) (Wave 5) | P3 |
+| queue:prune-batches | queue:prune-batches | PARTIAL | Command + default 72h locked (parse test) and it reports an honest empty run — the batch ledger is in-memory only until B-32 (Wave 5) | P3 |
+| queue:prune-failed | queue:prune-failed | MATCHED | `keel queue:prune-failed [--hours n]` (default 168) prunes dead jobs by age (parse test + jobs `admin_maintenance_purges_prunes_and_snapshots`) (Wave 5) | P3 |
+| queue:restart | queue:restart | MATCHED | restart-signal file; worker ignores a signal older than its start (jobs test `restart_signal_is_ignored_when_older_than_the_worker_start`) (Wave 5) | P3 |
+| queue:retry | queue:retry | UNKNOWN | Implemented since Wave 2 (main.rs `queue_retry`); no locked test evidence | P3 |
+| queue:retry-batch | queue:retry-batch | PARTIAL | Parses + validates the batch id then fails closed: batch membership needs the persisted ledger (B-32); per-job `queue:retry` is the alternative (parse test) (Wave 5) | P3 |
 | queue:work | queue:work | MATCHED | keel-worker | P1 |
 | route:cache | route:cache | MATCHED | keel route:cache writes storage/framework/routes.json (resolved chains/bindings/validators + SHA-256 manifest hash); boot registers from a matching artifact and refuses a stale one (Wave 1) | P2 |
 | route:clear | route:clear | MATCHED | keel route:clear deletes the artifact; boot falls back to live compilation (Wave 1) | P2 |
 | route:list | route:list | MATCHED | table/json with plane/group/version/deprecation columns; `--name`/`--path`/`--plane` filters (Wave 2) | P2 |
-| schedule:clear-cache | schedule:clear-cache | UNKNOWN | Scheduler exists; command not locked | P3 |
-| schedule:list | schedule:list | UNKNOWN | Scheduler exists; command not locked | P3 |
-| schedule:run | schedule:run | MATCHED | Scheduler runtime | P1 |
-| schedule:test | schedule:test | UNKNOWN | No locked evidence | P3 |
-| schedule:work | schedule:work | MATCHED | Worker scheduler loop | P1 |
-| storage:link | storage:link | UNKNOWN | No locked evidence | P3 |
+| schedule:clear-cache | schedule:clear-cache | UNKNOWN | No schedule cache exists to clear (the scheduler has no mutex/cache layer until Wave 6 cron guards) | P3 |
+| schedule:list | schedule:list | PARTIAL | Information stub over the `schedule_registry()` seam: reports the registry's empty posture until module schedules land (Wave 6); implementation main.rs `schedule_info` (Wave 5 documented this posture) | P3 |
+| schedule:run | schedule:run | PARTIAL | Same `schedule_info` stub today — the runtime tick exists (schedule:work) but one-shot due runs await module schedules (Wave 6) | P1 |
+| schedule:test | schedule:test | MATCHED | `keel schedule:test` pure dry run (registered vs due-now, nothing fires or writes; tests `schedule_test_plan_is_pure_and_skips_disabled` + `schedule_test_lines_report_the_empty_posture`) (Wave 5) | P3 |
+| schedule:work | schedule:work | MATCHED | `keel schedule:work [--every n]` daemon: fires due items as durable jobs, persists state after each pass, exits before the DB on an empty registry (tests `schedule_tick_fires_due_items_and_persists_state` + `schedule_commands_exit_cleanly_when_nothing_is_registered`) (Wave 5) | P1 |
+| storage:link | storage:link | MATCHED | `keel storage:link [--force]` creates the public/storage symlink, refuses to overwrite without `--force`, never deletes a real directory (tests `storage_link_creates_a_missing_link`, `storage_link_refuses_to_overwrite_without_force`, `storage_link_never_deletes_a_real_directory`, `storage_link_paths_point_at_the_local_disk_root`) (Wave 5) | P3 |
+| schema:dump | db:schema:dump | MATCHED | `keel db:schema:dump` writes a normalized, sorted DDL snapshot to `database/schema.sql` (empty schema → honest marker; tests `schema_dump_renders_normalized_sorted_ddl` + `schema_dump_renders_an_empty_marker_for_an_empty_schema`) (Wave 5; added to the inventory here — Laravel gained `schema:dump` in 10.x) | P3 |
+| test | test | MATCHED | `keel test [--pg]` runs `cargo test --workspace --locked`, tallies `test result:` lines into PASS/FAIL; `--pg` adds `pg-tests` and fails closed without `DATABASE_URL` (tests `test_result_lines_parse_pass_and_fail` + `storage_link_and_test_commands_parse`) (Wave 5; inventory row added) | P2 |
 | view:cache | view:cache | MATCHED | precompiles every template under `[views].paths` into `[views].cache_dir` (mtime + content hash) (Wave 2) | P3 |
 | view:clear | view:clear | MATCHED | drops the in-process memo plus every `*.json` artifact; boot recompiles on demand (Wave 2) | P3 |
 | vendor:publish | vendor:publish | MISSING | Package resource publish absent | P3 |
@@ -1083,7 +1086,7 @@ The CLI is one of the most important Laravel parity surfaces because it compress
 
 ### Current verified command maturity
 
-The repository brief states **34/34 planned Keel commands are done (L55 ✓)**. This proves planning completion, not full Laravel command parity. The gaps above are the difference between a closed internal roadmap and a Laravel-equivalent CLI surface.
+The repository brief states **34/34 planned Keel commands are done (L55 ✓)**. This proves planning completion, not full Laravel command parity. The gaps above are the difference between a closed internal roadmap and a Laravel-equivalent CLI surface. Wave 5 added 20+ commands beyond that count (the migrate family, db:show/schema:dump, the queue admin set, schedule:work/test, storage:link, optimize pair, `keel test`, `keel call`); the rows above carry their locked evidence (or honest UNKNOWN/PARTIAL) individually.
 
 ## 12. ORM Audit
 
@@ -1754,6 +1757,8 @@ Wave 3 completion entry (2026-09-29): Wave 3 — Eloquent & query parity + API r
 
 Wave 4 completion entry (2026-09-30): Wave 4 — Validation expansion + config + cache + parity residuals is DONE per `19-PARITY-PROGRAM.md`: ~45 new validation rules (types/strings/numeric/conditionals/cross-field/dates/files/composable `password` + tenant-scoped `unique`/`exists` ModelStore probes with DB error -> 503) with `bail`, dot-path wildcards and custom messages behind the collect-all boot gates `GRAPH-VALIDATION-RULE`/`GRAPH-VALIDATION-FIELD`/`GRAPH-RULE-UNKNOWN` (docs/19's earlier line named the token gate `GRAPH-RULE-UNKNOWN` — corrected: the code reserves that name for unregistered custom rules); `PlatformConfig::freeze()` + `GRAPH-CONFIG-SCHEMA` + the xtask env lint + `keel env`/`config:cache`/`config:clear`/`config:show`/`cache:forget` with hash-pinned drift refusal; `CacheService` (remember + stampede single-flight, atomic `add`, tags, locks, counters; serde_json values — `keel-caching` gains the workspace-budgeted `serde_json`, no budget change); session remember-me (cookie `Max-Age` + bag flag, regeneration-persistent, `/auth/me`-reported) and `POST /auth/confirm` + `confirmed` middleware; `keel about`; `GRAPH-VERSION-SEMVER` + route version columns + OpenAPI `x-keel-version`; shell `caps`/`models`; the `keel profile` samply wrapper; and the Playwright smoke kit at `templates/starter-template/e2e/`. Evidence: CHANGELOG `[Unreleased]`; the validation rule battery + `validation_edge_integration`; the keel-caching recording-port suite; keel-console config/about/profile/env tests; shell `caps_and_models_introspect_grants_and_registries`; registry `graph_version_semver_gate_rejects_bad_tokens_and_segment_mismatches`; the `openapi_emits_validation_constraints_and_deprecation` `x-keel-version` asserts; 1023 workspace tests with dep-rules + clippy clean; publish dry-run count=61 deferred=58. Deferred honestly: the web-plane password-confirm redirect was not implemented (both planes answer the 403 envelope — same precedent as `verified`); remember-me is cookie-`Max-Age` only (server-side idle/absolute session bounds unchanged); the Playwright kit executes out-of-band on external tooling (npm + browsers — not a workspace gate) and the profiling record runs only where samply is installed (the absent-samply path is unit-proven); no dedicated live-pg `unique`/`exists` wire tests were added (B-19 stays open). The §4 rows (FormRequest, Sessions, PgSessionStore, Cookies, HTTP auth flows, Validation, Cache, Redis cache driver, Config cache, View cache), the cache function-ledger rows (get/put/add/remember/rememberForever/forever/forget/flush/increment/decrement/pull/many/putMany/getMultiple/lock/forceRelease), the Auth/Session function-ledger rows (every row except `session forget` + `token revoke`, which stay conservative), the §11 CLI rows (about, env, cache:forget, config:cache/clear/show, tinker, serve), the §22 parity-gate annotations (Requests/FormRequest, Sessions, Cookies, Validation, Artisan/CLI, Cache) and backlog B-27/B-28/B-29 are flipped accordingly.
 
+Wave 5 completion entry (2026-09-30): Wave 5 — Command & generator surface is DONE per `19-PARITY-PROGRAM.md`: the optimize pair (`keel optimize` warms route/config/view artifacts in order, aborting at the first refusal; `keel optimize:clear` drops all three attempting every step); the migration family (`migrate:rollback [--step n]` over revertible `NNN.up.sql`/`NNN.down.sql` pairs in batches newest-first + reverse filename order with `keel_migrations` bookkeeping, `migrate:reset`/`migrate:refresh [--step n]` behind the dev/test-only destructive window, `migrate:install`, forward-only singles explicitly skipped); the advisory lock (`pg_advisory_lock(7259)` before any run, fail-closed on timeout — concurrent migrators serialize); `keel db:show` + `keel db:schema:dump` (normalized DDL snapshot to `database/schema.sql`, empty-schema marker); the queue admin surface (`queue:clear` dev/test-gated + `KEEL_FORCE`, `queue:flush` unbounded dead-job purge, `queue:forget`, `queue:monitor` depth/age render, `queue:prune-failed --hours 168`, `queue:prune-batches --hours 72`, `queue:restart` signal file + worker start-time race, `queue:listen` supervisor with crash-loop backoff, `queue:retry-batch` id-validated fail-closed, `queue:failed`/`queue:retry` left honest); `keel storage:link [--force]` (refuses overwrite, never deletes a real directory); `keel test [--pg]` cargo-test wrapper with PASS/FAIL tally + `DATABASE_URL` fail-closed; `keel call <name> [json] [--principal] [--tenant]` console routes through the CommandBus under the same policy engine as HTTP; the schedule daemon (`schedule:work [--every n]` ticking durable jobs + persisted state, `schedule:test` pure dry run) over the deliberately empty `schedule_registry()` seam; and codegen 15 → 27 kinds (cast, channel, component, exception, mail, notification, observer, rule, scope, job-middleware, middleware, view) with per-kind substitution/placeholder-free tests + real-platform-surface needle asserts. Evidence: CHANGELOG `[Unreleased]`; `migrate_pair_commands_parse_with_documented_defaults`, `rollback_order_walks_batches_newest_first_in_reverse_filename_order`, `migration_lock_key_matches_the_program_spec`, `db_show_renders_server_metadata_and_inventory`, `schema_dump_renders_normalized_sorted_ddl`, `queue_admin_commands_parse_with_documented_defaults`, `queue_monitor_renders_depth_and_oldest_age`, `admin_maintenance_purges_prunes_and_snapshots` (jobs), `restart_signal_is_ignored_when_older_than_the_worker_start` (jobs), `storage_link_*` (4 tests), `test_result_lines_parse_pass_and_fail`, `call_command_parses_with_documented_flags` + `call_pre_flight_resolves_routes_payloads_and_env_gate` (console) + `console_route_dispatch_enforces_capability_checks` + `operator_resolution_picks_first_active_and_rejects_unknown_explicit` + `tenant_resolution_falls_back_to_the_dev_tenant` (keel-api), `schedule_tick_fires_due_items_and_persists_state` + `schedule_commands_exit_cleanly_when_nothing_is_registered` + `schedule_test_plan_is_pure_and_skips_disabled`, `wave5_adds_twelve_generator_kinds` + `wave5_templates_reference_real_platform_surface`, and the pg-gated `pair_migrations_apply_rollback_and_reset_with_batches` + `advisory_lock_serializes_runs_and_fails_closed_on_timeout` (DATABASE_URL-gated, skipped in the default matrix — B-19 stays open); 1058 workspace tests with dep-rules + clippy clean; publish dry-run count=61 deferred=58. Deferred honestly: the batch ledger is in-memory only, so `queue:prune-batches` reports an honest empty run and `queue:retry-batch` fails closed (new backlog B-32); there is no admin-role model, so `keel call`'s default operator is the first active principal — dev/test-only, explicit `--principal` is the production path (new backlog B-33); production tenant resolution has no fallback at all (the dev/test default tenant is dev/test-only — production requires `--tenant`); `keel call` runs pre-flight only and skips the HTTP edge-stage validation layer (routes are pre-validated at boot); `schedule:list`/`schedule:run` remain `schedule_info` information stubs over the empty registry (module schedules land Wave 6); mail/notification templates are standalone definitions that document their Wave 6 landing; `keel dev` remains the one gate-pending CLI placeholder; `queue:failed`/`queue:retry` keep UNKNOWN (Wave 2 implementation, no locked test); pg-gated tests skip without `DATABASE_URL` (B-19). The §11 CLI rows (optimize, optimize:clear, clear-compiled, db:show, schema:dump, test, the make:* rows for the 12 new kinds, the migrate family, the queue admin rows, schedule:list/run/test/work, storage:link), the §4 queue:restart row, the §2 stale factory row and this backlog (B-32, B-33) are flipped accordingly.
+
 | ID | Domain | Feature | Status | Priority | Evidence | Dependencies | Complexity | Risk | Reason | Acceptance criteria |
 |---|---|---|---|---|---|---|---|---|---|---|
 | B-21 | Auth | OAuth2 authorization-server module (Passport-class): authorization code + PKCE, refresh tokens, client registry, revocation; ships as a module, never core; PAT + session stays the default | MISSING (add-on) | P2 | sec.22 Passport row; runtime/keel-api/src/auth_routes.rs; crates/security/tokens | v1.0 stable; module ABI gate | High | High (security surface) | third-party API integration; parity commitment | Module registers via ABI gate; code+PKCE/refresh/revocation flows HTTP-tested; zero-new-dep build on existing crypto (sha2/argon2/SignedUrls pattern) or recorded D-62 amendment; 06-SECURITY + 16-MIGRATION updated |
@@ -1767,6 +1772,8 @@ Wave 4 completion entry (2026-09-30): Wave 4 — Validation expansion + config +
 | B-29 | DX | keel shell (Tinker-class): typed interactive console over the app graph/stores under the caller principal | DONE v1.1 (`keel shell` spawns `keel-api --shell` per dep-rules topology; REPL over the production boot: login (argon2, same as POST /auth/login), whoami, ops, routes, run <module.operation> [json] through the CommandBus under the caller principal; capability denial enforced by the policy engine and tested (denied run writes nothing); prod refused unless KEEL_SHELL_ALLOW=1; Wave 4 adds `caps` (declared catalog + session grants) and `models` (binding/probe registries) — test `caps_and_models_introspect_grants_and_registries`) | P3 | sec.19 B-16 | model runtime (S8) | Medium | Low | exploration/ops developer experience | REPL executes operations through the engine under a principal; capability denial enforced and tested |
 | B-30 | Ecosystem | WASM plugin runtime decision gate (v2.0): sandboxed third-party modules over the capability ABI | DEFERRED (DoD v2.0 row; D-69) | P3 (decision) | DoD v2.0; D-69 roadmap | B-24; scope + budget decision | Very High | High | sandboxed third-party code without native compilation | decision doc first; if adopted: minimal wasm host passes G07 and the capability ABI; budget amendment recorded |
 | B-31 | Data | Multi-database driver decision gate (v2.0): second first-class driver behind the existing store ports | DELIBERATELY EXCLUDED v1 (D-62); DoD v2.0 roadmap | P3 (decision) | D-62; DoD v2.0 | D-62 amendment | Very High | High | ecosystem expansion | decision doc first; if adopted: second driver passes the full store matrix (CRUD/tenant/transactions); migrations remain SQL-first |
+| B-32 | Async/Queues | Durable batch ledger: persist batch records (members, per-item state, terminal outcome) in the job store so batch status/cancel/retry and `queue:retry-batch` can operate; today BatchRuntime is in-memory, so `queue:prune-batches` reports an honest empty run and `queue:retry-batch` fails closed | MISSING (Wave 5 recorded the honest fail-closed posture) | P2 | Wave 5 delivery note; docs/19 Wave 6 "Batch API operations" (batch.status/cancel/retry); main.rs `queue_retry_batch`/`queue_prune_batches` | none (zero-new-dep: existing job store + `keel_migrations`-style bookkeeping pattern) | Medium | Medium | batch parity without a persistence story | batch rows durable across restarts; `queue:retry-batch` requeues failed members; prune ages records; pg-gated round trip |
+| B-33 | Auth | Admin-role model: an explicit operator/admin role for the default principal; today `keel call` falls back to the first active principal (dev/test only) and production requires an explicit `--principal` | MISSING (Wave 5 shipped the dev/test first-active default with the honest posture) | P2 | Wave 5 delivery note; runtime/keel-api/src/call.rs `operator_resolution_picks_first_active_and_rejects_unknown_explicit` | B-21-class role model groundwork; module principal registry | Medium | Medium | production CLIs/scripts need a named operator, not a scan order | role-resolved operator; dev/test default documented; prod refuses to guess; tests + 06/12 docs updated |
 
 ### 26.1 Sequencing proposal
 
@@ -1785,7 +1792,8 @@ Wave 4 completion entry (2026-09-30): Wave 4 — Validation expansion + config +
 
 - D-62 as of v1.0: exhausted (cap 25; final slot spent on the S10 redis client).
 - Zero-new-dep items: B-22 HS256 (sha2), B-23/B-21 (existing crypto + token patterns),
-  B-27 (out-of-process samply), B-28 (out-of-process Playwright), B-29 (pure Rust).
+  B-27 (out-of-process samply), B-28 (out-of-process Playwright), B-29 (pure Rust),
+  B-32 (job-store bookkeeping pattern), B-33 (role model over existing principals).
 - Decision-gated candidates requiring amendment or removal if adopted: RS256 JWT (promote
   transitive ring to direct), any template engine (B-26), wasm runtime (B-30), second database
   driver (B-31).

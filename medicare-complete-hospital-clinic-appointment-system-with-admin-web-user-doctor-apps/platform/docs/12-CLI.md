@@ -31,15 +31,20 @@ against the same workspace/config the runtime uses.
 | `keel new [name] [--plane] [--with-starter]` | new project from the template (compiles immediately); `--with-starter` uses the SPA-first starter: auth-wired module + web shell (S9) |
 | `keel make:module <name> [--plane]` | scaffold a domain module |
 | `keel make:migration <name>` | timestamped migration file |
-| `keel make <kind> <name> --module <m>` | migration/seeder/factory/job/event/listener/command/query/policy/workflow/model/test/resource/request/controller |
+| `keel make <kind> <name> --module <m>` | migration/seeder/factory/job/event/listener/command/query/policy/workflow/model/test/resource/request/controller + Wave 5's cast/channel/component/exception/mail/notification/observer/rule/scope/job-middleware/middleware/view (27 kinds; kind discoverable via `GENERATOR_KINDS`, loop-tested for substitution + placeholder-free content) |
 
 ## Database
 
 | Command | Purpose |
 |---|---|
-| `keel migrate` / `migrate:status` / `migrate:fresh` | apply / report / drop+recreate (dev-test) |
+| `keel migrate` / `migrate:status` / `migrate:fresh` | apply (advisory-lock guarded: `pg_advisory_lock(7259)` acquired before any run, fail-closed on timeout — concurrent runs serialize) / report (incl. `keel_migrations` pair bookkeeping) / drop+recreate (dev-test) (Wave 3/5) |
+| `keel migrate:rollback [--step n]` | revert the last `n` batches (default 1) in reverse filename order — pair migrations only; forward-only single-file migrations are not revertible (documented divergence) (Wave 5) |
+| `keel migrate:reset` / `migrate:refresh [--step n]` | revert everything / rollback `n` batches then re-apply pending (both dev/test-only: the destructive window refuses production) (Wave 5) |
+| `keel migrate:install` | create the `keel_migrations` bookkeeping table without running any files (Wave 5) |
 | `keel seed [--only a,b]` | idempotent seeders |
 | `keel db:inspect` | tables + row counts |
+| `keel db:show` | driver, server version, database + the `db:inspect` table/row inventory (Wave 5) |
+| `keel db:schema:dump` | normalized DDL snapshot of the migrated schema → `database/schema.sql` (review artifact; never executed by `migrate`) (Wave 5) |
 | `keel model:prune [--chunk n] [--tenant <uuid>]` | sweep prunable models in chunked passes (1..=200); untenanted by default — passes the tenant only with `--tenant` (Wave 3) |
 
 ## Operations
@@ -50,7 +55,20 @@ against the same workspace/config the runtime uses.
 | `keel job:list [--status s] [--limit n]` | job inventory |
 | `keel queue:work [--once]` | run the worker |
 | `keel queue:failed` / `queue:retry <id>` | dead-letter triage |
-| `keel schedule:list` / `schedule:run` | schedules |
+| `keel queue:clear` | purge every pending job — refuses prod/staging (like `migrate:fresh`) and prompts unless `KEEL_FORCE=1` (Wave 5) |
+| `keel queue:flush` | delete every dead job (`flush_cutoff()` = unbounded; `queue:prune-failed` is the age-bounded variant) (Wave 5) |
+| `keel queue:forget <id>` | delete one dead job (unknown id or non-dead job = refusal) (Wave 5) |
+| `keel queue:monitor` | one-shot queue depth report: pending (+ oldest age), running, dead, succeeded counts (pure render, unit-tested) (Wave 5) |
+| `keel queue:prune-failed [--hours n]` (default 168) | delete dead jobs older than the cutoff (Wave 5) |
+| `keel queue:prune-batches [--hours n]` (default 72) | prune terminal batch records — honest empty run today: the batch ledger is in-memory only (B-32), output states exactly what happened (Wave 5) |
+| `keel queue:restart` | write the restart-signal file: workers that observe a signal newer than their start stop after the current job, supervisors respawn them (Wave 5) |
+| `keel queue:listen` | spawn + supervise `keel-worker`: respawn on every exit with a crash-loop backoff (≥2s runs restart immediately, faster runs back off 1s) (Wave 5) |
+| `keel queue:retry-batch <id>` | requeue every failed member of a batch — fails closed: batch membership is unresolvable without a persisted ledger (B-32); the id is validated so the wire contract holds (Wave 5) |
+| `keel schedule:list` / `schedule:run` | schedules (information stubs over the `schedule_registry` seam: they report the registry's empty posture until module schedules land — Wave 6) |
+| `keel schedule:work [--every n]` (default 60s) | schedule daemon: tick loop over the registry, persists tick state, fires due items (Wave 5) |
+| `keel schedule:test` | dry-run the schedule registry: prints registered vs due-now (pure — nothing fires, nothing is written; disabled entries would show registered but never due) (Wave 5) |
+| `keel storage:link [--force]` | create the public/storage → storage/local symlink (refuses to overwrite without `--force`; `--force` replaces a link or file — a real directory at the path is never deleted automatically) (Wave 5) |
+| `keel call <name> [json] [--principal <uuid>] [--tenant <uuid>]` | dispatch one module operation through the CLI console route: pre-flights against `routes/console.toml` (resolve by name, list on miss), enforces the dev/test-only default operator (explicit `--principal` is the production path — B-33), resolves the tenant (explicit `--tenant` UUID, else the dev/test fallback tenant — absent outside dev/test, so it must be passed), then spawns `keel-api --call` which runs the CommandBus with the same policy engine as HTTP (Wave 5; the HTTP edge-stage validation/middleware layer is not re-run — routes are pre-validated at boot) |
 | `keel key:generate` | new application key into config |
 | `keel config:dump` | effective config, secrets redacted |
 | `keel config:cache` / `keel config:clear` | pin the frozen effective config to `storage/framework/config.json` + content hash / drop it; boot hash-check refuses drift (Wave 4) |
@@ -59,6 +77,8 @@ against the same workspace/config the runtime uses.
 | `keel shell` | interactive platform console (v1.1 B-29): REPL over the booted engine — login/whoami/ops/routes/caps/models/run under your principal (Wave 4 adds `caps` + `models`) |
 | `keel cache:clear` | clear the app cache |
 | `keel cache:forget <key>` | remove one cache key (Wave 4) |
+| `keel optimize` | warm all three boot-pinning artifacts in order — route:cache → config:cache → view:cache; aborts at the first refusal (graph gate / config / views) (Wave 5) |
+| `keel optimize:clear` | drop route + config + view artifacts; every step is attempted (a clear never leaves one cache behind because another delete failed), first error reported afterwards (Wave 5) |
 | `keel view:cache` / `keel view:clear` | precompile every template under `[views].paths` into `[views].cache_dir` (mtime + content hash) / drop the compiled view artifacts; boot recompiles on demand (Wave 2 views engine) |
 | `keel flag:list` / `flag:set <name> <stage> [--tenant id]` | feature flag rollout |
 
@@ -74,6 +94,7 @@ against the same workspace/config the runtime uses.
 | `keel about` | Laravel-style environment report: framework/app version, env, debug, DB driver + server version (best-effort `SELECT version()`), cache/queue/session drivers, flag snapshot, graph module/route/operation counts, dep-budget state (Wave 4) |
 | `keel env` | environment summary: the config file the layering resolved, redacted key facts, config-cache pin state (Wave 4) |
 | `keel profile <api\|worker>` | B-27 profiling wrapper: builds the package, then `samply record target/debug/<bin>` when samply is installed; a missing samply fails closed with `cargo install samply` + the docs/13 workflow (Wave 4) |
+| `keel test [--pg]` | run `cargo test --workspace --locked` from the workspace root, streaming lines and tallying suite/test results into a final `PASS`/`FAIL` verdict; `--pg` adds `--features pg-tests` and fails closed without `DATABASE_URL` (Wave 5) |
 
 ## Telemetry (Sentinel)
 
@@ -108,7 +129,8 @@ The same incident plane is also exposed over HTTP to session-authenticated opera
 | `keel mcp:tools [--format table\|json]` | MCP tool manifest generated from the platform graph |
 | `keel sdk:openapi [--output file]` | OpenAPI 3.1 document from module routes (SDK generation) |
 
-`keel dev` and `keel test` are gate-pending placeholders reserved for their milestones.
+`keel dev` remains the one gate-pending placeholder (production serve posture); `keel test` is
+implemented as of Wave 5 (see Diagnostics and quality).
 
 
 Note (S7): sessions are opt-in — enable with `keel flag:set app.sessions 100` before serving browser logins.

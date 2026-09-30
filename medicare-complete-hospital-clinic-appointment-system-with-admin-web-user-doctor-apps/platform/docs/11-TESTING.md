@@ -45,6 +45,17 @@ violations. These are regressions gates, not style checks.
 idempotent replay, denial writes nothing). `examples/reference` extends it across the full module
 surface. Both run in CI (G09).
 
+## `keel test` (Wave 5)
+
+`keel test [--pg]` runs `cargo test --workspace --locked` from the workspace root, streams the
+lines, and tallies every `test result:` line into a final `PASS`/`FAIL` verdict with suite and
+test counts — the same tally the parity gates report. `--pg` adds `--features pg-tests` (the
+pg-gated matrix: migration pairs apply/rollback/reset round trip, advisory-lock contention,
+modelstore CRUD/tenant isolation, sessions/tokens, pgvector search) and fails closed with a
+`DATABASE_URL` pointer when the compose database is not configured — so `keel test` alone stays
+hermetic, `keel test --pg` is the full local matrix (backlog B-19 keeps the pg matrix out of the
+shared CI).
+
 ## Playwright smoke kit (B-28)
 
 `templates/starter-template/e2e/` ships a browser smoke kit with its own `package.json`
