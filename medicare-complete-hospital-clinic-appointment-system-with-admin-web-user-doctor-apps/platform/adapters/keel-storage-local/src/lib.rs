@@ -145,6 +145,32 @@ impl StoragePort for LocalDisk {
             "local disk does not support presigned URLs (use an S3-compatible adapter)",
         ))
     }
+
+    /// Wave 6 P1: capped read that stops early — at most `max_bytes + 1`
+    /// bytes are pulled from disk even when the object is far larger, then
+    /// `CAP_LIMIT_EXCEEDED` is raised (no silent truncation).
+    fn get_capped(&self, obj: &ObjectRef, max_bytes: u64) -> Result<Vec<u8>, AppError> {
+        use std::io::Read;
+        let path = self.resolve(&obj.bucket, &obj.key)?;
+        let file = std::fs::File::open(&path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                AppError::not_found(format!("{}/{}", obj.bucket, obj.key))
+            } else {
+                AppError::persistence(format!("cannot read {}: {e}", path.display()))
+            }
+        })?;
+        let mut buf = Vec::new();
+        file.take(max_bytes.saturating_add(1))
+            .read_to_end(&mut buf)
+            .map_err(|e| AppError::persistence(format!("cannot read {}: {e}", path.display())))?;
+        if buf.len() as u64 > max_bytes {
+            return Err(AppError::cap_limit(format!(
+                "{}/{} exceeds the {max_bytes} byte cap",
+                obj.bucket, obj.key
+            )));
+        }
+        Ok(buf)
+    }
 }
 
 #[cfg(test)]
@@ -223,6 +249,24 @@ mod tests {
             key: "x.txt".into(),
         };
         assert!(disk.presigned_url(&obj, 60).is_err());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Wave 6 P1: `get_capped` streams under the cap and refuses over the cap
+    /// with `CAP_LIMIT_EXCEEDED` (missing objects stay `NOT_FOUND`).
+    #[test]
+    fn get_capped_enforces_the_byte_cap() {
+        let (disk, dir) = disk();
+        let obj = disk.put("docs", "big.bin", vec![9u8; 4096]).unwrap();
+        assert_eq!(disk.get_capped(&obj, 4096).unwrap().len(), 4096);
+        let over = disk.get_capped(&obj, 100).unwrap_err();
+        assert_eq!(over.code, keel_foundation::codes::CAP_LIMIT);
+        let missing = ObjectRef {
+            bucket: "docs".into(),
+            key: "nope.bin".into(),
+        };
+        let err = disk.get_capped(&missing, 100).unwrap_err();
+        assert_eq!(err.code, keel_foundation::codes::NOT_FOUND);
         std::fs::remove_dir_all(dir).ok();
     }
 }

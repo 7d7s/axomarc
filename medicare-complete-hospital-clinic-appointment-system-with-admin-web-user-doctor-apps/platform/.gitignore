@@ -2,5 +2,7 @@
 **/*.rs.bk
 .env
 docker-data/
-storage/
+# runtime storage dir (storage/framework/...) — anchored so the
+# `crates/services/storage` crate stays under version control.
+/storage/
 *.log

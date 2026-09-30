@@ -262,6 +262,7 @@ Landed in earlier stages (S7–S10, v0.9 hardening, v1.1) and therefore out of s
 - `Mailable` abstraction: subject, from/reply-to, cc/bcc, text + html bodies (view-rendered), attachments from StoragePort objects (streamed, size-capped by the upload limits), headers.
 - Queued sends via the job registry (`mail.send` job type); failure → retry/backoff per the job policy, then dead-letter.
 - `[mail.mailers.<name>]` config: `{ transport = "smtp"|"log", host, port, ... }` with failover-chain selection (`mail.default` names the chain; first healthy transport wins, health = connection probe with timeout).
+  - **Delivery note (P1):** `Mailable` + capped `resolve_attachments` (refs-only payloads, upload-limit cap) + `MailPort::send_mailable`; `[mail]` config (schema map for level-3 keys, password redaction, `deny_unknown_fields`); `MailChain` failover probe; `mail.send` def + `MailSendHandler` + `enqueue_mailable` registered by keel-worker (storage `None` until P2 — attachment mail fails explicitly). Body-supplied-by-caller for now: view-rendered notification templates + producer dispatch land with P5/P6.
 
 **Storage disks (`crates/services/storage`)**
 - `[storage.disks.<name>] { driver = "local"|"s3", root|bucket, visibility = "public"|"private", url }` config; disk registry resolves a named disk to a StoragePort adapter instance at boot; unknown driver → boot-refusing config error.

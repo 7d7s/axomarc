@@ -8,6 +8,7 @@ pub mod keys;
 
 use keel_foundation::AppError;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -227,6 +228,81 @@ pub struct HttpSection {
     pub encrypt_cookies: bool,
 }
 
+/// Mail section (Wave 6 P1, `[mail]`): named mailers plus the default
+/// failover chain. Plain data like [`ViewsSection`] — the adapter class may
+/// not depend on application config, so keel-worker converts this into
+/// `keel_mail_smtp::MailerSpec`s at boot (unknown chain member → boot error).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MailSection {
+    /// Comma-separated ordered mailer names; the first healthy transport
+    /// wins. `log` is built in and needs no `[mail.mailers]` entry.
+    #[serde(default = "default_mail_chain")]
+    pub default: String,
+    /// Named mailers (`[mail.mailers.<name>]`).
+    #[serde(default)]
+    pub mailers: BTreeMap<String, MailerConfig>,
+}
+
+fn default_mail_chain() -> String {
+    "log".into()
+}
+
+impl Default for MailSection {
+    fn default() -> Self {
+        Self {
+            default: default_mail_chain(),
+            mailers: BTreeMap::new(),
+        }
+    }
+}
+
+/// Transport of one mailer: `log` records the mail (dev/test, degraded
+/// default), `smtp` delivers via lettre. Unknown values fail the typed parse,
+/// so a typo refuses boot instead of silently logging production mail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MailerTransport {
+    Log,
+    Smtp,
+}
+
+/// One `[mail.mailers.<name>]` entry. `deny_unknown_fields` closes the
+/// level-3 gap the 2-level schema walk cannot reach, so a typo like `passwd`
+/// is refused instead of silently dropping the credential.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MailerConfig {
+    #[serde(default = "default_mailer_transport")]
+    pub transport: MailerTransport,
+    /// SMTP host (required for `transport = "smtp"` — validated at boot).
+    #[serde(default)]
+    pub host: String,
+    #[serde(default = "default_smtp_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub username: String,
+    /// SMTP password — masked by `redacted_json` (`keel config:show`).
+    #[serde(default)]
+    pub password: String,
+    /// Default sender (`Keel <no-reply@example.com>`); a Mailable's own
+    /// `from` wins when present.
+    #[serde(default)]
+    pub from: String,
+    /// Health-probe timeout used by failover selection.
+    #[serde(default = "default_mailer_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+fn default_mailer_transport() -> MailerTransport {
+    MailerTransport::Log
+}
+fn default_smtp_port() -> u16 {
+    587
+}
+fn default_mailer_timeout_ms() -> u64 {
+    2000
+}
+
 /// Root platform configuration (all sections optional in file; filled from defaults).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PlatformConfig {
@@ -255,6 +331,9 @@ pub struct PlatformConfig {
     /// switches.
     #[serde(default)]
     pub http: HttpSection,
+    /// Mail section (Wave 6 P1): named mailers + default failover chain.
+    #[serde(default)]
+    pub mail: MailSection,
 }
 
 /// Wave 4 Phase 5 (docs/19 L210): the declared config schema — the keys the
@@ -278,11 +357,31 @@ pub const CONFIG_SCHEMA: &[(&str, &[&str])] = &[
     ("database", &["url", "max_connections", "run_migrations", "required"]),
     ("http", &["problem_json", "encrypt_cookies"]),
     ("limits", &["default_monthly_operations"]),
+    ("mail", &["default", "mailers"]),
     ("otp", &["provider", "code_ttl_secs", "max_attempts"]),
     ("storage", &["endpoint", "bucket"]),
     ("telemetry", &[]),
     ("views", &["paths", "cache_dir", "env"]),
 ];
+
+/// Level-3 declarations: (section, level-2 key) → allowed inner keys, for
+/// level-2 keys that map to *named* tables (`[mail.mailers.<name>]`, Wave 6
+/// P1; `[storage.disks.<name>]` reuses this in Wave 6 P2). The level-2 walk
+/// in [`schema_violations`] cannot see inside these — this closes that gap
+/// with the same collect-all `GRAPH-CONFIG-SCHEMA` reporting.
+pub const CONFIG_SCHEMA_MAPS: &[(&str, &str, &[&str])] = &[(
+    "mail",
+    "mailers",
+    &[
+        "transport",
+        "host",
+        "port",
+        "username",
+        "password",
+        "from",
+        "timeout_ms",
+    ],
+)];
 
 /// Sections whose inner keys are validated elsewhere: `telemetry` is an
 /// opaque JSON pass-through (see `PlatformConfig::telemetry`) — the
@@ -330,6 +429,28 @@ pub fn schema_violations(raw: &str) -> Vec<ConfigSchemaViolation> {
                     out.push(ConfigSchemaViolation {
                         key: format!("{key}.{subkey}"),
                     });
+                }
+            }
+            // Level-3: keys inside named tables declared in
+            // CONFIG_SCHEMA_MAPS (`mail.mailers.<name>.*`).
+            for (map_section, map_key, allowed) in CONFIG_SCHEMA_MAPS {
+                if *map_section != key.as_str() {
+                    continue;
+                }
+                let Some(named) = section.get(*map_key).and_then(|v| v.as_table()) else {
+                    continue;
+                };
+                for (name, map_entry) in named {
+                    let Some(inner) = map_entry.as_table() else {
+                        continue;
+                    };
+                    for inner_key in inner.keys() {
+                        if !allowed.contains(&inner_key.as_str()) {
+                            out.push(ConfigSchemaViolation {
+                                key: format!("{key}.{map_key}.{name}.{inner_key}"),
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -463,6 +584,12 @@ impl PlatformConfig {
         if let Some(db) = masked.database.as_mut() {
             db.url = mask_url_password(&db.url);
         }
+        // Wave 6 P1: SMTP credentials never render (config:show / config:dump).
+        for mailer in masked.mail.mailers.values_mut() {
+            if !mailer.password.is_empty() {
+                mailer.password = "[REDACTED]".into();
+            }
+        }
         serde_json::to_value(&masked).unwrap_or_default()
     }
 
@@ -521,6 +648,10 @@ impl FrozenConfig {
 
     pub fn http(&self) -> &HttpSection {
         &self.0.http
+    }
+
+    pub fn mail(&self) -> &MailSection {
+        &self.0.mail
     }
 
     pub fn database_url(&self) -> Option<&str> {
@@ -799,7 +930,7 @@ mod phase5_config_schema_tests {
             required: false,
         })
         .expect("database serializes");
-        let sections: [(&str, serde_json::Value); 8] = [
+        let sections: [(&str, serde_json::Value); 9] = [
             (
                 "app",
                 serde_json::to_value(AppConfig::default()).expect("app"),
@@ -816,6 +947,10 @@ mod phase5_config_schema_tests {
             (
                 "limits",
                 serde_json::to_value(LimitsConfig::default()).expect("limits"),
+            ),
+            (
+                "mail",
+                serde_json::to_value(MailSection::default()).expect("mail"),
             ),
             (
                 "otp",
@@ -842,6 +977,115 @@ mod phase5_config_schema_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod wave6_mail_config_tests {
+    use super::*;
+
+    /// Wave 6 P1 (GRAPH-CONFIG-SCHEMA): the `[mail]` section is declared at
+    /// level 2 and inside each named mailer at level 3 (collect-all report).
+    #[test]
+    fn mail_keys_are_declared_at_both_levels() {
+        // Declared keys report clean, including the built-in chain default.
+        let raw = r#"
+        [mail]
+        default = "smtp,log"
+        [mail.mailers.smtp]
+        transport = "smtp"
+        host = "smtp.example.com"
+        port = 587
+        username = "no-reply"
+        password = "secret"
+        from = "Keel <no-reply@example.com>"
+        timeout_ms = 1500
+        "#;
+        assert_eq!(schema_violations(raw), Vec::new());
+
+        // Level-2 typo.
+        let raw = "[mail]\nwtl = 1\n";
+        assert_eq!(schema_violations(raw)[0].key, "mail.wtl");
+
+        // Level-3 typo inside a named mailer (the CONFIG_SCHEMA_MAPS walk).
+        let raw = "[mail.mailers.smtp]\npasword = \"x\"\n";
+        assert_eq!(schema_violations(raw)[0].key, "mail.mailers.smtp.pasword");
+
+        // Unknown root section still reports.
+        let raw = "[mailer]\nhost = \"x\"\n";
+        assert_eq!(schema_violations(raw)[0].key, "mailer");
+    }
+
+    /// The typed parse is the second fail-closed layer for level 3:
+    /// `deny_unknown_fields` refuses a config the walk could not see, and a
+    /// well-formed section loads with every default filled in.
+    #[test]
+    fn typed_parse_refuses_unknown_mailer_fields_and_fills_defaults() {
+        let err = toml::from_str::<PlatformConfig>("[mail.mailers.log]\nnonsense = true\n")
+            .expect_err("unknown mailer field refuses the parse");
+        assert!(err.to_string().contains("nonsense"), "{err}");
+
+        let cfg: PlatformConfig = toml::from_str(
+            r#"
+            [mail]
+            default = "smtp,log"
+            [mail.mailers.smtp]
+            transport = "smtp"
+            host = "smtp.example.com"
+            "#,
+        )
+        .expect("valid mail section loads");
+        assert_eq!(cfg.mail.default, "smtp,log");
+        let smtp = &cfg.mail.mailers["smtp"];
+        assert_eq!(smtp.transport, MailerTransport::Smtp);
+        assert_eq!(smtp.port, 587); // default
+        assert_eq!(smtp.timeout_ms, 2000); // default
+        assert!(smtp.password.is_empty());
+
+        // Default section: built-in `log` chain, no mailers declared.
+        let cfg = PlatformConfig::default();
+        assert_eq!(cfg.mail.default, "log");
+        assert!(cfg.mail.mailers.is_empty());
+        assert_eq!(cfg.freeze().mail().default, "log");
+    }
+
+    /// A misspelled transport value fails the typed parse — production mail
+    /// can never silently fall through to the recording transport.
+    #[test]
+    fn unknown_transport_value_refuses_the_parse() {
+        let err = toml::from_str::<PlatformConfig>(
+            "[mail.mailers.primary]\ntransport = \"stmp\"\nhost = \"h\"\n",
+        )
+        .expect_err("bad transport refuses the parse");
+        assert!(err.to_string().contains("stmp"), "{err}");
+    }
+
+    /// SMTP credentials are masked in the redacted view while the live config
+    /// keeps the real value (the pattern app.key / jwt_secret already follow).
+    #[test]
+    fn redacted_json_masks_mailer_passwords() {
+        let mut cfg = PlatformConfig::default();
+        cfg.mail.mailers.insert(
+            "smtp".into(),
+            MailerConfig {
+                transport: MailerTransport::Smtp,
+                host: "smtp.example.com".into(),
+                port: 587,
+                username: "no-reply".into(),
+                password: "super-secret".into(),
+                from: "Keel <no-reply@example.com>".into(),
+                timeout_ms: 2000,
+            },
+        );
+        let masked = cfg.redacted_json();
+        assert_eq!(masked["mail"]["mailers"]["smtp"]["password"], "[REDACTED]");
+        assert!(
+            !masked["mail"]["mailers"]["smtp"]
+                .to_string()
+                .contains("super-secret"),
+            "raw password never rendered"
+        );
+        assert_eq!(cfg.mail.mailers["smtp"].password, "super-secret");
     }
 }
 

@@ -30,6 +30,27 @@ docker-compose). Guards enforce size/type policies.
 `services/notifications` is a hub: mail (sandbox in dev, SMTP live via lettre), SMS (MSG91), push
 (FCM). Channels are providers behind one contract; templates and dispatch are audited.
 
+Mail gains the Wave 6 `Mailable` path (P1): subject, from/reply-to, to/cc/bcc, text + html
+bodies, custom RFC822 headers, and attachments that carry only an `ObjectRef` — never bytes.
+`resolve_attachments` streams them through `StoragePort::get_capped` under the upload cap
+(8 MiB, pinned to `UploadLimits` by a keel-api test; over-cap is `CAP_LIMIT_EXCEEDED`, never a
+truncation, and `LocalDisk` stops reading at `max_bytes + 1`). The `[mail]` section declares
+the failover chain: `mail.default` is a comma-separated mailer list (`log` is built in and
+needs no declaration), `[mail.mailers.<name>]` sets `transport = "log"|"smtp"` +
+host/port/username/password/from/`timeout_ms`. An unknown chain member, a duplicate name, an
+empty chain, or an smtp mailer without a host refuses boot; level-3 key typos are caught by the
+`CONFIG_SCHEMA_MAPS` walk plus `deny_unknown_fields`, and `redacted_json` masks every non-empty
+mailer password.
+
+`MailChain` (keel-mail-smtp) selects the first healthy transport per send — health is a TCP
+connect probe bounded by the mailer's timeout (`log` never probes) — and an all-unhealthy chain
+is a retryable external error whose detail lands in `last_error`. Queued sends ride the
+`mail.send` job: keel-worker registers the def + `MailSendHandler` at boot (storage `None`
+until the P2 disk registry, so attachment mail fails explicitly instead of dropping
+attachments), and `enqueue_mailable` validates the `Mailable` and builds the refs-only payload
+through the registered def. The durable policy owns the rest: retry with backoff, then
+dead-letter.
+
 ## Realtime
 
 `services/realtime`: BroadcastHub with SSE and WebSocket carriers. Feature-flag gated rollout;

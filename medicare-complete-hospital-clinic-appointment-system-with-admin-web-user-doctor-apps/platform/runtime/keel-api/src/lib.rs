@@ -1074,3 +1074,18 @@ mod views_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod wave6_mail_tests {
+    /// Wave 6 P1: the mail attachment cap mirrors the upload limit — both
+    /// default to 8 MiB, so any attachment the upload edge accepts is
+    /// always sendable (and a send never demands more than the edge
+    /// stores). The two constants must not drift apart.
+    #[test]
+    fn mail_attachment_cap_matches_upload_limits() {
+        assert_eq!(
+            keel_notifications::DEFAULT_MAX_ATTACHMENT_BYTES as usize,
+            keel_http::UploadLimits::default().max_file_bytes
+        );
+    }
+}

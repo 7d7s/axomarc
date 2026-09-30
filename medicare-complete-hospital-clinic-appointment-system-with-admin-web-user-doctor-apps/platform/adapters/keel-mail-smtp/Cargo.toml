@@ -11,9 +11,14 @@ description = "Keel adapter: SMTP mail (D-18). Log-and-store sandbox until wirin
 
 [dependencies]
 keel-foundation = { workspace = true }
+keel-jobs = { workspace = true }
 keel-notifications = { workspace = true }
+keel-storage = { workspace = true }
 lettre = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
 
 [package.metadata.docs.rs]
 all-features = true

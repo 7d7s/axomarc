@@ -175,6 +175,45 @@ async fn deadline_guard(
     }
 }
 
+/// Wave 6 P1: convert the `[mail]` section into the adapter's failover chain.
+/// The conversion lives in the runtime because the layer matrix forbids
+/// adapters -> application; an unknown chain member, a duplicate name, or an
+/// smtp mailer without a host refuses boot (the chain builder owns those
+/// checks, `MailChain::new`).
+fn mail_chain(section: &keel_config::MailSection) -> Result<keel_mail_smtp::MailChain, AppError> {
+    use keel_mail_smtp::{MailerSpec, TransportKind};
+    let specs = section
+        .mailers
+        .iter()
+        .map(|(name, mailer)| MailerSpec {
+            name: name.clone(),
+            transport: match mailer.transport {
+                keel_config::MailerTransport::Log => TransportKind::Log,
+                keel_config::MailerTransport::Smtp => TransportKind::Smtp,
+            },
+            host: mailer.host.clone(),
+            port: mailer.port,
+            username: mailer.username.clone(),
+            password: mailer.password.clone(),
+            from: mailer.from.clone(),
+            timeout_ms: mailer.timeout_ms,
+        })
+        .collect();
+    keel_mail_smtp::MailChain::new(&section.default, specs)
+}
+
+/// Wave 6 P1: the queued-mail job def + handler every worker boots with,
+/// built from the frozen config. Kept out of `main` so the registration
+/// surface is unit-testable. Storage is `None` until the disk registry
+/// lands (P2): a `mail.send` carrying attachments then fails explicitly at
+/// run time instead of silently dropping them.
+fn mail_job(
+    cfg: &FrozenConfig,
+) -> Result<(JobDef, keel_mail_smtp::MailSendHandler), AppError> {
+    let handler = keel_mail_smtp::MailSendHandler::new(mail_chain(cfg.mail())?, None);
+    Ok((JobDef::new(keel_mail_smtp::MAIL_SEND_JOB), handler))
+}
+
 /// One claim+dispatch pass. Returns the claimed job, if any. Batch/chain
 /// runtimes are notified on terminal outcomes (L33/L34, S3).
 async fn dispatch_once(
@@ -362,9 +401,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let batches = Arc::new(BatchRuntime::new(jobs.clone()));
     let chains = Arc::new(ChainRuntime::new(jobs.clone()));
     let schedules = Arc::new(ScheduleRegistry::new());
-    let job_defs = Arc::new(JobRegistry::new());
+    // Wave 6 P1: the queued-mail def + handler, built from `[mail]` (an
+    // unknown chain member or a malformed mailer refuses boot right here).
+    let (mail_def, mail_handler) = mail_job(&cfg)?;
     // Modules register schedules + job defs here at boot; the framework ships
-    // the runner so the first module only adds entries, not machinery.
+    // the runner so the first module only adds entries, not machinery. The
+    // def registration makes `mail.send` buildable through the registry
+    // (def-owned retry budget) for queued-send producers.
+    let mut job_defs = JobRegistry::new();
+    job_defs.register(mail_def)?;
+    let job_defs = Arc::new(job_defs);
     let scheduler = Arc::new(SchedulerRunner::new(schedules.clone()));
 
     let listeners = Arc::new(ListenerRegistry::new());
@@ -377,6 +423,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut handlers = WorkerRegistry::new();
     handlers.register(Arc::new(DemoJobHandler))?;
+    // Wave 6 P1: `mail.send` dispatch; storage stays `None` until the disk
+    // registry lands (P2), so attachment mail fails explicitly at run time.
+    handlers.register(Arc::new(mail_handler))?;
     let handlers = Arc::new(handlers);
 
     let mut host = ApplicationHost::new();
@@ -539,4 +588,97 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // within the deadline; exporters close even on timeout).
     telemetry_runtime.shutdown(std::time::Duration::from_secs(5));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use keel_config::{MailerConfig, MailerTransport, MailSection};
+
+    fn section(default: &str) -> MailSection {
+        MailSection {
+            default: default.into(),
+            ..Default::default()
+        }
+    }
+
+    fn mailer(transport: MailerTransport, host: &str) -> MailerConfig {
+        MailerConfig {
+            transport,
+            host: host.into(),
+            port: 587,
+            username: "u".into(),
+            password: "p".into(),
+            from: "Keel <no-reply@example.com>".into(),
+            timeout_ms: 750,
+        }
+    }
+
+    /// Wave 6 P1: the default config boots the mail job (built-in `log`
+    /// chain), the def carries the job-policy retry budget, and declared
+    /// mailers convert field-for-field. A log-transport mailer with no host
+    /// boots while an smtp one refuses — together proving the transport
+    /// mapping (an inverted mapping would fail one of the two halves).
+    #[test]
+    fn mail_job_boots_from_default_config_and_converts_mailers() {
+        let cfg = PlatformConfig::default().freeze();
+        let (def, handler) = mail_job(&cfg).expect("default config builds the mail job");
+        assert_eq!(def.name, keel_mail_smtp::MAIL_SEND_JOB);
+        assert_eq!(def.max_attempts, 3, "job policy owns retry/backoff/dead");
+        assert_eq!(handler.name(), keel_mail_smtp::MAIL_SEND_JOB);
+
+        let mut cfg = PlatformConfig {
+            mail: section("relay,log"),
+            ..Default::default()
+        };
+        cfg.mail
+            .mailers
+            .insert("relay".into(), mailer(MailerTransport::Log, ""));
+        let frozen = cfg.freeze();
+        let chain = mail_chain(frozen.mail()).expect("relay,log chain converts");
+        assert_eq!(chain.names().join(","), "relay,log");
+    }
+
+    /// Config errors refuse boot: unknown chain member (typo), empty chain,
+    /// and an smtp mailer without a host.
+    #[test]
+    fn mail_chain_refuses_bad_sections() {
+        let err = mail_chain(&section("primry")).expect_err("typo refuses boot");
+        assert!(
+            err.public_message.contains("unknown mailer"),
+            "{}",
+            err.public_message
+        );
+
+        let err = mail_chain(&section(" , ")).expect_err("empty chain refuses boot");
+        assert!(err.public_message.contains("empty"), "{}", err.public_message);
+
+        let mut bad = section("relay");
+        bad.mailers
+            .insert("relay".into(), mailer(MailerTransport::Smtp, ""));
+        let err = mail_chain(&bad).expect_err("smtp without host refuses boot");
+        assert!(err.public_message.contains("no host"), "{}", err.public_message);
+    }
+
+    /// The def + handler register exactly once each — the boot-time guard
+    /// both registries enforce (duplicates refuse).
+    #[test]
+    fn registries_accept_the_mail_job_once() {
+        let cfg = PlatformConfig::default().freeze();
+        let (def, handler) = mail_job(&cfg).unwrap();
+
+        let mut defs = JobRegistry::new();
+        defs.register(def).unwrap();
+        let mut handlers = WorkerRegistry::new();
+        handlers.register(Arc::new(handler)).unwrap();
+        assert_eq!(defs.names(), vec![keel_mail_smtp::MAIL_SEND_JOB]);
+        assert_eq!(handlers.names(), vec![keel_mail_smtp::MAIL_SEND_JOB]);
+
+        let (dup_def, dup_handler) = mail_job(&cfg).unwrap();
+        assert!(defs.register(dup_def).is_err(), "def refuses duplicates");
+        assert!(
+            handlers.register(Arc::new(dup_handler)).is_err(),
+            "handler refuses duplicates"
+        );
+    }
 }

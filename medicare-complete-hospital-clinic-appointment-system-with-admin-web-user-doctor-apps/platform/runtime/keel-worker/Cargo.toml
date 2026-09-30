@@ -20,6 +20,7 @@ keel-config = { workspace = true }
 keel-lifecycle = { workspace = true }
 keel-jobs = { workspace = true }
 keel-event = { workspace = true }
+keel-mail-smtp = { workspace = true }
 keel-scheduling = { workspace = true }
 keel-postgres = { workspace = true }
 keel-observability = { workspace = true }

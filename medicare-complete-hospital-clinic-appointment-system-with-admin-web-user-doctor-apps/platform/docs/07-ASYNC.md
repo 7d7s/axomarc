@@ -48,6 +48,14 @@ start time, so a signal older than the worker is ignored (test:
 batches in memory, so `queue:prune-batches` reports an honest empty run and `queue:retry-batch`
 fails closed with the per-job alternative (backlog B-32).
 
+Wave 6 P1 registers two job defs at boot: `demo.job` (smoke handler) and `mail.send` (queued
+mail — the def owns the retry budget; the handler resolves storage-capped attachments and sends
+through the first healthy `[mail]` chain transport, recording the chain detail in `last_error`
+on failure). Producers build through the registry with `keel_mail_smtp::enqueue_mailable`,
+which validates the `Mailable` and refuses an unregistered job name (tests:
+`queued_send_retries_then_dead_letters`, `enqueue_requires_registered_def_and_valid_mail`,
+`registries_accept_the_mail_job_once`).
+
 ## Batches and chains
 
 - **BatchRuntime** — many items, one durable job: per-item progress, resumable.

@@ -1579,9 +1579,14 @@ name = "keel-mail-smtp"
 version = "0.1.0"
 dependencies = [
  "keel-foundation",
+ "keel-jobs",
  "keel-notifications",
+ "keel-storage",
  "lettre",
  "serde",
+ "serde_json",
+ "time",
+ "uuid",
 ]
 
 [[package]]
@@ -1633,7 +1638,9 @@ name = "keel-notifications"
 version = "0.1.0"
 dependencies = [
  "keel-foundation",
+ "keel-storage",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1979,6 +1986,7 @@ dependencies = [
  "keel-foundation",
  "keel-jobs",
  "keel-lifecycle",
+ "keel-mail-smtp",
  "keel-observability",
  "keel-postgres",
  "keel-scheduling",
