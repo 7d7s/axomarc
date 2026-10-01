@@ -16,7 +16,7 @@
 //! base64 dependency (same posture as `application/configuration::keys` and
 //! `web::http::jwt`).
 
-use keel_foundation::{AppError, Envelope, Sealer, Secret};
+use keel_foundation::{in_tz, timezone_offset_secs, AppError, Envelope, Sealer, Secret};
 use serde_json::Value as Json;
 use std::sync::Arc;
 
@@ -39,7 +39,12 @@ pub trait Cast: Send + Sync {
 // ------------------------------------------------------------- built-ins
 
 struct DateCast;
-struct DatetimeCast;
+struct DatetimeCast {
+    /// Wave 8 P2 (docs/19): optional IANA zone — reads localize the stored
+    /// UTC instant to the declared zone's wall clock (the timezone helper
+    /// feeding model casts); bare `datetime` stays UTC pass-through.
+    tz: Option<String>,
+}
 struct JsonCast;
 struct ArrayCast;
 struct HashedCast;
@@ -122,13 +127,34 @@ impl Cast for DatetimeCast {
     fn to_db(&self, wire: &Json) -> Result<Json, AppError> {
         let raw = require_string(wire, "datetime cast")?;
         let dt = parse_timestamp(raw)?;
+        // The zoned variant stores a UTC instant: normalize the arrival
+        // offset to `Z` (the bare cast's offset-preserving write is
+        // unchanged — non-regression).
+        let dt = if self.tz.is_some() {
+            dt.to_offset(time::UtcOffset::UTC)
+        } else {
+            dt
+        };
         dt.format(&time::format_description::well_known::Rfc3339)
             .map(Json::String)
             .map_err(|e| AppError::validation(format!("timestamp {raw:?} is not canonical: {e}")))
     }
 
     fn from_db(&self, stored: &Json) -> Result<Json, AppError> {
-        Ok(stored.clone())
+        let Some(tz) = self.tz.as_deref() else {
+            return Ok(stored.clone());
+        };
+        let raw = require_string(stored, "datetime cast")?;
+        let dt = parse_timestamp(raw)?;
+        // Construction validated the zone against the bundled table, but
+        // fail closed anyway: an unknown zone never renders a wrong reading.
+        let local = in_tz(dt, tz).ok_or_else(|| {
+            AppError::internal(format!("datetime cast zone {tz:?} left the bundled table"))
+        })?;
+        local
+            .format(&time::format_description::well_known::Rfc3339)
+            .map(Json::String)
+            .map_err(|e| AppError::validation(format!("timestamp {raw:?} is not canonical: {e}")))
     }
 }
 
@@ -274,9 +300,15 @@ pub(crate) fn builtin_cast(spec: &str) -> Result<Box<dyn Cast>, AppError> {
             variants: parse_variants(rest)?,
         }));
     }
+    if let Some(rest) = spec.strip_prefix("datetime:") {
+        datetime_tz_or_err(rest)?;
+        return Ok(Box::new(DatetimeCast {
+            tz: Some(rest.to_string()),
+        }));
+    }
     match spec {
         "date" => Ok(Box::new(DateCast)),
-        "datetime" => Ok(Box::new(DatetimeCast)),
+        "datetime" => Ok(Box::new(DatetimeCast { tz: None })),
         "json" => Ok(Box::new(JsonCast)),
         "array" => Ok(Box::new(ArrayCast)),
         "hashed" => Ok(Box::new(HashedCast)),
@@ -296,6 +328,20 @@ fn parse_scale(rest: &str) -> Result<u8, AppError> {
         return Err(scale_err(rest));
     }
     Ok(scale)
+}
+
+/// `datetime:<tz>` registration-time guard: the zone must be in the
+/// bundled IANA table (same fail-closed posture as a schedule item's
+/// zone), so a typo refuses registration instead of storing UTC readings.
+fn datetime_tz_or_err(rest: &str) -> Result<(), AppError> {
+    if timezone_offset_secs(rest).is_some() {
+        Ok(())
+    } else {
+        Err(AppError::validation(format!(
+            "datetime cast timezone {rest:?} is not in the bundled IANA table \
+             (fixed offsets; unknown zones refuse registration)"
+        )))
+    }
 }
 
 fn scale_err(rest: &str) -> AppError {
@@ -327,6 +373,9 @@ pub(crate) fn validate_cast_spec(spec: &str) -> Result<(), AppError> {
     }
     if let Some(rest) = spec.strip_prefix("enum:") {
         return parse_variants(rest).map(|_| ());
+    }
+    if let Some(rest) = spec.strip_prefix("datetime:") {
+        return datetime_tz_or_err(rest);
     }
     if spec == "decimal" {
         return Err(AppError::validation("decimal cast needs a scale: decimal:<n>"));
@@ -431,6 +480,40 @@ mod tests {
             .to_db(&Json::String("not-a-timestamp".into()))
             .is_err());
         assert!(datetime.to_db(&Json::Number(7.into())).is_err());
+    }
+
+    #[test]
+    fn datetime_tz_cast_localizes_reads_and_fails_closed_off_the_table() {
+        let cast = builtin("datetime:Asia/Kolkata");
+        // Writes stay canonical UTC instants, whatever offset arrives.
+        let canonical = cast
+            .to_db(&Json::String("2024-01-02T08:34:05+05:30".into()))
+            .unwrap();
+        assert_eq!(canonical, Json::String("2024-01-02T03:04:05Z".into()));
+        // Reads render the declared zone's wall clock with its offset —
+        // the timezone helper feeding the cast (Wave 8 P2).
+        let local = cast
+            .from_db(&Json::String("2024-01-02T03:04:05Z".into()))
+            .unwrap();
+        assert_eq!(local, Json::String("2024-01-02T08:34:05+05:30".into()));
+        // Malformed stored values fail closed.
+        assert!(cast.from_db(&Json::String("not-a-timestamp".into())).is_err());
+
+        // The bare datetime cast keeps its UTC pass-through.
+        let plain = builtin("datetime");
+        assert_eq!(
+            plain.from_db(&Json::String("2024-01-02T03:04:05Z".into())).unwrap(),
+            Json::String("2024-01-02T03:04:05Z".into())
+        );
+
+        // Zones outside the bundled table refuse at construction AND at
+        // registration — a typo never silently stores UTC readings.
+        assert!(builtin_cast("datetime:Mars/Olympus_Mons").is_err());
+        assert!(builtin_cast("datetime:").is_err());
+        assert!(validate_cast_spec("datetime:Mars/Olympus_Mons").is_err());
+        assert!(validate_cast_spec("datetime:").is_err());
+        assert!(validate_cast_spec("datetime:Asia/Kolkata").is_ok());
+        assert!(validate_cast_spec("datetime").is_ok());
     }
 
     #[test]

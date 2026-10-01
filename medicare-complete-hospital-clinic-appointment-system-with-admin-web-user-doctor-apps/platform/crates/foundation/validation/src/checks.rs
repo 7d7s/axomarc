@@ -1081,113 +1081,18 @@ fn date_cmp(
     }
 }
 
-/// Boot validation for `date_format:<fmt>`: closed PHP-style token set
-/// (`Y m d H i s`); every other ASCII letter is a fail-closed boot error and
-/// any non-letter is a literal separator.
+/// Boot validation for `date_format:<fmt>`: the closed `Y m d H i s` token
+/// set lives in `keel-foundation` (Wave 8 P2 moved the grammar into the TCB
+/// so the date helpers and this rule read ONE implementation).
 pub(crate) fn check_date_format_spec(fmt: &str) -> Result<(), String> {
-    if fmt.is_empty() {
-        return Err("date_format requires a format: date_format:<fmt>".into());
-    }
-    for c in fmt.chars() {
-        if c.is_ascii_alphabetic() && !"YmdHis".contains(c) {
-            return Err(format!(
-                "unsupported date_format token {c:?} (closed set: Y m d H i s)"
-            ));
-        }
-    }
-    Ok(())
+    keel_foundation::check_date_format_spec(fmt)
 }
 
-/// Match a value against a closed `Y m d H i s` format: fixed digit counts
-/// per token, exact literal consumption (no trailing characters), then
-/// calendar/time range checks on whatever components the format captured.
+/// Match a value against the closed `Y m d H i s` format — the grammar now
+/// lives in `keel_foundation::parse_date_with` (Wave 8 P2: one source of
+/// truth for the rule and the helpers).
 fn date_format_ok(s: &str, fmt: &str) -> bool {
-    let mut chars = s.chars().peekable();
-    let (mut year, mut month, mut day, mut hour, mut minute, mut second) =
-        (None, None, None, None, None, None);
-    for spec in fmt.chars() {
-        let taken = match spec {
-            'Y' => take_digits(&mut chars, 4),
-            'm' => take_digits(&mut chars, 2),
-            'd' => take_digits(&mut chars, 2),
-            'H' => take_digits(&mut chars, 2),
-            'i' => take_digits(&mut chars, 2),
-            's' => take_digits(&mut chars, 2),
-            literal => chars.next().filter(|&c| c == literal).map(|_| 0),
-        };
-        let Some(taken) = taken else {
-            return false;
-        };
-        match spec {
-            'Y' => year = Some(taken),
-            'm' => month = Some(taken),
-            'd' => day = Some(taken),
-            'H' => hour = Some(taken),
-            'i' => minute = Some(taken),
-            's' => second = Some(taken),
-            _ => {}
-        }
-    }
-    if chars.next().is_some() {
-        return false; // trailing characters
-    }
-    if hour.is_some_and(|h| h > 23)
-        || minute.is_some_and(|m| m > 59)
-        || second.is_some_and(|s| s > 59)
-    {
-        return false;
-    }
-    match (month, day) {
-        (Some(mo), Some(d)) => {
-            if !(1..=12).contains(&mo) {
-                return false;
-            }
-            match year {
-                Some(y) => date_parts_valid(y, mo, d),
-                // No year in the format: validate against a non-leap year,
-                // so `m-d` can never claim 02-30 (02-29 stays format-legal).
-                None => (1..=days_in_month(2001, mo)).contains(&d),
-            }
-        }
-        (Some(mo), None) => (1..=12).contains(&mo),
-        (None, Some(d)) => (1..=31).contains(&d),
-        (None, None) => true,
-    }
-}
-
-/// Consume exactly `n` ASCII digits as a number (whole token, no prefix).
-fn take_digits(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, n: usize) -> Option<i64> {
-    let mut out = 0i64;
-    for _ in 0..n {
-        let c = chars.next()?;
-        if !c.is_ascii_digit() {
-            return None;
-        }
-        out = out * 10 + i64::from(c.to_digit(10)?);
-    }
-    Some(out)
-}
-
-/// Real calendar validity (leap years included) for a captured Y/M/D.
-fn date_parts_valid(y: i64, m: i64, d: i64) -> bool {
-    let Ok(month) = time::Month::try_from(m as u8) else {
-        return false;
-    };
-    let (Ok(y), Ok(d)) = (i32::try_from(y), u8::try_from(d)) else {
-        return false;
-    };
-    time::Date::from_calendar_date(y, month, d).is_ok()
-}
-
-/// Days in a month, leap-year aware (Gregorian).
-fn days_in_month(y: i64, m: i64) -> i64 {
-    match m {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 => 29,
-        2 => 28,
-        _ => 0,
-    }
+    keel_foundation::parse_date_with(s, fmt).is_some()
 }
 
 /// `#` + exactly 3/4/6/8 hex digits (Laravel's hex_color regex verbatim:

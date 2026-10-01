@@ -38,6 +38,8 @@ belongs" and then discover "this is safer and more powerful."
 | `Str::slug/snake/camel/studly/title/words/excerpt/random` | String helpers: `to_slug`, `to_snake_case`, `to_camel_case`, `to_studly_case`, `to_title_case`, `words`, `excerpt`, `random` (CSPRNG alphanumeric) | `crates/foundation/core` |
 | `Str::uuid` / `Str::ulid` | `uuid()` (random v4) / `ulid()` (26-char Crockford base32) generators | `crates/foundation/core` |
 | `Str::plural` / `Str::singular` | `plural` / `singular` — documented English inflection subset | `crates/foundation/core` |
+| `Number::currency/percentage/precision/clamp` | Number helpers: `format_currency`, `format_percent`, `format_precision`, `clamp` (locale rules from the Wave 6 identities: en/fr/ar primary subtag, en fallback; curated ISO symbol + minor-unit tables) | `crates/foundation/core` |
+| `Carbon` (parse/format/timezone/now) | Date helpers: `parse_date_with` / `format_date_with` (closed `Y m d H i s` set — the `date_format` rule delegates here), `now_in` / `in_tz` / `local_wall` over the bundled IANA table | `crates/foundation/core` |
 
 ## Per-concept detail
 
@@ -100,6 +102,25 @@ case-sensitively; `title` normalizes `_`/`-`/camel boundaries to single spaces b
 treats identifiers as words (Laravel's `ucwords` keeps the underscore — documented divergence).
 Migration: drop the `Str::` prefix for free functions — `Str::plural('person')` ->
 `plural("person")`, `Str::slug($s)` -> `to_slug($s)`, `Str::uuid()` -> `uuid()`.
+
+### Number / Carbon -> keel-foundation number + date helpers
+Same instinct: `Number::currency($v, 'USD', 'fr')` -> `format_currency(v, "USD", "fr")`,
+`Carbon::createFromFormat('Y-m-d', $s)` -> `parse_date_with(s, "Y-m-d")`,
+`Carbon::now('Asia/Kolkata')` -> `now_in("Asia/Kolkata")`. Difference: formatting is a
+**documented subset** — the Wave 6 locale identities select rules by primary subtag
+(`en`/`fr`/`ar` ship, `en-IN` matches `en`, unknown locales fall back to `en` rules —
+display-only), with ASCII digits and 3-digit grouping everywhere (no Arabic-Indic digits,
+no Indian lakh grouping), a curated ISO symbol table (unknown codes render as themselves)
+and per-code minor units (`JPY`/`KRW` = 0, default 2). Dates share **one grammar**:
+`parse_date_with`/`format_date_with` implement the closed `Y m d H i s` token set and the
+`date_format` validation rule delegates to it, so helper and rule cannot drift. Timezone
+conversions (`now_in`, `in_tz`, `local_wall`) read the bundled IANA offset table —
+relocated from `keel-scheduler` into `keel-foundation` this wave — with the same
+fixed-offset caveat (no DST transitions) and `None` for unknown zones instead of ever
+converting in the wrong zone; the `datetime:<tz>` model cast feeds on them (UTC storage,
+zone-local reads) while bare `datetime` is unchanged. Migration: drop the class prefix;
+formats are strings in both worlds, wall-clock parses land as UTC instants (convert with
+`in_tz` when a zone applies).
 
 ## Migration strategy, step by step
 

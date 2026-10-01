@@ -6,12 +6,14 @@
 //! revision domains · DeltaStone · money · clock · locale/deadline · secrets.
 
 pub mod clock;
+pub mod datetime;
 pub mod delta;
 pub mod error;
 pub mod id;
 pub mod inflect;
 pub mod locale;
 pub mod money;
+pub mod numbers;
 pub mod plane;
 pub mod profile;
 pub mod revision;
@@ -19,8 +21,13 @@ pub mod secret;
 pub mod strings;
 pub mod telemetry;
 pub mod translate;
+pub mod tz;
 
 pub use clock::{Clock, FixedClock, SystemClock};
+pub use datetime::{
+    check_date_format_spec, format_date_with, in_tz, local_wall, now_in, parse_date_with,
+    DateParts, DATE_FORMAT_TOKENS,
+};
 pub use delta::{DeltaKind, DeltaStone, StreamRef};
 pub use error::{codes, AppError, ErrorCategory, Retryability, Severity};
 pub use id::{
@@ -31,6 +38,7 @@ pub use id::{
 pub use inflect::{plural, singular};
 pub use locale::{Deadline, Locale, TimeZone};
 pub use money::MoneyCents;
+pub use numbers::{clamp, format_cents, format_currency, format_percent, format_precision};
 pub use plane::SecurityPlane;
 pub use profile::{ConcurrencyStrategy, ExecutionProfile, ExecutionProfileKind, RetryPolicy};
 pub use revision::{
@@ -47,6 +55,7 @@ pub use translate::{
     plural_bucket, trans_choice, translate, validate_locale, MessageCatalog, Translated,
     CHOICE_BUCKETS,
 };
+pub use tz::timezone_offset_secs;
 
 #[cfg(test)]
 mod tests {

@@ -2,14 +2,14 @@
 //! Recurring execution contracts (11-SPEC §29): schedules declare WHEN; the jobs
 //! layer decides HOW (durable job enqueue). Next-run math is deterministic —
 //! UTC in the kernel, with optional per-item wall clocks (Wave 6 P4: a
-//! zero-dep cron parser, bundled timezones, overlap/one-server guards and
-//! hooks).
+//! zero-dep cron parser, bundled timezones — the IANA offset table moved to
+//! `keel-foundation` in Wave 8 P2 and is re-exported here — overlap/one-server
+//! guards and hooks).
 
 pub mod cron;
-pub mod tz;
 
 pub use cron::{daily, daily_at, every_minutes, hourly, monthly, weekly, CronExpr};
-pub use tz::timezone_offset_secs;
+pub use keel_foundation::timezone_offset_secs;
 
 use keel_foundation::AppError;
 use serde::{Deserialize, Serialize};

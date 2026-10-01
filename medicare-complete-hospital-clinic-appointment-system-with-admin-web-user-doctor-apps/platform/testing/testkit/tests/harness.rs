@@ -333,3 +333,28 @@ fn wave8_str_helpers_surface() {
     assert_eq!(ulid().len(), 26);
     assert_eq!(uuid().get_version(), Some(uuid::Version::Random));
 }
+
+/// Wave 8 P2 (docs/19 "Helpers"): the Number/date helper surface is
+/// re-exported from `keel-foundation` and callable from outside the crate.
+#[test]
+fn wave8_number_and_date_helpers_surface() {
+    use keel_foundation::{
+        clamp, format_cents, format_currency, format_date_with, format_percent,
+        format_precision, in_tz, now_in, parse_date_with, timezone_offset_secs, MoneyCents,
+    };
+
+    assert_eq!(format_currency(1234.56, "USD", "en"), "$1,234.56");
+    assert_eq!(format_currency(1234.56, "EUR", "fr"), "1 234,56 €");
+    assert_eq!(format_percent(75.0, 1, "fr"), "75,0 %");
+    assert_eq!(format_precision(1234.5, 2, "en"), "1,234.50");
+    assert_eq!(clamp(42.0, 0.0, 10.0), 10.0);
+    let cents = MoneyCents::new(999, "USD").expect("iso code");
+    assert_eq!(format_cents(&cents, "en"), "$9.99");
+
+    let parts = parse_date_with("2024-01-02", "Y-m-d").expect("parses");
+    let at = parts.to_instant().expect("full date");
+    assert_eq!(format_date_with(at, "d/m/Y").unwrap(), "02/01/2024");
+    assert!(in_tz(at, "Asia/Kolkata").is_some());
+    assert!(now_in("UTC").is_some());
+    assert_eq!(timezone_offset_secs("Asia/Kolkata"), Some(19_800));
+}

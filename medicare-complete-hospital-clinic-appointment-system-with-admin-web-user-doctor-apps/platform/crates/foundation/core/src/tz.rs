@@ -1,4 +1,9 @@
-//! Wave 6 P4: bundled static IANA → fixed UTC-offset table (docs/19).
+//! Bundled static IANA → fixed UTC-offset table.
+//!
+//! Wave 6 P4 (docs/19) built this table for zoned schedule `next_run`; Wave 8
+//! P2 relocated it into the TCB so the date helpers (`now_in`, `in_tz`,
+//! `local_wall`) and the model casts can feed from it too — `keel-scheduler`
+//! re-exports `timezone_offset_secs`, so the public path is unchanged.
 //!
 //! Zero-dep by policy (D-62: `chrono-tz` would be a new external
 //! dependency), so offsets are FIXED: DST transitions are not modeled.
@@ -6,7 +11,8 @@
 //! divergence — exact half the year, off by one hour during summer time);
 //! zones that never observe DST — including the platform default
 //! `Asia/Kolkata` — are exact. An unknown name refuses `register` with a
-//! registration error instead of silently running in the wrong zone.
+//! registration error instead of silently running in the wrong zone, and
+//! returns `None` from the helpers instead of converting in the wrong zone.
 
 /// UTC offset in seconds for a bundled IANA name (or its common alias),
 /// `None` when the name is not in the table.
