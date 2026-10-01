@@ -1,12 +1,15 @@
-//! Opt-in CSRF protection (blueprint L26, S3). Double-submit-cookie pattern:
+//! CSRF protection (blueprint L26, S3). Double-submit-cookie pattern:
 //! the server issues a random token as a cookie; state-changing requests must
 //! echo it in the `X-CSRF-TOKEN` header. A cross-origin attacker can make the
 //! browser SEND the cookie but cannot read it to set the header.
 //!
-//! Opt-in by construction: `CsrfGuard::layer()` is attached by the runtime
-//! only when the app enables it; the fixed Admission pipeline never includes
-//! it implicitly. Session-bound tokens (stronger, revocable with the
-//! session) are available through keel-session `Session::csrf_token`.
+//! Default-on for the web plane (Wave 7 P7): the runtime attaches
+//! `CsrfGuard` to every web-plane route through [`CsrfGuard::apply_route`]
+//! (skip paths come from `[security.csrf]` — no flag or env); the api plane
+//! attaches nothing and stays token-authenticated. Safe requests pass
+//! through but carry the bootstrap cookie, so a form roundtrip starts on the
+//! GET that renders the form. Session-bound tokens (stronger, revocable with
+//! the session) are available through keel-session `Session::csrf_token`.
 
 use axum::body::Body;
 use axum::extract::State;
@@ -25,7 +28,8 @@ pub const CSRF_COOKIE: &str = "keel_csrf";
 /// Header state-changing requests must echo the token in.
 pub const CSRF_HEADER: &str = "x-csrf-token";
 
-/// Opt-in CSRF posture.
+/// CSRF posture (Wave 7 P7): always on for the web plane; the only config
+/// is the set of paths that skip the check.
 #[derive(Debug, Clone, Default)]
 pub struct CsrfGuard {
     /// Paths that skip CSRF (webhook receivers signed by provider HMAC, etc.).
@@ -37,6 +41,18 @@ impl CsrfGuard {
     /// request-id/trace envelope context exists when rejections render).
     pub fn apply(self, router: axum::Router) -> axum::Router {
         router.layer(axum::middleware::from_fn_with_state(self, csrf_fn))
+    }
+
+    /// Wrap a single method router with the CSRF check — the web plane's
+    /// per-route attachment: `graph_router` layers this on `plane = "web"`
+    /// routes only, so an api-plane route keeps its byte-identical
+    /// token-authenticated answer. Runs inside the security-headers layer,
+    /// so a 403 rejection still carries the deployment's posture.
+    pub fn apply_route(
+        self,
+        route: axum::routing::MethodRouter,
+    ) -> axum::routing::MethodRouter {
+        route.layer(axum::middleware::from_fn_with_state(self, csrf_fn))
     }
 }
 
@@ -86,7 +102,13 @@ pub(crate) async fn csrf_fn(
     next: Next,
 ) -> Response<Body> {
     if method_is_safe(req.method()) {
-        return next.run(req).await;
+        // Safe requests pass the check — but they carry the bootstrap
+        // cookie (Wave 7 P7): without it, no first form POST could ever
+        // echo the header, and the double-submit roundtrip starts on the
+        // GET that renders the form.
+        let mut res = next.run(req).await;
+        ensure_cookie(&mut res);
+        return res;
     }
     if guard.bypass_paths.iter().any(|p| req.uri().path() == p) {
         return next.run(req).await;
@@ -207,6 +229,82 @@ mod tests {
     async fn bypass_paths_skip_csrf() {
         let res = app().oneshot(post_req("/hook", None, None)).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    /// Wave 7 P7: a safe request passes — and carries the bootstrap cookie,
+    /// without which no first form POST could ever echo the header.
+    #[tokio::test]
+    async fn safe_methods_issue_the_bootstrap_cookie() {
+        let res = app()
+            .oneshot(Request::builder().uri("/read").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let set = res
+            .headers()
+            .get(header::SET_COOKIE)
+            .expect("bootstrap cookie issued")
+            .to_str()
+            .unwrap();
+        assert!(set.starts_with("keel_csrf="), "{set}");
+        assert!(set.contains("SameSite=Strict"), "{set}");
+    }
+
+    /// The full double-submit roundtrip (deferred from Wave 2, landed in
+    /// Wave 7 P7): the GET that renders the form issues the token, the
+    /// POST echoes cookie + header and passes.
+    #[tokio::test]
+    async fn the_double_submit_roundtrip_bootstraps_from_a_get() {
+        let got = app()
+            .oneshot(Request::builder().uri("/read").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let set = got
+            .headers()
+            .get(header::SET_COOKIE)
+            .expect("bootstrap cookie issued")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let token = set
+            .strip_prefix("keel_csrf=")
+            .and_then(|rest| rest.split(';').next())
+            .expect("token value")
+            .to_string();
+        assert_eq!(token.len(), 64, "256-bit hex token: {set}");
+
+        let res = app()
+            .oneshot(post_req("/submit", Some(&token), Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "the pair passes");
+    }
+
+    /// Wave 7 P7: the web plane attaches through `apply_route` — one method
+    /// router is guarded (403 without the pair), while the api plane simply
+    /// never calls this and stays byte-identical.
+    #[tokio::test]
+    async fn apply_route_attaches_the_guard_to_a_single_route() {
+        let guarded = Router::new().route(
+            "/submit",
+            CsrfGuard {
+                bypass_paths: Vec::new(),
+            }
+            .apply_route(post(|| async { "accepted" })),
+        );
+
+        let denied = guarded
+            .clone()
+            .oneshot(post_req("/submit", None, None))
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+        let allowed = guarded
+            .oneshot(post_req("/submit", Some("tok"), Some("tok")))
+            .await
+            .unwrap();
+        assert_eq!(allowed.status(), StatusCode::OK);
     }
 
     #[test]

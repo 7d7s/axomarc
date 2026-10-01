@@ -74,6 +74,13 @@ enabled = false
 # bound above the 30-day hard ceiling; sign_once refuses mints above this.
 max_ttl_secs = 604800
 
+[security.csrf]
+# Wave 7 P7: web-plane CSRF is ALWAYS ON (double-submit cookie + header;
+# no flag or env). This lists exact request paths that skip the check -
+# webhook receivers signed by provider HMAC, and the like. Empty = every
+# web-plane route is checked; the api plane never sees the guard.
+skip_paths = []
+
 [limits]
 # usage-cap pricing (D-20): per-tenant caps enforced by capability engine
 default_monthly_operations = 100000

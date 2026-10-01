@@ -181,6 +181,13 @@ pub struct AppState {
     /// posture (19-PARITY "`[auth.password_policy]` config feeding the
     /// `password` rule composable").
     pub password_policy: keel_validation::PasswordPolicy,
+    // --- Wave 7 P7 CSRF ----------------------------------------------------
+    /// Resolved `[security.csrf]` posture: the double-submit guard is
+    /// attached to web-plane graph routes ALWAYS (default-on — no flag or
+    /// env; the section carries only skip paths), while the api plane
+    /// attaches nothing and stays token-authenticated (19-PARITY "CSRF
+    /// on-by-default for the web plane").
+    pub csrf: keel_http::CsrfGuard,
 }
 
 impl AppState {

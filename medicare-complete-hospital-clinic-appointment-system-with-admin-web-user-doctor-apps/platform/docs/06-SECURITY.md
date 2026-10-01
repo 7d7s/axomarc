@@ -27,6 +27,17 @@ elevation (+ sessions/tokens opt-in).
    views and route-gate rejections carry them too. The api plane is never touched; handler-set
    headers win over the middleware; an unparseable config value is skipped fail-closed (04-HTTP,
    19-PARITY Wave 7 P4).
+5. **CSRF (Wave 7 P7)** — web-plane routes only, always on: the double-submit guard pairs the
+   `keel_csrf` cookie with the `X-CSRF-TOKEN` header (safe requests bootstrap the cookie;
+   state-changing requests without the pair answer 403). The only configuration is
+   `[security.csrf].skip_paths` — exact paths that skip the check (webhook receivers signed by
+   provider HMAC, and the like); there is no flag or env, and the old `KEEL_CSRF` opt-in is gone.
+   The api plane stays token-authenticated and platform-plane flows (login, register, reset) are
+   unchanged (04-HTTP, 19-PARITY Wave 7 P7).
+6. **Cookie-value encryption (Wave 7 P7 roundtrip; toggle Wave 2)** — `[http] encrypt_cookies`
+   (default off) seals queued cookie values with AES-256-GCM under a key derived from the
+   application key; the wire value is a `k1.` envelope, and only a cipher under the same app key
+   can open it (04-HTTP).
 
 ## Agents and AI
 

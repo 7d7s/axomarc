@@ -63,6 +63,24 @@ capability = "availability"
 plane = "api"
 response = "json"
 public = true
+
+[[routes]]
+method = "POST"
+path = "/web/submit"
+operation = "availability"
+capability = "availability"
+plane = "web"
+response = "json"
+public = true
+
+[[routes]]
+method = "POST"
+path = "/api/submit"
+operation = "availability"
+capability = "availability"
+plane = "api"
+response = "json"
+public = true
 "#;
 
 fn router_for() -> axum::Router {
@@ -178,6 +196,50 @@ async fn get_with(router: &axum::Router, uri: &str, if_none_match: &str) -> Repl
             .expect("request builds"),
     )
     .await
+}
+
+async fn post(router: &axum::Router, uri: &str) -> Reply {
+    send(
+        router,
+        Request::builder()
+            .method(Method::POST)
+            .uri(uri)
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await
+}
+
+/// POST with the double-submit pair: the `keel_csrf` cookie value echoed
+/// in the `X-CSRF-TOKEN` header — exactly what a browser does after the
+/// GET that rendered the form.
+async fn post_with_csrf(router: &axum::Router, uri: &str, token: &str) -> Reply {
+    send(
+        router,
+        Request::builder()
+            .method(Method::POST)
+            .uri(uri)
+            .header(header::COOKIE, format!("{}={token}", keel_http::CSRF_COOKIE))
+            .header(keel_http::CSRF_HEADER, token)
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await
+}
+
+/// Pull the bootstrap token out of whichever `Set-Cookie` carries it —
+/// the response may also carry a session or queued cookie, and insertion
+/// order across layers is not part of the contract.
+fn csrf_token(reply: &Reply) -> String {
+    reply
+        .headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("set-cookie"))
+        .filter_map(|(_, value)| value.strip_prefix("keel_csrf="))
+        .filter_map(|rest| rest.split(';').next())
+        .find(|token| !token.is_empty())
+        .expect("keel_csrf bootstrap cookie on a safe web-plane response")
+        .to_string()
 }
 
 // ------------------------------------------------------------- response kinds
@@ -365,4 +427,66 @@ async fn the_security_headers_stay_off_until_a_deployment_turns_them_on() {
     ] {
         assert!(reply.header(name).is_none(), "{name} must not appear while disabled");
     }
+}
+
+// ------------------------------------------- Wave 7 P7 web-plane CSRF
+
+/// The public message of a refused double-submit (built inline by
+/// `csrf_fn`, rendered in the standard envelope).
+const CSRF_DENIED: &str = "CSRF token missing or mismatched";
+
+/// 19-PARITY "CSRF on-by-default for the web plane": a state-changing
+/// web-plane request without the double-submit pair is refused — no flag,
+/// no env; this is the default posture.
+#[tokio::test]
+async fn web_plane_state_changing_requests_are_csrf_checked_by_default() {
+    let router = router_for();
+    let reply = post(&router, "/web/submit").await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+    let body = reply.text();
+    assert!(body.contains(CSRF_DENIED), "{body}");
+}
+
+/// The roundtrip (deferred from Wave 2 to this item): the safe GET
+/// bootstraps the `keel_csrf` cookie, the POST echoes cookie + header and
+/// sails through the guard to the handler.
+#[tokio::test]
+async fn the_web_plane_csrf_roundtrip_bootstraps_from_a_safe_request() {
+    let router = router_for();
+    let boot = get(&router, "/web/no-content").await;
+    assert_eq!(boot.status, StatusCode::NO_CONTENT);
+    let token = csrf_token(&boot);
+
+    let reply = post_with_csrf(&router, "/web/submit", &token).await;
+    let body = reply.text();
+    assert!(!body.contains(CSRF_DENIED), "the pair passes the guard: {body}");
+    assert_ne!(reply.status, StatusCode::FORBIDDEN, "{body}");
+}
+
+/// The api plane stays untouched: the same state-changing request, no
+/// guard anywhere near it — token-authenticated routes answer on their own
+/// terms (19-PARITY "api plane stays token-authenticated, unchanged").
+#[tokio::test]
+async fn api_plane_state_changing_requests_stay_free_of_the_csrf_guard() {
+    let router = router_for();
+    let reply = post(&router, "/api/submit").await;
+    let body = reply.text();
+    assert!(!body.contains(CSRF_DENIED), "the api plane never runs the guard: {body}");
+    assert_ne!(reply.status, StatusCode::FORBIDDEN, "{body}");
+}
+
+/// `[security.csrf].skip_paths` carries a declared receiver through —
+/// config-only escape hatch, no flag or env (19-PARITY "skip-paths
+/// config only").
+#[tokio::test]
+async fn csrf_skip_paths_carry_a_declared_receiver_through() {
+    let router = router_with(|state| {
+        state.csrf = keel_http::CsrfGuard {
+            bypass_paths: vec!["/web/submit".into()],
+        };
+    });
+    let reply = post(&router, "/web/submit").await;
+    let body = reply.text();
+    assert!(!body.contains(CSRF_DENIED), "the skip path passes unsigned: {body}");
+    assert_ne!(reply.status, StatusCode::FORBIDDEN, "{body}");
 }

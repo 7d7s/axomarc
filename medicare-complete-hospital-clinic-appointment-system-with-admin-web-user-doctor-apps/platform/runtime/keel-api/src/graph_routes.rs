@@ -466,6 +466,14 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
             let security_headers = (dispatch.route_plane == RoutePlane::Web
                 && state.security_headers.enabled)
                 .then(|| state.security_headers.clone());
+            // Wave 7 P7 (19-PARITY "CSRF on-by-default for the web plane"):
+            // the double-submit guard, captured with the posture before the
+            // route gate consumes `dispatch`. Web-plane routes only — an
+            // api-plane request stays token-authenticated and never sees
+            // the layer — and always on (no flag or env); the deployment's
+            // `[security.csrf]` skip paths ride the guard itself.
+            let csrf = (dispatch.route_plane == RoutePlane::Web)
+                .then(|| state.csrf.clone());
             let mut route: MethodRouter = axum::routing::on(filter, graph_dispatch)
                 .with_state((state.clone(), dispatch.clone()))
                 .layer(axum::middleware::from_fn_with_state(
@@ -487,6 +495,15 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
             // exactly like a handled GET body.
             if declared.contains(&"HEAD") {
                 route = route.layer(axum::middleware::from_fn(strip_head_body));
+            }
+            // Wave 7 P7: attached BEFORE the security-headers layer, so the
+            // headers wrap the guard — a CSRF 403 still carries the
+            // deployment posture while the rejection itself (403, envelope
+            // or web error view) renders exactly like any other route
+            // answer. Safe requests bootstrap the `keel_csrf` cookie here;
+            // state-changing ones must echo it.
+            if let Some(guard) = csrf {
+                route = guard.apply_route(route);
             }
             // Wave 7 P4: attached last, so it is outermost within the route —
             // the handler's views, error views, chain short-circuits and

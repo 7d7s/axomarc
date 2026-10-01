@@ -350,6 +350,9 @@ pub struct SecuritySection {
     /// `[security.signed_urls]` (Wave 7 P6): the signed-link TTL bound.
     #[serde(default)]
     pub signed_urls: SignedUrlsSection,
+    /// `[security.csrf]` (Wave 7 P7): the web-plane CSRF skip paths.
+    #[serde(default)]
+    pub csrf: CsrfSection,
 }
 
 /// `[security.headers]` (Wave 7 P4, docs/19 "Security-headers middleware"):
@@ -429,6 +432,23 @@ impl Default for SignedUrlsSection {
             max_ttl_secs: default_signed_url_max_ttl(),
         }
     }
+}
+
+/// `[security.csrf]` (Wave 7 P7, docs/19 "CSRF on-by-default for the web
+/// plane"): the double-submit guard is ALWAYS ON for web-plane routes —
+/// this section carries only the deployment's skip paths (webhook
+/// receivers signed by provider HMAC, and the like). There is deliberately
+/// no `enabled` flag or env: secure by default, config-only escape hatches.
+/// `deny_unknown_fields` closes the level-3 gap the same way
+/// [`SecurityHeadersSection`] does.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CsrfSection {
+    /// Exact request paths that skip the web-plane CSRF check. Empty by
+    /// default — every web-plane route is checked unless a deployment
+    /// declares a receiver here.
+    #[serde(default)]
+    pub skip_paths: Vec<String>,
 }
 
 /// Identity section (Wave 7 P5, `[identity]`): argon2id work factors for
@@ -743,7 +763,7 @@ pub const CONFIG_SCHEMA: &[(&str, &[&str])] = &[
     ("limits", &["default_monthly_operations"]),
     ("mail", &["default", "mailers"]),
     ("otp", &["provider", "code_ttl_secs", "max_attempts"]),
-    ("security", &["headers", "signed_urls"]),
+    ("security", &["headers", "signed_urls", "csrf"]),
     (
         "storage",
         &["endpoint", "bucket", "default", "disks"],
@@ -1996,5 +2016,56 @@ mod wave7_signed_url_ttl_config_tests {
         let typo = schema_violations("[security]\nsigned_url = true\n");
         assert_eq!(typo.len(), 1, "{typo:?}");
         assert_eq!(typo[0].key, "security.signed_url");
+    }
+}
+
+#[cfg(test)]
+mod wave7_csrf_config_tests {
+    use super::*;
+
+    /// Wave 7 P7 (docs/19 "CSRF on-by-default for the web plane"): the
+    /// posture itself is not a config knob — only skip paths are, and they
+    /// default to empty (every web-plane route is checked).
+    #[test]
+    fn csrf_skip_paths_default_to_empty() {
+        let skip = PlatformConfig::default().security.csrf.skip_paths;
+        assert!(skip.is_empty(), "no route skips the guard by default: {skip:?}");
+    }
+
+    /// The skip paths survive a TOML override; a level-3 typo refuses the
+    /// typed parse (`deny_unknown_fields`, the `[security.headers]` pattern).
+    #[test]
+    fn csrf_section_parses_overrides_and_refuses_typos() {
+        let cfg: PlatformConfig = toml::from_str(
+            "[security.csrf]\nskip_paths = [\"/webhooks/stripe\"]\n",
+        )
+        .expect("declared key parses");
+        assert_eq!(
+            cfg.security.csrf.skip_paths,
+            vec!["/webhooks/stripe".to_string()]
+        );
+
+        let err = toml::from_str::<PlatformConfig>(
+            "[security.csrf]\nskip_path = [\"/x\"]\n",
+        )
+        .expect_err("a level-3 typo refuses the typed parse");
+        assert!(
+            err.to_string().contains("unknown field"),
+            "deny_unknown_fields names the typo: {err}"
+        );
+    }
+
+    /// The `GRAPH-CONFIG-SCHEMA` walk declares `security` → `csrf`: the
+    /// nested section passes clean, an unknown level-2 key reports.
+    #[test]
+    fn csrf_keys_are_declared_in_the_config_schema() {
+        assert_eq!(
+            schema_violations("[security.csrf]\nskip_paths = [\"/webhooks/stripe\"]\n"),
+            Vec::new(),
+            "the declared section is clean"
+        );
+        let typo = schema_violations("[security]\ncsrf_skip = true\n");
+        assert_eq!(typo.len(), 1, "{typo:?}");
+        assert_eq!(typo[0].key, "security.csrf_skip");
     }
 }

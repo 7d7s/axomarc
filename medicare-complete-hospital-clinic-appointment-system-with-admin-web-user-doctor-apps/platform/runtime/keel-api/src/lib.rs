@@ -639,6 +639,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         password_params: password_params_from(cfg.identity()),
         dummy_hash: Arc::new(std::sync::OnceLock::new()),
         password_policy: password_policy_from(&cfg.auth().password_policy),
+        csrf: csrf_guard_from(cfg.security()),
     };
 
     // B-29: `keel shell` — interactive console over the booted graph. Same
@@ -756,16 +757,13 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
     let app = admission.apply(router);
-    // Opt-in CSRF double-submit guard (L26): attached AFTER Admission so the
-    // request-id/trace envelope context exists when rejections render.
-    let csrf_enabled = std::env::var("KEEL_CSRF")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    let app = if csrf_enabled {
-        keel_http::CsrfGuard::default().apply(app)
-    } else {
-        app
-    };
+    // Wave 7 P7: CSRF is no longer an opt-in global layer (the `KEEL_CSRF`
+    // env gate is gone — no flag, no env). `graph_router` attaches the
+    // double-submit guard per web-plane route, default-on with the
+    // deployment's `[security.csrf]` skip paths; the api plane attaches
+    // nothing and stays token-authenticated. Rejections still render with
+    // the request-id/trace envelope because admission ran outside the
+    // router, and metrics below still counts them.
     // S10 metrics middleware sits OUTERMOST so admission/CSRF rejections are
     // counted alongside happy paths.
     let app = app.layer(axum::middleware::from_fn_with_state(
@@ -947,6 +945,17 @@ pub fn password_policy_from(
         numbers: section.numbers,
         symbols: section.symbols,
         mixed_case: section.mixed_case,
+    }
+}
+
+/// Wave 7 P7 (`[security.csrf]` → the web-plane guard): plain config data
+/// in, the web layer's `CsrfGuard` out — the same conversion pattern as
+/// `security_headers_from`. The guard itself is ALWAYS attached to
+/// web-plane routes (default-on, no flag or env); this resolves only its
+/// skip paths, so a deployment names receivers in config alone.
+pub fn csrf_guard_from(section: &keel_config::SecuritySection) -> keel_http::CsrfGuard {
+    keel_http::CsrfGuard {
+        bypass_paths: section.csrf.skip_paths.clone(),
     }
 }
 
@@ -1326,6 +1335,9 @@ pub fn build_app_state(
         // Harness default: the Laravel-posture policy — the P6 register/
         // reset enforcement tests exercise exactly the stock default.
         password_policy: keel_validation::PasswordPolicy::default(),
+        // Harness default: the P7 posture — always-on for web-plane routes
+        // with no skip paths; tests inject a bypass to prove it.
+        csrf: keel_http::CsrfGuard::default(),
     };
     (state, graph, appt_store)
 }

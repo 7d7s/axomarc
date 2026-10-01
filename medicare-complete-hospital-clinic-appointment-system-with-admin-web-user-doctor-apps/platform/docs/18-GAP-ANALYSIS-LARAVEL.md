@@ -58,7 +58,7 @@ The verified repository inventory supplied for this audit is:
 | HTTP dependency gap | `keel-api` has no `keel-mod-appointments` dependency | The declared domain route is not connected to the API runtime. |
 | Admission | `platform/crates/web/http/src/middleware.rs` | Request-id → trace → body-limit → CORS → maintenance → rate-limit. |
 | CSRF | `platform/crates/web/http/src/csrf.rs` | Double-submit mechanism and CSRF cookie handling. |
-| CSRF config | `platform/runtime/keel-api/src/main.rs` | `KEEL_CSRF` is opt-in. |
+| CSRF config | `platform/runtime/keel-api/src/graph_routes.rs` | Default-on for web-plane routes; skip paths from `[security.csrf]` only (no flag/env — `KEEL_CSRF` removed). |
 | Tokens | `platform/crates/security/tokens/src/lib.rs:137-214` | `TokenService` and `InMemoryTokenStore`. |
 | Reset flow | `platform/crates/security/tokens/src/reset.rs:45-64` | Reset token flow exists. |
 | Sessions | `platform/crates/security/sessions/src/lib.rs:197-279` | Session manager, regeneration and sweep. |
@@ -152,7 +152,7 @@ The matrix below is deliberately granular. A subsystem cannot be called `MATCHED
 | Routing | MATCHED | platform/runtime/keel-api/src/graph_routes.rs; platform/runtime/keel-api/tests/routing_edge_integration.rs | Graph routes dispatch at the edge (Wave 2): verb/ANY dispatch, auto HEAD/OPTIONS with 405 + Allow, api/web planes, groups, domain/subdomain gates, constraints, signed URLs; fallback routes stay gate-only (row `fallback`) | P0 |
 | Named routes / URL generation | MATCHED | platform/crates/application/registry/src/lib.rs (RouteSpec.name, GRAPH-DUP-ROUTENAME, resolve_url, UrlSection); platform/tools/keel-console/src/main.rs (route:list --name) | Named routes generate URLs with `[url]` defaults (explicit values win) and list with `--name` filters (Wave 1-2) | P2 |
 | Middleware | MATCHED | platform/crates/web/http/src/middleware_catalog.rs; platform/crates/application/registry/src/middleware_catalog.rs | Named middleware chains (Wave 1): middleware.toml aliases/groups/throttle configs, implicit api group (throttle:api → auth → verified), per-route chains at the dispatch edge, GRAPH-MW-UNKNOWN boot gate; catalog is framework-owned in v1 (no module-defined custom middleware; Wave 5 codegen follow-up) | P1 |
-| CSRF | EQUIVALENT | platform/crates/web/http/src/csrf.rs | Double-submit implementation exists; opt-in configuration | P1 |
+| CSRF | EQUIVALENT | platform/crates/web/http/src/csrf.rs; platform/runtime/keel-api/src/graph_routes.rs | Double-submit implementation; default-on for web-plane routes (Wave 7 P7), `[security.csrf].skip_paths` config only, api plane token-authenticated | P1 |
 | HTTP request parsing | PARTIAL | platform/crates/web/http/src/middleware.rs | Core request path exists; multipart absent | P0 |
 | Multipart uploads | MISSING | repo-wide zero rg hits supplied | No multipart implementation | P0 |
 | HTTP responses | MATCHED | platform/runtime/keel-api/src/graph_routes.rs (response dispatch); platform/runtime/keel-api/tests/response_layer_integration.rs | json/html/redirect/download/stream/no_content kinds dispatched at the edge: 204, NDJSON flush, per-route Cache-Control, ETag/304 (Wave 2) | P0 |
@@ -906,7 +906,7 @@ Admission currently proves request-id, tracing, body limits, CORS, maintenance a
 | Medium | In-memory sessions | `platform/crates/security/sessions/src/lib.rs:197-279` | No cross-instance revocation/durability; horizontal scaling is unsafe. |
 | Medium | IP-only rate-limit key | `platform/crates/web/http/src/middleware.rs` | Shared-network users can be over-throttled; principal fairness is weak. |
 | Low / Info | Per-boot random session secret | session architecture supplied | Restart can invalidate in-memory sessions. |
-| Low / Info | CSRF opt-in | `platform/runtime/keel-api/src/main.rs` | Safety depends on deployment configuration. |
+| Low / Info | CSRF opt-in (resolved in Wave 7 P7) | `platform/runtime/keel-api/src/graph_routes.rs` | Was: safety depended on deployment configuration. Now default-on for web-plane routes with config-only skip paths; the opt-in env is gone. |
 | Low / Info | Upload attack surface not yet present | repo-wide zero multipart hits | No upload surface exists yet, but C5 must include hardening before release. |
 
 ### Positive security controls

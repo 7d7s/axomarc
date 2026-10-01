@@ -315,4 +315,61 @@ mod tests {
             .expect("value");
         assert!(value.starts_with("k1."), "{value}");
     }
+
+    /// Wave 7 P7 (19-PARITY "cookie encryption roundtrip"): with
+    /// `[http] encrypt_cookies` on, the PRODUCTION edge seals a queued
+    /// cookie with the real AES-GCM sealer under the app-key-derived
+    /// cookie key — and a cipher derived from the same app key (what the
+    /// read side / a second boot holds) opens the wire value back to the
+    /// plaintext the handler queued. Another app key refuses; the toggle
+    /// off (the default) keeps shipping values in the clear, pinned by
+    /// `edge_layer_flushes_queued_cookies_then_runs_hooks` above.
+    #[tokio::test]
+    async fn edge_layer_roundtrips_a_queued_cookie_under_the_real_cipher() {
+        let cipher = crate::cookie_cipher(true, "test-app-key-0123456789")
+            .expect("derives")
+            .expect("enabled yields a cipher");
+        let cfg = EdgeConfig::new(Arc::new(TerminatingHooks::new()))
+            .with_cipher(Some(Arc::clone(&cipher)));
+        let response = get(cookie_router(cfg), "/queue").await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        let raw = response
+            .headers()
+            .get(header::SET_COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .expect("one Set-Cookie")
+            .to_string();
+        assert!(!raw.contains("evening"), "plaintext never reaches the wire: {raw}");
+        let value = raw
+            .split('=')
+            .nth(1)
+            .expect("value pair")
+            .split(';')
+            .next()
+            .expect("value")
+            .to_string();
+        assert!(value.starts_with("k1."), "{value}");
+
+        // The roundtrip: the wire value opens back to what the handler queued.
+        assert_eq!(
+            cipher.open(&value).expect("same key opens"),
+            "evening",
+            "seal → open restores the plaintext"
+        );
+        // A separate boot on the same app key derives the same cookie key,
+        // so it opens the first boot's cookie...
+        let reader = crate::cookie_cipher(true, "test-app-key-0123456789")
+            .expect("derives")
+            .expect("enabled yields a cipher");
+        assert_eq!(reader.open(&value).expect("same key opens"), "evening");
+        // ...while another deployment's key refuses (key separation).
+        let foreign = crate::cookie_cipher(true, "other-app-key-9876543210")
+            .expect("derives")
+            .expect("enabled yields a cipher");
+        assert!(
+            foreign.open(&value).is_err(),
+            "a foreign app key cannot open the sealed value"
+        );
+    }
 }

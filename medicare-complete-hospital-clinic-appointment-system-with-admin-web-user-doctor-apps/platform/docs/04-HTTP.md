@@ -53,8 +53,10 @@ Handlers that don't need the bridge stay raw JSON (the appointments reference ha
 Two layers: a frozen global admission pipeline, and per-route named chains (Wave 1,
 Laravel `$middlewareGroups` parity).
 
-**Global admission pipeline (frozen order).** metrics (outermost) → CSRF → admission
+**Global admission pipeline (frozen order).** metrics (outermost) → admission
 (request-id → trace → body-limit → CORS → maintenance → rate-limit) → session → router.
+CSRF used to sit in this global chain behind the `KEEL_CSRF` opt-in; Wave 7 P7 moved it
+onto the web plane's routes themselves (below), so the api plane never runs it.
 Maintenance mode answers 503 with Retry-After (bypass secret); the admission rate limiter
 stays as the coarse fallback limiter. Order and registration are runtime wiring; modules
 contribute through contracts, not by stacking closures ad hoc.
@@ -68,6 +70,19 @@ baseline CSP (`default-src 'self'`, per-deployment override) and
 api plane never sees it, and responses short-circuited before routing (rate limit,
 maintenance) stay outside it by design. Handler-set headers win: the middleware only
 fills gaps (06-SECURITY).
+
+**CSRF (Wave 7 P7).** Double-submit protection is on by default for web-plane routes:
+`graph_router` layers `CsrfGuard` inside the security-headers layer (so a rejection
+still carries the posture) on every `plane = "web"` route. Safe methods pass through
+but carry the `keel_csrf` bootstrap cookie — the roundtrip starts on the GET that
+renders the form — and state-changing requests must echo it in `X-CSRF-TOKEN`, else
+they are refused 403 (`CSRF token missing or mismatched`, rendered through the
+standard envelope or web error view). The deployment's `[security.csrf].skip_paths`
+names exact paths that skip the check: config only, no flag or env — the `KEEL_CSRF`
+opt-in is gone. The api plane attaches nothing and stays token-authenticated;
+platform-plane routes (auth, uploads, telemetry) are unchanged. Rejections happen
+inside the router, so the outermost `record_metrics` middleware counts them with
+everything else (06-SECURITY).
 
 **Named chains (Wave 1).** An optional `middleware.toml` at the discovery root (same root
 as `applications/`) declares the catalog; absent file = the builtin catalog.
@@ -201,6 +216,14 @@ Remember-me (Wave 4): login accepts `remember: bool`; true extends the cookie `M
 in the session bag, survives session regeneration, and `/auth/me` reports the flag. Honest
 gap: the extension is cookie-`Max-Age` only — server-side idle/absolute session bounds are
 unchanged, so a remembered session is still swept by policy.
+
+Cookie-value encryption (toggle shipped Wave 2, roundtrip proven Wave 7 P7):
+`[http] encrypt_cookies` (default off) seals every value queued through the cookie queue
+with AES-256-GCM under a key derived from the application key — `k1.<hex envelope>` on the
+wire, plaintext never visible — and a cipher derived from the same app key (a second boot,
+the read side) opens it back while another app key refuses. Note on naming: docs/19 calls
+the switch `cookies.encrypted`; config keys are additive-only, so the shipped
+`[http] encrypt_cookies` key is the one that works (06-SECURITY).
 
 ## Uploads (S7)
 
@@ -364,9 +387,9 @@ at `GET /metrics` in Prometheus text format 0.0.4 — but only when the
 `app.metrics` feature flag is enabled; otherwise the route answers a 404
 envelope. Recording paths:
 
-- `record_metrics` middleware — mounted **outermost** (after admission and
-  the CSRF guard), so rate-limit/maintenance/CSRF rejections are counted
-  alongside happy paths. Emits `keel_http_requests_total{method,status_class}`
+- `record_metrics` middleware — mounted **outermost** (outside admission and
+  every per-route layer, CSRF included), so rate-limit/maintenance and
+  per-route CSRF rejections are counted alongside happy paths. Emits `keel_http_requests_total{method,status_class}`
   and `keel_http_request_duration_seconds{method}` (fixed bucket histogram).
 - `/metrics` handler — refreshes `keel_uptime_seconds`, `keel_degraded`
   (0/1) and `keel_routes_declared` gauges on every scrape, and (Wave 6
