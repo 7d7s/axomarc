@@ -292,4 +292,52 @@ impl JobStoreAdmin for PgJobStore {
             })
         })
     }
+
+    fn defer(&self, id: Uuid, available_at: time::OffsetDateTime) -> Result<(), AppError> {
+        let pool = self.pool.clone();
+        block_on(async move {
+            let done = sqlx::query(
+                "UPDATE jobs_queue
+                 SET status = 'pending',
+                     attempt = GREATEST(attempt - 1, 0),
+                     available_at = $2,
+                     claimed_by = NULL, claimed_at = NULL
+                 WHERE id = $1 AND status = 'running'",
+            )
+            .bind(id)
+            .bind(available_at)
+            .execute(&pool)
+            .await
+            .map_err(pg)?;
+            if done.rows_affected() == 0 {
+                return Err(AppError::conflict(format!(
+                    "job {id} is not running; only a claimed job can be deferred"
+                )));
+            }
+            Ok(())
+        })
+    }
+
+    fn kill(&self, id: Uuid, error: &str) -> Result<(), AppError> {
+        let error = error.to_string();
+        let pool = self.pool.clone();
+        block_on(async move {
+            let done = sqlx::query(
+                "UPDATE jobs_queue
+                 SET status = 'dead', last_error = $2, finished_at = now()
+                 WHERE id = $1 AND status IN ('pending', 'running', 'failed')",
+            )
+            .bind(id)
+            .bind(&error)
+            .execute(&pool)
+            .await
+            .map_err(pg)?;
+            if done.rows_affected() == 0 {
+                return Err(AppError::conflict(format!(
+                    "job {id} is already terminal; only pending, running or failed jobs can be killed"
+                )));
+            }
+            Ok(())
+        })
+    }
 }

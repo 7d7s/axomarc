@@ -268,17 +268,27 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // `notification.send` def, so `queue_via` defs build a durable job at
     // dispatch (the worker drains it). No pool = no port = `queue_via`
     // fail-closed (`not_implemented`), the D-52 posture.
-    let notification_queue = pool.as_ref().map(|pool| {
-        let store: Arc<dyn keel_jobs::JobStore> =
-            Arc::new(keel_postgres::PgJobStore::new(pool.clone()));
-        let mut registry = keel_jobs::JobRegistry::new();
-        registry
-            .register(keel_jobs::JobDef::new(
-                keel_notifications::NOTIFICATION_SEND_JOB,
-            ))
-            .expect("notification.send def registers");
-        (store, Arc::new(registry))
-    });
+    // Wave 6 P8: the SAME store instance doubles as the `/metrics` queue
+    // census view (admin trait) — depth/age/finished, snapshot per scrape.
+    let (notification_queue, queue_stats) = match &pool {
+        Some(pool) => {
+            let store = Arc::new(keel_postgres::PgJobStore::new(pool.clone()));
+            let mut registry = keel_jobs::JobRegistry::new();
+            registry
+                .register(keel_jobs::JobDef::new(
+                    keel_notifications::NOTIFICATION_SEND_JOB,
+                ))
+                .expect("notification.send def registers");
+            (
+                Some((
+                    store.clone() as Arc<dyn keel_jobs::JobStore>,
+                    Arc::new(registry),
+                )),
+                Some(store as Arc<dyn keel_jobs::JobStoreAdmin>),
+            )
+        }
+        None => (None, None),
+    };
 
     let mut host = ApplicationHost::new();
     // Wave 2 error rendering: one registry per boot, published to every
@@ -579,6 +589,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         notifications: notification_store,
         channels: broadcast_routes::resolve_channels(&graph),
         presence: Arc::new(keel_realtime::PresenceHub::new()),
+        queue: queue_stats,
         route_inventory,
         middleware_catalog,
         route_bindings,
@@ -1156,6 +1167,9 @@ pub fn build_app_state(
         notifications: notification_store,
         channels: broadcast_routes::resolve_channels(&graph),
         presence: Arc::new(keel_realtime::PresenceHub::new()),
+        // No pool in the builder: no durable store — the /metrics queue
+        // series stays absent (tests inject one to prove the census).
+        queue: None,
         route_inventory: graph_routes::route_inventory(&graph),
         middleware_catalog: keel_http::MiddlewareCatalog::builtin(),
         route_bindings,

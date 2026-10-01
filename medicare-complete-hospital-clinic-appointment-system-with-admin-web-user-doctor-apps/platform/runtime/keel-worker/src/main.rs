@@ -13,9 +13,9 @@ use keel_config::{Environment, FrozenConfig, PlatformConfig};
 use keel_foundation::{codes, AppError, ErrorCategory, Retryability, Severity};
 use keel_event::{ListenerRegistry, OutboxPump, OutboxStore, OutboxStoreService};
 use keel_jobs::{
-    BatchRuntime, BoxFuture, ChainRuntime, DurableJob, InMemoryJobStore, JobDef, JobHandler,
-    JobRegistry, JobStatus, JobStore, JobStoreAdmin, JobStoreAdminService, JobStoreService,
-    WorkerRegistry,
+    BatchRuntime, BoxFuture, ChainRuntime, Control, DurableJob, InMemoryJobStore, JobDef,
+    JobHandler, JobMiddlewareStacks, JobRegistry, JobStatus, JobStore, JobStoreAdmin,
+    JobStoreAdminService, JobStoreService, UniqueLock, WorkerRegistry,
 };
 use keel_lifecycle::{ApplicationHost, BootError, Phase, Provider, ServiceRegistry};
 use keel_scheduling::{ScheduleItem, ScheduleLock, ScheduleRegistry, SchedulerRunner};
@@ -152,6 +152,28 @@ impl ScheduleLock for CacheScheduleLock {
         // Token-free release: within a tick we just acquired this key, so
         // `force_release` cannot free someone else's window.
         self.cache.lock(key, 0).force_release();
+    }
+}
+
+/// Wave 6 P8: the unique-job claim guard over the SAME cache seam as the
+/// schedule locks — `queue:unique:*` keys are backend-held for the def's
+/// `unique_ttl` (Redis when `REDIS_URL` connects, so skip-if-locked spans
+/// nodes; the in-memory port otherwise, D-52 process-local degradation).
+struct CacheUniqueLock {
+    cache: keel_caching::CacheService,
+}
+
+impl UniqueLock for CacheUniqueLock {
+    fn try_acquire(&self, key: &str, ttl: time::Duration) -> Result<bool, AppError> {
+        let ttl_secs = ttl.whole_seconds().max(1) as u64;
+        Ok(self.cache.lock(key, ttl_secs).try_acquire())
+    }
+
+    fn release(&self, key: &str) -> Result<(), AppError> {
+        // Token-free release, the schedule-lock posture: this process just
+        // acquired the key, so force_release cannot free someone else's.
+        self.cache.lock(key, 0).force_release();
+        Ok(())
     }
 }
 
@@ -408,65 +430,125 @@ impl JobHandler for NotificationDeliveryHandler {
     }
 }
 
-/// One claim+dispatch pass. Returns the claimed job, if any. Batch/chain
-/// runtimes are notified on terminal outcomes (L33/L34, S3).
-async fn dispatch_once(
-    registry: &WorkerRegistry,
-    store: &dyn JobStore,
-    worker_name: &str,
-    batches: &BatchRuntime,
-    chains: &ChainRuntime,
-) -> Result<Option<DurableJob>, AppError> {
-    let Some(job) = store.claim(worker_name)? else {
-        return Ok(None);
-    };
-    let id = job.id;
-    let name = job.name.clone();
-    let started = std::time::Instant::now();
-    let outcome = match registry.get(&name) {
-        None => Err(AppError::not_found(format!(
-            "no handler registered for {name}"
-        ))),
-        Some(handler) => deadline_guard(&job, handler.handle(&job)).await,
-    };
-    match outcome {
-        Ok(()) => {
-            store.complete(id)?;
-            if let Some(run) = batches.finish_by_job(id, false)? {
-                tracing::info!(batch_id = %run.id, batch = %run.name, "batch finished");
-            }
-            match chains.finish_by_job(id, true) {
-                Ok(Some(next_id)) => tracing::info!(chain_next = %next_id, "chain advanced"),
-                Ok(None) => {}
-                Err(e) => tracing::warn!(error = %e.public_message, "chain advance failed"),
-            }
-            tracing::info!(
-                job_id = %id,
-                job = %name,
-                ms = started.elapsed().as_millis() as u64,
-                "job succeeded"
-            );
-        }
-        Err(e) => {
-            let next = store.fail(id, &e.public_message)?;
-            if next == JobStatus::Dead {
-                if let Some(run) = batches.finish_by_job(id, true)? {
-                    tracing::warn!(batch_id = %run.id, batch = %run.name, ok = run.ok(), "batch finished with dead member");
+/// Wave 6 P8: everything one claim+dispatch pass reads — handlers and the
+/// middleware composition up front, the store in both trait views, and the
+/// batch/chain books that close on terminal outcomes (L33/L34, S3).
+struct DispatchCtx<'a> {
+    handlers: &'a WorkerRegistry,
+    defs: &'a JobRegistry,
+    stacks: &'a JobMiddlewareStacks,
+    store: &'a dyn JobStore,
+    admin: &'a dyn JobStoreAdmin,
+    batches: &'a BatchRuntime,
+    chains: &'a ChainRuntime,
+}
+
+impl DispatchCtx<'_> {
+    /// One claim+dispatch pass. Returns the claimed job, if any.
+    ///
+    /// Admission runs BEFORE the handler — a `Hold` returns the claim
+    /// (`defer`: attempt untouched, requeued at now + delay, no work
+    /// reported), an `Abort` kills the job terminal (batch/chain books
+    /// close like a dead failure), and the composed post-hooks observe
+    /// every Proceeded execution.
+    async fn once(&self, worker_name: &str) -> Result<Option<DurableJob>, AppError> {
+        let Some(job) = self.store.claim(worker_name)? else {
+            return Ok(None);
+        };
+        let id = job.id;
+        let name = job.name.clone();
+        let started = std::time::Instant::now();
+        let stack = self.stacks.for_job(&name, self.defs.get(&name));
+        let outcome: Result<(), AppError> = match stack.before(&job).await {
+            Ok(Control::Proceed) => {
+                let ran = match self.handlers.get(&name) {
+                    None => Err(AppError::not_found(format!(
+                        "no handler registered for {name}"
+                    ))),
+                    Some(handler) => deadline_guard(&job, handler.handle(&job)).await,
+                };
+                if let Some(err) = stack.after(&job, &ran).await {
+                    tracing::warn!(
+                        job_id = %id,
+                        job = %name,
+                        error = %err.public_message,
+                        "job middleware post-hook failed"
+                    );
                 }
-                if let Err(e) = chains.finish_by_job(id, false) {
+                ran
+            }
+            Ok(Control::Hold(delay)) => {
+                let at = OffsetDateTime::now_utc() + delay;
+                self.admin.defer(id, at)?;
+                tracing::info!(
+                    job_id = %id,
+                    job = %name,
+                    retry_at = %at,
+                    "job held by admission; requeued without failing"
+                );
+                return Ok(None);
+            }
+            Ok(Control::Abort(reason)) => {
+                self.admin.kill(id, reason)?;
+                // Terminal, like a dead failure: close the batch/chain books.
+                if let Some(run) = self.batches.finish_by_job(id, true)? {
+                    tracing::warn!(batch_id = %run.id, batch = %run.name, "batch member killed by admission");
+                }
+                if let Err(e) = self.chains.finish_by_job(id, false) {
                     tracing::warn!(error = %e.public_message, "chain halt failed");
                 }
+                tracing::warn!(
+                    job_id = %id,
+                    job = %name,
+                    reason,
+                    "job killed by admission (dead)"
+                );
+                return Ok(None);
             }
-            tracing::warn!(
-                job_id = %id,
-                job = %name,
-                error = %e.public_message,
-                next = ?next,
-                "job failed"
-            );
+            // Admission backend failure (e.g. the lock cache is down): the
+            // normal fail path — backoff and retry budget — rather than a
+            // blind run.
+            Err(e) => Err(e),
+        };
+        match outcome {
+            Ok(()) => {
+                self.store.complete(id)?;
+                if let Some(run) = self.batches.finish_by_job(id, false)? {
+                    tracing::info!(batch_id = %run.id, batch = %run.name, "batch finished");
+                }
+                match self.chains.finish_by_job(id, true) {
+                    Ok(Some(next_id)) => tracing::info!(chain_next = %next_id, "chain advanced"),
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!(error = %e.public_message, "chain advance failed"),
+                }
+                tracing::info!(
+                    job_id = %id,
+                    job = %name,
+                    ms = started.elapsed().as_millis() as u64,
+                    "job succeeded"
+                );
+            }
+            Err(e) => {
+                let next = self.store.fail(id, &e.public_message)?;
+                if next == JobStatus::Dead {
+                    if let Some(run) = self.batches.finish_by_job(id, true)? {
+                        tracing::warn!(batch_id = %run.id, batch = %run.name, ok = run.ok(), "batch finished with dead member");
+                    }
+                    if let Err(e) = self.chains.finish_by_job(id, false) {
+                        tracing::warn!(error = %e.public_message, "chain halt failed");
+                    }
+                }
+                tracing::warn!(
+                    job_id = %id,
+                    job = %name,
+                    error = %e.public_message,
+                    next = ?next,
+                    "job failed"
+                );
+            }
         }
+        Ok(Some(job))
     }
-    Ok(Some(job))
 }
 
 #[tokio::main]
@@ -617,12 +699,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     job_defs.register(mail_def)?;
     job_defs.register(notification_def)?;
     let job_defs = Arc::new(job_defs);
+    let guard_port = schedule_cache_port();
     let scheduler = Arc::new(
         SchedulerRunner::new(schedules.clone())
             .with_lock(Arc::new(CacheScheduleLock {
-                cache: keel_caching::CacheService::new(schedule_cache_port()),
+                cache: keel_caching::CacheService::new(guard_port.clone()),
             })),
     );
+    // Wave 6 P8: admission + middleware composition — the built-ins (unique
+    // / rate-limit / retry-limit) compose lazily per job name from each
+    // registered def; module middleware registers before first dispatch.
+    // The unique claim guard shares the schedule-lock cache seam.
+    let stacks = JobMiddlewareStacks::new(Arc::new(CacheUniqueLock {
+        cache: keel_caching::CacheService::new(guard_port),
+    }));
 
     let listeners = Arc::new(ListenerRegistry::new());
     let outbox: Option<Arc<dyn OutboxStore>> = pool.as_ref().map(|pool| {
@@ -642,6 +732,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // I/O out (mail chain / database store).
     handlers.register(Arc::new(notification_handler))?;
     let handlers = Arc::new(handlers);
+    // Modules register job middleware alongside their handler/def entries
+    // (boot-time `register`, before the first dispatch); none exists yet,
+    // so the built-in-ready composition arms here as-is.
+    let stacks = Arc::new(stacks);
 
     let mut host = ApplicationHost::new();
     // Sentinel runtime is adopted, not rebuilt, by the provider (boot() is
@@ -654,7 +748,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
     host.add_provider(Box::new(KernelProvider {
         jobs: jobs.clone(),
-        jobs_admin,
+        jobs_admin: jobs_admin.clone(),
         outbox,
         pump: pump.clone(),
         batches: batches.clone(),
@@ -757,7 +851,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             stop.store(true, Ordering::SeqCst);
             break;
         }
-        match dispatch_once(&handlers, &*jobs, &worker_name, &batches, &chains).await {
+        let dispatch = DispatchCtx {
+            handlers: &handlers,
+            defs: &job_defs,
+            stacks: &stacks,
+            store: &*jobs,
+            admin: &*jobs_admin,
+            batches: &batches,
+            chains: &chains,
+        };
+        match dispatch.once(&worker_name).await {
             Ok(Some(_)) => {
                 let done = processed.fetch_add(1, Ordering::SeqCst) + 1;
                 if args.max_jobs > 0 && done >= args.max_jobs {
@@ -1199,5 +1302,321 @@ mod tests {
             ..msg.clone()
         };
         assert!(port.send(&bad_msg, "s").is_err(), "recipient validation first");
+    }
+
+    // ------------------------------- Wave 6 P8: dispatch admission + middleware
+
+    use keel_jobs::{
+        build_from_def, unique_lock_key, JobMiddleware, MemoryUniqueLock, RateLimit,
+        RETRY_LIMIT_ABORT,
+    };
+    use std::sync::Mutex;
+
+    struct TraceHandler {
+        name: String,
+        trace: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl JobHandler for TraceHandler {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn handle<'a>(&'a self, _job: &'a DurableJob) -> BoxFuture<'a, Result<(), AppError>> {
+            let trace = self.trace.clone();
+            Box::pin(async move {
+                trace.lock().unwrap().push("handler".into());
+                Ok(())
+            })
+        }
+    }
+
+    struct TraceMiddleware {
+        trace: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl JobMiddleware for TraceMiddleware {
+        fn name(&self) -> &str {
+            "trace"
+        }
+
+        fn before<'a>(&'a self, _job: &'a DurableJob) -> BoxFuture<'a, Result<Control, AppError>> {
+            let trace = self.trace.clone();
+            Box::pin(async move {
+                trace.lock().unwrap().push("before".into());
+                Ok(Control::Proceed)
+            })
+        }
+
+        fn after<'a>(
+            &'a self,
+            _job: &'a DurableJob,
+            _result: &'a Result<(), AppError>,
+        ) -> BoxFuture<'a, Result<(), AppError>> {
+            let trace = self.trace.clone();
+            Box::pin(async move {
+                trace.lock().unwrap().push("after".into());
+                Ok(())
+            })
+        }
+    }
+
+    /// One P8 claim+dispatch pass against the in-memory store (the store is
+    /// its own admin twin, so both trait views point at one instance).
+    async fn p8_dispatch(
+        handlers: &WorkerRegistry,
+        defs: &JobRegistry,
+        stacks: &JobMiddlewareStacks,
+        store: &InMemoryJobStore,
+        batches: &BatchRuntime,
+        chains: &ChainRuntime,
+    ) -> Result<Option<DurableJob>, AppError> {
+        DispatchCtx {
+            handlers,
+            defs,
+            stacks,
+            store,
+            admin: store,
+            batches,
+            chains,
+        }
+        .once("p8-test")
+        .await
+    }
+
+    /// Wave 6 P8: an exhausted rate bucket HOLDS the claim — the job is
+    /// requeued without failing (attempt given back, no last_error), the
+    /// handler never ran for it, and nothing dead-lettered.
+    #[tokio::test]
+    async fn dispatch_holds_a_rate_limited_job_without_failing_it() {
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let mut def = JobDef::new("p8.rate_job");
+        def.rate_limit = Some(RateLimit {
+            capacity: 1,
+            refill_per_sec: 0.001,
+        });
+        let mut defs = JobRegistry::new();
+        defs.register(def.clone()).unwrap();
+        let mut handlers = WorkerRegistry::new();
+        handlers
+            .register(Arc::new(TraceHandler {
+                name: "p8.rate_job".into(),
+                trace: trace.clone(),
+            }))
+            .unwrap();
+        let stacks = JobMiddlewareStacks::new(Arc::new(MemoryUniqueLock::new()));
+        let store = Arc::new(InMemoryJobStore::new());
+        let batches = BatchRuntime::new(store.clone());
+        let chains = ChainRuntime::new(store.clone());
+
+        store
+            .enqueue(build_from_def(
+                &def,
+                serde_json::Value::Null,
+                OffsetDateTime::now_utc(),
+            ))
+            .unwrap();
+        store
+            .enqueue(build_from_def(
+                &def,
+                serde_json::Value::Null,
+                OffsetDateTime::now_utc(),
+            ))
+            .unwrap();
+
+        let first = p8_dispatch(&handlers, &defs, &stacks, &store, &batches, &chains)
+            .await
+            .unwrap();
+        assert!(first.is_some(), "the burst claim runs");
+        let held = p8_dispatch(&handlers, &defs, &stacks, &store, &batches, &chains)
+            .await
+            .unwrap();
+        assert!(held.is_none(), "the exhausted claim reports no work");
+        assert_eq!(
+            *trace.lock().unwrap(),
+            vec!["handler"],
+            "the held job never ran"
+        );
+
+        let pending = store.list(Some(JobStatus::Pending), 10).unwrap();
+        assert_eq!(pending.len(), 1, "the held job returned to pending");
+        assert_eq!(pending[0].attempt, 0, "the claim attempt was given back");
+        assert!(pending[0].last_error.is_none(), "held is not failed");
+        assert!(
+            pending[0].available_at > OffsetDateTime::now_utc(),
+            "requeued for the refill"
+        );
+        assert_eq!(
+            store.list(Some(JobStatus::Dead), 10).unwrap().len(),
+            0,
+            "nothing dead-lettered"
+        );
+    }
+
+    /// Wave 6 P8: skip-if-locked — a peer-held unique key defers the claim
+    /// (attempt returned, handler never runs); once the key releases a
+    /// fresh claim of the same type runs.
+    #[tokio::test]
+    async fn dispatch_skips_a_locked_unique_job() {
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let mut def = JobDef::new("p8.unique_job");
+        def.unique_key = Some("row-7".into());
+        let mut defs = JobRegistry::new();
+        defs.register(def.clone()).unwrap();
+        let mut handlers = WorkerRegistry::new();
+        handlers
+            .register(Arc::new(TraceHandler {
+                name: "p8.unique_job".into(),
+                trace: trace.clone(),
+            }))
+            .unwrap();
+        let lock = Arc::new(MemoryUniqueLock::new());
+        let stacks = JobMiddlewareStacks::new(lock.clone());
+        let store = Arc::new(InMemoryJobStore::new());
+        let batches = BatchRuntime::new(store.clone());
+        let chains = ChainRuntime::new(store.clone());
+        let key = unique_lock_key("p8.unique_job", "row-7");
+
+        // A peer worker holds the key.
+        assert!(
+            lock.try_acquire(&key, time::Duration::seconds(60))
+                .unwrap(),
+            "the peer takes the lock"
+        );
+        store
+            .enqueue(build_from_def(
+                &def,
+                serde_json::Value::Null,
+                OffsetDateTime::now_utc(),
+            ))
+            .unwrap();
+        assert!(
+            p8_dispatch(&handlers, &defs, &stacks, &store, &batches, &chains)
+                .await
+                .unwrap()
+                .is_none(),
+            "a locked claim skips"
+        );
+        let pending = store.list(Some(JobStatus::Pending), 10).unwrap();
+        assert_eq!(pending.len(), 1, "the skipped job stays pending");
+        assert_eq!(pending[0].attempt, 0, "the claim attempt was given back");
+        assert!(pending[0].last_error.is_none(), "skipped is not failed");
+        assert!(
+            pending[0].available_at > OffsetDateTime::now_utc(),
+            "requeued on the unique-poll cadence"
+        );
+        assert!(
+            trace.lock().unwrap().is_empty(),
+            "the locked job never ran"
+        );
+
+        // Released: a fresh claim of the same type runs.
+        lock.release(&key).unwrap();
+        store
+            .enqueue(build_from_def(
+                &def,
+                serde_json::Value::Null,
+                OffsetDateTime::now_utc(),
+            ))
+            .unwrap();
+        assert!(
+            p8_dispatch(&handlers, &defs, &stacks, &store, &batches, &chains)
+                .await
+                .unwrap()
+                .is_some(),
+            "an unlocked claim runs"
+        );
+        assert_eq!(*trace.lock().unwrap(), vec!["handler"]);
+    }
+
+    /// Wave 6 P8: a registered module middleware wraps the execution —
+    /// before → handler → after, in stack order around the real handler.
+    #[tokio::test]
+    async fn dispatch_runs_module_middleware_around_the_handler() {
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let def = JobDef::new("p8.mw_job");
+        let mut defs = JobRegistry::new();
+        defs.register(def.clone()).unwrap();
+        let mut handlers = WorkerRegistry::new();
+        handlers
+            .register(Arc::new(TraceHandler {
+                name: "p8.mw_job".into(),
+                trace: trace.clone(),
+            }))
+            .unwrap();
+        let mut stacks = JobMiddlewareStacks::new(Arc::new(MemoryUniqueLock::new()));
+        stacks
+            .register(
+                "p8.mw_job",
+                Arc::new(TraceMiddleware {
+                    trace: trace.clone(),
+                }),
+            )
+            .unwrap();
+        let store = Arc::new(InMemoryJobStore::new());
+        let batches = BatchRuntime::new(store.clone());
+        let chains = ChainRuntime::new(store.clone());
+        store
+            .enqueue(build_from_def(
+                &def,
+                serde_json::Value::Null,
+                OffsetDateTime::now_utc(),
+            ))
+            .unwrap();
+
+        assert!(
+            p8_dispatch(&handlers, &defs, &stacks, &store, &batches, &chains)
+                .await
+                .unwrap()
+                .is_some(),
+            "the job ran"
+        );
+        assert_eq!(
+            *trace.lock().unwrap(),
+            vec!["before", "handler", "after"],
+            "pre-hook, handler, post-hook in order"
+        );
+    }
+
+    /// Wave 6 P8: an over-budget claim is killed terminal — the handler
+    /// never runs, the job lands dead with the retry-limit reason.
+    #[tokio::test]
+    async fn dispatch_kills_an_over_budget_job() {
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let mut def = JobDef::new("p8.retry_job");
+        def.retry_limit = Some(1); // two executions allowed
+        let mut defs = JobRegistry::new();
+        defs.register(def.clone()).unwrap();
+        let mut handlers = WorkerRegistry::new();
+        handlers
+            .register(Arc::new(TraceHandler {
+                name: "p8.retry_job".into(),
+                trace: trace.clone(),
+            }))
+            .unwrap();
+        let stacks = JobMiddlewareStacks::new(Arc::new(MemoryUniqueLock::new()));
+        let store = Arc::new(InMemoryJobStore::new());
+        let batches = BatchRuntime::new(store.clone());
+        let chains = ChainRuntime::new(store.clone());
+
+        let mut job = build_from_def(&def, serde_json::Value::Null, OffsetDateTime::now_utc());
+        job.attempt = 2; // claim() bumps to 3 — over the two-execution cap
+        store.enqueue(job).unwrap();
+
+        assert!(
+            p8_dispatch(&handlers, &defs, &stacks, &store, &batches, &chains)
+                .await
+                .unwrap()
+                .is_none(),
+            "a killed claim reports no work"
+        );
+        assert!(
+            trace.lock().unwrap().is_empty(),
+            "the over-budget handler never ran"
+        );
+        let dead = store.list(Some(JobStatus::Dead), 10).unwrap();
+        assert_eq!(dead.len(), 1, "kill is terminal");
+        assert_eq!(dead[0].last_error.as_deref(), Some(RETRY_LIMIT_ABORT));
+        assert!(dead[0].finished_at.is_some(), "kill stamps finished_at");
     }
 }

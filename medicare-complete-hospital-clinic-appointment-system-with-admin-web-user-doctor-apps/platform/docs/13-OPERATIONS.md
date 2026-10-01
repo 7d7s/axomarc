@@ -25,6 +25,16 @@ class recorded by the edge middleware, plus `keel_uptime_seconds`, `keel_degrade
 `keel_routes_declared` gauges. The endpoint is feature-flagged by `app.metrics` (disabled by
 default); while the flag is off it answers a 404 envelope, so enabling it is an explicit act.
 
+When a durable queue store is wired (the pool-gated `PgJobStore` in `serve()`), every scrape
+also carries the queue census: `keel_queue_depth{status}` (pending / running / dead /
+succeeded), `keel_queue_oldest_age_seconds` (age of the oldest pending job; 0 when none) and
+`keel_queue_finished{outcome}` (succeeded / dead — the cumulative throughput census, since
+worker-side finishes land in the same store the API snapshots). The gauges are read at scrape
+time, not incremented: without a durable store (no pool, test builder) the series stays
+**absent** rather than reporting a lying zero, and a prune/clear can lower a census — they
+observe the store, they are not event counters (test:
+`metrics_expose_queue_depth_age_and_throughput`).
+
 `GET /_dashboard` serves a Horizon-lite operations page (health, readiness, boot metadata, flags,
 declared routes, metrics) that polls the JSON/meta endpoints every 5s. It is on by default in
 dev/test and gated by the `app.dashboard` flag elsewhere.

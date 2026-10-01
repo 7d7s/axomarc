@@ -56,10 +56,47 @@ which validates the `Mailable` and refuses an unregistered job name (tests:
 `queued_send_retries_then_dead_letters`, `enqueue_requires_registered_def_and_valid_mail`,
 `registries_accept_the_mail_job_once`).
 
+Wave 6 P8 advanced the queue admission plane (all `serde(default)` additions to `JobDef`):
+
+- **Unique jobs** — `unique_key` + `unique_ttl_secs` (default 300): admission takes a cache
+  lock keyed `queue:unique:<job>:<key>` before the handler; a claim whose key is held
+  elsewhere is deferred without failing (attempt given back, requeued on a short poll
+  cadence) and the lock releases only when the run succeeds. The worker's guard shares the
+  scheduler's `CacheService` seam (`CacheUniqueLock`; `MemoryUniqueLock` behind tests).
+- **Rate-limited jobs** — `rate_limit = { capacity, refill_per_sec }` shapes a token bucket
+  per job type; an exhausted bucket `Hold`s the claim — requeued at the next-token time,
+  never failed, never dead-lettered.
+- **Job middleware** — `JobMiddleware` (`before` → `Control::{Proceed, Hold, Abort}`, plus
+  `after` observing every proceeded result) composes in `MiddlewareStack`s;
+  `JobMiddlewareStacks` builds each job's stack lazily as the built-ins (unique →
+  rate-limit → retry-limit) followed by module layers, frozen at first dispatch. `Abort`
+  kills the job terminal, `Hold` routes through the new `JobStoreAdmin::defer`
+  (running → pending, `attempt` given back, `available_at` pushed) — both `defer` and
+  `kill` implement on the in-memory, Postgres and Redis stores. Registration refuses
+  impossible admission configs (empty unique key, zero TTL, zero capacity,
+  non-finite/non-positive refill).
+- **Metrics** — `/metrics` gains the scrape-time queue census (`keel_queue_depth{status}`,
+  `keel_queue_oldest_age_seconds`, `keel_queue_finished{outcome}`; see 13-OPERATIONS).
+
+Tests (jobs): `unique_admission_holds_locked_claims_until_release`,
+`rate_limited_admission_holds_until_the_bucket_refills`,
+`admission_defer_returns_the_attempt_and_kill_is_terminal`,
+`retry_limit_aborts_over_budget_claims`, `middleware_stack_orders_hooks_and_short_circuits`,
+`stacks_compose_builtins_then_module_layers`, `registry_refuses_impossible_admission_configs`;
+(worker): `dispatch_holds_a_rate_limited_job_without_failing_it`,
+`dispatch_skips_a_locked_unique_job`, `dispatch_runs_module_middleware_around_the_handler`,
+`dispatch_kills_an_over_budget_job`; (keel-api):
+`metrics_expose_queue_depth_age_and_throughput`. The codegen `job-middleware` kind now emits
+`impl JobMiddleware` with the real before/after shape (needle pinned by
+`wave5_templates_reference_real_platform_surface`).
+
 ## Batches and chains
 
 - **BatchRuntime** — many items, one durable job: per-item progress, resumable.
-- **ChainRuntime** — ordered steps where each step is a job; failure halts the chain.
+- **ChainRuntime** — ordered steps where each step is a job; failure records the halted
+  member position (`ChainStatus::Halted { position }`), repeats keep the first failure, and
+  a later success (e.g. `queue:retry`) resumes the chain through `Completed`
+  (tests `chain_advances_only_on_success`, `chain_failure_records_the_halted_position`).
 
 Both sit on the job store; they add orchestration semantics, not new infrastructure.
 

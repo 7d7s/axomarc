@@ -768,6 +768,98 @@ async fn metrics_endpoint_is_flag_gated() {
     assert!(body.contains("keel_routes_declared"));
 }
 
+/// Wave 6 P8: /metrics carries the queue census — depth per status, the
+/// oldest pending age and the finished throughput census — snapshotted
+/// from the store at scrape time; without a durable store the series
+/// stays absent (never a lying zero).
+#[tokio::test]
+async fn metrics_expose_queue_depth_age_and_throughput() {
+    use keel_jobs::{JobStore, JobStoreAdmin};
+    let mut state = app().state.clone();
+    state.flags.push("app.metrics".into());
+
+    // No durable store: no queue series at all.
+    let (status, _, body) = raw_text(
+        keel_api::routes::router(state.clone()),
+        Request::builder()
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !body.contains("keel_queue_"),
+        "queue series absent without a store: {body}"
+    );
+
+    // Seed one row per census dimension.
+    let store = Arc::new(keel_jobs::InMemoryJobStore::new());
+    let def = keel_jobs::JobDef::new("p8.metrics_probe");
+    let now = time::OffsetDateTime::now_utc();
+
+    // One job runs to success (succeeded census).
+    store
+        .enqueue(keel_jobs::build_from_def(
+            &def,
+            serde_json::Value::Null,
+            now,
+        ))
+        .unwrap();
+    let claimed = store.claim("metrics").expect("claims").expect("one job");
+    store.complete(claimed.id).unwrap();
+
+    // One dies straight from pending (dead census; no claim needed).
+    let doomed = keel_jobs::build_from_def(&def, serde_json::Value::Null, now);
+    let doomed_id = doomed.id;
+    store.enqueue(doomed).unwrap();
+    store.kill(doomed_id, "probe").unwrap();
+
+    // One sits pending, enqueued 90s ago — the oldest-age gauge source.
+    store
+        .enqueue(keel_jobs::build_from_def(
+            &def,
+            serde_json::Value::Null,
+            now - time::Duration::seconds(90),
+        ))
+        .unwrap();
+
+    state.queue = Some(store as Arc<dyn keel_jobs::JobStoreAdmin>);
+    let (status, _, body) = raw_text(
+        keel_api::routes::router(state),
+        Request::builder()
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    for line in [
+        "keel_queue_depth{status=\"pending\"} 1",
+        "keel_queue_depth{status=\"running\"} 0",
+        "keel_queue_depth{status=\"dead\"} 1",
+        "keel_queue_depth{status=\"succeeded\"} 1",
+        "keel_queue_finished{outcome=\"succeeded\"} 1",
+        "keel_queue_finished{outcome=\"dead\"} 1",
+    ] {
+        assert!(
+            body.contains(&format!("{line}\n")),
+            "missing `{line}`:\n{body}"
+        );
+    }
+    let age_line = body
+        .lines()
+        .find(|l| l.starts_with("keel_queue_oldest_age_seconds "))
+        .expect("age gauge present");
+    let age: f64 = age_line
+        .split_whitespace()
+        .nth(1)
+        .expect("age value")
+        .parse()
+        .expect("numeric age");
+    assert!(age >= 85.0, "aged pending row surfaces: {age_line}");
+}
+
 #[tokio::test]
 async fn metrics_middleware_counts_requests_by_method_and_class() {
     let mut state = app().state.clone();

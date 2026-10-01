@@ -626,6 +626,81 @@ impl JobStoreAdmin for RedisJobStore {
             oldest_pending: pending_jobs.iter().map(|j| j.enqueued_at).min(),
         })
     }
+
+    fn defer(&self, id: Uuid, available_at: OffsetDateTime) -> Result<(), AppError> {
+        let mut job = self
+            .read_item(id)?
+            .ok_or_else(|| AppError::not_found(format!("job {id}")))?;
+        if job.status != JobStatus::Running {
+            return Err(AppError::conflict(
+                "job is not running; only a claimed job can be deferred",
+            ));
+        }
+        job.status = JobStatus::Pending;
+        // The claim consumed an attempt; a Hold gives it back (P8).
+        job.attempt = job.attempt.saturating_sub(1);
+        job.available_at = available_at;
+        job.claimed_by = None;
+        job.claimed_at = None;
+        let m = member(job.priority, id);
+        self.write_item(&job)?;
+        self.conn.with(|c| {
+            redis::cmd("ZREM")
+                .arg(self.zset("running"))
+                .arg(&m)
+                .query::<u64>(c)
+        })?;
+        self.conn.with(|c| {
+            redis::cmd("ZADD")
+                .arg(self.zset("pending"))
+                .arg(epoch_score(available_at))
+                .arg(&m)
+                .query::<u64>(c)
+        })?;
+        Ok(())
+    }
+
+    fn kill(&self, id: Uuid, error: &str) -> Result<(), AppError> {
+        let mut job = self
+            .read_item(id)?
+            .ok_or_else(|| AppError::not_found(format!("job {id}")))?;
+        if !matches!(
+            job.status,
+            JobStatus::Pending | JobStatus::Running | JobStatus::Failed
+        ) {
+            return Err(AppError::conflict(
+                "job is already terminal; only pending, running or failed jobs can be killed",
+            ));
+        }
+        // Failed never rests in a zset (the claim/fail comments); pending
+        // and running do.
+        let source = match job.status {
+            JobStatus::Pending => Some("pending"),
+            JobStatus::Running => Some("running"),
+            _ => None,
+        };
+        job.status = JobStatus::Dead;
+        job.last_error = Some(error.to_string());
+        job.finished_at = Some(now());
+        let m = member(job.priority, id);
+        self.write_item(&job)?;
+        if let Some(which) = source {
+            self.conn.with(|c| {
+                redis::cmd("ZREM")
+                    .arg(self.zset(which))
+                    .arg(&m)
+                    .query::<u64>(c)
+            })?;
+        }
+        self.conn.with(|c| {
+            redis::cmd("ZADD")
+                .arg(self.zset("dead"))
+                .arg(epoch_score(job.available_at))
+                .arg(&m)
+                .query::<u64>(c)
+        })?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -328,7 +328,11 @@ envelope. Recording paths:
   alongside happy paths. Emits `keel_http_requests_total{method,status_class}`
   and `keel_http_request_duration_seconds{method}` (fixed bucket histogram).
 - `/metrics` handler — refreshes `keel_uptime_seconds`, `keel_degraded`
-  (0/1) and `keel_routes_declared` gauges on every scrape.
+  (0/1) and `keel_routes_declared` gauges on every scrape, and (Wave 6
+  P8) the queue census when a durable store is wired:
+  `keel_queue_depth{status}`, `keel_queue_oldest_age_seconds`,
+  `keel_queue_finished{outcome}` — read at scrape time from the same
+  store the worker drains; the series stays absent without one.
 - Dropped series (cardinality guard) surface as
   `keel_metrics_dropped_series`.
 
@@ -342,7 +346,8 @@ step) that polls `/healthz`, `/readyz`, `/meta/boot`, `/meta/flags`,
 `/meta/routes` and `/metrics`, rendering boot info, flag pills, the graph
 route table, registered services and the raw Prometheus text. Gating: always
 served in Dev/Test; production requires the `app.dashboard` flag. Read-only
-by design — queue/cache internals land in v0.9+ behind the same surface.
+by design — queue depth/age surface through the `/metrics` census (Wave 6
+P8); cache internals land in v0.9+ behind the same surface.
 
 ## Redis cache backend (S10, B-12)
 

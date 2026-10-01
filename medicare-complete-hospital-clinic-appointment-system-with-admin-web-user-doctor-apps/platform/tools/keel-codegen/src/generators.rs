@@ -683,27 +683,38 @@ pub fn __NAME___scope(filters: Vec<FieldFilter>) -> Vec<FieldFilter> {
 }
 "##;
 
-const JOB_MIDDLEWARE_TEMPLATE: &str = r##"//! Job middleware: __NAME__ — wraps durable-job execution (pass-through
-//! logging by default). Wrap `next` where the worker dispatches the job;
-//! delivery is at-least-once, so anything the middleware does must be
+const JOB_MIDDLEWARE_TEMPLATE: &str = r##"//! Job middleware: __NAME__ — composable pre/post hooks around durable-job
+//! execution (pass-through logging by default). Register it at worker boot
+//! on the `JobMiddlewareStacks` next to the module's job defs; admission
+//! decisions ride `Control` (`Proceed`, `Hold` to requeue, `Abort` to kill).
+//! Delivery is at-least-once, so anything the middleware does must be
 //! idempotent.
 
 use keel_foundation::AppError;
-use keel_jobs::{BoxFuture, DurableJob};
+use keel_jobs::{BoxFuture, Control, DurableJob, JobMiddleware};
 
 pub struct __TYPE__JobMiddleware;
 
-impl __TYPE__JobMiddleware {
-    pub fn handle<'a>(
-        &'a self,
-        job: &'a DurableJob,
-        next: BoxFuture<'a, Result<(), AppError>>,
-    ) -> BoxFuture<'a, Result<(), AppError>> {
+impl JobMiddleware for __TYPE__JobMiddleware {
+    fn name(&self) -> &str {
+        "__NAME__"
+    }
+
+    fn before<'a>(&'a self, job: &'a DurableJob) -> BoxFuture<'a, Result<Control, AppError>> {
         Box::pin(async move {
             tracing::debug!(job_id = %job.id, "__NAME__ middleware: before");
-            let result = next.await;
+            Ok(Control::Proceed)
+        })
+    }
+
+    fn after<'a>(
+        &'a self,
+        job: &'a DurableJob,
+        _result: &'a Result<(), AppError>,
+    ) -> BoxFuture<'a, Result<(), AppError>> {
+        Box::pin(async move {
             tracing::debug!(job_id = %job.id, "__NAME__ middleware: after");
-            result
+            Ok(())
         })
     }
 }
@@ -869,7 +880,8 @@ mod tests {
             ),
             ("channel", "routes/channels.toml"),
             ("exception", "impl From<SampleThingError> for AppError"),
-            ("job-middleware", "keel_jobs::{BoxFuture, DurableJob}"),
+            ("job-middleware", "impl JobMiddleware for SampleThingJobMiddleware"),
+            ("job-middleware", "keel_jobs::{BoxFuture, Control, DurableJob, JobMiddleware}"),
             (
                 "notification",
                 "impl NotificationDef for SampleThingNotification",

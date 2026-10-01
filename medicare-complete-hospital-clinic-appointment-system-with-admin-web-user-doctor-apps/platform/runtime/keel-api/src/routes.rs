@@ -70,6 +70,12 @@ pub struct AppState {
     /// authorized subscription path (join on connect, leave on
     /// disconnect) — ONE instance per boot.
     pub presence: Arc<keel_realtime::PresenceHub>,
+    // --- Wave 6 P8 queues ------------------------------------------------
+    /// Pool-gated queue census behind the `/metrics` queue series (depth /
+    /// age / finished throughput), snapshotted per scrape. `None` = no
+    /// durable store (no pool, or a builder) — the series stays absent
+    /// rather than reporting a lying zero (docs/19, 13-OPERATIONS).
+    pub queue: Option<Arc<dyn keel_jobs::JobStoreAdmin>>,
     pub route_inventory: Vec<RouteEntry>,
     // --- Wave 1 middleware model ------------------------------------------
     /// Named middleware catalog (middleware.toml or the builtin).
@@ -352,6 +358,48 @@ async fn metrics_text(State(s): State<AppState>) -> axum::response::Response {
         std::collections::BTreeMap::new(),
         s.route_inventory.len() as f64,
     );
+    // Wave 6 P8: the queue census (docs/19: queue depth/age/throughput
+    // counters on /metrics) — snapshotted at scrape from the pool-gated
+    // store. No durable store = the series stays absent rather than
+    // reporting a lying zero.
+    if let Some(queue) = &s.queue {
+        if let Ok(snap) = queue.snapshot() {
+            for (status, count) in [
+                ("pending", snap.pending),
+                ("running", snap.running),
+                ("dead", snap.dead),
+                ("succeeded", snap.succeeded),
+            ] {
+                let mut labels = std::collections::BTreeMap::new();
+                labels.insert("status".to_string(), status.to_string());
+                s.metrics
+                    .set_gauge("keel_queue_depth", labels, count as f64);
+            }
+            let oldest = snap
+                .oldest_pending
+                .map(|at| {
+                    (time::OffsetDateTime::now_utc() - at)
+                        .whole_seconds()
+                        .max(0) as f64
+                })
+                .unwrap_or(0.0);
+            s.metrics.set_gauge(
+                "keel_queue_oldest_age_seconds",
+                std::collections::BTreeMap::new(),
+                oldest,
+            );
+            // Throughput: the cumulative finished census — worker-side
+            // finishes land in the SAME store, so both planes surface here.
+            // A prune/clear can lower it; it is a store census, not an
+            // event counter (13-OPERATIONS).
+            for (outcome, count) in [("succeeded", snap.succeeded), ("dead", snap.dead)] {
+                let mut labels = std::collections::BTreeMap::new();
+                labels.insert("outcome".to_string(), outcome.to_string());
+                s.metrics
+                    .set_gauge("keel_queue_finished", labels, count as f64);
+            }
+        }
+    }
     let body = keel_metrics::render_prometheus(&s.metrics.snapshot());
     (
         [("content-type", "text/plain; version=0.0.4; charset=utf-8")],

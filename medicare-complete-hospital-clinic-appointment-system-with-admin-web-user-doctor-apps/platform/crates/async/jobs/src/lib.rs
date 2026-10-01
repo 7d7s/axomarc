@@ -102,6 +102,10 @@ pub const DEFAULT_BACKOFF_MAX_SECS: i64 = 600;
 // ------------------------------------------------------------------ registry
 
 /// Registered job type: retry budget, queue, execution deadline.
+///
+/// Wave 6 P8 adds the admission config the built-in middlewares read
+/// (unique / rate-limit / retry-limit) — all `serde(default)` additive, so
+/// pre-P8 serialized defs keep loading.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobDef {
     pub name: String,
@@ -111,6 +115,34 @@ pub struct JobDef {
     pub queue: String,
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
+    /// Wave 6 P8 unique jobs: a literal key guarding claims of this type
+    /// through a [`UniqueLock`] (skip-if-locked; see
+    /// [`UniqueMiddleware`]).
+    #[serde(default)]
+    pub unique_key: Option<String>,
+    /// Wave 6 P8 unique jobs: how long a held lock survives a crashed
+    /// holder (default [`DEFAULT_UNIQUE_TTL_SECS`]).
+    #[serde(default)]
+    pub unique_ttl_secs: Option<u64>,
+    /// Wave 6 P8 rate-limited jobs: token bucket per job type — an
+    /// exhausted checkout requeues with a refill-shaped delay instead of
+    /// failing (see [`RateLimitMiddleware`]).
+    #[serde(default)]
+    pub rate_limit: Option<RateLimit>,
+    /// Wave 6 P8 retry-limit middleware: cap on EXTRA runs enforced before
+    /// the handler — over budget the job dies without running (the store's
+    /// `max_attempts` budget is untouched; see [`RetryLimitMiddleware`]).
+    #[serde(default)]
+    pub retry_limit: Option<u32>,
+}
+
+/// Wave 6 P8: token-bucket config for one job type — `capacity` burst
+/// checkouts, `refill_per_sec` steady refill. Bucket state is per-process
+/// (per-node posture, the throttle-bucket posture).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RateLimit {
+    pub capacity: u32,
+    pub refill_per_sec: f64,
 }
 
 fn default_max_attempts() -> u32 {
@@ -120,6 +152,14 @@ fn default_timeout_secs() -> u64 {
     300
 }
 
+/// Wave 6 P8: default unique-lock TTL — a crashed holder releases its
+/// `queue:unique:*` key after this long (configurable per def).
+pub const DEFAULT_UNIQUE_TTL_SECS: u64 = 300;
+/// Wave 6 P8: while a unique key is locked, held claims are requeued on
+/// this cadence (a poll-shaped delay; the lock TTL is the crash valve, not
+/// the retry timer).
+pub const UNIQUE_POLL_SECS: u64 = 5;
+
 impl JobDef {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
@@ -127,6 +167,10 @@ impl JobDef {
             max_attempts: default_max_attempts(),
             queue: default_queue(),
             timeout_secs: default_timeout_secs(),
+            unique_key: None,
+            unique_ttl_secs: None,
+            rate_limit: None,
+            retry_limit: None,
         }
     }
 }
@@ -154,6 +198,32 @@ impl JobRegistry {
                 "job {} needs max_attempts >= 1",
                 def.name
             )));
+        }
+        // Wave 6 P8: refuse admission configs that can never admit.
+        if def.unique_key.as_deref() == Some("") {
+            return Err(AppError::validation(format!(
+                "job {} has an empty unique_key",
+                def.name
+            )));
+        }
+        if let Some(ttl) = def.unique_ttl_secs {
+            if ttl == 0 {
+                return Err(AppError::validation(format!(
+                    "job {} unique_ttl_secs must be >= 1",
+                    def.name
+                )));
+            }
+        }
+        if let Some(rate) = def.rate_limit {
+            if rate.capacity == 0
+                || !rate.refill_per_sec.is_finite()
+                || rate.refill_per_sec <= 0.0
+            {
+                return Err(AppError::validation(format!(
+                    "job {} rate_limit needs capacity >= 1 and refill_per_sec > 0",
+                    def.name
+                )));
+            }
         }
         self.defs.push(def);
         Ok(())
@@ -301,6 +371,14 @@ pub trait JobStoreAdmin: Send + Sync {
     fn delete_dead(&self, id: Uuid) -> Result<bool, AppError>;
     /// Wave 5: queue depth + oldest pending age (`queue:monitor`).
     fn snapshot(&self) -> Result<QueueSnapshot, AppError>;
+    /// Wave 6 P8: return a JUST-CLAIMED job to pending at `available_at`
+    /// (admission Hold — the attempt `claim()` consumed is given back, so
+    /// waiting never burns the retry budget and is never a failure).
+    fn defer(&self, id: Uuid, available_at: OffsetDateTime) -> Result<(), AppError>;
+    /// Wave 6 P8: terminal refusal — pending/running/failed → dead right
+    /// now with `error` recorded (the retry-limit abort; batch cancel
+    /// reuses it). Contrasts with `fail`, which walks the retry budget.
+    fn kill(&self, id: Uuid, error: &str) -> Result<(), AppError>;
 }
 
 /// Queue depth + age facts behind `keel queue:monitor`, kept as data so the
@@ -488,6 +566,43 @@ impl JobStoreAdmin for InMemoryJobStore {
         }
         Ok(snap)
     }
+
+    fn defer(&self, id: Uuid, available_at: OffsetDateTime) -> Result<(), AppError> {
+        let mut jobs = self.jobs.lock().unwrap();
+        let idx = Self::find_index(&jobs, id)?;
+        let job = &mut jobs[idx];
+        if job.status != JobStatus::Running {
+            return Err(AppError::conflict(format!(
+                "job {id} is not running; only a claimed job can be deferred"
+            )));
+        }
+        job.status = JobStatus::Pending;
+        // The claim consumed an attempt; a Hold gives it back so admission
+        // waiting never eats the retry budget.
+        job.attempt = job.attempt.saturating_sub(1);
+        job.available_at = available_at;
+        job.claimed_by = None;
+        job.claimed_at = None;
+        Ok(())
+    }
+
+    fn kill(&self, id: Uuid, error: &str) -> Result<(), AppError> {
+        let mut jobs = self.jobs.lock().unwrap();
+        let idx = Self::find_index(&jobs, id)?;
+        let job = &mut jobs[idx];
+        if !matches!(
+            job.status,
+            JobStatus::Pending | JobStatus::Running | JobStatus::Failed
+        ) {
+            return Err(AppError::conflict(format!(
+                "job {id} is already terminal; only pending, running or failed jobs can be killed"
+            )));
+        }
+        job.status = JobStatus::Dead;
+        job.last_error = Some(error.to_string());
+        job.finished_at = Some(OffsetDateTime::now_utc());
+        Ok(())
+    }
 }
 
 // ------------------------------------------------- batch/chain runtime (S3)
@@ -657,13 +772,31 @@ impl BatchRuntime {
     }
 }
 
+/// Wave 6 P8: liveness of one chain — a failed member leaves the chain
+/// dead with its position recorded (docs/19), later members were never
+/// enqueued.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChainStatus {
+    Running,
+    /// The member at `position` is the one that killed the chain.
+    Halted { position: usize },
+    /// Every member ran to success.
+    Completed,
+}
+
+struct ChainArm {
+    jobs: Vec<DurableJob>,
+    position: usize,
+    status: ChainStatus,
+}
+
 /// Executes a `ChainSpec` (L34): strictly ordered pipeline where the next
 /// job is enqueued only when the previous one SUCCEEDED. A failed member
 /// halts the chain (its retries are handled by the store; once it goes
-/// dead the chain stops and reports).
+/// dead the chain stops, records the failed position, and reports).
 pub struct ChainRuntime {
     store: Arc<dyn JobStore>,
-    chains: Mutex<HashMap<Uuid, (Vec<DurableJob>, usize)>>,
+    chains: Mutex<HashMap<Uuid, ChainArm>>,
 }
 
 impl ChainRuntime {
@@ -681,7 +814,14 @@ impl ChainRuntime {
         let jobs = spec.jobs;
         let first = jobs[0].clone();
         self.store.enqueue(first)?;
-        self.chains.lock().unwrap().insert(id, (jobs, 0));
+        self.chains.lock().unwrap().insert(
+            id,
+            ChainArm {
+                jobs,
+                position: 0,
+                status: ChainStatus::Running,
+            },
+        );
         Ok(id)
     }
 
@@ -689,25 +829,50 @@ impl ChainRuntime {
     /// chain advances. Returns the next enqueued job id, if the chain moved.
     pub fn step_finished(&self, chain_id: Uuid, succeeded: bool) -> Result<Option<Uuid>, AppError> {
         let mut chains = self.chains.lock().unwrap();
-        let Some((jobs, index)) = chains.get_mut(&chain_id) else {
+        let Some(arm) = chains.get_mut(&chain_id) else {
             return Err(AppError::not_found(format!("chain {chain_id}")));
         };
-        if !succeeded {
+        if succeeded {
+            if arm.status == ChainStatus::Completed {
+                return Ok(None);
+            }
+            arm.position += 1;
+            let Some(next) = arm.jobs.get(arm.position).cloned() else {
+                arm.status = ChainStatus::Completed;
+                return Ok(None);
+            };
+            // A revived member (`queue:retry` on the dead failure) resumes
+            // the chain — the halt record is revocable on success.
+            arm.status = ChainStatus::Running;
+            // Enqueue while holding the lock to keep order deterministic.
+            self.store.enqueue(next.clone())?;
+            return Ok(Some(next.id));
+        }
+        // Failure records THIS position as the failure site; later members
+        // were never enqueued. The first failure wins (repeat notifications
+        // are idempotent) until a retry revives the member.
+        if matches!(arm.status, ChainStatus::Halted { .. }) {
             return Ok(None);
         }
-        *index += 1;
-        let Some(next) = jobs.get(*index).cloned() else {
-            return Ok(None);
+        arm.status = ChainStatus::Halted {
+            position: arm.position,
         };
-        let next_id = next.id;
-        // Enqueue while holding the lock to keep order deterministic.
-        self.store.enqueue(next)?;
-        Ok(Some(next_id))
+        Ok(None)
     }
 
     /// Position of the currently-armed step (for observability).
     pub fn position(&self, chain_id: Uuid) -> Option<usize> {
-        self.chains.lock().unwrap().get(&chain_id).map(|(_, i)| *i)
+        self.chains.lock().unwrap().get(&chain_id).map(|arm| arm.position)
+    }
+
+    /// Wave 6 P8: the chain's liveness record — `Running`,
+    /// `Halted { position }` (the failed member) or `Completed`.
+    pub fn status(&self, chain_id: Uuid) -> Option<ChainStatus> {
+        self.chains
+            .lock()
+            .unwrap()
+            .get(&chain_id)
+            .map(|arm| arm.status.clone())
     }
 
     /// Worker convenience: advance/halt the chain whose CURRENT step is
@@ -718,7 +883,11 @@ impl ChainRuntime {
             .lock()
             .unwrap()
             .iter()
-            .find(|(_, (jobs, index))| jobs.get(*index).is_some_and(|current| current.id == job_id))
+            .find(|(_, arm)| {
+                arm.jobs
+                    .get(arm.position)
+                    .is_some_and(|current| current.id == job_id)
+            })
             .map(|(id, _)| *id);
         match containing {
             Some(chain_id) => self.step_finished(chain_id, succeeded),
@@ -774,6 +943,378 @@ impl WorkerRegistry {
 
     pub fn is_empty(&self) -> bool {
         self.handlers.is_empty()
+    }
+}
+
+// ------------------------------------------------------------- middleware (P8)
+
+/// What a middleware pre-hook decided for one claimed execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Control {
+    /// Run the handler (post-hooks observe the outcome afterwards).
+    Proceed,
+    /// Skip this pass: the job returns to pending at `now + delay` and the
+    /// attempt `claim()` consumed is given back — held is not failed (the
+    /// unique / rate-limit posture).
+    Hold(Duration),
+    /// Terminal: the job goes dead immediately and the handler never runs
+    /// (the retry-limit posture).
+    Abort(&'static str),
+}
+
+/// Composable pre/post hooks around one job execution (docs/19:
+/// retry-limit, rate-limit and unique ship as built-in middlewares; modules
+/// register their own through the codegen `job-middleware` kind). Delivery
+/// is at-least-once, so anything a middleware does must be idempotent.
+pub trait JobMiddleware: Send + Sync {
+    /// Stable name (registration key / log field).
+    fn name(&self) -> &str;
+    /// Pre-hook: runs in stack order BEFORE the handler; the first
+    /// non-[`Control::Proceed`] short-circuits the rest of the chain (no
+    /// later pre-hook and no handler run).
+    fn before<'a>(&'a self, _job: &'a DurableJob) -> BoxFuture<'a, Result<Control, AppError>> {
+        Box::pin(async { Ok(Control::Proceed) })
+    }
+    /// Post-hook: runs in REVERSE order when — and only when — the handler
+    /// ran. Errors are logged by the dispatcher; they never rewrite the
+    /// job's own outcome.
+    fn after<'a>(
+        &'a self,
+        _job: &'a DurableJob,
+        _result: &'a Result<(), AppError>,
+    ) -> BoxFuture<'a, Result<(), AppError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// The ordered middleware of one job type: built-ins (admission) first,
+/// then registered module layers. `after` walks the stack in reverse and
+/// keeps going past a failing post-hook, returning the first error for the
+/// dispatcher to log.
+#[derive(Default)]
+pub struct MiddlewareStack {
+    layers: Vec<Arc<dyn JobMiddleware>>,
+}
+
+impl MiddlewareStack {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(&mut self, layer: Arc<dyn JobMiddleware>) {
+        self.layers.push(layer);
+    }
+
+    pub fn len(&self) -> usize {
+        self.layers.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.layers.is_empty()
+    }
+
+    /// Pre-hooks in stack order; short-circuits on the first decision.
+    pub async fn before(&self, job: &DurableJob) -> Result<Control, AppError> {
+        for layer in &self.layers {
+            match layer.before(job).await? {
+                Control::Proceed => {}
+                other => return Ok(other),
+            }
+        }
+        Ok(Control::Proceed)
+    }
+
+    /// Post-hooks in reverse order (only called when the handler ran).
+    pub async fn after(&self, job: &DurableJob, result: &Result<(), AppError>) -> Option<AppError> {
+        let mut first_error = None;
+        for layer in self.layers.iter().rev() {
+            if let Err(err) = layer.after(job, result).await {
+                if first_error.is_none() {
+                    first_error = Some(err);
+                }
+            }
+        }
+        first_error
+    }
+}
+
+/// Claim-guard port for unique jobs (skip-if-locked): the worker wires a
+/// cache-backed lock (`CacheService` over Redis/memory — the schedule-lock
+/// seam), tests and degraded boots use [`MemoryUniqueLock`]. Async stays
+/// off Services, so the port lives here (D-52 posture).
+pub trait UniqueLock: Send + Sync {
+    /// True = lock taken now; false = someone else holds it (skip).
+    fn try_acquire(&self, key: &str, ttl: Duration) -> Result<bool, AppError>;
+    /// Release early (the success path); TTL is the crash valve.
+    fn release(&self, key: &str) -> Result<(), AppError>;
+}
+
+/// In-process [`UniqueLock`] (D-52 default / tests): expiry-purged map.
+#[derive(Default)]
+pub struct MemoryUniqueLock {
+    held: Mutex<HashMap<String, OffsetDateTime>>,
+}
+
+impl MemoryUniqueLock {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl UniqueLock for MemoryUniqueLock {
+    fn try_acquire(&self, key: &str, ttl: Duration) -> Result<bool, AppError> {
+        let mut held = self.held.lock().unwrap();
+        let now = OffsetDateTime::now_utc();
+        held.retain(|_, until| *until > now);
+        if held.contains_key(key) {
+            return Ok(false);
+        }
+        held.insert(key.to_string(), now + ttl);
+        Ok(true)
+    }
+
+    fn release(&self, key: &str) -> Result<(), AppError> {
+        self.held.lock().unwrap().remove(key);
+        Ok(())
+    }
+}
+
+/// The cache key one unique configuration claims (`queue:unique:<job>:<key>`).
+pub fn unique_lock_key(job_name: &str, unique_key: &str) -> String {
+    format!("queue:unique:{job_name}:{unique_key}")
+}
+
+/// Wave 6 P8 built-in: unique-job admission. Claims of a `unique_key` job
+/// are guarded by [`UniqueLock`] — while the key is held the claim is
+/// SKIPPED (requeued [`UNIQUE_POLL_SECS`] later, attempt returned, never
+/// failed). A successful run releases the key; failures keep it until the
+/// TTL so retries stay exclusive, and a crashed holder releases via TTL.
+pub struct UniqueMiddleware {
+    lock: Arc<dyn UniqueLock>,
+    key: String,
+    ttl: Duration,
+    retry: Duration,
+}
+
+impl UniqueMiddleware {
+    pub fn new(lock: Arc<dyn UniqueLock>, key: String, ttl: Duration, retry: Duration) -> Self {
+        Self {
+            lock,
+            key,
+            ttl,
+            retry,
+        }
+    }
+}
+
+impl JobMiddleware for UniqueMiddleware {
+    fn name(&self) -> &str {
+        "unique"
+    }
+
+    fn before<'a>(&'a self, _job: &'a DurableJob) -> BoxFuture<'a, Result<Control, AppError>> {
+        Box::pin(async move {
+            let acquired = self.lock.try_acquire(&self.key, self.ttl)?;
+            Ok(if acquired {
+                Control::Proceed
+            } else {
+                Control::Hold(self.retry)
+            })
+        })
+    }
+
+    fn after<'a>(
+        &'a self,
+        _job: &'a DurableJob,
+        result: &'a Result<(), AppError>,
+    ) -> BoxFuture<'a, Result<(), AppError>> {
+        Box::pin(async move {
+            if result.is_ok() {
+                self.lock.release(&self.key)?;
+            }
+            Ok(())
+        })
+    }
+}
+
+/// The token bucket behind [`RateLimitMiddleware`] — `capacity` burst
+/// checkouts refilled continuously at `refill_per_sec`. Pure time math
+/// (`checkout(now)` takes the instant) so tests stay deterministic.
+#[derive(Debug, Clone)]
+pub struct TokenBucket {
+    capacity: f64,
+    refill_per_sec: f64,
+    tokens: f64,
+    last: OffsetDateTime,
+}
+
+impl TokenBucket {
+    pub fn new(capacity: u32, refill_per_sec: f64) -> Self {
+        Self {
+            capacity: capacity as f64,
+            refill_per_sec,
+            tokens: capacity as f64,
+            last: OffsetDateTime::now_utc(),
+        }
+    }
+
+    /// Checkout one token at `now`: `None` = granted; `Some(delay)` =
+    /// exhausted — the wait until the next token refills.
+    pub fn checkout(&mut self, now: OffsetDateTime) -> Option<Duration> {
+        let elapsed_ms = (now - self.last).whole_milliseconds().max(0);
+        let gained = (elapsed_ms as f64 / 1000.0) * self.refill_per_sec;
+        self.tokens = (self.tokens + gained).min(self.capacity);
+        self.last = now;
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            None
+        } else {
+            let need = (1.0 - self.tokens) / self.refill_per_sec;
+            let ms = (need * 1000.0).ceil().max(1.0) as i64;
+            Some(Duration::milliseconds(ms))
+        }
+    }
+}
+
+/// Wave 6 P8 built-in: rate-limit admission — one token bucket per job
+/// type. An exhausted bucket HOLDS the claim (requeued when the next token
+/// refills) instead of failing it, so waiting never eats the retry budget.
+pub struct RateLimitMiddleware {
+    bucket: Mutex<TokenBucket>,
+}
+
+impl RateLimitMiddleware {
+    pub fn new(cfg: RateLimit) -> Self {
+        Self {
+            bucket: Mutex::new(TokenBucket::new(cfg.capacity, cfg.refill_per_sec)),
+        }
+    }
+}
+
+impl JobMiddleware for RateLimitMiddleware {
+    fn name(&self) -> &str {
+        "rate-limit"
+    }
+
+    fn before<'a>(&'a self, _job: &'a DurableJob) -> BoxFuture<'a, Result<Control, AppError>> {
+        Box::pin(async move {
+            let wait = self
+                .bucket
+                .lock()
+                .unwrap()
+                .checkout(OffsetDateTime::now_utc());
+            Ok(match wait {
+                None => Control::Proceed,
+                Some(delay) => Control::Hold(delay),
+            })
+        })
+    }
+}
+
+/// The reason [`RetryLimitMiddleware`] aborts over-budget jobs (recorded
+/// as the dead job's `last_error`).
+pub const RETRY_LIMIT_ABORT: &str = "retry limit reached";
+
+/// Wave 6 P8 built-in: retry-limit admission — a cap on EXTRA runs,
+/// enforced before the handler. A claim beyond `retry_limit + 1` executions
+/// aborts to dead without running (the store's own `max_attempts` budget
+/// stays untouched; `None` on the def = no extra cap).
+pub struct RetryLimitMiddleware {
+    retry_limit: u32,
+}
+
+impl RetryLimitMiddleware {
+    pub fn new(retry_limit: u32) -> Self {
+        Self { retry_limit }
+    }
+}
+
+impl JobMiddleware for RetryLimitMiddleware {
+    fn name(&self) -> &str {
+        "retry-limit"
+    }
+
+    fn before<'a>(&'a self, job: &'a DurableJob) -> BoxFuture<'a, Result<Control, AppError>> {
+        Box::pin(async move {
+            let allowed = u64::from(self.retry_limit) + 1;
+            Ok(if u64::from(job.attempt) > allowed {
+                Control::Abort(RETRY_LIMIT_ABORT)
+            } else {
+                Control::Proceed
+            })
+        })
+    }
+}
+
+/// Wave 6 P8: per-job-name middleware composition for the dispatcher —
+/// built-ins derived once per registered def (rate buckets persist across
+/// passes) plus module layers registered at boot. One claim loop builds
+/// the lazy stacks (single-dispatcher posture).
+pub struct JobMiddlewareStacks {
+    unique: Arc<dyn UniqueLock>,
+    module: HashMap<String, Vec<Arc<dyn JobMiddleware>>>,
+    built: Mutex<HashMap<String, Arc<MiddlewareStack>>>,
+}
+
+impl JobMiddlewareStacks {
+    pub fn new(unique: Arc<dyn UniqueLock>) -> Self {
+        Self {
+            unique,
+            module: HashMap::new(),
+            built: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Register a module middleware for one job name. Boot-time only: the
+    /// first `for_job` freezes the composed stacks.
+    pub fn register(&mut self, job: &str, layer: Arc<dyn JobMiddleware>) -> Result<(), AppError> {
+        if !self.built.lock().unwrap().is_empty() {
+            return Err(AppError::conflict(
+                "job middleware must register before the first dispatch",
+            ));
+        }
+        self.module
+            .entry(job.to_string())
+            .or_default()
+            .push(layer);
+        Ok(())
+    }
+
+    /// The stack for one job name: built-ins in admission order (unique →
+    /// rate-limit → retry-limit, each present only when the def configures
+    /// it), then the module layers. Unknown names get module layers alone.
+    pub fn for_job(&self, name: &str, def: Option<&JobDef>) -> Arc<MiddlewareStack> {
+        if let Some(hit) = self.built.lock().unwrap().get(name) {
+            return hit.clone();
+        }
+        let mut stack = MiddlewareStack::new();
+        if let Some(def) = def {
+            if let Some(unique_key) = &def.unique_key {
+                stack.push(Arc::new(UniqueMiddleware::new(
+                    self.unique.clone(),
+                    unique_lock_key(name, unique_key),
+                    Duration::seconds(def.unique_ttl_secs.unwrap_or(DEFAULT_UNIQUE_TTL_SECS) as i64),
+                    Duration::seconds(UNIQUE_POLL_SECS as i64),
+                )));
+            }
+            if let Some(rate) = def.rate_limit {
+                stack.push(Arc::new(RateLimitMiddleware::new(rate)));
+            }
+            if let Some(retries) = def.retry_limit {
+                stack.push(Arc::new(RetryLimitMiddleware::new(retries)));
+            }
+        }
+        if let Some(layers) = self.module.get(name) {
+            for layer in layers {
+                stack.push(layer.clone());
+            }
+        }
+        let stack = Arc::new(stack);
+        self.built
+            .lock()
+            .unwrap()
+            .insert(name.to_string(), stack.clone());
+        stack
     }
 }
 
@@ -1204,5 +1745,397 @@ mod tests {
             "chain exhausted"
         );
         assert_eq!(runtime.position(id), Some(3));
+    }
+
+    // ------------------------------------- Wave 6 P8: admission + middleware
+
+    /// Wave 6 P8 unique jobs: the first claim takes the key, a concurrent
+    /// claim HOLDS (skip-if-locked, never failed), failure keeps the key
+    /// exclusive for retries, success releases it.
+    #[tokio::test]
+    async fn unique_admission_holds_locked_claims_until_release() {
+        let lock = Arc::new(MemoryUniqueLock::new());
+        let key = unique_lock_key("demo.job", "row-1");
+        let ttl = Duration::seconds(30);
+        let retry = Duration::seconds(UNIQUE_POLL_SECS as i64);
+        let a = UniqueMiddleware::new(lock.clone(), key.clone(), ttl, retry);
+        let b = UniqueMiddleware::new(lock.clone(), key, ttl, retry);
+        let job = job(1, 3);
+
+        assert_eq!(
+            a.before(&job).await.unwrap(),
+            Control::Proceed,
+            "first claim takes the lock"
+        );
+        assert_eq!(
+            b.before(&job).await.unwrap(),
+            Control::Hold(retry),
+            "second claim of a held key skips a poll later"
+        );
+
+        let bad: Result<(), AppError> = Err(AppError::validation("boom"));
+        a.after(&job, &bad).await.unwrap();
+        assert_eq!(
+            b.before(&job).await.unwrap(),
+            Control::Hold(retry),
+            "a failed run keeps the key — retries stay exclusive"
+        );
+
+        let ok: Result<(), AppError> = Ok(());
+        a.after(&job, &ok).await.unwrap();
+        assert_eq!(
+            b.before(&job).await.unwrap(),
+            Control::Proceed,
+            "success releases the key"
+        );
+    }
+
+    /// Wave 6 P8 rate-limited jobs: burst up to capacity, an exhausted
+    /// bucket holds shaped by the refill rate, time restores service. The
+    /// middleware front-end holds real claims the same way.
+    #[tokio::test]
+    async fn rate_limited_admission_holds_until_the_bucket_refills() {
+        let mut bucket = TokenBucket::new(2, 0.5); // 1 token / 2s
+        let t0 = OffsetDateTime::now_utc();
+        assert_eq!(bucket.checkout(t0), None, "burst 1");
+        assert_eq!(bucket.checkout(t0), None, "burst 2");
+        assert_eq!(
+            bucket.checkout(t0),
+            Some(Duration::seconds(2)),
+            "exhausted: next token in 1/refill_per_sec"
+        );
+        assert!(
+            bucket
+                .checkout(t0 + Duration::milliseconds(999))
+                .is_some(),
+            "still refilling"
+        );
+        assert_eq!(
+            bucket.checkout(t0 + Duration::seconds(3)),
+            None,
+            "the refill restored service"
+        );
+
+        let mw = RateLimitMiddleware::new(RateLimit {
+            capacity: 1,
+            refill_per_sec: 0.001,
+        });
+        let job = job(0, 3);
+        assert_eq!(mw.before(&job).await.unwrap(), Control::Proceed, "burst");
+        match mw.before(&job).await.unwrap() {
+            Control::Hold(delay) => assert!(
+                delay >= Duration::seconds(900),
+                "exhausted checkout waits for the refill, got {delay}"
+            ),
+            other => panic!("expected Hold, got {other:?}"),
+        }
+    }
+
+    /// Wave 6 P8: a Hold gives the claim back — `defer` returns the
+    /// attempt, clears the claim and reschedules availability (a future
+    /// hold makes the job unclaimable, a past one restarts the cycle);
+    /// `kill` is terminal and refuses terminal jobs.
+    #[test]
+    fn admission_defer_returns_the_attempt_and_kill_is_terminal() {
+        let store = InMemoryJobStore::new();
+        let def = JobDef::new("demo.job");
+        let now = OffsetDateTime::now_utc();
+        let id = store
+            .enqueue(build_from_def(&def, json!({}), now))
+            .unwrap();
+
+        let claimed = store.claim("w1").unwrap().unwrap();
+        assert_eq!(claimed.attempt, 1, "claim consumes an attempt");
+
+        // Hold into the past: the attempt comes back and the cycle restarts.
+        store.defer(id, now - Duration::seconds(1)).unwrap();
+        let back = store
+            .list(Some(JobStatus::Pending), 10)
+            .unwrap()
+            .remove(0);
+        assert_eq!(back.attempt, 0, "Hold returns the attempt");
+        assert!(back.claimed_by.is_none(), "claim cleared");
+        assert!(back.claimed_at.is_none(), "claim cleared");
+
+        // Hold into the future: invisible to claimers until it elapses.
+        let again = store.claim("w1").unwrap().unwrap();
+        assert_eq!(again.attempt, 1, "the cycle restarted at 1");
+        store.defer(id, now + Duration::seconds(30)).unwrap();
+        assert!(
+            store.claim("w1").unwrap().is_none(),
+            "held job is not available yet"
+        );
+        assert!(
+            store.defer(id, now).is_err(),
+            "defer only accepts a claimed (running) job"
+        );
+
+        // Make it claimable again and kill it.
+        {
+            let mut jobs = store.jobs.lock().unwrap();
+            jobs[0].available_at = now - Duration::seconds(1);
+        }
+        let running = store.claim("w1").unwrap().unwrap();
+        store
+            .kill(running.id, RETRY_LIMIT_ABORT)
+            .expect("kill is terminal");
+        let dead = store
+            .list(Some(JobStatus::Dead), 10)
+            .unwrap()
+            .remove(0);
+        assert_eq!(dead.last_error.as_deref(), Some(RETRY_LIMIT_ABORT));
+        assert!(dead.finished_at.is_some(), "kill stamps finished_at");
+        assert!(store.kill(id, "again").is_err(), "already terminal");
+        assert!(store.defer(id, now).is_err(), "dead cannot be deferred");
+    }
+
+    /// Wave 6 P8 retry-limit: executions beyond `retry_limit + 1` abort to
+    /// dead without running the handler.
+    #[tokio::test]
+    async fn retry_limit_aborts_over_budget_claims() {
+        let mw = RetryLimitMiddleware::new(1); // two executions allowed
+        assert_eq!(
+            mw.before(&job(1, 3)).await.unwrap(),
+            Control::Proceed,
+            "first run allowed"
+        );
+        assert_eq!(
+            mw.before(&job(2, 3)).await.unwrap(),
+            Control::Proceed,
+            "one retry allowed"
+        );
+        assert_eq!(
+            mw.before(&job(3, 3)).await.unwrap(),
+            Control::Abort(RETRY_LIMIT_ABORT),
+            "budget spent"
+        );
+    }
+
+    /// Wave 6 P8 chain execution: a failed member leaves the chain dead
+    /// with ITS position recorded (docs/19); repeat notifications keep the
+    /// first failure site, later members stay unenqueued, and a revived
+    /// member (`queue:retry`) resumes the chain.
+    #[test]
+    fn chain_failure_records_the_halted_position() {
+        let store = Arc::new(InMemoryJobStore::new());
+        let runtime = ChainRuntime::new(store.clone());
+        let mut a = job(0, 3);
+        a.status = JobStatus::Pending;
+        let mut b = job(0, 3);
+        b.status = JobStatus::Pending;
+        let mut c = job(0, 3);
+        c.status = JobStatus::Pending;
+        let b_id = b.id;
+        let spec = ChainSpec {
+            id: Uuid::now_v7(),
+            jobs: vec![a, b, c],
+        };
+        let id = runtime.dispatch(spec).unwrap();
+        assert_eq!(runtime.status(id), Some(ChainStatus::Running));
+
+        runtime.step_finished(id, true).unwrap();
+        assert_eq!(runtime.position(id), Some(1));
+
+        assert!(
+            runtime.finish_by_job(b_id, false).unwrap().is_none(),
+            "a dead member halts the chain"
+        );
+        assert_eq!(
+            runtime.status(id),
+            Some(ChainStatus::Halted { position: 1 }),
+            "the failed position is recorded"
+        );
+        assert!(
+            runtime.finish_by_job(b_id, false).unwrap().is_none(),
+            "repeat notifications are idempotent"
+        );
+        assert_eq!(
+            runtime.status(id),
+            Some(ChainStatus::Halted { position: 1 }),
+            "the FIRST failure site stands"
+        );
+        assert_eq!(
+            store.list(Some(JobStatus::Pending), 10).unwrap().len(),
+            2,
+            "member 2 never enqueued"
+        );
+
+        assert!(
+            runtime.finish_by_job(b_id, true).unwrap().is_some(),
+            "a revived member resumes the chain"
+        );
+        assert_eq!(runtime.status(id), Some(ChainStatus::Running));
+        assert!(
+            runtime.step_finished(id, true).unwrap().is_none(),
+            "last member completes the chain"
+        );
+        assert_eq!(runtime.status(id), Some(ChainStatus::Completed));
+    }
+
+    struct Recorder {
+        tag: &'static str,
+        trace: Arc<Mutex<Vec<String>>>,
+        hold: Option<Duration>,
+    }
+
+    impl JobMiddleware for Recorder {
+        fn name(&self) -> &str {
+            self.tag
+        }
+
+        fn before<'a>(&'a self, _job: &'a DurableJob) -> BoxFuture<'a, Result<Control, AppError>> {
+            let tag = self.tag;
+            let hold = self.hold;
+            let trace = self.trace.clone();
+            Box::pin(async move {
+                trace.lock().unwrap().push(format!("{tag}:before"));
+                Ok(match hold {
+                    Some(delay) => Control::Hold(delay),
+                    None => Control::Proceed,
+                })
+            })
+        }
+
+        fn after<'a>(
+            &'a self,
+            _job: &'a DurableJob,
+            _result: &'a Result<(), AppError>,
+        ) -> BoxFuture<'a, Result<(), AppError>> {
+            let tag = self.tag;
+            let trace = self.trace.clone();
+            Box::pin(async move {
+                trace.lock().unwrap().push(format!("{tag}:after"));
+                Ok(())
+            })
+        }
+    }
+
+    /// Wave 6 P8: pre-hooks run in stack order and short-circuit on the
+    /// first non-Proceed decision; post-hooks run in reverse when — and
+    /// only when — the handler ran.
+    #[tokio::test]
+    async fn middleware_stack_orders_hooks_and_short_circuits() {
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let mut stack = MiddlewareStack::new();
+        stack.push(Arc::new(Recorder {
+            tag: "a",
+            trace: trace.clone(),
+            hold: None,
+        }));
+        stack.push(Arc::new(Recorder {
+            tag: "b",
+            trace: trace.clone(),
+            hold: Some(Duration::seconds(7)),
+        }));
+        stack.push(Arc::new(Recorder {
+            tag: "c",
+            trace: trace.clone(),
+            hold: None,
+        }));
+        let job = job(0, 3);
+
+        match stack.before(&job).await.unwrap() {
+            Control::Hold(delay) => assert_eq!(delay, Duration::seconds(7)),
+            other => panic!("expected Hold from the middle layer, got {other:?}"),
+        }
+        assert_eq!(
+            *trace.lock().unwrap(),
+            vec!["a:before", "b:before"],
+            "c never ran — the Hold short-circuits the chain"
+        );
+
+        trace.lock().unwrap().clear();
+        let ok: Result<(), AppError> = Ok(());
+        assert!(stack.after(&job, &ok).await.is_none());
+        assert_eq!(
+            *trace.lock().unwrap(),
+            vec!["c:after", "b:after", "a:after"],
+            "post-hooks reverse"
+        );
+    }
+
+    /// Wave 6 P8: built-ins compose from the def in admission order, the
+    /// module layer appends, registration freezes at first dispatch, and
+    /// an unconfigured job gets module layers alone.
+    #[tokio::test]
+    async fn stacks_compose_builtins_then_module_layers() {
+        let mut def = JobDef::new("demo.job");
+        def.unique_key = Some("row-9".into());
+        def.rate_limit = Some(RateLimit {
+            capacity: 2,
+            refill_per_sec: 1.0,
+        });
+        def.retry_limit = Some(4);
+        let mut registry = JobRegistry::new();
+        registry.register(def).unwrap();
+
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let mut stacks = JobMiddlewareStacks::new(Arc::new(MemoryUniqueLock::new()));
+        stacks
+            .register(
+                "demo.job",
+                Arc::new(Recorder {
+                    tag: "module",
+                    trace: trace.clone(),
+                    hold: None,
+                }),
+            )
+            .unwrap();
+
+        let stack = stacks.for_job("demo.job", registry.get("demo.job"));
+        assert_eq!(
+            stack.len(),
+            4,
+            "unique + rate-limit + retry-limit + module layer"
+        );
+        let job = job(0, 3);
+        assert_eq!(stack.before(&job).await.unwrap(), Control::Proceed);
+        assert_eq!(
+            *trace.lock().unwrap(),
+            vec!["module:before"],
+            "the module layer runs after admission granted"
+        );
+
+        let other = Arc::new(Recorder {
+            tag: "late",
+            trace: trace.clone(),
+            hold: None,
+        });
+        assert!(
+            stacks.register("other.job", other).is_err(),
+            "middleware must register before the first dispatch"
+        );
+        assert!(
+            stacks.for_job("unconfigured.job", None).is_empty(),
+            "no def, no built-ins"
+        );
+    }
+
+    /// Wave 6 P8: admission configs that can never admit refuse
+    /// registration (boot-time fail-closed).
+    #[test]
+    fn registry_refuses_impossible_admission_configs() {
+        let mut registry = JobRegistry::new();
+        let mut def = JobDef::new("demo.job");
+        def.unique_key = Some(String::new());
+        assert!(registry.register(def).is_err(), "empty unique_key");
+
+        let mut def = JobDef::new("demo.job");
+        def.rate_limit = Some(RateLimit {
+            capacity: 0,
+            refill_per_sec: 1.0,
+        });
+        assert!(registry.register(def).is_err(), "zero capacity");
+
+        let mut def = JobDef::new("demo.job");
+        def.rate_limit = Some(RateLimit {
+            capacity: 1,
+            refill_per_sec: 0.0,
+        });
+        assert!(registry.register(def).is_err(), "zero refill");
+
+        let mut def = JobDef::new("demo.job");
+        def.unique_ttl_secs = Some(0);
+        assert!(registry.register(def).is_err(), "zero unique TTL");
     }
 }
