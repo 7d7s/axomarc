@@ -17,7 +17,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use keel_foundation::{AppError, FeatureRevision, ModuleRevision, PrincipalId, TenantId};
 use keel_http::{Envelope, ResolvedSession};
-use keel_identity::{hash_password, verify_credential, Principal, PrincipalStatus, Secret};
+use keel_identity::{hash_password_with, verify_credential, Principal, PrincipalStatus, Secret};
 use keel_policy::AccessSnapshot;
 use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
@@ -78,12 +78,21 @@ fn unauthenticated() -> AppError {
     AppError::unauthenticated()
 }
 
-/// Static argon2 hash used to equalize timing when the principal is unknown.
-pub(crate) fn dummy_hash() -> &'static String {
-    static DUMMY: OnceLock<String> = OnceLock::new();
-    DUMMY.get_or_init(|| {
-        hash_password(&Secret::new("keel-dummy-password-for-timing")).expect("argon2 works")
-    })
+/// Equalized-timing dummy under the CURRENT `[identity]` factors: built once
+/// per boot on first use, so an unknown principal or missing credential pays
+/// the same argon2 work factor as a real converged-password check (docs/06
+/// "login timing equalization" — it holds after a factor change too).
+pub(crate) fn dummy_hash(state: &AppState) -> String {
+    state
+        .dummy_hash
+        .get_or_init(|| {
+            hash_password_with(
+                &state.password_params,
+                &Secret::new("keel-dummy-password-for-timing"),
+            )
+            .expect("argon2 works")
+        })
+        .clone()
 }
 
 fn validate_email(email: &str) -> Result<String, AppError> {
@@ -333,7 +342,7 @@ async fn register(
             email_verified_at: None,
             created_at: now,
         })?;
-        let hash = hash_password(&Secret::new(&body.password))?;
+        let hash = hash_password_with(&state.password_params, &Secret::new(&body.password))?;
         state.credentials.create(keel_identity::Credential {
             id: uuid::Uuid::now_v7(),
             principal_id: principal.id,
@@ -385,14 +394,14 @@ async fn login(
             None => {
                 // Equalized timing: verify against a dummy hash so unknown
                 // principals do not answer faster than bad passwords.
-                let _ = keel_identity::verify_password(&Secret::new(&body.password), dummy_hash());
+                let _ = keel_identity::verify_password(&Secret::new(&body.password), &dummy_hash(&state));
                 return Err(unauthenticated());
             }
         };
         let credential = match state.credentials.password_for(principal.id)? {
             Some(c) => c,
             None => {
-                let _ = keel_identity::verify_password(&Secret::new(&body.password), dummy_hash());
+                let _ = keel_identity::verify_password(&Secret::new(&body.password), &dummy_hash(&state));
                 return Err(unauthenticated());
             }
         };
@@ -403,6 +412,25 @@ async fn login(
             return Err(AppError::denied("principal is suspended"));
         }
         let tenant = resolve_tenant(&state, body.tenant.as_deref())?;
+        // Wave 7 P5 — argon2 rehash-on-login: the stored verifier's factors
+        // are embedded in its PHC string; when they drift from the current
+        // `[identity]` config, this successful login re-hashes the password
+        // and swaps the verifier. Best effort on purpose: an upgrade hiccup
+        // never blocks an authenticated login — the next login retries the
+        // same healing step.
+        if let Some(stored) = keel_identity::password_params_of(credential.secret_hash.expose()) {
+            if stored != state.password_params {
+                let healed = hash_password_with(&state.password_params, &Secret::new(&body.password))
+                    .map(Secret::new)
+                    .and_then(|fresh| state.credentials.replace_password_hash(principal.id, fresh));
+                if let Err(err) = healed {
+                    tracing::warn!(
+                        %err,
+                        "argon2 rehash-on-login failed; the verifier upgrades on the next login"
+                    );
+                }
+            }
+        }
         finish_login(
             &state,
             principal.id,
@@ -604,7 +632,7 @@ async fn reset_complete(
             .tokens
             .consume(keel_tokens::TokenPurpose::Reset, &body.token)?;
         validate_password(&body.password)?;
-        let hash = hash_password(&Secret::new(&body.password))?;
+        let hash = hash_password_with(&state.password_params, &Secret::new(&body.password))?;
         state
             .credentials
             .replace_password_hash(token.principal_id, Secret::new(hash))?;

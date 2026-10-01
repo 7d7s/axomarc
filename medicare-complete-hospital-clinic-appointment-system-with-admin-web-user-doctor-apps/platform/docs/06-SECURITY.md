@@ -47,8 +47,12 @@ severity, retryability, meta. Public messages are safe for the wire; internals s
 ## HTTP authentication flows (S7)
 
 - Register/login/logout/me and password reset are served on the platform plane by `keel-api`.
-  Passwords are hashed with argon2 (`keel-identity`); failed logins run a dummy hash so unknown
-  identifiers do not answer faster than bad passwords.
+  Passwords are hashed with argon2 (`keel-identity`) under the `[identity]` work factors
+  (`memory`/`time`/`parallelism`, argon2 baseline defaults); a successful login re-hashes the
+  password when the stored verifier's embedded factors drift from that config (rehash-on-login —
+  a factor upgrade converges old verifiers on first login without ever blocking the login
+  itself). Failed logins run a dummy hash so unknown identifiers do not answer faster than bad
+  passwords.
 - Browser clients get an HMAC-tagged `keel_session` cookie (HttpOnly, SameSite=Lax, Secure in prod);
   API clients use hashed PATs via `Authorization: Bearer`. Session fixation is defended at login and
   register: any session the client presented *before* authenticating is destroyed server-side, then
@@ -92,7 +96,8 @@ following changes and tests:
   issued, K1 dead server-side, K2 live.
 - **Login timing equalization.** Unknown identifiers and missing credentials verify against a dummy
   argon2 hash so error paths do not answer faster than a real bad-password check (pre-existing,
-  re-audited).
+  re-audited; Wave 7 P5 builds the dummy at the configured `[identity]` factors on first use, so
+  the equalization holds after a factor change too).
 - **Enumeration resistance.** Password-reset request answers identically for known and unknown
   identifiers (pre-existing, re-audited).
 - **Upload abuse surface.** Bounded multipart pipeline: 8 parts, 64 KB fields, 8 MB files, enforced

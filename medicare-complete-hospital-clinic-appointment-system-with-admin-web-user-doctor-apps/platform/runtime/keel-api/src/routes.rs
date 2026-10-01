@@ -165,6 +165,15 @@ pub struct AppState {
     /// middleware"); the api plane never reads it. `enabled = false` (the
     /// default) attaches nothing at all.
     pub security_headers: keel_http::SecurityHeaders,
+    // --- Wave 7 P5 argon2 rehash-on-login -----------------------------------
+    /// Resolved `[identity]` argon2 factors: register/reset hash with these,
+    /// and a successful login rehashes a stored verifier whose embedded
+    /// factors drift from them (19-PARITY "Argon2 rehash-on-login").
+    pub password_params: keel_identity::PasswordParams,
+    /// The timing-equalization dummy for unknown principals / missing
+    /// credentials, built once per boot on first use at the SAME factors so
+    /// docs/06's equalization claim holds after a factor change too.
+    pub dummy_hash: Arc<std::sync::OnceLock<String>>,
 }
 
 impl AppState {

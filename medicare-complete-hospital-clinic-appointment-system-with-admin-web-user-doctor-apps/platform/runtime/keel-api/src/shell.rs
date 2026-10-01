@@ -208,14 +208,14 @@ fn login(state: &AppState, session: &mut ShellSession, args: Vec<&str>) -> Outco
             Some(found) => found,
             None => {
                 // Equalized timing, same as the HTTP login handler.
-                let _ = keel_identity::verify_password(&Secret::new(password), dummy_hash());
+                let _ = keel_identity::verify_password(&Secret::new(password), &dummy_hash(state));
                 return Err(AppError::unauthenticated());
             }
         };
         let credential = match state.credentials.password_for(principal.id)? {
             Some(found) => found,
             None => {
-                let _ = keel_identity::verify_password(&Secret::new(password), dummy_hash());
+                let _ = keel_identity::verify_password(&Secret::new(password), &dummy_hash(state));
                 return Err(AppError::unauthenticated());
             }
         };

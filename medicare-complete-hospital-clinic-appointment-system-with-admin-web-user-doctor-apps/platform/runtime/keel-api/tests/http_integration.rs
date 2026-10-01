@@ -323,6 +323,104 @@ async fn login_bad_password_is_uniform_401() {
         "unknown principal same shape"
     );
 }
+
+// ------------------------------------------------ argon2 rehash-on-login (P5)
+
+/// Seed a principal whose stored verifier was hashed with EXPLICIT factors
+/// (the pre-upgrade era), bypassing HTTP register — the fixture a drifted
+/// deployment carries after `[identity]` was tuned.
+fn seed_password_with(
+    app: &App,
+    email: &str,
+    password: &str,
+    factors: keel_identity::PasswordParams,
+) -> keel_foundation::PrincipalId {
+    let now = time::OffsetDateTime::now_utc();
+    let principal = app
+        .state
+        .principals
+        .create(keel_identity::Principal {
+            id: keel_foundation::PrincipalId::new(),
+            status: keel_identity::PrincipalStatus::Active,
+            email: Some(email.to_string()),
+            phone: None,
+            email_verified_at: None,
+            created_at: now,
+        })
+        .expect("principal creates");
+    let hash = keel_identity::hash_password_with(&factors, &keel_identity::Secret::new(password))
+        .expect("argon2 works");
+    app.state
+        .credentials
+        .create(keel_identity::Credential {
+            id: uuid::Uuid::now_v7(),
+            principal_id: principal.id,
+            kind: keel_identity::CredentialKind::PasswordArgon2,
+            secret_hash: keel_identity::Secret::new(hash),
+            created_at: now,
+            expires_at: None,
+        })
+        .expect("credential creates");
+    principal.id
+}
+
+fn stored_verifier(app: &App, principal: keel_foundation::PrincipalId) -> String {
+    app.state
+        .credentials
+        .password_for(principal)
+        .expect("store answers")
+        .expect("credential exists")
+        .secret_hash
+        .expose()
+        .to_string()
+}
+
+/// Wave 7 P5 (docs/19 "Argon2 rehash-on-login"): a verifier stored under
+/// drifted argon2 factors still logs in — verification reads the factors
+/// from the PHC string — and the successful login heals it: the stored
+/// hash converges on the boot config and the next login rewrites nothing.
+#[tokio::test]
+async fn login_rehashes_a_verifier_whose_params_drifted_from_identity_config() {
+    let app = app();
+    let email = format!("drift-{}@clinic.test", uuid::Uuid::now_v7());
+    let password = "correct-horse-99";
+    let drifted = keel_identity::PasswordParams {
+        memory: 4096,
+        time: 3,
+        parallelism: 1,
+    };
+    let principal = seed_password_with(&app, &email, password, drifted);
+
+    // Fixture: the stored verifier carries the pre-upgrade factors...
+    let before = stored_verifier(&app, principal);
+    assert_eq!(
+        keel_identity::password_params_of(&before),
+        Some(drifted),
+        "fixture: verifier stored under drifted factors"
+    );
+
+    // ...but verification uses the STORED factors, so the login succeeds...
+    let ok = login(&app, &email, password, Some("dev")).await;
+    assert_eq!(ok.status, StatusCode::OK, "login: {}", ok.body);
+
+    // ...and it healed the verifier to the boot config (rehash-on-login).
+    let after = stored_verifier(&app, principal);
+    assert_ne!(after, before, "a fresh verifier was written");
+    assert_eq!(
+        keel_identity::password_params_of(&after),
+        Some(keel_identity::PasswordParams::default()),
+        "stored factors converged on the [identity] config"
+    );
+
+    // Second login: nothing left to drift — a stable fixpoint.
+    let again = login(&app, &email, password, Some("dev")).await;
+    assert_eq!(again.status, StatusCode::OK, "login: {}", again.body);
+    assert_eq!(
+        stored_verifier(&app, principal),
+        after,
+        "no rewrite once converged"
+    );
+}
 // ---------------------------------------------------------------- throttling
 
 #[tokio::test]

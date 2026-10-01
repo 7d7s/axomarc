@@ -573,6 +573,12 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let tenants = Some(Arc::new(keel_tenancy::TenantService::new(tenant_store)));
 
+    // Wave 7 P5: refuse boot on out-of-range `[identity]` factors — a typo
+    // must not surface halfway through the first register or login.
+    password_params_from(cfg.identity())
+        .to_argon2()
+        .map_err(|error| error.public_message)?;
+
     let state = routes::AppState {
         bus,
         health: health.clone(),
@@ -620,6 +626,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         static_files,
         assets,
         security_headers: security_headers_from(cfg.security()),
+        password_params: password_params_from(cfg.identity()),
+        dummy_hash: Arc::new(std::sync::OnceLock::new()),
     };
 
     // B-29: `keel shell` — interactive console over the booted graph. Same
@@ -895,6 +903,22 @@ pub fn security_headers_from(
         hsts_include_subdomains: section.headers.hsts_include_subdomains,
         csp: section.headers.csp.clone(),
         referrer_policy: section.headers.referrer_policy.clone(),
+    }
+}
+
+/// Wave 7 P5 (`[identity]` → verifier factors): the application layer holds
+/// plain config data (it may not depend on the security class), so boot
+/// resolves the section here — the same conversion pattern as
+/// `security_headers_from`. Login compares a stored verifier's
+/// PHC-embedded factors against the result and rehashes on drift; register
+/// and reset-redeem hash directly with it.
+pub fn password_params_from(
+    section: &keel_config::IdentitySection,
+) -> keel_identity::PasswordParams {
+    keel_identity::PasswordParams {
+        memory: section.memory,
+        time: section.time,
+        parallelism: section.parallelism,
     }
 }
 
@@ -1244,6 +1268,10 @@ pub fn build_app_state(
         // Harness default: the P4 posture stays off (the switch is per
         // config); tests inject one to prove emission end to end.
         security_headers: keel_http::SecurityHeaders::default(),
+        // Harness default: the argon2 baseline factors (the P5 drifted
+        // fixture seeds its verifier through the stores directly).
+        password_params: keel_identity::PasswordParams::default(),
+        dummy_hash: Arc::new(std::sync::OnceLock::new()),
     };
     (state, graph, appt_store)
 }

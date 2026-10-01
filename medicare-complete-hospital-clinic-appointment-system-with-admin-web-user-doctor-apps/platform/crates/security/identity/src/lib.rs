@@ -138,12 +138,7 @@ impl Session {
 // --- password hashing (argon2id, parameterized defaults) ---
 
 pub fn hash_password(password: &Secret) -> Result<String, AppError> {
-    use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
-    let salt = SaltString::generate(&mut rand::thread_rng());
-    Argon2::default()
-        .hash_password(password.expose().as_bytes(), &salt)
-        .map(|h| h.to_string())
-        .map_err(|e| AppError::internal(format!("password hash failed: {e}")))
+    hash_password_with(&PasswordParams::default(), password)
 }
 
 pub fn verify_password(password: &Secret, encoded: &str) -> Result<bool, AppError> {
@@ -153,6 +148,74 @@ pub fn verify_password(password: &Secret, encoded: &str) -> Result<bool, AppErro
     Ok(Argon2::default()
         .verify_password(password.expose().as_bytes(), &parsed)
         .is_ok())
+}
+
+// --- parameterized hashing (Wave 7 P5, `[identity]`) ---
+
+/// Argon2id work factors for password verifiers (Wave 7 P5): `memory` in
+/// kibibytes (PHC `m`), `time` = passes (PHC `t`), `parallelism` = lanes
+/// (PHC `p`). Defaults mirror `argon2::Params`' own baseline, so a stock
+/// `[identity]` config hashes exactly as before the section existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PasswordParams {
+    pub memory: u32,
+    pub time: u32,
+    pub parallelism: u32,
+}
+
+impl Default for PasswordParams {
+    fn default() -> Self {
+        Self {
+            memory: argon2::Params::DEFAULT_M_COST,
+            time: argon2::Params::DEFAULT_T_COST,
+            parallelism: argon2::Params::DEFAULT_P_COST,
+        }
+    }
+}
+
+impl PasswordParams {
+    /// The hasher for these factors (argon2id v19). Out-of-range factors —
+    /// a config typo like `time = 0` or `memory` under `8 * parallelism` —
+    /// are refused HERE, where they are checked, never half-way through a
+    /// register or login.
+    pub fn to_argon2(&self) -> Result<argon2::Argon2<'static>, AppError> {
+        let params = argon2::Params::new(self.memory, self.time, self.parallelism, None)
+            .map_err(|e| AppError::validation(format!("invalid [identity] argon2 factors: {e}")))?;
+        Ok(argon2::Argon2::new(
+            argon2::Algorithm::Argon2id,
+            argon2::Version::V0x13,
+            params,
+        ))
+    }
+}
+
+/// Hash with explicit factors. The PHC string embeds them, so verification
+/// (which reads the STORED factors from the encoding) and drift detection
+/// (`password_params_of`) both work regardless of who hashed it.
+pub fn hash_password_with(
+    params: &PasswordParams,
+    password: &Secret,
+) -> Result<String, AppError> {
+    use argon2::{password_hash::SaltString, PasswordHasher};
+    let salt = SaltString::generate(&mut rand::thread_rng());
+    params
+        .to_argon2()?
+        .hash_password(password.expose().as_bytes(), &salt)
+        .map(|h| h.to_string())
+        .map_err(|e| AppError::internal(format!("password hash failed: {e}")))
+}
+
+/// The factors a stored PHC verifier carries (Wave 7 P5 drift detection):
+/// `None` when the encoding does not parse as argon2.
+pub fn password_params_of(encoded: &str) -> Option<PasswordParams> {
+    use argon2::password_hash::PasswordHash;
+    let parsed = PasswordHash::new(encoded).ok()?;
+    let params = argon2::Params::try_from(&parsed).ok()?;
+    Some(PasswordParams {
+        memory: params.m_cost(),
+        time: params.t_cost(),
+        parallelism: params.p_cost(),
+    })
 }
 
 // --- OTP ---
@@ -190,6 +253,63 @@ mod tests {
         let hash = hash_password(&pw).unwrap();
         assert!(verify_password(&pw, &hash).unwrap());
         assert!(!verify_password(&Secret::new("wrong"), &hash).unwrap());
+    }
+
+    /// Wave 7 P5: configured factors embed in the PHC string and read back;
+    /// verification honors the STORED factors, so a drifted verifier still
+    /// checks out (that is what makes rehash-on-login possible) while the
+    /// comparison against the baseline flags the drift to be healed.
+    #[test]
+    fn password_params_roundtrip_and_drift_is_detectable() {
+        let pw = Secret::new("correct horse battery staple");
+        let drifted = PasswordParams {
+            memory: 4096,
+            time: 3,
+            parallelism: 1,
+        };
+        let stored = hash_password_with(&drifted, &pw).unwrap();
+        assert_eq!(password_params_of(&stored), Some(drifted));
+        assert!(verify_password(&pw, &stored).unwrap());
+        assert!(!verify_password(&Secret::new("wrong"), &stored).unwrap());
+        assert_ne!(
+            password_params_of(&stored),
+            Some(PasswordParams::default()),
+            "drift against the baseline is visible to the login check"
+        );
+
+        // The baseline itself is unchanged: default hashing embeds the
+        // argon2 defaults verbatim (non-regression for existing verifiers).
+        let baseline = hash_password(&pw).unwrap();
+        assert_eq!(
+            password_params_of(&baseline),
+            Some(PasswordParams::default())
+        );
+        assert_eq!(
+            (PasswordParams::default().memory, PasswordParams::default().time, PasswordParams::default().parallelism),
+            (19_456, 2, 1),
+            "the documented [identity] defaults stay pinned to argon2's baseline"
+        );
+        assert!(verify_password(&pw, &baseline).unwrap());
+    }
+
+    /// Wave 7 P5: out-of-range factors fail where they are checked
+    /// (`to_argon2`), never halfway through a register or login.
+    #[test]
+    fn out_of_range_factors_are_refused_at_the_boundary() {
+        assert!(PasswordParams {
+            memory: 3,
+            time: 2,
+            parallelism: 1,
+        }
+        .to_argon2()
+        .is_err());
+        assert!(PasswordParams {
+            time: 0,
+            ..PasswordParams::default()
+        }
+        .to_argon2()
+        .is_err());
+        assert!(PasswordParams::default().to_argon2().is_ok());
     }
 
     #[test]

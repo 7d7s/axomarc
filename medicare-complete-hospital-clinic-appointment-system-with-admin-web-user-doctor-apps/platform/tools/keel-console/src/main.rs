@@ -1818,7 +1818,7 @@ fn config_clear_at(root: &Path) -> anyhow::Result<ExitCode> {
 /// Known top-level config sections for `keel config:show` lookups.
 const CONFIG_SECTIONS: &[&str] = &[
     "app", "database", "auth", "otp", "storage", "limits", "telemetry", "views", "http", "mail",
-    "i18n", "security",
+    "i18n", "security", "identity",
 ];
 
 /// Wave 4 Phase 5: print one config section with every secret redacted

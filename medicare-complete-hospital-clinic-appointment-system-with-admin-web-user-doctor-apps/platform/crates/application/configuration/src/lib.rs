@@ -353,6 +353,48 @@ impl Default for SecurityHeadersSection {
     }
 }
 
+/// Identity section (Wave 7 P5, `[identity]`): argon2id work factors for
+/// password verifiers. Plain data like [`SecuritySection`] — keel-api
+/// resolves it into `keel_identity::PasswordParams` at boot; a successful
+/// login compares the stored verifier's embedded factors against these and
+/// rehashes on drift (rehash-on-login, docs/19).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IdentitySection {
+    /// Memory cost in kibibytes (PHC `m`).
+    #[serde(default = "default_identity_memory")]
+    pub memory: u32,
+    /// Time cost, i.e. passes (PHC `t`).
+    #[serde(default = "default_identity_time")]
+    pub time: u32,
+    /// Parallelism, i.e. lanes (PHC `p`).
+    #[serde(default = "default_identity_parallelism")]
+    pub parallelism: u32,
+}
+
+fn default_identity_memory() -> u32 {
+    // argon2 `Params::DEFAULT_M_COST` (19 * 1024); pinned by
+    // `identity_defaults_are_the_argon2_baseline`.
+    19_456
+}
+
+fn default_identity_time() -> u32 {
+    2
+}
+
+fn default_identity_parallelism() -> u32 {
+    1
+}
+
+impl Default for IdentitySection {
+    fn default() -> Self {
+        Self {
+            memory: default_identity_memory(),
+            time: default_identity_time(),
+            parallelism: default_identity_parallelism(),
+        }
+    }
+}
+
 /// Mail section (Wave 6 P1, `[mail]`): named mailers plus the default
 /// failover chain. Plain data like [`ViewsSection`] — the adapter class may
 /// not depend on application config, so keel-worker converts this into
@@ -590,6 +632,9 @@ pub struct PlatformConfig {
     /// Security posture section (Wave 7 P4): web-plane response headers.
     #[serde(default)]
     pub security: SecuritySection,
+    /// Identity section (Wave 7 P5): argon2 password-verifier work factors.
+    #[serde(default)]
+    pub identity: IdentitySection,
 }
 
 /// Wave 4 Phase 5 (docs/19 L210): the declared config schema — the keys the
@@ -613,6 +658,7 @@ pub const CONFIG_SCHEMA: &[(&str, &[&str])] = &[
     ("database", &["url", "max_connections", "run_migrations", "required"]),
     ("http", &["problem_json", "encrypt_cookies"]),
     ("i18n", &["default", "paths"]),
+    ("identity", &["memory", "time", "parallelism"]),
     ("limits", &["default_monthly_operations"]),
     ("mail", &["default", "mailers"]),
     ("otp", &["provider", "code_ttl_secs", "max_attempts"]),
@@ -930,6 +976,10 @@ impl FrozenConfig {
         &self.0.security
     }
 
+    pub fn identity(&self) -> &IdentitySection {
+        &self.0.identity
+    }
+
     pub fn database_url(&self) -> Option<&str> {
         self.0.database_url()
     }
@@ -1206,7 +1256,7 @@ mod phase5_config_schema_tests {
             required: false,
         })
         .expect("database serializes");
-        let sections: [(&str, serde_json::Value); 10] = [
+        let sections: [(&str, serde_json::Value); 11] = [
             (
                 "app",
                 serde_json::to_value(AppConfig::default()).expect("app"),
@@ -1219,6 +1269,10 @@ mod phase5_config_schema_tests {
             (
                 "http",
                 serde_json::to_value(HttpSection::default()).expect("http"),
+            ),
+            (
+                "identity",
+                serde_json::to_value(IdentitySection::default()).expect("identity"),
             ),
             (
                 "limits",
@@ -1700,5 +1754,54 @@ mod wave7_security_headers_config_tests {
             schema_violations("[security.headres]\nenabled = true\n");
         assert_eq!(violations.len(), 1, "{violations:?}");
         assert_eq!(violations[0].key, "security.headres");
+    }
+}
+
+#[cfg(test)]
+mod wave7_identity_config_tests {
+    use super::*;
+
+    /// Wave 7 P5 (docs/19 "Argon2 rehash-on-login"): `[identity]` defaults
+    /// are the argon2 baseline — a stock config hashes exactly as before
+    /// the section existed (non-regression for existing verifiers).
+    #[test]
+    fn identity_defaults_are_the_argon2_baseline() {
+        let identity = PlatformConfig::default().identity;
+        assert_eq!(
+            (identity.memory, identity.time, identity.parallelism),
+            (19_456, 2, 1),
+            "the documented [identity] defaults stay pinned to argon2's baseline"
+        );
+    }
+
+    /// Every documented factor survives a TOML override (the values the
+    /// boot conversion reads into `keel_identity::PasswordParams`).
+    #[test]
+    fn identity_section_parses_overrides() {
+        let cfg: PlatformConfig =
+            toml::from_str("[identity]\nmemory = 65536\ntime = 4\nparallelism = 2\n")
+                .expect("declared keys parse");
+        let identity = &cfg.identity;
+        assert_eq!(identity.memory, 65536);
+        assert_eq!(identity.time, 4);
+        assert_eq!(identity.parallelism, 2);
+    }
+
+    /// The `GRAPH-CONFIG-SCHEMA` walk declares `identity` with its three
+    /// factors: the clean section passes, a factor typo and a section typo
+    /// both report (collect-all, keyed like every other section).
+    #[test]
+    fn identity_keys_are_declared_and_typos_are_reported() {
+        assert_eq!(
+            schema_violations("[identity]\nmemory = 65536\n"),
+            Vec::new(),
+            "the declared section is clean"
+        );
+        let factor = schema_violations("[identity]\nmemroy = 65536\n");
+        assert_eq!(factor.len(), 1, "{factor:?}");
+        assert_eq!(factor[0].key, "identity.memroy");
+        let section = schema_violations("[idenitty]\nmemory = 65536\n");
+        assert_eq!(section.len(), 1, "{section:?}");
+        assert_eq!(section[0].key, "idenitty");
     }
 }
