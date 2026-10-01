@@ -547,6 +547,10 @@ impl JobStoreAdmin for RedisJobStore {
         Ok(out)
     }
 
+    fn get(&self, id: Uuid) -> Result<Option<DurableJob>, AppError> {
+        self.read_item(id)
+    }
+
     fn requeue(&self, id: Uuid) -> Result<(), AppError> {
         let mut job = self
             .read_item(id)?

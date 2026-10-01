@@ -76,6 +76,13 @@ pub struct AppState {
     /// durable store (no pool, or a builder) — the series stays absent
     /// rather than reporting a lying zero (docs/19, 13-OPERATIONS).
     pub queue: Option<Arc<dyn keel_jobs::JobStoreAdmin>>,
+    // --- Wave 6 P9 batches ------------------------------------------------
+    /// Pool-gated durable batch ledger (B-32) behind `GET /api/v1/batches/{id}`
+    /// and its `cancel`/`retry` operations — membership written once at
+    /// dispatch, per-member state read live from `queue`. `None` = no pool
+    /// (or a builder): the endpoints fail closed (D-52) instead of reporting
+    /// a batch the ledger never saw.
+    pub batches: Option<Arc<dyn keel_jobs::BatchLedger>>,
     pub route_inventory: Vec<RouteEntry>,
     // --- Wave 1 middleware model ------------------------------------------
     /// Named middleware catalog (middleware.toml or the builtin).

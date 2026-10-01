@@ -55,6 +55,17 @@ feed and a partial `(principal_id) WHERE read_at IS NULL` index for the unread c
 shape is served by `InMemoryNotificationStore` under degraded boot through the `NotificationStore`
 port.
 
+**Batch ledger (Wave 6 P9, B-32).** `20261001000002_job_batches.sql` creates `job_batches`
+(`id uuid PK, name text, members jsonb, on_complete text NULL, created_at timestamptz DEFAULT
+now(), finished_at timestamptz NULL`) with a partial `finished_at` index — the strictly-before
+cutoff `queue:prune-batches` deletes on (open batches keep `finished_at NULL` and are never
+pruned). The membership jsonb is written once at dispatch (`ON CONFLICT` refreshes only `name`
+and `on_complete`): per-member state stays in `jobs_queue`, so `batch.status` counts live queue
+truth and concurrent member finishes or admin ops can never lose an update. `PgBatchLedger`
+implements the `BatchLedger` port for the worker's dispatch, keel-api's batch endpoints and the
+console batch commands; degraded boots answer through `MemoryBatchLedger` on the same trait
+(D-52).
+
 ## Roles
 
 `roles.sql` enforces two database identities: the migration **owner** (DDL) and the **runtime**

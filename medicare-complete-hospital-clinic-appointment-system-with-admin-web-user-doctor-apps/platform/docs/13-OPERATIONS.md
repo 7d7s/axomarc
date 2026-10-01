@@ -119,9 +119,10 @@ keel queue:restart            # stop workers after their current job (Wave 5)
 Wave 5 added the admin surface on top of the Wave 2 dead-letter flow: `queue:monitor` for the
 depth/age snapshot, `queue:clear`/`queue:flush` for bulk purges (clear refuses prod/staging and
 prompts unless `KEEL_FORCE=1`), `queue:listen` to supervise the worker, and `queue:prune-*` for
-age-bounded cleanup. Two honest limits: `queue:prune-batches` reports an honest empty run and
-`queue:retry-batch <id>` fails closed — the batch ledger is in-memory only until B-32 lands, so
-requeue batch members individually with `queue:retry`.
+age-bounded cleanup. Wave 6 P9 closed the two batch limits (B-32): `queue:prune-batches`
+deletes finished batch records older than the cutoff against the durable `job_batches` ledger
+(never unfinished ones) and `queue:retry-batch <id>` requeues every failed/dead member through
+the same `BatchOps::retry` the HTTP `POST /api/v1/batches/{id}/retry` runs.
 
 ## Benchmark gate (G15)
 

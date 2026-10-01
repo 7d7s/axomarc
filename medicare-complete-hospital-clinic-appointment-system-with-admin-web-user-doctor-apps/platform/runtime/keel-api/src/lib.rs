@@ -11,6 +11,7 @@ pub mod graph_routes;
 pub mod host;
 pub mod i18n;
 pub mod notification_routes;
+pub mod batch_routes;
 pub mod routes;
 pub mod shell;
 pub mod static_assets;
@@ -270,7 +271,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // fail-closed (`not_implemented`), the D-52 posture.
     // Wave 6 P8: the SAME store instance doubles as the `/metrics` queue
     // census view (admin trait) — depth/age/finished, snapshot per scrape.
-    let (notification_queue, queue_stats) = match &pool {
+    // Wave 6 P9: and as the batch-operations store next to the durable
+    // batch ledger (`PgBatchLedger`, B-32) the batch endpoints read.
+    let (notification_queue, queue_stats, batch_ledger) = match &pool {
         Some(pool) => {
             let store = Arc::new(keel_postgres::PgJobStore::new(pool.clone()));
             let mut registry = keel_jobs::JobRegistry::new();
@@ -285,9 +288,12 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     Arc::new(registry),
                 )),
                 Some(store as Arc<dyn keel_jobs::JobStoreAdmin>),
+                Some(Arc::new(keel_postgres::PgBatchLedger::new(
+                    pool.clone(),
+                )) as Arc<dyn keel_jobs::BatchLedger>),
             )
         }
-        None => (None, None),
+        None => (None, None, None),
     };
 
     let mut host = ApplicationHost::new();
@@ -590,6 +596,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         channels: broadcast_routes::resolve_channels(&graph),
         presence: Arc::new(keel_realtime::PresenceHub::new()),
         queue: queue_stats,
+        batches: batch_ledger,
         route_inventory,
         middleware_catalog,
         route_bindings,
@@ -681,7 +688,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .merge(upload_routes::router(state.clone()))
         .merge(telemetry_routes::router(state.clone()))
         .merge(notification_routes::router(state.clone()))
-        .merge(broadcast_routes::router(state.clone()));
+        .merge(broadcast_routes::router(state.clone()))
+        .merge(batch_routes::router(state.clone()));
     let router = if realtime_enabled {
         let hub = host
             .registry()
@@ -1169,7 +1177,10 @@ pub fn build_app_state(
         presence: Arc::new(keel_realtime::PresenceHub::new()),
         // No pool in the builder: no durable store — the /metrics queue
         // series stays absent (tests inject one to prove the census).
+        // Wave 6 P9: same posture for the batch ledger — tests inject a
+        // ledger + admin store to prove the batch operations.
         queue: None,
+        batches: None,
         route_inventory: graph_routes::route_inventory(&graph),
         middleware_catalog: keel_http::MiddlewareCatalog::builtin(),
         route_bindings,

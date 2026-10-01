@@ -27,7 +27,15 @@ use crate::routes::AppState;
 /// route is behind `auth`), but 19-PARITY asks for a capability gate — so
 /// the check exists, is testable and stays revocable per-snapshot, while
 /// the default grant keeps the endpoint usable in production.
-pub(crate) const FRAMEWORK_CAPABILITIES: &[&str] = &["notifications.mark_read"];
+/// Wave 6 P9 extends the set with the batch-ledger operations
+/// (`batches.status` / `batches.cancel` / `batches.retry`) — the same
+/// posture: granted at login, checked per request, revocable per snapshot.
+pub(crate) const FRAMEWORK_CAPABILITIES: &[&str] = &[
+    "notifications.mark_read",
+    "batches.status",
+    "batches.cancel",
+    "batches.retry",
+];
 
 /// Ceiling on one mark-read request (ids ride in a single UPDATE).
 const MAX_READ_IDS: usize = 500;

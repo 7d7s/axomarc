@@ -60,10 +60,10 @@ against the same workspace/config the runtime uses.
 | `keel queue:forget <id>` | delete one dead job (unknown id or non-dead job = refusal) (Wave 5) |
 | `keel queue:monitor` | one-shot queue depth report: pending (+ oldest age), running, dead, succeeded counts (pure render, unit-tested) (Wave 5) |
 | `keel queue:prune-failed [--hours n]` (default 168) | delete dead jobs older than the cutoff (Wave 5) |
-| `keel queue:prune-batches [--hours n]` (default 72) | prune terminal batch records — honest empty run today: the batch ledger is in-memory only (B-32), output states exactly what happened (Wave 5) |
+| `keel queue:prune-batches [--hours n]` (default 72) | prune terminal batch records finished before the cutoff — real `BatchLedger::prune` over the durable `job_batches` rows (unfinished batches are never pruned), printing the deleted count (Wave 5 flag/default; Wave 6 P9 made it real, B-32) |
 | `keel queue:restart` | write the restart-signal file: workers that observe a signal newer than their start stop after the current job, supervisors respawn them (Wave 5) |
 | `keel queue:listen` | spawn + supervise `keel-worker`: respawn on every exit with a crash-loop backoff (≥2s runs restart immediately, faster runs back off 1s) (Wave 5) |
-| `keel queue:retry-batch <id>` | requeue every failed member of a batch — fails closed: batch membership is unresolvable without a persisted ledger (B-32); the id is validated so the wire contract holds (Wave 5) |
+| `keel queue:retry-batch <id>` | requeue every failed/dead member of a batch — the same `BatchOps::retry` the HTTP `POST /api/v1/batches/{id}/retry` runs over the durable batch ledger; the id is validated before any connection is attempted (Wave 5 flag; Wave 6 P9 made it real, B-32) |
 | `keel schedule:list` / `schedule:run` | schedules (information stubs over the `schedule_registry` seam: they report the registry's empty posture until module schedules land — Wave 6) |
 | `keel schedule:work [--every n]` (default 60s) | schedule daemon: tick loop over the registry, persists tick state (last-fired + recorded failures, Wave 6 P4), fires due items (Wave 5) |
 | `keel schedule:test` | dry-run the schedule registry: prints registered vs due-now (pure — nothing fires, nothing is written; disabled entries would show registered but never due) (Wave 5) |

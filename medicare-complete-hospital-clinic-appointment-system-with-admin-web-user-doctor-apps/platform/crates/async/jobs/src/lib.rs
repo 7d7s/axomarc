@@ -357,6 +357,10 @@ pub trait JobStore: Send + Sync {
 /// Operational add-ons (item 22/29) beyond the frozen §5 surface.
 pub trait JobStoreAdmin: Send + Sync {
     fn list(&self, status: Option<JobStatus>, limit: usize) -> Result<Vec<DurableJob>, AppError>;
+    /// Wave 6 P9: fetch one job by id — the batch operations resolve each
+    /// member's state precisely instead of paging `list()` (a member id set
+    /// is never lost behind a limit).
+    fn get(&self, id: Uuid) -> Result<Option<DurableJob>, AppError>;
     /// Manual retry: put a failed/dead job back to pending.
     fn requeue(&self, id: Uuid) -> Result<(), AppError>;
     /// Wave 5: purge every pending job (`queue:clear` — the CLI gates it to
@@ -496,6 +500,16 @@ impl JobStoreAdmin for InMemoryJobStore {
         out.sort_by(|a, b| b.enqueued_at.cmp(&a.enqueued_at));
         out.truncate(limit);
         Ok(out)
+    }
+
+    fn get(&self, id: Uuid) -> Result<Option<DurableJob>, AppError> {
+        Ok(self
+            .jobs
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|j| j.id == id)
+            .cloned())
     }
 
     fn requeue(&self, id: Uuid) -> Result<(), AppError> {
@@ -674,28 +688,136 @@ impl BatchRun {
     }
 }
 
-/// Executes a `BatchSpec` (item 22 types, L33). In-memory orchestration:
-/// the runtime enqueues all members, then tracks completion as the worker
-/// reports job finishes. Persistence of the batch ledger lands with the
-/// postgres adapter; this runs on any `JobStore` (degraded boot included).
+/// Wave 6 P9 (B-32): one row per dispatched batch in the durable ledger.
+/// The membership is written once at dispatch and never rewritten —
+/// per-member state lives in the job store, so `BatchOps` reads live queue
+/// truth and concurrent member finishes / admin ops cannot lose updates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchRecord {
+    pub id: Uuid,
+    pub name: String,
+    /// Every dispatched member id (written once, at dispatch).
+    pub members: Vec<Uuid>,
+    /// Optional job name to enqueue when every member finished.
+    pub on_complete: Option<String>,
+    #[serde(with = "time::serde::iso8601")]
+    pub created_at: OffsetDateTime,
+    /// Terminal stamp (set by the worker when the run finishes) — the
+    /// strictly-before cutoff `queue:prune-batches` ages records out on.
+    #[serde(default, with = "time::serde::iso8601::option")]
+    pub finished_at: Option<OffsetDateTime>,
+}
+
+/// Wave 6 P9 (B-32): the durable batch ledger behind `batch.status` /
+/// `batch.cancel` / `batch.retry`, `queue:retry-batch` and
+/// `queue:prune-batches`. [`MemoryBatchLedger`] covers degraded boots
+/// (D-52); the postgres adapter (`PgBatchLedger`) is the durable one —
+/// rows persist across restarts, so any process can resolve a batch.
+pub trait BatchLedger: Send + Sync {
+    /// Upsert the record (dispatch re-saves are metadata refreshes).
+    fn save(&self, record: &BatchRecord) -> Result<(), AppError>;
+    fn get(&self, id: Uuid) -> Result<Option<BatchRecord>, AppError>;
+    /// Every record, oldest first (ops tooling; `prune` does its own SQL).
+    fn list(&self) -> Result<Vec<BatchRecord>, AppError>;
+    /// Stamp the terminal time once the run finishes (id unknown = no-op).
+    fn mark_finished(&self, id: Uuid, at: OffsetDateTime) -> Result<(), AppError>;
+    /// Delete records finished strictly before the cutoff. Returns how many
+    /// were deleted; unfinished records are never pruned.
+    fn prune(&self, finished_before: OffsetDateTime) -> Result<u64, AppError>;
+}
+
+/// Degraded-boot ledger (D-52): same semantics, no durability.
+#[derive(Debug, Default)]
+pub struct MemoryBatchLedger {
+    records: Mutex<HashMap<Uuid, BatchRecord>>,
+}
+
+impl MemoryBatchLedger {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl BatchLedger for MemoryBatchLedger {
+    fn save(&self, record: &BatchRecord) -> Result<(), AppError> {
+        self.records.lock().unwrap().insert(record.id, record.clone());
+        Ok(())
+    }
+
+    fn get(&self, id: Uuid) -> Result<Option<BatchRecord>, AppError> {
+        Ok(self.records.lock().unwrap().get(&id).cloned())
+    }
+
+    fn list(&self) -> Result<Vec<BatchRecord>, AppError> {
+        let mut rows: Vec<BatchRecord> = self.records.lock().unwrap().values().cloned().collect();
+        rows.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        Ok(rows)
+    }
+
+    fn mark_finished(&self, id: Uuid, at: OffsetDateTime) -> Result<(), AppError> {
+        if let Some(record) = self.records.lock().unwrap().get_mut(&id) {
+            record.finished_at = Some(at);
+        }
+        Ok(())
+    }
+
+    fn prune(&self, finished_before: OffsetDateTime) -> Result<u64, AppError> {
+        let mut records = self.records.lock().unwrap();
+        let before = records.len();
+        records.retain(|_, record| {
+            record
+                .finished_at
+                .is_none_or(|finished| finished >= finished_before)
+        });
+        Ok((before - records.len()) as u64)
+    }
+}
+
+/// Executes a `BatchSpec` (item 22 types, L33): the runtime enqueues all
+/// members, then tracks completion as the worker reports job finishes.
+/// Membership is mirrored to the [`BatchLedger`] (Wave 6 P9, B-32) — memory
+/// on degraded boots, postgres at full boot — so the batch operations
+/// (`BatchOps`), `queue:retry-batch` and `queue:prune-batches` work from
+/// any process. This runs on any `JobStore` (degraded boot included).
 pub struct BatchRuntime {
     store: Arc<dyn JobStore>,
+    ledger: Arc<dyn BatchLedger>,
     runs: Mutex<HashMap<Uuid, BatchRun>>,
 }
 
 impl BatchRuntime {
+    /// Degraded-boot runtime: membership mirrors to an in-memory ledger
+    /// (D-52). Full boots pass a durable one via [`Self::with_ledger`].
     pub fn new(store: Arc<dyn JobStore>) -> Self {
+        Self::with_ledger(store, Arc::new(MemoryBatchLedger::new()))
+    }
+
+    /// Wave 6 P9 (B-32): run against an explicit [`BatchLedger`] — the
+    /// worker wires the pool-gated postgres ledger so another process
+    /// (keel-api, keel-console) sees the batches this one dispatches.
+    pub fn with_ledger(store: Arc<dyn JobStore>, ledger: Arc<dyn BatchLedger>) -> Self {
         Self {
             store,
+            ledger,
             runs: Mutex::new(HashMap::new()),
         }
     }
 
     /// Enqueue every member of a validated batch; returns the batch run id.
+    /// The ledger record is written BEFORE the enqueue side effects, so a
+    /// ledger refusal aborts dispatch with nothing enqueued.
     pub fn dispatch(&self, spec: BatchSpec) -> Result<Uuid, AppError> {
         spec.validate()?;
         let id = spec.id;
         let outstanding: Vec<Uuid> = spec.jobs.iter().map(|j| j.id).collect();
+        self.ledger.save(&BatchRecord {
+            id,
+            name: spec.name.clone(),
+            members: outstanding.clone(),
+            on_complete: spec.on_complete.clone(),
+            created_at: OffsetDateTime::now_utc(),
+            finished_at: None,
+        })?;
         for job in spec.jobs {
             self.store.enqueue(job)?;
         }
@@ -726,11 +848,15 @@ impl BatchRuntime {
         if dead {
             run.dead.push(job_id);
         }
-        Ok(if run.finished() {
-            Some(run.clone())
-        } else {
-            None
-        })
+        if !run.finished() {
+            return Ok(None);
+        }
+        let finished = run.clone();
+        // Wave 6 P9: stamp the terminal time so `queue:prune-batches` can
+        // age the record out (an id the ledger does not know is a no-op).
+        self.ledger
+            .mark_finished(batch_id, OffsetDateTime::now_utc())?;
+        Ok(Some(finished))
     }
 
     /// Convenience: run the `on_complete` job when a batch finished ok.
@@ -769,6 +895,158 @@ impl BatchRuntime {
             Some(batch_id) => self.member_finished(batch_id, job_id, dead),
             None => Ok(None),
         }
+    }
+}
+
+/// Wave 6 P9 (docs/19 L304): `batch.status` progress counts — live job
+/// store state per member, not ledger bookkeeping. `missing` members were
+/// pruned out of the store; they are counted, never guessed at.
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchProgress {
+    pub id: Uuid,
+    pub name: String,
+    pub total: usize,
+    pub pending: usize,
+    pub running: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub dead: usize,
+    pub missing: usize,
+    /// No member is pending or running (missing members count as settled).
+    pub finished: bool,
+}
+
+/// Wave 6 P9: `batch.cancel` — pending members go dead (`kill`, P8);
+/// running members keep their in-flight claim, terminal members are left
+/// alone. `settled` = already succeeded/failed/dead when cancel ran.
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchCancelOutcome {
+    pub id: Uuid,
+    pub killed: usize,
+    pub running: usize,
+    pub settled: usize,
+    pub missing: usize,
+}
+
+/// Wave 6 P9: `batch.retry` — failed/dead members go back to pending
+/// (`requeue`). Buckets sum to the batch total.
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchRetryOutcome {
+    pub id: Uuid,
+    pub requeued: usize,
+    pub pending: usize,
+    pub running: usize,
+    pub succeeded: usize,
+    pub missing: usize,
+}
+
+/// Wave 6 P9 (docs/19 L304): the batch operations behind the
+/// capability-gated endpoints (`GET /api/v1/batches/{id}`, `POST ...
+/// /cancel`, `POST ... /retry`) and `queue:retry-batch` — membership from
+/// the [`BatchLedger`], per-member state from one precise
+/// [`JobStoreAdmin::get`] each (no `list()` paging to lose ids behind).
+pub struct BatchOps<'a> {
+    pub ledger: &'a dyn BatchLedger,
+    pub admin: &'a dyn JobStoreAdmin,
+}
+
+impl<'a> BatchOps<'a> {
+    pub fn new(ledger: &'a dyn BatchLedger, admin: &'a dyn JobStoreAdmin) -> Self {
+        Self { ledger, admin }
+    }
+
+    fn record(&self, id: Uuid) -> Result<BatchRecord, AppError> {
+        self.ledger
+            .get(id)?
+            .ok_or_else(|| AppError::not_found(format!("batch {id}")))
+    }
+
+    /// Progress counts over every member of the batch.
+    pub fn status(&self, id: Uuid) -> Result<BatchProgress, AppError> {
+        let record = self.record(id)?;
+        let mut progress = BatchProgress {
+            id,
+            name: record.name.clone(),
+            total: record.members.len(),
+            pending: 0,
+            running: 0,
+            succeeded: 0,
+            failed: 0,
+            dead: 0,
+            missing: 0,
+            finished: false,
+        };
+        for member in &record.members {
+            match self.admin.get(*member)? {
+                None => progress.missing += 1,
+                Some(job) => match job.status {
+                    JobStatus::Pending => progress.pending += 1,
+                    JobStatus::Running => progress.running += 1,
+                    JobStatus::Succeeded => progress.succeeded += 1,
+                    JobStatus::Failed => progress.failed += 1,
+                    JobStatus::Dead => progress.dead += 1,
+                },
+            }
+        }
+        progress.finished = progress.pending == 0 && progress.running == 0;
+        Ok(progress)
+    }
+
+    /// Pending members → dead; everything else is reported, untouched.
+    pub fn cancel(&self, id: Uuid) -> Result<BatchCancelOutcome, AppError> {
+        let record = self.record(id)?;
+        let mut outcome = BatchCancelOutcome {
+            id,
+            killed: 0,
+            running: 0,
+            settled: 0,
+            missing: 0,
+        };
+        let reason = format!("batch {} cancelled", record.name);
+        for member in &record.members {
+            match self.admin.get(*member)? {
+                None => outcome.missing += 1,
+                Some(job) => match job.status {
+                    JobStatus::Pending => {
+                        self.admin.kill(*member, &reason)?;
+                        outcome.killed += 1;
+                    }
+                    JobStatus::Running => outcome.running += 1,
+                    JobStatus::Succeeded | JobStatus::Failed | JobStatus::Dead => {
+                        outcome.settled += 1
+                    }
+                },
+            }
+        }
+        Ok(outcome)
+    }
+
+    /// Failed/dead members → pending; every other state is reported.
+    pub fn retry(&self, id: Uuid) -> Result<BatchRetryOutcome, AppError> {
+        let record = self.record(id)?;
+        let mut outcome = BatchRetryOutcome {
+            id,
+            requeued: 0,
+            pending: 0,
+            running: 0,
+            succeeded: 0,
+            missing: 0,
+        };
+        for member in &record.members {
+            match self.admin.get(*member)? {
+                None => outcome.missing += 1,
+                Some(job) => match job.status {
+                    JobStatus::Pending => outcome.pending += 1,
+                    JobStatus::Running => outcome.running += 1,
+                    JobStatus::Succeeded => outcome.succeeded += 1,
+                    JobStatus::Failed | JobStatus::Dead => {
+                        self.admin.requeue(*member)?;
+                        outcome.requeued += 1;
+                    }
+                },
+            }
+        }
+        Ok(outcome)
     }
 }
 
@@ -1688,6 +1966,154 @@ mod tests {
             .maybe_run_completion(&registry, &done, OffsetDateTime::now_utc())
             .unwrap()
             .is_none());
+    }
+
+    // ------------------------------------- Wave 6 P9: durable batch ledger
+
+    /// Wave 6 P9: `batch.status` counts live store state per member (the
+    /// ledger carries membership only) and an unknown batch id is a
+    /// not-found.
+    #[test]
+    fn batch_status_counts_members_from_the_store() {
+        let store = Arc::new(InMemoryJobStore::new());
+        let ledger = Arc::new(MemoryBatchLedger::new());
+        let runtime = BatchRuntime::with_ledger(store.clone(), ledger.clone());
+        let mut members = Vec::new();
+        for _ in 0..3 {
+            let mut member = job(0, 3);
+            member.status = JobStatus::Pending;
+            members.push(member);
+        }
+        let spec = BatchSpec {
+            id: Uuid::now_v7(),
+            name: "nightly".into(),
+            jobs: members,
+            on_complete: None,
+        };
+        let batch = runtime.dispatch(spec).unwrap();
+        let ops = BatchOps::new(ledger.as_ref(), store.as_ref());
+
+        let progress = ops.status(batch).unwrap();
+        assert_eq!(
+            (progress.total, progress.pending, progress.finished),
+            (3, 3, false),
+            "three members, all pending"
+        );
+
+        let claimed = store.claim("worker").unwrap().expect("one claimable");
+        store.complete(claimed.id).unwrap();
+        let progress = ops.status(batch).unwrap();
+        assert_eq!(
+            (progress.total, progress.pending, progress.succeeded, progress.running),
+            (3, 2, 1, 0),
+            "the finished member leaves pending"
+        );
+        assert!(!progress.finished, "members still outstanding");
+
+        let unknown = ops.status(Uuid::now_v7()).expect_err("unknown batch");
+        assert_eq!(unknown.code, keel_foundation::codes::NOT_FOUND);
+    }
+
+    /// Wave 6 P9: `batch.cancel` takes pending members to dead and leaves
+    /// the in-flight claim; `batch.retry` puts the dead back to pending
+    /// (the P8 `kill` / Wave 5 `requeue` primitives behind the ops).
+    #[test]
+    fn batch_cancel_and_retry_move_members() {
+        let store = Arc::new(InMemoryJobStore::new());
+        let ledger = Arc::new(MemoryBatchLedger::new());
+        let runtime = BatchRuntime::with_ledger(store.clone(), ledger.clone());
+        let mut a = job(0, 3);
+        a.status = JobStatus::Pending;
+        let mut b = job(0, 3);
+        b.status = JobStatus::Pending;
+        let spec = BatchSpec {
+            id: Uuid::now_v7(),
+            name: "risky".into(),
+            jobs: vec![a, b],
+            on_complete: None,
+        };
+        let batch = runtime.dispatch(spec).unwrap();
+        let ops = BatchOps::new(ledger.as_ref(), store.as_ref());
+
+        store.claim("worker").unwrap().expect("one claimable");
+        let cancelled = ops.cancel(batch).unwrap();
+        assert_eq!(
+            (cancelled.killed, cancelled.running, cancelled.settled),
+            (1, 1, 0),
+            "pending member killed, running member untouched"
+        );
+        let progress = ops.status(batch).unwrap();
+        assert_eq!(
+            (progress.dead, progress.running, progress.finished),
+            (1, 1, false)
+        );
+
+        let retried = ops.retry(batch).unwrap();
+        assert_eq!(
+            (retried.requeued, retried.pending, retried.running),
+            (1, 0, 1),
+            "the dead member returns to pending"
+        );
+        let progress = ops.status(batch).unwrap();
+        assert_eq!((progress.pending, progress.dead, progress.running), (1, 0, 1));
+    }
+
+    /// Wave 6 P9 (B-32): dispatch writes the membership, the last member
+    /// stamps the terminal time, and prune ages out only finished records —
+    /// an unfinished batch survives any cutoff.
+    #[test]
+    fn batch_ledger_records_finishes_and_prunes() {
+        let store = Arc::new(InMemoryJobStore::new());
+        let ledger = Arc::new(MemoryBatchLedger::new());
+        let runtime = BatchRuntime::with_ledger(store.clone(), ledger.clone());
+
+        let mut member = job(0, 3);
+        member.status = JobStatus::Pending;
+        let spec = BatchSpec {
+            id: Uuid::now_v7(),
+            name: "one".into(),
+            jobs: vec![member.clone()],
+            on_complete: None,
+        };
+        let done_batch = runtime.dispatch(spec).unwrap();
+        let record = ledger
+            .get(done_batch)
+            .unwrap()
+            .expect("record written at dispatch");
+        assert_eq!(record.name, "one");
+        assert_eq!(record.members, vec![member.id]);
+        assert!(record.finished_at.is_none(), "open until the last member lands");
+
+        let mut open_member = job(0, 3);
+        open_member.status = JobStatus::Pending;
+        let open_spec = BatchSpec {
+            id: Uuid::now_v7(),
+            name: "open".into(),
+            jobs: vec![open_member],
+            on_complete: None,
+        };
+        let open_batch = runtime.dispatch(open_spec).unwrap();
+
+        runtime
+            .member_finished(done_batch, member.id, false)
+            .unwrap()
+            .expect("batch finished");
+        let record = ledger.get(done_batch).unwrap().expect("record");
+        assert!(record.finished_at.is_some(), "terminal stamp set");
+
+        let past = OffsetDateTime::now_utc() - Duration::hours(1);
+        assert_eq!(
+            ledger.prune(past).unwrap(),
+            0,
+            "strictly-before: a stamp newer than the cutoff stays"
+        );
+        let future = OffsetDateTime::now_utc() + Duration::hours(1);
+        assert_eq!(ledger.prune(future).unwrap(), 1, "finished record aged out");
+        assert!(ledger.get(done_batch).unwrap().is_none());
+        assert!(
+            ledger.get(open_batch).unwrap().is_some(),
+            "unfinished batches survive every cutoff"
+        );
     }
 
     #[test]

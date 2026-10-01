@@ -10,8 +10,8 @@ use keel_identity::store::{CredentialStore, PrincipalStore};
 use keel_identity::{Credential, CredentialKind, Principal, PrincipalStatus, Secret};
 use keel_notifications::{NotificationRow, NotificationStore};
 use keel_postgres::{
-    create_pool, run_migrations, PgCredentialStore, PgNotificationStore, PgPool, PgPrincipalStore,
-    PgSessionStore,
+    create_pool, run_migrations, PgBatchLedger, PgCredentialStore, PgNotificationStore, PgPool,
+    PgPrincipalStore, PgSessionStore,
 };
 use keel_session::{SessionPolicy, SessionStore};
 use time::OffsetDateTime;
@@ -340,4 +340,85 @@ async fn pg_notification_store_roundtrip() {
     let feed = notifications.list(owner.id, 0, 10).await.expect("counts");
     assert_eq!(feed.total, 2);
     assert_eq!(feed.unread, 1);
+}
+
+/// Wave 6 P9 (B-32): the durable batch ledger round trip — membership
+/// written once survives across ledger instances (the restart /
+/// second-process stand-in), the terminal stamp is one-shot, and prune ages
+/// out only finished records strictly before the cutoff.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pg_batch_ledger_roundtrip() {
+    use keel_jobs::{BatchLedger, BatchRecord};
+
+    let Some(pool) = pool().await else { return };
+    let ledger = PgBatchLedger::new(pool.clone());
+
+    let record = BatchRecord {
+        id: uuid::Uuid::now_v7(),
+        name: "nightly".into(),
+        members: vec![uuid::Uuid::now_v7(), uuid::Uuid::now_v7()],
+        on_complete: Some("batch.done".into()),
+        created_at: OffsetDateTime::now_utc(),
+        finished_at: None,
+    };
+    ledger.save(&record).expect("record writes");
+
+    // A second ledger over the same pool = another process / a restart.
+    let reader = PgBatchLedger::new(pool.clone());
+    let read = reader
+        .get(record.id)
+        .expect("reads")
+        .expect("record present");
+    assert_eq!(read.name, "nightly");
+    assert_eq!(read.members, record.members, "membership round trips");
+    assert_eq!(read.on_complete.as_deref(), Some("batch.done"));
+    assert!(read.finished_at.is_none(), "open batch carries no stamp");
+    assert!(
+        reader
+            .list()
+            .expect("lists")
+            .iter()
+            .any(|r| r.id == record.id),
+        "list sees the record"
+    );
+
+    // Upsert refreshes metadata only — the bookkeeping columns hold.
+    // (Compare against the first READ: timestamptz stores microseconds, so
+    // the raw `record.created_at` nanos never survive the trip verbatim.)
+    let created = read.created_at;
+    let mut refreshed = read.clone();
+    refreshed.name = "nightly-renamed".into();
+    ledger.save(&refreshed).expect("upsert");
+    let read = ledger.get(record.id).expect("reads").expect("present");
+    assert_eq!(read.name, "nightly-renamed");
+    assert_eq!(read.created_at, created, "created_at never rewritten");
+    assert!(read.finished_at.is_none());
+
+    // Unfinished records survive every cutoff; prune says so honestly.
+    let future = OffsetDateTime::now_utc() + time::Duration::hours(1);
+    assert_eq!(ledger.prune(future).expect("prunes"), 0, "open batch kept");
+
+    // The terminal stamp is one-shot (finished_at IS NULL guard)...
+    let finished_at = OffsetDateTime::now_utc();
+    ledger.mark_finished(record.id, finished_at).expect("stamps");
+    let later = finished_at + time::Duration::seconds(5);
+    ledger
+        .mark_finished(record.id, later)
+        .expect("second stamp is a no-op");
+    let read = ledger.get(record.id).expect("reads").expect("present");
+    let stamped = read.finished_at.expect("stamped");
+    // timestamptz stores microseconds — compare within that truncation.
+    assert!(
+        stamped <= finished_at && stamped >= finished_at - time::Duration::seconds(1),
+        "first stamp wins ({stamped:?} vs {finished_at:?})"
+    );
+
+    // ...and only strictly-before cutoffs age the record out.
+    let past = OffsetDateTime::now_utc() - time::Duration::hours(1);
+    assert_eq!(ledger.prune(past).expect("prunes"), 0, "stamp is newer");
+    assert_eq!(ledger.prune(future).expect("prunes"), 1, "finished record aged out");
+    assert!(
+        ledger.get(record.id).expect("reads").is_none(),
+        "pruned records are gone"
+    );
 }

@@ -204,6 +204,19 @@ impl JobStoreAdmin for PgJobStore {
         })
     }
 
+    fn get(&self, id: Uuid) -> Result<Option<DurableJob>, AppError> {
+        let pool = self.pool.clone();
+        block_on(async move {
+            let row: Option<sqlx::postgres::PgRow> =
+                sqlx::query("SELECT * FROM jobs_queue WHERE id = $1")
+                    .bind(id)
+                    .fetch_optional(&pool)
+                    .await
+                    .map_err(pg)?;
+            row.map(job_from_row).transpose()
+        })
+    }
+
     fn requeue(&self, id: Uuid) -> Result<(), AppError> {
         let pool = self.pool.clone();
         block_on(async move {

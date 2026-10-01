@@ -9,6 +9,7 @@
 //! - per-stream monotonic delta sequences
 //! - runtime role never owns tables (see ../../../database/roles.sql)
 
+pub mod batchledger;
 pub mod bridge;
 pub mod jobstore;
 pub mod modelstore;
@@ -23,6 +24,7 @@ pub mod tokenstore;
 pub mod tx;
 pub mod txport;
 
+pub use batchledger::PgBatchLedger;
 pub use jobstore::PgJobStore;
 pub use modelstore::PgModelStore;
 pub use notificationstore::PgNotificationStore;

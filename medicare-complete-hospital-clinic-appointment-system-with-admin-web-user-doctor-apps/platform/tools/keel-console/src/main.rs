@@ -2375,19 +2375,22 @@ async fn queue_prune_failed(hours: u64) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Wave 5: prune terminal batch records older than --hours (default 72).
-/// Honest empty run: the batch ledger (BatchRuntime) is in-memory only, so
-/// no terminal batch records are persisted yet. Command, flag and default
-/// are real (docs/19 wire contract); output states exactly what happened.
+/// Wave 5/6 P9: prune terminal batch records older than --hours (default
+/// 72). The durable ledger (B-32) ages finished records out strictly
+/// before the cutoff; unfinished batches are never pruned, and the count
+/// printed is what the DELETE actually removed.
 async fn queue_prune_batches(hours: u64) -> anyhow::Result<ExitCode> {
+    use keel_jobs::BatchLedger;
     let hours = i64::try_from(hours).map_err(|_| anyhow::anyhow!("--hours out of range"))?;
     if hours < 1 {
         anyhow::bail!("--hours must be at least 1");
     }
-    println!("queue:prune-batches: pruned 0 batch record(s) (cutoff {hours}h).");
-    println!(
-        "  the batch ledger is in-memory only (BatchRuntime); no terminal batch records are persisted yet."
-    );
+    let root = workspace_root()?;
+    let pool = db_pool(&root).await?;
+    let ledger = keel_postgres::PgBatchLedger::new(pool);
+    let cutoff = time::OffsetDateTime::now_utc() - time::Duration::hours(hours);
+    let pruned = ledger.prune(cutoff).map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("queue:prune-batches: pruned {pruned} batch record(s) (cutoff {hours}h).");
     Ok(ExitCode::SUCCESS)
 }
 
@@ -2437,15 +2440,27 @@ fn queue_listen() -> anyhow::Result<ExitCode> {
     }
 }
 
-/// Wave 5: requeue every failed member of a batch — fails closed: batch
-/// membership cannot be resolved without a persisted ledger. The id is
-/// still validated so the wire contract holds when the ledger lands.
+/// Wave 5/6 P9: requeue every failed/dead member of a batch — the durable
+/// ledger (B-32) carries membership, the job store carries member state,
+/// and the operation is the very `BatchOps::retry` the HTTP
+/// `POST /api/v1/batches/{id}/retry` runs. The id validates first so a
+/// typo fails before any connection is attempted.
 async fn queue_retry_batch(id: &str) -> anyhow::Result<ExitCode> {
-    let _batch =
+    use keel_jobs::BatchOps;
+    let batch_id =
         uuid::Uuid::parse_str(id).map_err(|e| anyhow::anyhow!("invalid batch id: {e}"))?;
-    anyhow::bail!(
-        "queue:retry-batch {id}: the batch ledger is not persisted (BatchRuntime keeps batches in memory; postgres persistence lands with the jobs-ledger follow-up) — requeue members individually with queue:retry <job-id>"
+    let root = workspace_root()?;
+    let pool = db_pool(&root).await?;
+    let store = keel_postgres::PgJobStore::new(pool.clone());
+    let ledger = keel_postgres::PgBatchLedger::new(pool);
+    let outcome = BatchOps::new(&ledger, &store)
+        .retry(batch_id)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!(
+        "queue:retry-batch {id}: requeued {} failed member(s) ({} pending, {} running, {} succeeded, {} missing).",
+        outcome.requeued, outcome.pending, outcome.running, outcome.succeeded, outcome.missing
     );
+    Ok(ExitCode::SUCCESS)
 }
 
 // ---------------------------------------------------------------- schedules
@@ -5371,6 +5386,22 @@ middleware = ["ghost"]
         assert!(matches!(cli.cmd, Cmd::QueueRestart), "queue:restart");
         let cli = Cli::try_parse_from(["keel", "queue:listen"]).expect("parses");
         assert!(matches!(cli.cmd, Cmd::QueueListen), "queue:listen");
+    }
+
+    /// Wave 6 P9: the batch commands validate BEFORE touching a database —
+    /// a malformed id and a non-positive cutoff refuse with actionable
+    /// errors whether or not DATABASE_URL is set (the id parse runs first).
+    #[tokio::test]
+    async fn batch_commands_validate_before_connecting() {
+        let err = queue_retry_batch("not-a-uuid")
+            .await
+            .expect_err("malformed batch id refuses");
+        assert!(err.to_string().contains("invalid batch id"), "{err}");
+
+        let err = queue_prune_batches(0)
+            .await
+            .expect_err("zero cutoff refuses");
+        assert!(err.to_string().contains("--hours"), "{err}");
     }
 
     /// Unique temp root per test (Windows-safe: no forward-slash asserts).

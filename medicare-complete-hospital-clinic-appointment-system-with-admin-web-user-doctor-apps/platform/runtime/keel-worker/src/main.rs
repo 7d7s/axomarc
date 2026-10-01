@@ -674,7 +674,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
     // S3 enterprise runtime: batches, chains, scheduler tick (L33/L34/L35).
-    let batches = Arc::new(BatchRuntime::new(jobs.clone()));
+    // Wave 6 P9 (B-32): batch membership mirrors to the durable ledger —
+    // postgres when a pool exists, memory on the degraded boot (D-52) — so
+    // keel-api's batch operations and the console batch commands resolve
+    // batches this worker dispatches, and a restart never loses a fan-out.
+    let batch_ledger: Arc<dyn keel_jobs::BatchLedger> = match &pool {
+        Some(pool) => Arc::new(keel_postgres::PgBatchLedger::new(pool.clone())),
+        None => Arc::new(keel_jobs::MemoryBatchLedger::new()),
+    };
+    let batches = Arc::new(BatchRuntime::with_ledger(jobs.clone(), batch_ledger));
     let chains = Arc::new(ChainRuntime::new(jobs.clone()));
     let schedules = Arc::new(ScheduleRegistry::new());
     // Wave 6 P1/P2: the queued-mail def + handler, built from `[mail]` and

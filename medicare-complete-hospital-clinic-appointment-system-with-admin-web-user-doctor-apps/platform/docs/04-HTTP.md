@@ -243,6 +243,29 @@ the mark additionally requires the `notifications.mark_read` capability, chained
 login-time grant set (`FRAMEWORK_CAPABILITIES` in `notification_routes.rs`) — self-service, but
 still a real gate a snapshot can revoke (403 `AUTH_DENIED`).
 
+## Batch operations (Wave 6 P9)
+
+`GET /api/v1/batches/{id}` reports one dispatched batch's progress as `{ id, name, total,
+pending, running, succeeded, failed, dead, missing, finished }` — membership comes from the
+durable `job_batches` ledger (written once at dispatch) while every count is read live from the
+job store, one precise `get` per member (`missing` = members no longer in the store, counted
+honestly; `finished` = nothing pending or running).
+
+`POST /api/v1/batches/{id}/cancel` is body-less: pending members go dead (`JobStoreAdmin::kill`),
+running members keep their in-flight claim and terminal members are left alone — answered as
+`{ id, killed, running, settled, missing }`. `POST /api/v1/batches/{id}/retry` (also body-less)
+requeues failed/dead members — `{ id, requeued, pending, running, succeeded, missing }` — through
+the same `BatchOps` service the console's `queue:retry-batch` runs, so the HTTP edge and the CLI
+agree by construction.
+
+A malformed path id is a 422 on the shared `fields` shape and an unknown batch a 404. Every
+endpoint resolves identity through the shared resolver (session cookie or bearer PAT) and
+requires its framework capability — `batches.status` / `batches.cancel` / `batches.retry` —
+granted at login through `FRAMEWORK_CAPABILITIES` (`notification_routes.rs`) and revocable per
+snapshot (403 `AUTH_DENIED`). Without a pool there is no ledger and no admin store: the
+endpoints answer `KER_NOT_IMPLEMENTED` (D-52 fail-closed) rather than reporting batches they
+cannot see.
+
 ## Broadcast channel auth (Wave 6 P7)
 
 `POST /api/v1/broadcast/auth` (session or bearer PAT; body `{ channel }`) resolves the channel

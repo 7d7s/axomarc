@@ -37,16 +37,19 @@ keel queue:forget <id>                 # delete one dead job
 keel queue:prune-failed --hours 168    # age-bounded dead-letter pruning (default 168h)
 keel queue:prune-batches --hours 72    # prune terminal batch records (default 72h)
 keel queue:restart                     # restart-signal file: workers stop after the current job
-keel queue:retry-batch <id>            # fails closed until the batch ledger persists (B-32)
+keel queue:retry-batch <id>            # requeue every failed/dead member of a batch (B-32)
 ```
 
 Wave 5 added the admin surface (clear/flush/forget/monitor/prune-*/restart/retry-batch) and
 promoted `queue:listen` to a real supervisor that respawns `keel-worker` on every exit with a
 crash-loop backoff. `queue:restart` writes the signal file; the worker races it against its own
 start time, so a signal older than the worker is ignored (test:
-`restart_signal_is_ignored_when_older_than_the_worker_start`). Honest gap: `BatchRuntime` keeps
-batches in memory, so `queue:prune-batches` reports an honest empty run and `queue:retry-batch`
-fails closed with the per-job alternative (backlog B-32).
+`restart_signal_is_ignored_when_older_than_the_worker_start`). Wave 6 P9 closed the batch gap
+(B-32): `BatchRuntime` mirrors membership to a pool-gated `BatchLedger` — saved BEFORE enqueue,
+so a ledger refusal aborts dispatch with nothing enqueued — `PgBatchLedger` at full boot and
+`MemoryBatchLedger` degraded; `queue:prune-batches` ages terminal records out for real and
+`queue:retry-batch` requeues members through `BatchOps::retry` (tests
+`batch_commands_validate_before_connecting`, `pg_batch_ledger_roundtrip`).
 
 Wave 6 P1 registers two job defs at boot: `demo.job` (smoke handler) and `mail.send` (queued
 mail — the def owns the retry budget; the handler resolves storage-capped attachments and sends
@@ -92,7 +95,13 @@ Tests (jobs): `unique_admission_holds_locked_claims_until_release`,
 
 ## Batches and chains
 
-- **BatchRuntime** — many items, one durable job: per-item progress, resumable.
+- **BatchRuntime** — many items, one durable job: per-item progress, resumable. Wave 6 P9 (B-32)
+  gives it a durable `BatchLedger` (membership written once at dispatch, `mark_finished` stamped
+  when the run settles) and the `BatchOps` service — `status` (live counts), `cancel` (pending →
+  dead via `kill`), `retry` (failed/dead → pending via `requeue`) — shared by the
+  capability-gated `GET/POST /api/v1/batches/{id}[/cancel|/retry]` endpoints (docs/04) and
+  `queue:retry-batch` (tests `batch_status_counts_members_from_the_store`,
+  `batch_cancel_and_retry_move_members`, `batch_ledger_records_finishes_and_prunes`).
 - **ChainRuntime** — ordered steps where each step is a job; failure records the halted
   member position (`ChainStatus::Halted { position }`), repeats keep the first failure, and
   a later success (e.g. `queue:retry`) resumes the chain through `Completed`

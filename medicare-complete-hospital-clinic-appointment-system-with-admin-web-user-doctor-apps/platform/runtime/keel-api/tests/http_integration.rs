@@ -22,7 +22,8 @@ fn app() -> App {
         .merge(keel_api::graph_routes::graph_router(state.clone(), &graph))
         .merge(keel_api::auth_routes::router(state.clone()))
         .merge(keel_api::upload_routes::router(state.clone()))
-        .merge(keel_api::notification_routes::router(state.clone()));
+        .merge(keel_api::notification_routes::router(state.clone()))
+        .merge(keel_api::batch_routes::router(state.clone()));
     let router = state
         .sessions
         .as_ref()
@@ -2937,7 +2938,8 @@ fn app_with_lang() -> App {
         .merge(keel_api::graph_routes::graph_router(state.clone(), &graph))
         .merge(keel_api::auth_routes::router(state.clone()))
         .merge(keel_api::upload_routes::router(state.clone()))
-        .merge(keel_api::notification_routes::router(state.clone()));
+        .merge(keel_api::notification_routes::router(state.clone()))
+        .merge(keel_api::batch_routes::router(state.clone()));
     let router = state
         .sessions
         .as_ref()
@@ -3362,4 +3364,305 @@ async fn presence_member_list_tracks_join_and_leave() {
     let data = after.data();
     let list = data["members"].as_array().expect("member array");
     assert_eq!(list.len(), 0, "the dropped stream left the roster");
+}
+
+// ------------------------------------------------------------- Wave 6 P9
+
+/// The batch surface needs the admin store + ledger `serve()` wires at full
+/// boot; `build_app_state` is degraded (None/None), so inject them before
+/// the router assembles — the SAME instances the batch runtime dispatches
+/// through. Returns them for the test to dispatch with.
+fn batch_app() -> (
+    App,
+    Arc<keel_jobs::InMemoryJobStore>,
+    Arc<keel_jobs::MemoryBatchLedger>,
+) {
+    let dir = std::env::temp_dir().join(format!("keel-api-p9-{}", uuid::Uuid::now_v7()));
+    let (mut state, graph, store) = keel_api::build_app_state(&dir, true, true);
+    let jobs = Arc::new(keel_jobs::InMemoryJobStore::new());
+    let ledger = Arc::new(keel_jobs::MemoryBatchLedger::new());
+    state.queue = Some(jobs.clone());
+    state.batches = Some(ledger.clone());
+    let router = keel_api::routes::router(state.clone())
+        .merge(keel_api::graph_routes::graph_router(state.clone(), &graph))
+        .merge(keel_api::auth_routes::router(state.clone()))
+        .merge(keel_api::upload_routes::router(state.clone()))
+        .merge(keel_api::notification_routes::router(state.clone()))
+        .merge(keel_api::batch_routes::router(state.clone()));
+    let router = state
+        .sessions
+        .as_ref()
+        .expect("sessions enabled")
+        .as_ref()
+        .clone()
+        .apply(router);
+    (
+        App {
+            router,
+            state,
+            store,
+        },
+        jobs,
+        ledger,
+    )
+}
+
+/// One pending batch member — the jobs suite's fixture shape (all fields
+/// public, built directly).
+fn pending_member() -> keel_jobs::DurableJob {
+    use keel_jobs::JobStatus;
+    let now = time::OffsetDateTime::now_utc();
+    keel_jobs::DurableJob {
+        id: uuid::Uuid::now_v7(),
+        execution_id: keel_foundation::ExecutionId::new(),
+        name: "demo.job".into(),
+        payload: serde_json::Value::Null,
+        queue: "default".into(),
+        attempt: 0,
+        max_attempts: 3,
+        deadline: now + time::Duration::minutes(5),
+        available_at: now,
+        status: JobStatus::Pending,
+        priority: 0,
+        claimed_by: None,
+        claimed_at: None,
+        causation_id: None,
+        correlation_id: None,
+        last_error: None,
+        enqueued_at: now,
+        finished_at: None,
+    }
+}
+
+/// Capability-gated operations: anonymous callers stop at the identity
+/// resolver, a login-granted snapshot passes the gate and misses the empty
+/// ledger (404, not a gate error), a malformed path id is a 422 on the
+/// shared validation shape, and a snapshot WITHOUT the batch capability is
+/// refused 403 before any ledger is touched.
+#[tokio::test]
+async fn batch_endpoints_require_authentication_and_capabilities() {
+    let (app, _jobs, _ledger) = batch_app();
+
+    let anon = send(
+        &app,
+        json_req(
+            Method::GET,
+            "/api/v1/batches/01900000-0000-7000-8000-000000000000",
+            Value::Null,
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(anon.status, StatusCode::UNAUTHORIZED, "{}", anon.body);
+    assert_eq!(anon.error_code(), keel_foundation::codes::UNAUTHENTICATED);
+
+    let (cookie, principal) = inbox_owner(
+        &app,
+        &format!("batch-gate-{}@clinic.test", uuid::Uuid::now_v7()),
+    )
+    .await;
+
+    let miss = send(
+        &app,
+        json_req(
+            Method::GET,
+            &format!("/api/v1/batches/{}", uuid::Uuid::now_v7()),
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(miss.status, StatusCode::NOT_FOUND, "{}", miss.body);
+    assert_eq!(miss.error_code(), keel_foundation::codes::NOT_FOUND);
+
+    let bad = send(
+        &app,
+        json_req(
+            Method::GET,
+            "/api/v1/batches/not-a-uuid",
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        bad.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        bad.body
+    );
+    assert_eq!(bad.error_code(), keel_foundation::codes::VALIDATION);
+
+    // Capability gate: a snapshot WITHOUT batches.cancel refuses (403) —
+    // the check exists and stays revocable per snapshot (P5 posture).
+    app.state
+        .policy
+        .install_snapshot(keel_policy::AccessSnapshot {
+            principal_id: principal,
+            tenant_id: app.state.default_tenant_id.expect("dev tenant"),
+            membership_active: true,
+            capabilities: ["appointments.list".to_string()].into_iter().collect(),
+            scope_paths: ["/".to_string()].into_iter().collect(),
+            authorization_revision: app.state.policy.revision(),
+            feature_revision: keel_foundation::FeatureRevision(1),
+            module_revision: keel_foundation::ModuleRevision(1),
+            computed_at: time::OffsetDateTime::now_utc(),
+        });
+    let denied = send(
+        &app,
+        json_req(
+            Method::POST,
+            &format!(
+                "/api/v1/batches/{}/cancel",
+                uuid::Uuid::now_v7()
+            ),
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN, "{}", denied.body);
+    assert_eq!(denied.error_code(), keel_foundation::codes::DENIED);
+}
+
+/// The full operation round trip over one dispatched batch: status counts
+/// live store state, cancel takes the pending members to dead (leaving the
+/// finished one), retry puts the dead back to pending — the same service
+/// `queue:retry-batch` runs.
+#[tokio::test]
+async fn batch_status_cancel_retry_roundtrip() {
+    use keel_jobs::{BatchRuntime, BatchSpec, JobStore};
+
+    let (app, jobs, ledger) = batch_app();
+    let (cookie, _principal) = inbox_owner(
+        &app,
+        &format!("batch-ops-{}@clinic.test", uuid::Uuid::now_v7()),
+    )
+    .await;
+
+    let runtime = BatchRuntime::with_ledger(jobs.clone(), ledger.clone());
+    let spec = BatchSpec {
+        id: uuid::Uuid::now_v7(),
+        name: "nightly".into(),
+        jobs: vec![pending_member(), pending_member(), pending_member()],
+        on_complete: None,
+    };
+    let batch = runtime.dispatch(spec).expect("dispatches");
+    let path = format!("/api/v1/batches/{batch}");
+
+    let res = send(
+        &app,
+        json_req(Method::GET, &path, Value::Null, Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.data()["total"], 3);
+    assert_eq!(res.data()["pending"], 3);
+    assert_eq!(res.data()["finished"], false);
+
+    let claimed = jobs.claim("worker").expect("claims").expect("claimable");
+    jobs.complete(claimed.id).expect("completes");
+    let res = send(
+        &app,
+        json_req(Method::GET, &path, Value::Null, Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(res.data()["succeeded"], 1, "{}", res.body);
+    assert_eq!(res.data()["pending"], 2);
+
+    let res = send(
+        &app,
+        json_req(
+            Method::POST,
+            &format!("{path}/cancel"),
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.data()["killed"], 2, "{}", res.body);
+    assert_eq!(res.data()["running"], 0);
+    assert_eq!(res.data()["settled"], 1, "the finished member is left alone");
+
+    let res = send(
+        &app,
+        json_req(Method::GET, &path, Value::Null, Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(res.data()["dead"], 2, "{}", res.body);
+    assert_eq!(res.data()["succeeded"], 1);
+    assert_eq!(res.data()["finished"], true);
+
+    let res = send(
+        &app,
+        json_req(
+            Method::POST,
+            &format!("{path}/retry"),
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.data()["requeued"], 2, "{}", res.body);
+
+    let res = send(
+        &app,
+        json_req(Method::GET, &path, Value::Null, Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(res.data()["pending"], 2, "{}", res.body);
+    assert_eq!(res.data()["dead"], 0);
+    assert_eq!(res.data()["succeeded"], 1);
+
+    // A batch the ledger never saw is a plain 404 through the same gate.
+    let res = send(
+        &app,
+        json_req(
+            Method::GET,
+            &format!("/api/v1/batches/{}", uuid::Uuid::now_v7()),
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::NOT_FOUND, "{}", res.body);
+}
+
+/// Degraded boot (D-52): without a pool the builder state carries no
+/// ledger — the endpoint fails closed with KER_NOT_IMPLEMENTED instead of
+/// reporting batches it cannot see.
+#[tokio::test]
+async fn batch_endpoints_fail_closed_without_a_ledger() {
+    let app = app();
+    let (cookie, _principal) = inbox_owner(
+        &app,
+        &format!("batch-degraded-{}@clinic.test", uuid::Uuid::now_v7()),
+    )
+    .await;
+    let res = send(
+        &app,
+        json_req(
+            Method::GET,
+            &format!("/api/v1/batches/{}", uuid::Uuid::now_v7()),
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        res.error_code(),
+        keel_foundation::codes::NOT_IMPLEMENTED,
+        "{}",
+        res.body
+    );
 }
