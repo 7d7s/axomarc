@@ -1753,7 +1753,11 @@ async fn graph_dispatch(
             .with_tenant(Some(tenant))
             .with_db_probes(&probes)
             .with_custom_rules(&keel_validation::GLOBAL_CUSTOM_RULES)
-            .with_messages(&state.messages, &locale);
+            .with_messages(&state.messages, &locale)
+            // Wave 7 P6: the `password` rule reads the configured
+            // `[auth.password_policy]` — the same policy register/reset
+            // enforce — so every dispatch context sees one posture.
+            .with_password_policy(state.password_policy);
         if !uploads.is_empty() {
             ctx = ctx.with_uploads(&uploads);
         }

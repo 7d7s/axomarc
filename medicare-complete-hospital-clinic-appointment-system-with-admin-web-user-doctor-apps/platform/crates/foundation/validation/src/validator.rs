@@ -921,9 +921,10 @@ pub enum DimBound {
 /// Password criteria for the `password` rule (Wave 4 Phase 3). The engine
 /// default mirrors Laravel's `Password::defaults()` (min 8, letters, numbers,
 /// symbols, mixed case); `[auth.password_policy]` config feeds it through
-/// [`ValidationContext::with_password_policy`] in Phase 5. Sub-rule tokens
-/// (`min:<n>`, `letters`, `numbers`, `symbols`, `mixed_case`) compose in the
-/// same field's rule list.
+/// [`ValidationContext::with_password_policy`] (Wave 7 P6 wires the section
+/// into every dispatch context and into the register/reset flows). Sub-rule
+/// tokens (`min:<n>`, `letters`, `numbers`, `symbols`, `mixed_case`) compose
+/// in the same field's rule list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PasswordPolicy {
     /// Minimum length in characters (Unicode scalar count).
@@ -947,6 +948,35 @@ impl Default for PasswordPolicy {
             symbols: true,
             mixed_case: true,
         }
+    }
+}
+
+impl PasswordPolicy {
+    /// The failure for `value` under this policy: the first unmet criterion,
+    /// in min-length → letters → numbers → symbols → mixed-case order (one
+    /// message per evaluation, `bail`-style), or `None` when the value
+    /// satisfies every enabled criterion. The `password` rule reads it
+    /// through the context; register/password-reset call it directly
+    /// (Wave 7 P6), so both enforce the same configured posture.
+    pub fn failure(&self, value: &str) -> Option<String> {
+        if value.chars().count() < self.min_length {
+            return Some(format!("must be at least {} characters", self.min_length));
+        }
+        if self.letters && !value.chars().any(|c| c.is_alphabetic()) {
+            return Some("must contain a letter".into());
+        }
+        if self.numbers && !value.chars().any(|c| c.is_ascii_digit()) {
+            return Some("must contain a number".into());
+        }
+        if self.symbols && !value.chars().any(|c| !c.is_alphanumeric()) {
+            return Some("must contain a symbol".into());
+        }
+        if self.mixed_case
+            && !(value.chars().any(|c| c.is_uppercase()) && value.chars().any(|c| c.is_lowercase()))
+        {
+            return Some("must contain uppercase and lowercase letters".into());
+        }
+        None
     }
 }
 
@@ -1061,7 +1091,7 @@ impl<'a> ValidationContext<'a> {
         self
     }
 
-    /// Override the `password` policy (Phase 5 wires `[auth.password_policy]`).
+    /// Override the `password` policy (Wave 7 P6 wires `[auth.password_policy]`).
     pub fn with_password_policy(mut self, policy: PasswordPolicy) -> Self {
         self.policy = policy;
         self
@@ -2726,7 +2756,7 @@ mod tests {
             .expect_err("non-string");
         assert_eq!(report.violations[0].message, "must be a string");
 
-        // config-shaped override (Phase 5 wires [auth.password_policy])
+        // config-shaped override ([auth.password_policy] wires this at boot)
         let custom = PasswordPolicy {
             min_length: 12,
             symbols: false,

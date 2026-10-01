@@ -183,7 +183,7 @@ async fn register(app: &App, email: &str) -> String {
         json_req(
             Method::POST,
             "/auth/register",
-            json!({ "email": email, "password": "correct-horse-99", "tenant": "dev" }),
+            json!({ "email": email, "password": "Correct-horse-99", "tenant": "dev" }),
             None,
         ),
     )

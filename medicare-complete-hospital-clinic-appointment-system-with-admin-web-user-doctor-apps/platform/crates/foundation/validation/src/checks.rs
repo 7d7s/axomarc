@@ -28,7 +28,7 @@
 //! documented replacement for Laravel's `regex:` rule).
 
 use crate::validator::{
-    DateTarget, DimBound, NumTarget, PasswordPolicy, Rule, UploadMeta, ValidationContext,
+    DateTarget, DimBound, NumTarget, Rule, UploadMeta, ValidationContext,
 };
 use serde_json::Value;
 
@@ -371,8 +371,10 @@ pub(crate) fn check(
         },
 
         // -------------------------------------------------- Wave 4 auth ---
+        // Wave 7 P6: the policy instance comes from the context, fed by
+        // `[auth.password_policy]` at boot (flows call the same method).
         Rule::Password => match v {
-            Value::String(s) => password_fail(s, &ctx.password_policy()),
+            Value::String(s) => ctx.password_policy().failure(s),
             _ => Some("must be a string".into()),
         },
         // A wrong password, a missing verifier and a missing principal are
@@ -549,30 +551,6 @@ fn dimensions_fail(part: &UploadMeta, bounds: &[DimBound]) -> Option<String> {
             _ => continue,
         };
         return Some(msg);
-    }
-    None
-}
-
-/// `password` against the active policy: the first unmet criterion, in
-/// min-length → letters → numbers → symbols → mixed-case order (one message
-/// per evaluation, `bail`-style).
-fn password_fail(s: &str, policy: &PasswordPolicy) -> Option<String> {
-    if s.chars().count() < policy.min_length {
-        return Some(format!("must be at least {} characters", policy.min_length));
-    }
-    if policy.letters && !s.chars().any(|c| c.is_alphabetic()) {
-        return Some("must contain a letter".into());
-    }
-    if policy.numbers && !s.chars().any(|c| c.is_ascii_digit()) {
-        return Some("must contain a number".into());
-    }
-    if policy.symbols && !s.chars().any(|c| !c.is_alphanumeric()) {
-        return Some("must contain a symbol".into());
-    }
-    if policy.mixed_case
-        && !(s.chars().any(|c| c.is_uppercase()) && s.chars().any(|c| c.is_lowercase()))
-    {
-        return Some("must contain uppercase and lowercase letters".into());
     }
     None
 }

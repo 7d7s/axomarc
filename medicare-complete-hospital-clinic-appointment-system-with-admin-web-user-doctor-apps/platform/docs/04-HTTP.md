@@ -330,6 +330,14 @@ parameters, expiry values, and expired links (constant-time compare). This is
 the direct equivalent of Laravel `URL::signedRoute` / temporary signed URLs
 with no new dependency.
 
+**TTL bounds (Wave 7 P6).** `security.signed_urls.max_ttl_secs` (default
+604800 = 7 days) caps every TTL a `SignedGate` link may carry: `sign_once`
+refuses to mint above the configured bound, and boot refuses the whole
+config when that bound sits above the hard ceiling of 2 592 000 seconds
+(30 days, `keel_api::SIGNED_URL_TTL_CEILING_SECS`) — the spec's
+over-bound → boot-refusing config error, so a misconfiguration can never
+mint links that outlive a key-rotation window.
+
 ## Redirects and flash (S9)
 
 - `Redirect::to / see_other / temporary` — 302/303/307 with `Location`.

@@ -310,6 +310,7 @@ fn enabled_headers() -> keel_http::SecurityHeaders {
             csp: "default-src 'self' https://cdn.test".into(),
             referrer_policy: "no-referrer".into(),
         },
+        ..Default::default()
     })
 }
 

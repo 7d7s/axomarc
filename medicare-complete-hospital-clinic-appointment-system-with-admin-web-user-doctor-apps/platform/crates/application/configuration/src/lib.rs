@@ -111,10 +111,57 @@ pub struct AuthConfig {
     /// fail-closed, the gate only admits a same-second confirmation.
     #[serde(default = "default_confirm_timeout")]
     pub confirm_timeout_secs: u64,
+    /// `[auth.password_policy]` (Wave 7 P6): strength rules enforced by
+    /// register/password-reset and read by the `password` validation rule.
+    #[serde(default)]
+    pub password_policy: PasswordPolicySection,
 }
 
 fn default_confirm_timeout() -> u64 {
     900
+}
+
+/// `[auth.password_policy]` (Wave 7 P6, docs/19 "Security parity"): the five
+/// strength criteria register + password-reset enforce and the Wave 4
+/// `password` rule composable reads through `ValidationContext`. Defaults
+/// mirror Laravel's `Password::defaults()` (min 8, letters, numbers, symbols,
+/// mixed case). `deny_unknown_fields` closes the level-3 gap the 2-level
+/// schema walk cannot reach, the same way [`SecurityHeadersSection`] does for
+/// `[security.headers]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PasswordPolicySection {
+    /// Minimum length in characters (Unicode scalar count).
+    #[serde(default = "default_policy_min_length")]
+    pub min_length: usize,
+    /// Require at least one letter.
+    #[serde(default = "default_true")]
+    pub letters: bool,
+    /// Require at least one ASCII digit.
+    #[serde(default = "default_true")]
+    pub numbers: bool,
+    /// Require at least one non-alphanumeric character.
+    #[serde(default = "default_true")]
+    pub symbols: bool,
+    /// Require at least one uppercase and one lowercase letter.
+    #[serde(default = "default_true")]
+    pub mixed_case: bool,
+}
+
+fn default_policy_min_length() -> usize {
+    8
+}
+
+impl Default for PasswordPolicySection {
+    fn default() -> Self {
+        Self {
+            min_length: default_policy_min_length(),
+            letters: true,
+            numbers: true,
+            symbols: true,
+            mixed_case: true,
+        }
+    }
 }
 
 impl Default for AuthConfig {
@@ -122,6 +169,7 @@ impl Default for AuthConfig {
         Self {
             jwt_secret: String::new(),
             confirm_timeout_secs: default_confirm_timeout(),
+            password_policy: PasswordPolicySection::default(),
         }
     }
 }
@@ -299,6 +347,9 @@ pub struct HttpSection {
 pub struct SecuritySection {
     #[serde(default)]
     pub headers: SecurityHeadersSection,
+    /// `[security.signed_urls]` (Wave 7 P6): the signed-link TTL bound.
+    #[serde(default)]
+    pub signed_urls: SignedUrlsSection,
 }
 
 /// `[security.headers]` (Wave 7 P4, docs/19 "Security-headers middleware"):
@@ -349,6 +400,33 @@ impl Default for SecurityHeadersSection {
             hsts_include_subdomains: false,
             csp: default_csp(),
             referrer_policy: default_referrer_policy(),
+        }
+    }
+}
+
+/// `[security.signed_urls]` (Wave 7 P6, docs/19 "Signed-URL hardening"): the
+/// hard bound on how long a signed link may live — boot refuses a configured
+/// bound above the ceiling documented in docs/04 (over-bound → boot-refusing
+/// config error), and `SignedGate::sign_once` refuses to mint past it.
+/// `deny_unknown_fields` closes the level-3 gap the same way
+/// [`SecurityHeadersSection`] does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignedUrlsSection {
+    /// Maximum TTL a signed URL may carry, in seconds (7 days by default;
+    /// pairs with `keel_http::SignedGate`'s mint-time bound).
+    #[serde(default = "default_signed_url_max_ttl")]
+    pub max_ttl_secs: u64,
+}
+
+fn default_signed_url_max_ttl() -> u64 {
+    604_800
+}
+
+impl Default for SignedUrlsSection {
+    fn default() -> Self {
+        Self {
+            max_ttl_secs: default_signed_url_max_ttl(),
         }
     }
 }
@@ -654,7 +732,10 @@ pub const CONFIG_SCHEMA: &[(&str, &[&str])] = &[
             "debug",
         ],
     ),
-    ("auth", &["jwt_secret", "confirm_timeout_secs"]),
+    (
+        "auth",
+        &["jwt_secret", "confirm_timeout_secs", "password_policy"],
+    ),
     ("database", &["url", "max_connections", "run_migrations", "required"]),
     ("http", &["problem_json", "encrypt_cookies"]),
     ("i18n", &["default", "paths"]),
@@ -662,7 +743,7 @@ pub const CONFIG_SCHEMA: &[(&str, &[&str])] = &[
     ("limits", &["default_monthly_operations"]),
     ("mail", &["default", "mailers"]),
     ("otp", &["provider", "code_ttl_secs", "max_attempts"]),
-    ("security", &["headers"]),
+    ("security", &["headers", "signed_urls"]),
     (
         "storage",
         &["endpoint", "bucket", "default", "disks"],
@@ -1803,5 +1884,117 @@ mod wave7_identity_config_tests {
         let section = schema_violations("[idenitty]\nmemory = 65536\n");
         assert_eq!(section.len(), 1, "{section:?}");
         assert_eq!(section[0].key, "idenitty");
+    }
+}
+
+#[cfg(test)]
+mod wave7_password_policy_config_tests {
+    use super::*;
+
+    /// Wave 7 P6 (docs/19 "Security parity"): `[auth.password_policy]`
+    /// defaults are the Laravel `Password::defaults()` posture — a stock
+    /// config enforces exactly what the Wave 4 `password` composable
+    /// evaluates out of the box.
+    #[test]
+    fn password_policy_defaults_are_the_laravel_posture() {
+        let policy = PlatformConfig::default().auth.password_policy;
+        assert_eq!(
+            (
+                policy.min_length,
+                policy.letters,
+                policy.numbers,
+                policy.symbols,
+                policy.mixed_case,
+            ),
+            (8, true, true, true, true),
+            "the documented [auth.password_policy] defaults stay pinned to Laravel's posture"
+        );
+    }
+
+    /// Every documented criterion survives a TOML override, and a level-3
+    /// typo refuses the typed parse (`deny_unknown_fields` closes the gap
+    /// the 2-level schema walk cannot reach, the way `[security.headers]`).
+    #[test]
+    fn password_policy_section_parses_overrides_and_refuses_typos() {
+        let cfg: PlatformConfig = toml::from_str(
+            "[auth.password_policy]\nmin_length = 12\nletters = true\nnumbers = false\nsymbols = false\nmixed_case = true\n",
+        )
+        .expect("declared keys parse");
+        let policy = &cfg.auth.password_policy;
+        assert_eq!((policy.min_length, policy.letters), (12, true));
+        assert_eq!(
+            (policy.numbers, policy.symbols, policy.mixed_case),
+            (false, false, true)
+        );
+
+        let err = toml::from_str::<PlatformConfig>(
+            "[auth.password_policy]\nmin_lenght = 12\n",
+        )
+        .expect_err("a level-3 typo refuses the typed parse");
+        assert!(
+            err.to_string().contains("unknown field"),
+            "deny_unknown_fields names the typo: {err}"
+        );
+    }
+
+    /// The `GRAPH-CONFIG-SCHEMA` walk declares `auth` → `password_policy`:
+    /// the nested section passes clean, an unknown level-2 key reports.
+    #[test]
+    fn password_policy_keys_are_declared_in_the_config_schema() {
+        assert_eq!(
+            schema_violations("[auth.password_policy]\nmin_length = 12\n"),
+            Vec::new(),
+            "the declared section is clean"
+        );
+        let typo = schema_violations("[auth]\npassword_polcy = true\n");
+        assert_eq!(typo.len(), 1, "{typo:?}");
+        assert_eq!(typo[0].key, "auth.password_polcy");
+    }
+}
+
+#[cfg(test)]
+mod wave7_signed_url_ttl_config_tests {
+    use super::*;
+
+    /// Wave 7 P6 (docs/19 "Signed-URL hardening"): `[security.signed_urls]`
+    /// defaults to a 7-day bound — signed links never outlive a week unless
+    /// a deployment deliberately raises (still capped at boot).
+    #[test]
+    fn signed_url_ttl_bound_defaults_to_seven_days() {
+        let bound = PlatformConfig::default().security.signed_urls.max_ttl_secs;
+        assert_eq!(bound, 604_800, "the documented default stays 7 days");
+    }
+
+    /// The bound survives a TOML override; a level-3 typo refuses the typed
+    /// parse (`deny_unknown_fields`, the `[security.headers]` pattern).
+    #[test]
+    fn signed_urls_section_parses_overrides_and_refuses_typos() {
+        let cfg: PlatformConfig =
+            toml::from_str("[security.signed_urls]\nmax_ttl_secs = 3600\n")
+                .expect("declared key parses");
+        assert_eq!(cfg.security.signed_urls.max_ttl_secs, 3600);
+
+        let err = toml::from_str::<PlatformConfig>(
+            "[security.signed_urls]\nmax_ttl_sec = 3600\n",
+        )
+        .expect_err("a level-3 typo refuses the typed parse");
+        assert!(
+            err.to_string().contains("unknown field"),
+            "deny_unknown_fields names the typo: {err}"
+        );
+    }
+
+    /// The `GRAPH-CONFIG-SCHEMA` walk declares `security` → `signed_urls`:
+    /// the nested section passes clean, an unknown level-2 key reports.
+    #[test]
+    fn signed_urls_keys_are_declared_in_the_config_schema() {
+        assert_eq!(
+            schema_violations("[security.signed_urls]\nmax_ttl_secs = 3600\n"),
+            Vec::new(),
+            "the declared section is clean"
+        );
+        let typo = schema_violations("[security]\nsigned_url = true\n");
+        assert_eq!(typo.len(), 1, "{typo:?}");
+        assert_eq!(typo[0].key, "security.signed_url");
     }
 }

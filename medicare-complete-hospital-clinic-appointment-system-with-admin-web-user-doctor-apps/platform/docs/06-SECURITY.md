@@ -52,7 +52,11 @@ severity, retryability, meta. Public messages are safe for the wire; internals s
   password when the stored verifier's embedded factors drift from that config (rehash-on-login —
   a factor upgrade converges old verifiers on first login without ever blocking the login
   itself). Failed logins run a dummy hash so unknown identifiers do not answer faster than bad
-  passwords.
+  passwords. Register and password-reset completion enforce the `[auth.password_policy]`
+  strength rules (`min_length`, `letters`, `numbers`, `symbols`, `mixed_case` — Laravel-posture
+  defaults), the same policy that feeds the Wave 4 `password` validation rule at the dispatch
+  edge, so the composable and the flows never drift apart; a refused reset attempt never
+  consumes the reset token.
 - Browser clients get an HMAC-tagged `keel_session` cookie (HttpOnly, SameSite=Lax, Secure in prod);
   API clients use hashed PATs via `Authorization: Bearer`. Session fixation is defended at login and
   register: any session the client presented *before* authenticating is destroyed server-side, then

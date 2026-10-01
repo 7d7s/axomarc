@@ -105,9 +105,20 @@ fn validate_email(email: &str) -> Result<String, AppError> {
     Ok(email)
 }
 
-fn validate_password(password: &str) -> Result<(), AppError> {
-    if password.len() < 8 || password.len() > 128 {
-        return Err(AppError::validation("password must be 8..=128 characters"));
+/// Wave 7 P6: register and password-reset enforce the configured
+/// `[auth.password_policy]` (the same policy the `password` rule composable
+/// reads), plus the hard 128-byte size cap the policy does not carry.
+fn validate_password(
+    password: &str,
+    policy: &keel_validation::PasswordPolicy,
+) -> Result<(), AppError> {
+    if password.len() > 128 {
+        return Err(AppError::validation(
+            "password must be 128 characters or fewer",
+        ));
+    }
+    if let Some(failure) = policy.failure(password) {
+        return Err(AppError::validation(format!("password {failure}")));
     }
     Ok(())
 }
@@ -327,7 +338,7 @@ async fn register(
     }
     let result = (|| -> Result<(AuthData, Option<axum::http::HeaderValue>), AppError> {
         let email = validate_email(&body.email)?;
-        validate_password(&body.password)?;
+        validate_password(&body.password, &state.password_policy)?;
         if state.principals.by_email(&email)?.is_some() {
             return Err(AppError::conflict(
                 "an account with this email already exists",
@@ -628,10 +639,13 @@ async fn reset_complete(
     Json(body): Json<ResetCompleteBody>,
 ) -> impl IntoResponse {
     let result = (|| -> Result<serde_json::Value, AppError> {
+        // Wave 7 P6: the policy gates before anything is spent — a weak
+        // password never consumes the reset token (re-requesting is the
+        // user's only recovery step otherwise).
+        validate_password(&body.password, &state.password_policy)?;
         let token = state
             .tokens
             .consume(keel_tokens::TokenPurpose::Reset, &body.token)?;
-        validate_password(&body.password)?;
         let hash = hash_password_with(&state.password_params, &Secret::new(&body.password))?;
         state
             .credentials

@@ -121,7 +121,7 @@ fn json_req(
 
 async fn register(app: &App, email: &str) -> Reply {
     let body =
-        serde_json::json!({ "email": email, "password": "correct-horse-99", "tenant": "dev" });
+        serde_json::json!({ "email": email, "password": "Correct-horse-99", "tenant": "dev" });
     send(
         app,
         json_req(Method::POST, "/auth/register", body, None, None),
@@ -383,7 +383,7 @@ fn stored_verifier(app: &App, principal: keel_foundation::PrincipalId) -> String
 async fn login_rehashes_a_verifier_whose_params_drifted_from_identity_config() {
     let app = app();
     let email = format!("drift-{}@clinic.test", uuid::Uuid::now_v7());
-    let password = "correct-horse-99";
+    let password = "Correct-horse-99";
     let drifted = keel_identity::PasswordParams {
         memory: 4096,
         time: 3,
@@ -421,6 +421,111 @@ async fn login_rehashes_a_verifier_whose_params_drifted_from_identity_config() {
         "no rewrite once converged"
     );
 }
+
+// ---------------------------------------------------- Wave 7 P6 policy
+
+/// Wave 7 P6 (docs/19 test plan "password policy enforcement on register"):
+/// the configured `[auth.password_policy]` gates registration — a password
+/// below `min_length` is refused before any principal is written, and the
+/// same email then registers fine with a compliant password.
+#[tokio::test]
+async fn register_rejects_a_password_below_the_configured_policy() {
+    let app = app();
+    let email = format!("policy-{}@clinic.test", uuid::Uuid::now_v7());
+    let body = serde_json::json!({ "email": email, "password": "Ab1!", "tenant": "dev" });
+    let weak = send(
+        &app,
+        json_req(Method::POST, "/auth/register", body, None, None),
+    )
+    .await;
+    assert_eq!(
+        weak.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        weak.body
+    );
+    assert_eq!(
+        weak.body["error"]["message"],
+        serde_json::json!("password must be at least 8 characters"),
+        "{}",
+        weak.body
+    );
+
+    // Nothing was written: a compliant password lands for the same email.
+    let ok = register(&app, &email).await;
+    assert_eq!(ok.status, StatusCode::OK, "{}", ok.body);
+}
+
+/// Wave 7 P6 (docs/19 test plan "password policy enforcement on reset"): the
+/// same policy gates password-reset completion, and a refused attempt never
+/// consumes the reset token — the compliant password then lands and the new
+/// credential is what logs in.
+#[tokio::test]
+async fn reset_complete_rejects_a_password_below_the_configured_policy() {
+    let app = app();
+    let email = format!("reset-policy-{}@clinic.test", uuid::Uuid::now_v7());
+    assert_eq!(register(&app, &email).await.status, StatusCode::OK);
+
+    let request = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/auth/password-reset/request",
+            serde_json::json!({ "email": email }),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(request.status, StatusCode::OK, "{}", request.body);
+    let token = request.data()["dev_token"]
+        .as_str()
+        .expect("dev token in non-prod")
+        .to_string();
+
+    // A weak password refuses with the policy message; the token survives.
+    let weak = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/auth/password-reset/complete",
+            serde_json::json!({ "token": token, "password": "Ab1!" }),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        weak.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        weak.body
+    );
+    assert_eq!(
+        weak.body["error"]["message"],
+        serde_json::json!("password must be at least 8 characters"),
+        "{}",
+        weak.body
+    );
+
+    // The same token completes with a compliant password...
+    let ok = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/auth/password-reset/complete",
+            serde_json::json!({ "token": token, "password": "Reset-Pass-99" }),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(ok.status, StatusCode::OK, "{}", ok.body);
+
+    // ...and the NEW credential is what logs in (the reset landed).
+    let login_ok = login(&app, &email, "Reset-Pass-99", Some("dev")).await;
+    assert_eq!(login_ok.status, StatusCode::OK, "{}", login_ok.body);
+}
 // ---------------------------------------------------------------- throttling
 
 #[tokio::test]
@@ -444,7 +549,7 @@ async fn login_throttling_returns_429_after_burst() {
     );
     assert_eq!(sixth.error_code(), "CAP_LIMIT_EXCEEDED");
     // Correct password is also throttled (bucket is identity+IP keyed).
-    let locked = login(&app, &email, "correct-horse-99", Some("dev")).await;
+    let locked = login(&app, &email, "Correct-horse-99", Some("dev")).await;
     assert_eq!(locked.status, StatusCode::TOO_MANY_REQUESTS);
 }
 
@@ -455,7 +560,7 @@ async fn bearer_pat_flow_works_without_cookies() {
     let app = app();
     let email = format!("pat-{}@clinic.test", uuid::Uuid::now_v7());
     let mut body =
-        serde_json::json!({ "identifier": email, "password": "correct-horse-99", "tenant": "dev" });
+        serde_json::json!({ "identifier": email, "password": "Correct-horse-99", "tenant": "dev" });
     register(&app, &email).await;
     body["mode"] = Value::String("token".into());
     let login_res = send(
@@ -1074,7 +1179,7 @@ async fn login_rotates_session_and_invalidates_prelogin_cookie() {
     // id (K2 != K1) and the pre-login session must be destroyed.
     let body = serde_json::json!({
         "identifier": email,
-        "password": "correct-horse-99",
+        "password": "Correct-horse-99",
         "tenant": "dev"
     });
     let login_res = send(
@@ -1612,7 +1717,7 @@ async fn pat_bearer_still_authenticates_with_jwt_enabled() {
     let email = format!("patjwt-{}@clinic.test", uuid::Uuid::now_v7());
     let body = serde_json::json!({
         "email": email,
-        "password": "correct-horse-99",
+        "password": "Correct-horse-99",
         "tenant": "dev",
         "mode": "token"
     });
@@ -2171,7 +2276,7 @@ async fn cancel_route_reauthenticates_with_current_password() {
         json_req(
             Method::DELETE,
             &format!("/api/v1/appointments/{id}"),
-            serde_json::json!({ "password": "correct-horse-99" }),
+            serde_json::json!({ "password": "Correct-horse-99" }),
             Some(&cookie),
             None,
         ),
@@ -2335,7 +2440,7 @@ async fn binding_miss_malformed_and_cross_tenant_are_404() {
             "/auth/register",
             serde_json::json!({
                 "email": email_b,
-                "password": "correct-horse-99",
+                "password": "Correct-horse-99",
                 "tenant": tenant_b.to_string(),
             }),
             None,
@@ -2554,7 +2659,7 @@ async fn remember_login_issues_the_30d_cookie_and_me_reports_the_flag() {
     register(&app, &email).await;
 
     // Plain login: the default 8 hour cookie, flag absent.
-    let plain = login(&app, &email, "correct-horse-99", Some("dev")).await;
+    let plain = login(&app, &email, "Correct-horse-99", Some("dev")).await;
     assert_eq!(plain.status, StatusCode::OK, "{}", plain.body);
     let plain_set = plain
         .set_cookies
@@ -2580,7 +2685,7 @@ async fn remember_login_issues_the_30d_cookie_and_me_reports_the_flag() {
     // Remembered login: 30d cookie (2_592_000) + bag flag reported by me.
     let body = serde_json::json!({
         "identifier": email,
-        "password": "correct-horse-99",
+        "password": "Correct-horse-99",
         "tenant": "dev",
         "remember": true,
     });
@@ -2630,7 +2735,7 @@ async fn password_confirm_stamps_the_session_and_fails_closed() {
         json_req(
             Method::POST,
             "/auth/confirm",
-            serde_json::json!({ "password": "correct-horse-99" }),
+            serde_json::json!({ "password": "Correct-horse-99" }),
             None,
             None,
         ),
@@ -2658,7 +2763,7 @@ async fn password_confirm_stamps_the_session_and_fails_closed() {
         json_req(
             Method::POST,
             "/auth/confirm",
-            serde_json::json!({ "password": "correct-horse-99" }),
+            serde_json::json!({ "password": "Correct-horse-99" }),
             Some(&cookie),
             None,
         ),

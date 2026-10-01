@@ -102,14 +102,31 @@ pub trait SignedUrlPort: Send + Sync {
 pub struct SignedGate {
     urls: SignedUrls,
     tokens: Arc<TokenService>,
+    /// Wave 7 P6: the hard bound on any minted TTL (seconds). Pairs with
+    /// keel-config's `[security.signed_urls].max_ttl_secs` default — boot
+    /// always rebinds it to the configured value via [`Self::with_max_ttl`].
+    max_ttl_secs: u64,
 }
+
+/// Default bound when no configured value is threaded: 7 days, the same
+/// figure keel-config's `max_ttl_secs` serde default carries.
+const DEFAULT_MAX_TTL_SECS: u64 = 604_800;
 
 impl SignedGate {
     pub fn new(secret: Vec<u8>, tokens: Arc<TokenService>) -> Self {
         Self {
             urls: SignedUrls::new(secret),
             tokens,
+            max_ttl_secs: DEFAULT_MAX_TTL_SECS,
         }
+    }
+
+    /// Wave 7 P6: bind the gate to the configured
+    /// `[security.signed_urls].max_ttl_secs`; [`Self::sign_once`] refuses
+    /// any TTL above it (the configured bound itself is validated at boot).
+    pub fn with_max_ttl(mut self, max_ttl_secs: u64) -> Self {
+        self.max_ttl_secs = max_ttl_secs;
+        self
     }
 
     /// Mint a one-time signed URL (19-PARITY "one-time redemption variant").
@@ -123,6 +140,16 @@ impl SignedGate {
         path: &str,
         ttl: Duration,
     ) -> Result<String, AppError> {
+        // Wave 7 P6 TTL bound: no mint may outlive the configured cap
+        // (a negative TTL fails the same way — nothing signs a link that
+        // is already expired).
+        let requested = ttl.whole_seconds();
+        if requested < 0 || requested as u64 > self.max_ttl_secs {
+            return Err(AppError::validation(format!(
+                "signed url ttl {requested}s exceeds the configured max_ttl_secs of {}",
+                self.max_ttl_secs
+            )));
+        }
         let issued = self
             .tokens
             .issue(principal, TokenPurpose::SignedUrl, ttl, None)?;
@@ -372,6 +399,33 @@ mod tests {
             keel_tokens::InMemoryTokenStore::new(),
         )));
         SignedGate::new(b"signed-url-test-secret".to_vec(), tokens)
+    }
+
+    /// Wave 7 P6: the gate's TTL bound — `sign_once` refuses to mint a link
+    /// that outlives `max_ttl_secs` (the configured
+    /// `[security.signed_urls]` value, rebound via `with_max_ttl`) and
+    /// still mints inside it.
+    #[test]
+    fn sign_once_refuses_a_ttl_above_the_configured_bound() {
+        let g = gate().with_max_ttl(3_600);
+        let err = g
+            .sign_once(
+                keel_foundation::PrincipalId::new(),
+                "/downloads/1",
+                Duration::minutes(61),
+            )
+            .expect_err("an over-bound ttl refuses to mint");
+        assert!(
+            err.public_message.contains("max_ttl_secs"),
+            "{}",
+            err.public_message
+        );
+        g.sign_once(
+            keel_foundation::PrincipalId::new(),
+            "/downloads/1",
+            Duration::minutes(60),
+        )
+        .expect("an in-bound ttl mints");
     }
 
     #[test]

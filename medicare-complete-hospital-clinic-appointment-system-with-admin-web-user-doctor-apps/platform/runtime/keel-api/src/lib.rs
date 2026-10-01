@@ -527,6 +527,13 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         root.join("public"),
     )));
 
+    // Wave 7 P6 signed-URL TTL bounds (19-PARITY "over-bound →
+    // boot-refusing config error"): a `max_ttl_secs` above the hard ceiling
+    // refuses boot here, before anything can mint — the validated bound then
+    // binds the gate below (`sign_once` refuses any TTL above it).
+    let signed_ttl_bound = signed_url_max_ttl_secs(cfg.security())
+        .map_err(|error| error.public_message)?;
+
     // Wave 2 signed URLs (19-PARITY "URL generation"): the `signed`
     // middleware builtin verifies links through this gate. An empty
     // application key leaves no trustworthy secret, so the gate stays off
@@ -538,10 +545,13 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         None
     } else {
-        Some(Arc::new(keel_http::SignedGate::new(
-            keel_http::derive_signed_key(&cfg.app().key),
-            tokens.clone(),
-        )))
+        Some(Arc::new(
+            keel_http::SignedGate::new(
+                keel_http::derive_signed_key(&cfg.app().key),
+                tokens.clone(),
+            )
+            .with_max_ttl(signed_ttl_bound),
+        ))
     };
 
     // Wave 2 subdomain tenancy (19-PARITY route host matching): the host
@@ -628,6 +638,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         security_headers: security_headers_from(cfg.security()),
         password_params: password_params_from(cfg.identity()),
         dummy_hash: Arc::new(std::sync::OnceLock::new()),
+        password_policy: password_policy_from(&cfg.auth().password_policy),
     };
 
     // B-29: `keel shell` — interactive console over the booted graph. Same
@@ -920,6 +931,46 @@ pub fn password_params_from(
         time: section.time,
         parallelism: section.parallelism,
     }
+}
+
+/// Wave 7 P6 (`[auth.password_policy]` → the composable + the flows): plain
+/// config data in, the validation layer's policy out — the same conversion
+/// pattern as `password_params_from`. `graph_routes` attaches the result to
+/// every dispatch context (the Wave 4 `password` rule reads it) and
+/// register/password-reset enforce the same policy directly.
+pub fn password_policy_from(
+    section: &keel_config::PasswordPolicySection,
+) -> keel_validation::PasswordPolicy {
+    keel_validation::PasswordPolicy {
+        min_length: section.min_length,
+        letters: section.letters,
+        numbers: section.numbers,
+        symbols: section.symbols,
+        mixed_case: section.mixed_case,
+    }
+}
+
+/// Wave 7 P6: hard ceiling on `security.signed_urls.max_ttl_secs` — 30 days.
+/// A configured bound above it refuses boot (19-PARITY "over-bound →
+/// boot-refusing config error"): the TTL cap itself must stay sane, so a
+/// misconfiguration can never mint links that outlive a key-rotation window.
+pub const SIGNED_URL_TTL_CEILING_SECS: u64 = 2_592_000;
+
+/// Wave 7 P6 (`[security.signed_urls]` → the mint bound): validate the
+/// configured bound and hand it back for `SignedGate::with_max_ttl`. A
+/// bound above [`SIGNED_URL_TTL_CEILING_SECS`] is a config error that
+/// refuses boot — the helper exists so the refusal is unit-testable
+/// without opening a listener.
+pub fn signed_url_max_ttl_secs(
+    section: &keel_config::SecuritySection,
+) -> Result<u64, keel_foundation::AppError> {
+    let secs = section.signed_urls.max_ttl_secs;
+    if secs > SIGNED_URL_TTL_CEILING_SECS {
+        return Err(keel_foundation::AppError::validation(format!(
+            "security.signed_urls.max_ttl_secs={secs} exceeds the hard ceiling of {SIGNED_URL_TTL_CEILING_SECS} seconds"
+        )));
+    }
+    Ok(secs)
 }
 
 /// Session cookie HMAC secret: explicit env wins; otherwise a per-boot
@@ -1272,6 +1323,9 @@ pub fn build_app_state(
         // fixture seeds its verifier through the stores directly).
         password_params: keel_identity::PasswordParams::default(),
         dummy_hash: Arc::new(std::sync::OnceLock::new()),
+        // Harness default: the Laravel-posture policy — the P6 register/
+        // reset enforcement tests exercise exactly the stock default.
+        password_policy: keel_validation::PasswordPolicy::default(),
     };
     (state, graph, appt_store)
 }
@@ -1834,5 +1888,32 @@ mod wave6_disk_tests {
         let err = disk_registry(&bad, &root).unwrap_err();
         assert!(err.public_message.contains("nope"), "{}", err.public_message);
         std::fs::remove_dir_all(&root).ok();
+    }
+}
+
+#[cfg(test)]
+mod wave7_signed_url_ttl_tests {
+    use super::{signed_url_max_ttl_secs, SIGNED_URL_TTL_CEILING_SECS};
+
+    /// Wave 7 P6 (19-PARITY "over-bound → boot-refusing config error"): a
+    /// `security.signed_urls.max_ttl_secs` above the hard ceiling refuses
+    /// boot; the default and the ceiling itself pass through to the gate.
+    #[test]
+    fn over_bound_signed_url_ttl_refuses_boot() {
+        let mut security = keel_config::SecuritySection::default();
+        assert_eq!(
+            signed_url_max_ttl_secs(&security).expect("the default bound is in range"),
+            604_800,
+            "the default is the documented 7 days"
+        );
+        security.signed_urls.max_ttl_secs = SIGNED_URL_TTL_CEILING_SECS;
+        signed_url_max_ttl_secs(&security).expect("the ceiling itself passes");
+        security.signed_urls.max_ttl_secs = SIGNED_URL_TTL_CEILING_SECS + 1;
+        let err = signed_url_max_ttl_secs(&security).expect_err("over-bound refuses boot");
+        assert!(
+            err.public_message.contains("max_ttl_secs"),
+            "{}",
+            err.public_message
+        );
     }
 }

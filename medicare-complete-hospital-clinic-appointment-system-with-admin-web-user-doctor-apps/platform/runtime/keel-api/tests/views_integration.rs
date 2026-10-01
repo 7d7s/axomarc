@@ -179,7 +179,7 @@ async fn get(router: &axum::Router, uri: &str, accept: Option<&str>) -> Reply {
 /// wiring: auth routes + session middleware are part of the router).
 async fn register(router: &axum::Router, email: &str) -> String {
     let body =
-        serde_json::json!({ "email": email, "password": "correct-horse-99", "tenant": "dev" });
+        serde_json::json!({ "email": email, "password": "Correct-horse-99", "tenant": "dev" });
     let req = Request::builder()
         .method(Method::POST)
         .uri("/auth/register")

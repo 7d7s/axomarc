@@ -174,6 +174,13 @@ pub struct AppState {
     /// credentials, built once per boot on first use at the SAME factors so
     /// docs/06's equalization claim holds after a factor change too.
     pub dummy_hash: Arc<std::sync::OnceLock<String>>,
+    // --- Wave 7 P6 password policy ----------------------------------------
+    /// Resolved `[auth.password_policy]`: register/password-reset enforce it
+    /// directly and `graph_routes` feeds it to every dispatch context, so
+    /// the Wave 4 `password` rule composable reads the same configured
+    /// posture (19-PARITY "`[auth.password_policy]` config feeding the
+    /// `password` rule composable").
+    pub password_policy: keel_validation::PasswordPolicy,
 }
 
 impl AppState {

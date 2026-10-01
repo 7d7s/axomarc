@@ -15,6 +15,15 @@ run_migrations = true
 # secrets are asserted at boot (never defaulted in prod)
 jwt_secret = "dev-only-not-for-prod"
 
+# Wave 7 P6: password strength for register + password-reset (the same
+# policy the `password` validation rule reads). Laravel-posture defaults.
+[auth.password_policy]
+min_length = 8
+letters = true
+numbers = true
+symbols = true
+mixed_case = true
+
 # Argon2id work factors for password verifiers (Wave 7 P5): the argon2
 # baseline defaults. A successful login re-hashes a stored verifier whose
 # embedded factors drift from here (memory in KiB, time = passes,
@@ -59,6 +68,11 @@ enabled = false
 # hsts_include_subdomains = false
 # csp = "default-src 'self'"
 # referrer_policy = "strict-origin-when-cross-origin"
+
+[security.signed_urls]
+# Wave 7 P6: how long a signed link may live (seconds). Boot refuses a
+# bound above the 30-day hard ceiling; sign_once refuses mints above this.
+max_ttl_secs = 604800
 
 [limits]
 # usage-cap pricing (D-20): per-tenant caps enforced by capability engine
