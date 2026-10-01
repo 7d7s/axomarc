@@ -152,6 +152,24 @@ notification localization landed at P6: the shipped `platform/lang` catalog thro
 `services/realtime`: BroadcastHub with SSE and WebSocket carriers. Feature-flag gated rollout;
 per-tenant channels; used for live UI updates rather than polling.
 
+Wave 6 P7 composes the authorization the crate's own header defers to the runtime: the hub
+gained a `PresenceHub` roster (idempotent join/leave per member id; `presence.join`/
+`presence.leave` events publish through the same hub subscribers listen on) and a
+`ChannelAuthorizer` seam the transports run at every connect — `realtime_router_authorized`
+takes the host's authorizer and joins a `presence-*` roster before handing over the SSE
+stream (a drop-guarded stream leaves on disconnect; the WS session leaves when its loop ends),
+while the raw `realtime_router(hub)` stays as the un-authorized transport primitive for the
+crate's own tests. The host side lives in `keel-api`'s `broadcast_routes.rs`: `POST
+/api/v1/broadcast/auth` mints the short-TTL channel-bound token after the resolved capability
+gate, `GET /api/v1/broadcast/members` reads the roster under the same gate, and
+`ChannelTokenAuthorizer` refuses anything but a valid token bound to the requested channel —
+one uniform 401. `serve()` mounts only the authorized router (behind `app.realtime`), sharing
+the single `PresenceHub` instance between transports and the members endpoint. Honest gaps:
+channel names are exact-matched (the Wave 2 wire sanitizer forbids dots and braces, so
+parameterized `orders.{id}` names can never be requested — per-record channels ride
+`tenant:{id}:...` style names), and the roster is in-process (single-node posture, same as the
+hub).
+
 ## HTTP client
 
 `services/http-client`: retry policies, timeouts, redaction of secrets in logs, structured request

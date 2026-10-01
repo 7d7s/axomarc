@@ -39,6 +39,10 @@ pub enum TokenPurpose {
     /// the plaintext marker, this row records its hash so the second
     /// redemption fails.
     SignedUrl,
+    /// Broadcast channel subscription (Wave 6 P7, verify-only — short-TTL
+    /// and bound to ONE channel name through the row's label, so a channel
+    /// token never grants more than its channel).
+    Channel,
 }
 
 impl TokenPurpose {
@@ -50,6 +54,7 @@ impl TokenPurpose {
             TokenPurpose::OauthCode => "oauth_code",
             TokenPurpose::OauthRefresh => "oauth_refresh",
             TokenPurpose::SignedUrl => "signed_url",
+            TokenPurpose::Channel => "channel",
         }
     }
 

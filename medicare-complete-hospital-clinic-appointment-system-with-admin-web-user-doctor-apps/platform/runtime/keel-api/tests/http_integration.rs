@@ -2913,3 +2913,361 @@ async fn booked_appointment_lands_in_the_inbox_in_the_request_locale() {
     assert_eq!(feed.body["meta"]["total"], 1);
     assert_eq!(feed.body["meta"]["unread"], 1);
 }
+
+// ------------------------------------------------------------- Wave 6 P7
+
+/// Raw oneshot against the subscription path — the SSE body never ends, so
+/// the response is returned UNREAD (read it and the await hangs; the
+/// presence tests drop it to simulate the disconnect).
+async fn sse_connect(app: &App, uri: &str) -> axum::http::Response<Body> {
+    app.router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("request serves")
+}
+
+/// The harness graph ships no `routes/channels.toml` entries, so the P7
+/// fixtures resolve the granted-form capability first — what login
+/// actually puts on the snapshot; `serve()` runs the same
+/// `broadcast_routes::resolve_channels` against the real graph — and set
+/// the state BEFORE the router is built: a channel gated on a granted
+/// capability, one on an undeclared ghost, one presence roster, one
+/// ghost-gated presence. The authorized transports mount with the very
+/// `ChannelTokenAuthorizer` serve() wires.
+fn app_with_channels() -> App {
+    let dir = std::env::temp_dir().join(format!("keel-api-p7-{}", uuid::Uuid::now_v7()));
+    let (mut state, graph, store) = keel_api::build_app_state(&dir, true, true);
+    let granted = state
+        .granted_capabilities
+        .iter()
+        .find(|cap| cap.starts_with("appointments."))
+        .cloned()
+        .expect("module capability granted at boot");
+    let ghost = vec!["ghost.missing".to_string()];
+    state.channels = vec![
+        keel_api::broadcast_routes::ChannelAuthz {
+            name: "appointments:private".into(),
+            allowed: vec![granted.clone()],
+        },
+        keel_api::broadcast_routes::ChannelAuthz {
+            name: "ghost:channel".into(),
+            allowed: ghost.clone(),
+        },
+        keel_api::broadcast_routes::ChannelAuthz {
+            name: "presence-lobby".into(),
+            allowed: vec![granted],
+        },
+        keel_api::broadcast_routes::ChannelAuthz {
+            name: "presence-ghost".into(),
+            allowed: ghost,
+        },
+    ];
+    let realtime = keel_realtime::realtime_router_authorized(
+        keel_realtime::BroadcastHub::new(),
+        state.presence.clone(),
+        Arc::new(keel_api::broadcast_routes::ChannelTokenAuthorizer {
+            tokens: state.tokens.clone(),
+            principals: state.principals.clone(),
+        }),
+    );
+    let router = keel_api::routes::router(state.clone())
+        .merge(keel_api::graph_routes::graph_router(state.clone(), &graph))
+        .merge(keel_api::auth_routes::router(state.clone()))
+        .merge(keel_api::upload_routes::router(state.clone()))
+        .merge(keel_api::notification_routes::router(state.clone()))
+        .merge(keel_api::broadcast_routes::router(state.clone()))
+        .merge(realtime);
+    let router = state
+        .sessions
+        .as_ref()
+        .expect("sessions enabled")
+        .as_ref()
+        .clone()
+        .apply(router);
+    App {
+        router,
+        state,
+        store,
+    }
+}
+
+/// Wave 6 P7: the broadcast auth matrix — allowed (registered channel with
+/// a granted capability -> short-TTL channel-bound token), denied
+/// capability, unregistered channel (the same denial — no oracle),
+/// anonymous caller, and the subscription path itself: the issued token
+/// opens the stream while a missing, wrong, cross-channel or expired token
+/// refuses the connect with one uniform 401.
+#[tokio::test]
+async fn broadcast_auth_matrix_allowed_denied_and_expired() {
+    let app = app_with_channels();
+    let email = format!("p7-{}@clinic.test", uuid::Uuid::now_v7());
+    let (cookie, principal) = inbox_owner(&app, &email).await;
+
+    // Allowed: capability on the snapshot -> token issued.
+    let ok = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/api/v1/broadcast/auth",
+            serde_json::json!({ "channel": "appointments:private" }),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(ok.status, StatusCode::OK, "{}", ok.body);
+    assert_eq!(ok.data()["channel"], "appointments:private");
+    let token = ok.data()["token"]
+        .as_str()
+        .expect("channel token")
+        .to_string();
+    assert!(
+        !ok.data()["expires_at"].is_null(),
+        "the short TTL is visible to the client"
+    );
+
+    // Denied: capability not on the snapshot.
+    let denied = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/api/v1/broadcast/auth",
+            serde_json::json!({ "channel": "ghost:channel" }),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN, "{}", denied.body);
+    assert_eq!(denied.error_code(), keel_foundation::codes::DENIED);
+
+    // Unregistered: the same denial — the endpoint never reveals which.
+    let unknown = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/api/v1/broadcast/auth",
+            serde_json::json!({ "channel": "never:registered" }),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(unknown.status, StatusCode::FORBIDDEN, "{}", unknown.body);
+    assert_eq!(unknown.error_code(), keel_foundation::codes::DENIED);
+
+    // Anonymous callers never reach the gate.
+    let anon = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/api/v1/broadcast/auth",
+            serde_json::json!({ "channel": "appointments:private" }),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(anon.status, StatusCode::UNAUTHORIZED, "{}", anon.body);
+
+    // A second token, bound to ANOTHER channel by its label.
+    let other = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/api/v1/broadcast/auth",
+            serde_json::json!({ "channel": "presence-lobby" }),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(other.status, StatusCode::OK, "{}", other.body);
+    let other_token = other.data()["token"]
+        .as_str()
+        .expect("second channel token")
+        .to_string();
+
+    // A token minted for a tiny TTL, then allowed to expire.
+    let expired = app
+        .state
+        .tokens
+        .issue(
+            principal,
+            keel_tokens::TokenPurpose::Channel,
+            time::Duration::milliseconds(5),
+            Some("appointments:private".into()),
+        )
+        .expect("token issues");
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+
+    // Subscription: the issued token opens the stream...
+    let sse = sse_connect(
+        &app,
+        &format!("/realtime/sse?channel=appointments:private&token={token}"),
+    )
+    .await;
+    assert_eq!(sse.status(), StatusCode::OK);
+    let ct = sse
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .expect("content type")
+        .to_str()
+        .expect("content type text");
+    assert!(ct.starts_with("text/event-stream"), "got {ct}");
+    drop(sse);
+
+    // ...and every other presented credential refuses identically.
+    for (label, uri) in [
+        (
+            "missing token",
+            "/realtime/sse?channel=appointments:private".to_string(),
+        ),
+        (
+            "wrong token",
+            "/realtime/sse?channel=appointments:private&token=not-a-token".to_string(),
+        ),
+        (
+            "token bound to another channel",
+            format!("/realtime/sse?channel=appointments:private&token={other_token}"),
+        ),
+        (
+            "expired token",
+            format!(
+                "/realtime/sse?channel=appointments:private&token={}",
+                expired.plaintext
+            ),
+        ),
+    ] {
+        let res = sse_connect(&app, &uri).await;
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{label}");
+    }
+}
+
+/// Wave 6 P7: the presence member list — capability-gated, `presence-*`
+/// only, and it tracks the roster the subscription path maintains: a
+/// connect joins under the principal's email, the disconnect (stream
+/// dropped) leaves.
+#[tokio::test]
+async fn presence_member_list_tracks_join_and_leave() {
+    let app = app_with_channels();
+    let email = format!("p7-presence-{}@clinic.test", uuid::Uuid::now_v7());
+    let (cookie, _) = inbox_owner(&app, &email).await;
+
+    // Capability gate: the ghost-gated presence channel is denied, and a
+    // non-presence channel is refused as a validation error.
+    let denied = send(
+        &app,
+        json_req(
+            Method::GET,
+            "/api/v1/broadcast/members?channel=presence-ghost",
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN, "{}", denied.body);
+    assert_eq!(denied.error_code(), keel_foundation::codes::DENIED);
+
+    let wrong_kind = send(
+        &app,
+        json_req(
+            Method::GET,
+            "/api/v1/broadcast/members?channel=appointments:private",
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        wrong_kind.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        wrong_kind.body
+    );
+
+    // The roster starts empty.
+    let empty = send(
+        &app,
+        json_req(
+            Method::GET,
+            "/api/v1/broadcast/members?channel=presence-lobby",
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(empty.status, StatusCode::OK, "{}", empty.body);
+    let data = empty.data();
+    let list = data["members"].as_array().expect("member array");
+    assert_eq!(list.len(), 0, "roster starts empty");
+
+    // Issue the connect token and open the stream (kept alive, unread).
+    let auth = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/api/v1/broadcast/auth",
+            serde_json::json!({ "channel": "presence-lobby" }),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(auth.status, StatusCode::OK, "{}", auth.body);
+    let token = auth.data()["token"]
+        .as_str()
+        .expect("channel token")
+        .to_string();
+    let stream = sse_connect(
+        &app,
+        &format!("/realtime/sse?channel=presence-lobby&token={token}"),
+    )
+    .await;
+    assert_eq!(stream.status(), StatusCode::OK);
+
+    // Connected: exactly the caller is on the roster, named by their email.
+    let joined = send(
+        &app,
+        json_req(
+            Method::GET,
+            "/api/v1/broadcast/members?channel=presence-lobby",
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(joined.status, StatusCode::OK, "{}", joined.body);
+    let data = joined.data();
+    let list = data["members"].as_array().expect("member array");
+    assert_eq!(list.len(), 1, "the subscriber joined the roster");
+    assert_eq!(list[0]["display_name"], email);
+
+    // The disconnect (response dropped) leaves the roster.
+    drop(stream);
+    let after = send(
+        &app,
+        json_req(
+            Method::GET,
+            "/api/v1/broadcast/members?channel=presence-lobby",
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(after.status, StatusCode::OK, "{}", after.body);
+    let data = after.data();
+    let list = data["members"].as_array().expect("member array");
+    assert_eq!(list.len(), 0, "the dropped stream left the roster");
+}

@@ -58,6 +58,18 @@ pub struct AppState {
     /// in-memory on degraded hosts — D-52). The notify hub dispatches
     /// rows through this very instance.
     pub notifications: Arc<dyn keel_notifications::NotificationStore>,
+    // --- Wave 6 P7 broadcasting -------------------------------------------
+    /// Resolved broadcast channel authorization entries merged across
+    /// module manifests (`routes/channels.toml`): channel name plus every
+    /// capability string a caller's snapshot must carry. Consulted by
+    /// `POST /api/v1/broadcast/auth`, `GET /api/v1/broadcast/members` and
+    /// the subscription authorizer (resolve via
+    /// `crate::broadcast_routes::resolve_channels`).
+    pub channels: Vec<crate::broadcast_routes::ChannelAuthz>,
+    /// Presence roster shared between the members endpoint and the
+    /// authorized subscription path (join on connect, leave on
+    /// disconnect) — ONE instance per boot.
+    pub presence: Arc<keel_realtime::PresenceHub>,
     pub route_inventory: Vec<RouteEntry>,
     // --- Wave 1 middleware model ------------------------------------------
     /// Named middleware catalog (middleware.toml or the builtin).

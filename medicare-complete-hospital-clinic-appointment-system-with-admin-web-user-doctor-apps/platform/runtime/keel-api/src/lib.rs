@@ -3,6 +3,7 @@
 //! integration suite can drive the exact production wiring.
 
 pub mod auth_routes;
+pub mod broadcast_routes;
 pub mod call;
 pub mod dashboard;
 pub mod edge;
@@ -576,6 +577,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         storage,
         disks,
         notifications: notification_store,
+        channels: broadcast_routes::resolve_channels(&graph),
+        presence: Arc::new(keel_realtime::PresenceHub::new()),
         route_inventory,
         middleware_catalog,
         route_bindings,
@@ -666,13 +669,26 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .merge(auth_routes::router(state.clone()))
         .merge(upload_routes::router(state.clone()))
         .merge(telemetry_routes::router(state.clone()))
-        .merge(notification_routes::router(state.clone()));
+        .merge(notification_routes::router(state.clone()))
+        .merge(broadcast_routes::router(state.clone()));
     let router = if realtime_enabled {
         let hub = host
             .registry()
             .get::<keel_realtime::BroadcastHub>()
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
-        router.merge(keel_realtime::realtime_router((*hub).clone()))
+        // Wave 6 P7: the mounted transports are AUTHORIZED — every
+        // connect runs the host-side channel-token authorizer (issue the
+        // token at `POST /api/v1/broadcast/auth`), and `presence-*`
+        // channels join/leave the roster `GET /api/v1/broadcast/members`
+        // reads: one shared `state.presence` instance behind both.
+        router.merge(keel_realtime::realtime_router_authorized(
+            (*hub).clone(),
+            state.presence.clone(),
+            Arc::new(broadcast_routes::ChannelTokenAuthorizer {
+                tokens: state.tokens.clone(),
+                principals: state.principals.clone(),
+            }),
+        ))
     } else {
         router
     };
@@ -1138,6 +1154,8 @@ pub fn build_app_state(
         storage,
         disks: Arc::new(disks),
         notifications: notification_store,
+        channels: broadcast_routes::resolve_channels(&graph),
+        presence: Arc::new(keel_realtime::PresenceHub::new()),
         route_inventory: graph_routes::route_inventory(&graph),
         middleware_catalog: keel_http::MiddlewareCatalog::builtin(),
         route_bindings,

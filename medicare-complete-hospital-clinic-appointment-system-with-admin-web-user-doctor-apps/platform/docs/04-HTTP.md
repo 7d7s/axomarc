@@ -243,6 +243,25 @@ the mark additionally requires the `notifications.mark_read` capability, chained
 login-time grant set (`FRAMEWORK_CAPABILITIES` in `notification_routes.rs`) — self-service, but
 still a real gate a snapshot can revoke (403 `AUTH_DENIED`).
 
+## Broadcast channel auth (Wave 6 P7)
+
+`POST /api/v1/broadcast/auth` (session or bearer PAT; body `{ channel }`) resolves the channel
+in the boot-merged `routes/channels.toml` list and checks the caller's tenant snapshot for one
+of its resolved capabilities, then issues a 300-second `TokenPurpose::Channel` token whose label
+binds it to that channel — `{ token, channel, expires_at }` in the standard envelope. An
+unregistered channel and an ungranted capability both answer 403 `AUTH_DENIED` (no oracle);
+malformed channel names are 422 and anonymous callers 401. The presented token is what the
+`app.realtime`-gated `/realtime/sse` and `/realtime/ws` transports validate at connect
+(`/realtime/sse?channel=...&token=...`): purpose + expiry through the token service's uniform
+denial and label == requested channel, every failure a single 401 — a channel token never
+grants more than its channel.
+
+`GET /api/v1/broadcast/members?channel=presence-<name>` lists the live presence roster
+(`{ channel, members: [{ id, display_name }] }`) under the very same capability gate; only
+`presence-*` channels carry members (anything else is 422). The roster is maintained by the
+subscription path itself: connecting joins (and broadcasts `presence.join` on the channel),
+dropping the SSE stream or ending the WS session leaves (broadcasting `presence.leave`).
+
 ## Stateless JWT bearer interop (B-22, v1.1)
 
 Opt-in and non-default (report R5): with the `app.jwt` feature flag on

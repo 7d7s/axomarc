@@ -198,7 +198,7 @@ The matrix below is deliberately granular. A subsystem cannot be called `MATCHED
 | Redis queue driver | MISSING | no Redis queue driver supplied | Queue backend choice limited | P2 |
 | Events / outbox | MATCHED | platform/crates/async/events/src/lib.rs:135,236 | Outbox store/pump | P1 |
 | Scheduler | MATCHED | platform/runtime/keel-worker/src/main.rs | Scheduler path exists | P1 |
-| Broadcasting | MATCHED | platform/crates/services/realtime/src/lib.rs:69,187 | BroadcastHub and realtime router | P2 |
+| Broadcasting | MATCHED | platform/crates/services/realtime/src/lib.rs (BroadcastHub, SSE/WS transports, PresenceHub); platform/runtime/keel-api/src/broadcast_routes.rs | BroadcastHub + realtime router (Wave 2); Wave 6 P7 adds the auth surface — `POST /api/v1/broadcast/auth` short-TTL channel-bound token over the resolved `routes/channels.toml` capability gate, `GET /api/v1/broadcast/members` presence roster under the same gate, and host-side `ChannelTokenAuthorizer` validation at every `/realtime/sse|ws` connect (uniform 401; token never grants more than its channel) with `presence.join`/`presence.leave` events | P2 |
 | Storage abstraction | EQUIVALENT | platform/crates/services/storage/src/lib.rs:23 | StoragePort | P1 |
 | Local storage | MATCHED | platform/crates/services/storage/src/lib.rs:23 | Local implementation | P2 |
 | S3 storage | STUB | platform/crates/services/storage/src/lib.rs:23 | S3 path is stub | P2 |
@@ -1020,7 +1020,7 @@ The CLI is one of the most important Laravel parity surfaces because it compress
 | event:list | event:list | UNKNOWN | Event runtime exists but list command not proven | P3 |
 | key:generate | key:generate | UNKNOWN | No locked evidence | P3 |
 | make:cast | make cast | MATCHED | platform/tools/keel-codegen/src/generators.rs CAST_TEMPLATE emits `impl Cast for __TYPE__Cast` against the real `keel_models::Cast` trait (tests wave5_adds_twelve_generator_kinds + wave5_templates_reference_real_platform_surface) (Wave 5) | P2 |
-| make:channel | make channel | PARTIAL | platform/tools/keel-codegen/src/generators.rs CHANNEL_TEMPLATE points at the real `routes/channels.toml` capability registry (same test); broadcast auth enforcement is Wave 6 | P2 |
+| make:channel | make channel | PARTIAL | platform/tools/keel-codegen/src/generators.rs CHANNEL_TEMPLATE points at the real `routes/channels.toml` capability registry (same test); broadcast auth enforcement landed Wave 6 P7 (`broadcast/auth` + presence members + host-side connect validation in `keel-api/src/broadcast_routes.rs`) | P2 |
 | make:class | make class | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
 | make:command | make command | MISSING | platform/tools/keel-codegen/src/generators.rs; no individually verified Laravel-parity generator evidence | P2 |
 | make:component | make component | MATCHED | COMPONENT_TEMPLATE renders under the module's real view root with `@props` (test asserts the components/ path + `@props`) (Wave 5) | P2 |
@@ -1490,7 +1490,7 @@ This table assigns the final strategic decision, not merely today's runtime stat
 | Errors | EQUIVALENT |
 | Logging | EQUIVALENT |
 | Artisan/CLI | EQUIVALENT (Wave 4 adds about/env/profile + config/cache rows; full matrix lands Wave 5) |
-| Broadcasting | EQUIVALENT |
+| Broadcasting | EQUIVALENT (auth matrix + presence roster landed Wave 6 P7) |
 | Cache | EQUIVALENT (landed: CacheService — Wave 4) |
 | Collections | DELIBERATELY EXCLUDED |
 | Concurrency | SUPERSEDED |
@@ -1705,7 +1705,7 @@ section, this section governs.
 | Redis | EQUIVALENT future | Implemented (S10): RedisCache + RedisJobStore adapters, feature-gated |
 | Search | EQUIVALENT future pgvector | Implemented (S10): pgvector adapter, keyword/facet/vector/hybrid, tenant-isolated |
 | Rate limiting | EQUIVALENT future per-principal | Implemented (S7); Wave 1 named throttle:<group> chains (per-group token buckets in middleware.toml, 429 + Retry-After) |
-| Broadcasting / Reverb | EQUIVALENT via realtime service | Flag-gated realtime router + SSE/WebSocket paths |
+| Broadcasting / Reverb | EQUIVALENT via realtime service | Flag-gated realtime router + SSE/WebSocket paths; Wave 6 P7 adds channel-token auth at connect + presence roster/members (broadcast/auth) |
 | Artisan/CLI | EQUIVALENT | 42 commands incl. serve + observe family; matrix reconciled in 12-CLI |
 | Breeze | EQUIVALENT future starter kit | Implemented (S9): starter template behind keel new --with-starter |
 | Sanctum | EQUIVALENT via hashed PAT + session model | Implemented (S7 auth flows) |
