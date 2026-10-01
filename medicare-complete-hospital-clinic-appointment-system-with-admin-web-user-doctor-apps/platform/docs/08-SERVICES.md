@@ -116,7 +116,14 @@ pre-commit posture, and a refused dispatch fails the operation (fail-closed) —
 `with_notifier()` (the `ModuleProvider` fetches the hub from the registry; Platform phase
 precedes Modules, an absent hub degrades silently). Rows carry `{patient, slot, locale}` plus the
 request principal/tenant; `lang/{en,fr,ar}` gained `appointment_cancelled`; the defs' 
-`template() -> None` keeps dispatched mail text-only (no view file ships). Honest gaps
+`template() -> None` keeps dispatched mail text-only (no view file ships). Wave 7 P1 adds the
+dispatch observation seam: `NotifyHub::with_tap(Arc<dyn DispatchTap>)` records each successful
+`NotificationDef` dispatch as `DispatchRecord { principal (None for on-demand), notification_type,
+channel }` at the two dispatch entry points only — `deliver_queued` never taps (it fulfils a
+dispatch the entry point already recorded; tapping would double count), the legacy raw `dispatch()`
+carries no type key, and a failed render/delivery/enqueue records nothing — which is how the
+testkit `NotificationFake` proves `assert_sent_to(principal, notification_type, channel)`.
+Honest gaps
 carried: notification mail attachments still refuse on this dispatch path (the P1
 `not_implemented` seam); no in-repo def opts into `queue_via` yet (the seam is wired and
 round-tripped hermetically — producers opt in when a channel must outlive the request);

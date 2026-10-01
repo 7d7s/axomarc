@@ -1902,10 +1902,13 @@ name = "keel-testkit"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "keel-caching",
  "keel-event",
  "keel-execution",
  "keel-foundation",
+ "keel-http-client",
  "keel-jobs",
+ "keel-notifications",
  "keel-search",
  "keel-storage",
  "serde",

@@ -16,6 +16,9 @@ keel-jobs = { workspace = true }
 keel-event = { workspace = true }
 keel-storage = { workspace = true }
 keel-search = { workspace = true }
+keel-caching = { workspace = true }
+keel-http-client = { workspace = true }
+keel-notifications = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }
 serde = { workspace = true }

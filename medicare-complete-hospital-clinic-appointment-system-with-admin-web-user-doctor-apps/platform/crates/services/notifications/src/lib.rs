@@ -471,6 +471,29 @@ pub trait NotificationViewRenderer: Send + Sync {
     fn render(&self, template: &str, context: serde_json::Value) -> Result<String, AppError>;
 }
 
+/// Wave 7 P1: one recorded dispatch (19-PARITY testkit `NotificationFake`) —
+/// who it was for, which notification type, on which channel. `principal` is
+/// `None` for on-demand dispatches (no principal record stands behind a raw
+/// target).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DispatchRecord {
+    pub principal: Option<PrincipalId>,
+    pub notification_type: String,
+    pub channel: Channel,
+}
+
+/// Wave 7 P1: dispatch observation seam (19-PARITY testkit
+/// `NotificationFake`). The hub taps each SUCCESSFUL dispatch at the two
+/// `NotificationDef` entry points (`dispatch_notification`,
+/// `dispatch_on_demand`); [`NotifyHub::deliver_queued`] deliberately does
+/// NOT tap — it fulfils a dispatch the entry point already recorded, and
+/// tapping there would double count. The legacy raw
+/// [`NotifyHub::dispatch`] path carries no type key, so it is not tapped
+/// either. `None` (the default) records nothing.
+pub trait DispatchTap: Send + Sync {
+    fn on_dispatch(&self, record: &DispatchRecord);
+}
+
 /// Dispatch hub: route by channel. Missing adapter = explicit error, never silent.
 pub struct NotifyHub {
     pub sms: Option<Box<dyn SmsPort>>,
@@ -489,6 +512,9 @@ pub struct NotifyHub {
     /// [`NotificationDef::queue_via`] (`None` = immediate dispatch only;
     /// a `queue_via` def with no port fails closed as `not_implemented`).
     queue: Option<Box<dyn NotificationQueuePort>>,
+    /// Wave 7 P1: dispatch observation hook (testkit `NotificationFake`);
+    /// `None` (the default) records nothing.
+    tap: Option<std::sync::Arc<dyn DispatchTap>>,
 }
 
 impl NotifyHub {
@@ -501,6 +527,7 @@ impl NotifyHub {
             store: None,
             views: None,
             queue: None,
+            tap: None,
         }
     }
 
@@ -516,6 +543,7 @@ impl NotifyHub {
             store: None,
             views: None,
             queue: None,
+            tap: None,
         }
     }
 
@@ -542,6 +570,31 @@ impl NotifyHub {
     pub fn with_queue(mut self, port: Box<dyn NotificationQueuePort>) -> Self {
         self.queue = Some(port);
         self
+    }
+
+    /// Wave 7 P1: attach a dispatch observer (the testkit
+    /// `NotificationFake` records through it); consumes the hub like the
+    /// other builder seams.
+    pub fn with_tap(mut self, tap: std::sync::Arc<dyn DispatchTap>) -> Self {
+        self.tap = Some(tap);
+        self
+    }
+
+    /// Wave 7 P1: record one successful dispatch through the attached tap
+    /// (`None` tap = no-op).
+    fn observe(
+        &self,
+        principal: Option<PrincipalId>,
+        notification_type: &str,
+        channel: Channel,
+    ) {
+        if let Some(tap) = self.tap.as_ref() {
+            tap.on_dispatch(&DispatchRecord {
+                principal,
+                notification_type: notification_type.to_string(),
+                channel,
+            });
+        }
     }
 
     pub fn dispatch(&self, msg: &NotifyMessage) -> Result<(), AppError> {
@@ -624,6 +677,10 @@ impl NotifyHub {
     ///
     /// `to` is the routing address (email / phone / device token) and is
     /// required for every channel except `Database`.
+    ///
+    /// Wave 7 P1: a dispatch that returns `Ok` is tapped through
+    /// [`DispatchTap`] when one is wired (a failed render/delivery/enqueue
+    /// records nothing).
     pub async fn dispatch_notification(
         &self,
         n: &dyn NotificationDef,
@@ -640,7 +697,7 @@ impl NotifyHub {
             ctx.tenant_id,
             ctx.locale.as_deref(),
         )?;
-        match n.queue_via() {
+        let dispatched = match n.queue_via() {
             Some(job) => {
                 let port = self
                     .queue
@@ -659,7 +716,12 @@ impl NotifyHub {
                 )
             }
             None => self.deliver_payload(payload).await,
+        };
+        if dispatched.is_ok() {
+            // Wave 7 P1: only successful dispatches reach the tap.
+            self.observe(Some(ctx.principal_id), n.type_key(), channel);
         }
+        dispatched
     }
 
     /// Wave 6 P6: deliver to a RAW target with no principal record behind
@@ -714,6 +776,9 @@ impl NotifyHub {
             }
             None => self.deliver_payload(payload).await?,
         }
+        // Wave 7 P1: reaching here means the dispatch succeeded (every
+        // failure `?`-ed out above); an on-demand dispatch has no principal.
+        self.observe(None, n.type_key(), channel);
         Ok(OnDemandAudit {
             type_key: n.type_key().to_string(),
             channel,

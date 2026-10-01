@@ -18,8 +18,8 @@ mod time;
 pub use app::{TestApp, TestRequest, TestResponse};
 pub use factories::{sample_event, sample_job, EventFactory, Factory, JobFactory};
 pub use fakes::{
-    assert_delta, assert_event, AuditRecorder, FakeMail, FakeQueue, FakeSearch, FakeStorage,
-    MailMessage,
+    assert_delta, assert_event, AuditRecorder, CacheFake, EventFake, FakeMail, FakeQueue,
+    FakeSearch, FakeStorage, MailFake, MailMessage, NotificationFake, QueueFake, StorageFake,
 };
 pub use keel_search::{
     HybridQuery, Index, SearchDocument, SearchEngine, SearchQuery, SearchResult, VectorQuery,
@@ -27,7 +27,13 @@ pub use keel_search::{
 pub use time::{advance, freeze_time, travel_to};
 
 // Convenience re-exports so tests get one import root.
+pub use keel_caching::CachePort;
 pub use keel_event::{InMemoryOutbox, OutboxEvent};
 pub use keel_execution::{AuditRecord, InMemoryBackend, QueryTap};
+pub use keel_http_client::{HttpClientPort, HttpFake, HttpRequest, HttpResponse};
 pub use keel_jobs::{DurableJob, InMemoryJobStore, JobStatus};
+pub use keel_notifications::{
+    Channel, DispatchRecord, MailPort, Mailable, NotificationContext, NotificationDef, NotifyHub,
+    NotifyMessage,
+};
 pub use keel_storage::{ObjectRef, StoragePort};

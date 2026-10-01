@@ -8,9 +8,10 @@ use serde_json::json;
 use time::{Duration, OffsetDateTime};
 
 use keel_testkit::{
-    assert_delta, assert_event, sample_event, sample_job, AuditRecorder, EventFactory, Factory,
-    FakeMail, FakeQueue, FakeStorage, InMemoryBackend, InMemoryOutbox, JobFactory, StoragePort,
-    TestApp,
+    assert_delta, assert_event, sample_event, sample_job, AuditRecorder, CacheFake, CachePort,
+    EventFactory, EventFake, Factory, FakeMail, FakeQueue, FakeStorage, HttpFake, HttpClientPort,
+    HttpRequest, HttpResponse, InMemoryBackend, InMemoryOutbox, JobFactory, NotificationFake,
+    QueueFake, StorageFake, StoragePort, TestApp,
 };
 
 async fn ping() -> Json<serde_json::Value> {
@@ -140,4 +141,69 @@ fn event_factory_builds_unpublished_events() {
     assert_eq!(event.event, "x.done");
     assert_eq!(event.topic, "audit");
     assert!(!event.published);
+}
+
+// ------------------------------------------------------------- Wave 7 P1
+
+#[test]
+fn wave7_queue_event_and_notification_fakes_surface() {
+    let queue = QueueFake::new();
+    queue.enqueue(sample_job("mail.send"));
+    queue.assert_pushed("mail.send", |job| job.name == "mail.send");
+    queue.assert_pushed_count("mail.send", 1);
+    queue.assert_not_pushed("report.build");
+
+    let events = EventFake::new();
+    events.dispatch(sample_event("tenant.created"));
+    events.assert_dispatched("tenant.created", |event| !event.published);
+    events.assert_not_dispatched("invoice.posted");
+
+    assert!(NotificationFake::new().records().is_empty());
+}
+
+#[test]
+fn wave7_storage_and_cache_fakes_surface() {
+    let storage = StorageFake::new();
+    storage.put("files", "a.txt", vec![1, 2, 3]).unwrap();
+    storage.assert_exists("files/a.txt");
+    storage.assert_missing("files/b.txt");
+    storage.assert_directory_empty("logs/");
+
+    let cache = CacheFake::new();
+    cache.put("query:products", b"[]".to_vec(), Some(30));
+    cache.assert_has("query:products");
+    assert_eq!(cache.ttl_secs("query:products"), Some(30));
+    cache.delete("query:products");
+    cache.assert_missing("query:products");
+}
+
+#[tokio::test]
+async fn http_fake_reexport_records_requests() {
+    let fake = HttpFake::new();
+    fake.enqueue(HttpResponse {
+        status: 200,
+        headers: Default::default(),
+        body: b"pong".to_vec(),
+    });
+
+    let request = HttpRequest::json("POST", "https://api.example.test/ping", &json!({ "x": 1 }))
+        .expect("json request builds");
+    let response = fake.execute(&request).await.expect("queued response");
+    assert_eq!(response.status, 200);
+
+    fake.assert_request_count(1);
+    fake.assert_sent(|r| r.method == "POST" && r.url == "https://api.example.test/ping");
+    fake.assert_no_pending();
+}
+
+#[test]
+#[should_panic(expected = "never consumed")]
+fn http_fake_assert_no_pending_panics_with_unconsumed_response() {
+    let fake = HttpFake::new();
+    fake.enqueue(HttpResponse {
+        status: 200,
+        headers: Default::default(),
+        body: Vec::new(),
+    });
+    fake.assert_no_pending();
 }

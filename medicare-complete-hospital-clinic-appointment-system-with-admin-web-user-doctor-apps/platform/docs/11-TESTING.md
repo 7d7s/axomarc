@@ -9,9 +9,24 @@ Boots a platform host behind the HTTP surface for request-level tests: build the
 
 ## Fakes (in-memory ports with asserts)
 
-- `FakeQueue` — durable queue semantics; `assert_enqueued(name)`, `assert_empty`, counts.
-- `FakeStorage` — object port double with inspection helpers.
-- `FakeMail` — captured `MailMessage`s for notification tests.
+- `QueueFake` (legacy alias `FakeQueue`) — durable queue semantics; `assert_enqueued(name)`,
+  `assert_empty`, counts, plus the Wave 7 `assert_pushed(job_type, |j| ...)`,
+  `assert_not_pushed(job_type)`, `assert_pushed_count(job_type, n)`.
+- `EventFake` — outbox recorder; share `outbox()` with the publishers under test, then
+  `assert_dispatched(event_name, |e| ...)`, `assert_not_dispatched(event_name)` (the free
+  `assert_event(outbox, name)` remains).
+- `NotificationFake` — records what `NotifyHub::with_tap(...)` dispatched;
+  `assert_sent_to(principal, notification_type, channel)`.
+- `MailFake` (legacy alias `FakeMail`) — implements the notifications `MailPort`, recording
+  `Mailable`s for `assert_sent(|m| ...)` (subject/to/attachments count) and mirroring them into
+  the `MailMessage` log the message-level asserts read.
+- `StorageFake` (legacy alias `FakeStorage`) — object port double; `assert_exists(path)` /
+  `assert_missing(path)` on the S3-style `bucket/key` path, `assert_directory_empty(prefix)`.
+- `CacheFake` — in-memory `CachePort` with the production TTL posture (lazy expiry, `ttl = 0`
+  immediately expired) on an injectable `freeze_time` clock (`with_clock`); `assert_has(key)`,
+  `assert_missing(key)`, `ttl_secs(key)`.
+- `HttpFake` — re-exported from `keel-http-client`; wraps the mock recording:
+  `assert_request_count(n)`, `assert_sent(|req| ...)` (method/url/body), `assert_no_pending()`.
 - `FakeSearch` — backed by the in-memory search engine; `assert_indexed`, `assert_hits`
   (exact ordering), `assert_no_hits`, tenant-aware `count`.
 - `AuditRecorder` — captures audit records emitted by executions.
