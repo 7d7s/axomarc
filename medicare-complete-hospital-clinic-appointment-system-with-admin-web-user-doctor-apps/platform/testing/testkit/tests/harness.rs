@@ -231,3 +231,84 @@ async fn wave7_response_assertion_matrix_surface() {
         .assert_see("Tom & Jerry");
     app.get("/ping").send().await.assert_json_path("pong", json!(true));
 }
+
+// ------------------------------------------------------------- Wave 7 P3
+
+/// The pub surface a generated factory or a downstream test names from
+/// OUTSIDE the crate — the gap class a missing `pub use` hides from
+/// same-crate unit tests (the P2 ViewRecorder bug): time travel, seeded
+/// sequences, state() overrides, ModelFactory persistence through the
+/// ModelStore, and the view probe type.
+#[test]
+fn wave7_test_infrastructure_surface() {
+    use keel_foundation::{Clock, TenantId};
+    use keel_models::InMemoryModelStore;
+    use keel_testkit::{
+        freeze_time, travel, ModelDef, ModelFactory, ModelStore, Record, Sequence, ViewRecorder,
+    };
+
+    // freeze_time + travel compose; the concrete FixedClock makes an
+    // external crate name the Clock trait itself.
+    let clock = freeze_time(OffsetDateTime::UNIX_EPOCH);
+    travel(&clock, 90);
+    assert_eq!(
+        clock.now(),
+        OffsetDateTime::UNIX_EPOCH + Duration::seconds(90)
+    );
+
+    // A seeded counter reproduces from its seed (no process-wide leak).
+    let seq = Sequence::seeded(7);
+    assert_eq!(seq.next(), 7);
+    assert_eq!(seq.next(), 8);
+    assert_eq!(Sequence::seeded(7).next(), 7);
+
+    // state() overrides chain before build on a stock factory.
+    let job = JobFactory::default()
+        .state(|f| f.name = "billing.sync".into())
+        .build();
+    assert_eq!(job.name, "billing.sync");
+
+    // ModelFactory the way codegen templates implement it: model +
+    // to_record, with the provided create() persisting through the store
+    // (stamps tenant_id on tenant_scoped models and a missing id).
+    #[derive(Default)]
+    struct NoteFactory;
+
+    impl Factory for NoteFactory {
+        type Item = String;
+
+        fn build(self) -> String {
+            "standalone note".into()
+        }
+    }
+
+    impl ModelFactory for NoteFactory {
+        fn model(&self) -> ModelDef {
+            ModelDef::new("Note", "notes").tenant_scoped()
+        }
+
+        fn to_record(item: &Self::Item) -> Record {
+            let mut record = Record::new();
+            record.insert("body".into(), json!(item.as_str()));
+            record
+        }
+    }
+
+    let mem = InMemoryModelStore::new();
+    let store: &dyn ModelStore = &mem;
+    let tenant = TenantId::new();
+    let row = NoteFactory
+        .create(store, tenant)
+        .expect("row persists");
+    assert_eq!(row["body"], json!("standalone note"));
+    assert_eq!(row["tenant_id"], json!(tenant.to_string()));
+    assert!(row["id"]
+        .as_str()
+        .expect("create stamps the missing id")
+        .parse::<uuid::Uuid>()
+        .is_ok());
+
+    // The view probe type is reachable from outside the crate too.
+    let views = ViewRecorder::new();
+    assert!(views.renders().is_empty());
+}

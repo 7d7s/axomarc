@@ -34,6 +34,18 @@ Probes are opt-in `TestApp` builders (an unwired assert fails with the wiring hi
 - `with_models(store)` — the `Arc<dyn ModelStore>` the database asserts read; the tenant comes
   from `.tenant(...)` (uuid) and is passed through to the store.
 
+Test infrastructure (Wave 7 P3) — fake queue/scheduler + injected clock builders:
+
+- `with_fake_queue()` — a `QueueFake` the harness owns (`queue()` for asserts); the fake
+  scheduler fires due items into it.
+- `with_fake_scheduler()` — a fresh `ScheduleRegistry` the harness owns; `schedule(item)`
+  registers an item, `run_due_schedules()` executes one synchronous tick: due at the injected
+  clock's instant (else wall time), each fired item enqueued as a `max_attempts = 1` durable job
+  into the fake queue, last-fired state carried across calls so nothing refires before its
+  window. Unwired probes panic with the builder hint.
+- `with_clock(freeze_time handle)` — the clock `run_due_schedules` reads; `travel` between
+  ticks moves due-ness instead of waiting on wall time.
+
 ## Fakes (in-memory ports with asserts)
 
 - `QueueFake` (legacy alias `FakeQueue`) — durable queue semantics; `assert_enqueued(name)`,
@@ -69,11 +81,27 @@ Fakes exist per port so tests never need live postgres/smtp/minio.
 
 ## Time control
 
-`freeze_time`, `advance`, `travel_to` — deterministic schedules, retries, deadlines in tests.
+`freeze_time`, `advance`, `travel_to`, `travel(clock, seconds)` — deterministic schedules,
+retries, deadlines in tests. Wave 7 P3 threads the same injectable clock through the production
+capture points, each defaulting to the wall clock (behavior without injection is unchanged):
+
+- `ApplicationHost::with_clock` — the host clock; keel-worker's scheduler tick reads
+  `host.clock().now()` instead of a bare `now_utc()`.
+- `SessionMiddleware::with_clock` — the touch gate, the login session stamp, and the TestApp
+  session probe all read `mw.now()`, so session TTLs follow the frozen clock.
+- `TokenService::with_clock` — issue/verify/consume read the injected clock (token expiry).
 
 ## Factories
 
 `Factory`, `JobFactory`, `EventFactory` plus `sample_job`/`sample_event` primitives.
+
+- `state(|f| ...)` — chainable override applied BEFORE `build()` (visible at the call site;
+  every generated factory inherits it).
+- `ModelFactory` — `model()` + `to_record(item)` make `create(&store, tenant)` persist through
+  the ModelStore (stamps `tenant_id` on `tenant_scoped` models, generates `id` when the mapping
+  omits it) and return the STORED record.
+- `Sequence::seeded(n)` — per-test deterministic counter (no process-wide leak); generated
+  factories ship a `seed_sequence(at)` reset for the same reason.
 
 ## Architecture tests
 
@@ -94,10 +122,24 @@ lines, and tallies every `test result:` line into a final `PASS`/`FAIL` verdict 
 test counts — the same tally the parity gates report. `--pg` adds `--features pg-tests` (the
 pg-gated matrix: migration pairs apply/rollback/reset round trip, advisory-lock contention,
 modelstore CRUD/tenant isolation, sessions/tokens, notification inbox round trip (Wave 6 P5),
-batch ledger round trip (Wave 6 P9), pgvector search) and fails closed with a
+batch ledger round trip (Wave 6 P9), savepoint rollback isolation (Wave 7 P3), pgvector search) and fails closed with a
 `DATABASE_URL` pointer when the compose database is not configured — so `keel test` alone stays
 hermetic, `keel test --pg` is the full local matrix (backlog B-19 keeps the pg matrix out of the
 shared CI).
+
+## Transactional pg tests (Wave 7 P3)
+
+`keel_postgres::test_support::Savepoint` is the RefreshDatabase-equivalent suite setup for the
+live-pg matrix — per-test isolation WITHOUT schema drops or truncation:
+
+- `Savepoint::begin(&mut conn)` runs `BEGIN; SAVEPOINT keel_test;` — run the test body's SQL
+  through `sp.conn()` (its writes are visible inside the scope and to nothing else).
+- `sp.rollback()` executes `ROLLBACK TO SAVEPOINT keel_test` plus the outer `ROLLBACK`, so the
+  pooled connection is always returned idle with nothing half-open.
+
+Two tests can touch the same table on separate connections and neither leaks into the other
+(`pg_savepoint_rollback_isolates_two_tests_sharing_a_table`; DATABASE_URL-gated like every pg
+test).
 
 ## Playwright smoke kit (B-28)
 

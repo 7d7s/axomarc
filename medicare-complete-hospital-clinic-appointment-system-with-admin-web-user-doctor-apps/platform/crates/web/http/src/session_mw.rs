@@ -68,12 +68,16 @@ pub struct ResolvedSession {
 
 /// Session edge posture. `secure` controls the Secure flag on issued cookies
 /// (prod); `cookie_ttl_secs` bounds Max-Age (0 = session cookie, no Max-Age).
+/// Wave 7 P3 (docs/19 L340): `clock` is the injected time source — the
+/// touch gate and every login/probe timestamp read it, so a frozen
+/// `FixedClock` + `travel` proves session TTLs deterministically.
 #[derive(Clone)]
 pub struct SessionMiddleware {
     pub manager: Arc<SessionManager>,
     pub secret: Vec<u8>,
     pub secure: bool,
     pub cookie_ttl_secs: u64,
+    pub clock: Arc<dyn keel_foundation::Clock>,
 }
 
 impl SessionMiddleware {
@@ -83,6 +87,7 @@ impl SessionMiddleware {
             secret: secret.as_ref().to_vec(),
             secure: false,
             cookie_ttl_secs: 0,
+            clock: Arc::new(keel_foundation::SystemClock),
         }
     }
 
@@ -94,6 +99,17 @@ impl SessionMiddleware {
     pub fn with_cookie_ttl_secs(mut self, secs: u64) -> Self {
         self.cookie_ttl_secs = secs;
         self
+    }
+
+    /// Wave 7 P3: inject the time source (tests freeze it, then `travel`).
+    pub fn with_clock(mut self, clock: Arc<dyn keel_foundation::Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// Current instant per the injected clock (touch + login stamps).
+    pub fn now(&self) -> OffsetDateTime {
+        self.clock.now()
     }
 
     /// Attach to a router. Runs INSIDE Admission (request-id/trace exist) and
@@ -147,7 +163,7 @@ pub(crate) async fn session_fn(
     let jar = CookieJar::from_headers(req.headers());
     if let Some(raw) = jar.get(SESSION_COOKIE) {
         if let Some(id) = parse_session_cookie(raw, &mw.secret) {
-            let now = OffsetDateTime::now_utc();
+            let now = mw.now();
             if let Ok(Some(session)) = mw.manager.touch(&id, now) {
                 req.extensions_mut().insert(ResolvedSession { session });
             }
@@ -240,6 +256,58 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// Wave 7 P3 (docs/19 L340): the touch gate reads the INJECTED clock —
+    /// travel past the idle TTL on a frozen clock expires the session with
+    /// no wall-time wait (time-travel determinism for session TTLs).
+    #[tokio::test]
+    async fn session_ttl_reads_the_injected_clock() {
+        let t0 = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+        let clock = Arc::new(keel_foundation::FixedClock::new(t0));
+        let manager = Arc::new(SessionManager::new(
+            InMemorySessionStore::shared(),
+            SessionPolicy::default(),
+            b"unit-secret",
+        ));
+        let mw = SessionMiddleware::new(manager.clone(), b"cookie-secret")
+            .with_clock(clock.clone());
+        let router = Router::new().route(
+            "/whoami",
+            get(|Extension(rs): Extension<ResolvedSession>| async move {
+                rs.session.principal.to_string()
+            }),
+        );
+        let router = mw.apply(router);
+        let session = manager
+            .start(PrincipalId::new(), None, t0)
+            .expect("session stamped at the frozen instant");
+        let cookie = Some(format!(
+            "keel_session={}",
+            session_cookie_value(&session, b"cookie-secret")
+        ));
+
+        let res = router.clone().oneshot(get_req(cookie.clone())).await.unwrap();
+        assert_eq!(
+            res.status(),
+            axum::http::StatusCode::OK,
+            "fresh session resolves while the frozen clock is inside the idle window"
+        );
+
+        // Still inside the window: nothing expires (touch slides `last_seen`).
+        clock.advance(time::Duration::seconds(1_799));
+        let res = router.clone().oneshot(get_req(cookie.clone())).await.unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::OK);
+
+        // One idle window past the SLIDING touch crosses `idle_secs` —
+        // anonymous WITHOUT wall time.
+        clock.advance(time::Duration::seconds(1_801));
+        let res = router.oneshot(get_req(cookie)).await.unwrap();
+        assert_eq!(
+            res.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "expired session is anonymous (handler misses the extension)"
+        );
     }
 
     #[test]

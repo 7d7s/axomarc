@@ -272,7 +272,7 @@ fn finish_login(
     if let Some(mw) = &state.sessions {
         let session = mw
             .manager
-            .start(principal, Some(tenant), OffsetDateTime::now_utc())?;
+            .start(principal, Some(tenant), mw.now())?;
         if remember {
             // Bag first: the cookie value is id-only, so ordering is free.
             mw.manager

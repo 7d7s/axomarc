@@ -20,6 +20,7 @@ pub mod principalstore;
 pub mod seeders;
 pub mod sessionstore;
 pub mod store;
+pub mod test_support;
 pub mod tokenstore;
 pub mod tx;
 pub mod txport;

@@ -21,6 +21,12 @@ pub fn advance(clock: &FixedClock, by: Duration) {
     clock.advance(by);
 }
 
+/// Wave 7 P3 (docs/19 L340): `travel(seconds)` — advance the frozen clock
+/// by whole seconds (the unit session TTLs / schedule windows are quoted in).
+pub fn travel(clock: &FixedClock, seconds: i64) {
+    clock.advance(Duration::seconds(seconds));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -37,5 +43,8 @@ mod tests {
 
         advance(&clock, Duration::minutes(15));
         assert_eq!(clock.now(), t0 + Duration::seconds(7200 + 900));
+
+        travel(&clock, 60);
+        assert_eq!(clock.now(), t0 + Duration::seconds(7200 + 900 + 60));
     }
 }

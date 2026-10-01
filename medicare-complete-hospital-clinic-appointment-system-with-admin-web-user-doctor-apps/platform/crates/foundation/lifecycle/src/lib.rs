@@ -274,6 +274,10 @@ pub struct ApplicationHost {
     providers: Vec<Box<dyn Provider>>,
     registry: ServiceRegistry,
     booted: bool,
+    /// Wave 7 P3 (docs/19 L340): the injectable clock on the host. Default =
+    /// wall clock; tests inject a `FixedClock` so scheduler `next_run` and
+    /// every host-captured instant read the SAME frozen time.
+    clock: Arc<dyn keel_foundation::Clock>,
 }
 
 impl ApplicationHost {
@@ -282,7 +286,20 @@ impl ApplicationHost {
             providers: Vec::new(),
             registry: ServiceRegistry::new(),
             booted: false,
+            clock: Arc::new(keel_foundation::SystemClock),
         }
+    }
+
+    /// Wave 7 P3: inject the time source (tests freeze it, then `travel`).
+    pub fn with_clock(mut self, clock: Arc<dyn keel_foundation::Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// The host's injected clock — spawn sites read `clock.now()` instead of
+    /// `OffsetDateTime::now_utc()`.
+    pub fn clock(&self) -> &Arc<dyn keel_foundation::Clock> {
+        &self.clock
     }
 
     pub fn add_provider(&mut self, provider: Box<dyn Provider>) {
@@ -365,6 +382,23 @@ mod tests {
                 Arc::new(String::from("foundation")),
             )
         }
+    }
+
+    /// Wave 7 P3 (docs/19 L340): the host clock is injectable — the default
+    /// tracks wall time, an injected `FixedClock` is what spawn sites read.
+    #[test]
+    fn host_clock_is_injectable() {
+        let wall = ApplicationHost::new();
+        let seen = wall.clock().now();
+        assert!(seen.unix_timestamp() > 0, "default host clock reads wall time");
+
+        let frozen = ApplicationHost::new()
+            .with_clock(Arc::new(keel_foundation::FixedClock::new(seen)));
+        assert_eq!(
+            frozen.clock().now(),
+            seen,
+            "injected clock wins over the wall clock"
+        );
     }
 
     #[tokio::test]

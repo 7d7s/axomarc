@@ -1911,6 +1911,7 @@ dependencies = [
  "keel-jobs",
  "keel-models",
  "keel-notifications",
+ "keel-scheduling",
  "keel-search",
  "keel-session",
  "keel-storage",

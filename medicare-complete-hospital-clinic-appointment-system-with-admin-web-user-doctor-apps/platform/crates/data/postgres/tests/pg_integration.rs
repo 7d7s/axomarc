@@ -422,3 +422,70 @@ async fn pg_batch_ledger_roundtrip() {
         "pruned records are gone"
     );
 }
+/// Wave 7 P3 (docs/19 L341): transactional savepoint isolation — the
+/// RefreshDatabase-equivalent suite setup. Two test bodies touch the SAME
+/// table on SEPARATE connections: body A's insert lives only inside its
+/// `BEGIN; SAVEPOINT keel_test` scope, `rollback()` leaves no residue for
+/// body B, and no schema drops/truncation are involved. (DATABASE_URL-gated
+/// like every pg test; skips cleanly without it.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pg_savepoint_rollback_isolates_two_tests_sharing_a_table() {
+    let Some(pool) = pool().await else { return };
+    let email_a = format!("savepoint-a-{}@it.test", uuid::Uuid::now_v7());
+    let email_b = format!("savepoint-b-{}@it.test", uuid::Uuid::now_v7());
+
+    // Test body A: writes inside the savepoint, sees them, rolls them back.
+    {
+        let mut conn = pool.acquire().await.expect("connection A");
+        let mut sp = keel_postgres::test_support::Savepoint::begin(&mut conn)
+            .await
+            .expect("BEGIN + SAVEPOINT keel_test");
+        sqlx::query("INSERT INTO principals (id, email) VALUES ($1, $2)")
+            .bind(uuid::Uuid::now_v7())
+            .bind(&email_a)
+            .execute(sp.conn())
+            .await
+            .expect("insert inside the scope");
+        let seen: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM principals WHERE email = $1")
+                .bind(&email_a)
+                .fetch_one(sp.conn())
+                .await
+                .expect("count inside the scope");
+        assert_eq!(seen, 1, "the body sees its own write");
+        sp.rollback().await.expect("ROLLBACK TO keel_test");
+    }
+
+    // Test body B: a separate connection — A's row never existed for it,
+    // and the shared table still accepts writes through its own scope.
+    {
+        let mut conn = pool.acquire().await.expect("connection B");
+        let residue: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM principals WHERE email = $1")
+                .bind(&email_a)
+                .fetch_one(&mut *conn)
+                .await
+                .expect("count after A rolled back");
+        assert_eq!(residue, 0, "body A left no residue behind");
+
+        let mut sp = keel_postgres::test_support::Savepoint::begin(&mut conn)
+            .await
+            .expect("second scope begins");
+        sqlx::query("INSERT INTO principals (id, email) VALUES ($1, $2)")
+            .bind(uuid::Uuid::now_v7())
+            .bind(&email_b)
+            .execute(sp.conn())
+            .await
+            .expect("second body writes to the same table");
+        sp.rollback().await.expect("second rollback");
+    }
+
+    // Final state: the table is exactly as both bodies found it.
+    let mut conn = pool.acquire().await.expect("connection C");
+    let total: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM principals WHERE email LIKE 'savepoint-%@it.test'")
+            .fetch_one(&mut *conn)
+            .await
+            .expect("final count");
+    assert_eq!(total, 0, "no savepoint row survives its scope");
+}

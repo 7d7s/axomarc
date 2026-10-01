@@ -7,9 +7,11 @@ use std::sync::{Arc, Mutex};
 use axum::body::{to_bytes, Body, Bytes};
 use axum::http::{header, HeaderMap, Method, Request, StatusCode};
 use axum::Router;
-use keel_foundation::{PrincipalId, TenantId};
+use keel_foundation::{AppError, Clock, FixedClock, PrincipalId, TenantId};
 use keel_http::{parse_session_cookie, CookieJar, SessionMiddleware, SESSION_COOKIE};
+use keel_jobs::{build_from_def, JobDef};
 use keel_models::{FieldFilter, ListOpts, ModelDef, ModelStore, Record};
+use keel_scheduling::{ScheduleItem, ScheduleRegistry, SchedulerRunner};
 use keel_session::Session;
 use keel_views::{ViewRender, ViewTap};
 use serde::de::DeserializeOwned;
@@ -37,6 +39,15 @@ pub struct TestApp {
     views: Option<Arc<ViewRecorder>>,
     /// Wave 7 P2: ModelStore the database asserts probe.
     models: Option<Arc<dyn ModelStore>>,
+    /// Wave 7 P3: fake queue the fake scheduler fires due items into.
+    queue: Option<Arc<crate::fakes::QueueFake>>,
+    /// Wave 7 P3: the schedule registry this TestApp owns (fresh per app).
+    schedules: Option<Arc<ScheduleRegistry>>,
+    /// Wave 7 P3: last-fired state carried across `run_due_schedules`
+    /// calls (the runner is rebuilt per tick; the state is not).
+    schedule_state: Vec<(String, OffsetDateTime)>,
+    /// Wave 7 P3: the clock `run_due_schedules` reads (freeze_time handle).
+    clock: Option<Arc<FixedClock>>,
 }
 
 impl TestApp {
@@ -49,6 +60,10 @@ impl TestApp {
             session: None,
             views: None,
             models: None,
+            queue: None,
+            schedules: None,
+            schedule_state: Vec::new(),
+            clock: None,
         }
     }
 
@@ -95,6 +110,80 @@ impl TestApp {
     pub fn with_models(mut self, store: Arc<dyn ModelStore>) -> Self {
         self.models = Some(store);
         self
+    }
+
+    /// Wave 7 P3 (docs/19 L342): fake queue — `run_due_schedules` fires
+    /// every due schedule item into it as a `max_attempts = 1` durable job;
+    /// assert through `queue()`.
+    pub fn with_fake_queue(mut self) -> Self {
+        self.queue = Some(Arc::new(crate::fakes::QueueFake::new()));
+        self
+    }
+
+    /// Wave 7 P3 (docs/19 L342): fake scheduler — a fresh `ScheduleRegistry`
+    /// this TestApp owns. Register items with `schedule(...)`, execute due
+    /// items with `run_due_schedules()`.
+    pub fn with_fake_scheduler(mut self) -> Self {
+        self.schedules = Some(Arc::new(ScheduleRegistry::new()));
+        self
+    }
+
+    /// Wave 7 P3 (docs/19 L340): the clock `run_due_schedules` reads —
+    /// wire the `freeze_time` handle, then `travel` between ticks.
+    pub fn with_clock(mut self, clock: Arc<FixedClock>) -> Self {
+        self.clock = Some(clock);
+        self
+    }
+
+    /// The fake queue (wiring hint when unwired).
+    pub fn queue(&self) -> &Arc<crate::fakes::QueueFake> {
+        self.queue.as_ref().unwrap_or_else(|| {
+            panic!("no queue fake wired (call TestApp::with_fake_queue)")
+        })
+    }
+
+    /// Wave 7 P3: register a schedule item into the fake scheduler (before
+    /// the first `run_due_schedules` tick).
+    pub fn schedule(&mut self, item: ScheduleItem) -> Result<(), AppError> {
+        let registry = self.schedules.as_mut().unwrap_or_else(|| {
+            panic!("no scheduler wired (call TestApp::with_fake_scheduler)")
+        });
+        let registry = Arc::get_mut(registry)
+            .expect("schedule registry is uniquely owned before the first tick");
+        registry.register(item)
+    }
+
+    /// Wave 7 P3 (docs/19 L342): execute due items synchronously — the tick
+    /// instant comes from the injected clock (else wall time), each fired
+    /// item enqueues a `max_attempts = 1` durable job into the fake queue,
+    /// and last-fired state carries across calls (an item never refires
+    /// before its window, exactly like the worker tick).
+    pub fn run_due_schedules(&mut self) -> Result<Vec<String>, AppError> {
+        let registry = self
+            .schedules
+            .as_ref()
+            .unwrap_or_else(|| panic!("no scheduler wired (call TestApp::with_fake_scheduler)"))
+            .clone();
+        let queue = self
+            .queue
+            .as_ref()
+            .unwrap_or_else(|| panic!("no queue fake wired (call TestApp::with_fake_queue)"))
+            .clone();
+        let now = self
+            .clock
+            .as_ref()
+            .map(|clock| clock.now())
+            .unwrap_or_else(OffsetDateTime::now_utc);
+        let runner = SchedulerRunner::with_state(registry, std::mem::take(&mut self.schedule_state));
+        let fired = runner.tick(now, |item| {
+            let mut def = JobDef::new(item.operation.clone());
+            def.max_attempts = 1;
+            let job = build_from_def(&def, item.payload.clone(), now);
+            queue.enqueue(job);
+            Ok(())
+        })?;
+        self.schedule_state = runner.state();
+        Ok(fired)
     }
 
     pub fn router(&self) -> &Router {
@@ -577,11 +666,12 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
 }
 
 /// Load + verify a session from a raw cookie value (tag check, store load,
-/// policy expiry — the middleware's posture, read-only).
+/// policy expiry — the middleware's posture, read-only). Wave 7 P3: expiry
+/// reads the middleware's injected clock, mirroring the touch gate.
 fn load_session(mw: &SessionMiddleware, cookie: &str) -> Option<Session> {
     let id = parse_session_cookie(cookie, &mw.secret)?;
     let session = mw.manager.store().load(&id).ok().flatten()?;
-    if session.expired(OffsetDateTime::now_utc(), mw.manager.policy()) {
+    if session.expired(mw.now(), mw.manager.policy()) {
         None
     } else {
         Some(session)
@@ -814,7 +904,7 @@ mod tests {
                         let principal =
                             PrincipalId::from_uuid(uuid::Uuid::parse_str(actor).expect("uuid"));
                         let mut session = manager
-                            .start(principal, None, OffsetDateTime::now_utc())
+                            .start(principal, None, mw.now())
                             .unwrap();
                         session.data.insert("cart".into(), json!("7"));
                         manager.store().save(&session).unwrap();
@@ -1167,5 +1257,80 @@ mod tests {
             .send()
             .await
             .assert_database_count(&patient_model(), 0);
+    }
+
+    // ------------------------------------ Wave 7 P3: fake queue/scheduler
+
+    fn interval_item(name: &str, operation: &str, secs: u64) -> ScheduleItem {
+        ScheduleItem {
+            name: name.into(),
+            operation: operation.into(),
+            spec: keel_scheduling::ScheduleSpec::Interval { secs },
+            enabled: true,
+            ..Default::default()
+        }
+    }
+
+    /// Wave 7 P3 (docs/19 L340/L342): scheduler `next_run` reads the
+    /// injected clock — `travel` moves due-ness, not wall time — and every
+    /// fired item lands in the fake queue as a durable job.
+    #[test]
+    fn fake_scheduler_fires_due_items_into_the_fake_queue_under_a_frozen_clock() {
+        let t0 = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+        let clock = crate::freeze_time(t0);
+        let mut app = TestApp::new(Router::new())
+            .with_fake_scheduler()
+            .with_fake_queue()
+            .with_clock(clock.clone());
+        app.schedule(interval_item("billing.close-day", "billing.close_day", 60))
+            .unwrap();
+
+        // Never fired -> due on the first pass.
+        let fired = app.run_due_schedules().unwrap();
+        assert_eq!(fired, vec!["billing.close-day".to_string()]);
+        app.queue().assert_pushed_count("billing.close_day", 1);
+
+        // Same frozen instant: inside the window, nothing refires.
+        assert!(app.run_due_schedules().unwrap().is_empty());
+        app.queue().assert_pushed_count("billing.close_day", 1);
+
+        // Travel to one second before the window closes: still quiet.
+        crate::travel(&clock, 59);
+        assert!(app.run_due_schedules().unwrap().is_empty());
+        app.queue().assert_pushed_count("billing.close_day", 1);
+
+        // Travel past the window: due again on the same frozen clock.
+        crate::travel(&clock, 2);
+        let fired = app.run_due_schedules().unwrap();
+        assert_eq!(fired, vec!["billing.close-day".to_string()]);
+        app.queue().assert_pushed_count("billing.close_day", 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "with_fake_scheduler")]
+    fn run_due_schedules_requires_the_scheduler_probe() {
+        let mut app = TestApp::new(Router::new());
+        let _ = app.run_due_schedules();
+    }
+
+    #[test]
+    #[should_panic(expected = "with_fake_queue")]
+    fn run_due_schedules_requires_the_queue_probe() {
+        let mut app = TestApp::new(Router::new()).with_fake_scheduler();
+        let _ = app.run_due_schedules();
+    }
+
+    #[test]
+    #[should_panic(expected = "with_fake_queue")]
+    fn queue_accessor_requires_the_fake() {
+        let app = TestApp::new(Router::new());
+        let _ = app.queue();
+    }
+
+    #[test]
+    #[should_panic(expected = "with_fake_scheduler")]
+    fn schedule_registration_requires_the_scheduler_probe() {
+        let mut app = TestApp::new(Router::new());
+        let _ = app.schedule(interval_item("a.b", "a.b", 60));
     }
 }

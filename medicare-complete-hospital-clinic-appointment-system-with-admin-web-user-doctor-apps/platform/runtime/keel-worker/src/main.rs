@@ -791,6 +791,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let processed = AtomicUsize::new(0);
 
     // Scheduler tick (L35): every 30s fire due schedules as durable jobs.
+    // Wave 7 P3 (docs/19 L340): the tick instant comes from the HOST clock
+    // (injectable — default wall time) instead of a bare `now_utc()`.
+    let clock = host.clock().clone();
     let scheduler_handle = {
         let scheduler = scheduler.clone();
         let job_defs = job_defs.clone();
@@ -804,7 +807,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if stop.load(Ordering::SeqCst) {
                     break;
                 }
-                let now = OffsetDateTime::now_utc();
+                let now = clock.now();
                 let job_defs = job_defs.clone();
                 let jobs = jobs.clone();
                 match scheduler.tick(now, move |item: &ScheduleItem| {

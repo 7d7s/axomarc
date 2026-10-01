@@ -15,7 +15,7 @@ pub use seal::{AesGcmSealer, ALG_AES256_GCM, KEY_LEN, NONCE_LEN};
 
 use std::sync::{Arc, Mutex};
 
-use keel_foundation::{AppError, PrincipalId};
+use keel_foundation::{AppError, Clock, PrincipalId};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -179,14 +179,35 @@ pub trait TokenStore: Send + Sync {
     fn list_for(&self, principal: PrincipalId) -> Result<Vec<AuthToken>, AppError>;
 }
 
-/// Token lifecycle service over a TokenStore.
+/// Token lifecycle service over a TokenStore. Wave 7 P3 (docs/19 L340):
+/// expiry reads come from the INJECTED clock (default = wall clock), so a
+/// frozen `FixedClock` makes issue/verify/consume deterministic in tests.
 pub struct TokenService {
     store: Arc<dyn TokenStore>,
+    clock: Arc<dyn Clock>,
 }
 
 impl TokenService {
     pub fn new(store: Arc<dyn TokenStore>) -> Self {
-        Self { store }
+        Self {
+            store,
+            clock: Arc::new(keel_foundation::SystemClock),
+        }
+    }
+
+    /// Wave 7 P3: inject the time source (test travel via `FixedClock`).
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// Current instant per the injected clock.
+    pub fn clock(&self) -> &Arc<dyn Clock> {
+        &self.clock
+    }
+
+    fn now(&self) -> OffsetDateTime {
+        self.clock.now()
     }
 
     /// Issue a new token. Plaintext leaves this function exactly once.
@@ -200,7 +221,7 @@ impl TokenService {
         if ttl <= Duration::ZERO {
             return Err(AppError::validation("token ttl must be positive"));
         }
-        let now = OffsetDateTime::now_utc();
+        let now = self.now();
         let plaintext = generate_plaintext();
         let token = AuthToken {
             id: Uuid::now_v7(),
@@ -223,7 +244,7 @@ impl TokenService {
             .store
             .find_by_hash(purpose, &sha256_hex(plaintext))?
             .ok_or_else(|| AppError::denied("token is not valid"))?;
-        if !token.active(OffsetDateTime::now_utc()) {
+        if !token.active(self.now()) {
             return Err(AppError::denied("token is not valid"));
         }
         Ok(token)
@@ -235,7 +256,7 @@ impl TokenService {
         if purpose.single_use() {
             let consumed = self
                 .store
-                .mark_consumed(token.id, OffsetDateTime::now_utc())?;
+                .mark_consumed(token.id, self.now())?;
             if !consumed {
                 return Err(AppError::denied("token is not valid"));
             }
@@ -323,6 +344,36 @@ mod tests {
 
     fn service() -> TokenService {
         TokenService::new(Arc::new(InMemoryTokenStore::new()))
+    }
+
+    /// Wave 7 P3 (docs/19 L340): token expiry reads the injected clock —
+    /// travel past the TTL on a frozen clock without waiting on wall time.
+    #[test]
+    fn token_expiry_reads_the_injected_clock() {
+        let t0 = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+        let clock = Arc::new(keel_foundation::FixedClock::new(t0));
+        let svc = TokenService::new(Arc::new(InMemoryTokenStore::new())).with_clock(clock.clone());
+        let principal = PrincipalId::new();
+        let issued = svc
+            .issue(principal, TokenPurpose::Reset, Duration::seconds(60), None)
+            .unwrap();
+        assert_eq!(
+            issued.token.created_at, t0,
+            "issue stamps the injected instant, not the wall clock"
+        );
+        assert_eq!(issued.token.expires_at, t0 + Duration::seconds(60));
+        svc.verify(TokenPurpose::Reset, &issued.plaintext)
+            .expect("valid inside the TTL");
+
+        clock.advance(Duration::seconds(59));
+        svc.verify(TokenPurpose::Reset, &issued.plaintext)
+            .expect("still valid one second before expiry");
+
+        clock.advance(Duration::seconds(2));
+        assert!(
+            svc.verify(TokenPurpose::Reset, &issued.plaintext).is_err(),
+            "expired by the frozen clock alone"
+        );
     }
 
     #[test]

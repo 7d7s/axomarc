@@ -225,7 +225,7 @@ const FACTORY_TEMPLATE: &str = r##"//! Factory: __TYPE__ fixtures (keel-testkit 
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use keel_testkit::Factory;
+use keel_testkit::{Factory, ModelFactory};
 
 /// Monotonic per-process sequence: generated defaults stay unique and
 /// deterministic (no wall-clock dependence in fixture values).
@@ -246,6 +246,14 @@ pub struct __TYPE__Factory {
     pub label: Option<String>,
 }
 
+impl __TYPE__Factory {
+    /// Wave 7 P3 (docs/19 L343): seed the sequence counter — tests reset it
+    /// so fixture labels reproduce run-to-run (counter-seeded per test).
+    pub fn seed_sequence(at: u64) {
+        __TYPE__FACTORY_SEQ.store(at, Ordering::Relaxed);
+    }
+}
+
 impl Factory for __TYPE__Factory {
     type Item = __TYPE__;
 
@@ -255,6 +263,21 @@ impl Factory for __TYPE__Factory {
             id: self.id.unwrap_or_else(uuid::Uuid::now_v7),
             label: self.label.unwrap_or_else(|| format!("__NAME__-{seq}")),
         }
+    }
+}
+
+/// Wave 7 P3 (docs/19 L343): `create()` persists through the ModelStore —
+/// `factory.state(|f| …).create(&store, tenant)` returns the STORED row.
+impl ModelFactory for __TYPE__Factory {
+    fn model(&self) -> keel_testkit::ModelDef {
+        keel_testkit::ModelDef::new("__TYPE__", "__NAME__s")
+    }
+
+    fn to_record(item: &Self::Item) -> keel_testkit::Record {
+        let mut record = keel_testkit::Record::new();
+        record.insert("id".into(), serde_json::json!(item.id.to_string()));
+        record.insert("label".into(), serde_json::json!(item.label));
+        record
     }
 }
 "##;
@@ -807,6 +830,13 @@ mod tests {
         assert!(content.contains("fn build(self) -> Widget"));
         assert!(content.contains("WidgetFACTORY_SEQ.fetch_add"));
         assert!(content.contains("pub struct WidgetFactory"));
+        // Wave 7 P3 (docs/19 L343): create() rides the REAL ModelFactory
+        // trait (persistence through the ModelStore) and the sequence can
+        // be seeded per test.
+        assert!(content.contains("impl ModelFactory for WidgetFactory"));
+        assert!(content.contains("fn model(&self) -> keel_testkit::ModelDef"));
+        assert!(content.contains("fn to_record(item: &Self::Item) -> keel_testkit::Record"));
+        assert!(content.contains("pub fn seed_sequence(at: u64)"));
     }
 
     /// Wave 3 Phase 7: the resource scaffold implements the REAL trait. The
