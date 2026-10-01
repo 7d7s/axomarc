@@ -292,6 +292,67 @@ pub struct HttpSection {
     pub encrypt_cookies: bool,
 }
 
+/// Security posture section (Wave 7 P4, `[security]`): web-plane response
+/// hardening. Plain data like [`HttpSection`] — keel-api resolves it into
+/// `keel_http::SecurityHeaders` at boot; the api plane never reads it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SecuritySection {
+    #[serde(default)]
+    pub headers: SecurityHeadersSection,
+}
+
+/// `[security.headers]` (Wave 7 P4, docs/19 "Security-headers middleware"):
+/// what every web-plane response carries. `deny_unknown_fields` closes the
+/// level-3 gap the 2-level schema walk cannot reach, the same way
+/// [`MailerConfig`] does for `[mail.mailers.<name>]`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecurityHeadersSection {
+    /// Master switch — default off, additive like `http.problem_json`: a
+    /// deployment turns it on once its CSP is settled (and leaves it off
+    /// when an edge proxy already sets these headers).
+    #[serde(default)]
+    pub enabled: bool,
+    /// HSTS `max-age` in seconds; `0` omits the `Strict-Transport-Security`
+    /// header entirely. Browsers only honour HSTS over https.
+    #[serde(default = "default_hsts_max_age_secs")]
+    pub hsts_max_age_secs: u64,
+    /// Append `; includeSubDomains` to HSTS (opt-in per docs/19).
+    #[serde(default)]
+    pub hsts_include_subdomains: bool,
+    /// Baseline CSP, overridable per deployment (`default-src 'self'`);
+    /// an empty string omits the header.
+    #[serde(default = "default_csp")]
+    pub csp: String,
+    /// `Referrer-Policy` value; an empty string omits the header.
+    #[serde(default = "default_referrer_policy")]
+    pub referrer_policy: String,
+}
+
+fn default_hsts_max_age_secs() -> u64 {
+    31_536_000
+}
+
+fn default_csp() -> String {
+    "default-src 'self'".into()
+}
+
+fn default_referrer_policy() -> String {
+    "strict-origin-when-cross-origin".into()
+}
+
+impl Default for SecurityHeadersSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            hsts_max_age_secs: default_hsts_max_age_secs(),
+            hsts_include_subdomains: false,
+            csp: default_csp(),
+            referrer_policy: default_referrer_policy(),
+        }
+    }
+}
+
 /// Mail section (Wave 6 P1, `[mail]`): named mailers plus the default
 /// failover chain. Plain data like [`ViewsSection`] — the adapter class may
 /// not depend on application config, so keel-worker converts this into
@@ -526,6 +587,9 @@ pub struct PlatformConfig {
     /// i18n section (Wave 6 P3): default locale + message-file roots.
     #[serde(default)]
     pub i18n: I18nSection,
+    /// Security posture section (Wave 7 P4): web-plane response headers.
+    #[serde(default)]
+    pub security: SecuritySection,
 }
 
 /// Wave 4 Phase 5 (docs/19 L210): the declared config schema — the keys the
@@ -552,6 +616,7 @@ pub const CONFIG_SCHEMA: &[(&str, &[&str])] = &[
     ("limits", &["default_monthly_operations"]),
     ("mail", &["default", "mailers"]),
     ("otp", &["provider", "code_ttl_secs", "max_attempts"]),
+    ("security", &["headers"]),
     (
         "storage",
         &["endpoint", "bucket", "default", "disks"],
@@ -861,6 +926,10 @@ impl FrozenConfig {
         &self.0.i18n
     }
 
+    pub fn security(&self) -> &SecuritySection {
+        &self.0.security
+    }
+
     pub fn database_url(&self) -> Option<&str> {
         self.0.database_url()
     }
@@ -1137,7 +1206,7 @@ mod phase5_config_schema_tests {
             required: false,
         })
         .expect("database serializes");
-        let sections: [(&str, serde_json::Value); 9] = [
+        let sections: [(&str, serde_json::Value); 10] = [
             (
                 "app",
                 serde_json::to_value(AppConfig::default()).expect("app"),
@@ -1162,6 +1231,10 @@ mod phase5_config_schema_tests {
             (
                 "otp",
                 serde_json::to_value(OtpConfig::default()).expect("otp"),
+            ),
+            (
+                "security",
+                serde_json::to_value(SecuritySection::default()).expect("security"),
             ),
             (
                 "storage",
@@ -1556,5 +1629,76 @@ mod wave6_i18n_config_tests {
         assert!(err.public_message.contains("i18n.default"), "{}", err.public_message);
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod wave7_security_headers_config_tests {
+    use super::*;
+
+    /// Wave 7 P4 (docs/19 "Security-headers middleware"): `[security.headers]`
+    /// defaults gate emission OFF (additive, like `http.problem_json`), with
+    /// the documented baseline values waiting behind the switch.
+    #[test]
+    fn security_headers_defaults_gate_off_with_the_documented_baseline() {
+        let cfg = PlatformConfig::default();
+        let headers = &cfg.security.headers;
+        assert!(
+            !headers.enabled,
+            "opt-in posture: nothing is emitted until a deployment asks"
+        );
+        assert_eq!(headers.hsts_max_age_secs, 31_536_000);
+        assert!(!headers.hsts_include_subdomains, "includeSubDomains stays an opt");
+        assert_eq!(headers.csp, "default-src 'self'");
+        assert_eq!(headers.referrer_policy, "strict-origin-when-cross-origin");
+    }
+
+    /// Every documented knob survives TOML, and an unknown key is refused
+    /// (`deny_unknown_fields` closes the level-3 gap the schema walk cannot
+    /// see — a typo must not silently leave the posture off).
+    #[test]
+    fn security_headers_section_parses_overrides_and_refuses_typos() {
+        let cfg: PlatformConfig = toml::from_str(
+            r#"
+            [security.headers]
+            enabled = true
+            hsts_max_age_secs = 7777
+            hsts_include_subdomains = true
+            csp = "default-src 'self' https://cdn.example"
+            referrer_policy = "no-referrer"
+            "#,
+        )
+        .expect("declared keys parse");
+        let headers = &cfg.security.headers;
+        assert!(headers.enabled);
+        assert_eq!(headers.hsts_max_age_secs, 7777);
+        assert!(headers.hsts_include_subdomains);
+        assert_eq!(headers.csp, "default-src 'self' https://cdn.example");
+        assert_eq!(headers.referrer_policy, "no-referrer");
+
+        let err = toml::from_str::<PlatformConfig>(
+            r#"
+            [security.headers]
+            enbaled = true
+            "#,
+        )
+        .expect_err("a typo refuses instead of silently staying off");
+        assert!(err.to_string().contains("enbaled"), "{err}");
+    }
+
+    /// The `GRAPH-CONFIG-SCHEMA` walk declares `security` → `headers`, so a
+    /// level-2 typo reports like every other section and the section itself
+    /// is never a schema violation.
+    #[test]
+    fn security_keys_are_declared_and_level2_typos_are_reported() {
+        assert_eq!(
+            schema_violations("[security.headers]\nenabled = true\n"),
+            Vec::new(),
+            "the declared section is clean"
+        );
+        let violations =
+            schema_violations("[security.headres]\nenabled = true\n");
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert_eq!(violations[0].key, "security.headres");
     }
 }

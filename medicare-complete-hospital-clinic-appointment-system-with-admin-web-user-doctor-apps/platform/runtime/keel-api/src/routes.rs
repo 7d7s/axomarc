@@ -159,6 +159,12 @@ pub struct AppState {
     /// `@asset("...")` URL helper in templates; `None` (no build yet)
     /// degrades to literal root-absolute URLs.
     pub assets: Option<Arc<keel_http::AssetManifest>>,
+    // --- Wave 7 P4 security headers ----------------------------------------
+    /// Resolved `[security.headers]` posture: layered outermost on
+    /// web-plane graph routes only (19-PARITY "Security-headers
+    /// middleware"); the api plane never reads it. `enabled = false` (the
+    /// default) attaches nothing at all.
+    pub security_headers: keel_http::SecurityHeaders,
 }
 
 impl AppState {

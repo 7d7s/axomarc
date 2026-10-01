@@ -20,6 +20,13 @@ elevation (+ sessions/tokens opt-in).
 2. **Plane invariant** — tenant operations cannot run on the platform plane and vice versa.
 3. **Revisions** — access snapshots carry authorization/feature/module revisions; stale decisions
    are detectable.
+4. **Transport security headers (Wave 7 P4)** — web-plane responses only: `[security.headers]`
+   (off by default, additive) stamps `X-Content-Type-Options: nosniff`, HSTS (`max-age`, opt-in
+   `includeSubDomains`), the baseline CSP (`default-src 'self'`, per-deployment override) and
+   `Referrer-Policy: strict-origin-when-cross-origin` as the outermost per-route layer, so error
+   views and route-gate rejections carry them too. The api plane is never touched; handler-set
+   headers win over the middleware; an unparseable config value is skipped fail-closed (04-HTTP,
+   19-PARITY Wave 7 P4).
 
 ## Agents and AI
 

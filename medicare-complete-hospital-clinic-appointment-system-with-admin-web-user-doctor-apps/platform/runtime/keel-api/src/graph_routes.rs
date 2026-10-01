@@ -458,6 +458,14 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
             });
 
             let path = axum_path(&spec.path);
+            // Wave 7 P4 (19-PARITY "Security-headers middleware"): the
+            // deployment's `[security.headers]` posture, captured before the
+            // route gate consumes `dispatch`. Web-plane routes only — an
+            // api-plane response stays byte-identical — and only while the
+            // switch is on, so the default posture attaches nothing at all.
+            let security_headers = (dispatch.route_plane == RoutePlane::Web
+                && state.security_headers.enabled)
+                .then(|| state.security_headers.clone());
             let mut route: MethodRouter = axum::routing::on(filter, graph_dispatch)
                 .with_state((state.clone(), dispatch.clone()))
                 .layer(axum::middleware::from_fn_with_state(
@@ -479,6 +487,18 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
             // exactly like a handled GET body.
             if declared.contains(&"HEAD") {
                 route = route.layer(axum::middleware::from_fn(strip_head_body));
+            }
+            // Wave 7 P4: attached last, so it is outermost within the route —
+            // the handler's views, error views, chain short-circuits and
+            // route-gate rejections all carry the posture. Responses
+            // short-circuited before routing (rate limit, maintenance) stay
+            // outside the route by design; they are edge posture, not
+            // web-plane answers.
+            if let Some(headers) = security_headers {
+                route = route.layer(axum::middleware::from_fn_with_state(
+                    headers,
+                    keel_http::security_headers_fn,
+                ));
             }
             router = router.route(&path, route);
             tracing::info!(method = %spec.method, path = %spec.path, operation = %operation_id, "graph route registered");

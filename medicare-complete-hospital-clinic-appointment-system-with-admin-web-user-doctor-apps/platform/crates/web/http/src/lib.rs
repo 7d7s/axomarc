@@ -17,6 +17,7 @@ pub mod pagination;
 pub mod redirect;
 pub mod request;
 pub mod resource;
+pub mod security_headers;
 pub mod session_mw;
 pub mod signed;
 pub mod static_files;
@@ -44,6 +45,7 @@ pub use pagination::{Page, PageQuery, DEFAULT_PER_PAGE, MAX_PER_PAGE};
 pub use redirect::Redirect;
 pub use request::{accepts, bearer_token, client_ip, expects_json, fingerprint};
 pub use resource::{Fields, Resource, ResourceCollection};
+pub use security_headers::{security_headers_fn, SecurityHeaders};
 pub use session_mw::{
     parse_session_cookie, session_cookie_value, ResolvedSession, SessionMiddleware, SESSION_COOKIE,
 };

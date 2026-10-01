@@ -59,6 +59,16 @@ Maintenance mode answers 503 with Retry-After (bypass secret); the admission rat
 stays as the coarse fallback limiter. Order and registration are runtime wiring; modules
 contribute through contracts, not by stacking closures ad hoc.
 
+**Security headers (Wave 7 P4).** Inside the router, web-plane routes carry the
+deployment's `[security.headers]` posture as the outermost per-route layer:
+`X-Content-Type-Options: nosniff`, HSTS (`max-age`, opt-in `includeSubDomains`), the
+baseline CSP (`default-src 'self'`, per-deployment override) and
+`Referrer-Policy: strict-origin-when-cross-origin`. The switch is off by default
+(additive); when on, `graph_router` attaches the layer to web-plane routes only — the
+api plane never sees it, and responses short-circuited before routing (rate limit,
+maintenance) stay outside it by design. Handler-set headers win: the middleware only
+fills gaps (06-SECURITY).
+
 **Named chains (Wave 1).** An optional `middleware.toml` at the discovery root (same root
 as `applications/`) declares the catalog; absent file = the builtin catalog.
 

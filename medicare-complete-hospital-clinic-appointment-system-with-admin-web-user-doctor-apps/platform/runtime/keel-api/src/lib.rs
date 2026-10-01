@@ -619,6 +619,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         tenants,
         static_files,
         assets,
+        security_headers: security_headers_from(cfg.security()),
     };
 
     // B-29: `keel shell` — interactive console over the booted graph. Same
@@ -877,6 +878,24 @@ fn cookie_cipher(
         Arc::new(sealer),
         "cookies.v1",
     ))))
+}
+
+/// Wave 7 P4 (`[security.headers]` → wire posture): the application layer
+/// holds plain config data (it may not depend on the web class), so boot
+/// resolves the section into the web layer's `SecurityHeaders` here — the
+/// same conversion pattern as `ViewsSection` → `ViewsConfig`. The api plane
+/// never consults the result; `graph_router` attaches it to web-plane
+/// routes only.
+pub fn security_headers_from(
+    section: &keel_config::SecuritySection,
+) -> keel_http::SecurityHeaders {
+    keel_http::SecurityHeaders {
+        enabled: section.headers.enabled,
+        hsts_max_age_secs: section.headers.hsts_max_age_secs,
+        hsts_include_subdomains: section.headers.hsts_include_subdomains,
+        csp: section.headers.csp.clone(),
+        referrer_policy: section.headers.referrer_policy.clone(),
+    }
 }
 
 /// Session cookie HMAC secret: explicit env wins; otherwise a per-boot
@@ -1222,6 +1241,9 @@ pub fn build_app_state(
         tenants,
         static_files,
         assets,
+        // Harness default: the P4 posture stays off (the switch is per
+        // config); tests inject one to prove emission end to end.
+        security_headers: keel_http::SecurityHeaders::default(),
     };
     (state, graph, appt_store)
 }

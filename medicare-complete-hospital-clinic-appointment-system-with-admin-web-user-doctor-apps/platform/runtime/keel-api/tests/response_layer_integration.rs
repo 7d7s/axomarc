@@ -66,9 +66,17 @@ public = true
 "#;
 
 fn router_for() -> axum::Router {
+    router_with(|_| {})
+}
+
+/// `router_for` with a hook on the freshly built state, so a test can inject
+/// a posture (Wave 7 P4 security headers) before the routes register.
+fn router_with(prepare: impl FnOnce(&mut keel_api::routes::AppState)) -> axum::Router {
     let dir = std::env::temp_dir().join(format!("keel-response-it-{}", uuid::Uuid::now_v7()));
     std::fs::create_dir_all(dir.join("views")).expect("views fixture dir");
     let (state, _, _) = keel_api::build_app_state(&dir, true, true);
+    let mut state = state;
+    prepare(&mut state);
     let raw = format!(
         "{}{EXTRA_ROUTES}",
         include_str!("../../../applications/appointments/module.toml")
@@ -287,4 +295,73 @@ async fn an_unchanged_payload_keeps_its_validator_across_restarts_of_the_body() 
         "same bytes, same validator"
     );
     assert_ne!(one.header("etag"), None);
+}
+
+// ------------------------------------------- Wave 7 P4 security headers
+
+/// A fully configured posture (every knob non-default) so each assertion
+/// proves config → wire, not a coincidental default.
+fn enabled_headers() -> keel_http::SecurityHeaders {
+    keel_api::security_headers_from(&keel_config::SecuritySection {
+        headers: keel_config::SecurityHeadersSection {
+            enabled: true,
+            hsts_max_age_secs: 7777,
+            hsts_include_subdomains: true,
+            csp: "default-src 'self' https://cdn.test".into(),
+            referrer_policy: "no-referrer".into(),
+        },
+    })
+}
+
+/// 19-PARITY "Security-headers middleware": a web-plane response carries
+/// the configured posture, exactly as configured.
+#[tokio::test]
+async fn web_plane_responses_carry_the_configured_security_headers() {
+    let router = router_with(|state| state.security_headers = enabled_headers());
+    let reply = get(&router, "/web/no-content").await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    assert_eq!(reply.header("x-content-type-options"), Some("nosniff"));
+    assert_eq!(
+        reply.header("strict-transport-security"),
+        Some("max-age=7777; includeSubDomains")
+    );
+    assert_eq!(
+        reply.header("content-security-policy"),
+        Some("default-src 'self' https://cdn.test")
+    );
+    assert_eq!(reply.header("referrer-policy"), Some("no-referrer"));
+}
+
+/// The api plane stays untouched: same enabled posture, zero headers on an
+/// api-plane answer.
+#[tokio::test]
+async fn api_plane_responses_stay_untouched_by_the_security_headers() {
+    let router = router_with(|state| state.security_headers = enabled_headers());
+    let reply = get(&router, "/api/plain").await;
+    assert_eq!(reply.status, StatusCode::OK);
+    for name in [
+        "x-content-type-options",
+        "strict-transport-security",
+        "content-security-policy",
+        "referrer-policy",
+    ] {
+        assert!(reply.header(name).is_none(), "{name} must not appear on the api plane");
+    }
+}
+
+/// Default posture (the harness default, and `enabled = false`): even the
+/// web plane emits nothing until a deployment turns the switch on.
+#[tokio::test]
+async fn the_security_headers_stay_off_until_a_deployment_turns_them_on() {
+    let router = router_for();
+    let reply = get(&router, "/web/no-content").await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    for name in [
+        "x-content-type-options",
+        "strict-transport-security",
+        "content-security-policy",
+        "referrer-policy",
+    ] {
+        assert!(reply.header(name).is_none(), "{name} must not appear while disabled");
+    }
 }

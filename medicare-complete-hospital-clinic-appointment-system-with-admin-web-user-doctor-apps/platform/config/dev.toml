@@ -40,6 +40,17 @@ problem_json = false
 # cookie consumer understands the sealed form.
 encrypt_cookies = false
 
+[security.headers]
+# Wave 7 P4: web-plane response hardening — HSTS, `nosniff`, the baseline
+# CSP and Referrer-Policy, emitted on web-plane routes only (the api plane
+# is never touched). Off until the deployment's CSP is settled; stay off
+# when an edge proxy already sets these headers.
+enabled = false
+# hsts_max_age_secs = 31536000
+# hsts_include_subdomains = false
+# csp = "default-src 'self'"
+# referrer_policy = "strict-origin-when-cross-origin"
+
 [limits]
 # usage-cap pricing (D-20): per-tenant caps enforced by capability engine
 default_monthly_operations = 100000
