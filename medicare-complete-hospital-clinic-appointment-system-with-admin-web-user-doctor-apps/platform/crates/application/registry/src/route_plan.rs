@@ -232,6 +232,25 @@ pub fn manifests_hash(root: &Path) -> Result<String, String> {
         hasher.update(raw.as_bytes());
         hasher.update(b"\0");
     }
+    // Wave 8 (B-24): the package index pins too — adding, re-pointing or
+    // editing an entry invalidates a cached route set, and an index that
+    // no longer parses (or an entry whose manifest vanished) refuses the
+    // hash instead of silently serving the old routes.
+    let index = crate::PackageIndex::load(root)?;
+    if let Ok(raw) = std::fs::read_to_string(crate::PackageIndex::packages_path(root)) {
+        hasher.update(b"packages.toml\0");
+        hasher.update(raw.as_bytes());
+        hasher.update(b"\0");
+    }
+    for entry in &index.package {
+        let path = crate::PackageIndex::entry_dir(root, entry).join("module.toml");
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|e| format!("package {}: {}: {e}", entry.name, path.display()))?;
+        hasher.update(entry.path.as_bytes());
+        hasher.update(b"\0package-manifest\0");
+        hasher.update(raw.as_bytes());
+        hasher.update(b"\0");
+    }
     // Wave 2: root route files participate in the cache pin too.
     for name in ["api.toml", "channels.toml", "console.toml", "web.toml"] {
         let path = root.join("routes").join(name);
@@ -382,6 +401,51 @@ constraints = [{ param = "id", kind = "number" }]
         std::fs::write(dir.join("routes").join("web.toml"), "# routes v2
 ").unwrap();
         assert_ne!(with_web, manifests_hash(&dir).unwrap());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn packages_participate_in_the_manifest_hash() {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "keel-pkghash-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("packages/billing")).unwrap();
+        let base = manifests_hash(&dir).unwrap();
+
+        // Creating the index changes the pin (B-24: a cached route set
+        // never survives a package registration). The manifest ships with
+        // the index — an entry whose manifest is missing fails the hash
+        // (fail-closed, asserted below).
+        std::fs::write(
+            dir.join("packages/billing").join("module.toml"),
+            "[module]\nname = \"billing\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let index_raw = "[[package]]\nname = \"billing\"\nversion = \"0.1.0\"\npath = \"packages/billing\"\n";
+        std::fs::write(dir.join("packages.toml"), index_raw).unwrap();
+        let with_index = manifests_hash(&dir).unwrap();
+        assert_ne!(base, with_index);
+
+        // Manifest content drift invalidates the cache too.
+        std::fs::write(
+            dir.join("packages/billing").join("module.toml"),
+            "[module]\nname = \"billing\"\nversion = \"0.1.1\"\n",
+        )
+        .unwrap();
+        let with_manifest = manifests_hash(&dir).unwrap();
+        assert_ne!(with_index, with_manifest);
+        assert_eq!(with_manifest, manifests_hash(&dir).unwrap());
+
+        // An index entry whose manifest vanished refuses the hash
+        // (fail-closed — never a silent stale-serve).
+        std::fs::remove_file(dir.join("packages/billing").join("module.toml")).unwrap();
+        let err = manifests_hash(&dir).unwrap_err();
+        assert!(err.contains("package billing"), "{err}");
 
         std::fs::remove_dir_all(&dir).ok();
     }

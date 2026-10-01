@@ -80,6 +80,17 @@ enum Cmd {
     Graph,
     /// List registered modules.
     Modules,
+    /// Wave 8 B-24: show the packages.toml index with per-entry manifest +
+    /// ABI compatibility (fail-closed exit when any entry is unusable).
+    #[command(name = "pkg:list")]
+    PkgList,
+    /// Wave 8 B-24: validate a package manifest (module.toml) and append it
+    /// to packages.toml so graph compile merges it.
+    #[command(name = "pkg:add")]
+    PkgAdd {
+        /// Package directory containing module.toml (root-relative or absolute).
+        path: String,
+    },
     /// List all declared routes (duplicate check is in the graph gate).
     #[command(name = "route:list")]
     RouteList {
@@ -551,6 +562,8 @@ fn main() -> ExitCode {
         Cmd::MakeMigration { name } => make_migration(&name),
         Cmd::Graph => graph_report(),
         Cmd::Modules => modules_list(),
+        Cmd::PkgList => pkg_list(),
+        Cmd::PkgAdd { path } => pkg_add(&path),
         Cmd::RouteList {
             format,
             name,
@@ -1067,6 +1080,14 @@ fn discover_manifests(root: &Path) -> anyhow::Result<Vec<keel_registry::ModuleMa
             }
         }
     }
+    // Wave 8 B-24: indexed packages (root packages.toml) merge into the
+    // same fail-closed compile as applications/ and modules/.
+    out.extend(
+        keel_registry::PackageIndex::load(root)
+            .map_err(anyhow::Error::msg)?
+            .manifests(root)
+            .map_err(anyhow::Error::msg)?,
+    );
     out.extend(discover_route_files(root)?);
     out.sort_by(|a, b| a.name().cmp(b.name()));
     Ok(out)
@@ -1154,6 +1175,135 @@ fn modules_list() -> anyhow::Result<ExitCode> {
     if graph.modules.is_empty() {
         println!("  (none)");
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+// --------------------------------------------------------------- packages
+
+fn pkg_list() -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    pkg_list_at(&root)
+}
+
+/// `keel pkg:list` — every indexed package with its manifest + ABI status.
+/// Fail-closed: any unusable entry (missing/malformed manifest, ABI
+/// mismatch) exits non-zero so CI can gate on it, while still printing the
+/// full index for diagnosis.
+fn pkg_list_at(root: &Path) -> anyhow::Result<ExitCode> {
+    let index =
+        keel_registry::PackageIndex::load(root).map_err(|e| anyhow::anyhow!("{}", e))?;
+    if index.package.is_empty() {
+        println!("  (no packages - keel pkg:add <path> to register one)");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let mut broken = false;
+    for entry in &index.package {
+        match index.entry_manifest(root, entry) {
+            Ok(manifest) => {
+                let compatible = manifest.module.api == keel_registry::MODULE_ABI;
+                if !compatible {
+                    broken = true;
+                }
+                println!(
+                    "  {:<24} v{:<10} path={:<28} abi={} {}",
+                    entry.name,
+                    entry.version,
+                    entry.path,
+                    manifest.module.api,
+                    if compatible {
+                        "compatible"
+                    } else {
+                        "INCOMPATIBLE (keel graph refuses it)"
+                    }
+                );
+            }
+            Err(err) => {
+                broken = true;
+                println!(
+                    "  {:<24} v{:<10} path={:<28} invalid: {err}",
+                    entry.name, entry.version, entry.path
+                );
+            }
+        }
+    }
+    println!(
+        "packages: {} indexed ({})",
+        index.package.len(),
+        if broken {
+            "NOT graph-ready"
+        } else {
+            "graph-ready"
+        }
+    );
+    Ok(if broken {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+fn pkg_add(path: &str) -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    pkg_add_at(&root, path)
+}
+
+/// `keel pkg:add <path>` — validate the package's `module.toml` (the
+/// package v1 contract) and append it to `packages.toml`. Duplicates are
+/// refused by name and by resolved directory; an ABI mismatch only warns
+/// (the index records what exists — `keel pkg:list` and graph compile are
+/// the fail-closed gates).
+fn pkg_add_at(root: &Path, path: &str) -> anyhow::Result<ExitCode> {
+    let requested = std::path::Path::new(path);
+    let dir = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        root.join(requested)
+    };
+    let manifest_path = dir.join("module.toml");
+    if !manifest_path.exists() {
+        anyhow::bail!(
+            "no module.toml at {} - a package v1 ships a manifest",
+            manifest_path.display()
+        );
+    }
+    let raw = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| anyhow::anyhow!("{}: {e}", manifest_path.display()))?;
+    let manifest = keel_registry::ModuleManifest::from_toml(&raw)
+        .map_err(|v| anyhow::anyhow!("{}: {}", manifest_path.display(), v.message))?;
+    let mut index =
+        keel_registry::PackageIndex::load(root).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let name = manifest.name().to_string();
+    if index.contains_name(&name) {
+        anyhow::bail!("package {name} is already indexed (keel pkg:list)");
+    }
+    if index.contains_dir(root, &dir) {
+        anyhow::bail!("{} is already indexed under another name", dir.display());
+    }
+    // Root-relative paths keep the index portable across checkouts;
+    // paths outside the root stay absolute.
+    let stored = match dir.strip_prefix(root) {
+        Ok(rel) => rel.display().to_string(),
+        Err(_) => dir.display().to_string(),
+    };
+    index.append(keel_registry::PackageEntry {
+        name: name.clone(),
+        version: manifest.module.version.clone(),
+        path: stored.clone(),
+    });
+    index.save(root).map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!(
+        "package {name} v{} added -> {} (path={stored})",
+        manifest.module.version,
+        keel_registry::PackageIndex::packages_path(root).display()
+    );
+    if manifest.module.api != keel_registry::MODULE_ABI {
+        println!(
+            "warning: manifest api={} does not match host MODULE_ABI={} - keel graph will refuse it",
+            manifest.module.api,
+            keel_registry::MODULE_ABI
+        );
+    }
+    println!("keel graph merges it fail-closed; keel pkg:list shows ABI status");
     Ok(ExitCode::SUCCESS)
 }
 
@@ -5414,6 +5564,82 @@ middleware = ["ghost"]
         ));
         std::fs::create_dir_all(&dir).expect("temp root");
         dir
+    }
+
+    /// Wave 8 B-24: pkg:add validates the package's module.toml (the
+    /// package v1 contract) and appends a root-relative entry; duplicates
+    /// are refused by name; pkg:list reports ABI compatibility fail-closed
+    /// (any unusable entry exits non-zero).
+    #[test]
+    fn wave8_pkg_add_and_list_validate_the_index() {
+        let root = fresh_temp("pkg");
+
+        // No manifest -> refused (a package v1 ships a manifest).
+        std::fs::create_dir_all(root.join("vendor").join("nope")).unwrap();
+        let err = pkg_add_at(&root, "vendor/nope").expect_err("manifest required");
+        assert!(err.to_string().contains("module.toml"), "{err}");
+
+        // Malformed manifest -> refused with the file in the message.
+        let broken = root.join("vendor").join("broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join("module.toml"), "[module\nname = ").unwrap();
+        let err = pkg_add_at(&root, "vendor/broken").expect_err("parse fails");
+        assert!(err.to_string().contains("module.toml"), "{err}");
+
+        // Valid package -> appended, version taken from the manifest, and
+        // the stored path resolves back to the package directory.
+        let pkg = root.join("vendor").join("billing");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            pkg.join("module.toml"),
+            "[module]\nname = \"billing\"\nversion = \"0.3.0\"\n",
+        )
+        .unwrap();
+        pkg_add_at(&root, "vendor/billing").expect("adds");
+        let index = keel_registry::PackageIndex::load(&root).expect("index written");
+        assert_eq!(index.package.len(), 1);
+        assert_eq!(index.package[0].name, "billing");
+        assert_eq!(index.package[0].version, "0.3.0");
+        assert_eq!(
+            keel_registry::PackageIndex::entry_dir(&root, &index.package[0]),
+            pkg,
+            "stored path resolves back to the package directory"
+        );
+
+        // Duplicate name (a second directory declaring the same package)
+        // -> refused.
+        let twin = root.join("vendor").join("twin");
+        std::fs::create_dir_all(&twin).unwrap();
+        std::fs::write(
+            twin.join("module.toml"),
+            "[module]\nname = \"billing\"\nversion = \"0.3.1\"\n",
+        )
+        .unwrap();
+        let err = pkg_add_at(&root, "vendor/twin").expect_err("duplicate name");
+        assert!(err.to_string().contains("already indexed"), "{err}");
+
+        // Compatible index -> graph-ready (SUCCESS).
+        assert_eq!(pkg_list_at(&root).unwrap(), ExitCode::SUCCESS);
+
+        // ABI mismatch (manifest api 2 vs host MODULE_ABI 1) -> NOT
+        // graph-ready (FAILURE) while the entry still lists.
+        std::fs::write(
+            pkg.join("module.toml"),
+            "[module]\nname = \"billing\"\nversion = \"0.3.0\"\napi = 2\n",
+        )
+        .unwrap();
+        assert_eq!(pkg_list_at(&root).unwrap(), ExitCode::FAILURE);
+
+        // Missing manifest -> invalid entry, still fail-closed.
+        std::fs::remove_file(pkg.join("module.toml")).unwrap();
+        assert_eq!(pkg_list_at(&root).unwrap(), ExitCode::FAILURE);
+
+        // Empty index lists cleanly.
+        let empty = fresh_temp("pkg-empty");
+        assert_eq!(pkg_list_at(&empty).unwrap(), ExitCode::SUCCESS);
+
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&empty).ok();
     }
 
     /// Wave 5 Phase 6: storage:link points public/storage at the local disk

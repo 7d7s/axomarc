@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 pub mod config_cache;
 pub mod constraint;
 pub mod middleware_catalog;
+pub mod packages;
 pub mod route_plan;
 
 pub use constraint::{
@@ -24,6 +25,7 @@ pub use config_cache::{
     config_cache_check, config_cache_path, config_hash, ConfigCacheArtifact, CONFIG_CACHE_ABI,
     CONFIG_CACHE_CODE,
 };
+pub use packages::{PackageEntry, PackageIndex, PACKAGES_FILE};
 pub use route_plan::{
     manifests_hash, resolve_route_plans, route_cache_path, RouteCacheArtifact, RoutePlan,
 };
@@ -638,6 +640,13 @@ pub struct ModuleManifest {
     /// [`MODULE_ABI`].
     #[serde(default)]
     pub url: UrlSection,
+    /// Boot config defaults (Wave 8 B-24): a `[config]` TOML table a
+    /// package ships with its manifest; merged UNDER the app config file
+    /// at boot (file wins per key) for packages listed in the root
+    /// `packages.toml` index. Additive — absent section keeps
+    /// [`MODULE_ABI`].
+    #[serde(default)]
+    pub config: Option<toml::Value>,
 }
 
 /// `[url]` manifest section (Wave 2): default parameter values for URL
@@ -743,6 +752,9 @@ impl RouteFileManifest {
             // Root route files generate URLs for their own routes only;
             // module `[url] defaults` never leaks across the file boundary.
             url: UrlSection::default(),
+            // Root route files ship no boot config defaults; only indexed
+            // packages feed `[config]` into the boot merge (Wave 8 B-24).
+            config: None,
         }
     }
 }

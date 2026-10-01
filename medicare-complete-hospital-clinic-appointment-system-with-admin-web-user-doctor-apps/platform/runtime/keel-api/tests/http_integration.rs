@@ -744,6 +744,83 @@ async fn malformed_json_body_is_422_envelope() {
     assert_eq!(res.error_code(), "KER_VALIDATION");
 }
 
+/// Wave 8 B-24: a manifest-only package indexed in `packages.toml` merges
+/// into graph compile and its route is served over HTTP (an auth refusal,
+/// not a 404 miss); an ABI mismatch in the package manifest refuses the
+/// same compile fail-closed — the boot path never registers it.
+#[tokio::test]
+async fn package_routes_serve_over_http_and_abi_mismatch_refuses_boot() {
+    let dir = std::env::temp_dir().join(format!("keel-api-pkg-{}", uuid::Uuid::now_v7()));
+    std::fs::create_dir_all(dir.join("packages").join("billing")).unwrap();
+
+    // Manifest-only package: it declares its own capability + route (the
+    // package v1 contract; linked crates register the operation handler).
+    let manifest_v1 = "[module]\nname = \"billing\"\nversion = \"0.1.0\"\n\n\
+        [capabilities]\n\"invoice\" = { profile = \"READ\" }\n\n\
+        [[routes]]\nmethod = \"GET\"\npath = \"/api/v1/billing/invoice\"\noperation = \"invoice\"\n";
+    std::fs::write(
+        dir.join("packages").join("billing").join("module.toml"),
+        manifest_v1,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages.toml"),
+        "[[package]]\nname = \"billing\"\nversion = \"0.1.0\"\npath = \"packages/billing\"\n",
+    )
+    .unwrap();
+
+    // Discovery merges the indexed manifest; the graph compiles with the
+    // package's operation and route registered.
+    let manifests = keel_api::graph_routes::discover_manifests(&dir).expect("discovers");
+    assert!(manifests.iter().any(|m| m.name() == "billing"));
+    let graph = keel_registry::PlatformGraph::compile(manifests).expect("graph compiles");
+    assert!(
+        graph.operations.contains_key("billing.invoice"),
+        "the package operation registers: {:?}",
+        graph.operations.keys()
+    );
+    let billing = graph
+        .modules
+        .iter()
+        .find(|m| m.name() == "billing")
+        .expect("package module in graph");
+    assert!(billing
+        .routes
+        .iter()
+        .any(|r| r.path == "/api/v1/billing/invoice"));
+
+    // The route answers over HTTP: anonymous callers hit the 401 envelope
+    // (the package route is not public), never the 404 route miss.
+    let (state, _, _) = keel_api::build_app_state(&dir, true, true);
+    let router = keel_api::graph_routes::graph_router(state, &graph);
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/api/v1/billing/invoice")
+        .body(Body::empty())
+        .unwrap();
+    let res = router.oneshot(req).await.expect("request serves");
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+
+    // The same package rewritten against another module ABI refuses the
+    // compile (fail-closed), naming the package in the violation.
+    std::fs::write(
+        dir.join("packages").join("billing").join("module.toml"),
+        manifest_v1.replace("version = \"0.1.0\"", "version = \"0.1.0\"\napi = 2"),
+    )
+    .unwrap();
+    let manifests = keel_api::graph_routes::discover_manifests(&dir).expect("still discovers");
+    let violations = keel_registry::PlatformGraph::compile(manifests)
+        .expect_err("ABI mismatch refuses the compile");
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.code == "GRAPH-MANIFEST-ABI" && v.message.contains("billing")),
+        "{violations:?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 // ------------------------------------------------------------------ uploads
 
 fn multipart_request(

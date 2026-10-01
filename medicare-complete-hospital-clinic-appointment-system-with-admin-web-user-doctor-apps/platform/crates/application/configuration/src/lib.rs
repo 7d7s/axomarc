@@ -1,10 +1,13 @@
 //! # keel-config
 //! Typed configuration with deterministic layering (11-SPEC §19):
-//! `defaults <- config file <- .env <- .env.<env> <- environment` (item 18).
-//! Secrets are asserted at boot and are never silently defaulted outside dev.
+//! `package [config] <- defaults <- config file <- .env <- .env.<env> <-
+//! environment` (item 18). Indexed packages (`packages.toml`, Wave 8 B-24)
+//! contribute `[config]` manifest defaults UNDER the config file. Secrets
+//! are asserted at boot and are never silently defaulted outside dev.
 
 pub mod dotenv;
 pub mod keys;
+mod package_defaults;
 
 use keel_foundation::AppError;
 use serde::{Deserialize, Serialize};
@@ -874,9 +877,12 @@ pub fn schema_violations(raw: &str) -> Vec<ConfigSchemaViolation> {
 }
 
 impl PlatformConfig {
-    /// Layered load: defaults <- file <- .env <- .env.<env> <- environment.
-    /// .env files only fill variables that are not already set, so the real
-    /// environment always wins (item 18).
+    /// Layered load: package `[config]` defaults <- defaults <- file <-
+    /// .env <- .env.<env> <- environment. `.env` files only fill variables
+    /// that are not already set, so the real environment always wins
+    /// (item 18). Package defaults come from every package in the root
+    /// `packages.toml` index and fill only keys the config file omits
+    /// (Wave 8 B-24).
     pub fn load(path: Option<&std::path::Path>) -> Result<Self, AppError> {
         if let Some(p) = path {
             dotenv::load_dotenv(&dotenv::config_dir_of(p))?;
@@ -886,6 +892,10 @@ impl PlatformConfig {
                 let raw = std::fs::read_to_string(p).map_err(|e| {
                     AppError::validation(format!("config read {}: {e}", p.display()))
                 })?;
+                // Wave 8 B-24: indexed packages may ship `[config]`
+                // defaults in their manifest; they merge UNDER this file
+                // before schema validation (the file always wins).
+                let raw = package_defaults::apply(p, raw)?;
                 // Wave 4 Phase 5 (GRAPH-CONFIG-SCHEMA): unknown keys are
                 // refused here, fail-closed, before any typed accessor could
                 // silently ignore them. Every offender is reported (collect-
@@ -1170,6 +1180,103 @@ mod tests {
         assert_eq!(cfg.app.env, Environment::Dev);
         assert_eq!(cfg.database.as_ref().unwrap().max_connections, 8);
         assert_eq!(cfg.otp.provider, "msg91");
+    }
+
+    /// Wave 8 B-24: indexed packages may ship `[config]` defaults in their
+    /// manifest; they merge UNDER the config file at boot (the file wins
+    /// per key, the FIRST indexed package wins among packages, absent keys
+    /// fill in).
+    #[test]
+    fn package_config_defaults_merge_under_the_file() {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "keel-pkgcfg-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("config")).unwrap();
+
+        // Two indexed packages both set limits: the first index entry wins.
+        let billing = root.join("packages").join("billing");
+        std::fs::create_dir_all(&billing).unwrap();
+        std::fs::write(
+            billing.join("module.toml"),
+            "[module]\nname = \"billing\"\nversion = \"0.3.0\"\n\n\
+             [config.app]\nname = \"from-package\"\n\n\
+             [config.limits]\ndefault_monthly_operations = 7\n",
+        )
+        .unwrap();
+        let tax = root.join("packages").join("tax");
+        std::fs::create_dir_all(&tax).unwrap();
+        std::fs::write(
+            tax.join("module.toml"),
+            "[module]\nname = \"tax\"\nversion = \"0.1.0\"\n\n\
+             [config.limits]\ndefault_monthly_operations = 99\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("packages.toml"),
+            "[[package]]\nname = \"billing\"\nversion = \"0.3.0\"\npath = \"packages/billing\"\n\n\
+             [[package]]\nname = \"tax\"\nversion = \"0.1.0\"\npath = \"packages/tax\"\n",
+        )
+        .unwrap();
+
+        // File omits app.name -> the package default fills in.
+        let config_path = root.join("config").join("test.toml");
+        std::fs::write(&config_path, "[app]\nenv = \"test\"\n").unwrap();
+        let cfg = PlatformConfig::load(Some(&config_path)).expect("loads");
+        assert_eq!(cfg.app.name, "from-package");
+        assert_eq!(cfg.app.env, Environment::Test);
+        assert_eq!(
+            cfg.limits.default_monthly_operations, 7,
+            "first indexed package wins among conflicting defaults"
+        );
+
+        // The file's value wins over the package default for the same key.
+        std::fs::write(&config_path, "[app]\nenv = \"test\"\nname = \"host-app\"\n").unwrap();
+        let cfg = PlatformConfig::load(Some(&config_path)).expect("loads");
+        assert_eq!(cfg.app.name, "host-app");
+        assert_eq!(cfg.limits.default_monthly_operations, 7);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Wave 8 B-24: package defaults are schema-checked on their own — a
+    /// package never smuggles an unknown key past GRAPH-CONFIG-SCHEMA, and
+    /// the error names the package instead of blaming the app's config file.
+    #[test]
+    fn package_config_defaults_fail_closed_on_unknown_keys() {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "keel-pkgcfg-bad-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("config")).unwrap();
+        let pkg = root.join("packages").join("billing");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            pkg.join("module.toml"),
+            "[module]\nname = \"billing\"\nversion = \"0.3.0\"\n\n\
+             [config.bogus_section]\nx = 1\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("packages.toml"),
+            "[[package]]\nname = \"billing\"\nversion = \"0.3.0\"\npath = \"packages/billing\"\n",
+        )
+        .unwrap();
+
+        let config_path = root.join("config").join("test.toml");
+        std::fs::write(&config_path, "[app]\nenv = \"test\"\n").unwrap();
+        let err = PlatformConfig::load(Some(&config_path)).expect_err("unknown key refused");
+        let msg = err.to_string();
+        assert!(msg.contains("GRAPH-CONFIG-SCHEMA"), "{msg}");
+        assert!(msg.contains("package billing"), "{msg}");
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

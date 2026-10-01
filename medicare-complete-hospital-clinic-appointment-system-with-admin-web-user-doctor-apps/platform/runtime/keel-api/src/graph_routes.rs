@@ -50,7 +50,10 @@ use crate::routes::AppState;
 // ------------------------------------------------------------- graph compile
 
 /// Discover module manifests under applications/ and modules/ (same layout
-/// keel graph uses in tools/keel-console).
+/// keel graph uses in tools/keel-console), plus every package indexed by the
+/// root `packages.toml` (Wave 8 B-24). An entry whose manifest is missing or
+/// malformed refuses discovery (fail-closed) — packages never silently
+/// disappear from the graph.
 pub fn discover_manifests(root: &Path) -> Result<Vec<ModuleManifest>, String> {
     let mut out = Vec::new();
     for base in ["applications", "modules"] {
@@ -69,6 +72,7 @@ pub fn discover_manifests(root: &Path) -> Result<Vec<ModuleManifest>, String> {
             }
         }
     }
+    out.extend(keel_registry::PackageIndex::load(root)?.manifests(root)?);
     out.extend(discover_route_files(root)?);
     out.sort_by(|a, b| a.name().cmp(b.name()));
     Ok(out)
@@ -2053,6 +2057,40 @@ operation = "index"
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "{ not json").unwrap();
         assert!(route_cache_check(&dir).is_err(), "corrupt artifact is a boot error");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn package_discovery_merges_indexed_manifests_and_fails_closed() {
+        let dir = manifest_dir("pkgdisc");
+        // No index: applications only.
+        let found = discover_manifests(&dir).expect("discovers");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name(), "alpha");
+
+        // Index a package manifest -> merged into the same fail-closed
+        // discovery that feeds graph compile (Wave 8 B-24).
+        std::fs::create_dir_all(dir.join("packages").join("billing")).unwrap();
+        std::fs::write(
+            dir.join("packages").join("billing").join("module.toml"),
+            "[module]\nname = \"billing\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("packages.toml"),
+            "[[package]]\nname = \"billing\"\nversion = \"0.1.0\"\npath = \"packages/billing\"\n",
+        )
+        .unwrap();
+        let found = discover_manifests(&dir).expect("discovers packages");
+        let names: Vec<&str> = found.iter().map(|m| m.name()).collect();
+        assert_eq!(names, vec!["alpha", "billing"]);
+
+        // A missing package manifest refuses discovery — packages never
+        // silently vanish from the graph.
+        std::fs::remove_file(dir.join("packages").join("billing").join("module.toml")).unwrap();
+        let err = discover_manifests(&dir).expect_err("missing manifest refuses");
+        assert!(err.contains("package billing"), "{err}");
+
         std::fs::remove_dir_all(&dir).ok();
     }
 

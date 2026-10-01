@@ -184,13 +184,15 @@ Laravel’s `route:cache` / `config:cache` exist because PHP re-parses routing a
 every request. Keel’s runtime model keeps both off the request path, and Wave 1 adds an optional,
 hash-pinned route artifact for deployments:
 
-- **Routing.** Module manifests (`applications/*/module.toml`) are compiled into the
+- **Routing.** Module manifests (`applications/*/module.toml` plus every package indexed by the
+  root `packages.toml`) are compiled into the
   `PlatformGraph` once at boot — the same compile path used by `keel check`, `keel graph` and the
   architecture gates. The graph is then registered into the axum router in one pass. Per-request
   dispatch reads the compiled router only; no manifest parsing ever happens on the request path.
   Since Wave 1, `keel route:cache` additionally writes `storage/framework/routes.json` — every
   route’s resolved dispatch plan (middleware chain, bindings, validators, flags) pinned to a
-  SHA-256 content hash over all `module.toml` manifests + `middleware.toml` + `MODULE_ABI`.
+  SHA-256 content hash over all `module.toml` manifests + `packages.toml` + indexed package
+  manifests + `middleware.toml` + `MODULE_ABI`.
   Boot semantics are strictly stricter than Laravel: the graph always recompiles; an absent
   artifact falls back to live compilation; a present artifact with a matching hash registers
   routes from the plan list; a stale or corrupt artifact refuses boot with a pointer to re-run

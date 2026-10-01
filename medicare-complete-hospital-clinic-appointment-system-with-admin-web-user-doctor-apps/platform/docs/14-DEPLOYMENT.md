@@ -18,7 +18,10 @@ release.
 
 ## Configuration
 
-Layered: `defaults <- config/<env>.toml <- .env <- environment variables`. Parsed, validated
+Layered: `defaults <- package [config] <- config/<env>.toml <- .env <- environment variables`.
+The package layer (Wave 8, B-24) is the `[config]` table of every package indexed by the root
+`packages.toml` — it fills keys the config file omits, never overrides them, and is schema-checked
+on its own before merging. Parsed, validated
 (secrets asserted — production refuses silent defaults), normalized, then **frozen at boot** as an
 immutable `Arc<PlatformConfig>`. Environments: development, test, staging, production (+ benchmark,
 migration, worker postures).

@@ -40,6 +40,7 @@ belongs" and then discover "this is safer and more powerful."
 | `Str::plural` / `Str::singular` | `plural` / `singular` — documented English inflection subset | `crates/foundation/core` |
 | `Number::currency/percentage/precision/clamp` | Number helpers: `format_currency`, `format_percent`, `format_precision`, `clamp` (locale rules from the Wave 6 identities: en/fr/ar primary subtag, en fallback; curated ISO symbol + minor-unit tables) | `crates/foundation/core` |
 | `Carbon` (parse/format/timezone/now) | Date helpers: `parse_date_with` / `format_date_with` (closed `Y m d H i s` set — the `date_format` rule delegates here), `now_in` / `in_tz` / `local_wall` over the bundled IANA table | `crates/foundation/core` |
+| Composer package discovery | Package registry: root `packages.toml` index (`[[package]] { name, version, path }`), `keel pkg:list` / `keel pkg:add`, graph compile merges every indexed package's `module.toml` fail-closed (ABI-gated) | `crates/application/registry` |
 
 ## Per-concept detail
 
@@ -121,6 +122,16 @@ converting in the wrong zone; the `datetime:<tz>` model cast feeds on them (UTC 
 zone-local reads) while bare `datetime` is unchanged. Migration: drop the class prefix;
 formats are strings in both worlds, wall-clock parses land as UTC instants (convert with
 `in_tz` when a zone applies).
+
+### Composer package discovery -> packages.toml registry
+Same instinct: a third-party package registers its routes/config without framework edits.
+Difference: discovery is **compile-time**, not runtime — the root `packages.toml` index lists
+local-path packages, `keel pkg:add <path>` validates the package's `module.toml` and appends it,
+`keel pkg:list` shows manifest + ABI compatibility, and graph compile merges the manifest through
+the same fail-closed gates as your own modules (an unusable entry refuses `keel check`/boot).
+Packages may ship `[config]` defaults that merge UNDER your config file at boot. Migration:
+replace `composer require` + provider auto-discovery with copying the package in, `keel pkg:add`,
+and a workspace member for its crate; v1 is local-path only (git fetch is out — zero-dep rule).
 
 ## Migration strategy, step by step
 

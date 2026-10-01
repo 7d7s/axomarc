@@ -44,8 +44,28 @@ api = 1            # optional; defaults to the current MODULE_ABI
   dependencies, plane/maturity metadata) and the `ModuleProvider` surface registered against
   registry carriers. Additive manifest fields and new carriers are non-breaking; changing or
   removing existing semantics is an ABI bump with a migration window.
-- Discovery and a package registry remain post-v1 (frozen D-69): third-party modules compile into
-  the workspace today. The ABI gate is the seam that keeps them stable once a loader exists.
+- Out-of-workspace runtime loading remains post-v1 (frozen D-69): third-party modules compile
+  into the workspace today. The ABI gate is the seam that keeps them stable once a loader exists.
+
+## Package registry (B-24, Wave 8)
+
+Local-path package discovery ships in v1:
+
+- The root `packages.toml` index lists `[[package]] { name, version, path }` entries (relative
+  paths resolve against the workspace root; absolute paths work too). v1 is local-path only —
+  git fetch stays out under the zero-dependency rule.
+- `keel pkg:add <path>` validates the package's `module.toml` (the package v1 contract:
+  a manifest + an optional workspace crate member) and appends it; `keel pkg:list` prints the
+  index with each manifest's ABI status and fails when any entry is unusable.
+- Graph compile (`keel check` / `keel graph` / boot) merges every indexed package's manifest
+  into the same fail-closed pass as `applications/` and `modules/`: a missing or malformed
+  manifest refuses discovery, `GRAPH-MANIFEST-ABI` rejects an incompatible `api`, and the route
+  cache pin covers `packages.toml` + indexed manifests (drift = boot refusal, never a silent
+  stale route set).
+- Manifest-only packages may declare routes for operations their linked workspace crate
+  registers, and may ship a `[config]` table whose defaults merge UNDER the app config file at
+  boot (file wins per key; first indexed package wins among packages; schema-checked on their
+  own so a package never smuggles an unknown key past `GRAPH-CONFIG-SCHEMA`).
 
 ## Plugin roadmap (D-69)
 

@@ -18,8 +18,10 @@ against the same workspace/config the runtime uses.
 |---|---|
 | `keel graph` | compile the platform graph from all `module.toml` |
 | `keel modules` | registered modules (version, maturity, plane, capability count) |
+| `keel pkg:list` | the root `packages.toml` index with each entry's manifest + ABI compatibility; exits non-zero when any entry is unusable (Wave 8, B-24) |
+| `keel pkg:add <path>` | validate the package's `module.toml` (the package v1 contract) and append it to `packages.toml` (stored root-relative; duplicates refused) (Wave 8, B-24) |
 | `keel route:list [--format table\|json] [--name F] [--path F] [--plane api\|web]` | declared routes with plane/group/version/deprecation columns; `--name`/`--path` are case-insensitive substring filters, `--plane` validates `api`/`web` (Wave 2) |
-| `keel route:cache` | write the pinned route artifact (Wave 1): resolved per-route middleware chains, bindings and validators → `storage/framework/routes.json`, hash-pinned to all `module.toml` + `middleware.toml` + `MODULE_ABI`; boot refuses a stale artifact |
+| `keel route:cache` | write the pinned route artifact (Wave 1): resolved per-route middleware chains, bindings and validators → `storage/framework/routes.json`, hash-pinned to `module.toml` + `packages.toml` + indexed package manifests + `middleware.toml` + `MODULE_ABI`; boot refuses a stale artifact |
 | `keel route:clear` | delete the route artifact; boot falls back to live compilation |
 | `keel event:list` | declared events |
 | `keel capabilities` | capability catalog |

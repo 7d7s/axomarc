@@ -1311,6 +1311,7 @@ name = "keel-config"
 version = "0.1.0"
 dependencies = [
  "keel-foundation",
+ "keel-registry",
  "rand 0.8.7",
  "serde",
  "serde_json",
@@ -1912,6 +1913,7 @@ dependencies = [
  "keel-jobs",
  "keel-models",
  "keel-notifications",
+ "keel-registry",
  "keel-scheduling",
  "keel-search",
  "keel-session",

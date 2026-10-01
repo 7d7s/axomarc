@@ -358,3 +358,42 @@ fn wave8_number_and_date_helpers_surface() {
     assert!(now_in("UTC").is_some());
     assert_eq!(timezone_offset_secs("Asia/Kolkata"), Some(19_800));
 }
+
+/// Wave 8 P3 (docs/19 "B-24 package registry"): the package-index surface
+/// is re-exported from `keel-registry` and callable from outside the crate
+/// (load/append/save/entry resolution over the root `packages.toml`).
+#[test]
+fn wave8_package_index_surface() {
+    use keel_registry::{PackageEntry, PackageIndex, PACKAGES_FILE};
+
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let root = std::env::temp_dir().join(format!(
+        "keel-testkit-pkg-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("temp root");
+
+    // Absent index loads empty (the normal posture for a fresh project).
+    let mut index = PackageIndex::load(&root).expect("absent index is empty");
+    assert!(index.package.is_empty());
+
+    // append + save + reload round-trips, and the entry resolves
+    // root-relative to its package directory.
+    index.append(PackageEntry {
+        name: "billing".into(),
+        version: "0.1.0".into(),
+        path: "packages/billing".into(),
+    });
+    index.save(&root).expect("index writes");
+    assert!(root.join(PACKAGES_FILE).exists());
+    let reloaded = PackageIndex::load(&root).expect("index parses");
+    assert_eq!(reloaded.package.len(), 1);
+    assert_eq!(
+        PackageIndex::entry_dir(&root, &reloaded.package[0]),
+        root.join("packages/billing")
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}

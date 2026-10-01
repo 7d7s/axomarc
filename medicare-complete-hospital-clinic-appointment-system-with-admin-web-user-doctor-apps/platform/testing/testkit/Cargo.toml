@@ -11,6 +11,7 @@ keywords.workspace = true
 
 [dependencies]
 keel-foundation = { workspace = true }
+keel-registry = { workspace = true }
 keel-execution = { workspace = true }
 keel-jobs = { workspace = true }
 keel-event = { workspace = true }
