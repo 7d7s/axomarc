@@ -2,6 +2,7 @@
 //! and side-effect assertions.
 
 use axum::extract::Request;
+use axum::http::{header, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::json;
@@ -206,4 +207,27 @@ fn http_fake_assert_no_pending_panics_with_unconsumed_response() {
         body: Vec::new(),
     });
     fake.assert_no_pending();
+}
+
+// ------------------------------------------------------------- Wave 7 P2
+
+#[tokio::test]
+async fn wave7_response_assertion_matrix_surface() {
+    let app = TestApp::new(
+        Router::new()
+            .route("/ping", get(ping))
+            .route(
+                "/go",
+                get(|| async { ([(header::LOCATION, "/next")], StatusCode::SEE_OTHER) }),
+            )
+            .route("/page", get(|| async { "<p>Tom &amp; Jerry</p>" })),
+    );
+
+    app.get("/go").send().await
+        .assert_redirect("/next")
+        .assert_redirect("/n");
+    app.get("/page").send().await
+        .assert_html_contains("Tom &amp; Jerry")
+        .assert_see("Tom & Jerry");
+    app.get("/ping").send().await.assert_json_path("pong", json!(true));
 }

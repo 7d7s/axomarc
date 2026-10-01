@@ -73,6 +73,24 @@ pub type HookHandler = dyn Fn(&mut Value) + Send + Sync;
 /// Wired by Wave 8 package discovery; absent hook = namespaces fail closed.
 pub type ResolverFn = dyn Fn(&str, &str) -> Option<PathBuf> + Send + Sync;
 
+// ------------------------------------------------------- observation seam
+
+/// One top-level render: the view name plus the context handed to the
+/// renderer (view hooks already applied — this IS what the template got).
+#[derive(Debug, Clone)]
+pub struct ViewRender {
+    pub view: String,
+    pub context: Value,
+}
+
+/// Wave 7 P2 observation seam (mirrors `DispatchTap`/`HttpTap`): fires for
+/// every SUCCESSFUL top-level `render` (template resolved; a failed render
+/// records nothing). Testkit's `ViewRecorder` feeds
+/// `TestResponse::assert_view_has`.
+pub trait ViewTap: Send + Sync {
+    fn on_render(&self, render: &ViewRender);
+}
+
 // ------------------------------------------------------------------ config
 
 /// [views] config section shape (every key optional).
@@ -160,6 +178,7 @@ pub struct ViewsEngine {
     hooks: Mutex<BTreeMap<String, Vec<Arc<HookHandler>>>>,
     resolver: Mutex<Option<Arc<ResolverFn>>>,
     memo: Mutex<HashMap<String, Memo>>,
+    tap: Mutex<Option<Arc<dyn ViewTap>>>,
 }
 
 impl ViewsEngine {
@@ -171,6 +190,7 @@ impl ViewsEngine {
             hooks: Mutex::new(BTreeMap::new()),
             resolver: Mutex::new(None),
             memo: Mutex::new(HashMap::new()),
+            tap: Mutex::new(None),
         }
     }
 
@@ -222,6 +242,12 @@ impl ViewsEngine {
         F: Fn(&str, &str) -> Option<PathBuf> + Send + Sync + 'static,
     {
         *self.resolver.lock().unwrap() = Some(Arc::new(resolver));
+    }
+
+    /// Wave 7 P2: install the observation seam (testkit `ViewRecorder`).
+    /// Replaces any previous tap; renders without a tap are unaffected.
+    pub fn set_tap(&self, tap: Arc<dyn ViewTap>) {
+        *self.tap.lock().unwrap() = Some(tap);
     }
 
     pub(crate) fn directive(&self, name: &str) -> Option<Arc<DirectiveHandler>> {
@@ -391,12 +417,20 @@ impl ViewsEngine {
     // ------------------------------------------------------------ render
 
     /// Render one view with a JSON context. View hooks (composers) run
-    /// before rendering; "*" hooks run for every view.
+    /// before rendering; "*" hooks run for every view. A successful
+    /// template resolution fires the ViewTap (post-hook context) before the
+    /// renderer runs.
     pub fn render(&self, name: &str, mut context: Value) -> Result<String, ViewError> {
         for hook in self.hooks_for(name) {
             hook(&mut context);
         }
         let template = self.template(name)?;
+        if let Some(tap) = self.tap.lock().unwrap().clone() {
+            tap.on_render(&ViewRender {
+                view: name.to_string(),
+                context: context.clone(),
+            });
+        }
         let mut renderer = Renderer::new(self, context);
         renderer.render_template(&template, name)
     }

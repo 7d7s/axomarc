@@ -31,8 +31,8 @@ mod render;
 
 pub use ast::{AttrEntry, ForSpec, LoopVars, Node, Template};
 pub use engine::{
-    ConditionalHandler, DirectiveHandler, HookHandler, ResolverFn, ViewError, ViewsConfig,
-    ViewsEngine,
+    ConditionalHandler, DirectiveHandler, HookHandler, ResolverFn, ViewError, ViewRender, ViewTap,
+    ViewsConfig, ViewsEngine,
 };
 pub use expr::{
     html_escape, parse_cond, parse_echo, parse_operand_str, parse_path, to_display, CmpOp, Cond,

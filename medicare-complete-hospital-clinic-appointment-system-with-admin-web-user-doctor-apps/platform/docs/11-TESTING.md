@@ -7,6 +7,33 @@ control, factories, assertion macros.
 
 Boots a platform host behind the HTTP surface for request-level tests: build the app.
 
+**Assertion matrix (Wave 7 P2)** — every assert consumes and returns the response, and panics
+with the visible body/header/context on failure:
+
+- Web flow: `assert_redirect(location)` (exact or prefix), `assert_session_has(key)` /
+  `assert_session_missing(key)` (dot-paths; a guest response satisfies missing),
+  `assert_cookie(name, value = None)` (presence or exact), `assert_view_has(key)` (dot-path into
+  the context the response's LAST rendered view received).
+- Content: `assert_json_path("a.b", expected)` (objects; numeric segments index arrays),
+  `assert_html_contains(fragment)` (raw substring), `assert_see(text)` (the HTML-escaped form —
+  Blade `assertSee` parity; raw fragments belong in `assert_html_contains`).
+- Database: `assert_database_has(model, predicates)`, `assert_database_count(model, n)`,
+  `assert_database_missing(model, predicates)` — equality predicates ANDed, LIVE rows only
+  (soft deletes never count), probed through the ModelStore under the TestApp's tenant
+  (`tenant_scoped` models isolate per tenant).
+- Auth: `assert_authenticated_as(principal)`, `assert_guest`.
+- Existing `assert_status`/`assert_header`/`assert_json_eq`/`assert_json_contains` unchanged.
+
+Probes are opt-in `TestApp` builders (an unwired assert fails with the wiring hint):
+
+- `with_session(mw)` — the SAME `SessionMiddleware` wired as `mw.clone().apply(router)`; a
+  `keel_session` Set-Cookie on the response is authoritative (login issues, logout clears),
+  else the request cookie carries the session forward.
+- `with_views(recorder)` — a `ViewRecorder` also handed to `ViewsEngine::set_tap(...)`; `send()`
+  snapshots only this response's renders (a previous response's view never leaks in).
+- `with_models(store)` — the `Arc<dyn ModelStore>` the database asserts read; the tenant comes
+  from `.tenant(...)` (uuid) and is passed through to the store.
+
 ## Fakes (in-memory ports with asserts)
 
 - `QueueFake` (legacy alias `FakeQueue`) — durable queue semantics; `assert_enqueued(name)`,
