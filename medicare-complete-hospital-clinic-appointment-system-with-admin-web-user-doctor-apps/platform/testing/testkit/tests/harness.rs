@@ -312,3 +312,24 @@ fn wave7_test_infrastructure_surface() {
     let views = ViewRecorder::new();
     assert!(views.renders().is_empty());
 }
+
+/// Wave 8 (docs/19 "Helpers"): the Str/inflection helper surface is
+/// re-exported from `keel-foundation` — names and behavior callable from
+/// outside the crate, the same external-surface proof the Wave 7 infra
+/// smoke gives its exports.
+#[test]
+fn wave8_str_helpers_surface() {
+    use keel_foundation::{excerpt, plural, random, singular, to_title_case, ulid, uuid, words};
+
+    assert_eq!(to_title_case("hello_world"), "Hello World");
+    assert_eq!(words("one two three", 2, "..."), "one two...");
+    assert!(excerpt("the quick brown fox", "brown", 6, 4, 100).contains("brown"));
+    assert_eq!(plural("person"), "people");
+    assert_eq!(singular("people"), "person");
+    assert_eq!(plural("sheep"), "sheep");
+
+    let token = random(12);
+    assert_eq!(token.len(), 12);
+    assert_eq!(ulid().len(), 26);
+    assert_eq!(uuid().get_version(), Some(uuid::Version::Random));
+}

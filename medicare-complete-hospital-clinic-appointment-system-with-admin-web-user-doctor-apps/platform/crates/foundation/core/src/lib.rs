@@ -9,6 +9,7 @@ pub mod clock;
 pub mod delta;
 pub mod error;
 pub mod id;
+pub mod inflect;
 pub mod locale;
 pub mod money;
 pub mod plane;
@@ -23,10 +24,11 @@ pub use clock::{Clock, FixedClock, SystemClock};
 pub use delta::{DeltaKind, DeltaStone, StreamRef};
 pub use error::{codes, AppError, ErrorCategory, Retryability, Severity};
 pub use id::{
-    ActorId, AuditId, CorrelationId, CorrelationId as CausationIdAlias, DeltaId, EventId, ExecutionId,
-    IncidentId, LeaseId, MembershipId, OperationId, OutboxId, PrincipalId, RequestId, ScopeNodeId,
-    SpanId, StreamId, TenantId, TraceId,
+    ulid, uuid, ActorId, AuditId, CorrelationId, CorrelationId as CausationIdAlias, DeltaId, EventId,
+    ExecutionId, IncidentId, LeaseId, MembershipId, OperationId, OutboxId, PrincipalId, RequestId,
+    ScopeNodeId, SpanId, StreamId, TenantId, TraceId,
 };
+pub use inflect::{plural, singular};
 pub use locale::{Deadline, Locale, TimeZone};
 pub use money::MoneyCents;
 pub use plane::SecurityPlane;
@@ -36,7 +38,10 @@ pub use revision::{
     SchemaRevision, TenantRevision,
 };
 pub use secret::{open_for_key, Envelope, Sealer, Secret};
-pub use strings::{to_camel_case, to_kebab_case, to_slug, to_snake_case, to_studly_case};
+pub use strings::{
+    excerpt, random, to_camel_case, to_kebab_case, to_slug, to_snake_case, to_studly_case,
+    to_title_case, words,
+};
 pub use telemetry::{TelemetryContext, MAX_BAGGAGE_ENTRIES};
 pub use translate::{
     plural_bucket, trans_choice, translate, validate_locale, MessageCatalog, Translated,

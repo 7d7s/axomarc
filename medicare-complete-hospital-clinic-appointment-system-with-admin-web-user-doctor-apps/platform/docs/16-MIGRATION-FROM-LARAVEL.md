@@ -35,6 +35,9 @@ belongs" and then discover "this is safer and more powerful."
 | Blade | Not cloned — SPA-first (OpenAPI + your SPA toolchain); SSR revisited v2.0 | `keel sdk:openapi`, starter template |
 | Breeze / Jetstream | Starter template: `keel new --with-starter` | `templates/starter-template` |
 | Tinker | `keel shell` (B-29): typed REPL over the booted engine; dispatches through the engine under your principal, capability denial enforced | `runtime/keel-api --shell`, spawned by `tools/keel-console` |
+| `Str::slug/snake/camel/studly/title/words/excerpt/random` | String helpers: `to_slug`, `to_snake_case`, `to_camel_case`, `to_studly_case`, `to_title_case`, `words`, `excerpt`, `random` (CSPRNG alphanumeric) | `crates/foundation/core` |
+| `Str::uuid` / `Str::ulid` | `uuid()` (random v4) / `ulid()` (26-char Crockford base32) generators | `crates/foundation/core` |
+| `Str::plural` / `Str::singular` | `plural` / `singular` — documented English inflection subset | `crates/foundation/core` |
 
 ## Per-concept detail
 
@@ -83,6 +86,20 @@ mailables map to the mail adapter with templates.
 Same ports, stricter contracts: storage guards (size/type), cache locks with delete-if-equals,
 scheduler runs with worker ticks and list/run CLI. Migration: disk config moves to config TOML;
 cache calls move to the cache port; scheduled closures become registered schedules.
+
+### Str / helper functions -> keel-foundation helpers
+Same instinct: familiar names for casing, slugs, snippets, tokens and inflection — pure free
+functions in `keel-foundation`, no PHP runtime and no new dependencies. Difference: inflection
+is a **documented subset**, not a full English inflector — regular rules (`s/x/z/ch/sh -> es`,
+`consonant+y -> ies`, default `+s`, with their reversals stopping at `ss`/`us`/`is` stems) plus
+curated tables: irregulars (`person/people`, `child/children`, `knife/knives`, `potato/potatoes`,
+`matrix/matrices`, `quiz/quizzes`, `bus/buses`...) and uncountables (`sheep`, `series`,
+`information` never inflect). The tables are the extension point for anything outside the
+subset. `excerpt` windows by **character counts** (not locale delimiters) and matches
+case-sensitively; `title` normalizes `_`/`-`/camel boundaries to single spaces because Keel
+treats identifiers as words (Laravel's `ucwords` keeps the underscore — documented divergence).
+Migration: drop the `Str::` prefix for free functions — `Str::plural('person')` ->
+`plural("person")`, `Str::slug($s)` -> `to_slug($s)`, `Str::uuid()` -> `uuid()`.
 
 ## Migration strategy, step by step
 
