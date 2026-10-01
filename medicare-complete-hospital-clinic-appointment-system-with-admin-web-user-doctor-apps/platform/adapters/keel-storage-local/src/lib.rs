@@ -7,7 +7,7 @@
 use std::path::{Component, Path, PathBuf};
 
 use keel_foundation::AppError;
-use keel_storage::{ObjectRef, StoragePort};
+use keel_storage::{ObjectRef, ObjectWriter, StoragePort};
 
 /// Maximum object key length (defensive bound, not a storage limit).
 pub const MAX_KEY_LEN: usize = 1024;
@@ -249,6 +249,70 @@ impl StoragePort for LocalDisk {
             ))),
         }
     }
+
+    /// Wave 6 P10 (HTTP client sink): stream straight to the target file —
+    /// chunks are written as they arrive (a large download never buffers in
+    /// memory), and a session dropped before [`ObjectWriter::finish`]
+    /// removes the partial file, so an aborted download never publishes a
+    /// truncated object under the final key.
+    fn writer<'a>(
+        &'a self,
+        bucket: &str,
+        key: &str,
+    ) -> Result<Box<dyn ObjectWriter + 'a>, AppError> {
+        let path = self.resolve(bucket, key)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                AppError::persistence(format!("cannot create {}: {e}", parent.display()))
+            })?;
+        }
+        let file = std::fs::File::create(&path).map_err(|e| {
+            AppError::persistence(format!("cannot create {}: {e}", path.display()))
+        })?;
+        Ok(Box::new(FileWriter {
+            file,
+            path,
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            committed: false,
+        }))
+    }
+}
+
+/// Wave 6 P10: streaming write session for [`LocalDisk`]. Chunks land on
+/// the file immediately; `finish` commits the object, while a Drop without
+/// finish removes the partial (write failures abort the same way).
+struct FileWriter {
+    file: std::fs::File,
+    path: PathBuf,
+    bucket: String,
+    key: String,
+    committed: bool,
+}
+
+impl ObjectWriter for FileWriter {
+    fn write(&mut self, chunk: &[u8]) -> Result<(), AppError> {
+        use std::io::Write as _;
+        self.file.write_all(chunk).map_err(|e| {
+            AppError::persistence(format!("cannot write {}: {e}", self.path.display()))
+        })
+    }
+
+    fn finish(mut self: Box<Self>) -> Result<ObjectRef, AppError> {
+        self.committed = true;
+        Ok(ObjectRef {
+            bucket: std::mem::take(&mut self.bucket),
+            key: std::mem::take(&mut self.key),
+        })
+    }
+}
+
+impl Drop for FileWriter {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -386,6 +450,46 @@ mod tests {
         assert!(disk.list("../").is_err());
         assert!(disk.make_dir("a/../b").is_err());
         assert!(disk.delete_dir("/abs/").is_err());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Wave 6 P10: the streaming writer commits exactly the chunks that
+    /// were written, readable through the normal `get` path.
+    #[test]
+    fn writer_streams_chunks_and_finish_commits() {
+        let (disk, dir) = disk();
+        {
+            let mut writer = disk.writer("exports", "reports/big.bin").unwrap();
+            writer.write(b"a,b,c\n").unwrap();
+            writer.write(b"1,2,3\n").unwrap();
+            writer.write(b"4,5,6\n").unwrap();
+            let obj = writer.finish().unwrap();
+            assert_eq!(obj.bucket, "exports");
+            assert_eq!(obj.key, "reports/big.bin");
+        }
+        let obj = ObjectRef {
+            bucket: "exports".into(),
+            key: "reports/big.bin".into(),
+        };
+        assert_eq!(disk.get(&obj).unwrap(), b"a,b,c\n1,2,3\n4,5,6\n");
+        assert!(dir.join("exports/reports/big.bin").exists());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Wave 6 P10: a session dropped before `finish` removes the partial —
+    /// an aborted download never publishes a truncated object.
+    #[test]
+    fn aborted_writer_session_removes_the_partial_file() {
+        let (disk, dir) = disk();
+        {
+            let mut writer = disk.writer("exports", "half.bin").unwrap();
+            writer.write(b"partial").unwrap();
+            // Dropped without finish.
+        }
+        assert!(
+            !dir.join("exports/half.bin").exists(),
+            "partial file must be removed"
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 }

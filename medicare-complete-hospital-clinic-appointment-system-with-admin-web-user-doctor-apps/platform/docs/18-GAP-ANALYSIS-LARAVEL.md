@@ -208,7 +208,7 @@ The matrix below is deliberately granular. A subsystem cannot be called `MATCHED
 | Notifications | EQUIVALENT | platform/crates/services/notifications/src/lib.rs (NotifyHub, NotificationDef, NotificationStore port); platform/crates/data/postgres/src/notificationstore.rs; platform/runtime/keel-api/src/notification_routes.rs | Typed per-channel renderers (mail/sms/push/database), `notifications` table + in-memory/pg stores behind one port, inbox `GET /api/v1/notifications` + capability-gated `POST /read` (docs/04; tests notifications_endpoints_require_authentication / feed_lists_newest_first_with_unread_meta / read_marks_rows_and_gates_the_capability) (Wave 6 P5); on-demand notifiables (`dispatch_on_demand` + sha256 `OnDemandAudit`, D-74 caller-persisted), the `queue_via` v1-envelope seam (render-at-enqueue, keel-api pool-gated enqueue / keel-worker drain) and appointments producer dispatch with locale e2e landed Wave 6 P6 | P2 |
 | Search | PARTIAL | platform/crates/services/search/src/lib.rs | In-memory search only | P2 |
 | pgvector | MISSING | platform/crates/services/search/src/lib.rs | No pgvector adapter | P2 |
-| HTTP client | UNKNOWN | no locked evidence anchor supplied | Depth not proven in audit facts | P2 |
+| HTTP client | MATCHED | platform/crates/services/http-client/src/lib.rs (17 tests incl. live loopback: retry-after-500, retry_on exclusion, per-request 100ms timeout vs 700ms server, redacted taps across retries, pool bound == 2, HttpFake asserts, 100KB sink round trip + 404 refusal) | Wave 6 P10: retry schedule `{times, base_ms, max_ms, on}`, per-request timeout, bounded pool, redacted tap hooks, HttpFake assertions, streaming `sink_to` over `StoragePort::writer`; honest gap: no multipart/streamed request bodies (outside the Wave 6 parity scope) | P2 |
 | Process API | UNKNOWN | no locked evidence anchor supplied | Depth not proven | P3 |
 | Images | UNKNOWN | no locked evidence anchor supplied | No current production claim | P3 |
 | Collections | DELIBERATELY EXCLUDED | Rust iterator model | Rust iterators preferred over Laravel collection wrapper | P3 |
@@ -1497,7 +1497,7 @@ This table assigns the final strategic decision, not merely today's runtime stat
 | Context | SUPERSEDED |
 | Events | EQUIVALENT |
 | Filesystem | EQUIVALENT |
-| HTTP client | UNKNOWN |
+| HTTP client | MATCHED (landed: port + reqwest adapter; Wave 6 P10 retry `{times, base_ms, max_ms, on}` schedule, per-request timeout override, bounded `execute_pool`, redacted `HttpTap` hooks, `HttpFake` assertions, streaming `sink_to` over `StoragePort::writer`) |
 | Images | UNKNOWN |
 | Localization | EQUIVALENT |
 | Mail | EQUIVALENT |

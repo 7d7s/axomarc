@@ -236,6 +236,7 @@ impl WebhookDispatcher {
             url: subscription.url.clone(),
             headers: BTreeMap::new(),
             body,
+            timeout_ms: None,
         };
         request
             .headers

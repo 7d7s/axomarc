@@ -100,6 +100,62 @@ pub trait StoragePort: Send + Sync {
     fn delete_dir(&self, _prefix: &str) -> Result<(), AppError> {
         Err(AppError::not_implemented("delete_dir"))
     }
+
+    /// Wave 6 P10 (HTTP client sink): open a chunked write session for a
+    /// large object. The default buffers every chunk and performs one
+    /// `put` on [`ObjectWriter::finish`] — adapters that own a real sink
+    /// (see `keel-storage-local`) override it to write incrementally, so
+    /// a multi-hundred-megabyte download never has to live in memory at
+    /// once. A session that is dropped without `finish` commits nothing.
+    fn writer<'a>(
+        &'a self,
+        bucket: &str,
+        key: &str,
+    ) -> Result<Box<dyn ObjectWriter + 'a>, AppError> {
+        Ok(Box::new(BufferedWriter {
+            port: self,
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            buf: Vec::new(),
+        }))
+    }
+}
+
+/// Wave 6 P10: one chunked write session opened by [`StoragePort::writer`].
+/// `finish` is the only way a well-behaved sink commits the object;
+/// dropping the writer aborts it (partial data is discarded, never
+/// published under the target key).
+pub trait ObjectWriter: Send {
+    /// Append a chunk to the object under construction.
+    fn write(&mut self, chunk: &[u8]) -> Result<(), AppError>;
+    /// Commit the object and return its reference.
+    fn finish(self: Box<Self>) -> Result<ObjectRef, AppError>;
+}
+
+/// Default [`StoragePort::writer`] implementation: accumulates the chunks
+/// and issues a single `put` on `finish`, so the port stays implementable
+/// with its core four methods. Generic over `P` (not `dyn StoragePort`)
+/// so the default compiles for `Self: ?Sized` — `P = dyn StoragePort`
+/// works through the same path.
+struct BufferedWriter<'a, P: StoragePort + ?Sized> {
+    port: &'a P,
+    bucket: String,
+    key: String,
+    buf: Vec<u8>,
+}
+
+impl<P: StoragePort + ?Sized> ObjectWriter for BufferedWriter<'_, P> {
+    fn write(&mut self, chunk: &[u8]) -> Result<(), AppError> {
+        self.buf.extend_from_slice(chunk);
+        Ok(())
+    }
+
+    fn finish(self: Box<Self>) -> Result<ObjectRef, AppError> {
+        let session = *self;
+        session
+            .port
+            .put(&session.bucket, &session.key, session.buf)
+    }
 }
 
 /// Wave 6 P2: disk visibility. Private objects are served only through
@@ -424,5 +480,68 @@ mod tests {
             .unwrap_err();
         assert!(err.public_message.contains("empty"), "{}", err.public_message);
         assert!(empty_name.validate_default().is_err());
+    }
+
+    /// Wave 6 P10: a port that records every `put` (the default writer's
+    /// only commit path).
+    #[derive(Default)]
+    struct Recorder(std::sync::Mutex<Vec<(String, String, Vec<u8>)>>);
+
+    impl StoragePort for Recorder {
+        fn put(&self, bucket: &str, key: &str, bytes: Vec<u8>) -> Result<ObjectRef, AppError> {
+            self.0
+                .lock()
+                .unwrap()
+                .push((bucket.to_string(), key.to_string(), bytes));
+            Ok(ObjectRef {
+                bucket: bucket.to_string(),
+                key: key.to_string(),
+            })
+        }
+        fn get(&self, _obj: &ObjectRef) -> Result<Vec<u8>, AppError> {
+            Err(AppError::not_implemented("test get"))
+        }
+        fn delete(&self, _obj: &ObjectRef) -> Result<(), AppError> {
+            Ok(())
+        }
+        fn presigned_url(&self, _obj: &ObjectRef, _ttl_secs: u64) -> Result<String, AppError> {
+            Err(AppError::not_implemented("test presign"))
+        }
+    }
+
+    /// The default writer buffers chunks in order and commits exactly one
+    /// `put` on `finish`.
+    #[test]
+    fn default_writer_buffers_and_commits_on_finish() {
+        let port = Recorder::default();
+        {
+            let mut writer = port.writer("exports", "big.bin").unwrap();
+            writer.write(b"chunk-1").unwrap();
+            writer.write(b"chunk-2").unwrap();
+            let obj = writer.finish().unwrap();
+            assert_eq!(obj.bucket, "exports");
+            assert_eq!(obj.key, "big.bin");
+        }
+        let written = port.0.lock().unwrap();
+        assert_eq!(written.len(), 1, "finish is the single commit point");
+        assert_eq!(written[0].0, "exports");
+        assert_eq!(written[0].1, "big.bin");
+        assert_eq!(written[0].2, b"chunk-1chunk-2");
+    }
+
+    /// An aborted session (drop without `finish`) publishes nothing — the
+    /// sink's honesty guarantee for mid-stream failures.
+    #[test]
+    fn aborted_writer_session_commits_nothing() {
+        let port = Recorder::default();
+        {
+            let mut writer = port.writer("exports", "half.bin").unwrap();
+            writer.write(b"partial").unwrap();
+            // Dropped without finish.
+        }
+        assert!(
+            port.0.lock().unwrap().is_empty(),
+            "an unfinished session must not reach put"
+        );
     }
 }

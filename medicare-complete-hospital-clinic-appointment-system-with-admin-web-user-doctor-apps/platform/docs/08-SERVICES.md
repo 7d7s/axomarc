@@ -44,6 +44,13 @@ public files go through the `storage:link` symlink path). The upload edge resolv
 through the registry (`storage.default` when absent; an unknown name is a 422, never a silent
 fallback), and every stored record names the disk it landed on.
 
+Wave 6 P10 adds a chunked write path for large downloads: `StoragePort::writer(bucket, key)` opens
+an `ObjectWriter` session (`write(chunk)` / `finish() -> ObjectRef`) that commits exactly once. The
+default implementation buffers the chunks and issues one `put` on `finish` — the port stays
+implementable with its core four methods — while `keel-storage-local` overrides it with direct file
+writes and removes the partial file when a session is dropped without `finish`. A session that is
+never finished commits nothing, so an aborted download can never publish a truncated object.
+
 ## Notifications (multi-channel)
 
 `services/notifications` is a hub: mail (sandbox in dev, SMTP live via lettre), SMS (MSG91), push
@@ -174,6 +181,29 @@ hub).
 
 `services/http-client`: retry policies, timeouts, redaction of secrets in logs, structured request
 logging. Webhooks build on it (S3 surface).
+
+Wave 6 P10 completes the parity surface on `ReqwestHttpClient`. The retry schedule is configurable
+as the spec's `retry { times, base_ms, max_ms, on }` — `max_retries` / `retry_base_ms` /
+`retry_max_ms` (the backoff cap was a hard-coded 10s) / `retry_on`, a validated list of `429`,
+`5xx`, `timeout`, `connect` whose default keeps the original all-four posture; all four new knobs
+are serde-default additive, and an unknown condition refuses client build instead of silently never
+retrying. `retry_on` gates retrying, not classification: 429/5xx remain `EXT_ERROR` (fail fast when
+excluded), 4xx remain `Ok` responses for the caller. `HttpRequest::timeout_ms` overrides the client
+timeout per request (absent = inherit; skipped on the wire so pre-P10 payloads stay byte-identical).
+`execute_pool(client, requests, limit)` fans out over a bounded tokio join-set and returns results
+in input order (`limit = 0` clamps to 1). `HttpTap` hooks (`on_request` / `on_response` /
+`on_retry` / `on_error`) observe every attempt with headers already passed through
+`config.redact` — bodies stay under this crate's never-log rule. `HttpFake` asserts over the
+`MockHttpClient` recording: `assert_request_count`, `assert_sent(|req| …)`, `assert_no_pending`
+(the Wave 7 testkit names — the testkit fake will delegate here) plus per-index `assert_request` /
+`assert_body_json`, and every failure message prints the recorded `method url` set. Finally
+`sink_to(req, storage, bucket, key)` streams a 2xx body through the storage port's chunked writer
+without buffering it (callers pass the target disk's port from the `DiskRegistry`): 4xx are
+`NotRetryable` errors with a capped preview in `internal` — an error page is never sunk over the
+target key — and once streaming starts the download is not retried; an aborted session discards the
+partial object. The sink is an inherent method, not a port method — `HttpClientPort` keeps its
+single `execute` operation. The crate gains a `keel-storage` workspace dependency for it
+(Services→Services, the `notifications → storage` edge).
 
 ## Search
 

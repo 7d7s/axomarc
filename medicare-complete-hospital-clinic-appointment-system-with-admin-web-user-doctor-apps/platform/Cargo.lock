@@ -1524,6 +1524,7 @@ name = "keel-http-client"
 version = "0.1.0"
 dependencies = [
  "keel-foundation",
+ "keel-storage",
  "reqwest",
  "serde",
  "serde_json",
