@@ -129,8 +129,10 @@ keel schedule:test               # pure dry run: registered vs due-now (nothing 
 `schedule:work` fires each due item as a durable job (`max_attempts = 1`, the item's payload) and
 persists last-fired state after every firing pass, so a restart or `schedule:test` never re-fires.
 With an empty registry it reports the empty posture and exits before touching the database — the
-CLI's `schedule_registry()` is the single seam where module-declared schedules will land (Wave 6
-module content); `schedule:list`/`schedule:run` remain information stubs over that seam.
+CLI's `schedule_registry()` is the single seam where module-declared schedules will land — still
+empty after Wave 6 (P4 delivered the scheduling vocabulary, while module declarations are module
+content outside the nine-wave program); `schedule:list`/`schedule:run` remain information stubs
+over that seam.
 
 Wave 6 P4 fills in Laravel's scheduling vocabulary (all additive — `serde(default)` fields on
 `ScheduleItem`, so pre-P4 state files and serialized items still load):

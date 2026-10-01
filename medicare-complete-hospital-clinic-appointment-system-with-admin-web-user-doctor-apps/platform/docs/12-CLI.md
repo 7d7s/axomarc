@@ -64,7 +64,7 @@ against the same workspace/config the runtime uses.
 | `keel queue:restart` | write the restart-signal file: workers that observe a signal newer than their start stop after the current job, supervisors respawn them (Wave 5) |
 | `keel queue:listen` | spawn + supervise `keel-worker`: respawn on every exit with a crash-loop backoff (≥2s runs restart immediately, faster runs back off 1s) (Wave 5) |
 | `keel queue:retry-batch <id>` | requeue every failed/dead member of a batch — the same `BatchOps::retry` the HTTP `POST /api/v1/batches/{id}/retry` runs over the durable batch ledger; the id is validated before any connection is attempted (Wave 5 flag; Wave 6 P9 made it real, B-32) |
-| `keel schedule:list` / `schedule:run` | schedules (information stubs over the `schedule_registry` seam: they report the registry's empty posture until module schedules land — Wave 6) |
+| `keel schedule:list` / `schedule:run` | schedules (information stubs over the `schedule_registry` seam: they report the registry's empty posture — still empty after Wave 6, which delivered the cron/guard vocabulary (P4) but no module-declared schedules) |
 | `keel schedule:work [--every n]` (default 60s) | schedule daemon: tick loop over the registry, persists tick state (last-fired + recorded failures, Wave 6 P4), fires due items (Wave 5) |
 | `keel schedule:test` | dry-run the schedule registry: prints registered vs due-now (pure — nothing fires, nothing is written; disabled entries would show registered but never due) (Wave 5) |
 | `keel storage:link [--force]` | create the public/storage → storage/local symlink (refuses to overwrite without `--force`; `--force` replaces a link or file — a real directory at the path is never deleted automatically) (Wave 5) |
