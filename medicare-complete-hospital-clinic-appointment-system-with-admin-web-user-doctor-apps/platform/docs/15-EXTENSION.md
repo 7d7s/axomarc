@@ -67,6 +67,31 @@ Local-path package discovery ships in v1:
   boot (file wins per key; first indexed package wins among packages; schema-checked on their
   own so a package never smuggles an unknown key past `GRAPH-CONFIG-SCHEMA`).
 
+## Package publishing (B-25, Wave 8)
+
+`keel publish <package> [--force]` materializes an indexed package's resources into the host
+app (Laravel's `vendor:publish`, scoped to one package). `keel config:publish <package>
+[--force]` publishes only the config layer. Source layout → target:
+
+| Package source | Published target | Semantics |
+| --- | --- | --- |
+| `<pkg>/database/migrations/{v}_{desc}.sql` | `database/migrations/{v}_{name}_{desc}.sql` | sqlx keys applied migrations by the leading integer, so the version stays first and the package name namespaces the rest (lowercase `[a-z0-9_]` description, the rule `keel make:migration` enforces). A version already owned by a differently named file is refused (a duplicate would break `keel migrate`), as are two sources sharing one version. |
+| manifest `[config]` table | `config/packages/<name>.toml` | The editable overlay boot reads: package manifest defaults ← published copy ← config file (each layer schema-checked on its own; the published file's errors name the file). Deterministic bytes (header + body) keep re-publish idempotent. |
+| `<pkg>/public/**` | `public/vendor/<name>/**` | Plain file copy, recursive. |
+| `<pkg>/views/**` | *no copy* | Registered under the `<name>::` view namespace at boot (Wave 2 resolver): `billing::welcome` renders `<pkg>/views/welcome.html`. Without an index the namespaces fail closed. |
+
+Publish contract:
+
+- **Idempotent:** every target is byte-compared. Identical content is skipped (`unchanged`),
+  missing targets are written, differing content is a **conflict**: skipped, reported, and the
+  command exits non-zero — review the drift, then re-run with `--force` to overwrite.
+  `config:publish` cycles through the same semantics for its one target, and refuses packages
+  that ship no `[config]` table.
+- **Fail-closed inputs:** the package must be indexed (`keel pkg:list`) and its index entry
+  must match its manifest name; `config:publish` additionally requires `[config]`.
+- Rebuild after publishing migrations: they are embedded at compile time (`keel migrate` runs
+  the embedded set).
+
 ## Plugin roadmap (D-69)
 
 Deliberate order, smallest trusted core first:

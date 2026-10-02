@@ -91,6 +91,18 @@ enum Cmd {
         /// Package directory containing module.toml (root-relative or absolute).
         path: String,
     },
+    /// Wave 8 B-25: materialize an indexed package's migrations, config and
+    /// assets into the app; views register under the package namespace at
+    /// boot (no copy). Idempotent: identical files are skipped, differing
+    /// files are reported as conflicts and skipped unless --force.
+    #[command(name = "publish")]
+    Publish {
+        /// Indexed package name (keel pkg:list).
+        package: String,
+        /// Overwrite existing files whose content differs.
+        #[arg(long)]
+        force: bool,
+    },
     /// List all declared routes (duplicate check is in the graph gate).
     #[command(name = "route:list")]
     RouteList {
@@ -281,6 +293,17 @@ enum Cmd {
         /// Print JSON instead of TOML.
         #[arg(long)]
         json: bool,
+    },
+    /// Wave 8 B-25: materialize only the package's [config] table to
+    /// config/packages/<name>.toml (the editable boot layer; publish scope
+    /// restricted to config — no migrations or assets).
+    #[command(name = "config:publish")]
+    ConfigPublish {
+        /// Indexed package name (keel pkg:list).
+        package: String,
+        /// Overwrite an existing published copy whose content differs.
+        #[arg(long)]
+        force: bool,
     },
     /// Wave 4 Phase 5: print the environment summary (config file layering,
     /// redacted key facts, config-cache pin state).
@@ -564,6 +587,7 @@ fn main() -> ExitCode {
         Cmd::Modules => modules_list(),
         Cmd::PkgList => pkg_list(),
         Cmd::PkgAdd { path } => pkg_add(&path),
+        Cmd::Publish { package, force } => publish_cmd(&package, force),
         Cmd::RouteList {
             format,
             name,
@@ -599,6 +623,7 @@ fn main() -> ExitCode {
         Cmd::ConfigCache => config_cache(),
         Cmd::ConfigClear => config_clear(),
         Cmd::ConfigShow { key, json } => config_show(&key, json),
+        Cmd::ConfigPublish { package, force } => config_publish_cmd(&package, force),
         Cmd::Env => env_summary(),
         Cmd::CacheForget { key } => cache_forget(&key),
         Cmd::Up => up(),
@@ -1305,6 +1330,320 @@ fn pkg_add_at(root: &Path, path: &str) -> anyhow::Result<ExitCode> {
     }
     println!("keel graph merges it fail-closed; keel pkg:list shows ABI status");
     Ok(ExitCode::SUCCESS)
+}
+
+// ---------------------------------------------------------- publish (Wave 8)
+
+/// What one publish run did (printed by the command wrappers, asserted by
+/// tests). Paths are workspace-root-relative.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PublishOutcome {
+    /// Targets written this run.
+    written: Vec<PathBuf>,
+    /// Targets whose bytes already matched (the idempotent no-op).
+    unchanged: usize,
+    /// Targets whose existing content differs - skipped without --force.
+    conflicts: Vec<PathBuf>,
+    /// `<name>::` view namespaces whose package ships a views/ directory
+    /// (registered at boot by the views engine - views are never copied).
+    view_namespaces: Vec<String>,
+}
+
+impl PublishOutcome {
+    /// A skipped conflict means the publish did not fully land: fail
+    /// closed so CI notices (review the drift, re-run with --force).
+    fn exit_code(&self) -> ExitCode {
+        if self.conflicts.is_empty() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Publish scope: the full surface, or config only (`config:publish`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PublishScope {
+    /// Migrations + config + assets (+ the view-namespace report).
+    All,
+    /// Only config/packages/<name>.toml.
+    ConfigOnly,
+}
+
+fn publish_cmd(package: &str, force: bool) -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    let outcome = publish_at(&root, package, force, PublishScope::All)?;
+    print_publish_outcome(&outcome);
+    Ok(outcome.exit_code())
+}
+
+fn config_publish_cmd(package: &str, force: bool) -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    let outcome = publish_at(&root, package, force, PublishScope::ConfigOnly)?;
+    print_publish_outcome(&outcome);
+    Ok(outcome.exit_code())
+}
+
+fn print_publish_outcome(outcome: &PublishOutcome) {
+    for path in &outcome.written {
+        println!("  + {}", path.display());
+    }
+    for path in &outcome.conflicts {
+        println!(
+            "  ! {} (conflict: content differs, use --force)",
+            path.display()
+        );
+    }
+    for ns in &outcome.view_namespaces {
+        println!(
+            "  = {ns}:: registered at boot from the package views/ directory (no files copied)"
+        );
+    }
+    println!(
+        "publish: {} written, {} unchanged, {} conflict(s)",
+        outcome.written.len(),
+        outcome.unchanged,
+        outcome.conflicts.len()
+    );
+    if outcome
+        .written
+        .iter()
+        .any(|p| p.starts_with("database/migrations"))
+    {
+        println!("note: migrations are embedded at compile time; rebuild before keel migrate");
+    }
+}
+
+/// Wave 8 B-25: materialize an indexed package's resources (docs/15
+/// "Publish contract"). Source -> target:
+/// `<pkg>/database/migrations/{v}_{desc}.sql` becomes
+/// `database/migrations/{v}_{name}_{desc}.sql` (sqlx keys migrations by
+/// the leading integer, so the version stays first and the package name
+/// namespaces the rest - byte-deterministic, therefore idempotent), the
+/// manifest `[config]` table becomes `config/packages/<name>.toml` (the
+/// editable overlay boot reads), `<pkg>/public/**` becomes
+/// `public/vendor/<name>/**`, and `views/` registers under `<name>::` at
+/// boot (never copied). Every target is byte-compared: identical =
+/// unchanged, different = conflict (skipped unless --force), missing =
+/// written. A non-empty conflict set exits FAILURE.
+fn publish_at(
+    root: &Path,
+    package: &str,
+    force: bool,
+    scope: PublishScope,
+) -> anyhow::Result<PublishOutcome> {
+    let index = keel_registry::PackageIndex::load(root).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let entry = index
+        .package
+        .iter()
+        .find(|e| e.name == package)
+        .ok_or_else(|| {
+            anyhow::anyhow!("package {package} is not indexed (keel pkg:list shows the index)")
+        })?;
+    let manifest = index
+        .entry_manifest(root, entry)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    if manifest.name() != package {
+        anyhow::bail!(
+            "index entry {package} drifted from its manifest (named {}); re-run keel pkg:add <path>",
+            manifest.name()
+        );
+    }
+    let pkg_dir = keel_registry::PackageIndex::entry_dir(root, entry);
+    let mut outcome = PublishOutcome::default();
+
+    // Config (both scopes): the manifest [config] table materializes into
+    // the editable boot layer config/packages/<name>.toml. Full publish
+    // treats it as optional; config:publish requires it.
+    match (scope, manifest.config.as_ref()) {
+        (PublishScope::ConfigOnly, None) => {
+            anyhow::bail!("package {package} ships no [config] table to publish");
+        }
+        (PublishScope::ConfigOnly, Some(config)) | (PublishScope::All, Some(config)) => {
+            if !config.is_table() {
+                anyhow::bail!("package {package}: [config] must be a table");
+            }
+            let bytes = published_config_bytes(package, config)?;
+            materialize(
+                root,
+                &root
+                    .join("config")
+                    .join("packages")
+                    .join(format!("{package}.toml")),
+                &bytes,
+                force,
+                &mut outcome,
+            )?;
+        }
+        (PublishScope::All, None) => {}
+    }
+    if scope == PublishScope::ConfigOnly {
+        return Ok(outcome);
+    }
+
+    // Migrations: validated sources publish name-prefixed after the sqlx
+    // integer version; a version already present under a different file
+    // name is refused (applied migrations are keyed by version, so a
+    // duplicate would break `keel migrate`).
+    let mdir = pkg_dir.join("database").join("migrations");
+    if mdir.is_dir() {
+        let mut sources = Vec::new();
+        walk_files(&mdir, &mut sources)
+            .map_err(|e| anyhow::anyhow!("{}: {e}", mdir.display()))?;
+        sources.sort();
+        let target_dir = root.join("database").join("migrations");
+        let mut existing: Vec<(i64, String)> = Vec::new();
+        if target_dir.is_dir() {
+            let mut files = Vec::new();
+            walk_files(&target_dir, &mut files)
+                .map_err(|e| anyhow::anyhow!("{}: {e}", target_dir.display()))?;
+            files.sort();
+            for f in files {
+                if let Some(name) = f.file_name().and_then(|n| n.to_str()) {
+                    // Unparsable leftovers cannot collide by version.
+                    if let Ok((version, _)) = migration_source_parts(name) {
+                        existing.push((version, name.to_string()));
+                    }
+                }
+            }
+        }
+        let mut seen: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+        for src in &sources {
+            let file_name = src
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| anyhow::anyhow!("migration file name is not UTF-8: {}", src.display()))?;
+            let (version, desc) = migration_source_parts(file_name)?;
+            if let Some(prev) = seen.insert(version, file_name.to_string()) {
+                anyhow::bail!(
+                    "package {package} migrations {prev} and {file_name} share version {version}; give each a unique integer prefix"
+                );
+            }
+            let target_name = format!("{version}_{package}_{desc}.sql");
+            for (ex_version, ex_name) in &existing {
+                if *ex_version == version && *ex_name != target_name {
+                    anyhow::bail!(
+                        "migration version {version} collides with database/migrations/{ex_name}; re-stamp {file_name} with a free version"
+                    );
+                }
+            }
+            let bytes =
+                std::fs::read(src).map_err(|e| anyhow::anyhow!("{}: {e}", src.display()))?;
+            materialize(root, &target_dir.join(&target_name), &bytes, force, &mut outcome)?;
+        }
+    }
+
+    // Assets: <pkg>/public/** -> public/vendor/<name>/**.
+    let pdir = pkg_dir.join("public");
+    if pdir.is_dir() {
+        let mut files = Vec::new();
+        walk_files(&pdir, &mut files)
+            .map_err(|e| anyhow::anyhow!("{}: {e}", pdir.display()))?;
+        files.sort();
+        for src in files {
+            let rel = src
+                .strip_prefix(&pdir)
+                .map_err(|_| anyhow::anyhow!("{} escapes the package", src.display()))?;
+            let bytes =
+                std::fs::read(&src).map_err(|e| anyhow::anyhow!("{}: {e}", src.display()))?;
+            materialize(
+                root,
+                &root.join("public").join("vendor").join(package).join(rel),
+                &bytes,
+                force,
+                &mut outcome,
+            )?;
+        }
+    }
+
+    // Views: registered under <name>:: at boot, never copied.
+    if pkg_dir.join("views").is_dir() {
+        outcome.view_namespaces.push(package.to_string());
+    }
+
+    Ok(outcome)
+}
+
+/// Deterministic bytes for the published config copy (header + the
+/// manifest [config] table) - byte-identical re-materialization is what
+/// makes `config:publish` idempotent.
+fn published_config_bytes(package: &str, config: &toml::Value) -> anyhow::Result<Vec<u8>> {
+    let body = toml::to_string(config)
+        .map_err(|e| anyhow::anyhow!("package {package}: [config] serialize: {e}"))?;
+    Ok(format!(
+        "# Package {package} config (materialized from its module.toml [config]\n\
+         # table by `keel config:publish`). Edit values here to override the\n\
+         # package defaults; the app config file still wins over this file.\n\
+         {body}"
+    )
+    .into_bytes())
+}
+
+/// One publish target: identical content is the idempotent no-op,
+/// different content is a conflict (overwritten only with --force), and a
+/// missing target writes. The outcome records what happened.
+fn materialize(
+    root: &Path,
+    target: &Path,
+    bytes: &[u8],
+    force: bool,
+    outcome: &mut PublishOutcome,
+) -> anyhow::Result<()> {
+    let rel = target.strip_prefix(root).unwrap_or(target).to_path_buf();
+    if target.is_file() {
+        let existing =
+            std::fs::read(target).map_err(|e| anyhow::anyhow!("{}: {e}", target.display()))?;
+        if existing == bytes {
+            outcome.unchanged += 1;
+        } else if force {
+            std::fs::write(target, bytes)
+                .map_err(|e| anyhow::anyhow!("{}: {e}", target.display()))?;
+            outcome.written.push(rel);
+        } else {
+            outcome.conflicts.push(rel);
+        }
+        return Ok(());
+    }
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| anyhow::anyhow!("{}: {e}", parent.display()))?;
+    }
+    std::fs::write(target, bytes).map_err(|e| anyhow::anyhow!("{}: {e}", target.display()))?;
+    outcome.written.push(rel);
+    Ok(())
+}
+
+/// Package migration file contract: `<integer version>_<description>.sql`
+/// (lowercase description - the same rule `keel make:migration` enforces).
+/// sqlx parses the leading part as i64 and applies migrations by that
+/// number, so the version must lead the published filename too.
+fn migration_source_parts(name: &str) -> anyhow::Result<(i64, String)> {
+    let (version_raw, rest) = name.split_once('_').ok_or_else(|| {
+        anyhow::anyhow!(
+            "migration {name} must be named <version>_<description>.sql: an integer version prefix leads (sqlx orders migrations by that number)"
+        )
+    })?;
+    if version_raw.is_empty() || !version_raw.bytes().all(|b| b.is_ascii_digit()) {
+        anyhow::bail!(
+            "migration {name} must start with an integer version prefix (sqlx orders migrations by it, e.g. 20260901000001_{name})"
+        );
+    }
+    let version: i64 = version_raw
+        .parse()
+        .map_err(|_| anyhow::anyhow!("migration {name}: version prefix {version_raw} does not fit i64"))?;
+    let desc = rest
+        .strip_suffix(".sql")
+        .ok_or_else(|| anyhow::anyhow!("migration {name} must end in .sql"))?;
+    if desc.is_empty()
+        || !desc
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    {
+        anyhow::bail!(
+            "migration {name}: description must match [a-z0-9_]+ (the rule keel make:migration enforces)"
+        );
+    }
+    Ok((version, desc.to_string()))
 }
 
 /// One row of `route:list` (the table and json formats share it).
@@ -5642,8 +5981,226 @@ middleware = ["ghost"]
         std::fs::remove_dir_all(&empty).ok();
     }
 
+    /// Wave 8 sample package fixture (docs/19 "tested against a sample
+    /// package"): billing ships a stamped migration, a [config] table, a
+    /// nested asset and a view - the four publish surfaces.
+    fn seed_publish_package(root: &Path) -> PathBuf {
+        let pkg = root.join("packages").join("billing");
+        std::fs::create_dir_all(pkg.join("database").join("migrations")).unwrap();
+        std::fs::create_dir_all(pkg.join("public").join("img")).unwrap();
+        std::fs::create_dir_all(pkg.join("views")).unwrap();
+        std::fs::write(
+            pkg.join("module.toml"),
+            "[module]\nname = \"billing\"\nversion = \"0.3.0\"\n\n\
+             [config.limits]\ndefault_monthly_operations = 11\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pkg.join("database")
+                .join("migrations")
+                .join("20260901000001_create_invoices.sql"),
+            "-- create invoices\n",
+        )
+        .unwrap();
+        std::fs::write(pkg.join("public").join("img").join("logo.svg"), "<svg/>\n").unwrap();
+        std::fs::write(pkg.join("views").join("welcome.html"), "pkg says hi").unwrap();
+        pkg_add_at(root, "packages/billing").expect("indexes the sample package");
+        pkg
+    }
+
+    /// Wave 8 B-25: publish materializes the sample package's migration
+    /// (version prefix kept, package name namespacing the description),
+    /// config copy and assets; views register (no copy); a second run is a
+    /// byte-identical no-op; both commands parse with --force.
+    #[test]
+    fn wave8_publish_materializes_a_sample_package_and_is_idempotent() {
+        let root = fresh_temp("publish");
+        seed_publish_package(&root);
+
+        let outcome = publish_at(&root, "billing", false, PublishScope::All).expect("publishes");
+        assert!(
+            root.join("database/migrations/20260901000001_billing_create_invoices.sql")
+                .is_file(),
+            "migration lands name-prefixed after the sqlx integer version"
+        );
+        let cfg = root.join("config").join("packages").join("billing.toml");
+        assert!(cfg.is_file(), "config materializes");
+        let cfg_raw = std::fs::read_to_string(&cfg).unwrap();
+        assert!(
+            cfg_raw.contains("default_monthly_operations = 11"),
+            "{cfg_raw}"
+        );
+        assert!(
+            root.join("public/vendor/billing/img/logo.svg").is_file(),
+            "assets land under public/vendor/<name>/"
+        );
+        assert_eq!(
+            outcome.view_namespaces,
+            vec!["billing".to_string()],
+            "views are reported, never copied"
+        );
+        assert!(!root.join("views").exists(), "no views directory is written");
+        assert!(outcome.conflicts.is_empty());
+        let written = outcome.written.len();
+        assert_eq!(written, 3, "migration + config + asset: {outcome:?}");
+        assert_eq!(outcome.exit_code(), ExitCode::SUCCESS);
+
+        // Second run: every target byte-identical (idempotent no-op).
+        let again = publish_at(&root, "billing", false, PublishScope::All).expect("republishes");
+        assert!(again.written.is_empty());
+        assert_eq!(again.unchanged, written);
+        assert!(again.conflicts.is_empty());
+        assert_eq!(again.exit_code(), ExitCode::SUCCESS);
+
+        // CLI surface: both names parse; --force defaults off.
+        let cli = Cli::try_parse_from(["keel", "publish", "billing", "--force"]).expect("parses");
+        match cli.cmd {
+            Cmd::Publish { ref package, force } => {
+                assert_eq!(package, "billing");
+                assert!(force, "--force sets it");
+            }
+            _ => panic!("publish maps to Publish"),
+        }
+        let cli = Cli::try_parse_from(["keel", "publish", "billing"]).expect("parses");
+        match cli.cmd {
+            Cmd::Publish { force, .. } => assert!(!force, "force defaults off"),
+            _ => panic!("publish maps to Publish"),
+        }
+        let cli = Cli::try_parse_from(["keel", "config:publish", "billing"]).expect("parses");
+        match cli.cmd {
+            Cmd::ConfigPublish { ref package, force } => {
+                assert_eq!(package, "billing");
+                assert!(!force, "force defaults off");
+            }
+            _ => panic!("config:publish maps to ConfigPublish"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Wave 8 B-25: an edited target is a reported conflict (skipped,
+    /// FAILURE) until --force overwrites it; unindexed names, drifted
+    /// entries, malformed migration sources and colliding versions all
+    /// refuse fail-closed.
+    #[test]
+    fn wave8_publish_conflicts_force_and_refusals() {
+        let root = fresh_temp("publish-conflict");
+        let pkg = seed_publish_package(&root);
+        publish_at(&root, "billing", false, PublishScope::All).expect("publishes");
+
+        // Drift one published artifact -> conflict, skipped, FAILURE.
+        let mig = root
+            .join("database/migrations/20260901000001_billing_create_invoices.sql");
+        std::fs::write(&mig, "-- edited by the operator\n").unwrap();
+        let outcome = publish_at(&root, "billing", false, PublishScope::All).expect("runs");
+        assert_eq!(outcome.conflicts.len(), 1, "{outcome:?}");
+        assert_eq!(outcome.unchanged, 2, "config + asset untouched");
+        assert_eq!(outcome.exit_code(), ExitCode::FAILURE);
+        assert_eq!(
+            std::fs::read_to_string(&mig).unwrap(),
+            "-- edited by the operator\n",
+            "a conflict never overwrites"
+        );
+
+        // --force overwrites and clears the conflict.
+        let outcome = publish_at(&root, "billing", true, PublishScope::All).expect("runs");
+        assert!(outcome.conflicts.is_empty());
+        assert_eq!(outcome.exit_code(), ExitCode::SUCCESS);
+        assert_ne!(
+            std::fs::read_to_string(&mig).unwrap(),
+            "-- edited by the operator\n"
+        );
+
+        // Unindexed package -> refused with a pointer at the index.
+        let err = publish_at(&root, "ghost", false, PublishScope::All).expect_err("refuses");
+        assert!(err.to_string().contains("not indexed"), "{err}");
+
+        // Migration source without an integer version prefix -> refused.
+        std::fs::write(pkg.join("database/migrations/create_extra.sql"), "-- x\n").unwrap();
+        let err = publish_at(&root, "billing", false, PublishScope::All).expect_err("refuses");
+        assert!(err.to_string().contains("integer version prefix"), "{err}");
+        std::fs::remove_file(pkg.join("database/migrations/create_extra.sql")).unwrap();
+
+        // A file already owns that version -> refused (sqlx keys applied
+        // migrations by version, so a duplicate would break keel migrate).
+        let platform = root.join("database/migrations/20260901000001_platform.sql");
+        std::fs::write(&platform, "-- platform\n").unwrap();
+        let err = publish_at(&root, "billing", false, PublishScope::All).expect_err("refuses");
+        assert!(err.to_string().contains("collides"), "{err}");
+        std::fs::remove_file(&platform).unwrap();
+
+        // Index entry drifted from its manifest name -> refused.
+        std::fs::write(
+            root.join("packages.toml"),
+            "[[package]]\nname = \"billings\"\nversion = \"0.3.0\"\npath = \"packages/billing\"\n",
+        )
+        .unwrap();
+        let err = publish_at(&root, "billings", false, PublishScope::All).expect_err("refuses");
+        assert!(err.to_string().contains("drifted"), "{err}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Wave 8 B-25: config:publish materializes ONLY the editable config
+    /// copy - no migrations, no assets, no view report - through the same
+    /// idempotence / conflict / --force cycle; a package without [config]
+    /// refuses.
+    #[test]
+    fn wave8_config_publish_materializes_config_only() {
+        let root = fresh_temp("config-publish");
+        seed_publish_package(&root);
+
+        let outcome =
+            publish_at(&root, "billing", false, PublishScope::ConfigOnly).expect("publishes");
+        assert_eq!(outcome.written.len(), 1, "{outcome:?}");
+        assert!(root.join("config/packages/billing.toml").is_file());
+        assert!(!root.join("database").exists(), "no migrations published");
+        assert!(!root.join("public/vendor").exists(), "no assets published");
+        assert!(outcome.view_namespaces.is_empty(), "no view report");
+        assert_eq!(outcome.exit_code(), ExitCode::SUCCESS);
+
+        // Idempotent no-op.
+        let again =
+            publish_at(&root, "billing", false, PublishScope::ConfigOnly).expect("reruns");
+        assert!(again.written.is_empty());
+        assert_eq!(again.unchanged, 1);
+
+        // Conflict + --force on the published copy.
+        let cfg = root.join("config/packages/billing.toml");
+        std::fs::write(&cfg, "[limits]\ndefault_monthly_operations = 99\n").unwrap();
+        let outcome =
+            publish_at(&root, "billing", false, PublishScope::ConfigOnly).expect("runs");
+        assert_eq!(outcome.conflicts.len(), 1, "{outcome:?}");
+        assert_eq!(outcome.exit_code(), ExitCode::FAILURE);
+        assert!(
+            std::fs::read_to_string(&cfg).unwrap().contains("99"),
+            "conflict never overwrites"
+        );
+        let outcome = publish_at(&root, "billing", true, PublishScope::ConfigOnly).expect("runs");
+        assert!(outcome.conflicts.is_empty());
+        assert!(
+            std::fs::read_to_string(&cfg)
+                .unwrap()
+                .contains("default_monthly_operations = 11")
+        );
+
+        // A package without [config] refuses config-only publish.
+        let tax = root.join("packages").join("tax");
+        std::fs::create_dir_all(&tax).unwrap();
+        std::fs::write(
+            tax.join("module.toml"),
+            "[module]\nname = \"tax\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        pkg_add_at(&root, "packages/tax").expect("indexes");
+        let err = publish_at(&root, "tax", false, PublishScope::ConfigOnly).expect_err("refuses");
+        assert!(err.to_string().contains("[config]"), "{err}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     /// Wave 5 Phase 6: storage:link points public/storage at the local disk
-    /// root (storage/local — the host's StorageProvider), whatever the OS
+    /// root (storage/local - the host's StorageProvider), whatever the OS
     /// path separator.
     #[test]
     fn storage_link_paths_point_at_the_local_disk_root() {

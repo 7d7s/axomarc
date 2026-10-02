@@ -1,9 +1,11 @@
 //! # keel-config
 //! Typed configuration with deterministic layering (11-SPEC §19):
-//! `package [config] <- defaults <- config file <- .env <- .env.<env> <-
-//! environment` (item 18). Indexed packages (`packages.toml`, Wave 8 B-24)
-//! contribute `[config]` manifest defaults UNDER the config file. Secrets
-//! are asserted at boot and are never silently defaulted outside dev.
+//! `defaults <- package [config] <- published copy <- config file <- .env <-
+//! .env.<env> <- environment` (item 18). Indexed packages (`packages.toml`,
+//! Wave 8 B-24) contribute `[config]` manifest defaults, overlaid by their
+//! published `config/packages/<name>.toml` copy (Wave 8 B-25), both UNDER
+//! the config file. Secrets are asserted at boot and are never silently
+//! defaulted outside dev.
 
 pub mod dotenv;
 pub mod keys;
@@ -877,12 +879,13 @@ pub fn schema_violations(raw: &str) -> Vec<ConfigSchemaViolation> {
 }
 
 impl PlatformConfig {
-    /// Layered load: package `[config]` defaults <- defaults <- file <-
-    /// .env <- .env.<env> <- environment. `.env` files only fill variables
-    /// that are not already set, so the real environment always wins
-    /// (item 18). Package defaults come from every package in the root
-    /// `packages.toml` index and fill only keys the config file omits
-    /// (Wave 8 B-24).
+    /// Layered load: defaults <- package `[config]` <- published copy <-
+    /// file <- .env <- .env.<env> <- environment. `.env` files only fill
+    /// variables that are not already set, so the real environment always
+    /// wins (item 18). Package defaults come from every package in the root
+    /// `packages.toml` index, overlaid by its published
+    /// `config/packages/<name>.toml` copy (Wave 8 B-24/B-25), and fill only
+    /// keys the config file omits.
     pub fn load(path: Option<&std::path::Path>) -> Result<Self, AppError> {
         if let Some(p) = path {
             dotenv::load_dotenv(&dotenv::config_dir_of(p))?;
@@ -1275,6 +1278,122 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("GRAPH-CONFIG-SCHEMA"), "{msg}");
         assert!(msg.contains("package billing"), "{msg}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Wave 8 B-25: the published copy (`keel config:publish`) overlays the
+    /// package's manifest `[config]` — operator edits win, a published-only
+    /// package still loads, and the config file still beats both.
+    #[test]
+    fn published_package_config_overrides_manifest_defaults() {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "keel-pkgpub-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("config").join("packages")).unwrap();
+
+        // tax: no manifest [config] at all; its PUBLISHED copy is the only
+        // source, and it is the FIRST indexed package (first wins).
+        let tax = root.join("packages").join("tax");
+        std::fs::create_dir_all(&tax).unwrap();
+        std::fs::write(
+            tax.join("module.toml"),
+            "[module]\nname = \"tax\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("config").join("packages").join("tax.toml"),
+            "[app]\nname = \"from-published-only\"\n",
+        )
+        .unwrap();
+        // billing: manifest [config] says limits 7, published copy says 11.
+        let billing = root.join("packages").join("billing");
+        std::fs::create_dir_all(&billing).unwrap();
+        std::fs::write(
+            billing.join("module.toml"),
+            "[module]\nname = \"billing\"\nversion = \"0.3.0\"\n\n\
+             [config.limits]\ndefault_monthly_operations = 7\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("config").join("packages").join("billing.toml"),
+            "[limits]\ndefault_monthly_operations = 11\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("packages.toml"),
+            "[[package]]\nname = \"tax\"\nversion = \"0.1.0\"\npath = \"packages/tax\"\n\n\
+             [[package]]\nname = \"billing\"\nversion = \"0.3.0\"\npath = \"packages/billing\"\n",
+        )
+        .unwrap();
+
+        // The config file omits both keys: published beats manifest, and
+        // the published-only package contributes through its file alone.
+        let config_path = root.join("config").join("test.toml");
+        std::fs::write(&config_path, "[app]\nenv = \"test\"\n").unwrap();
+        let cfg = PlatformConfig::load(Some(&config_path)).expect("loads");
+        assert_eq!(cfg.app.name, "from-published-only");
+        assert_eq!(
+            cfg.limits.default_monthly_operations, 11,
+            "published copy wins over the manifest [config] default"
+        );
+
+        // The config file still beats every package layer.
+        std::fs::write(
+            &config_path,
+            "[app]\nenv = \"test\"\n\n[limits]\ndefault_monthly_operations = 42\n",
+        )
+        .unwrap();
+        let cfg = PlatformConfig::load(Some(&config_path)).expect("loads");
+        assert_eq!(cfg.limits.default_monthly_operations, 42);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Wave 8 B-25: a typo in the PUBLISHED copy is schema-checked on its
+    /// own and the error names the file the operator edited — not the
+    /// package and not the app's config file.
+    #[test]
+    fn published_package_config_typo_names_the_published_file() {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "keel-pkgpub-bad-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("config").join("packages")).unwrap();
+        let pkg = root.join("packages").join("billing");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            pkg.join("module.toml"),
+            "[module]\nname = \"billing\"\nversion = \"0.3.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("packages.toml"),
+            "[[package]]\nname = \"billing\"\nversion = \"0.3.0\"\npath = \"packages/billing\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("config").join("packages").join("billing.toml"),
+            "[bogus_section]\nx = 1\n",
+        )
+        .unwrap();
+
+        let config_path = root.join("config").join("test.toml");
+        std::fs::write(&config_path, "[app]\nenv = \"test\"\n").unwrap();
+        let err = PlatformConfig::load(Some(&config_path)).expect_err("typo refused");
+        let msg = err.to_string();
+        assert!(msg.contains("GRAPH-CONFIG-SCHEMA"), "{msg}");
+        assert!(
+            msg.contains("packages") && msg.contains("billing.toml"),
+            "the error names the published copy: {msg}"
+        );
 
         std::fs::remove_dir_all(&root).ok();
     }

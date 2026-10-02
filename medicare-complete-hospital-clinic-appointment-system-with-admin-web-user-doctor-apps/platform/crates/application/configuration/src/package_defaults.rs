@@ -1,14 +1,16 @@
-//! Wave 8 B-24 (docs/19): boot-time package config defaults.
+//! Wave 8 B-24/B-25 (docs/19): boot-time package config defaults.
 //!
 //! A package listed in the root `packages.toml` index may ship a
-//! `[config]` table in its `module.toml` manifest. At boot those tables
-//! merge UNDER the app config file (documented layer: package `[config]`
-//! <- config file <- .env <- environment), so a package supplies defaults
-//! without being published or hand-edited into the host app. Precedence is
-//! per key: the file always wins, keys only packages declare fill in, and
-//! among packages the FIRST indexed entry wins. Defaults are
-//! schema-checked on their own before merging, so a package never smuggles
-//! a key past GRAPH-CONFIG-SCHEMA.
+//! `[config]` table in its `module.toml` manifest, and the operator may
+//! materialize an editable copy at `config/packages/<name>.toml`
+//! (`keel config:publish`). At boot the layers merge UNDER the app config
+//! file (documented layer: package `[config]` <- published copy <- config
+//! file <- .env <- environment): the config file wins per key, the
+//! published copy wins over the package's own manifest defaults, and
+//! among packages the FIRST indexed entry wins. Every layer is
+//! schema-checked on its own before merging, so a package (or an edit to
+//! its published copy) never smuggles a key past GRAPH-CONFIG-SCHEMA and
+//! the error always names the layer at fault.
 
 use std::path::Path;
 
@@ -32,37 +34,75 @@ pub(crate) fn apply(config_path: &Path, file_raw: String) -> Result<String, AppE
         let manifest = index
             .entry_manifest(root, entry)
             .map_err(|e| AppError::validation(format!("package config: {e}")))?;
-        let Some(config) = manifest.config.as_ref() else {
-            continue;
-        };
-        if !config.is_table() {
-            return Err(AppError::validation(format!(
-                "package {}: [config] must be a table",
-                entry.name
-            )));
+        let mut pkg_defaults = toml::Value::Table(toml::map::Map::new());
+        let mut any = false;
+        if let Some(config) = manifest.config.as_ref() {
+            if !config.is_table() {
+                return Err(AppError::validation(format!(
+                    "package {}: [config] must be a table",
+                    entry.name
+                )));
+            }
+            // Schema-check the manifest defaults themselves, fail-closed: a
+            // package never smuggles an unknown key past GRAPH-CONFIG-SCHEMA,
+            // and the error names the package rather than blaming the app's
+            // config file.
+            let raw = toml::to_string(config).map_err(|e| {
+                AppError::validation(format!("package {}: [config] serialize: {e}", entry.name))
+            })?;
+            let violations = schema_violations(&raw);
+            if !violations.is_empty() {
+                return Err(AppError::validation(format!(
+                    "{}: package {}: {} unknown key(s) in [config]: {}",
+                    CONFIG_SCHEMA_CODE,
+                    entry.name,
+                    violations.len(),
+                    violations
+                        .iter()
+                        .map(|v| v.key.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+            merge_first_wins(&mut pkg_defaults, config);
+            any = true;
         }
-        // Schema-check the defaults themselves, fail-closed: a package
-        // never smuggles an unknown key past GRAPH-CONFIG-SCHEMA, and the
-        // error names the package rather than blaming the app's config file.
-        let raw = toml::to_string(config).map_err(|e| {
-            AppError::validation(format!("package {}: [config] serialize: {e}", entry.name))
-        })?;
-        let violations = schema_violations(&raw);
-        if !violations.is_empty() {
-            return Err(AppError::validation(format!(
-                "{}: package {}: {} unknown key(s) in [config]: {}",
-                CONFIG_SCHEMA_CODE,
-                entry.name,
-                violations.len(),
-                violations
-                    .iter()
-                    .map(|v| v.key.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )));
+        // Wave 8 B-25: the published copy (`keel config:publish`) overlays
+        // the package's manifest defaults — the operator's edits win per
+        // key, still under the app config file. It is schema-checked on its
+        // own so a typo names the file the operator edited.
+        let published = root
+            .join("config")
+            .join("packages")
+            .join(format!("{}.toml", entry.name));
+        if published.is_file() {
+            let raw = std::fs::read_to_string(&published).map_err(|e| {
+                AppError::validation(format!("config read {}: {e}", published.display()))
+            })?;
+            let violations = schema_violations(&raw);
+            if !violations.is_empty() {
+                return Err(AppError::validation(format!(
+                    "{}: {} unknown key(s) in {}: {}",
+                    CONFIG_SCHEMA_CODE,
+                    violations.len(),
+                    published.display(),
+                    violations
+                        .iter()
+                        .map(|v| v.key.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+            let published_value: toml::Value = raw.parse().map_err(|e| {
+                AppError::validation(format!("config parse {}: {e}", published.display()))
+            })?;
+            pkg_defaults = merge_file_over(&pkg_defaults, published_value);
+            any = true;
         }
-        merge_first_wins(&mut defaults, config);
-        shipped = true;
+        if any {
+            merge_first_wins(&mut defaults, &pkg_defaults);
+            shipped = true;
+        }
     }
     if !shipped {
         return Ok(file_raw);

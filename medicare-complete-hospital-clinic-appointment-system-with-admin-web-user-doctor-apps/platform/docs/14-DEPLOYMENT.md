@@ -18,10 +18,12 @@ release.
 
 ## Configuration
 
-Layered: `defaults <- package [config] <- config/<env>.toml <- .env <- environment variables`.
-The package layer (Wave 8, B-24) is the `[config]` table of every package indexed by the root
-`packages.toml` — it fills keys the config file omits, never overrides them, and is schema-checked
-on its own before merging. Parsed, validated
+Layered: `defaults <- package [config] <- config/packages/<name>.toml (published) <- config/<env>.toml <- .env <- environment variables`.
+The package layers (Wave 8, B-24/B-25) are the `[config]` table of every package indexed by the
+root `packages.toml` plus its published, operator-editable copy at `config/packages/<name>.toml`
+(`keel config:publish`) — together they fill keys the config file omits, never override it, and
+are each schema-checked on their own before merging (an error in the published copy names the
+file). Parsed, validated
 (secrets asserted — production refuses silent defaults), normalized, then **frozen at boot** as an
 immutable `Arc<PlatformConfig>`. Environments: development, test, staging, production (+ benchmark,
 migration, worker postures).

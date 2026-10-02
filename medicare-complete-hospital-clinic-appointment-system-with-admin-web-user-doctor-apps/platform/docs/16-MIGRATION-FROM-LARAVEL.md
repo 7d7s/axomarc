@@ -40,7 +40,7 @@ belongs" and then discover "this is safer and more powerful."
 | `Str::plural` / `Str::singular` | `plural` / `singular` — documented English inflection subset | `crates/foundation/core` |
 | `Number::currency/percentage/precision/clamp` | Number helpers: `format_currency`, `format_percent`, `format_precision`, `clamp` (locale rules from the Wave 6 identities: en/fr/ar primary subtag, en fallback; curated ISO symbol + minor-unit tables) | `crates/foundation/core` |
 | `Carbon` (parse/format/timezone/now) | Date helpers: `parse_date_with` / `format_date_with` (closed `Y m d H i s` set — the `date_format` rule delegates here), `now_in` / `in_tz` / `local_wall` over the bundled IANA table | `crates/foundation/core` |
-| Composer package discovery | Package registry: root `packages.toml` index (`[[package]] { name, version, path }`), `keel pkg:list` / `keel pkg:add`, graph compile merges every indexed package's `module.toml` fail-closed (ABI-gated) | `crates/application/registry` |
+| Composer package discovery | Package registry: root `packages.toml` index (`[[package]] { name, version, path }`), `keel pkg:list` / `keel pkg:add`, graph compile merges every indexed package's `module.toml` fail-closed (ABI-gated); `keel publish` / `keel config:publish` materialize package resources (vendor:publish-class) | `crates/application/registry`, `tools/keel-console` |
 
 ## Per-concept detail
 
@@ -129,9 +129,15 @@ Difference: discovery is **compile-time**, not runtime — the root `packages.to
 local-path packages, `keel pkg:add <path>` validates the package's `module.toml` and appends it,
 `keel pkg:list` shows manifest + ABI compatibility, and graph compile merges the manifest through
 the same fail-closed gates as your own modules (an unusable entry refuses `keel check`/boot).
-Packages may ship `[config]` defaults that merge UNDER your config file at boot. Migration:
-replace `composer require` + provider auto-discovery with copying the package in, `keel pkg:add`,
-and a workspace member for its crate; v1 is local-path only (git fetch is out — zero-dep rule).
+Packages may ship `[config]` defaults that merge UNDER your config file at boot; `keel
+config:publish <package>` materializes an editable copy at `config/packages/<name>.toml` that
+layers above the manifest defaults and still under your config file. Package resources map
+`vendor:publish` to `keel publish <package>`: migrations (name-prefixed after the sqlx integer
+version), config and assets materialize byte-compared-idempotent — differing files are reported
+as conflicts and skipped unless `--force` — while views register under the `<name>::` namespace
+at boot (no copy). Migration: replace `composer require` + provider auto-discovery with copying
+the package in, `keel pkg:add`, `keel publish`, and a workspace member for its crate; v1 is
+local-path only (git fetch is out — zero-dep rule).
 
 ## Migration strategy, step by step
 

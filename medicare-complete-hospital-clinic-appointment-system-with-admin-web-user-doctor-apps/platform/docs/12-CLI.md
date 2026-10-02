@@ -20,6 +20,7 @@ against the same workspace/config the runtime uses.
 | `keel modules` | registered modules (version, maturity, plane, capability count) |
 | `keel pkg:list` | the root `packages.toml` index with each entry's manifest + ABI compatibility; exits non-zero when any entry is unusable (Wave 8, B-24) |
 | `keel pkg:add <path>` | validate the package's `module.toml` (the package v1 contract) and append it to `packages.toml` (stored root-relative; duplicates refused) (Wave 8, B-24) |
+| `keel publish <package> [--force]` | materialize an indexed package: migrations → `database/migrations/` (name-prefixed after the sqlx integer version), `[config]` → `config/packages/<name>.toml`, assets → `public/vendor/<name>/`; views register under `<name>::` at boot (no copy). Byte-compared idempotence: identical = skip, different = conflict (exit non-zero) unless `--force` (Wave 8, B-25) |
 | `keel route:list [--format table\|json] [--name F] [--path F] [--plane api\|web]` | declared routes with plane/group/version/deprecation columns; `--name`/`--path` are case-insensitive substring filters, `--plane` validates `api`/`web` (Wave 2) |
 | `keel route:cache` | write the pinned route artifact (Wave 1): resolved per-route middleware chains, bindings and validators → `storage/framework/routes.json`, hash-pinned to `module.toml` + `packages.toml` + indexed package manifests + `middleware.toml` + `MODULE_ABI`; boot refuses a stale artifact |
 | `keel route:clear` | delete the route artifact; boot falls back to live compilation |
@@ -75,6 +76,7 @@ against the same workspace/config the runtime uses.
 | `keel config:dump` | effective config, secrets redacted |
 | `keel config:cache` / `keel config:clear` | pin the frozen effective config to `storage/framework/config.json` + content hash / drop it; boot hash-check refuses drift (Wave 4) |
 | `keel config:show <key> [--json]` | print one config section with secrets redacted (Wave 4) |
+| `keel config:publish <package> [--force]` | materialize only the package's manifest `[config]` table to `config/packages/<name>.toml` (the editable overlay boot reads); same idempotence / conflict / `--force` cycle as `keel publish`; refuses packages without `[config]` (Wave 8, B-25) |
 | `keel serve [--worker]` | one-command local loop: spawns keel-api (and keel-worker), streams logs (S7) |
 | `keel shell` | interactive platform console (v1.1 B-29): REPL over the booted engine — login/whoami/ops/routes/caps/models/run under your principal (Wave 4 adds `caps` + `models`) |
 | `keel cache:clear` | clear the app cache |

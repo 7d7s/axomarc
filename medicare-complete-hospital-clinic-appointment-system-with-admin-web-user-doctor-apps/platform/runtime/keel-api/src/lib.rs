@@ -348,6 +348,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let views_engine =
         keel_views::ViewsEngine::new(views_config(cfg.views(), &root, env.as_str()));
     register_asset_directive(&views_engine, assets.clone());
+    // Wave 8 B-25: indexed packages register their view roots (no copy —
+    // the namespace resolves into the package directory).
+    register_package_view_namespaces(&root, &views_engine);
     let views = Some(Arc::new(views_engine));
 
     host.add_provider(Box::new(ConfigProvider {
@@ -877,6 +880,43 @@ fn register_asset_directive(
     });
 }
 
+/// Wave 8 B-25 (B-24 index): every indexed package serves its `views/`
+/// templates under its own namespace — `billing::welcome` resolves to
+/// `<pkg>/views/welcome.html` (dots map to directories, the same rule the
+/// app-side names use). No index (or an unusable one) installs no
+/// resolver, so `pkg::` names keep failing closed exactly like an engine
+/// without one; the boot config layer already refuses a malformed index,
+/// fail-closed, before this runs.
+fn register_package_view_namespaces(root: &std::path::Path, engine: &keel_views::ViewsEngine) {
+    let Ok(index) = keel_registry::PackageIndex::load(root) else {
+        return;
+    };
+    let roots: std::collections::HashMap<String, std::path::PathBuf> = index
+        .package
+        .iter()
+        .map(|entry| {
+            (
+                entry.name.clone(),
+                keel_registry::PackageIndex::entry_dir(root, entry).join("views"),
+            )
+        })
+        .collect();
+    if roots.is_empty() {
+        return;
+    }
+    engine.set_resolver(move |ns, name| {
+        let base = roots.get(ns)?;
+        let rel = name.replace('.', "/");
+        let file = if rel.ends_with(".html") {
+            rel
+        } else {
+            format!("{rel}.html")
+        };
+        let candidate = base.join(file);
+        candidate.is_file().then_some(candidate)
+    });
+}
+
 /// Wave 2 queued-cookie encryption (opt-in via `[http] encrypt_cookies`).
 /// The master key is derived from the application key and scoped to the
 /// cookie context, so one derived key cannot open another context's
@@ -1227,6 +1267,9 @@ pub fn build_app_state(
         env: "test".into(),
     });
     register_asset_directive(&views_engine, assets.clone());
+    // Wave 8 B-25: the harness mirrors the production posture — an index
+    // under the storage root registers package view namespaces too.
+    register_package_view_namespaces(storage_root, &views_engine);
     let views = Some(Arc::new(views_engine));
     // Wave 2 static assets: the harness resolves <storage_root>/public —
     // tests opt into the fallback through `static_assets::with_static_files`
@@ -1417,6 +1460,83 @@ mod wave6_mail_tests {
     /// views engine — a fixture `views/notifications/<type>.html` receives
     /// the `to_database()` payload as context, and a template that cannot
     /// render fails the dispatch (fail-closed once a view port is wired).
+    /// Wave 8 B-25: an indexed package registers its `views/` root under
+    /// its own namespace (`billing::welcome`), unknown namespaces fail
+    /// closed, and a package-less project installs no resolver at all
+    /// (namespace lookups behave exactly like an unwired engine).
+    #[test]
+    fn package_view_namespaces_register_from_the_index() {
+        let root = std::env::temp_dir().join(format!("keel-pkgviews-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(root.join("packages").join("billing").join("views"))
+            .expect("view dirs");
+        std::fs::write(
+            root.join("packages").join("billing").join("views").join("welcome.html"),
+            "pkg says hi",
+        )
+        .expect("fixture template");
+        std::fs::write(
+            root.join("packages.toml"),
+            "[[package]]\nname = \"billing\"\nversion = \"0.1.0\"\npath = \"packages/billing\"\n",
+        )
+        .expect("index");
+
+        let engine = keel_views::ViewsEngine::new(keel_views::ViewsConfig {
+            paths: vec![],
+            cache_dir: None,
+            env: "test".into(),
+        });
+        crate::register_package_view_namespaces(&root, &engine);
+        assert_eq!(
+            engine
+                .render("billing::welcome", serde_json::json!({}))
+                .expect("package view resolves"),
+            "pkg says hi"
+        );
+        // Dots map to directories under the package's view root.
+        std::fs::create_dir_all(
+            root.join("packages")
+                .join("billing")
+                .join("views")
+                .join("admin"),
+        )
+        .expect("nested view dir");
+        std::fs::write(
+            root.join("packages")
+                .join("billing")
+                .join("views")
+                .join("admin")
+                .join("invoice.html"),
+            "admin view",
+        )
+        .expect("nested template");
+        assert_eq!(
+            engine
+                .render("billing::admin.invoice", serde_json::json!({}))
+                .expect("dotted package view resolves"),
+            "admin view"
+        );
+        // Unknown namespace -> VIEW-NOT-FOUND, never a panic.
+        let err = engine
+            .render("ghost::welcome", serde_json::json!({}))
+            .expect_err("unknown namespace fails closed");
+        assert_eq!(err.code, keel_views::engine::VIEW_NOT_FOUND);
+
+        // No index -> no resolver installed -> namespaces stay closed.
+        let bare = std::env::temp_dir().join(format!("keel-pkgviews-bare-{}", uuid::Uuid::now_v7()));
+        let engine = keel_views::ViewsEngine::new(keel_views::ViewsConfig {
+            paths: vec![],
+            cache_dir: None,
+            env: "test".into(),
+        });
+        crate::register_package_view_namespaces(&bare, &engine);
+        let err = engine
+            .render("billing::welcome", serde_json::json!({}))
+            .expect_err("no index means no namespaces");
+        assert_eq!(err.code, keel_views::engine::VIEW_NOT_FOUND);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     #[tokio::test]
     async fn notification_html_mail_renders_through_the_views_engine() {
         use keel_notifications::{

@@ -36,7 +36,7 @@ tests/        architecture gate tests
 templates/    project-template + starter-template used by `keel new [--with-starter]`
 specs/        STAGE-0-FOUNDATION-SPEC (normative)
 database/     migrations + roles.sql
-config/       per-environment TOML (defaults <- package [config] <- file <- env)
+config/       per-environment TOML (defaults <- package [config] <- config/packages/*.toml <- file <- env)
 ```
 
 ## Run the examples
