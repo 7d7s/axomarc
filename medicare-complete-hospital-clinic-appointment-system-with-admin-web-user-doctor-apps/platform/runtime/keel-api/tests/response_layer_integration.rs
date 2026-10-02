@@ -490,3 +490,308 @@ async fn csrf_skip_paths_carry_a_declared_receiver_through() {
     assert!(!body.contains(CSRF_DENIED), "the skip path passes unsigned: {body}");
     assert_ne!(reply.status, StatusCode::FORBIDDEN, "{body}");
 }
+
+// ------------------------------------------- Wave 8 ADR 0007 JSON:API
+
+use std::sync::Arc;
+
+use keel_context::ExecutionContext;
+use keel_execution::{BoxFuture, ExecutionPlan, ExecutionUnit, OperationHandler};
+use keel_foundation::{AppError, ExecutionProfileKind, OperationId};
+
+/// A standalone resource module: `resource = "notes"` expands into the
+/// CRUD verbs (only `index`/`show` here), and one plain route proves the
+/// header is ignored outside resource routes (ADR 0007 activation).
+const NOTES_MODULE: &str = r#"[module]
+name = "notes"
+api = 1
+version = "0.1.0"
+maturity = "L0"
+plane = "tenant"
+description = "JSON:API negotiation fixture"
+
+[capabilities]
+index = { profile = "READ", inputs = ["page"] }
+show = { profile = "READ", inputs = [] }
+
+[dependencies]
+contracts = []
+
+[[routes]]
+resource = "notes"
+name = "notes"
+only = ["index", "show"]
+plane = "api"
+response = "json"
+public = true
+
+[[routes]]
+method = "GET"
+path = "/plain"
+operation = "index"
+capability = "index"
+plane = "api"
+response = "json"
+public = true
+"#;
+
+/// The canonical list result the `notes.index` stub returns: wrap-shaped
+/// body + reserved `included` + page meta, exactly what a resource handler
+/// renders through `ResourceCollection`/`from_page`.
+fn index_result() -> Value {
+    serde_json::json!({
+        "data": [
+            {
+                "id": "n-1",
+                "title": "first note",
+                "body": "hello",
+                "relationships": { "author": { "data": { "type": "people", "id": "p-1" } } }
+            },
+            { "id": 2, "title": "second note", "body": "world" }
+        ],
+        "included": [
+            { "type": "people", "id": "p-1", "name": "Ada" },
+            { "type": "people", "id": "p-1", "name": "dupe" },
+            { "id": "orphan", "name": "no type" }
+        ],
+        "meta": { "page": 1, "per_page": 2, "total": 3, "has_more": true }
+    })
+}
+
+/// The canonical item result the `notes.show` stub returns — its own `type`
+/// member must never land in `attributes`.
+fn show_result() -> Value {
+    serde_json::json!({
+        "data": {
+            "id": "n-1",
+            "type": "note",
+            "title": "first note",
+            "body": "hello"
+        }
+    })
+}
+
+/// Fixture operation: plan + fixed result (public/anonymous read).
+struct StubOperation {
+    plan: ExecutionPlan,
+    result: Value,
+}
+
+impl OperationHandler for StubOperation {
+    fn plan(&self) -> &ExecutionPlan {
+        &self.plan
+    }
+
+    fn handle(
+        &self,
+        _ctx: Arc<ExecutionContext>,
+        _input: Value,
+        _unit: &mut dyn ExecutionUnit,
+    ) -> BoxFuture<'static, Result<Value, AppError>> {
+        let result = self.result.clone();
+        Box::pin(async move { Ok(result) })
+    }
+}
+
+fn stub(operation: &'static str, result: Value) -> Arc<StubOperation> {
+    let mut plan = ExecutionPlan::new(OperationId::from_static(operation), ExecutionProfileKind::Read);
+    // Public fixture route: the HTTP edge admits anonymous callers only
+    // when the plan says authorization is not required.
+    plan.authorization.required = false;
+    Arc::new(StubOperation { plan, result })
+}
+
+/// The production router assembly over the notes fixture: stub operations
+/// registered on the bus before any clone, then the same layers the other
+/// suites in this file mount (sessions + edge).
+fn jsonapi_router() -> axum::Router {
+    let dir = std::env::temp_dir().join(format!("keel-jsonapi-it-{}", uuid::Uuid::now_v7()));
+    std::fs::create_dir_all(dir.join("views")).expect("views fixture dir");
+    let (mut state, _, _) = keel_api::build_app_state(&dir, true, true);
+    let bus = Arc::get_mut(&mut state.bus).expect("sole bus handle");
+    bus.register(stub("notes.index", index_result()))
+        .expect("index stub registers");
+    bus.register(stub("notes.show", show_result()))
+        .expect("show stub registers");
+
+    let manifest =
+        keel_registry::ModuleManifest::from_toml(NOTES_MODULE).expect("notes manifest parses");
+    let graph =
+        keel_registry::PlatformGraph::compile(vec![manifest]).expect("notes graph compiles");
+
+    let router = keel_api::routes::router(state.clone())
+        .merge(keel_api::graph_routes::graph_router(state.clone(), &graph))
+        .merge(keel_api::auth_routes::router(state.clone()));
+    let router = state
+        .sessions
+        .as_ref()
+        .expect("sessions enabled")
+        .as_ref()
+        .clone()
+        .apply(router);
+    router.layer(axum::middleware::from_fn_with_state(
+        state.edge_config(),
+        keel_api::edge::edge_mw,
+    ))
+}
+
+async fn get_accept(router: &axum::Router, uri: &str, accept: &str) -> Reply {
+    send(
+        router,
+        Request::builder()
+            .method(Method::GET)
+            .uri(uri)
+            .header(header::ACCEPT, accept)
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn jsonapi_negotiation_renders_the_compound_document() {
+    let router = jsonapi_router();
+    let reply = get_accept(&router, "/notes?page=1&per_page=2", "application/vnd.api+json").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    assert_eq!(reply.content_type, "application/vnd.api+json");
+
+    let document: Value = serde_json::from_slice(&reply.body).expect("JSON:API document parses");
+    assert!(document.get("ok").is_none(), "never the envelope: {document}");
+
+    let data = document["data"].as_array().expect("collection primary data");
+    assert_eq!(data.len(), 2);
+    assert_eq!(data[0]["type"], "notes");
+    assert_eq!(data[0]["id"], "n-1");
+    assert_eq!(data[1]["id"], "2", "non-scalar ids lift as canonical strings");
+    assert_eq!(data[0]["attributes"]["title"], "first note");
+    assert!(data[0]["attributes"].get("id").is_none());
+    assert!(data[0]["attributes"].get("type").is_none());
+    assert!(data[0]["attributes"].get("relationships").is_none());
+    assert!(data[0]["attributes"].get("included").is_none());
+    assert_eq!(data[0]["relationships"]["author"]["data"]["type"], "people");
+    assert!(
+        data[1].get("relationships").is_none(),
+        "an emptied relationships object is omitted"
+    );
+
+    let included = document["included"].as_array().expect("compound includes");
+    assert_eq!(included.len(), 1, "dedupe by (type, id), drop bad entries");
+    assert_eq!(included[0]["type"], "people");
+    assert_eq!(included[0]["id"], "p-1");
+    assert_eq!(included[0]["attributes"]["name"], "Ada");
+    assert!(included[0].get("links").is_none(), "no self on included");
+
+    assert_eq!(document["meta"]["page"], 1);
+    assert_eq!(document["meta"]["has_more"], true);
+    assert_eq!(document["links"]["self"], "/notes?page=1&per_page=2");
+    assert_eq!(document["links"]["first"], "/notes?per_page=2&page=1");
+    assert_eq!(document["links"]["next"], "/notes?per_page=2&page=2");
+    assert_eq!(document["links"]["last"], "/notes?per_page=2&page=2");
+    assert!(document["links"].get("prev").is_none(), "no prev at page 1");
+}
+
+#[tokio::test]
+async fn jsonapi_item_documents_carry_self_links_and_strip_reserved_members() {
+    let router = jsonapi_router();
+    let reply = get_accept(&router, "/notes/n-1", "application/vnd.api+json").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+
+    let document: Value = serde_json::from_slice(&reply.body).expect("JSON:API document parses");
+    assert_eq!(document["data"]["type"], "notes");
+    assert_eq!(document["data"]["id"], "n-1");
+    assert_eq!(document["data"]["links"]["self"], "/notes/n-1");
+    assert_eq!(document["links"]["self"], "/notes/n-1");
+    assert_eq!(document["data"]["attributes"]["title"], "first note");
+    assert!(
+        document["data"]["attributes"].get("type").is_none(),
+        "the body's reserved type never lands in attributes"
+    );
+    assert_eq!(
+        document["links"].as_object().expect("links").len(),
+        1,
+        "no page meta -> self only"
+    );
+}
+
+#[tokio::test]
+async fn jsonapi_negotiation_absent_falls_back_to_the_default_envelope() {
+    let router = jsonapi_router();
+    let expected =
+        serde_json::to_vec(&keel_http::Envelope::ok(index_result())).expect("envelope serializes");
+
+    // No Accept header: today's bytes, byte for byte.
+    let reply = get(&router, "/notes?page=1&per_page=2").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    assert_eq!(reply.content_type, "application/json");
+    assert_eq!(reply.body, expected, "the default wire is byte-identical");
+
+    // An Accept that does not ask for JSON:API - same bytes.
+    let reply = get_accept(&router, "/notes?page=1&per_page=2", "application/json").await;
+    assert_eq!(reply.content_type, "application/json");
+    assert_eq!(reply.body, expected);
+
+    // q=0 explicitly refuses the media type - same bytes.
+    let reply = get_accept(
+        &router,
+        "/notes?page=1&per_page=2",
+        "application/vnd.api+json;q=0",
+    )
+    .await;
+    assert_eq!(reply.content_type, "application/json");
+    assert_eq!(reply.body, expected);
+
+    // Non-resource routes ignore the header entirely (ADR 0007 activation).
+    let reply = get_accept(&router, "/plain", "application/vnd.api+json").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    assert_eq!(reply.content_type, "application/json");
+    let body: Value = serde_json::from_slice(&reply.body).expect("envelope parses");
+    assert_eq!(body["ok"], true);
+    assert!(
+        body["data"]["data"].is_array(),
+        "the resource wrap stays: {body}"
+    );
+}
+
+#[tokio::test]
+async fn jsonapi_media_type_parameters_are_refused_with_406() {
+    let router = jsonapi_router();
+    let reply = get_accept(&router, "/notes", "application/vnd.api+json;ext[]=foo").await;
+    assert_eq!(reply.status, StatusCode::NOT_ACCEPTABLE, "{}", reply.text());
+    assert_eq!(reply.content_type, "application/json");
+
+    let body: Value = serde_json::from_slice(&reply.body).expect("refusal parses");
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["error"]["code"], "KER_NOT_ACCEPTABLE");
+    assert_eq!(body["error"]["message"], "unsupported media type parameters");
+    assert_eq!(body["error"]["retryable"], false);
+    assert!(
+        body.get("data").is_none(),
+        "the standard envelope, not a JSON:API document: {body}"
+    );
+}
+
+#[tokio::test]
+async fn jsonapi_sparse_fieldsets_filter_attributes_at_the_http_edge() {
+    let router = jsonapi_router();
+    let reply = get_accept(
+        &router,
+        "/notes?fields[notes]=title,author",
+        "application/vnd.api+json",
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+
+    let document: Value = serde_json::from_slice(&reply.body).expect("JSON:API document parses");
+    let data = &document["data"][0];
+    assert_eq!(data["id"], "n-1", "id/type survive a fieldset");
+    assert_eq!(data["type"], "notes");
+    assert_eq!(data["attributes"]["title"], "first note");
+    assert!(
+        data["attributes"].get("body").is_none(),
+        "unlisted attribute filtered"
+    );
+    assert!(
+        data["relationships"].get("author").is_some(),
+        "listed relationship kept"
+    );
+}

@@ -155,6 +155,11 @@ pub struct RouteDispatch {
     pub deprecated: bool,
     /// GET routes parse page/per_page and inject _page (Wave 1 pagination).
     pub inject_page: bool,
+    /// JSON:API type name (Wave 8 ADR 0007): `Some` on expanded resource
+    /// routes (`resource = "<name>"`), derived from the route name's
+    /// `{basename}.{op}` prefix — the declared resource name, stable across
+    /// path renames.
+    pub resource_type: Option<String>,
     /// Path-parameter -> model bindings resolved before dispatch.
     pub bindings: Vec<BindingSpec>,
     /// Compiled manifest validation for this route's operation (collect-all).
@@ -180,6 +185,27 @@ pub struct RouteDispatch {
 /// through unchanged (axum rejects the old :param form).
 fn axum_path(spec_path: &str) -> String {
     spec_path.to_string()
+}
+
+/// The JSON:API `type` for an expanded resource route (ADR 0007). Registry
+/// expansion names every verb `{basename}.{op}` where the basename is the
+/// declared `resource = "<name>"` (or the route's own `name`), so the
+/// prefix before the last dot is the resource name — stable across path
+/// renames. Falls back to the first literal path segment.
+fn jsonapi_type_name(spec: &RouteSpec) -> String {
+    spec.name
+        .as_deref()
+        .and_then(|name| name.rsplit_once('.'))
+        .map(|(prefix, _)| prefix)
+        .filter(|prefix| !prefix.is_empty())
+        .or_else(|| {
+            spec.path
+                .trim_start_matches('/')
+                .split('/')
+                .find(|segment| !segment.is_empty() && !segment.starts_with('{'))
+        })
+        .unwrap_or("resource")
+        .to_string()
 }
 
 /// The wire methods a manifest `method` answers (19-PARITY route dispatch):
@@ -430,6 +456,7 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
                 public: spec.public,
                 deprecated: spec.deprecated,
                 inject_page: spec.method.eq_ignore_ascii_case("get"),
+                resource_type: spec.from_resource.then(|| jsonapi_type_name(spec)),
                 bindings: cached
                     .map(|plan| plan.bindings.clone())
                     .unwrap_or_else(|| spec.bindings.clone()),
@@ -788,6 +815,7 @@ pub(crate) fn not_found_response(
         public: true,
         deprecated: false,
         inject_page: false,
+        resource_type: None,
         bindings: Vec::new(),
         validator: None,
         route_plane: RoutePlane::Web,
@@ -1220,7 +1248,7 @@ fn render_success(
     state: &AppState,
     dispatch: &RouteDispatch,
     headers: &HeaderMap,
-    path: &str,
+    request_target: &str,
     session: Option<ResolvedSession>,
     view_auth: Option<String>,
     result: serde_json::Value,
@@ -1228,6 +1256,12 @@ fn render_success(
     use keel_foundation::AppError;
     match dispatch.response {
         ResponseKind::Html => {
+            // The route was registered on the path, never on the query —
+            // `request_target` is that path with the query re-appended.
+            let path = match request_target.split_once('?') {
+                Some((path, _)) => path,
+                None => request_target,
+            };
             // Wave 6 P3: same pure resolution the dispatcher ran for
             // validation/context (session + headers ⇒ identical outcome).
             let locale = crate::i18n::resolve(
@@ -1246,6 +1280,58 @@ fn render_success(
         ResponseKind::Download => Ok((download_response(state, result)?, None)),
         ResponseKind::Stream => Ok((stream_response(result)?, None)),
         ResponseKind::Json => {
+            // Wave 8 ADR 0007: a resource route whose Accept negotiation
+            // matches answers with a JSON:API document; a matched entry
+            // with media-type parameters refuses with a 406 through the
+            // standard error path. Absent/q=0 falls through to today's
+            // bytes (byte-identical default).
+            if let Some(type_name) = &dispatch.resource_type {
+                let accept = headers.get(header::ACCEPT).and_then(|v| v.to_str().ok());
+                match keel_http::jsonapi::negotiate(accept) {
+                    keel_http::jsonapi::Negotiation::UnsupportedParameters => {
+                        return Err(AppError::not_acceptable());
+                    }
+                    keel_http::jsonapi::Negotiation::Matched => {
+                        let split = keel_http::jsonapi::split(&result);
+                        let query = request_target
+                            .split_once('?')
+                            .map(|(_, query)| query)
+                            .filter(|query| !query.is_empty());
+                        let mut document = keel_http::jsonapi::render_document(
+                            type_name,
+                            &split,
+                            query,
+                            request_target,
+                        );
+                        if dispatch.deprecated {
+                            // Envelope parity: `meta.deprecated` rides the
+                            // document the way it rides the envelope.
+                            if let Some(document) = document.as_object_mut() {
+                                let meta = document
+                                    .entry("meta")
+                                    .or_insert_with(|| serde_json::json!({}));
+                                if let Some(meta) = meta.as_object_mut() {
+                                    meta.insert(
+                                        "deprecated".to_string(),
+                                        serde_json::json!(true),
+                                    );
+                                }
+                            }
+                        }
+                        let bytes = serde_json::to_vec(&document).map_err(|_| {
+                            AppError::internal("JSON:API document could not be serialized")
+                        })?;
+                        let response = (
+                            StatusCode::OK,
+                            [(header::CONTENT_TYPE, keel_http::jsonapi::MEDIA_TYPE)],
+                            Body::from(bytes.clone()),
+                        )
+                            .into_response();
+                        return Ok((response, Some(bytes)));
+                    }
+                    keel_http::jsonapi::Negotiation::Absent => {}
+                }
+            }
             let mut envelope = Envelope::ok(result);
             if dispatch.deprecated {
                 envelope = envelope.with_meta(serde_json::json!({ "deprecated": true }));
@@ -1567,6 +1653,12 @@ async fn graph_dispatch(
 
     let uri = req.uri().clone();
     let path = uri.path().to_string();
+    // The full request target (path?query) — JSON:API links.self and
+    // pagination rewriting read it verbatim (ADR 0007).
+    let request_target = match uri.query() {
+        Some(query) => format!("{path}?{query}"),
+        None => path.clone(),
+    };
     let method = req.method().clone();
     let body = match axum::body::to_bytes(req.into_body(), state.body_limit).await {
         Ok(bytes) => bytes,
@@ -1911,7 +2003,7 @@ async fn graph_dispatch(
                 &state,
                 &dispatch,
                 &headers,
-                &path,
+                &request_target,
                 resolved_session,
                 view_auth,
                 outcome.result,
@@ -2252,6 +2344,7 @@ operation = "index"
             public: true,
             deprecated: false,
             inject_page: is_get,
+            resource_type: None,
             bindings: Vec::new(),
             validator: None,
             route_plane: RoutePlane::Api,

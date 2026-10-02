@@ -1,7 +1,11 @@
 # ADR 0007 — JSON:API spec server (compound documents over Wave 3 resources)
 
-Status: **Proposed** (2026-10-02) · Gate: Wave 8 decision gate (docs/19, "Decision gates") ·
-Implementation: only after the gate passes review
+Status: **Accepted** (2026-10-02) · Gate: Wave 8 decision gate (docs/19, "Decision gates") ·
+Implementation: landed 2026-10-02, the day the gate passed review — serializer in
+`crates/web/http/src/jsonapi.rs` (`negotiate`/`split`/`render_document`), consulted by
+`render_success`; the 406 refusal is `AppError::not_acceptable()` (`KER_NOT_ACCEPTABLE`)
+with its wire status pinned in both keel-api error-render registries.
+Implementation-reconciliation notes are folded into the sections below.
 
 ## Context
 
@@ -25,7 +29,11 @@ Constraints the decision must honor:
 
 ### Activation (content negotiation)
 
-- A resource route (its `RouteSpec` declares `resource = "<name>"`) answers with a
+- A resource route (its `RouteSpec` declares `resource = "<name>"` — at the dispatch edge
+  these are the expanded CRUD routes carrying `from_resource`, each named
+  `{basename}.{op}` where the basename is that declared resource name; that basename is
+  the document `type`, carried on `RouteDispatch.resource_type` so no other route can
+  negotiate) answers with a
   JSON:API 1.1 document **when the request's `Accept` header contains the media type
   `application/vnd.api+json`**.
 - `Accept` is parsed as a comma list with `q` weights (case-insensitive essence match).
@@ -43,6 +51,15 @@ Constraints the decision must honor:
 Input is the `Resource::from_source` body (item object or array) — the Laravel-style
 `wrap()` step is replaced by the JSON:API document, not applied on top of it.
 
+*Implementation reconciliation:* handlers return that body through the existing wrap, so
+`jsonapi::split` reads the wrap back off — the payload is the `data` slot when present
+(item or array); otherwise the remaining members are the body and custom wrap keys read
+as attributes (documented collision: a body with its own `data` member must use the
+default wrap contract). Top-level `meta` (non-empty object) and the reserved `included`
+array are lifted off as siblings in either shape. A scalar body fails closed to
+`data: null`, and a non-object entry in a collection is dropped rather than emit a
+spec-invalid document.
+
 For one resource object:
 
 | JSON:API member | Source |
@@ -51,7 +68,7 @@ For one resource object:
 | `id` | lifted from the body's `id` member when it is a scalar (string kept verbatim, other scalars rendered as their canonical string); absent/non-scalar → `"id": null` |
 | `attributes` | the body minus the reserved members `id`, `type`, `relationships`, `included` |
 | `relationships` | body's reserved `relationships` member, shape-checked: only members whose `data` is `{type, id}` or an array thereof survive; an emptied object is omitted |
-| `links.self` | the request URI (named routes: `PlatformGraph::resolve_url` when the route has a name) |
+| `links.self` | the request URI, verbatim (`path?query` — the earlier `PlatformGraph::resolve_url`-when-named note is superseded: that resolver needs extracted path parameters the pure serializer never sees) |
 
 - **Collections**: a body that is an array becomes `data: [ ... ]` with order preserved;
   each entry maps by the same rules.
@@ -82,19 +99,29 @@ For one resource object:
 
 ### Implementation locus
 
-Serializer in `crates/web/http/src/jsonapi.rs` (pure: resource name + body + meta +
-query + request URI → `serde_json::Value`), consulted by `render_success` when negotiation
-matched on a `from_resource` route. No engine, registry, config, or manifest surface
-moves.
+Serializer in `crates/web/http/src/jsonapi.rs` (pure: resource name + split payload/meta/
+included + query + request URI → `serde_json::Value`), consulted by `render_success` when
+negotiation matched on a `from_resource` route (`RouteDispatch.resource_type` carries the
+derived type name). The 406 refusal is `AppError::not_acceptable()` — code
+`KER_NOT_ACCEPTABLE`, Validation category (non-reportable client mistake) — with the
+wire status pinned to HTTP 406 by `ErrorRenderRegistry::set_status` at BOTH keel-api
+state constructors (production boot and the test harness); the registry itself stays
+empty until a module registers, per its contract. Deprecated routes merge
+`deprecated: true` into the document meta (envelope parity with `meta.deprecated`), and
+the response still flows through the shared `Deprecation` header + caching pass. No
+engine, registry, config, or manifest surface moves.
 
 ## Consequences
 
 - Zero new dependencies (budget untouched); `MODULE_ABI` stays 1 (no manifest fields).
 - Default wire bytes are unchanged, so the existing suite count is unaffected; the
-  evidence matrix lands in EXISTING suites (keel-http unit matrix: item/collection,
+  evidence matrix landed in EXISTING suites (keel-http unit matrix: item/collection,
   id+type lift, reserved-member stripping, relationships shape check, include dedupe +
   bad-entry drop, sparse fieldsets, links at bounds, parameter-reject 406; keel-api:
-  negotiation roundtrip on a resource route) — suite count stays 150.
+  negotiation roundtrip on a resource route) as 13 `jsonapi` unit tests plus 5
+  `response_layer_integration` HTTP tests — including a byte-for-byte default-path
+  assertion against `Envelope::ok` output for absent / `q=0` / plain-JSON `Accept` —
+  suite count stays 150.
 - Resources gain a second stable wire profile without a trait change: mapping reads only
   the body value and the route declaration, so generated `Resource` impls need no edits.
 - The envelope/error posture stays platform-native even under negotiation — a JSON:API

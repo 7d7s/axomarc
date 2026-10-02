@@ -300,6 +300,12 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Wave 2 error rendering: one registry per boot, published to every
     // module provider (Foundation phase) and read by the dispatch edge.
     let error_renders = Arc::new(keel_http::ErrorRenderRegistry::new());
+    // Wave 8 ADR 0007: content-negotiation refusals are protocol-fixed at
+    // HTTP 406 (the Validation category default would be 422).
+    error_renders.set_status(
+        keel_foundation::codes::NOT_ACCEPTABLE,
+        axum::http::StatusCode::NOT_ACCEPTABLE,
+    );
     host.add_provider(Box::new(host::ErrorRenderProvider {
         registry: error_renders.clone(),
     }));
@@ -1303,6 +1309,12 @@ pub fn build_app_state(
     // production does (services may register into it), with both transport
     // gates closed so tests opt in explicitly.
     let error_renders = Arc::new(keel_http::ErrorRenderRegistry::new());
+    // Wave 8 ADR 0007: the harness pins the same protocol-fixed 406 for
+    // content-negotiation refusals production serves.
+    error_renders.set_status(
+        keel_foundation::codes::NOT_ACCEPTABLE,
+        axum::http::StatusCode::NOT_ACCEPTABLE,
+    );
 
     // Wave 2 routing edge: a fixed harness application key backs the signed
     // URL gate, and a fresh (empty) tenant registry tests can seed through

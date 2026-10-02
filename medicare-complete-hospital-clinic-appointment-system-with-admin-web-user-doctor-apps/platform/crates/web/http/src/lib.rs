@@ -10,6 +10,7 @@ pub mod cookie;
 pub mod csrf;
 pub mod error_render;
 pub mod flash;
+pub mod jsonapi;
 pub mod jwt;
 pub mod middleware;
 pub mod middleware_catalog;

@@ -1524,7 +1524,7 @@ This table assigns the final strategic decision, not merely today's runtime stat
 | Eloquent | EQUIVALENT future ORM runtime |
 | Factories | EQUIVALENT future |
 | API resources | EQUIVALENT future |
-| JSON:API | EQUIVALENT future (decision gate docs delivered Wave 8 P6: `specs/ADR/0007` decision doc + resource mapping spec; implementation only after the gate passes review) |
+| JSON:API | EQUIVALENT (decision gate passed review 2026-10-02: `specs/ADR/0007` Accepted — compound-document server implemented over resource routes: content negotiation, sparse fieldsets, includes, links, 406 media-type-parameter refusal, byte-identical default; `filter[]`/`sort[]`/cursor conventions recorded as future gates) |
 | AI/MCP | SUPERSEDED |
 | Testing | EQUIVALENT (assertion-bearing fakes + TestResponse/TestApp assertion matrix + time travel + savepoint isolation + factory runtime landed Wave 7) |
 | Browser automation / Dusk | DELIBERATELY EXCLUDED from core v1; ecosystem |

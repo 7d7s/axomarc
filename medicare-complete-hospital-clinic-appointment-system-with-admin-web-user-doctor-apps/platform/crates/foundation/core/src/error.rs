@@ -40,6 +40,7 @@ pub mod codes {
     pub const DENIED: &str = "AUTH_DENIED";
     pub const STALE_REVISION: &str = "AUTH_STALE_REVISION";
     pub const NOT_FOUND: &str = "KER_NOT_FOUND";
+    pub const NOT_ACCEPTABLE: &str = "KER_NOT_ACCEPTABLE";
     pub const CONFLICT: &str = "KER_CONFLICT";
     pub const WORKFLOW: &str = "KER_WORKFLOW";
     pub const MISSING_DELTA: &str = "KER_MISSING_DELTA";
@@ -143,6 +144,21 @@ impl AppError {
             Severity::Low,
             Retryability::NotRetryable,
             format!("{resource} not found"),
+        )
+    }
+
+    /// Content negotiation refused the request's media-type parameters
+    /// (JSON:API `Accept` parameters, ADR 0007). Validation category keeps
+    /// this a non-reportable client mistake; the error-render registry pins
+    /// the wire status to HTTP 406 at every boot (the category default is
+    /// 422).
+    pub fn not_acceptable() -> Self {
+        Self::new(
+            codes::NOT_ACCEPTABLE,
+            ErrorCategory::Validation,
+            Severity::Low,
+            Retryability::NotRetryable,
+            "unsupported media type parameters",
         )
     }
 
