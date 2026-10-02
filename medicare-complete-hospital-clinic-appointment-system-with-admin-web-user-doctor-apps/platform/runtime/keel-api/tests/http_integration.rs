@@ -5090,3 +5090,346 @@ async fn oauth_clients_manage_requires_the_capability() {
     .expect_err("the gate refuses");
     assert_eq!(denied.code, keel_foundation::codes::DENIED);
 }
+
+// --------------------------------------------- Wave 8 ADR 0008 Precognition
+
+/// Attach the Precognition header to any built request.
+fn with_precognition(mut req: Request<Body>, value: &str) -> Request<Body> {
+    req.headers_mut().insert(
+        header::HeaderName::from_static("precognition"),
+        header::HeaderValue::from_str(value).expect("header value"),
+    );
+    req
+}
+
+/// A multipart POST carrying text fields AND a file part - the intake shape
+/// a precognition probe must refuse BEFORE any part is stored.
+fn multipart_with_fields(
+    uri: &str,
+    cookie: &str,
+    fields: &[(&str, &str)],
+    filename: &str,
+    content_type: &str,
+    data: &[u8],
+) -> Request<Body> {
+    let boundary = "keel-precognition-boundary";
+    let mut body = Vec::new();
+    for (name, value) in fields {
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+        );
+        body.extend_from_slice(value.as_bytes());
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        format!("Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n")
+            .as_bytes(),
+    );
+    body.extend_from_slice(format!("Content-Type: {content_type}\r\n\r\n").as_bytes());
+    body.extend_from_slice(data);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(
+            header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .header(header::COOKIE, cookie)
+        .body(Body::from(body))
+        .unwrap()
+}
+
+/// ADR 0008 Outcome: a probe whose payload would pass answers 204 with no
+/// body and never reaches the bus - the store proves it. An unrecognized
+/// header value is treated as absent (never a failure), so the same payload
+/// then dispatches normally.
+#[tokio::test]
+async fn precognition_pass_returns_204_without_dispatching() {
+    let app = app();
+    let email = format!("preco-{}@clinic.test", uuid::Uuid::now_v7());
+    let cookie = register(&app, &email).await.session_cookie().unwrap();
+    let tenant = app.state.default_tenant_id.unwrap();
+    assert_eq!(app.store.count(tenant).unwrap(), 0, "fixture: empty store");
+    let payload =
+        serde_json::json!({ "patient": "A. Patient", "slot": "2026-09-01T10:00Z" });
+
+    // Matched ASCII case-insensitively, value trimmed + case-insensitive.
+    let probe = send(
+        &app,
+        with_precognition(
+            json_req(
+                Method::POST,
+                "/api/v1/appointments",
+                payload.clone(),
+                Some(&cookie),
+                None,
+            ),
+            "TrUe",
+        ),
+    )
+    .await;
+    assert_eq!(probe.status, StatusCode::NO_CONTENT, "{}", probe.body);
+    assert_eq!(probe.body, Value::Null, "204 carries no body");
+    assert_eq!(
+        app.store.count(tenant).unwrap(),
+        0,
+        "no dispatch happened below the return"
+    );
+
+    // An unrecognized value is absent - the request runs for real.
+    let miss = send(
+        &app,
+        with_precognition(
+            json_req(
+                Method::POST,
+                "/api/v1/appointments",
+                payload,
+                Some(&cookie),
+                None,
+            ),
+            "sometimes",
+        ),
+    )
+    .await;
+    assert_eq!(miss.status, StatusCode::OK, "{}", miss.body);
+    assert_eq!(app.store.count(tenant).unwrap(), 1, "absent = full dispatch");
+}
+
+/// ADR 0008 Outcome: validation fails -> the existing 422 envelope, one
+/// response two causes - byte-identical to the same failure without the
+/// header (same wording, same `fields` meta).
+#[tokio::test]
+async fn precognition_failure_is_the_byte_identical_422_envelope() {
+    let app = app();
+    let email = format!("preco-bad-{}@clinic.test", uuid::Uuid::now_v7());
+    let cookie = register(&app, &email).await.session_cookie().unwrap();
+    let payload = serde_json::json!({ "patient": "A. Patient", "slot": "not-a-date" });
+
+    let probe = send(
+        &app,
+        with_precognition(
+            json_req(
+                Method::POST,
+                "/api/v1/appointments",
+                payload.clone(),
+                Some(&cookie),
+                None,
+            ),
+            "true",
+        ),
+    )
+    .await;
+    assert_eq!(
+        probe.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        probe.body
+    );
+    assert_eq!(probe.error_code(), keel_foundation::codes::VALIDATION);
+    let fields = &probe.body["error"]["meta"]["fields"];
+    assert!(
+        fields["slot"].is_array(),
+        "collect-all still reports: {}",
+        probe.body
+    );
+
+    let normal = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/api/v1/appointments",
+            payload,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(normal.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        probe.body.to_string(),
+        normal.body.to_string(),
+        "the 422 is byte-identical with and without the header"
+    );
+}
+
+/// ADR 0008 Outcome: a route with no `[[validation]]` specs vacuous-passes
+/// to 204 (nothing to check); without the header the default wire is
+/// untouched.
+#[tokio::test]
+async fn precognition_vacuous_passes_routes_without_validation() {
+    let app = app();
+    // `availability` is public and declares no validation specs.
+    let probe = send(
+        &app,
+        with_precognition(
+            json_req(
+                Method::GET,
+                "/api/v1/appointments/availability",
+                Value::Null,
+                None,
+                None,
+            ),
+            "true",
+        ),
+    )
+    .await;
+    assert_eq!(probe.status, StatusCode::NO_CONTENT, "{}", probe.body);
+    assert_eq!(probe.body, Value::Null);
+
+    let full = send(
+        &app,
+        json_req(
+            Method::GET,
+            "/api/v1/appointments/availability",
+            Value::Null,
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(full.status, StatusCode::OK, "{}", full.body);
+    assert_eq!(full.body["ok"], true);
+}
+
+/// ADR 0008 Refusal: multipart intake stores upload parts BEFORE the
+/// validator, so the probe refuses the body with the documented message
+/// - and the SAME body without the header intakes and books normally,
+/// proving the refusal (not the multipart shape) produced the 422.
+#[tokio::test]
+async fn precognition_refuses_multipart_bodies_before_intake() {
+    let app = app();
+    let email = format!("preco-mp-{}@clinic.test", uuid::Uuid::now_v7());
+    let cookie = register(&app, &email).await.session_cookie().unwrap();
+    let tenant = app.state.default_tenant_id.unwrap();
+    let fields = [
+        ("patient", "A. Patient"),
+        ("slot", "2026-09-01T10:00Z"),
+    ];
+
+    let probe = send(
+        &app,
+        with_precognition(
+            multipart_with_fields(
+                "/api/v1/appointments",
+                &cookie,
+                &fields,
+                "report.csv",
+                "text/csv",
+                b"ignored",
+            ),
+            "true",
+        ),
+    )
+    .await;
+    assert_eq!(
+        probe.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        probe.body
+    );
+    assert_eq!(probe.error_code(), keel_foundation::codes::VALIDATION);
+    assert_eq!(
+        probe.body["error"]["message"],
+        "precognition does not accept multipart bodies"
+    );
+    assert_eq!(app.store.count(tenant).unwrap(), 0, "no intake, no dispatch");
+
+    let full = send(
+        &app,
+        multipart_with_fields(
+            "/api/v1/appointments",
+            &cookie,
+            &fields,
+            "report.csv",
+            "text/csv",
+            b"ignored",
+        ),
+    )
+    .await;
+    assert_eq!(full.status, StatusCode::OK, "{}", full.body);
+    assert_eq!(
+        app.store.count(tenant).unwrap(),
+        1,
+        "without the header the same body intakes and books"
+    );
+}
+
+/// ADR 0008 Security posture: identity runs before validation exactly as
+/// today - a probe learns only what the caller is already allowed to
+/// attempt (401 unchanged).
+#[tokio::test]
+async fn precognition_is_not_an_anonymous_401_bypass() {
+    let app = app();
+    let probe = send(
+        &app,
+        with_precognition(
+            json_req(
+                Method::POST,
+                "/api/v1/appointments",
+                serde_json::json!({ "patient": "A. Patient", "slot": "2026-09-01T10:00Z" }),
+                None,
+                None,
+            ),
+            "true",
+        ),
+    )
+    .await;
+    assert_eq!(probe.status, StatusCode::UNAUTHORIZED, "{}", probe.body);
+    assert_eq!(probe.error_code(), keel_foundation::codes::UNAUTHENTICATED);
+}
+
+/// ADR 0008 Security posture: web-plane POSTs still run the double-submit
+/// guard - a precognition probe without the token is refused 403 before
+/// any validation runs (the `keel_csrf` half is deliberately not echoed).
+#[tokio::test]
+async fn precognition_is_not_a_csrf_403_bypass() {
+    let app = app();
+    let redirect_uri = "https://client.example/cb";
+    let (cookie, _principal, client_id, _secret) =
+        oauth_client(&app, "preco-csrf", &[redirect_uri], &["openid"]).await;
+    let (verifier, challenge) = pkce_pair();
+    let _ = verifier;
+
+    // Bootstrap: any safe web-plane response sets the cookie half.
+    let bootstrap = send(
+        &app,
+        json_req(
+            Method::GET,
+            &format!(
+                "/oauth/authorize?client_id={client_id}&redirect_uri={redirect_uri}&response_type=code"
+            ),
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    let _csrf = csrf_cookie(&bootstrap).expect("keel_csrf cookie bootstrapped");
+
+    let body = serde_json::json!({
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+    });
+    let probe = send(
+        &app,
+        with_precognition(
+            json_req(
+                Method::POST,
+                "/oauth/authorize",
+                body,
+                Some(&cookie),
+                None,
+            ),
+            "true",
+        ),
+    )
+    .await;
+    assert_eq!(probe.status, StatusCode::FORBIDDEN, "{}", probe.body);
+    assert_eq!(probe.error_code(), keel_foundation::codes::DENIED);
+}

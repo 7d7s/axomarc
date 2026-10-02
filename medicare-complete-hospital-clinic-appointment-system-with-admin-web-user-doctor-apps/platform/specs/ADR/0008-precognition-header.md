@@ -1,7 +1,9 @@
 # ADR 0008 — Precognition (validate-only dispatch)
 
-Status: **Proposed** (2026-10-02) · Gate: Wave 8 decision gate (docs/19, "Decision gates") ·
-Implementation: only after the gate passes review
+Status: **Accepted** (2026-10-02) · Gate: Wave 8 decision gate (docs/19, "Decision gates") ·
+Implementation: landed 2026-10-02, the day the gate passed review — the one header read
+plus the early return in `graph_dispatch` exactly as the Locus section specifies.
+Implementation-reconciliation notes are folded into the sections below.
 
 ## Context
 
@@ -68,14 +70,26 @@ Constraints:
   success branch and before the idempotency-header read. No engine, config, registry, or
   manifest surface moves.
 
+*Implementation reconciliation:* the header read sits with the other request metadata
+before intake (`HeaderMap::get` supplies name case-insensitivity; the value is trimmed
+and compared with `eq_ignore_ascii_case`), and the multipart refusal sits immediately
+after the `multipart/form-data` content-type probe — before `ingest_multipart` can store
+a part — as `AppError::validation` (the exact message above) through `dispatch_error`,
+so it renders the standard `KER_VALIDATION` 422 envelope. The early return issues a bare
+`StatusCode::NO_CONTENT` from `graph_dispatch`: the shared success-render tail
+(Cache-Control/ETag/Deprecation) belongs to dispatched responses and does not run for a
+probe, per the Outcome rule that everything below the return does not exist.
+
 ## Consequences
 
 - Zero new dependencies, zero new env vars, zero manifest fields; `MODULE_ABI` stays 1.
 - The default path is untouched (no header → identical control flow), so no existing
-  test changes; evidence lands in EXISTING suites (keel-api integration: pass → 204 with
-  zero dispatch side effects asserted via the store/job surfaces, fail → 422 envelope
-  shape, no-validation route → 204, multipart → 422, anonymous → 401, missing CSRF →
-  403) — suite count stays 150.
+  test changed; evidence landed in the EXISTING `http_integration` suite as six tests
+  (pass → 204 with the store proving zero dispatch side effects + an unrecognized value
+  behaving as absent, fail → the byte-identical 422 envelope with `fields` meta, no-
+  validation route → vacuous 204 with the no-header control still 200, multipart → the
+  documented 422 with the same body booking normally without the header, anonymous →
+  401, missing CSRF → 403) — suite count stays 150.
 - Clients get a cheap "would this payload validate?" probe that is safe to point at
   production: structurally incapable of mutating state.
 - Known non-goal: precognition does not preview dispatch RESULTS (serialization,

@@ -1659,6 +1659,15 @@ async fn graph_dispatch(
         Some(query) => format!("{path}?{query}"),
         None => path.clone(),
     };
+    // Wave 8 ADR 0008 (Precognition): validate-only dispatch. The header
+    // name matches ASCII case-insensitively (HeaderMap); the mode activates
+    // only for the value `true` (trimmed, ASCII case-insensitive) — any
+    // other value is treated as absent and never fails a request. Graph
+    // routes only; platform routes never read it.
+    let precognition = headers
+        .get("precognition")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"));
     let method = req.method().clone();
     let body = match axum::body::to_bytes(req.into_body(), state.body_limit).await {
         Ok(bytes) => bytes,
@@ -1705,6 +1714,16 @@ async fn graph_dispatch(
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|ct| ct.starts_with("multipart/form-data"));
+    // Wave 8 ADR 0008: multipart intake stores upload parts BEFORE the
+    // validator runs, so a precognition probe cannot be allowed to parse
+    // the body — fail closed with the documented refusal instead (JSON and
+    // form-urlencoded bodies intake normally below).
+    if precognition && is_multipart {
+        let err = keel_foundation::AppError::validation(
+            "precognition does not accept multipart bodies",
+        );
+        return dispatch_error(&state, &dispatch, &headers, &path, &err);
+    }
     // Wave 8 P5 (B-21): RFC 6749 sec 4.1.3 / sec 4.1.2 — the OAuth2 token
     // and revoke endpoints MUST accept `application/x-www-form-urlencoded`
     // bodies (that is the wire format RFC 8252 native apps and every
@@ -1938,6 +1957,16 @@ async fn graph_dispatch(
             let err = report.into_app_error();
             return dispatch_error(&state, &dispatch, &headers, &path, &err);
         }
+    }
+
+    // Wave 8 ADR 0008: validation passed (or the route declares nothing to
+    // validate — a vacuous pass), so a precognition probe answers HERE.
+    // Side-effect freedom is structural: the idempotency-key read, the
+    // `ExecutionContext`, `CommandBus::dispatch` and every mutation/audit/
+    // outbox/job/token/trace path below this line do not exist for the
+    // probe. The 204 carries no body and no special headers.
+    if precognition {
+        return StatusCode::NO_CONTENT.into_response();
     }
 
     let idempotency = headers
