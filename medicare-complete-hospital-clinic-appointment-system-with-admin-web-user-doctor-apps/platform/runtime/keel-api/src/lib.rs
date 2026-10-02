@@ -351,8 +351,13 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // the providers (Wave 6 P5): the platform phase wires the engine into
     // the notify hub for notification HTML mail bodies.
     let assets = load_asset_manifest(&root.join("public"));
-    let views_engine =
-        keel_views::ViewsEngine::new(views_config(cfg.views(), &root, env.as_str()));
+    let mut views_cfg = views_config(cfg.views(), &root, env.as_str());
+    // Wave 8 ADR 0009: the platform-shipped view root (dashboard/ops.html
+    // + partials) rides LAST, so an app's own `dashboard/ops.html` in any
+    // `[views] paths` entry wins. Appended here rather than in
+    // `views_config`, whose output the views tests pin exactly.
+    views_cfg.paths.push(crate::dashboard::builtin_views_root());
+    let views_engine = keel_views::ViewsEngine::new(views_cfg);
     register_asset_directive(&views_engine, assets.clone());
     // Wave 8 B-25: indexed packages register their view roots (no copy —
     // the namespace resolves into the package directory).
@@ -625,6 +630,14 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         presence: Arc::new(keel_realtime::PresenceHub::new()),
         queue: queue_stats,
         batches: batch_ledger,
+        // Wave 8 ADR 0009: schedules register programmatically (the worker
+        // process owns the registry — docs/13), so the API holds none; the
+        // traces handle points at the SAME file plane the engine saves to
+        // and `keel inspect` reads (`storage/framework/traces`).
+        schedule: None,
+        traces: Some(Arc::new(keel_execution::FileTraceStore::standard(
+            &root,
+        ))),
         route_inventory,
         middleware_catalog,
         route_bindings,
@@ -1290,7 +1303,13 @@ pub fn build_app_state(
     // so the helper behaves in tests exactly as it does in production.
     let assets = load_asset_manifest(&storage_root.join("public"));
     let views_engine = keel_views::ViewsEngine::new(keel_views::ViewsConfig {
-        paths: vec![storage_root.join("views")],
+        // ADR 0009: the platform-shipped root rides LAST, so a fixture
+        // under <storage_root>/views overrides it exactly like a production
+        // app's `[views] paths` entry overrides the shipped page.
+        paths: vec![
+            storage_root.join("views"),
+            crate::dashboard::builtin_views_root(),
+        ],
         cache_dir: None,
         env: "test".into(),
     });
@@ -1361,6 +1380,11 @@ pub fn build_app_state(
         // ledger + admin store to prove the batch operations.
         queue: None,
         batches: None,
+        // Wave 8 ADR 0009 (D-52 posture, like `queue`): no registry is
+        // registered and no trace plane is attached in the harness — the
+        // ops dashboard's sections degrade inline; tests inject handles.
+        schedule: None,
+        traces: None,
         route_inventory: graph_routes::route_inventory(&graph),
         middleware_catalog: keel_http::MiddlewareCatalog::builtin(),
         route_bindings,

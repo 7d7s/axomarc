@@ -1202,6 +1202,7 @@ dependencies = [
  "keel-query",
  "keel-realtime",
  "keel-registry",
+ "keel-scheduling",
  "keel-scope",
  "keel-session",
  "keel-storage",

@@ -83,6 +83,16 @@ pub struct AppState {
     /// (or a builder): the endpoints fail closed (D-52) instead of reporting
     /// a batch the ledger never saw.
     pub batches: Option<Arc<dyn keel_jobs::BatchLedger>>,
+    // --- Wave 8 ADR 0009 ops dashboard ------------------------------------
+    /// Registered schedule items behind `GET /_dashboard/ops` (ADR 0009).
+    /// `None` today — registration is programmatic (docs/13), so the
+    /// schedule section reports the honest note instead of a lie.
+    pub schedule: Option<Arc<keel_scheduling::ScheduleRegistry>>,
+    /// Execution traces on the byte-identical file plane `keel inspect`
+    /// reads (ADR 0009): production wires `FileTraceStore::standard(root)`;
+    /// `None` on a degraded boot (D-52) degrades the section inline. Rows
+    /// are rendered from a whitelist — `input` never leaves the environment.
+    pub traces: Option<Arc<dyn keel_execution::TraceStore>>,
     pub route_inventory: Vec<RouteEntry>,
     // --- Wave 1 middleware model ------------------------------------------
     /// Named middleware catalog (middleware.toml or the builtin).
@@ -364,6 +374,9 @@ pub fn router(state: AppState) -> Router {
         .route("/meta/routes", get(routes_meta))
         .route("/metrics", get(metrics_text))
         .route("/_dashboard", get(dashboard))
+        // Wave 8 ADR 0009: the operational half — same `dashboard_enabled`
+        // gate, shared identity resolution, views-or-JSON rendering.
+        .route("/_dashboard/ops", get(crate::dashboard::ops_dashboard))
         .route("/api/v1/demo/echo", post(demo_echo))
         .with_state(state)
 }

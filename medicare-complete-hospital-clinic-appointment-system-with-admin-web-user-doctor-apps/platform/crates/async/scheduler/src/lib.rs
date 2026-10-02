@@ -344,6 +344,13 @@ impl ScheduleRegistry {
         self.items.iter().map(|i| i.name.as_str()).collect()
     }
 
+    /// Wave 8 ADR 0009: read access for the ops dashboard (name +
+    /// `next_run(now)` per registered item). Mutation stays boot-time
+    /// (`register`); nothing here writes.
+    pub fn items(&self) -> &[ScheduleItem] {
+        &self.items
+    }
+
     /// Items whose next run (strictly after `last_fired`) is <= `now`.
     pub fn due<'a>(
         &'a self,

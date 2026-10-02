@@ -229,14 +229,14 @@ The matrix below is deliberately granular. A subsystem cannot be called `MATCHED
 | Plugin discovery | MISSING | D-69 | No registry/discovery surface | P2 |
 | Multi-DB | DELIBERATELY EXCLUDED | D-62; revisit v2.0 | Dependency cap / scope decision | P3 |
 | MongoDB | DELIBERATELY EXCLUDED | D-62 scope | Not a v1 target | P3 |
-| Dashboard UI | MISSING | keel inspect/replay data exists | No Horizon/Telescope-like UI | P3 |
+| Dashboard UI | EQUIVALENT | `/_dashboard` lite (S10: boot/flags/routes/health + `/metrics`) + `/_dashboard/ops` (Wave 8: queue depth, recent jobs, schedule state, execution inspect — `runtime/keel-api/src/dashboard.rs` + platform-shipped `views/dashboard/ops.html`) | Flag-gated (`app.dashboard`), read-only by design; ADR 0009 Accepted (decision gate 2026-10-02); mutating dashboard actions stay on the console commands | P3 |
 | Tinker equivalent | MISSING | no interactive shell supplied | Developer exploration gap | P3 |
 | Serve dev command | MISSING | no keel serve supplied | Local app loop broken | P1 |
 | Vendor publish | MISSING | no vendor:publish equivalent supplied | Package resource publishing absent | P3 |
 | Route cache | MATCHED | platform/crates/application/registry/src/route_plan.rs; platform/tools/keel-console/src/main.rs (route:cache) | storage/framework/routes.json artifact pinned to a SHA-256 manifest hash; stale artifact refuses boot (Wave 1; stricter than Laravel) | P2 |
 | Config cache | MATCHED | platform/crates/application/registry/src/config_cache.rs; platform/tools/keel-console/src/main.rs (config:cache); test `config_cache_cycle_pins_and_clears_the_artifact` | storage/framework/config.json + content hash; boot `config_cache_check` refuses drift (Wave 4; stricter than Laravel) | P2 |
 | View cache | MATCHED | platform/tools/keel-console/src/main.rs (view:cache/view:clear); test `view_cache_cycle_compiles_and_clears` | `[views].cache_dir` artifacts (mtime + content hash); boot recompiles on demand (Wave 2) | P3 |
-| Horizon equivalent | MISSING | dashboard gap | Queue dashboard absent | P3 |
+| Horizon equivalent | EQUIVALENT | `/_dashboard/ops` over the existing job/scheduler/trace stores; `queue:monitor` / `keel inspect` terminal equivalents | Read-only queue dashboard shipped (Wave 8 decision gate, `specs/ADR/0009` Accepted 2026-10-02); job payload and trace input never rendered; worker mutation actions remain console commands | P3 |
 | Telescope equivalent | SUPERSEDED | keel inspect/replay | Operational introspection is more general | P2 |
 | Breeze/Starter Kit | MISSING | no starter kit supplied | Adoption friction | P2 |
 | Jetstream equivalent | MISSING | no full starter stack supplied | Enterprise auth UI not provided | P3 |
@@ -1081,7 +1081,7 @@ The CLI is one of the most important Laravel parity surfaces because it compress
 | view:cache | view:cache | MATCHED | precompiles every template under `[views].paths` into `[views].cache_dir` (mtime + content hash) (Wave 2) | P3 |
 | view:clear | view:clear | MATCHED | drops the in-process memo plus every `*.json` artifact; boot recompiles on demand (Wave 2) | P3 |
 | vendor:publish | vendor:publish | MISSING | Package resource publish absent | P3 |
-| horizon | inspect/queue | MISSING | No Horizon-equivalent dashboard | P3 |
+| horizon | inspect/queue + /_dashboard/ops | EQUIVALENT (read-only) | Web ops dashboard `GET /_dashboard/ops` (queue depth, recent jobs, schedule state, execution inspect; ADR 0009 Accepted 2026-10-02) plus `queue:monitor`/`keel inspect`; worker start/pause mutations stay out of scope (console commands) | P3 |
 | telescope | inspect/replay | SUPERSEDED | Keel inspect/replay model is broader | P2 |
 | tinker | shell | MATCHED | `keel shell` REPL (v1.1: login/whoami/ops/routes/run under the caller principal, capability denial enforced; Wave 4 adds `caps` + `models`) | P3 |
 | serve | serve | MATCHED | `keel serve [--worker]` one-command local loop (S7 B-08; `tools/keel-console`) | P1 |
@@ -1256,7 +1256,7 @@ Traditional application frameworks typically stop at request logs and tracing. K
 | Folio | UNKNOWN / ECOSYSTEM | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
 | Herd | UNKNOWN / ECOSYSTEM | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
 | Head | UNKNOWN / ECOSYSTEM | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
-| Horizon | UNKNOWN / ECOSYSTEM | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
+| Horizon | EQUIVALENT (decision gate passed review 2026-10-02) | `specs/ADR/0009` Accepted — read-only `GET /_dashboard/ops` over the existing job/scheduler/trace stores: queue depth, recent jobs, schedule state, execution inspect; flag-gated (`app.dashboard`), views-rendered (platform-shipped template, app override) with JSON degradation, payload/input never rendered; 7 tests (3 `dashboard.rs` units + 4 `http_integration`) | Implemented as the ADR 0009 ops dashboard (docs/19 Wave 8 decision gates); historical metrics charts stay on the `/metrics` scrape surface and mutating actions stay on the console commands | P2/P4 |
 | Octane | SUPERSEDED | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
 | Passport | UNKNOWN / ECOSYSTEM | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
 | Pennant | UNKNOWN / ECOSYSTEM | No standalone Keel product mapping is locked beyond the stated audit facts | Treat as ecosystem decisions; do not inflate core parity | P2/P4 |
@@ -1532,7 +1532,7 @@ This table assigns the final strategic decision, not merely today's runtime stat
 | Socialite | DELIBERATELY EXCLUDED from core |
 | Valet | DELIBERATELY EXCLUDED |
 | Telescope | SUPERSEDED by inspect/replay |
-| Horizon | DELIBERATELY EXCLUDED from core v1; dashboard roadmap (ops-dashboard decision gate docs delivered Wave 8 P6: `specs/ADR/0009` decision doc + data-source spec over the existing job/scheduler/trace stores; implementation only after the gate passes review) |
+| Horizon | DELIBERATELY EXCLUDED from core v1 (no Laravel package clone); operational dashboard SHIPPED — ops-dashboard decision gate passed review 2026-10-02, `specs/ADR/0009` Accepted: read-only `/_dashboard/ops` over the existing job/scheduler/trace stores (queue depth, recent jobs, schedule state, execution inspect), flag-gated (`app.dashboard`), payload/input never rendered |
 | Octane | SUPERSEDED by native Rust runtime model |
 | Sail | DELIBERATELY EXCLUDED |
 | Fortify | EQUIVALENT via auth services, not Laravel package clone |

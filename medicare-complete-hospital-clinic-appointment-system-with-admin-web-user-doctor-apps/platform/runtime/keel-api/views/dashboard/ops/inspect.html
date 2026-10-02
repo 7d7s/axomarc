@@ -1,0 +1,40 @@
+<section>
+  <h2>Execution inspect</h2>
+  @if(sections.inspect.ok)
+    @if(sections.inspect.detail)
+      <table>
+        <tr><th>operation</th><td><code>{{ sections.inspect.detail.operation }}</code></td></tr>
+        <tr><th>started</th><td class="muted">{{ sections.inspect.detail.started_at }}</td></tr>
+        <tr><th>result</th><td>
+          @if(sections.inspect.detail.ok)<span class="ok">ok</span>@else<span class="bad">error</span>@endif
+        </td></tr>
+        <tr><th>error</th><td>{{ sections.inspect.detail.error | default("-") }}</td></tr>
+        <tr><th>principal</th><td>{{ sections.inspect.detail.principal }}</td></tr>
+        <tr><th>tenant</th><td>{{ sections.inspect.detail.tenant | default("-") }}</td></tr>
+        <tr><th>capability</th><td>{{ sections.inspect.detail.capability | default("-") }}</td></tr>
+        <tr><th>authz</th><td>{{ sections.inspect.detail.authz }}</td></tr>
+        <tr><th>queries</th><td>{{ sections.inspect.detail.query_count }} in {{ sections.inspect.detail.total_query_ms }} ms</td></tr>
+        <tr><th>writes</th><td>deltas {{ sections.inspect.detail.deltas_written }}, audit {{ sections.inspect.detail.audit_written }}, outbox {{ sections.inspect.detail.outbox_queued }}</td></tr>
+        <tr><th>execution</th><td><code>{{ sections.inspect.detail.execution_id }}</code></td></tr>
+      </table>
+      <p class="muted"><a href="/_dashboard/ops">back to recent executions</a></p>
+    @else
+      <table>
+        <tr><th>operation</th><th>started</th><th>queries</th><th>result</th></tr>
+        @forelse(sections.inspect.rows as trace)
+          <tr>
+            <td><code>{{ trace.operation }}</code></td>
+            <td class="muted">{{ trace.started_at }}</td>
+            <td>{{ trace.query_count }} / {{ trace.total_query_ms }} ms</td>
+            <td>@if(trace.ok)<span class="ok">ok</span>@else<span class="bad">error</span>@endif</td>
+          </tr>
+        @empty
+          <tr><td colspan="4" class="note">no executions recorded</td></tr>
+        @endforelse
+      </table>
+      <p class="muted">append <code>?trace=&lt;execution id&gt;</code> for one row of detail</p>
+    @endif
+  @else
+    <span class="note">{{ sections.inspect.note }}</span>
+  @endif
+</section>

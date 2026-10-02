@@ -1,0 +1,44 @@
+<section>
+  <h2>Schedule state</h2>
+  @if(sections.schedule.state.ok)
+    @if(sections.schedule.state.note)
+      <span class="note">{{ sections.schedule.state.note }}</span>
+    @else
+      <table>
+        <tr><th>last fired</th><th>at</th></tr>
+        @forelse(sections.schedule.state.last_fired as fired)
+          <tr><td><code>{{ fired.name }}</code></td><td class="muted">{{ fired.at }}</td></tr>
+        @empty
+          <tr><td colspan="2" class="note">no successful fires recorded</td></tr>
+        @endforelse
+      </table>
+      <table>
+        <tr><th>failure</th><th>at</th><th>error</th></tr>
+        @forelse(sections.schedule.state.failures as failure)
+          <tr><td><code>{{ failure.name }}</code></td><td class="muted">{{ failure.at }}</td><td>{{ failure.error }}</td></tr>
+        @empty
+          <tr><td colspan="3" class="note">no failures recorded</td></tr>
+        @endforelse
+      </table>
+    @endif
+  @else
+    <span class="note">{{ sections.schedule.state.note }}</span>
+  @endif
+  <h3>Registered schedules</h3>
+  @if(sections.schedule.registry.ok)
+    <table>
+      <tr><th>item</th><th>enabled</th><th>next run</th></tr>
+      @forelse(sections.schedule.registry.items as item)
+        <tr>
+          <td><code>{{ item.name }}</code></td>
+          <td>{{ item.enabled }}</td>
+          <td class="muted">{{ item.next_run | default("n/a") }}</td>
+        </tr>
+      @empty
+        <tr><td colspan="3" class="note">registry holds no items</td></tr>
+      @endforelse
+    </table>
+  @else
+    <span class="note">{{ sections.schedule.registry.note }}</span>
+  @endif
+</section>

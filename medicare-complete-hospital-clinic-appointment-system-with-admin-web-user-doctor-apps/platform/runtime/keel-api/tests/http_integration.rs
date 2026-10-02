@@ -1227,6 +1227,136 @@ async fn dashboard_served_in_test_env_and_flag_gated_when_off() {
     );
 }
 
+// ----------------------------- Wave 8 ADR 0009: ops dashboard route ------
+
+#[tokio::test]
+async fn ops_dashboard_is_flag_gated_when_off() {
+    let app = app();
+    let mut state = app.state.clone();
+    state.dashboard_enabled = false;
+    let router = keel_api::routes::router(state);
+    let (status, _, body) = raw_text(
+        router,
+        Request::builder()
+            .uri("/_dashboard/ops")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        body.contains("app.dashboard"),
+        "envelope explains gate: {body}"
+    );
+}
+
+#[tokio::test]
+async fn ops_dashboard_rejects_anonymous_with_401() {
+    let app = app();
+    let res = send(
+        &app,
+        json_req(Method::GET, "/_dashboard/ops", Value::Null, None, None),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::UNAUTHORIZED, "{}", res.body);
+    assert_eq!(res.body["ok"], false);
+}
+
+#[tokio::test]
+async fn ops_dashboard_renders_shipped_view_for_a_session() {
+    let app = app();
+    let email = format!("ops-{}@clinic.test", uuid::Uuid::now_v7());
+    let reg = register(&app, &email).await;
+    assert_eq!(reg.status, StatusCode::OK, "{}", reg.body);
+    let cookie = reg.session_cookie().expect("session cookie");
+
+    let (status, ctype, body) = raw_text(
+        app.router.clone(),
+        Request::builder()
+            .uri("/_dashboard/ops")
+            .header(header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(ctype.starts_with("text/html"), "{ctype}");
+    assert!(
+        body.contains("<meta http-equiv=\"refresh\" content=\"10\""),
+        "server-side refresh: {body}"
+    );
+    for heading in [
+        "Queue depth",
+        "Recent jobs",
+        "Schedule state",
+        "Execution inspect",
+    ] {
+        assert!(body.contains(heading), "section {heading} rendered:\n{body}");
+    }
+    // Harness boots without queue/trace/schedule handles (D-52): sections
+    // degrade inline instead of failing the page.
+    assert!(body.contains("degraded boot"), "{body}");
+    assert!(body.contains("no schedules registered"), "{body}");
+}
+
+#[tokio::test]
+async fn ops_dashboard_degrades_to_json_envelope_without_views() {
+    let app = app();
+    let email = format!("opsjson-{}@clinic.test", uuid::Uuid::now_v7());
+    let reg = register(&app, &email).await;
+    assert_eq!(reg.status, StatusCode::OK, "{}", reg.body);
+    let cookie = reg.session_cookie().expect("session cookie");
+
+    // Same state, views engine removed: the route answers with the JSON
+    // envelope of the SAME sections (never a 500), session still resolving.
+    let mut state = app.state.clone();
+    state.views = None;
+    let router = state
+        .sessions
+        .as_ref()
+        .expect("sessions enabled")
+        .as_ref()
+        .clone()
+        .apply(keel_api::routes::router(state.clone()));
+    let app2 = App {
+        router,
+        state,
+        store: app.store.clone(),
+    };
+
+    let res = send(
+        &app2,
+        json_req(
+            Method::GET,
+            "/_dashboard/ops",
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.body["ok"], true);
+    let data = res.data();
+    assert_eq!(data["dashboard"], "ops");
+    assert_eq!(data["refresh_secs"], 10);
+    assert!(data["generated_at"].as_str().is_some(), "{}", data);
+    let sections = &data["sections"];
+    for key in ["queue", "jobs", "schedule", "inspect"] {
+        assert!(sections.get(key).is_some(), "section {key} present");
+    }
+    assert_eq!(sections["queue"]["ok"], false);
+    assert!(sections["inspect"]["note"].as_str().is_some());
+    assert!(
+        sections["schedule"]["registry"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("no schedules registered"),
+        "{}",
+        sections["schedule"]["registry"]
+    );
+}
+
 // ------------------------------------------- attack-oriented: session fixation
 
 #[tokio::test]

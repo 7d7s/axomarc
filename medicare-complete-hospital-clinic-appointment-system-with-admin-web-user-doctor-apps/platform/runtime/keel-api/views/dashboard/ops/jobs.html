@@ -1,0 +1,22 @@
+<section>
+  <h2>Recent jobs</h2>
+  @if(sections.jobs.ok)
+    <table>
+      <tr><th>job</th><th>status</th><th>attempts</th><th>queue</th><th>enqueued</th><th>last error</th></tr>
+      @forelse(sections.jobs.rows as row)
+        <tr>
+          <td><code>{{ row.name }}</code> <span class="muted">{{ row.id }}</span></td>
+          <td>{{ row.status }}</td>
+          <td>{{ row.attempt }}/{{ row.max_attempts }}</td>
+          <td>{{ row.queue }}</td>
+          <td class="muted">{{ row.enqueued_at }}</td>
+          <td class="muted">{{ row.last_error | default("-") }}</td>
+        </tr>
+      @empty
+        <tr><td colspan="6" class="note">no jobs recorded</td></tr>
+      @endforelse
+    </table>
+  @else
+    <span class="note">{{ sections.jobs.note }}</span>
+  @endif
+</section>
