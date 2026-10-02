@@ -916,6 +916,43 @@ pub(crate) fn query_pairs(query: Option<&str>) -> Vec<(String, String)> {
         .collect()
 }
 
+/// `application/x-www-form-urlencoded` value decoding (HTML form encoding,
+/// required by RFC 6749 for token-request bodies): `%XX` bytes decode and
+/// `+` means space. Malformed escapes stay literal and invalid UTF-8 falls
+/// back to lossy — decoding never fails a request (same tolerance posture
+/// as [`query_pairs`]).
+pub(crate) fn form_decode(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+                match hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                    Some(byte) => {
+                        out.push(byte);
+                        i += 3;
+                    }
+                    None => {
+                        out.push(b'%');
+                        i += 1;
+                    }
+                }
+            }
+            byte => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Merge path + query params into the JSON input object (body wins).
 fn merge_params(
     mut input: serde_json::Value,
@@ -1576,6 +1613,16 @@ async fn graph_dispatch(
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|ct| ct.starts_with("multipart/form-data"));
+    // Wave 8 P5 (B-21): RFC 6749 sec 4.1.3 / sec 4.1.2 — the OAuth2 token
+    // and revoke endpoints MUST accept `application/x-www-form-urlencoded`
+    // bodies (that is the wire format RFC 8252 native apps and every
+    // conforming client library send). Distinct from the query string,
+    // which has never percent-decoded: form bodies decode (`+` and `%XX`,
+    // the HTML form encoding) and values stay STRINGS (`$_POST` posture).
+    let is_form = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.starts_with("application/x-www-form-urlencoded"));
     let (input, uploads): (serde_json::Value, Vec<keel_validation::UploadMeta>) = if is_multipart
     {
         let content_type = headers[header::CONTENT_TYPE]
@@ -1632,6 +1679,19 @@ async fn graph_dispatch(
             })
             .collect();
         (serde_json::Value::Object(obj), metas)
+    } else if is_form {
+        let raw = match std::str::from_utf8(&body) {
+            Ok(raw) => raw,
+            Err(_) => {
+                let err = keel_foundation::AppError::validation("form body must be UTF-8");
+                return dispatch_error(&state, &dispatch, &headers, &path, &err);
+            }
+        };
+        let mut obj = serde_json::Map::new();
+        for (key, value) in query_pairs(Some(raw)) {
+            obj.insert(key, serde_json::Value::String(form_decode(&value)));
+        }
+        (serde_json::Value::Object(obj), Vec::new())
     } else if body.is_empty() {
         (serde_json::json!({}), Vec::new())
     } else {
@@ -1987,6 +2047,22 @@ mod tests {
             vec![("a".into(), "1".into()), ("c".into(), "3=4".into())]
         );
         assert!(query_pairs(None).is_empty());
+    }
+
+    #[test]
+    fn form_decode_applies_form_urlencoding() {
+        // Wave 8 P5 (B-21): OAuth2 form bodies decode per HTML form rules.
+        assert_eq!(form_decode("plain"), "plain");
+        assert_eq!(form_decode("a%20b"), "a b");
+        assert_eq!(form_decode("a+b"), "a b");
+        assert_eq!(
+            form_decode("https%3A%2F%2Fclient.example%2Fcb"),
+            "https://client.example/cb"
+        );
+        assert_eq!(form_decode("%41%42"), "AB");
+        // Tolerance: a malformed escape stays literal instead of failing.
+        assert_eq!(form_decode("100%"), "100%");
+        assert_eq!(form_decode("%zz"), "%zz");
     }
 
     // ------------------------------------------------------- route cache pin

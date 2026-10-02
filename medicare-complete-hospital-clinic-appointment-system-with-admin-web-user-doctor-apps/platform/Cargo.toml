@@ -69,6 +69,7 @@ members = [
   "examples/minimal",
 "examples/reference",
   "applications/appointments",
+  "applications/oauth2",
 ]
 
 [workspace.package]
@@ -155,6 +156,7 @@ keel-push-fcm = { version = "0.1.0", path = "adapters/keel-push-fcm" }
 keel-webhooks = { version = "0.1.0", path = "adapters/keel-webhooks" }
 keel-search-pgvector = { version = "0.1.0", path = "adapters/keel-search-pgvector" }
 keel-mod-appointments = { path = "applications/appointments" }
+keel-mod-oauth2 = { path = "applications/oauth2" }
 # --- external (budget: policy v2 D-62, cap 25; see DEPENDENCY-POLICY.md) ---
 axum = { version = "=0.8.6", features = ["ws", "multipart"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }

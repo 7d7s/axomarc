@@ -132,7 +132,13 @@ resolved middleware chain as a per-route layer. The dispatcher then:
    under a fixed anonymous principal + default tenant. Anonymous reach is never possible on
    non-public routes (fail-closed).
 2. Parses the JSON body (empty → `{}`, malformed → 422), merges path params and query pairs into
-   the input object.
+   the input object. Bodies declaring `application/x-www-form-urlencoded` decode as form data
+   instead (Wave 8 P5, B-21 — the RFC 6749 token wire format): fields split on `&`/`=`, values
+   run through the form decoder (`+` → space, `%XX` percent-escapes, malformed escapes such as
+   `%zz` and a trailing `%` stay literal, undecodable bytes degrade lossily) and stay STRINGS
+   (`$_POST` posture — no JSON parse-back, unlike multipart text fields); empty → `{}`, non-UTF-8
+   bytes → 422. Query strings keep the platform-wide parse-without-decode posture: only the form
+   body percent-decodes (documented divergence; unit `form_decode_applies_form_urlencoding`).
 3. GET routes parse `page`/`per_page` and inject `_page` (pagination, below).
 4. Resolves `route.bindings` and injects `_bindings.<param>` AFTER the merge, so request bodies
    cannot forge bindings (model binding, below).

@@ -3946,3 +3946,1147 @@ async fn batch_endpoints_fail_closed_without_a_ledger() {
         res.body
     );
 }
+
+// ------------------------------------------------------------- Wave 8 P5
+// (B-21) OAuth2: the whole code flow over the real edge — authorize
+// (web plane + CSRF), token (JSON AND form-encoded bodies), revoke,
+// refresh rotation, and the client registry through the CommandBus.
+
+/// The `keel_csrf` cookie half of the double-submit pair (bootstrapped by
+/// any safe web-plane request) — the bare token value, ready to echo in
+/// the `x-csrf-token` header (or re-attach as a `keel_csrf=` cookie).
+fn csrf_cookie(reply: &Reply) -> Option<String> {
+    reply
+        .set_cookies
+        .iter()
+        .find(|c| c.starts_with("keel_csrf="))
+        .map(|c| c.split(';').next().unwrap_or_default().to_string())
+        .map(|c| c.trim_start_matches("keel_csrf=").to_string())
+}
+
+/// Location header of a redirect reply.
+fn location_of(reply: &Reply) -> String {
+    reply
+        .headers
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// First `key` value of a query string (codes are base64url — never needs
+/// decoding; tests assert the echo of unreserved `state` the same way).
+fn query_param(url: &str, key: &str) -> Option<String> {
+    url.split_once('?').and_then(|(_, query)| {
+        query.split('&').find_map(|pair| {
+            let (k, v) = pair.split_once('=')?;
+            (k == key).then(|| v.to_string())
+        })
+    })
+}
+
+/// RFC 7636 fixture: a valid verifier (43 unreserved chars) and its S256
+/// challenge — computed with the SAME helper production clients derive.
+fn pkce_pair() -> (String, String) {
+    let verifier = "a".repeat(43);
+    let challenge = keel_tokens::pkce_s256_challenge(&verifier);
+    (verifier, challenge)
+}
+
+/// `application/x-www-form-urlencoded` POST (the RFC 6749 token-request
+/// wire format).
+fn form_req(uri: &str, form: &str, cookie: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
+    if let Some(c) = cookie {
+        builder = builder.header(header::COOKIE, c);
+    }
+    builder.body(Body::from(form.to_string())).unwrap()
+}
+
+/// Drive `oauth2.clients.manage` through the real CommandBus — the same
+/// dispatch `keel call oauth-clients` takes (the register snapshot already
+/// carries the capability; only the console's execution context is built
+/// test-side).
+async fn oauth_manage(
+    app: &App,
+    principal: keel_foundation::PrincipalId,
+    input: Value,
+) -> Result<Value, keel_foundation::AppError> {
+    let now = time::OffsetDateTime::now_utc();
+    let ctx = keel_context::ExecutionContext::builder(
+        keel_foundation::ExecutionProfileKind::Command,
+        now,
+    )
+    .plane(keel_foundation::SecurityPlane::Tenant)
+    .principal(keel_context::PrincipalContext {
+        id: principal,
+        display: None,
+    })
+    .tenant(keel_context::TenantContext {
+        id: app.state.default_tenant_id.expect("dev tenant"),
+        slug: "dev".into(),
+        plan: "standard".into(),
+    })
+    .scope(keel_context::ScopeSnapshot {
+        nodes: vec![],
+        revision: keel_foundation::AuthorizationRevision(1),
+        computed_at: now,
+    })
+    .build()
+    .expect("execution context builds");
+    let operation =
+        keel_foundation::OperationId::parse("oauth2.clients.manage").expect("operation id");
+    app.state
+        .bus
+        .dispatch(ctx, &operation, input, None)
+        .await
+        .map(|outcome| outcome.result)
+}
+
+/// Register a principal and create an OAuth client through the real
+/// dispatch. Returns (session cookie, principal, client_id, secret).
+async fn oauth_client(
+    app: &App,
+    label: &str,
+    redirect_uris: &[&str],
+    scopes: &[&str],
+) -> (String, keel_foundation::PrincipalId, String, String) {
+    let (cookie, principal) = inbox_owner(
+        app,
+        &format!("oauth-{label}-{}@clinic.test", uuid::Uuid::now_v7()),
+    )
+    .await;
+    let created = oauth_manage(
+        app,
+        principal,
+        serde_json::json!({
+            "action": "create",
+            "name": format!("client {label}"),
+            "redirect_uris": redirect_uris,
+            "scopes": scopes,
+        }),
+    )
+    .await
+    .expect("client creates");
+    let client_id = created["client_id"].as_str().expect("client_id").to_string();
+    let secret = created["secret"].as_str().expect("secret").to_string();
+    (cookie, principal, client_id, secret)
+}
+
+/// Run the authorize half (session + PKCE) and return the issued `code`
+/// from the 302 Location.
+async fn authorize_code(
+    app: &App,
+    cookie: &str,
+    client_id: &str,
+    redirect_uri: &str,
+    params: &[(&str, &str)],
+) -> String {
+    let mut url = format!(
+        "/oauth/authorize?client_id={client_id}&redirect_uri={redirect_uri}&response_type=code"
+    );
+    for (k, v) in params {
+        url.push_str(&format!("&{k}={v}"));
+    }
+    let res = send(
+        app,
+        json_req(Method::GET, &url, Value::Null, Some(cookie), None),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::FOUND, "authorize: {}", res.body);
+    query_param(&location_of(&res), "code").expect("code rides the redirect")
+}
+
+/// JSON token request (the other accepted body shape).
+fn token_json(fields: &[(&str, &str)]) -> Value {
+    let mut map = serde_json::Map::new();
+    for (k, v) in fields {
+        map.insert((*k).to_string(), Value::String((*v).to_string()));
+    }
+    Value::Object(map)
+}
+
+/// The browser endpoint demands a session: an anonymous GET never redirects
+/// (401 envelope, no Location — a fail-closed posture, since no redirect
+/// target has been validated yet), while a sessioned GET with PKCE issues a
+/// code bound to the registered URI and echoes `state` untouched.
+#[tokio::test]
+async fn oauth_authorize_requires_a_session_and_issues_a_bound_code() {
+    let app = app();
+    let redirect_uri = "https://client.example/cb";
+    let (cookie, _principal, client_id, _secret) =
+        oauth_client(&app, "authorize", &[redirect_uri], &["openid", "profile"]).await;
+    let (_verifier, challenge) = pkce_pair();
+
+    let anon = send(
+        &app,
+        json_req(
+            Method::GET,
+            &format!(
+                "/oauth/authorize?client_id={client_id}&redirect_uri={redirect_uri}&response_type=code"
+            ),
+            Value::Null,
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(anon.status, StatusCode::UNAUTHORIZED, "{}", anon.body);
+    assert_eq!(anon.error_code(), keel_foundation::codes::UNAUTHENTICATED);
+    assert!(
+        location_of(&anon).is_empty(),
+        "an unauthenticated request never redirects: {}",
+        anon.body
+    );
+
+    let res = send(
+        &app,
+        json_req(
+            Method::GET,
+            &format!(
+                "/oauth/authorize?client_id={client_id}&redirect_uri={redirect_uri}&response_type=code&state=st-42&code_challenge={challenge}&code_challenge_method=S256&scope=openid"
+            ),
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::FOUND, "authorize: {}", res.body);
+    let location = location_of(&res);
+    assert!(
+        location.starts_with(redirect_uri),
+        "redirects to the registered URI: {location}"
+    );
+    assert!(
+        query_param(&location, "code").is_some(),
+        "a code rides the redirect: {location}"
+    );
+    assert_eq!(
+        query_param(&location, "state").as_deref(),
+        Some("st-42"),
+        "state round-trips: {location}"
+    );
+}
+
+/// The POST verb (the form-submit half of the same route) sits behind the
+/// Wave 7 CSRF double-submit: session alone is refused 403, echoing the
+/// bootstrapped `keel_csrf` cookie in `x-csrf-token` passes it.
+#[tokio::test]
+async fn oauth_authorize_post_requires_csrf_double_submit() {
+    let app = app();
+    let redirect_uri = "https://client.example/cb";
+    let (cookie, _principal, client_id, _secret) =
+        oauth_client(&app, "csrf", &[redirect_uri], &["openid"]).await;
+    let (verifier, challenge) = pkce_pair();
+    let _ = verifier;
+
+    // Bootstrap: any safe web-plane response sets the cookie.
+    let bootstrap = send(
+        &app,
+        json_req(
+            Method::GET,
+            &format!(
+                "/oauth/authorize?client_id={client_id}&redirect_uri={redirect_uri}&response_type=code"
+            ),
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    let csrf = csrf_cookie(&bootstrap).expect("keel_csrf cookie bootstrapped");
+
+    let body = serde_json::json!({
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+    });
+    let no_echo = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/oauth/authorize",
+            body.clone(),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(no_echo.status, StatusCode::FORBIDDEN, "{}", no_echo.body);
+    assert_eq!(no_echo.error_code(), keel_foundation::codes::DENIED);
+
+    let mut echo = cookie.clone();
+    echo.push_str("; keel_csrf=");
+    echo.push_str(&csrf);
+    let mut req = json_req(
+        Method::POST,
+        "/oauth/authorize",
+        body,
+        Some(&echo),
+        None,
+    );
+    req.headers_mut().insert(
+        header::HeaderName::from_static("x-csrf-token"),
+        header::HeaderValue::from_str(&csrf).expect("header value"),
+    );
+    let ok = send(&app, req).await;
+    assert_eq!(ok.status, StatusCode::FOUND, "post: {}", ok.body);
+    assert!(
+        query_param(&location_of(&ok), "code").is_some(),
+        "{}",
+        location_of(&ok)
+    );
+}
+
+/// One authorize attempt that must die as a 422 envelope with NO Location.
+async fn authorize_expect_fail(app: &App, cookie: &str, uri: &str) {
+    let res = send(
+        app,
+        json_req(Method::GET, uri, Value::Null, Some(cookie), None),
+    )
+    .await;
+    assert_eq!(
+        res.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{uri} -> {}",
+        res.body
+    );
+    assert_eq!(res.error_code(), keel_foundation::codes::VALIDATION);
+    assert!(
+        location_of(&res).is_empty(),
+        "failures never redirect: {uri}"
+    );
+}
+
+/// Every rejection BEFORE the redirect target is proven safe stays an
+/// envelope — never a Location: unknown client, unregistered redirect_uri,
+/// non-code response_type, missing PKCE, plain method, foreign scope.
+#[tokio::test]
+async fn oauth_authorize_fails_closed_before_any_redirect() {
+    let app = app();
+    let redirect_uri = "https://client.example/cb";
+    let (cookie, _principal, client_id, _secret) =
+        oauth_client(&app, "fail", &[redirect_uri], &["openid"]).await;
+    let (_verifier, challenge) = pkce_pair();
+
+    // Unknown client.
+    authorize_expect_fail(
+        &app,
+        &cookie,
+        &format!(
+            "/oauth/authorize?client_id={}&redirect_uri={redirect_uri}&response_type=code",
+            uuid::Uuid::now_v7()
+        ),
+    )
+    .await;
+    // Registered client, unregistered redirect target.
+    authorize_expect_fail(
+        &app,
+        &cookie,
+        &format!(
+            "/oauth/authorize?client_id={client_id}&redirect_uri=https%3A%2F%2Fevil.example%2Fcb&response_type=code"
+        ),
+    )
+    .await;
+    // response_type must be exactly `code`.
+    authorize_expect_fail(
+        &app,
+        &cookie,
+        &format!(
+            "/oauth/authorize?client_id={client_id}&redirect_uri={redirect_uri}&response_type=token"
+        ),
+    )
+    .await;
+    // PKCE: challenge missing, then the wrong method.
+    authorize_expect_fail(
+        &app,
+        &cookie,
+        &format!(
+            "/oauth/authorize?client_id={client_id}&redirect_uri={redirect_uri}&response_type=code"
+        ),
+    )
+    .await;
+    authorize_expect_fail(
+        &app,
+        &cookie,
+        &format!(
+            "/oauth/authorize?client_id={client_id}&redirect_uri={redirect_uri}&response_type=code&code_challenge={challenge}&code_challenge_method=plain"
+        ),
+    )
+    .await;
+    // A scope outside the registered set narrows to nothing (422).
+    authorize_expect_fail(
+        &app,
+        &cookie,
+        &format!(
+            "/oauth/authorize?client_id={client_id}&redirect_uri={redirect_uri}&response_type=code&code_challenge={challenge}&code_challenge_method=S256&scope=admin"
+        ),
+    )
+    .await;
+}
+
+/// authorization_code -> a tenant-labelled PAT the api plane honors
+/// immediately, a rotating refresh token, and the granted scope reported
+/// back (narrowed here, defaulted in the next test).
+#[tokio::test]
+async fn oauth_code_exchanges_for_a_usable_pat() {
+    let app = app();
+    let redirect_uri = "https://client.example/cb";
+    let (cookie, _principal, client_id, secret) =
+        oauth_client(&app, "exchange", &[redirect_uri], &["openid", "profile"]).await;
+    let (verifier, challenge) = pkce_pair();
+    let code = authorize_code(
+        &app,
+        &cookie,
+        &client_id,
+        redirect_uri,
+        &[
+            ("code_challenge", &challenge),
+            ("code_challenge_method", "S256"),
+            ("scope", "openid"),
+        ],
+    )
+    .await;
+
+    let res = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/oauth/token",
+            token_json(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", redirect_uri),
+                ("client_id", &client_id),
+                ("client_secret", &secret),
+                ("code_verifier", &verifier),
+            ]),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "token: {}", res.body);
+    let data = res.data();
+    assert_eq!(data["token_type"], "Bearer");
+    assert_eq!(data["scope"], "openid", "the requested scope narrows");
+    assert_eq!(
+        data["expires_in"].as_i64(),
+        Some(30 * 24 * 60 * 60),
+        "access tokens carry the platform PAT TTL"
+    );
+    let access = data["access_token"].as_str().expect("access token").to_string();
+    let refresh = data["refresh_token"].as_str().expect("refresh token").to_string();
+    assert!(!refresh.is_empty());
+
+    // The minted access token IS a platform PAT: it authenticates the api
+    // plane exactly like a login-issued one.
+    let me = send(
+        &app,
+        json_req(Method::GET, "/auth/me", Value::Null, None, Some(&access)),
+    )
+    .await;
+    assert_eq!(me.status, StatusCode::OK, "bearer auth: {}", me.body);
+
+    // An omitted scope request grants the FULL registered set instead.
+    let code2 = authorize_code(
+        &app,
+        &cookie,
+        &client_id,
+        redirect_uri,
+        &[
+            ("code_challenge", &challenge),
+            ("code_challenge_method", "S256"),
+        ],
+    )
+    .await;
+    let res2 = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/oauth/token",
+            token_json(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code2),
+                ("redirect_uri", redirect_uri),
+                ("client_id", &client_id),
+                ("client_secret", &secret),
+                ("code_verifier", &verifier),
+            ]),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(res2.status, StatusCode::OK, "token 2: {}", res2.body);
+    assert_eq!(
+        res2.data()["scope"],
+        "openid profile",
+        "no scope parameter defaults to the registered set"
+    );
+}
+
+/// Codes are single-use AND bound to the client they were issued to: a
+/// second client's credentials die on the client check (and burn the code —
+/// fail closed), and the original client's replay then dies on consume.
+#[tokio::test]
+async fn oauth_code_is_single_use_and_bound_to_its_client() {
+    let app = app();
+    let redirect_uri = "https://client.example/cb";
+    let (cookie, _principal, client_a, secret_a) =
+        oauth_client(&app, "victim", &[redirect_uri], &["openid"]).await;
+    let (_cookie_b, _principal_b, client_b, secret_b) =
+        oauth_client(&app, "thief", &["https://thief.example/cb"], &["openid"]).await;
+    let (verifier, challenge) = pkce_pair();
+    let code = authorize_code(
+        &app,
+        &cookie,
+        &client_a,
+        redirect_uri,
+        &[
+            ("code_challenge", &challenge),
+            ("code_challenge_method", "S256"),
+        ],
+    )
+    .await;
+
+    // The thief presents the stolen code with ITS OWN credentials.
+    let stolen = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/oauth/token",
+            token_json(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", redirect_uri),
+                ("client_id", &client_b),
+                ("client_secret", &secret_b),
+                ("code_verifier", &verifier),
+            ]),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(stolen.status, StatusCode::FORBIDDEN, "{}", stolen.body);
+    assert_eq!(stolen.error_code(), keel_foundation::codes::DENIED);
+
+    // The victim's own replay is dead too: the theft attempt consumed it.
+    let replay = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/oauth/token",
+            token_json(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", redirect_uri),
+                ("client_id", &client_a),
+                ("client_secret", &secret_a),
+                ("code_verifier", &verifier),
+            ]),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(replay.status, StatusCode::FORBIDDEN, "{}", replay.body);
+    assert_eq!(replay.error_code(), keel_foundation::codes::DENIED);
+}
+
+/// PKCE verification: a well-formed verifier that is NOT the one the
+/// challenge was derived from is refused — and the failed attempt burns the
+/// code (fail closed, no second guessing).
+#[tokio::test]
+async fn oauth_pkce_rejects_the_wrong_verifier_and_burns_the_code() {
+    let app = app();
+    let redirect_uri = "https://client.example/cb";
+    let (cookie, _principal, client_id, secret) =
+        oauth_client(&app, "pkce", &[redirect_uri], &["openid"]).await;
+    let (right, challenge) = pkce_pair();
+    let wrong = "b".repeat(43);
+    let code = authorize_code(
+        &app,
+        &cookie,
+        &client_id,
+        redirect_uri,
+        &[
+            ("code_challenge", &challenge),
+            ("code_challenge_method", "S256"),
+        ],
+    )
+    .await;
+
+    let bad = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/oauth/token",
+            token_json(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", redirect_uri),
+                ("client_id", &client_id),
+                ("client_secret", &secret),
+                ("code_verifier", &wrong),
+            ]),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(bad.status, StatusCode::FORBIDDEN, "{}", bad.body);
+    assert_eq!(bad.error_code(), keel_foundation::codes::DENIED);
+
+    // The correct verifier arrives too late — consume already happened.
+    let late = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/oauth/token",
+            token_json(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", redirect_uri),
+                ("client_id", &client_id),
+                ("client_secret", &secret),
+                ("code_verifier", &right),
+            ]),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(late.status, StatusCode::FORBIDDEN, "{}", late.body);
+    assert_eq!(late.error_code(), keel_foundation::codes::DENIED);
+}
+
+/// The RFC 6749 wire format: a form-encoded token request — including a
+/// percent-encoded `redirect_uri` — parses exactly like its JSON twin
+/// (the intake branch decodes `%XX` before the handler sees the value).
+#[tokio::test]
+async fn oauth_token_endpoint_accepts_form_encoded_bodies() {
+    let app = app();
+    let redirect_uri = "https://client.example/cb";
+    let (cookie, _principal, client_id, secret) =
+        oauth_client(&app, "form", &[redirect_uri], &["openid"]).await;
+    let (verifier, challenge) = pkce_pair();
+    let code = authorize_code(
+        &app,
+        &cookie,
+        &client_id,
+        redirect_uri,
+        &[
+            ("code_challenge", &challenge),
+            ("code_challenge_method", "S256"),
+        ],
+    )
+    .await;
+
+    let form = format!(
+        "grant_type=authorization_code&code={code}&redirect_uri=https%3A%2F%2Fclient.example%2Fcb&client_id={client_id}&client_secret={secret}&code_verifier={verifier}"
+    );
+    let res = send(&app, form_req("/oauth/token", &form, None)).await;
+    assert_eq!(res.status, StatusCode::OK, "form token: {}", res.body);
+    let data = res.data();
+    assert_eq!(data["token_type"], "Bearer");
+    assert!(
+        data["access_token"].as_str().is_some(),
+        "{}",
+        res.body
+    );
+}
+
+/// Client authentication and grant validation: missing/unknown secrets are
+/// a uniform 401 (no probing oracle), malformed grants a 422 envelope.
+#[tokio::test]
+async fn oauth_token_endpoint_rejects_bad_credentials() {
+    let app = app();
+    let redirect_uri = "https://client.example/cb";
+    let (cookie, _principal, client_id, secret) =
+        oauth_client(&app, "creds", &[redirect_uri], &["openid"]).await;
+    let (verifier, challenge) = pkce_pair();
+    let code = authorize_code(
+        &app,
+        &cookie,
+        &client_id,
+        redirect_uri,
+        &[
+            ("code_challenge", &challenge),
+            ("code_challenge_method", "S256"),
+        ],
+    )
+    .await;
+
+    // Wrong secret and unknown client answer identically.
+    for (cid, csecret) in [
+        (client_id.as_str(), "wrong-secret"),
+        ("00000000-0000-7000-8000-000000000000", secret.as_str()),
+    ] {
+        let res = send(
+            &app,
+            json_req(
+                Method::POST,
+                "/oauth/token",
+                token_json(&[
+                    ("grant_type", "authorization_code"),
+                    ("code", &code),
+                    ("redirect_uri", redirect_uri),
+                    ("client_id", cid),
+                    ("client_secret", csecret),
+                    ("code_verifier", &verifier),
+                ]),
+                None,
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(res.status, StatusCode::UNAUTHORIZED, "{}", res.body);
+        assert_eq!(res.error_code(), keel_foundation::codes::UNAUTHENTICATED);
+    }
+
+    // Valid client, unsupported grant type / missing code: 422.
+    let bad_grant = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/oauth/token",
+            token_json(&[
+                ("grant_type", "password"),
+                ("client_id", &client_id),
+                ("client_secret", &secret),
+            ]),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        bad_grant.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        bad_grant.body
+    );
+    assert_eq!(bad_grant.error_code(), keel_foundation::codes::VALIDATION);
+
+    let no_code = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/oauth/token",
+            token_json(&[
+                ("grant_type", "authorization_code"),
+                ("client_id", &client_id),
+                ("client_secret", &secret),
+                ("code_verifier", &verifier),
+            ]),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        no_code.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        no_code.body
+    );
+    assert_eq!(no_code.error_code(), keel_foundation::codes::VALIDATION);
+}
+
+/// Refresh rotation: every grant burns the presented token and mints a
+/// fresh pair; the old refresh token is dead afterwards.
+#[tokio::test]
+async fn oauth_refresh_rotates_and_kills_the_old_token() {
+    let app = app();
+    let redirect_uri = "https://client.example/cb";
+    let (cookie, _principal, client_id, secret) =
+        oauth_client(&app, "refresh", &[redirect_uri], &["openid"]).await;
+    let (verifier, challenge) = pkce_pair();
+    let code = authorize_code(
+        &app,
+        &cookie,
+        &client_id,
+        redirect_uri,
+        &[
+            ("code_challenge", &challenge),
+            ("code_challenge_method", "S256"),
+        ],
+    )
+    .await;
+    let first = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/oauth/token",
+            token_json(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", redirect_uri),
+                ("client_id", &client_id),
+                ("client_secret", &secret),
+                ("code_verifier", &verifier),
+            ]),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    let refresh = first.data()["refresh_token"]
+        .as_str()
+        .expect("refresh token")
+        .to_string();
+    let access_before = first.data()["access_token"]
+        .as_str()
+        .expect("access token")
+        .to_string();
+
+    let rotated = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/oauth/token",
+            token_json(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &refresh),
+                ("client_id", &client_id),
+                ("client_secret", &secret),
+            ]),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(rotated.status, StatusCode::OK, "{}", rotated.body);
+    let new_refresh = rotated.data()["refresh_token"]
+        .as_str()
+        .expect("rotated refresh token")
+        .to_string();
+    let new_access = rotated.data()["access_token"]
+        .as_str()
+        .expect("rotated access token")
+        .to_string();
+    assert_ne!(new_refresh, refresh, "rotation issues a fresh token");
+    assert_ne!(new_access, access_before, "rotation issues a fresh access token");
+
+    // The burned refresh token is dead.
+    let replay = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/oauth/token",
+            token_json(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &refresh),
+                ("client_id", &client_id),
+                ("client_secret", &secret),
+            ]),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(replay.status, StatusCode::FORBIDDEN, "{}", replay.body);
+    assert_eq!(replay.error_code(), keel_foundation::codes::DENIED);
+
+    // The rotated one keeps working.
+    let again = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/oauth/token",
+            token_json(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &new_refresh),
+                ("client_id", &client_id),
+                ("client_secret", &secret),
+            ]),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.body);
+}
+
+/// RFC 7009 revocation: client-authenticated, idempotent in shape — an
+/// access token dies on the api plane (bearer stops authenticating), an
+/// unknown token answers `{"revoked": false}` without an oracle, and a
+/// refresh token dies at the token endpoint.
+#[tokio::test]
+async fn oauth_revoke_kills_issued_tokens() {
+    let app = app();
+    let redirect_uri = "https://client.example/cb";
+    let (cookie, _principal, client_id, secret) =
+        oauth_client(&app, "revoke", &[redirect_uri], &["openid"]).await;
+    let (verifier, challenge) = pkce_pair();
+    let code = authorize_code(
+        &app,
+        &cookie,
+        &client_id,
+        redirect_uri,
+        &[
+            ("code_challenge", &challenge),
+            ("code_challenge_method", "S256"),
+        ],
+    )
+    .await;
+    let issued = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/oauth/token",
+            token_json(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", redirect_uri),
+                ("client_id", &client_id),
+                ("client_secret", &secret),
+                ("code_verifier", &verifier),
+            ]),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(issued.status, StatusCode::OK, "{}", issued.body);
+    let access = issued.data()["access_token"]
+        .as_str()
+        .expect("access token")
+        .to_string();
+    let refresh = issued.data()["refresh_token"]
+        .as_str()
+        .expect("refresh token")
+        .to_string();
+
+    // A healthy PAT first.
+    let me = send(
+        &app,
+        json_req(Method::GET, "/auth/me", Value::Null, None, Some(&access)),
+    )
+    .await;
+    assert_eq!(me.status, StatusCode::OK, "{}", me.body);
+
+    let revoked = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/oauth/revoke",
+            token_json(&[
+                ("token", &access),
+                ("token_type_hint", "access_token"),
+                ("client_id", &client_id),
+                ("client_secret", &secret),
+            ]),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.body);
+    assert_eq!(revoked.data()["revoked"], true, "{}", revoked.body);
+
+    // The revoked PAT no longer authenticates anything.
+    let dead = send(
+        &app,
+        json_req(Method::GET, "/auth/me", Value::Null, None, Some(&access)),
+    )
+    .await;
+    assert_eq!(dead.status, StatusCode::UNAUTHORIZED, "{}", dead.body);
+
+    // Unknown tokens are an uninformative false — never an error oracle.
+    let unknown = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/oauth/revoke",
+            token_json(&[
+                ("token", "never-issued-token"),
+                ("client_id", &client_id),
+                ("client_secret", &secret),
+            ]),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(unknown.status, StatusCode::OK, "{}", unknown.body);
+    assert_eq!(unknown.data()["revoked"], false, "{}", unknown.body);
+
+    // Revoking the refresh token kills it at the token endpoint.
+    let refresh_revoked = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/oauth/revoke",
+            token_json(&[
+                ("token", &refresh),
+                ("token_type_hint", "refresh_token"),
+                ("client_id", &client_id),
+                ("client_secret", &secret),
+            ]),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        refresh_revoked.status,
+        StatusCode::OK,
+        "{}",
+        refresh_revoked.body
+    );
+    assert_eq!(refresh_revoked.data()["revoked"], true);
+    let dead_refresh = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/oauth/token",
+            token_json(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &refresh),
+                ("client_id", &client_id),
+                ("client_secret", &secret),
+            ]),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        dead_refresh.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        dead_refresh.body
+    );
+}
+
+/// The client registry through `oauth2.clients.manage`: create returns the
+/// secret EXACTLY once (rows never carry it), list/update/delete round trip,
+/// and an unknown id is the standard 404 envelope.
+#[tokio::test]
+async fn oauth_clients_manage_crud_shows_the_secret_once() {
+    let app = app();
+    let (cookie, principal, client_id, secret) =
+        oauth_client(&app, "crud", &["https://client.example/cb"], &["openid"]).await;
+    let _ = &cookie;
+    assert!(!secret.is_empty(), "create returns the plaintext secret");
+
+    let listed = oauth_manage(
+        &app,
+        principal,
+        serde_json::json!({ "action": "list" }),
+    )
+    .await
+    .expect("list runs");
+    let rows = listed["clients"].as_array().expect("client array");
+    let row = rows
+        .iter()
+        .find(|r| r["client_id"] == client_id)
+        .expect("the created client is listed");
+    assert_eq!(row["name"], "client crud");
+    assert!(
+        row.get("secret").is_none() && row.get("secret_hash").is_none(),
+        "the secret never leaves the store: {row}"
+    );
+    assert_eq!(row["version"], 1);
+
+    // Update: rename + add a scope; the version stamps the change.
+    let id = row["id"].as_str().expect("row id").to_string();
+    let updated = oauth_manage(
+        &app,
+        principal,
+        serde_json::json!({
+            "action": "update",
+            "id": id,
+            "name": "renamed client",
+            "scopes": ["openid", "profile", "email"],
+        }),
+    )
+    .await
+    .expect("update runs");
+    assert_eq!(updated["name"], "renamed client");
+    assert_eq!(updated["version"], 2);
+    assert_eq!(updated["scopes"].as_array().expect("scopes").len(), 3);
+
+    // Deleting removes it from the registry.
+    let deleted = oauth_manage(
+        &app,
+        principal,
+        serde_json::json!({ "action": "delete", "id": id }),
+    )
+    .await
+    .expect("delete runs");
+    assert_eq!(deleted["deleted"].as_str().expect("deleted id"), id);
+    let after = oauth_manage(
+        &app,
+        principal,
+        serde_json::json!({ "action": "list" }),
+    )
+    .await
+    .expect("list runs");
+    assert!(
+        after["clients"]
+            .as_array()
+            .expect("client array")
+            .iter()
+            .all(|r| r["client_id"] != client_id),
+        "the deleted client is gone"
+    );
+
+    // An unknown id keeps the standard envelope (KER_NOT_FOUND).
+    let miss = oauth_manage(
+        &app,
+        principal,
+        serde_json::json!({ "action": "delete", "id": uuid::Uuid::now_v7() }),
+    )
+    .await
+    .expect_err("unknown id fails");
+    assert_eq!(miss.code, keel_foundation::codes::NOT_FOUND);
+}
+
+/// `clients.manage` is capability-bound like every other operation: a
+/// snapshot WITHOUT `oauth2.clients.manage` is refused before any write.
+#[tokio::test]
+async fn oauth_clients_manage_requires_the_capability() {
+    let app = app();
+    let (_cookie, principal, _client_id, _secret) =
+        oauth_client(&app, "gate", &["https://client.example/cb"], &["openid"]).await;
+
+    // Reinstall the snapshot WITHOUT the oauth2 capability (the same
+    // revoke-by-snapshot posture the batch gate exercises).
+    app.state
+        .policy
+        .install_snapshot(keel_policy::AccessSnapshot {
+            principal_id: principal,
+            tenant_id: app.state.default_tenant_id.expect("dev tenant"),
+            membership_active: true,
+            capabilities: Vec::<String>::new().into_iter().collect(),
+            scope_paths: ["/".to_string()].into_iter().collect(),
+            authorization_revision: app.state.policy.revision(),
+            feature_revision: keel_foundation::FeatureRevision(1),
+            module_revision: keel_foundation::ModuleRevision(1),
+            computed_at: time::OffsetDateTime::now_utc(),
+        });
+    let denied = oauth_manage(
+        &app,
+        principal,
+        serde_json::json!({
+            "action": "create",
+            "name": "should never land",
+            "redirect_uris": ["https://evil.example/cb"],
+            "scopes": [],
+        }),
+    )
+    .await
+    .expect_err("the gate refuses");
+    assert_eq!(denied.code, keel_foundation::codes::DENIED);
+}

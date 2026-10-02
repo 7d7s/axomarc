@@ -26,3 +26,10 @@ operation = "appointments.list"
 [[command]]
 name = "availability"
 operation = "appointments.availability"
+
+# Wave 8 P5 (B-21): the OAuth2 client registry runs through `keel call` —
+# one operation with an `action` discriminator (create / list / update /
+# delete); create prints the client secret EXACTLY once.
+[[command]]
+name = "oauth-clients"
+operation = "oauth2.clients.manage"

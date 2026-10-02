@@ -127,5 +127,11 @@ following changes and tests:
 - **Tenancy.** Every query path applies `tenant_scope`; cross-tenant reads are covered by the
   PostgreSQL integration matrix (`pg-tests`).
 
-Out of scope for v1 (parity-gate decisions, unchanged): JWT default, OAuth2 server, WAF-style
-edge filtering.
+Out of scope for v1 (parity-gate decisions, unchanged): JWT default, WAF-style edge filtering.
+The OAuth2 authorization server ships as an optional module (`applications/oauth2`, Wave 8
+B-21), never a default: authorization code + PKCE S256 with a consent-less first-party flow,
+single-use codes, refresh rotation, RFC 7009 revocation (200 `{"revoked": bool}` even for
+unknown tokens), an argon2-hashed `oauth_clients` registry (redirect allowlist, scopes, secret
+shown once) and capability-gated client management — hashed PAT + HMAC sessions remain the
+platform's auth, and the module's web-plane POSTs ride the same CSRF double-submit guard as
+everything else (asserted by the `oauth_*` matrix in `runtime/keel-api/tests/http_integration.rs`).

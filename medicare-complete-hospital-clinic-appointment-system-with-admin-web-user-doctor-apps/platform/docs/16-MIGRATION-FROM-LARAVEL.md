@@ -41,6 +41,7 @@ belongs" and then discover "this is safer and more powerful."
 | `Number::currency/percentage/precision/clamp` | Number helpers: `format_currency`, `format_percent`, `format_precision`, `clamp` (locale rules from the Wave 6 identities: en/fr/ar primary subtag, en fallback; curated ISO symbol + minor-unit tables) | `crates/foundation/core` |
 | `Carbon` (parse/format/timezone/now) | Date helpers: `parse_date_with` / `format_date_with` (closed `Y m d H i s` set — the `date_format` rule delegates here), `now_in` / `in_tz` / `local_wall` over the bundled IANA table | `crates/foundation/core` |
 | Composer package discovery | Package registry: root `packages.toml` index (`[[package]] { name, version, path }`), `keel pkg:list` / `keel pkg:add`, graph compile merges every indexed package's `module.toml` fail-closed (ABI-gated); `keel publish` / `keel config:publish` materialize package resources (vendor:publish-class) | `crates/application/registry`, `tools/keel-console` |
+| Laravel Passport / OAuth2 server | OAuth2 module: authorization code + PKCE S256, refresh rotation, `oauth_clients` registry, RFC 7009 revocation — an optional module, PAT + session stay the default | `applications/oauth2`, `database/migrations/20260826000001_oauth2.sql` |
 
 ## Per-concept detail
 
@@ -138,6 +139,21 @@ as conflicts and skipped unless `--force` — while views register under the `<n
 at boot (no copy). Migration: replace `composer require` + provider auto-discovery with copying
 the package in, `keel pkg:add`, `keel publish`, and a workspace member for its crate; v1 is
 local-path only (git fetch is out — zero-dep rule).
+
+### Passport / OAuth2 server -> applications/oauth2 module
+Same instinct: an OAuth2 authorization server for third-party clients is something you mount,
+not the framework's default. Difference: it is a regular module — `applications/oauth2`
+compiles through the same manifest/ABI/capability gates as your own applications, so the
+platform's auth (hashed PAT + HMAC sessions) never changes. `GET|POST /oauth/authorize`
+auto-issues the code and 302s (consent-less first-party flow; every pre-issuance failure
+answers as an envelope error, never a redirect), `POST /oauth/token` takes the
+`authorization_code` (PKCE S256) and `refresh_token` grants over
+`application/x-www-form-urlencoded`, `POST /oauth/revoke` answers `{"revoked": bool}` per
+RFC 7009, and `oauth2.clients.manage` (console: `keel call oauth-clients`) runs the
+argon2-hashed `oauth_clients` registry (secret shown once, redirect allowlist, scopes,
+`version` CAS). Migration: `Passport::routes()` + the `clients` table -> the manifest's routes
++ one migration (`20260826000001_oauth2.sql`); access tokens stay PATs and codes/refresh
+tokens ride the single-use `TokenService` rows.
 
 ## Migration strategy, step by step
 

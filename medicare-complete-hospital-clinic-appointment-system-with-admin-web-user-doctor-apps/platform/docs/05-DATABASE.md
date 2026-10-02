@@ -66,6 +66,17 @@ implements the `BatchLedger` port for the worker's dispatch, keel-api's batch en
 console batch commands; degraded boots answer through `MemoryBatchLedger` on the same trait
 (D-52).
 
+**OAuth2 client registry (Wave 8 P5, B-21).** `20260826000001_oauth2.sql` creates `oauth_clients`
+(`id uuid PK, name text, client_id text UNIQUE, secret_hash text, redirect_uris jsonb, scopes
+jsonb, version bigint, created_at/updated_at timestamptz`) — a GLOBAL registry (no tenant
+column, hard deletes): token/revoke calls resolve a client by its globally unique `client_id`,
+the authorization endpoint resolves it from the session's tenant context through the same key.
+Secrets are argon2-hashed through `keel_identity` (`hash_password`/`verify_password`) and the
+plaintext is shown exactly once at creation; redirect allowlists and scopes ride jsonb (data,
+not string parsing) and updates bump `version` (CAS) through the model runtime. Codes and
+refresh tokens never touch this table — they ride the `TokenService` hashed single-use rows in
+`auth_tokens`, and access tokens are ordinary PATs.
+
 ## Roles
 
 `roles.sql` enforces two database identities: the migration **owner** (DDL) and the **runtime**

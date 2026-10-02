@@ -48,6 +48,7 @@ keel-storage-local = { workspace = true }
 keel-storage-s3 = { workspace = true }
 keel-views = { workspace = true }
 keel-mod-appointments = { workspace = true }
+keel-mod-oauth2 = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }

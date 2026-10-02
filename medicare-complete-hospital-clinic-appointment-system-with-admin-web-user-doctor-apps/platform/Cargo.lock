@@ -1193,6 +1193,7 @@ dependencies = [
  "keel-lifecycle",
  "keel-metrics",
  "keel-mod-appointments",
+ "keel-mod-oauth2",
  "keel-models",
  "keel-notifications",
  "keel-observability",
@@ -1622,6 +1623,23 @@ dependencies = [
  "serde_json",
  "time",
  "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "keel-mod-oauth2"
+version = "0.1.0"
+dependencies = [
+ "keel-context",
+ "keel-execution",
+ "keel-foundation",
+ "keel-identity",
+ "keel-lifecycle",
+ "keel-models",
+ "keel-tokens",
+ "serde",
+ "serde_json",
+ "time",
  "uuid",
 ]
 

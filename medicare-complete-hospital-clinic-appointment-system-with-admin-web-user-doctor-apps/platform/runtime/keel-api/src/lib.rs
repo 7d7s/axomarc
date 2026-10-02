@@ -387,6 +387,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Modules phase: domain module first (registers its handler bundle), then
     // the demo provider assembles the CommandBus from every registered bundle.
     host.add_provider(Box::new(keel_mod_appointments::ModuleProvider));
+    // Wave 8 P5 (B-21): the OAuth2 module registers its own handler bundle
+    // (distinct newtype slot) BEFORE the bus assembly below.
+    host.add_provider(Box::new(keel_mod_oauth2::ModuleProvider));
     host.add_provider(Box::new(DemoModuleProvider {
         dev_snapshot: matches!(env, Environment::Dev | Environment::Test),
     }));
@@ -1193,7 +1196,16 @@ pub fn build_app_state(
         "../../../applications/appointments/module.toml"
     ))
     .expect("appointments manifest parses");
-    let graph = keel_registry::PlatformGraph::compile(vec![manifest]).expect("graph compiles");
+    // Wave 8 P5 (B-21): the harness graph carries BOTH modules — routes,
+    // capabilities (`oauth2.*`) and the granted-capability snapshots that
+    // register installs then match production discovery, which compiles
+    // every `applications/*/module.toml`.
+    let oauth_manifest = keel_registry::ModuleManifest::from_toml(include_str!(
+        "../../../applications/oauth2/module.toml"
+    ))
+    .expect("oauth2 manifest parses");
+    let graph = keel_registry::PlatformGraph::compile(vec![manifest, oauth_manifest])
+        .expect("graph compiles");
     let granted_capabilities: Vec<String> = graph
         .modules
         .iter()
@@ -1208,6 +1220,16 @@ pub fn build_app_state(
     let tokens = Arc::new(keel_tokens::TokenService::new(Arc::new(
         keel_tokens::InMemoryTokenStore::new(),
     )));
+    // Wave 8 P5 (B-21): the oauth2 handlers need the token service, so they
+    // register onto the harness bus here (after `tokens`, before the bus is
+    // moved into AppState). The client registry gets its own in-memory
+    // backend — `oauth_clients` is global, never tenant keyed.
+    let oauth_store = Arc::new(keel_mod_oauth2::OauthClientStore::new(Arc::new(
+        keel_models::InMemoryModelStore::new(),
+    )));
+    for handler in keel_mod_oauth2::handlers(oauth_store, tokens.clone()) {
+        bus.register(handler).expect("oauth2 handlers register");
+    }
     let principals: Arc<dyn keel_identity::PrincipalStore> =
         Arc::new(keel_identity::InMemoryPrincipalStore::new());
     let credentials: Arc<dyn keel_identity::CredentialStore> =

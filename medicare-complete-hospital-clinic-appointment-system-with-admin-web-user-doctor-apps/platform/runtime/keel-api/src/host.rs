@@ -289,6 +289,18 @@ impl Provider for DemoModuleProvider {
                     })?;
             }
         }
+        // Wave 8 P5 (B-21): the oauth2 module rides its own newtype bundle —
+        // the ServiceRegistry holds one instance per type, and the plain
+        // `Vec<Arc<dyn OperationHandler>>` slot above is appointments'.
+        if let Ok(bundle) = r.get::<keel_mod_oauth2::OauthHandlerBundle>() {
+            for handler in bundle.0.iter() {
+                bus.register(handler.clone())
+                    .map_err(|e| BootError::ProviderFailed {
+                        provider: "module.demo".into(),
+                        source: e.to_string(),
+                    })?;
+            }
+        }
         r.insert("command.bus", Arc::new(bus))?;
         if self.dev_snapshot {
             let policy = r.get::<PolicyEngine>()?;
