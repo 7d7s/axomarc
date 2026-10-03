@@ -12,3 +12,6 @@ Index of ADRs (one file each: NNNN-title.md). The decision log in
 | 0008-precognition-header.md | Precognition (validate-only dispatch) | Wave 8 gate (P6) |
 | 0009-ops-dashboard.md | Operations dashboard (read-only over inspect/job/scheduler stores) | Wave 8 gate (P6) |
 | 0010-mysql-driver.md | MySQL as a first-class SQL driver (keel-mysql) | Wave 9 B-31 |
+| 0011-rs256-jwt.md | RS256 JWT interop verifier (budget-gated) | Wave 9 gate (advanced backlog) |
+| 0012-password-breach-range-check.md | Password breach check (k-anonymity range API) | Wave 9 gate (advanced backlog) |
+| 0013-recursive-cte-relations.md | Recursive/CTE relations in the query builder | Wave 9 gate (advanced backlog) |
