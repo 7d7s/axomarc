@@ -270,6 +270,16 @@ impl Provider for DemoModuleProvider {
     fn phase(&self) -> Phase {
         Phase::Modules
     }
+    /// Wave 9 B-30: the bus assembles strictly AFTER every handler bundle
+    /// provider has inserted its bundle. (Init used to run in plain
+    /// (phase, name) order — `module.demo` sorts BEFORE `module.oauth2`
+    /// and `module.wasm`, so those bundles would have been registered
+    /// into the registry too late to join the bus. The lifecycle host now
+    /// inits in dependency order; declaring the edges makes that edge
+    /// real and cycle-checked.)
+    fn dependencies(&self) -> Vec<&'static str> {
+        vec!["module.appointments", "module.oauth2", "module.wasm"]
+    }
     fn init(&self, r: &mut ServiceRegistry) -> Result<(), BootError> {
         let engine = r.get::<keel_execution::Engine>()?;
         let mut bus = CommandBus::new(engine);
@@ -301,6 +311,20 @@ impl Provider for DemoModuleProvider {
                     })?;
             }
         }
+        // Wave 9 B-30: WASM plugins ride their own newtype bundle too —
+        // one handler per sidecar-verified READ capability. Registered
+        // through the same provider graph, so the bus sees them exactly
+        // like first-party handlers (Design C: sidecar manifests; the
+        // console never links keel-wasm).
+        if let Ok(bundle) = r.get::<keel_wasm::WasmHandlerBundle>() {
+            for handler in bundle.0.iter() {
+                bus.register(handler.clone())
+                    .map_err(|e| BootError::ProviderFailed {
+                        provider: "module.demo".into(),
+                        source: e.to_string(),
+                    })?;
+            }
+        }
         r.insert("command.bus", Arc::new(bus))?;
         if self.dev_snapshot {
             let policy = r.get::<PolicyEngine>()?;
@@ -318,6 +342,33 @@ impl Provider for DemoModuleProvider {
                 module_revision: keel_foundation::ModuleRevision(1),
                 computed_at: OffsetDateTime::now_utc(),
             });
+        }
+        Ok(())
+    }
+}
+
+/// WASM plugin module (Modules phase, Wave 9 B-30): publishes the
+/// pre-loaded, drift-checked plugin handlers so the demo provider's bus
+/// assembly picks them up. Loading happens BEFORE `host.boot()` (a plugin
+/// that fails to compile, link, or whose guest manifest drifts from the
+/// reviewed sidecar refuses the boot outright), so `init` only registers
+/// — it never touches the filesystem or wasmtime.
+pub struct WasmModulesProvider {
+    /// `None` when the index declares no plugins — the provider still
+    /// registers so `module.demo`'s declared dependency always resolves.
+    pub bundle: Option<keel_wasm::WasmHandlerBundle>,
+}
+
+impl Provider for WasmModulesProvider {
+    fn name(&self) -> &str {
+        "module.wasm"
+    }
+    fn phase(&self) -> Phase {
+        Phase::Modules
+    }
+    fn init(&self, r: &mut ServiceRegistry) -> Result<(), BootError> {
+        if let Some(bundle) = &self.bundle {
+            r.insert("module.wasm.handlers", Arc::new(bundle.clone()))?;
         }
         Ok(())
     }

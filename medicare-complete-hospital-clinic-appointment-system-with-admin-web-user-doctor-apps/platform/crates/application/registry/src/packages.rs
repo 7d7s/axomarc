@@ -41,12 +41,39 @@ fn default_version() -> String {
     "0.1.0".to_string()
 }
 
-/// The whole index: `[[package]]` entries in registration order.
+/// One indexed WASM plugin (Wave 9 B-30, docs/19): the compiled binary plus
+/// the reviewed sidecar manifest. The sidecar is the same shape as a
+/// `module.toml`, and at boot the guest's own `keel_manifest()` JSON must
+/// normalize to the IDENTICAL document (drift refuses the load) — so the
+/// index entry and the reviewed TOML are the two halves of the trust
+/// story: what was reviewed is what runs. Paths resolve like package
+/// paths (root-relative unless absolute).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WasmModuleEntry {
+    /// Plugin name — must equal `[module].name` in the sidecar.
+    pub name: String,
+    /// Plugin version — must equal `[module].version` in the sidecar.
+    pub version: String,
+    /// Compiled binary path (`.wasm`, or `.wat` for checked-in fixtures).
+    pub path: String,
+    /// Sidecar manifest path (the `module.toml`-equivalent TOML).
+    pub manifest: String,
+}
+
+/// The whole index: `[[package]]` entries in registration order, plus
+/// `[[wasm]]` plugin entries (Wave 9 B-30, additive).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackageIndex {
     #[serde(default)]
     pub package: Vec<PackageEntry>,
+    /// Indexed WASM plugins. `skip_serializing_if` keeps a pure package
+    /// index byte-identical to its pre-B-30 output (no bare `wasm = []`
+    /// key can land inside the last `[[package]]` table and trip
+    /// `deny_unknown_fields` on reload).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wasm: Vec<WasmModuleEntry>,
 }
 
 impl PackageIndex {
@@ -93,18 +120,117 @@ impl PackageIndex {
             .map_err(|v| format!("package {}: {}: {}", entry.name, path.display(), v.message))
     }
 
-    /// Every indexed package's manifest, in index order — fail-closed
-    /// (discovery feeds this straight into graph compile).
+    /// Every indexed manifest, in index order — packages first, then WASM
+    /// plugin sidecars — fail-closed (discovery feeds this straight into
+    /// graph compile; both discovery copies — keel-api and keel-console —
+    /// call it, so WASM plugins reach `keel graph`/`keel check`/boot with
+    /// zero per-caller wiring).
     pub fn manifests(&self, root: &Path) -> Result<Vec<ModuleManifest>, String> {
-        self.package
+        let mut out: Vec<ModuleManifest> = self
+            .package
             .iter()
             .map(|entry| self.entry_manifest(root, entry))
+            .collect::<Result<_, _>>()?;
+        out.extend(self.wasm_manifests(root)?);
+        Ok(out)
+    }
+
+    /// Resolve an index path (root-relative unless absolute).
+    pub fn resolve_path(root: &Path, path: &str) -> PathBuf {
+        let path = Path::new(path);
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            root.join(path)
+        }
+    }
+
+    /// One WASM plugin's sidecar manifest (Wave 9 B-30). The shared
+    /// discovery rule — run by graph discovery (console + boot) and mirrored
+    /// by the boot-time loader, so every caller sees the same contract:
+    /// * the sidecar must exist and parse (`GRAPH-MANIFEST` on garbage),
+    /// * `[module].name` / `[module].version` must match the index entry
+    ///   (a stale entry never silently describes a different plugin),
+    /// * the binary must exist,
+    /// * at least one capability must be declared (nothing to register =
+    ///   refuse instead of dead-weighting boot),
+    /// * every capability must be READ-profile — guest delta ABI backlog:
+    ///   the engine's delta/audit paths cannot represent guest mutations,
+    ///   so `WRITE`-profile plugins refuse at discovery (console, `keel
+    ///   check` and boot all fail identically).
+    pub fn wasm_manifest(
+        &self,
+        root: &Path,
+        entry: &WasmModuleEntry,
+    ) -> Result<ModuleManifest, String> {
+        let manifest_path = Self::resolve_path(root, &entry.manifest);
+        let binary_path = Self::resolve_path(root, &entry.path);
+        let raw = std::fs::read_to_string(&manifest_path).map_err(|e| {
+            format!("wasm plugin {}: {}: {e}", entry.name, manifest_path.display())
+        })?;
+        let manifest = ModuleManifest::from_toml(&raw).map_err(|v| {
+            format!(
+                "wasm plugin {}: {}: {}",
+                entry.name,
+                manifest_path.display(),
+                v.message
+            )
+        })?;
+        if manifest.name() != entry.name {
+            return Err(format!(
+                "wasm plugin {}: sidecar {} declares module name {:?}, index says {:?}",
+                entry.name,
+                manifest_path.display(),
+                manifest.name(),
+                entry.name
+            ));
+        }
+        if manifest.module.version != entry.version {
+            return Err(format!(
+                "wasm plugin {}: sidecar {} declares version {:?}, index says {:?}",
+                entry.name,
+                manifest_path.display(),
+                manifest.module.version,
+                entry.version
+            ));
+        }
+        if !binary_path.exists() {
+            return Err(format!(
+                "wasm plugin {}: binary {} does not exist",
+                entry.name,
+                binary_path.display()
+            ));
+        }
+        if manifest.capabilities.is_empty() {
+            return Err(format!(
+                "wasm plugin {}: sidecar {} declares no capabilities",
+                entry.name,
+                manifest_path.display()
+            ));
+        }
+        for (capability, spec) in &manifest.capabilities {
+            if !keel_foundation::ExecutionProfile::resolve(spec.profile).is_readonly() {
+                return Err(format!(
+                    "wasm plugin {}: capability {capability} declares profile {:?}: WASM plugins are read-only (guest delta ABI backlog)",
+                    entry.name, spec.profile
+                ));
+            }
+        }
+        Ok(manifest)
+    }
+
+    /// Every indexed plugin's sidecar manifest — fail-closed.
+    pub fn wasm_manifests(&self, root: &Path) -> Result<Vec<ModuleManifest>, String> {
+        self.wasm
+            .iter()
+            .map(|entry| self.wasm_manifest(root, entry))
             .collect()
     }
 
-    /// True when the name is already indexed (`keel pkg:add` duplicate gate).
+    /// True when the name is already indexed (`keel pkg:add` duplicate
+    /// gate; WASM plugins occupy the same module-name namespace).
     pub fn contains_name(&self, name: &str) -> bool {
-        self.package.iter().any(|e| e.name == name)
+        self.package.iter().any(|e| e.name == name) || self.wasm.iter().any(|e| e.name == name)
     }
 
     /// True when the resolved directory is already indexed (same package
@@ -256,5 +382,134 @@ mod tests {
             PackageIndex::entry_dir(&root, &absolute),
             root.join("elsewhere")
         );
+    }
+
+    // ------------------------------------------------ Wave 9 B-30 (wasm)
+
+    /// Write a plugin binary + sidecar under `plugins/<name>/` and return
+    /// its index entry.
+    fn write_plugin(
+        root: &Path,
+        name: &str,
+        version: &str,
+        capability: &str,
+        profile: &str,
+    ) -> WasmModuleEntry {
+        let dir = root.join("plugins").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{name}.wasm")), b"\0asmfixture").unwrap();
+        std::fs::write(
+            dir.join("module.toml"),
+            format!(
+                "[module]\nname = \"{name}\"\nversion = \"{version}\"\n\n\
+                 [capabilities.{capability}]\nprofile = \"{profile}\"\n"
+            ),
+        )
+        .unwrap();
+        WasmModuleEntry {
+            name: name.into(),
+            version: version.into(),
+            path: format!("plugins/{name}/{name}.wasm"),
+            manifest: format!("plugins/{name}/module.toml"),
+        }
+    }
+
+    #[test]
+    fn wasm_sidecars_discover_with_full_context_refusals() {
+        let root = temp_root("wasm");
+        let entry = write_plugin(&root, "echo", "1.2.0", "echo", "READ");
+
+        let mut index = PackageIndex::load(&root).unwrap();
+        index.wasm.push(entry.clone());
+        let manifests = index.manifests(&root).expect("plugin sidecar discovers");
+        assert_eq!(manifests.len(), 1, "sidecar joins the manifest merge");
+        assert_eq!(manifests[0].name(), "echo");
+        assert_eq!(manifests[0].module.version, "1.2.0");
+        assert!(manifests[0].capabilities.contains_key("echo"));
+        assert!(index.contains_name("echo"), "plugin names are indexed too");
+
+        // Index/sidecar name disagreement: refused, naming the plugin.
+        let mut bad = entry.clone();
+        bad.name = "renamed".into();
+        index.wasm[0] = bad;
+        let err = index.manifests(&root).unwrap_err();
+        assert!(err.contains("wasm plugin renamed"), "{err}");
+
+        // Version disagreement: refused (a stale entry never silently
+        // describes a different plugin).
+        let mut bad = entry.clone();
+        bad.version = "9.9.9".into();
+        index.wasm[0] = bad;
+        let err = index.manifests(&root).unwrap_err();
+        assert!(err.contains("9.9.9"), "{err}");
+
+        // Missing binary: refused.
+        let mut bad = entry.clone();
+        bad.path = "plugins/echo/missing.wasm".into();
+        index.wasm[0] = bad;
+        let err = index.manifests(&root).unwrap_err();
+        assert!(err.contains("does not exist"), "{err}");
+
+        // Missing sidecar: refused with plugin context.
+        let mut bad = entry.clone();
+        bad.manifest = "plugins/echo/ghost.toml".into();
+        index.wasm[0] = bad;
+        let err = index.manifests(&root).unwrap_err();
+        assert!(err.contains("wasm plugin echo"), "{err}");
+
+        // A non-READ capability: refused (guest delta ABI backlog).
+        index.wasm[0] = write_plugin(&root, "mutate", "0.1.0", "write_all", "COMMAND");
+        let err = index.manifests(&root).unwrap_err();
+        assert!(err.contains("read-only"), "{err}");
+
+        // A plugin declaring nothing: refused (nothing to register).
+        let dir = root.join("plugins/idle");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("idle.wasm"), b"\0asmfixture").unwrap();
+        std::fs::write(
+            dir.join("module.toml"),
+            "[module]\nname = \"idle\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        index.wasm[0] = WasmModuleEntry {
+            name: "idle".into(),
+            version: "0.1.0".into(),
+            path: "plugins/idle/idle.wasm".into(),
+            manifest: "plugins/idle/module.toml".into(),
+        };
+        let err = index.manifests(&root).unwrap_err();
+        assert!(err.contains("no capabilities"), "{err}");
+    }
+
+    #[test]
+    fn save_omits_the_wasm_key_when_empty_and_round_trips_plugins() {
+        let root = temp_root("wasm-save");
+        write_manifest(&root.join("packages/billing"), "billing", "");
+        let mut index = PackageIndex::load(&root).unwrap();
+        index.append(PackageEntry {
+            name: "billing".into(),
+            version: "0.1.0".into(),
+            path: "packages/billing".into(),
+        });
+        index.save(&root).unwrap();
+        let raw = std::fs::read_to_string(PackageIndex::packages_path(&root)).unwrap();
+        assert!(
+            !raw.contains("[[wasm]]") && !raw.contains("\nwasm"),
+            "an empty wasm list emits no key at all:\n{raw}"
+        );
+        let reloaded = PackageIndex::load(&root).unwrap();
+        assert_eq!(reloaded, index);
+
+        // With a plugin: [[wasm]] survives save -> load and the sidecars
+        // still discover from the reloaded index.
+        index
+            .wasm
+            .push(write_plugin(&root, "echo", "1.0.0", "echo", "READ"));
+        index.save(&root).unwrap();
+        let raw = std::fs::read_to_string(PackageIndex::packages_path(&root)).unwrap();
+        assert!(raw.contains("[[wasm]]"), "{raw}");
+        let reloaded = PackageIndex::load(&root).unwrap();
+        assert_eq!(reloaded, index);
+        assert!(reloaded.manifests(&root).is_ok());
     }
 }

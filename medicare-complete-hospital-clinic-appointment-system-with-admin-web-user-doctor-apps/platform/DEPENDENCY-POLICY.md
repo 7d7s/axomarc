@@ -6,7 +6,7 @@ externals, enforced by the analyzer (keel check -> ANALYZER-BUDGET).
 
 ## Budget
 <= 25 direct external dependencies at the workspace level.
-Current count: 23.
+Current count: 25.
 
 ## Admission criteria
 1. Maintenance: active releases, responsive security handling.
@@ -42,6 +42,8 @@ Current count: 23.
 | tokio-stream | Broadcast -> SSE stream bridging | MIT | sync feature only; tiny tokio companion crate; used by keel-realtime |
 | lettre | SMTP mail delivery | MIT | default-features OFF; builder + smtp-transport + rustls-tls; pure-Rust TLS; used by keel-mail-smtp adapter |
 | aes-gcm | At-rest secret encryption (AES-256-GCM envelopes, L27) | MIT/Apache-2.0 | Pure Rust, RustCrypto; audited cipher line next to sha2; used by keel-tokens only |
+| redis | Optional bounded-cache/queue driver (adapters) | MIT/Apache-2.0 | socket feature only; used by the keel-cache-redis adapter; not on the default path |
+| wasmtime | Sandboxed WASM plugin runtime (Wave 9 B-30) | Apache-2.0 WITH LLVM-exception | D-62 amendment recorded by docs/19 Wave 9 B-30; 34.x line, MSRV 1.85 = workspace MSRV; default features OFF (cranelift/runtime/wat/std only: no component-model, no cache, no profiling); fuel metering + store-limits sandbox, fail-closed import surface; reaches the 25-crate cap (25/25) |
 
 ## Rules
 - Core (crates/foundation/core) uses only the pinned minimal set (serde, serde_json, time, uuid,

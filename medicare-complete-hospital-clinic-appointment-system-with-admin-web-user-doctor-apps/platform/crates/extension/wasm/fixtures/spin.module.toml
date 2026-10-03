@@ -1,0 +1,5 @@
+[module]
+name = "spin"
+
+[capabilities.spin]
+profile = "READ"

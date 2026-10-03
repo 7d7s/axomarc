@@ -1,0 +1,5 @@
+[module]
+name = "garbage"
+
+[capabilities.bogus]
+profile = "READ"

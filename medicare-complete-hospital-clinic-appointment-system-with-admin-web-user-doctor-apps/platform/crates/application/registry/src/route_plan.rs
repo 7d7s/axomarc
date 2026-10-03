@@ -251,6 +251,28 @@ pub fn manifests_hash(root: &Path) -> Result<String, String> {
         hasher.update(raw.as_bytes());
         hasher.update(b"\0");
     }
+    // Wave 9 (B-30): WASM plugins pin too — sidecar manifest AND compiled
+    // binary bytes, so editing either (a code change re-links routes just
+    // like an operation rename would) invalidates the cache, and an
+    // unreadable file refuses the hash instead of serving stale routes.
+    for entry in &index.wasm {
+        let sidecar = crate::PackageIndex::resolve_path(root, &entry.manifest);
+        let raw = std::fs::read(&sidecar)
+            .map_err(|e| format!("wasm plugin {}: {}: {e}", entry.name, sidecar.display()))?;
+        hasher.update(b"wasm-sidecar\0");
+        hasher.update(entry.name.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(&raw);
+        hasher.update(b"\0");
+        let binary = crate::PackageIndex::resolve_path(root, &entry.path);
+        let raw = std::fs::read(&binary)
+            .map_err(|e| format!("wasm plugin {}: {}: {e}", entry.name, binary.display()))?;
+        hasher.update(b"wasm-binary\0");
+        hasher.update(entry.name.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(&raw);
+        hasher.update(b"\0");
+    }
     // Wave 2: root route files participate in the cache pin too.
     for name in ["api.toml", "channels.toml", "console.toml", "web.toml"] {
         let path = root.join("routes").join(name);
@@ -446,6 +468,56 @@ constraints = [{ param = "id", kind = "number" }]
         std::fs::remove_file(dir.join("packages/billing").join("module.toml")).unwrap();
         let err = manifests_hash(&dir).unwrap_err();
         assert!(err.contains("package billing"), "{err}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn wasm_plugins_participate_in_the_manifest_hash() {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "keel-wasmhash-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("plugins/echo")).unwrap();
+        std::fs::write(
+            dir.join("plugins/echo/module.toml"),
+            "[module]\nname = \"echo\"\nversion = \"0.1.0\"\n\n[capabilities.echo]\nprofile = \"READ\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("plugins/echo/echo.wasm"), b"\0asm-v1").unwrap();
+        let base = manifests_hash(&dir).unwrap();
+
+        // Registering the plugin pins it (index bytes + both file reads).
+        std::fs::write(
+            dir.join("packages.toml"),
+            "[[wasm]]\nname = \"echo\"\nversion = \"0.1.0\"\npath = \"plugins/echo/echo.wasm\"\nmanifest = \"plugins/echo/module.toml\"\n",
+        )
+        .unwrap();
+        let with_index = manifests_hash(&dir).unwrap();
+        assert_ne!(base, with_index);
+
+        // Binary bytes invalidate the pin (B-30: code edits re-pin routes).
+        std::fs::write(dir.join("plugins/echo/echo.wasm"), b"\0asm-v2").unwrap();
+        let with_binary = manifests_hash(&dir).unwrap();
+        assert_ne!(with_index, with_binary);
+        assert_eq!(with_binary, manifests_hash(&dir).unwrap(), "deterministic");
+
+        // Sidecar edits invalidate the pin too.
+        std::fs::write(
+            dir.join("plugins/echo/module.toml"),
+            "[module]\nname = \"echo\"\nversion = \"0.1.0\"\n\n[capabilities.scan]\nprofile = \"READ\"\n",
+        )
+        .unwrap();
+        let with_sidecar = manifests_hash(&dir).unwrap();
+        assert_ne!(with_binary, with_sidecar);
+
+        // A vanished binary refuses the hash (fail-closed, never stale-serve).
+        std::fs::remove_file(dir.join("plugins/echo/echo.wasm")).unwrap();
+        let err = manifests_hash(&dir).unwrap_err();
+        assert!(err.contains("wasm plugin echo"), "{err}");
 
         std::fs::remove_dir_all(&dir).ok();
     }

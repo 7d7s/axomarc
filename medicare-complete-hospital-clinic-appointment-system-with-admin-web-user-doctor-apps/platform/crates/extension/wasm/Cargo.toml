@@ -1,0 +1,32 @@
+[package]
+name = "keel-wasm"
+# Wave 9 B-30 (docs/19): internal-only — never published to crates.io, so
+# the publish set stays at 61. keel-console (Tools) does not link this crate;
+# only the runtime (keel-api) hosts plugins.
+publish = false
+description = "WASM plugin runtime: fuel-metered wasmtime sandbox, keel_manifest()/keel_call() guest ABI, fail-closed import surface."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+
+[dependencies]
+keel-foundation = { workspace = true }
+keel-context = { workspace = true }
+keel-execution = { workspace = true }
+keel-registry = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+rand = { workspace = true }
+wasmtime = { workspace = true }
+
+[lib]
+# Wave 9 B-30: every keel-wasm test lives in an EXISTING suite (the keel-api
+# `wasm_tests` facet module plus registry suites drive this runtime over the
+# real edge), so the crate opts out of its own lib test target and doctests —
+# the suite count stays 150 (oauth2 precedent).
+test = false
+doctest = false

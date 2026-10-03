@@ -28,6 +28,42 @@ use host::{
 use keel_config::{Environment, PlatformConfig};
 use keel_foundation::{PrincipalId, TenantId};
 use keel_lifecycle::ApplicationHost;
+
+/// Wave 9 B-30: load every WASM plugin indexed by the root `packages.toml`
+/// `[[wasm]]` entries. Runs BEFORE `host.boot()` so compile, link, ABI,
+/// capability and manifest-drift failures refuse the boot outright
+/// (fail-closed) instead of surfacing at first dispatch. `Ok(None)` = no
+/// plugins indexed — the default path loads nothing and changes nothing.
+pub fn load_wasm_plugins(
+    root: &std::path::Path,
+) -> Result<Option<keel_wasm::WasmHandlerBundle>, String> {
+    let index = keel_registry::PackageIndex::load(root)?;
+    if index.wasm.is_empty() {
+        return Ok(None);
+    }
+    let host = keel_wasm::WasmHost::new().map_err(|e| e.to_string())?;
+    let mut handlers: Vec<Arc<dyn keel_execution::OperationHandler>> = Vec::new();
+    for entry in &index.wasm {
+        // Shared discovery rules (sidecar parses, name/version agree,
+        // binary exists, capabilities present and READ-profile) — the
+        // exact call `keel graph`/`keel check` and the console make, so
+        // what boots here was what `keel check` reviewed.
+        let sidecar = index.wasm_manifest(root, entry)?;
+        let binary = keel_registry::PackageIndex::resolve_path(root, &entry.path);
+        let bytes = std::fs::read(&binary)
+            .map_err(|e| format!("wasm plugin {}: {}: {e}", entry.name, binary.display()))?;
+        let plugin = Arc::new(
+            host.load(&bytes, &sidecar)
+                .map_err(|e| format!("wasm plugin {}: {e}", entry.name))?,
+        );
+        handlers.extend(
+            keel_wasm::handlers(plugin).map_err(|e| format!("wasm plugin {}: {e}", entry.name))?,
+        );
+        tracing::info!(plugin = %entry.name, handlers = handlers.len(), "wasm plugin loaded");
+    }
+    Ok(Some(keel_wasm::WasmHandlerBundle(handlers)))
+}
+
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cfg_path = std::env::var("KEEL_CONFIG").unwrap_or_else(|_| "config/dev.toml".into());
     // B-29: interactive console mode (`keel shell` spawns `keel-api --shell`).
@@ -306,6 +342,14 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         keel_foundation::codes::NOT_ACCEPTABLE,
         axum::http::StatusCode::NOT_ACCEPTABLE,
     );
+    // Wave 9 B-30: fuel exhaustion is a resource failure that behaves like
+    // a timeout — pinned to 503 SERVICE UNAVAILABLE (the ResourceExhausted
+    // category default would be 429 rate-limit, which misattributes a
+    // plugin bug to the caller).
+    error_renders.set_status(
+        keel_foundation::codes::WASM_FUEL,
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+    );
     host.add_provider(Box::new(host::ErrorRenderProvider {
         registry: error_renders.clone(),
     }));
@@ -401,6 +445,14 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Wave 8 P5 (B-21): the OAuth2 module registers its own handler bundle
     // (distinct newtype slot) BEFORE the bus assembly below.
     host.add_provider(Box::new(keel_mod_oauth2::ModuleProvider));
+    // Wave 9 B-30: WASM plugins load BEFORE boot (fail-closed: compile,
+    // link, ABI, capability and manifest-drift failures refuse the boot
+    // outright). The provider then only publishes the bundle for the bus
+    // assembly below — dependency edges keep the assembly strictly after it.
+    let wasm_bundle = load_wasm_plugins(&root)?;
+    host.add_provider(Box::new(host::WasmModulesProvider {
+        bundle: wasm_bundle,
+    }));
     host.add_provider(Box::new(DemoModuleProvider {
         dev_snapshot: matches!(env, Environment::Dev | Environment::Test),
     }));
@@ -1334,6 +1386,12 @@ pub fn build_app_state(
         keel_foundation::codes::NOT_ACCEPTABLE,
         axum::http::StatusCode::NOT_ACCEPTABLE,
     );
+    // Wave 9 B-30: the harness pins the same 503 for wasm fuel exhaustion,
+    // so `error_envelope` serves the production status for KER_WASM_FUEL.
+    error_renders.set_status(
+        keel_foundation::codes::WASM_FUEL,
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+    );
 
     // Wave 2 routing edge: a fixed harness application key backs the signed
     // URL gate, and a fresh (empty) tenant registry tests can seed through
@@ -1442,6 +1500,12 @@ pub fn build_app_state(
     };
     (state, graph, appt_store)
 }
+
+/// Wave 9 B-30 facet suite: discovery + guest ABI gates, bus dispatch
+/// roundtrip, authz + capability denials, fuel -> 503, loader refusals.
+/// Rides the crate's existing lib test binary (suite count stays 150).
+#[cfg(test)]
+mod wasm_tests;
 
 #[cfg(test)]
 mod views_tests {

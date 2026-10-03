@@ -69,6 +69,11 @@ pub mod codes {
     /// than `auth.confirm_timeout_secs`. Authorization category (HTTP 403
     /// via `status_for_error`).
     pub const CONFIRMATION_REQUIRED: &str = "CONFIRMATION_REQUIRED";
+    /// Wave 9 B-30 (docs/19): a WASM plugin burned its per-call instruction
+    /// budget (fuel metering). ResourceExhausted/Retryable; the runtime pins
+    /// it to HTTP 503 at boot (`ErrorRenderRegistry::set_status`) because it
+    /// behaves like a timeout, not a client-side rate limit.
+    pub const WASM_FUEL: &str = "KER_WASM_FUEL";
 }
 
 /// The one error type. `meta` must stay PHI-free (safe metadata only).

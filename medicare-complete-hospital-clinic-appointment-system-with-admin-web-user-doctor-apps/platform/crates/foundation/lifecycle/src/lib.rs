@@ -306,22 +306,29 @@ impl ApplicationHost {
         self.providers.push(provider);
     }
 
-    /// register → dependency topo-sort (cycle = boot refusal) → boot in order →
-    /// FREEZE (STAGE-0-SPEC §6).
+    /// register → dependency topo-sort (cycle = boot refusal) → init + boot in
+    /// topo order → FREEZE (STAGE-0-SPEC §6).
     pub async fn boot(&mut self) -> Result<(), BootError> {
-        // Deterministic registration order: phase, then name (stable diagnostics).
+        // Deterministic registration order: phase, then name (stable
+        // diagnostics). The typed provider graph (S1) then orders BOTH the
+        // synchronous init and the async boot: every provider registers its
+        // services strictly after its declared dependencies. Init used to
+        // run in plain (phase, name) order, which let a bus-assembling
+        // provider run BEFORE the providers that insert handlers into it
+        // (Wave 9 B-30 fixed the latent ordering bug for the oauth2/wasm
+        // handler bundles). With no dependencies the two orders coincide.
         self.providers
             .sort_by_key(|p| (p.phase(), p.name().to_string()));
-        for p in self.providers.iter() {
-            p.init(&mut self.registry)
+        let order = topo_order(&self.providers)?;
+        for &i in &order {
+            self.providers[i]
+                .init(&mut self.registry)
                 .map_err(|e| BootError::ProviderFailed {
-                    provider: p.name().to_string(),
+                    provider: self.providers[i].name().to_string(),
                     source: e.to_string(),
                 })?;
         }
-        // Typed provider graph (S1): boot strictly after declared dependencies.
-        let order = topo_order(&self.providers)?;
-        for i in order {
+        for &i in &order {
             self.providers[i].boot(&self.registry).await.map_err(|e| {
                 BootError::ProviderFailed {
                     provider: self.providers[i].name().to_string(),

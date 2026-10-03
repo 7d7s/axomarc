@@ -92,6 +92,40 @@ Publish contract:
 - Rebuild after publishing migrations: they are embedded at compile time (`keel migrate` runs
   the embedded set).
 
+## WASM plugins (B-30, Wave 9)
+
+The D-62 amendment (wasmtime, recorded in the dependency ledger + `deny.toml`) ships the third
+roadmap step as an opt-in runtime — `crates/extension/wasm` (`keel-wasm`, workspace-internal,
+`publish = false`):
+
+- **Discovery (sidecar manifests).** The root `packages.toml` gains `[[wasm]] { name, version,
+  path }` entries (`serde` default; the key is omitted when empty, so every existing index stays
+  byte-identical). Each binary ships a reviewed `<binary>.module.toml` sidecar parsed with the
+  same `ModuleManifest` + GRAPH gates as a crate module. `manifests()`, `contains_name()` and
+  the route-cache `manifests_hash` all cover WASM entries — the hash mixes in the sidecar AND
+  the binary bytes, so editing a plugin refuses boot until `keel route:cache` is cleared.
+- **Guest ABI v1.** A module exports `memory`, `keel_manifest() -> i64` (packed
+  `ptr << 32 | len` of a NUL-terminated `module.toml`-shaped JSON), `keel_alloc(len) -> i32`
+  and `keel_call(op_ptr, op_len, in_ptr, in_len) -> i64`. Load validates every export,
+  compiles, instantiates, reads the guest manifest and refuses boot on **drift**: the guest's
+  document must serialize IDENTICALLY to the reviewed sidecar — a plugin cannot smuggle a
+  capability past review.
+- **Sandbox.** Fuel metering (`DEFAULT_FUEL` = 10M instructions) + a 16 MiB store memory cap;
+  exhaustion maps to the append-only `KER_WASM_FUEL` code pinned to HTTP 503 at both boot
+  sites. The import surface is a hand-rolled WASI-preview1 subset (`fd_write`, `proc_exit`,
+  `clock_time_get`, `random_get`, `sched_yield`, `fd_close`; empty args/environ) plus
+  `host.log` and `host.capability_check` — there is no `sock_*`, so any module that imports
+  networking fails at link time (fail-closed).
+- **No self-elevation.** `host.capability_check` answers only from the sidecar-declared set,
+  and a path-bearing request additionally needs an attached scope whose node path matches.
+  Operation registration goes through `WasmHandler: OperationHandler`, so authorization,
+  idempotency, delta and audit run host-side in the existing engine — readonly profiles only,
+  enforced both at registry discovery and in `WasmHandler::new`.
+- **Lifecycle.** `load_wasm_plugins` runs BEFORE `host.boot()` (errors are prefixed
+  `wasm plugin <name>:`); `module.wasm` is registered unconditionally with
+  `DemoModuleProvider` depending on it, so init order is deterministic whether or not any
+  plugin is installed.
+
 ## Plugin roadmap (D-69)
 
 Deliberate order, smallest trusted core first:
@@ -99,8 +133,9 @@ Deliberate order, smallest trusted core first:
 1. **Compile-time modules** — today. Zero runtime code loading; the compiler is the sandbox.
 2. **Dynamic adapters** — later, at the port seams (e.g. a third-party search backend), loaded by
    the runtime binary, still behind frozen traits.
-3. **WASM sandbox** — only if the ecosystem proves demand. Nothing above changes when it lands,
-   because the extension seams already exist.
+3. **WASM sandbox** — shipped as B-30 (Wave 9, above): opt-in `[[wasm]]` entries over the
+   capability ABI. Nothing above changed when it landed, because the extension seams already
+   existed.
 
 ## API governance
 

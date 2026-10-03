@@ -1,0 +1,5 @@
+[module]
+name = "echo"
+
+[capabilities.echo]
+profile = "READ"

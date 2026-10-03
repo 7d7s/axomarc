@@ -50,6 +50,9 @@ keel-storage-s3 = { workspace = true }
 keel-views = { workspace = true }
 keel-mod-appointments = { workspace = true }
 keel-mod-oauth2 = { workspace = true }
+# Wave 9 B-30: the WASM plugin runtime (internal-only, publish = false — the
+# publish set stays 61; only this runtime hosts plugins, never the console).
+keel-wasm = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }

@@ -27,6 +27,10 @@ pub enum Class {
     Tests,
     Examples,
     Applications,
+    /// Extension crates (`crates/extension/<name>`): sandboxed plugin runtimes
+    /// hosted by the runtime (docs/19 Wave 9 B-30). Added by the Wave 9
+    /// program — STAGE-0-SPEC §2 predates the class.
+    Extension,
 }
 
 impl Class {
@@ -50,6 +54,7 @@ impl Class {
             Class::Tests => "tests",
             Class::Examples => "examples",
             Class::Applications => "applications",
+            Class::Extension => "extension",
         }
     }
 
@@ -72,6 +77,7 @@ impl Class {
                 "enterprise" => Some(Class::Enterprise),
                 "testing" => Some(Class::Testing),
                 "ai" => Some(Class::Ai),
+                "extension" => Some(Class::Extension),
                 _ => None,
             },
             "testing" => Some(Class::Testing),
@@ -142,6 +148,8 @@ impl Class {
             ],
             Adapters => &[Foundation, Services, Async, Adapters],
             // D-77 (recorded as D-73 before Sentinel renumbering): runtime hosts boot domain application modules.
+            // Extension joins for Wave 9 B-30: the runtime host instantiates
+            // and dispatches WASM plugin handlers.
             Runtime => &[
                 Foundation,
                 Security,
@@ -155,6 +163,7 @@ impl Class {
                 Enterprise,
                 Adapters,
                 Applications,
+                Extension,
                 Runtime,
             ],
             // STAGE-0-SPEC §3: tools -> anything except runtime binaries.
@@ -203,6 +212,12 @@ impl Class {
                 Adapters,
                 Applications,
             ],
+            // docs/19 Wave 9 B-30: the WASM plugin runtime hosts module
+            // manifests (Application), builds ExecutionPlans and dispatches
+            // through the OperationHandler trait (Execution), and reports
+            // through Foundation errors. It must NOT reach Web/Security/Data
+            // services: the sandbox has no host-side I/O surface by design.
+            Extension => &[Foundation, Execution, Application, Extension],
         }
     }
 }

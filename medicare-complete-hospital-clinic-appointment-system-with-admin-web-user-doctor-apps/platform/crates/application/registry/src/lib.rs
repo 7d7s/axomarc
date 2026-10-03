@@ -25,7 +25,7 @@ pub use config_cache::{
     config_cache_check, config_cache_path, config_hash, ConfigCacheArtifact, CONFIG_CACHE_ABI,
     CONFIG_CACHE_CODE,
 };
-pub use packages::{PackageEntry, PackageIndex, PACKAGES_FILE};
+pub use packages::{PackageEntry, PackageIndex, WasmModuleEntry, PACKAGES_FILE};
 pub use route_plan::{
     manifests_hash, resolve_route_plans, route_cache_path, RouteCacheArtifact, RoutePlan,
 };
@@ -678,6 +678,20 @@ pub struct ModuleHeader {
 impl ModuleManifest {
     pub fn from_toml(raw: &str) -> Result<Self, GraphViolation> {
         let mut manifest: ModuleManifest = toml::from_str(raw).map_err(|e| GraphViolation {
+            code: "GRAPH-MANIFEST".into(),
+            message: format!("manifest parse failed: {e}"),
+        })?;
+        expand_resources(&mut manifest)?;
+        Ok(manifest)
+    }
+
+    /// Parse a guest-supplied `keel_manifest()` JSON document (Wave 9 B-30,
+    /// docs/19). Normalization mirrors [`ModuleManifest::from_toml`]
+    /// (resource expansion runs) so the drift comparison against the
+    /// reviewed sidecar compares like with like. A malformed document is
+    /// `GRAPH-MANIFEST` — the plugin load refuses, fail closed.
+    pub fn from_json(raw: &str) -> Result<Self, GraphViolation> {
+        let mut manifest: ModuleManifest = serde_json::from_str(raw).map_err(|e| GraphViolation {
             code: "GRAPH-MANIFEST".into(),
             message: format!("manifest parse failed: {e}"),
         })?;
