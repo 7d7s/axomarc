@@ -25,7 +25,7 @@ Current count: 25.
 | tower-http | CORS (+trace) middleware | MIT | Only cors/trace features enabled |
 | serde | Serialization | MIT/Apache-2.0 | Universal standard |
 | serde_json | JSON values | MIT/Apache-2.0 | Universal standard |
-| sqlx | Postgres pool + migrate | MIT/Apache-2.0 | Default features OFF; runtime-tokio + rustls only |
+| sqlx | SQL fabric: Postgres pool + migrate; MySQL pool + migrate (Wave 9 B-31, `mysql` feature — same external, no new crate) | MIT/Apache-2.0 | Default features OFF; runtime-tokio + rustls only; the mysql feature rides the existing dependency (cap stays 25) |
 | uuid | Typed ids (v7) | MIT/Apache-2.0 | v7 + serde features only |
 | time | Clock/dates | MIT/Apache-2.0 | serde/formatting/parsing/macros features |
 | thiserror | Error derives | MIT/Apache-2.0 | Tiny proc-macro |

@@ -39,13 +39,18 @@ struct Args {
 }
 
 /// Job store fallback chain shared by the REDIS_URL failure path and the
-/// no-redis default (S10 B-13).
+/// no-redis default (S10 B-13). Wave 9 B-31: driver-selected — the pool is
+/// the boot-selected `DbPool` variant (postgres or mysql).
 fn fallback_job_stores(
-    pool: &Option<keel_postgres::PgPool>,
+    pool: &Option<keel_mysql::DbPool>,
 ) -> (Arc<dyn JobStore>, Arc<dyn JobStoreAdmin>) {
     match pool {
-        Some(pool) => {
+        Some(keel_mysql::DbPool::Postgres(pool)) => {
             let store = Arc::new(keel_postgres::PgJobStore::new(pool.clone()));
+            (store.clone(), store)
+        }
+        Some(keel_mysql::DbPool::MySql(pool)) => {
+            let store = Arc::new(keel_mysql::MySqlJobStore::new(pool.clone()));
             (store.clone(), store)
         }
         None => {
@@ -619,17 +624,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
     // Database probe (same semantics as keel-api; degraded boot D-52).
-    let pool = match cfg.database() {
+    // Wave 9 B-31: `[database].driver` selects the probe + runner; `postgres`
+    // (the default) keeps the existing path byte-identical.
+    let pool: Option<keel_mysql::DbPool> = match cfg.database() {
         Some(db) => {
-            let probe = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                keel_postgres::create_pool(&db.url, db.max_connections),
-            )
-            .await;
+            let probe = match cfg.database_driver() {
+                keel_config::DatabaseDriver::Postgres => tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    keel_postgres::create_pool(&db.url, db.max_connections),
+                )
+                .await
+                .map(|r| r.map(keel_mysql::DbPool::Postgres)),
+                keel_config::DatabaseDriver::MySql => tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    keel_mysql::create_pool(&db.url, db.max_connections),
+                )
+                .await
+                .map(|r| r.map(keel_mysql::DbPool::MySql)),
+            };
             match probe {
                 Ok(Ok(pool)) => {
                     if db.run_migrations {
-                        keel_postgres::run_migrations(&pool, &root).await?;
+                        match &pool {
+                            keel_mysql::DbPool::Postgres(p) => {
+                                keel_postgres::run_migrations(p, &root).await?;
+                            }
+                            keel_mysql::DbPool::MySql(p) => {
+                                keel_mysql::run_migrations(p, &root).await?;
+                            }
+                        }
                     }
                     Some(pool)
                 }
@@ -679,7 +702,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keel-api's batch operations and the console batch commands resolve
     // batches this worker dispatches, and a restart never loses a fan-out.
     let batch_ledger: Arc<dyn keel_jobs::BatchLedger> = match &pool {
-        Some(pool) => Arc::new(keel_postgres::PgBatchLedger::new(pool.clone())),
+        Some(keel_mysql::DbPool::Postgres(pool)) => {
+            Arc::new(keel_postgres::PgBatchLedger::new(pool.clone()))
+        }
+        Some(keel_mysql::DbPool::MySql(pool)) => {
+            Arc::new(keel_mysql::MySqlBatchLedger::new(pool.clone()))
+        }
         None => Arc::new(keel_jobs::MemoryBatchLedger::new()),
     };
     let batches = Arc::new(BatchRuntime::with_ledger(jobs.clone(), batch_ledger));
@@ -694,7 +722,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // reachable, in-memory otherwise, D-52), so a `Database` envelope
     // drained here lands in the same table the HTTP feed reads.
     let notification_store: Arc<dyn keel_notifications::NotificationStore> = match &pool {
-        Some(pool) => Arc::new(keel_postgres::PgNotificationStore::new(pool.clone())),
+        Some(keel_mysql::DbPool::Postgres(pool)) => {
+            Arc::new(keel_postgres::PgNotificationStore::new(pool.clone()))
+        }
+        Some(keel_mysql::DbPool::MySql(pool)) => {
+            Arc::new(keel_mysql::MySqlNotificationStore::new(pool.clone()))
+        }
         None => Arc::new(keel_notifications::InMemoryNotificationStore::new()),
     };
     let (notification_def, notification_handler) =
@@ -723,8 +756,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
 
     let listeners = Arc::new(ListenerRegistry::new());
-    let outbox: Option<Arc<dyn OutboxStore>> = pool.as_ref().map(|pool| {
-        Arc::new(keel_postgres::PgOutboxStore::new(pool.clone())) as Arc<dyn OutboxStore>
+    let outbox: Option<Arc<dyn OutboxStore>> = pool.as_ref().map(|pool| match pool {
+        keel_mysql::DbPool::Postgres(p) => {
+            Arc::new(keel_postgres::PgOutboxStore::new(p.clone())) as Arc<dyn OutboxStore>
+        }
+        keel_mysql::DbPool::MySql(p) => {
+            Arc::new(keel_mysql::MySqlOutboxStore::new(p.clone())) as Arc<dyn OutboxStore>
+        }
     });
     let pump: Option<Arc<OutboxPump>> = outbox
         .as_ref()

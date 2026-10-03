@@ -49,7 +49,7 @@ available on crates.io before the sweep.
 3. Add `keel-framework` to `members` and `[workspace.dependencies]`.
 4. `just deny && just publish-dry` must both pass.
 5. Publish the wave: `just publish` (local) or dispatch `keel-publish.yml`
-   with `dry_run=false`. The topologically ordered run publishes all 61
+   with `dry_run=false`. The topologically ordered run publishes all 62
    crates in one pass (`keel-analyzer` is already live; `already exists` is
    treated as success) with registry-propagation retries.
 
@@ -60,9 +60,11 @@ release wave* had their gate lifted (`keel-metrics`, `keel-telemetry`,
 `keel-tracing`, `keel-pipeline`, `keel-buffer`, `keel-export`,
 `keel-integrity`), and `keel-api` gained `publish = false` — it is the demo
 API host that hard-wires `keel-mod-appointments` (application code, staying
-gated) and is not a library artifact. Result: 68 members, 61 publishable, 7
+gated) and is not a library artifact. Result: 69 members, 62 publishable, 7
 gated (`keel-audit`, `keel-api`, `keel-mod-appointments`, `keel-arch-validation`,
-`keel-example-minimal`, `keel-example-reference`, `xtask`).
+`keel-example-minimal`, `keel-example-reference`, `xtask`). Wave 9 B-31 moved
+the counts 68/61/7 -> 69/62/7 by adding the publishable `keel-mysql` fabric
+crate (ADR 0010 records the crate decision).
 
 Dry-run bootstrap semantics: `cargo publish --dry-run` resolves every
 dependency against the crates.io index, so before the first real publish the

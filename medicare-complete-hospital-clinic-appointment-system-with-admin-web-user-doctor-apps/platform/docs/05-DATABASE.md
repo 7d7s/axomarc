@@ -3,13 +3,18 @@
 PostgreSQL is the reference data layer (`crates/data/postgres`, keel-postgres). It implements the
 execution and service ports; nothing in the kernel imports it directly.
 
+MySQL is the second first-class fabric (`crates/data/mysql`, keel-mysql, ADR 0010): the same
+store traits, selected at boot by `[database].driver`. The dialect divergences between the two
+are listed in the [MySQL driver (B-31)](#mysql-driver-b-31) section.
+
 ## Layout
 
 ```
 database/
-  migrations/    timestamped SQL files (keel make:migration)
+  migrations/         timestamped SQL files (keel make:migration) — PostgreSQL
+  migrations-mysql/   the same migrations adapted to MySQL (B-31, forward-only)
   roles.sql      role separation: owner != runtime (least privilege)
-config/dev.toml  [database] url, max_connections, run_migrations
+config/dev.toml  [database] url, max_connections, run_migrations, driver
 ```
 
 ## Migrations
@@ -171,6 +176,64 @@ Local matrix runs (no docker): point `DATABASE_URL` at any reachable PostgreSQL 
 `cargo test -p keel-postgres --features pg-tests` and
 `cargo test -p keel-search-pgvector --features pg-tests`. Vector/hybrid coverage additionally
 needs the `vector` extension (CI image); all other slices run on stock Postgres.
+
+## MySQL driver (B-31)
+
+`[database].driver = "mysql"` (default `postgres`, ADR 0010) selects the second fabric at boot:
+`keel-api`, `keel-worker`, and `keel-console` all build the MySQL pool, runner, seeders, and
+stores from that key. The default path is byte-identical — with no `driver` key every probe,
+migration, and store call runs exactly as before. Degraded boot (D-52) is unchanged on both
+drivers: unreachable + not required lands on the in-memory stores.
+
+**Migrations stay SQL-first.** `database/migrations-mysql/` carries the same nine filenames in
+the same order as `database/migrations/`, each adapted to MySQL 8 (sqlx bookkeeping stays in
+the shared `_sqlx_migrations` table per database; each driver embeds its own directory). The
+set is forward-only: `keel migrate` applies it under `GET_LOCK` (the `pg_advisory_lock(7259)`
+twin), `migrate:fresh` drops every table with FK checks off instead of cascading a schema, and
+`migrate:status` lists the MySQL set. Revertible pairs are **PostgreSQL-only**: if
+`database/migrations-pairs` ships any `.up.sql`/`.down.sql`, `keel-mysql::run_migrations`
+fails closed with a clear refusal rather than half-running them.
+
+**Console surface on `driver = "mysql"`:**
+
+| Works | Refuses (clear message + docs/05 pointer) |
+|---|---|
+| `migrate`, `migrate:fresh`, `migrate:status`, `seed`, `db:show`, `db:inspect`, the `queue:*`/`schedule:*` commands | `migrate:rollback`, `migrate:reset`, `migrate:refresh`, `migrate:install` (pairs machinery), `db:schema:dump` (pg_catalog snapshot) |
+
+**Dialect divergences (documented, not gaps):**
+
+- **No RLS.** MySQL has no row-level security; the explicit `tenant_id` predicates every
+  statement already carries are the isolation story. Postgres keeps RLS as defense-in-depth
+  on top of the same predicates.
+- **Types.** uuid columns are `BINARY(16)` (sqlx's MySQL `Uuid` codec writes raw 16 bytes;
+  binds are unchanged), timestamps are `DATETIME(6)` (`OffsetDateTime` encodes UTC and
+  decodes `assume_utc()` — round-trip exact), documents are `JSON` (MySQL has no `jsonb`), and
+  the clock reads `NOW(6)`.
+- **No `RETURNING`.** Upserts select back on the same transaction. sqlx sets
+  `CLIENT_FOUND_ROWS`, so `rows_affected()` on `UPDATE` counts matched rows — the
+  pg-compatible count the stores audit against.
+- **Upsert translation.** `ON CONFLICT ... DO NOTHING` becomes
+  `INSERT ... SELECT ... FROM DUAL WHERE NOT EXISTS` preserving the exact conflict target
+  (same 1/0 `rows_affected`); `DO UPDATE` becomes `AS new ON DUPLICATE KEY UPDATE`.
+- **Locks.** `FOR UPDATE SKIP LOCKED` is kept verbatim for the job claim (MySQL 8 supports
+  it); the migration advisory lock becomes `GET_LOCK('keel_migrations', timeout)`.
+- **Partial indexes.** Non-unique partial indexes drop the `WHERE` (size/selectivity only).
+  The appointments partial-UNIQUE index (`WHERE deleted_at IS NULL AND status = 'booked'`)
+  is reproduced exactly with STORED generated columns (`IF(pred, col, NULL)`) plus a unique
+  index — non-matching rows key to all-NULL and MySQL unique indexes allow repeated NULLs.
+- **No arrays.** `scope_paths text[]` becomes a comma-separated `TEXT` column (real
+  divergence; nothing in the runtime reads it yet).
+- **Collation.** Tables use `utf8mb4_0900_ai_ci`, so equality and unique indexes are
+  case/accent-insensitive where Postgres `text` is case-sensitive (e.g. `by_email` matches a
+  differently-cased address; a differently-cased duplicate email is a conflict).
+- **Keyed text.** Columns that participate in keys become sized `VARCHAR(n)` (MySQL cannot
+  key `TEXT`).
+
+**Evidence.** The live-MySQL matrix rides the same `pg-tests`-gated suites as Postgres:
+`cargo test -p keel-postgres --features pg-tests` with `DATABASE_URL=mysql://...` runs the
+MySQL slice (scheme-based skip — each test only runs against its own driver). `docker compose
+up -d mysql` starts the `mysql:8.4` service (user/pass/db `keel`/`keel_dev_only`/`keel`). No
+CI workflow runs live fabric tests — the posture is manual, as it is for Postgres.
 
 ## pgvector search adapter (S10, B-14)
 

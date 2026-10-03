@@ -26,6 +26,7 @@ keel-contracts = { workspace = true }
 keel-execution = { workspace = true }
 keel-policy = { workspace = true }
 keel-postgres = { workspace = true }
+keel-mysql = { workspace = true }
 keel-integrity = { workspace = true }
 keel-observability = { workspace = true }
 keel-http = { workspace = true }

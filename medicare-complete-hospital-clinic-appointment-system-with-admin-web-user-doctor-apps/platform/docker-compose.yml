@@ -12,6 +12,23 @@ services:
       interval: 3s
       timeout: 3s
       retries: 10
+  mysql:
+    # Wave 9 B-31: second first-class driver. Point DATABASE_URL at
+    # mysql://keel:keel_dev_only@localhost:3306/keel to run the live-MySQL
+    # store matrix (`cargo test -p keel-postgres --features pg-tests`).
+    image: mysql:8.4
+    environment:
+      MYSQL_USER: keel
+      MYSQL_PASSWORD: keel_dev_only
+      MYSQL_DATABASE: keel
+      MYSQL_ROOT_PASSWORD: keel_dev_only
+    ports: ["3306:3306"]
+    volumes: [keel_mysql:/var/lib/mysql]
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -ukeel -pkeel_dev_only --silent"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
@@ -23,4 +40,5 @@ services:
 
 volumes:
   keel_pg: {}
+  keel_mysql: {}
   keel_minio: {}

@@ -220,31 +220,64 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    let pool = match cfg.database() {
+    // Wave 9 B-31: `[database].driver` selects the probe + fabric at boot.
+    // `postgres` (the default) keeps today's path byte-identical; `mysql`
+    // swaps in the keel-mysql pool, runner and seed. Degraded boot (D-52)
+    // is unchanged: unreachable + not required = in-memory stores.
+    let pool: Option<keel_mysql::DbPool> = match cfg.database() {
         Some(db) => {
-            let probe = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                keel_postgres::create_pool(&db.url, db.max_connections),
-            )
-            .await;
+            let probe = match cfg.database_driver() {
+                keel_config::DatabaseDriver::Postgres => tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    keel_postgres::create_pool(&db.url, db.max_connections),
+                )
+                .await
+                .map(|r| r.map(keel_mysql::DbPool::Postgres)),
+                keel_config::DatabaseDriver::MySql => tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    keel_mysql::create_pool(&db.url, db.max_connections),
+                )
+                .await
+                .map(|r| r.map(keel_mysql::DbPool::MySql)),
+            };
             match probe {
                 Ok(Ok(pool)) => {
                     if db.run_migrations {
-                        keel_postgres::run_migrations(&pool, &root).await?;
+                        match &pool {
+                            keel_mysql::DbPool::Postgres(p) => {
+                                keel_postgres::run_migrations(p, &root).await?;
+                            }
+                            keel_mysql::DbPool::MySql(p) => {
+                                keel_mysql::run_migrations(p, &root).await?;
+                            }
+                        }
                     }
                     // Dev bootstrap: register/login assign the fixed dev tenant, so a fresh
                     // database needs its tenants row to exist (FK target for domain writes).
-                    // ON CONFLICT DO NOTHING keeps this idempotent; failure only warns.
+                    // Idempotent guarded insert keeps this re-runnable; failure only warns.
                     if matches!(env, Environment::Dev | Environment::Test) {
                         if let Ok(dev_tenant) = uuid::Uuid::parse_str(host::DEV_TENANT_UUID) {
-                            if let Err(e) = keel_postgres::seed_tenant(
-                                &pool,
-                                dev_tenant,
-                                "dev",
-                                "Development Tenant",
-                            )
-                            .await
-                            {
+                            let seeded = match &pool {
+                                keel_mysql::DbPool::Postgres(p) => {
+                                    keel_postgres::seed_tenant(
+                                        p,
+                                        dev_tenant,
+                                        "dev",
+                                        "Development Tenant",
+                                    )
+                                    .await
+                                }
+                                keel_mysql::DbPool::MySql(p) => {
+                                    keel_mysql::seed_tenant(
+                                        p,
+                                        dev_tenant,
+                                        "dev",
+                                        "Development Tenant",
+                                    )
+                                    .await
+                                }
+                            };
+                            if let Err(e) = seeded {
                                 tracing::warn!(error = %e, "dev tenant seed failed");
                             }
                         }
@@ -284,50 +317,85 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let health = SystemHealth::new(
         pool.is_none(),
         if pool.is_none() {
-            "postgres unreachable or not configured"
+            // B-31: driver-aware message; the postgres spelling (and the
+            // default path) stays byte-identical to today.
+            match cfg.database_driver() {
+                keel_config::DatabaseDriver::MySql => "mysql unreachable or not configured",
+                keel_config::DatabaseDriver::Postgres => "postgres unreachable or not configured",
+            }
         } else {
             "ok"
         },
     );
     let secret = session_secret();
     let session_store: Arc<dyn keel_session::SessionStore> = match &pool {
-        Some(pool) => Arc::new(keel_postgres::PgSessionStore::new(pool.clone())),
+        Some(keel_mysql::DbPool::Postgres(pool)) => {
+            Arc::new(keel_postgres::PgSessionStore::new(pool.clone()))
+        }
+        Some(keel_mysql::DbPool::MySql(pool)) => {
+            Arc::new(keel_mysql::MySqlSessionStore::new(pool.clone()))
+        }
         None => keel_session::InMemorySessionStore::shared(),
     };
-    // Wave 6 P5: the database-channel inbox store — postgres when reachable,
-    // in-memory otherwise (D-52, the session-store posture). Built before the
-    // providers so the notify hub and the HTTP feed share ONE instance.
+    // Wave 6 P5: the database-channel inbox store — durable driver when
+    // reachable, in-memory otherwise (D-52, the session-store posture).
+    // Built before the providers so the notify hub and the HTTP feed share
+    // ONE instance.
     let notification_store: Arc<dyn keel_notifications::NotificationStore> = match &pool {
-        Some(pool) => Arc::new(keel_postgres::PgNotificationStore::new(pool.clone())),
+        Some(keel_mysql::DbPool::Postgres(pool)) => {
+            Arc::new(keel_postgres::PgNotificationStore::new(pool.clone()))
+        }
+        Some(keel_mysql::DbPool::MySql(pool)) => {
+            Arc::new(keel_mysql::MySqlNotificationStore::new(pool.clone()))
+        }
         None => Arc::new(keel_notifications::InMemoryNotificationStore::new()),
     };
-    // Wave 6 P6: the pool-gated enqueue seam — `PgJobStore` + the registered
-    // `notification.send` def, so `queue_via` defs build a durable job at
-    // dispatch (the worker drains it). No pool = no port = `queue_via`
-    // fail-closed (`not_implemented`), the D-52 posture.
+    // Wave 6 P6: the pool-gated enqueue seam — the driver-selected job store
+    // + the registered `notification.send` def, so `queue_via` defs build a
+    // durable job at dispatch (the worker drains it). No pool = no port =
+    // `queue_via` fail-closed (`not_implemented`), the D-52 posture.
     // Wave 6 P8: the SAME store instance doubles as the `/metrics` queue
     // census view (admin trait) — depth/age/finished, snapshot per scrape.
     // Wave 6 P9: and as the batch-operations store next to the durable
-    // batch ledger (`PgBatchLedger`, B-32) the batch endpoints read.
+    // batch ledger (B-32) the batch endpoints read.
     let (notification_queue, queue_stats, batch_ledger) = match &pool {
-        Some(pool) => {
-            let store = Arc::new(keel_postgres::PgJobStore::new(pool.clone()));
-            let mut registry = keel_jobs::JobRegistry::new();
-            registry
-                .register(keel_jobs::JobDef::new(
-                    keel_notifications::NOTIFICATION_SEND_JOB,
-                ))
-                .expect("notification.send def registers");
-            (
-                Some((
-                    store.clone() as Arc<dyn keel_jobs::JobStore>,
-                    Arc::new(registry),
-                )),
-                Some(store as Arc<dyn keel_jobs::JobStoreAdmin>),
-                Some(Arc::new(keel_postgres::PgBatchLedger::new(
-                    pool.clone(),
-                )) as Arc<dyn keel_jobs::BatchLedger>),
-            )
+        Some(driver) => {
+            // The def registration is driver-independent; each arm builds the
+            // ONE concrete store so it can be coerced to both `JobStore` and
+            // `JobStoreAdmin` from the same instance.
+            let registry = || {
+                let mut registry = keel_jobs::JobRegistry::new();
+                registry
+                    .register(keel_jobs::JobDef::new(
+                        keel_notifications::NOTIFICATION_SEND_JOB,
+                    ))
+                    .expect("notification.send def registers");
+                Arc::new(registry)
+            };
+            match driver {
+                keel_mysql::DbPool::Postgres(pool) => {
+                    let store = Arc::new(keel_postgres::PgJobStore::new(pool.clone()));
+                    (
+                        Some((store.clone() as Arc<dyn keel_jobs::JobStore>, registry())),
+                        Some(store as Arc<dyn keel_jobs::JobStoreAdmin>),
+                        Some(
+                            Arc::new(keel_postgres::PgBatchLedger::new(pool.clone()))
+                                as Arc<dyn keel_jobs::BatchLedger>,
+                        ),
+                    )
+                }
+                keel_mysql::DbPool::MySql(pool) => {
+                    let store = Arc::new(keel_mysql::MySqlJobStore::new(pool.clone()));
+                    (
+                        Some((store.clone() as Arc<dyn keel_jobs::JobStore>, registry())),
+                        Some(store as Arc<dyn keel_jobs::JobStoreAdmin>),
+                        Some(
+                            Arc::new(keel_mysql::MySqlBatchLedger::new(pool.clone()))
+                                as Arc<dyn keel_jobs::BatchLedger>,
+                        ),
+                    )
+                }
+            }
         }
         None => (None, None, None),
     };

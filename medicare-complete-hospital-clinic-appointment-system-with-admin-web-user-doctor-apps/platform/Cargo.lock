@@ -1418,6 +1418,7 @@ dependencies = [
  "keel-mod-appointments",
  "keel-mod-oauth2",
  "keel-models",
+ "keel-mysql",
  "keel-notifications",
  "keel-observability",
  "keel-policy",
@@ -1564,6 +1565,7 @@ dependencies = [
  "keel-http",
  "keel-integrity",
  "keel-jobs",
+ "keel-mysql",
  "keel-observability",
  "keel-policy",
  "keel-postgres",
@@ -1883,6 +1885,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "keel-mysql"
+version = "0.1.0"
+dependencies = [
+ "keel-context",
+ "keel-event",
+ "keel-execution",
+ "keel-foundation",
+ "keel-identity",
+ "keel-integrity",
+ "keel-jobs",
+ "keel-models",
+ "keel-notifications",
+ "keel-query",
+ "keel-session",
+ "keel-tokens",
+ "keel-transaction",
+ "serde_json",
+ "sqlx",
+ "time",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "keel-notifications"
 version = "0.1.0"
 dependencies = [
@@ -1967,6 +1994,7 @@ dependencies = [
  "keel-integrity",
  "keel-jobs",
  "keel-models",
+ "keel-mysql",
  "keel-notifications",
  "keel-query",
  "keel-session",
@@ -2266,6 +2294,7 @@ dependencies = [
  "keel-jobs",
  "keel-lifecycle",
  "keel-mail-smtp",
+ "keel-mysql",
  "keel-notifications",
  "keel-observability",
  "keel-postgres",

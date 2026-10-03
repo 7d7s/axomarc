@@ -1,0 +1,43 @@
+[package]
+name = "keel-mysql"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Keel adapter: MySQL 8 fabric — pool, SQL-first migrations, delta/audit/outbox, idempotency (Wave 9 B-31 second driver)."
+
+[dependencies]
+keel-foundation = { workspace = true }
+keel-context = { workspace = true }
+keel-execution = { workspace = true }
+keel-transaction = { workspace = true }
+keel-event = { workspace = true }
+keel-models = { workspace = true }
+keel-query = { workspace = true }
+keel-jobs = { workspace = true }
+keel-tokens = { workspace = true }
+keel-session = { workspace = true }
+keel-identity = { workspace = true }
+keel-integrity = { workspace = true }
+keel-notifications = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+time = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lib]
+# Wave 9 B-31: every keel-mysql test lives in an EXISTING suite (the live
+# store matrix rides the keel-postgres `pg-tests` integration files, which
+# skip unless DATABASE_URL points at a MySQL 8 instance), so the crate opts
+# out of its own lib test target and doctests — the suite count stays 150
+# (keel-wasm / oauth2 precedent).
+test = false
+doctest = false

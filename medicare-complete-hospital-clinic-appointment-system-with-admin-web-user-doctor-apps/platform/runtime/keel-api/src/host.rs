@@ -18,7 +18,8 @@ use keel_execution::{
 };
 use keel_lifecycle::{BootError, Phase, Provider, ServiceRegistry};
 use keel_policy::{AccessSnapshot, PolicyAuthz, PolicyEngine};
-use keel_postgres::{PgIdempotency, PgPool, PostgresBackend};
+use keel_mysql::DbPool;
+use keel_postgres::{PgIdempotency, PostgresBackend};
 use serde_json::Value;
 use time::OffsetDateTime;
 
@@ -116,8 +117,11 @@ impl Provider for TerminatingProvider {
 }
 
 /// Kernel phase: policy engine, execution backend, idempotency port, engine.
+/// Wave 9 B-31: the pool is the boot-selected [`DbPool`] variant (postgres
+/// or mysql, from `[database].driver`); `None` keeps the in-memory
+/// degradation posture (D-52).
 pub struct KernelProvider {
-    pub pool: Option<PgPool>,
+    pub pool: Option<DbPool>,
 }
 
 impl Provider for KernelProvider {
@@ -134,9 +138,13 @@ impl Provider for KernelProvider {
         });
         let (backend, idem): (Arc<dyn ExecutionBackend>, Arc<dyn IdempotencyPort>) =
             match &self.pool {
-                Some(pool) => (
+                Some(DbPool::Postgres(pool)) => (
                     Arc::new(PostgresBackend::new(pool.clone())),
                     Arc::new(PgIdempotency::new(pool.clone())),
+                ),
+                Some(DbPool::MySql(pool)) => (
+                    Arc::new(keel_mysql::MySqlBackend::new(pool.clone())),
+                    Arc::new(keel_mysql::MySqlIdempotency::new(pool.clone())),
                 ),
                 None => (
                     Arc::new(InMemoryBackend::new()),
@@ -164,9 +172,9 @@ pub struct PlatformProvider {
     /// Wave 6 P5: views engine for notification HTML mail bodies
     /// (`views/notifications/...`); `None` keeps mail text-only.
     pub views: Option<Arc<keel_views::ViewsEngine>>,
-    /// Wave 6 P6: the pool-gated enqueue seam — `PgJobStore` + the
-    /// registered `notification.send` def, present only when a database
-    /// pool exists. `None` leaves `queue_via` fail-closed
+    /// Wave 6 P6: the pool-gated enqueue seam — the driver-selected job
+    /// store + the registered `notification.send` def, present only when a
+    /// database pool exists. `None` leaves `queue_via` fail-closed
     /// (`not_implemented`) — the D-52 degradation posture.
     pub notification_queue: Option<(Arc<dyn keel_jobs::JobStore>, Arc<keel_jobs::JobRegistry>)>,
 }
@@ -190,9 +198,9 @@ impl keel_notifications::NotificationViewRenderer for ViewsNotificationRenderer 
 /// target, views); this port only durable-enqueues the pre-rendered
 /// envelope under the def's `queue_via` name. `registry.build` refuses an
 /// unregistered name, so a typo is a loud dispatch error, never a silent
-/// drop. Wired pool-gated: `PgJobStore` + the registered
-/// `notification.send` def when a database pool exists; no pool leaves
-/// `queue_via` fail-closed (`not_implemented`).
+/// drop. Wired pool-gated: the driver-selected job store (B-31) + the
+/// registered `notification.send` def when a database pool exists; no pool
+/// leaves `queue_via` fail-closed (`not_implemented`).
 pub(crate) struct JobQueuePort {
     store: Arc<dyn keel_jobs::JobStore>,
     registry: Arc<keel_jobs::JobRegistry>,
@@ -522,10 +530,10 @@ pub struct DiskRegistryRef(pub Arc<keel_storage::DiskRegistry>);
 #[derive(Clone)]
 pub struct CachePortRef(pub Arc<dyn keel_caching::CachePort>);
 
-/// Platform phase: identity + token services (S7 C2/B-02). Postgres-backed
-/// when the pool is up; in-memory on degraded boot (D-52).
+/// Platform phase: identity + token services (S7 C2/B-02). Fabric-backed
+/// when the driver-selected pool is up; in-memory on degraded boot (D-52).
 pub struct IdentityProvider {
-    pub pool: Option<PgPool>,
+    pub pool: Option<DbPool>,
 }
 
 impl Provider for IdentityProvider {
@@ -541,10 +549,15 @@ impl Provider for IdentityProvider {
             Arc<dyn keel_identity::CredentialStore>,
             Arc<dyn keel_tokens::TokenStore>,
         ) = match &self.pool {
-            Some(pool) => (
+            Some(DbPool::Postgres(pool)) => (
                 Arc::new(keel_postgres::PgPrincipalStore::new(pool.clone())),
                 Arc::new(keel_postgres::PgCredentialStore::new(pool.clone())),
                 Arc::new(keel_postgres::PgTokenStore::new(pool.clone())),
+            ),
+            Some(DbPool::MySql(pool)) => (
+                Arc::new(keel_mysql::MySqlPrincipalStore::new(pool.clone())),
+                Arc::new(keel_mysql::MySqlCredentialStore::new(pool.clone())),
+                Arc::new(keel_mysql::MySqlTokenStore::new(pool.clone())),
             ),
             None => (
                 Arc::new(keel_identity::InMemoryPrincipalStore::new()),
@@ -611,9 +624,10 @@ impl Provider for StorageProvider {
 
 /// Platform phase: semantic model store port (S8 C3/B-04). Domain modules
 /// (appointments first) consume the [`keel_models::ModelStoreRef`] carrier;
-/// Pg-backed when the pool is up, in-memory on degraded boot (D-52).
+/// fabric-backed when the driver-selected pool is up, in-memory on degraded
+/// boot (D-52).
 pub struct PersistenceProvider {
-    pub pool: Option<PgPool>,
+    pub pool: Option<DbPool>,
 }
 
 impl Provider for PersistenceProvider {
@@ -625,7 +639,10 @@ impl Provider for PersistenceProvider {
     }
     fn init(&self, r: &mut ServiceRegistry) -> Result<(), BootError> {
         let store: Arc<dyn keel_models::ModelStore> = match &self.pool {
-            Some(pool) => Arc::new(keel_postgres::PgModelStore::new(pool.clone())),
+            Some(DbPool::Postgres(pool)) => {
+                Arc::new(keel_postgres::PgModelStore::new(pool.clone()))
+            }
+            Some(DbPool::MySql(pool)) => Arc::new(keel_mysql::MySqlModelStore::new(pool.clone())),
             None => Arc::new(keel_models::InMemoryModelStore::new()),
         };
         r.insert("model.store", Arc::new(keel_models::ModelStoreRef(store)))?;

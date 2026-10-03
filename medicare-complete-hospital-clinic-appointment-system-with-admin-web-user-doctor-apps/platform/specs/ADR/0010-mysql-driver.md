@@ -1,0 +1,125 @@
+# ADR 0010 — MySQL as a first-class SQL driver (keel-mysql)
+
+Status: **Accepted** (2026-10-03) · Gate: Wave 9 B-31 (docs/19 parity program) ·
+Implementation: lands with the B-31 change set itself — the docs/18 DoD demands the
+decision doc *first* ("decision doc first; if adopted: second driver passes the full
+store matrix (CRUD/tenant/transactions); migrations remain SQL-first"), so this ADR is
+that decision record.
+
+## Context
+
+B-31 (docs/19) asks whether the platform can be fabric-portable: today
+`crates/data/postgres` is the only SQL fabric, `[database].url` is assumed
+`postgres://`, and boot, migrations, and every pool-backed store speak Postgres
+directly (advisory locks, `ON CONFLICT`, `RETURNING`, RLS as defense-in-depth).
+Constraints that bound the answer:
+
+- **Zero new external dependencies** (the wasmtime amendment for B-30 was already
+  spent; external direct count must stay 25).
+- **Migrations remain SQL-first** — files are the source of truth; no ORM-generated
+  schema, no builder DSL.
+- **Byte-identical default path** — `MODULE_ABI` stays 1, the suite count stays 150,
+  and no existing test may change behavior.
+- `sqlx` is already the access layer (Postgres feature, offline lockfile), so the
+  second driver has to ride the existing dependency, not add one.
+
+## Decision
+
+### 1. The driver is selected by config — zero test edits
+
+- New key **`[database].driver = "postgres" | "mysql"`**, default `postgres`.
+  An unknown value fails config load (fail-fast, like every other enum in the
+  schema); the key is declared in `CONFIG_SCHEMA`.
+- The section type becomes a wrapper `DatabaseSection { driver, #[serde(flatten)]
+  DatabaseConfig }` with `Deref`/`DerefMut` into the connection config. This keeps
+  every existing `db.url`/`db.max_connections` site — including the config suite's
+  literal expectations — compiling and reading unchanged; `PlatformConfig` and
+  `FrozenConfig` gain `database_driver()`.
+
+### 2. A new publishable crate owns the second fabric (crate decision)
+
+- **`keel-mysql` at `crates/data/mysql`**, mirroring the keel-postgres surface:
+  `create_pool`, `run_migrations` (+ `GET_LOCK` migration lock), `seed_tenant`, and
+  every pool-backed store behind the *same* `keel-*` traits (model store, session
+  store, principal/credential/token stores, job store + admin, batch ledger,
+  notification store, outbox store, idempotency, transaction backend, seeder
+  registry). Both fabrics implement one trait set, so the store matrix tests run
+  against either without changing assertions.
+- **`DbPool { Postgres(PgPool), MySql(MySqlPool) }`** lives in keel-mysql. The two
+  pool types both come from sqlx, so neither fabric crate depends on the other;
+  boot code matches on the enum once and hands out trait objects everywhere else.
+- **Counts deviation, recorded deliberately:** members 68 → 69, publishable
+  61 → 62 (gated stays 7). The earlier "publish stays 61" note is overridden by
+  the crate decision; `PUBLISHING.md` and the delivery notes carry the new
+  numbers, historical CHANGELOG rows stay untouched.
+
+### 3. Full switch scope
+
+- **keel-api, keel-worker, and keel-console** all select on
+  `database_driver()`: probe, migrate, seed, and every store construction site.
+  Degraded boot (D-52) is untouched — no database or unreachable + not required
+  still lands on the in-memory stores, on both drivers.
+
+### 4. Migrations stay SQL-first; rollback-capable pairs are PostgreSQL-only
+
+- A parallel set **`database/migrations-mysql/`** carries the same nine migration
+  filenames in the same order, adapted to MySQL dialect (below). sqlx bookkeeping
+  stays the shared `_sqlx_migrations` table per database; each driver embeds its
+  own directory.
+- `keel-mysql::run_migrations` **fails closed** if `database/migrations-pairs`
+  ships any `.up.sql`/`.down.sql` pair: pairs are an advisory-lock/`ON CONFLICT`
+  Postgres feature and are never half-ported.
+- Console refusals on the mysql driver, each with a message that names the
+  command, the reason, and docs/05: `migrate:rollback`, `migrate:reset`,
+  `migrate:refresh`, `migrate:install`, `db:schema:dump` (pg_catalog snapshot).
+  `migrate`/`migrate:fresh`/`migrate:status`/`seed`/`db:show`/`db:inspect` all
+  work (status lists the MySQL set and notes when pairs exist but will refuse).
+
+### 5. Dialect rules that make the store matrix pass unchanged
+
+- `$n` placeholders → ordered `?`; `IS NOT DISTINCT FROM` → `<=>`;
+  `FOR UPDATE SKIP LOCKED` kept; empty `IN` lists short-circuit before the query.
+- uuid columns are **`BINARY(16)`** (sqlx's MySQL `Uuid` codec writes raw 16
+  bytes), timestamps **`DATETIME(6)`** (`OffsetDateTime` encodes UTC, decodes
+  `assume_utc()` — round-trip exact), documents `JSON`, `NOW(6)` for the clock.
+- **No `RETURNING`** → upsert/select-back on the same transaction. sqlx sets
+  `CLIENT_FOUND_ROWS`, so `rows_affected()` on `UPDATE` counts matched rows —
+  the pg-compatible count the stores audit against.
+- **`ON CONFLICT DO NOTHING`** → `INSERT ... SELECT ... FROM DUAL WHERE NOT
+  EXISTS` with the exact conflict target (same 1/0 `rows_affected`);
+  **`DO UPDATE`** → `AS new ON DUPLICATE KEY UPDATE`; the delta sequence becomes
+  an upsert increment plus a select of the own value on the same transaction.
+- **No RLS on MySQL** → the explicit `tenant_id` predicates every statement
+  already carries are the isolation story (pg keeps RLS as defense-in-depth;
+  documented divergence).
+- **`GET_LOCK`** replaces the Postgres advisory migration lock; partial indexes
+  become plain (non-unique) indexes or, for unique semantics, STORED generated
+  columns plus a unique index (multi-NULL preserved); keyed `TEXT` becomes
+  sized `VARCHAR(n)`; tables use `utf8mb4_0900_ai_ci`.
+
+### 6. Evidence posture
+
+- Suite count stays 150: the live-MySQL matrix is **appended to the existing
+  `pg-tests`-gated suites** (same `DATABASE_URL` env var, scheme-based skip —
+  `postgres://` runs the pg matrix only, `mysql://` the mysql matrix only). No
+  new feature, no new env var, no new test file.
+- `docker-compose.yml` gains a `mysql:8.4` service; no CI workflow runs live
+  fabric tests (manual posture, unchanged from B-19).
+- Analyzer: `crates/data/mysql` classifies as Data with the allowed dependency
+  set; sqlx's `mysql` feature adds no external crate to the direct count.
+
+## Consequences
+
+- The platform runs its full store matrix — CRUD, tenant scoping, transactions —
+  on two first-class fabrics at **zero new external dependencies**.
+- The default path is byte-identical: driver defaults to `postgres`, every
+  existing test compiles untouched (the config suite passes with zero edits plus
+  one new driver test).
+- Publish count moves to 62 (recorded deviation); `PUBLISHING.md` carries
+  69 members / 62 publishable / 7 gated.
+- PostgreSQL-only surfaces are explicit refusals with docs pointers, not silent
+  no-ops: pairs machinery, `db:schema:dump`, and the RLS/array/collation
+  divergences are documented in docs/05-DATABASE and docs/12-CONSOLE.
+- Non-goals for B-31: no cross-driver migration (a Postgres dump does not apply
+  to MySQL — each database runs its own migration set), no sharding/failover,
+  no driver switching at runtime (selection is boot-time config only).

@@ -18,7 +18,7 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use keel_config::{Environment, PlatformConfig};
 use keel_execution::{ExecutionTrace, FileTraceStore, TraceStore};
-use keel_postgres::PgPool;
+use keel_mysql::DbPool;
 
 mod observe;
 
@@ -560,14 +560,92 @@ fn rt<F: std::future::Future<Output = anyhow::Result<ExitCode>>>(
         .block_on(future)
 }
 
-async fn db_pool(root: &Path) -> anyhow::Result<PgPool> {
+/// Wave 9 B-31: driver-selected pool — `[database].driver` picks the
+/// Postgres or MySQL probe. Postgres-only commands (the pairs machinery,
+/// pg_catalog introspection) refuse the mysql variant with a clear message.
+async fn db_pool(root: &Path) -> anyhow::Result<DbPool> {
     let cfg = load_config(root)?;
     let db = cfg.database.as_ref().ok_or_else(|| {
         anyhow::anyhow!("no database configured in {}", config_path(root).display())
     })?;
-    keel_postgres::create_pool(&db.url, db.max_connections)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))
+    match cfg.database_driver() {
+        keel_config::DatabaseDriver::Postgres => keel_postgres::create_pool(&db.url, db.max_connections)
+            .await
+            .map(DbPool::Postgres)
+            .map_err(|e| anyhow::anyhow!("{e}")),
+        keel_config::DatabaseDriver::MySql => keel_mysql::create_pool(&db.url, db.max_connections)
+            .await
+            .map(DbPool::MySql)
+            .map_err(|e| anyhow::anyhow!("{e}")),
+    }
+}
+
+/// Wave 9 B-31: driver-selected queue-admin store — every `queue:*` command
+/// builds its handle here, so both drivers expose one admin surface.
+fn job_store_admin(pool: &DbPool) -> Arc<dyn keel_jobs::JobStoreAdmin> {
+    match pool {
+        DbPool::Postgres(p) => Arc::new(keel_postgres::PgJobStore::new(p.clone())),
+        DbPool::MySql(p) => Arc::new(keel_mysql::MySqlJobStore::new(p.clone())),
+    }
+}
+
+/// Wave 9 B-31: driver-selected job store for the enqueue paths
+/// (`schedule:work` ticks through `&dyn JobStore`).
+fn job_store(pool: &DbPool) -> Arc<dyn keel_jobs::JobStore> {
+    match pool {
+        DbPool::Postgres(p) => Arc::new(keel_postgres::PgJobStore::new(p.clone())),
+        DbPool::MySql(p) => Arc::new(keel_mysql::MySqlJobStore::new(p.clone())),
+    }
+}
+
+/// Wave 9 B-31: driver-selected batch ledger (`queue:prune-batches`,
+/// `queue:retry-batch`).
+fn batch_ledger(pool: &DbPool) -> Arc<dyn keel_jobs::BatchLedger> {
+    match pool {
+        DbPool::Postgres(p) => Arc::new(keel_postgres::PgBatchLedger::new(p.clone())),
+        DbPool::MySql(p) => Arc::new(keel_mysql::MySqlBatchLedger::new(p.clone())),
+    }
+}
+
+/// `SELECT version()` on whichever driver the pool selected (both servers
+/// expose it; the statement itself is dialect-neutral).
+async fn server_version(pool: &DbPool) -> anyhow::Result<String> {
+    match pool {
+        DbPool::Postgres(p) => sqlx::query_scalar("SELECT version()")
+            .fetch_one(p)
+            .await
+            .map_err(|e| anyhow::anyhow!("server version: {e}")),
+        DbPool::MySql(p) => sqlx::query_scalar("SELECT version()")
+            .fetch_one(p)
+            .await
+            .map_err(|e| anyhow::anyhow!("server version: {e}")),
+    }
+}
+
+/// Current database name — `current_database()` on Postgres, `DATABASE()`
+/// on MySQL (B-31 dialect twin).
+async fn current_database(pool: &DbPool) -> anyhow::Result<String> {
+    match pool {
+        DbPool::Postgres(p) => sqlx::query_scalar("SELECT current_database()")
+            .fetch_one(p)
+            .await
+            .map_err(|e| anyhow::anyhow!("current database: {e}")),
+        DbPool::MySql(p) => sqlx::query_scalar("SELECT DATABASE()")
+            .fetch_one(p)
+            .await
+            .map_err(|e| anyhow::anyhow!("current database: {e}")),
+    }
+}
+
+/// The refusal shared by the PostgreSQL-only commands on the mysql driver
+/// (docs/05-DATABASE documented divergence): pairs machinery, advisory
+/// lock flow and pg_catalog introspection never run against MySQL.
+fn pg_only_on_mysql(command: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{command} is PostgreSQL-only: it drives rollback-capable pairs / pg_catalog \
+         ([database].driver = \"mysql\" runs forward-only SQL-first singles). \
+         Switch [database].driver to \"postgres\" to use it (docs/05-DATABASE)"
+    )
 }
 
 fn main() -> ExitCode {
@@ -911,11 +989,7 @@ async fn db_server_version(root: &Path) -> Option<String> {
         return None;
     }
     let pool = db_pool(root).await.ok()?;
-    let version: String = sqlx::query_scalar("SELECT version()")
-        .fetch_one(&pool)
-        .await
-        .ok()?;
-    Some(version)
+    server_version(&pool).await.ok()
 }
 
 /// `[workspace.package] version` from the root Cargo.toml (the application
@@ -1961,12 +2035,21 @@ fn migrator() -> &'static sqlx::migrate::Migrator {
     MIGRATOR.get_or_init(|| sqlx::migrate!("../../database/migrations"))
 }
 
+fn mysql_migrator() -> &'static sqlx::migrate::Migrator {
+    // Wave 9 B-31: the forward MySQL twin set, same source keel-mysql boots
+    // with (each driver embeds its own directory — sqlx bookkeeping shares
+    // the `_sqlx_migrations` table per database).
+    static MIGRATOR: std::sync::OnceLock<sqlx::migrate::Migrator> = std::sync::OnceLock::new();
+    MIGRATOR.get_or_init(|| sqlx::migrate!("../../database/migrations-mysql"))
+}
+
 async fn migrate() -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
     let pool = db_pool(&root).await?;
-    let pair_applied = keel_postgres::run_migrations(&pool, &root)
-        .await
-        .map_err(db_err)?;
+    let pair_applied = match &pool {
+        DbPool::Postgres(p) => keel_postgres::run_migrations(p, &root).await.map_err(db_err)?,
+        DbPool::MySql(p) => keel_mysql::run_migrations(p, &root).await.map_err(db_err)?,
+    };
     for name in &pair_applied {
         println!("  + {name}");
     }
@@ -1977,12 +2060,25 @@ async fn migrate() -> anyhow::Result<ExitCode> {
 async fn migrate_status() -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
     let pool = db_pool(&root).await?;
-    let migrator = migrator();
-    let applied: Vec<i64> =
-        sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success ORDER BY version")
-            .fetch_all(&pool)
-            .await
-            .unwrap_or_default();
+    let applied: Vec<i64> = match &pool {
+        DbPool::Postgres(p) => {
+            sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success ORDER BY version")
+                .fetch_all(p)
+                .await
+        }
+        DbPool::MySql(p) => {
+            sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success ORDER BY version")
+                .fetch_all(p)
+                .await
+        }
+    }
+    .unwrap_or_default();
+    // B-31: each driver lists its OWN embedded set (database/migrations vs
+    // database/migrations-mysql); the applied bookkeeping table is shared.
+    let migrator = match &pool {
+        DbPool::Postgres(_) => migrator(),
+        DbPool::MySql(_) => mysql_migrator(),
+    };
     let mut pending = 0usize;
     for migration in migrator.iter() {
         let is_applied = applied.contains(&migration.version);
@@ -1996,14 +2092,30 @@ async fn migrate_status() -> anyhow::Result<ExitCode> {
             migration.description
         );
     }
+    if matches!(pool, DbPool::MySql(_)) {
+        // Pairs never run on MySQL (migrate refuses them fail-closed): surface
+        // the posture instead of silently under-reporting pending work.
+        if !keel_postgres::pairs::scan_pairs(&root).map_err(db_err)?.is_empty() {
+            println!(
+                "  note: rollback-capable pairs exist in database/migrations-pairs but are \
+                 PostgreSQL-only; `keel migrate` refuses them on driver = \"mysql\" (docs/05-DATABASE)"
+            );
+        }
+        println!("{pending} pending migration(s).");
+        return Ok(ExitCode::SUCCESS);
+    }
     // Wave 5: rollback-capable pairs (keel_migrations may not exist yet —
     // status stays read-only, so a missing bookkeeping table just means
     // every pair is pending).
-    let pair_applied: Vec<String> =
-        sqlx::query_scalar("SELECT migration FROM keel_migrations ORDER BY migration")
-            .fetch_all(&pool)
-            .await
-            .unwrap_or_default();
+    let pair_applied: Vec<String> = match &pool {
+        DbPool::Postgres(p) => {
+            sqlx::query_scalar("SELECT migration FROM keel_migrations ORDER BY migration")
+                .fetch_all(p)
+                .await
+                .unwrap_or_default()
+        }
+        DbPool::MySql(_) => Vec::new(),
+    };
     for pair in keel_postgres::pairs::scan_pairs(&root).map_err(db_err)? {
         let is_applied = pair_applied.contains(&pair.migration);
         if !is_applied {
@@ -2031,21 +2143,51 @@ async fn migrate_fresh() -> anyhow::Result<ExitCode> {
         anyhow::bail!("aborted (set KEEL_FORCE=1 to skip the prompt in scripts)");
     }
     let pool = db_pool(&root).await?;
-    // The schema drop happens outside the advisory lock (fresh is dev/test
+    // The schema drop happens outside the migration lock (fresh is dev/test
     // only and confirmed); the migration run that follows locks inside
     // run_migrations — locking here too would deadlock against it on a
     // second connection.
-    sqlx::query("DROP SCHEMA public CASCADE")
-        .execute(&pool)
-        .await
-        .map_err(|e| anyhow::anyhow!("drop schema: {e}"))?;
-    sqlx::query("CREATE SCHEMA public")
-        .execute(&pool)
-        .await
-        .map_err(|e| anyhow::anyhow!("create schema: {e}"))?;
-    let pair_applied = keel_postgres::run_migrations(&pool, &root)
-        .await
-        .map_err(db_err)?;
+    match &pool {
+        DbPool::Postgres(p) => {
+            sqlx::query("DROP SCHEMA public CASCADE")
+                .execute(p)
+                .await
+                .map_err(|e| anyhow::anyhow!("drop schema: {e}"))?;
+            sqlx::query("CREATE SCHEMA public")
+                .execute(p)
+                .await
+                .map_err(|e| anyhow::anyhow!("create schema: {e}"))?;
+        }
+        DbPool::MySql(p) => {
+            // B-31: MySQL has no cascadeable schema inside a database — drop
+            // every table (bookkeeping included) with FK checks off, then the
+            // forward run rebuilds from zero. Dev/test only, like pg.
+            sqlx::query("SET FOREIGN_KEY_CHECKS = 0")
+                .execute(p)
+                .await
+                .map_err(|e| anyhow::anyhow!("drop schema: {e}"))?;
+            let tables: Vec<String> = sqlx::query_scalar(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE()",
+            )
+            .fetch_all(p)
+            .await
+            .map_err(|e| anyhow::anyhow!("list tables: {e}"))?;
+            for table in &tables {
+                sqlx::query(&format!("DROP TABLE IF EXISTS `{table}`"))
+                    .execute(p)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("drop table {table}: {e}"))?;
+            }
+            sqlx::query("SET FOREIGN_KEY_CHECKS = 1")
+                .execute(p)
+                .await
+                .map_err(|e| anyhow::anyhow!("create schema: {e}"))?;
+        }
+    }
+    let pair_applied = match &pool {
+        DbPool::Postgres(p) => keel_postgres::run_migrations(p, &root).await.map_err(db_err)?,
+        DbPool::MySql(p) => keel_mysql::run_migrations(p, &root).await.map_err(db_err)?,
+    };
     for name in &pair_applied {
         println!("  + {name}");
     }
@@ -2059,6 +2201,9 @@ async fn migrate_fresh() -> anyhow::Result<ExitCode> {
 async fn migrate_rollback(steps: u32) -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
     let pool = db_pool(&root).await?;
+    let DbPool::Postgres(pool) = pool else {
+        return Err(pg_only_on_mysql("migrate:rollback"));
+    };
     // The advisory lock is session-scoped: acquire, roll back, and release
     // on one pooled connection (a concurrent migrate serializes instead of
     // interleaving).
@@ -2101,6 +2246,9 @@ async fn migrate_reset() -> anyhow::Result<ExitCode> {
         anyhow::bail!("aborted (set KEEL_FORCE=1 to skip the prompt in scripts)");
     }
     let pool = db_pool(&root).await?;
+    let DbPool::Postgres(pool) = pool else {
+        return Err(pg_only_on_mysql("migrate:reset"));
+    };
     let mut conn = pool
         .acquire()
         .await
@@ -2138,6 +2286,9 @@ async fn migrate_refresh(steps: u32) -> anyhow::Result<ExitCode> {
         anyhow::bail!("aborted (set KEEL_FORCE=1 to skip the prompt in scripts)");
     }
     let pool = db_pool(&root).await?;
+    let DbPool::Postgres(pool) = pool else {
+        return Err(pg_only_on_mysql("migrate:refresh"));
+    };
     // One lock across rollback + re-apply so no run interleaves between the
     // two phases.
     let mut conn = pool
@@ -2175,6 +2326,9 @@ async fn migrate_refresh(steps: u32) -> anyhow::Result<ExitCode> {
 async fn migrate_install() -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
     let pool = db_pool(&root).await?;
+    let DbPool::Postgres(pool) = pool else {
+        return Err(pg_only_on_mysql("migrate:install"));
+    };
     keel_postgres::pairs::install(&pool)
         .await
         .map_err(db_err)?;
@@ -2190,25 +2344,45 @@ async fn migrate_install() -> anyhow::Result<ExitCode> {
 async fn seed(only: Option<String>) -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
     let pool = db_pool(&root).await?;
-    let mut registry = keel_postgres::SeederRegistry::new();
-    registry
-        .register(Arc::new(keel_postgres::DevTenantSeeder))
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let only: Option<Vec<String>> = only.map(|list| {
         list.split(',')
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect()
     });
-    let results = registry
-        .run(&pool, only.as_deref())
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    for (name, report) in &results {
-        println!(
-            "  {name}: inserted={} skipped={}",
-            report.inserted, report.skipped
-        );
+    // B-31: driver-selected registry — each fabric runs its own seeder set
+    // (the SeedReport types are per-crate, so the pass normalizes the two
+    // `(inserted, skipped)` pairs before rendering).
+    let results: Vec<(String, (u64, u64))> = match &pool {
+        DbPool::Postgres(p) => {
+            let mut registry = keel_postgres::SeederRegistry::new();
+            registry
+                .register(Arc::new(keel_postgres::DevTenantSeeder))
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            registry
+                .run(p, only.as_deref())
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .into_iter()
+                .map(|(name, report)| (name, (report.inserted, report.skipped)))
+                .collect()
+        }
+        DbPool::MySql(p) => {
+            let mut registry = keel_mysql::SeederRegistry::new();
+            registry
+                .register(Arc::new(keel_mysql::DevTenantSeeder))
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            registry
+                .run(p, only.as_deref())
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .into_iter()
+                .map(|(name, report)| (name, (report.inserted, report.skipped)))
+                .collect()
+        }
+    };
+    for (name, (inserted, skipped)) in &results {
+        println!("  {name}: inserted={inserted} skipped={skipped}");
     }
     println!("seed complete ({} seeder(s)).", results.len());
     Ok(ExitCode::SUCCESS)
@@ -2682,14 +2856,13 @@ fn print_jobs(jobs: &[keel_jobs::DurableJob]) {
 }
 
 async fn job_list(status: Option<String>, limit: usize) -> anyhow::Result<ExitCode> {
-    use keel_jobs::JobStoreAdmin;
     let root = workspace_root()?;
     let pool = db_pool(&root).await?;
     let status = match status {
         Some(raw) => Some(parse_job_status(&raw)?),
         None => None,
     };
-    let store = keel_postgres::PgJobStore::new(pool);
+    let store = job_store_admin(&pool);
     let jobs = store
         .list(status, limit)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -2698,10 +2871,10 @@ async fn job_list(status: Option<String>, limit: usize) -> anyhow::Result<ExitCo
 }
 
 async fn queue_failed() -> anyhow::Result<ExitCode> {
-    use keel_jobs::{JobStatus, JobStoreAdmin};
+    use keel_jobs::JobStatus;
     let root = workspace_root()?;
     let pool = db_pool(&root).await?;
-    let store = keel_postgres::PgJobStore::new(pool);
+    let store = job_store_admin(&pool);
     let jobs = store
         .list(Some(JobStatus::Dead), 50)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -2711,11 +2884,10 @@ async fn queue_failed() -> anyhow::Result<ExitCode> {
 }
 
 async fn queue_retry(id: &str) -> anyhow::Result<ExitCode> {
-    use keel_jobs::JobStoreAdmin;
     let root = workspace_root()?;
     let job_id = uuid::Uuid::parse_str(id).map_err(|e| anyhow::anyhow!("invalid job id: {e}"))?;
     let pool = db_pool(&root).await?;
-    let store = keel_postgres::PgJobStore::new(pool);
+    let store = job_store_admin(&pool);
     store.requeue(job_id).map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("job {job_id} requeued (pending).");
     Ok(ExitCode::SUCCESS)
@@ -2759,7 +2931,6 @@ fn queue_work(once: bool) -> anyhow::Result<ExitCode> {
 /// migrate:fresh shape); queued work in prod goes through the queue's own
 /// lifecycle instead.
 async fn queue_clear() -> anyhow::Result<ExitCode> {
-    use keel_jobs::JobStoreAdmin;
     let root = workspace_root()?;
     let cfg = load_config(&root)?;
     if cfg.app.env.is_prod() || matches!(cfg.app.env, Environment::Staging) {
@@ -2771,7 +2942,7 @@ async fn queue_clear() -> anyhow::Result<ExitCode> {
         anyhow::bail!("aborted (set KEEL_FORCE=1 to skip the prompt in scripts)");
     }
     let pool = db_pool(&root).await?;
-    let store = keel_postgres::PgJobStore::new(pool);
+    let store = job_store_admin(&pool);
     let purged = store.purge_pending().map_err(db_err)?;
     println!("queue:clear: {purged} pending job(s) purged.");
     Ok(ExitCode::SUCCESS)
@@ -2780,10 +2951,9 @@ async fn queue_clear() -> anyhow::Result<ExitCode> {
 /// Wave 5: delete every dead job (forensic rows are gone afterwards —
 /// queue:prune-failed is the age-bounded variant).
 async fn queue_flush() -> anyhow::Result<ExitCode> {
-    use keel_jobs::JobStoreAdmin;
     let root = workspace_root()?;
     let pool = db_pool(&root).await?;
-    let store = keel_postgres::PgJobStore::new(pool);
+    let store = job_store_admin(&pool);
     let pruned = store
         .prune_dead(keel_jobs::flush_cutoff())
         .map_err(db_err)?;
@@ -2793,11 +2963,10 @@ async fn queue_flush() -> anyhow::Result<ExitCode> {
 
 /// Wave 5: delete one dead job (unknown id or not dead = refusal).
 async fn queue_forget(id: &str) -> anyhow::Result<ExitCode> {
-    use keel_jobs::JobStoreAdmin;
     let job_id = uuid::Uuid::parse_str(id).map_err(|e| anyhow::anyhow!("invalid job id: {e}"))?;
     let root = workspace_root()?;
     let pool = db_pool(&root).await?;
-    let store = keel_postgres::PgJobStore::new(pool);
+    let store = job_store_admin(&pool);
     if !store.delete_dead(job_id).map_err(db_err)? {
         anyhow::bail!("job {job_id} is not a dead job (nothing forgotten)");
     }
@@ -2807,10 +2976,9 @@ async fn queue_forget(id: &str) -> anyhow::Result<ExitCode> {
 
 /// Wave 5: queue depth + oldest pending age snapshot.
 async fn queue_monitor() -> anyhow::Result<ExitCode> {
-    use keel_jobs::JobStoreAdmin;
     let root = workspace_root()?;
     let pool = db_pool(&root).await?;
-    let store = keel_postgres::PgJobStore::new(pool);
+    let store = job_store_admin(&pool);
     let snap = store.snapshot().map_err(db_err)?;
     print!(
         "{}",
@@ -2850,14 +3018,13 @@ fn format_age(age: time::Duration) -> String {
 
 /// Wave 5: prune dead jobs that ended before now - --hours (default 168).
 async fn queue_prune_failed(hours: u64) -> anyhow::Result<ExitCode> {
-    use keel_jobs::JobStoreAdmin;
     let hours = i64::try_from(hours).map_err(|_| anyhow::anyhow!("--hours out of range"))?;
     if hours < 1 {
         anyhow::bail!("--hours must be at least 1");
     }
     let root = workspace_root()?;
     let pool = db_pool(&root).await?;
-    let store = keel_postgres::PgJobStore::new(pool);
+    let store = job_store_admin(&pool);
     let cutoff = time::OffsetDateTime::now_utc() - time::Duration::hours(hours);
     let pruned = store.prune_dead(cutoff).map_err(db_err)?;
     println!("queue:prune-failed: {pruned} dead job(s) older than {hours}h deleted.");
@@ -2869,14 +3036,13 @@ async fn queue_prune_failed(hours: u64) -> anyhow::Result<ExitCode> {
 /// before the cutoff; unfinished batches are never pruned, and the count
 /// printed is what the DELETE actually removed.
 async fn queue_prune_batches(hours: u64) -> anyhow::Result<ExitCode> {
-    use keel_jobs::BatchLedger;
     let hours = i64::try_from(hours).map_err(|_| anyhow::anyhow!("--hours out of range"))?;
     if hours < 1 {
         anyhow::bail!("--hours must be at least 1");
     }
     let root = workspace_root()?;
     let pool = db_pool(&root).await?;
-    let ledger = keel_postgres::PgBatchLedger::new(pool);
+    let ledger = batch_ledger(&pool);
     let cutoff = time::OffsetDateTime::now_utc() - time::Duration::hours(hours);
     let pruned = ledger.prune(cutoff).map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("queue:prune-batches: pruned {pruned} batch record(s) (cutoff {hours}h).");
@@ -2940,9 +3106,9 @@ async fn queue_retry_batch(id: &str) -> anyhow::Result<ExitCode> {
         uuid::Uuid::parse_str(id).map_err(|e| anyhow::anyhow!("invalid batch id: {e}"))?;
     let root = workspace_root()?;
     let pool = db_pool(&root).await?;
-    let store = keel_postgres::PgJobStore::new(pool.clone());
-    let ledger = keel_postgres::PgBatchLedger::new(pool);
-    let outcome = BatchOps::new(&ledger, &store)
+    let store = job_store_admin(&pool);
+    let ledger = batch_ledger(&pool);
+    let outcome = BatchOps::new(&*ledger, &*store)
         .retry(batch_id)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     println!(
@@ -3082,12 +3248,12 @@ fn schedule_work(every: u64) -> anyhow::Result<ExitCode> {
         let state = keel_scheduling::load_state_doc(&root).map_err(db_err)?;
         let runner = keel_scheduling::SchedulerRunner::with_state_doc(Arc::new(registry), state);
         let pool = db_pool(&root).await?;
-        let store = keel_postgres::PgJobStore::new(pool);
+        let store = job_store(&pool);
         let every = every.max(1);
         println!("schedule:work: {count} schedule(s) registered; ticking every {every}s (Ctrl-C stops; state saves after each firing pass)");
         loop {
             let now = time::OffsetDateTime::now_utc();
-            match schedule_tick(&runner, &store, &root, now) {
+            match schedule_tick(&runner, &*store, &root, now) {
                 Ok(fired) if !fired.is_empty() => {
                     println!("  [{}] fired: {}", rfc3339(now), fired.join(", "));
                 }
@@ -3102,19 +3268,43 @@ fn schedule_work(every: u64) -> anyhow::Result<ExitCode> {
 // -------------------------------------------------------------- db inspect
 
 /// Public tables with their row counts (shared by db:inspect and db:show).
-async fn table_row_counts(pool: &PgPool) -> anyhow::Result<Vec<(String, i64)>> {
-    let tables: Vec<String> = sqlx::query_scalar(
-        "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public' ORDER BY tablename",
-    )
-    .fetch_all(pool)
-    .await
+/// Wave 9 B-31: pg_catalog on Postgres, information_schema on MySQL — same
+/// shape, same ordering, base tables only.
+async fn table_row_counts(pool: &DbPool) -> anyhow::Result<Vec<(String, i64)>> {
+    let tables: Vec<String> = match pool {
+        DbPool::Postgres(p) => {
+            sqlx::query_scalar(
+                "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public' ORDER BY tablename",
+            )
+            .fetch_all(p)
+            .await
+        }
+        DbPool::MySql(p) => {
+            sqlx::query_scalar(
+                "SELECT table_name FROM information_schema.tables \
+                 WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' \
+                 ORDER BY table_name",
+            )
+            .fetch_all(p)
+            .await
+        }
+    }
     .map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut out = Vec::with_capacity(tables.len());
     for table in tables {
-        let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM \"{table}\""))
-            .fetch_one(pool)
-            .await
-            .map_err(|e| anyhow::anyhow!("count {table}: {e}"))?;
+        let count: i64 = match pool {
+            DbPool::Postgres(p) => {
+                sqlx::query_scalar(&format!("SELECT COUNT(*) FROM \"{table}\""))
+                    .fetch_one(p)
+                    .await
+            }
+            DbPool::MySql(p) => {
+                sqlx::query_scalar(&format!("SELECT COUNT(*) FROM `{table}`"))
+                    .fetch_one(p)
+                    .await
+            }
+        }
+        .map_err(|e| anyhow::anyhow!("count {table}: {e}"))?;
         out.push((table, count));
     }
     Ok(out)
@@ -3124,7 +3314,14 @@ async fn db_inspect() -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
     let pool = db_pool(&root).await?;
     let counts = table_row_counts(&pool).await?;
-    println!("public schema: {} table(s)", counts.len());
+    // B-31: MySQL's schema vocabulary is the current database, not a
+    // `public` schema; the Postgres line stays byte-identical.
+    let scope = if matches!(pool, DbPool::MySql(_)) {
+        "current database"
+    } else {
+        "public schema"
+    };
+    println!("{scope}: {} table(s)", counts.len());
     for (table, count) in &counts {
         println!("  {:<24} {count}", table);
     }
@@ -3154,14 +3351,8 @@ async fn db_show() -> anyhow::Result<ExitCode> {
         .filter(|scheme| !scheme.is_empty())
         .unwrap_or("postgresql")
         .to_string();
-    let server: String = sqlx::query_scalar("SELECT version()")
-        .fetch_one(&pool)
-        .await
-        .map_err(|e| anyhow::anyhow!("server version: {e}"))?;
-    let database: String = sqlx::query_scalar("SELECT current_database()")
-        .fetch_one(&pool)
-        .await
-        .map_err(|e| anyhow::anyhow!("current database: {e}"))?;
+    let server = server_version(&pool).await?;
+    let database = current_database(&pool).await?;
     let summary = DbSummary {
         driver,
         server,
@@ -3241,7 +3432,7 @@ const SCHEMA_INDEXES_SQL: &str = r#"SELECT c.relname AS table_name, pg_get_index
 /// Fetch the migrated schema from the live catalog, assembled into
 /// [`SchemaTable`]s (tables without columns — impossible in practice — are
 /// skipped rather than rendered as empty DDL).
-async fn fetch_schema_tables(pool: &PgPool) -> anyhow::Result<Vec<SchemaTable>> {
+async fn fetch_schema_tables(pool: &keel_postgres::PgPool) -> anyhow::Result<Vec<SchemaTable>> {
     #[derive(sqlx::FromRow)]
     struct ColRow {
         table_name: String,
@@ -3308,9 +3499,15 @@ async fn fetch_schema_tables(pool: &PgPool) -> anyhow::Result<Vec<SchemaTable>> 
 /// Wave 5: `db:schema:dump` — normalized DDL snapshot of the migrated
 /// schema, written to database/schema.sql for review. The file is never
 /// executed by migrate (migrations stay the source of truth).
+/// Wave 9 B-31: the snapshot reads pg_catalog, so the mysql driver refuses
+/// it (documented divergence, docs/05-DATABASE) — `db:show` still reports
+/// the MySQL table inventory via information_schema.
 async fn db_schema_dump() -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
     let pool = db_pool(&root).await?;
+    let DbPool::Postgres(pool) = pool else {
+        return Err(pg_only_on_mysql("db:schema:dump"));
+    };
     let tables = fetch_schema_tables(&pool).await?;
     let snapshot = render_schema_snapshot(&tables);
     let path = root.join("database").join("schema.sql");

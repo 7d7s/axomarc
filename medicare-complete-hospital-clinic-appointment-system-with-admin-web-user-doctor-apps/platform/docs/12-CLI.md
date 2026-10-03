@@ -40,7 +40,7 @@ against the same workspace/config the runtime uses.
 
 | Command | Purpose |
 |---|---|
-| `keel migrate` / `migrate:status` / `migrate:fresh` | apply (advisory-lock guarded: `pg_advisory_lock(7259)` acquired before any run, fail-closed on timeout — concurrent runs serialize) / report (incl. `keel_migrations` pair bookkeeping) / drop+recreate (dev-test) (Wave 3/5) |
+| `keel migrate` / `migrate:status` / `migrate:fresh` | apply (advisory-lock guarded: `pg_advisory_lock(7259)` acquired before any run, fail-closed on timeout — concurrent runs serialize; `GET_LOCK('keel_migrations')` twin on MySQL) / report (incl. `keel_migrations` pair bookkeeping) / drop+recreate (dev-test) (Wave 3/5, B-31) |
 | `keel migrate:rollback [--step n]` | revert the last `n` batches (default 1) in reverse filename order — pair migrations only; forward-only single-file migrations are not revertible (documented divergence) (Wave 5) |
 | `keel migrate:reset` / `migrate:refresh [--step n]` | revert everything / rollback `n` batches then re-apply pending (both dev/test-only: the destructive window refuses production) (Wave 5) |
 | `keel migrate:install` | create the `keel_migrations` bookkeeping table without running any files (Wave 5) |
@@ -49,6 +49,15 @@ against the same workspace/config the runtime uses.
 | `keel db:show` | driver, server version, database + the `db:inspect` table/row inventory (Wave 5) |
 | `keel db:schema:dump` | normalized DDL snapshot of the migrated schema → `database/schema.sql` (review artifact; never executed by `migrate`) (Wave 5) |
 | `keel model:prune [--chunk n] [--tenant <uuid>]` | sweep prunable models in chunked passes (1..=200); untenanted by default — passes the tenant only with `--tenant` (Wave 3) |
+
+**MySQL driver (B-31).** With `[database].driver = "mysql"` the whole Database table keeps
+working — `migrate` applies the forward-only `database/migrations-mysql/` set, `migrate:fresh`
+drops every table (FK checks off) and rebuilds, `migrate:status` lists the MySQL set (plus a
+note when pairs exist), `seed`/`db:show`/`db:inspect` run against information_schema. Five
+commands refuse on this driver with a message naming the command, the reason, and
+docs/05-DATABASE: `migrate:rollback`, `migrate:reset`, `migrate:refresh`, `migrate:install`
+(the pairs machinery is PostgreSQL-only) and `db:schema:dump` (the snapshot reads pg_catalog).
+`keel migrate` itself refuses fail-closed if `database/migrations-pairs` ships a pair.
 
 ## Operations
 

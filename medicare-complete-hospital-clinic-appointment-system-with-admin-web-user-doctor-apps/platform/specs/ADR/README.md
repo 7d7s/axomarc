@@ -11,3 +11,4 @@ Index of ADRs (one file each: NNNN-title.md). The decision log in
 | 0007-json-api-spec-server.md | JSON:API spec server (compound documents over Wave 3 resources) | Wave 8 gate (P6) |
 | 0008-precognition-header.md | Precognition (validate-only dispatch) | Wave 8 gate (P6) |
 | 0009-ops-dashboard.md | Operations dashboard (read-only over inspect/job/scheduler stores) | Wave 8 gate (P6) |
+| 0010-mysql-driver.md | MySQL as a first-class SQL driver (keel-mysql) | Wave 9 B-31 |

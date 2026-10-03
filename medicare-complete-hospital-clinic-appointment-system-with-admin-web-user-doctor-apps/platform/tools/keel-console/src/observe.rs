@@ -1,8 +1,8 @@
 //! `keel observe` family (Sentinel S5, doc §28/§34): operate the telemetry
 //! runtime from local stores — exported JSONL events, WAL segments, exporter
 //! health snapshots, cost rollups, the incident file control plane, the trace
-//! store, and the postgres audit chain. No new ports: commands read files or
-//! the configured database only.
+//! store, and the audit chain (both drivers). No new ports: commands read
+//! files or the configured database only.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -11,6 +11,7 @@ use std::process::ExitCode;
 use clap::Subcommand;
 use keel_config::PlatformConfig;
 use keel_execution::TraceStore;
+use keel_mysql::DbPool;
 use keel_observability::{IncidentControlPlane, TelemetryConfig};
 use serde_json::Value;
 
@@ -848,45 +849,77 @@ async fn audit(
     since: Option<String>,
     limit: usize,
 ) -> anyhow::Result<ExitCode> {
-    use sqlx::Row;
-
     let pool = crate::db_pool(root).await?;
 
+    // B-31: filter literals split by driver - MySQL stores uuid columns as
+    // BINARY(16) (a quoted uuid string never equals one) and rejects the
+    // RFC3339 'Z' suffix in datetime literals - while the validation itself
+    // stays shared and runs up front.
     let mut filters: Vec<String> = vec!["chain_hash IS NOT NULL".into()];
     if let Some(tid) = &tenant {
-        uuid::Uuid::parse_str(tid).map_err(|_| anyhow::anyhow!("invalid tenant id {tid:?}"))?;
-        filters.push(format!("tenant_id = '{tid}'"));
+        let tid = uuid::Uuid::parse_str(tid)
+            .map_err(|_| anyhow::anyhow!("invalid tenant id {tid:?}"))?;
+        filters.push(match &pool {
+            DbPool::Postgres(_) => format!("tenant_id = '{tid}'"),
+            // The same 16 bytes sqlx binds for a uuid, as a MySQL hex literal.
+            DbPool::MySql(_) => format!("tenant_id = 0x{}", tid.as_simple()),
+        });
     }
     if let Some(since) = &since {
-        time::OffsetDateTime::parse(since, &time::format_description::well_known::Rfc3339)
-            .map_err(|_| anyhow::anyhow!("invalid --since timestamp {since:?} (RFC3339)"))?;
-        filters.push(format!("at >= '{since}'"));
+        let parsed = time::OffsetDateTime::parse(
+            since,
+            &time::format_description::well_known::Rfc3339,
+        )
+        .map_err(|_| anyhow::anyhow!("invalid --since timestamp {since:?} (RFC3339)"))?;
+        filters.push(match &pool {
+            DbPool::Postgres(_) => format!("at >= '{since}'"),
+            // MySQL: 'YYYY-MM-DD HH:MM:SS.ffffff' in UTC - no 'T', no 'Z'.
+            DbPool::MySql(_) => {
+                let d = parsed.to_offset(time::UtcOffset::UTC);
+                format!(
+                    "at >= '{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:06}'",
+                    d.year(),
+                    d.month(),
+                    d.day(),
+                    d.hour(),
+                    d.minute(),
+                    d.second(),
+                    d.microsecond()
+                )
+            }
+        });
     }
     let where_clause = filters.join(" AND ");
 
     if !verify {
-        let rows = sqlx::query(&format!(
+        let sql = format!(
             "SELECT at, tenant_id, principal_id, action, resource, authority, outcome, chain_hash IS NOT NULL AS chained
                FROM audit_records
               WHERE {where_clause}
               ORDER BY at DESC, id DESC
               LIMIT {limit}"
-        ))
-        .fetch_all(&pool)
-        .await?;
+        );
+        // Driver-neutral row shape: sqlx's tuple FromRow is generic over any
+        // driver, so both arms feed one print path.
+        type Listed = (
+            time::OffsetDateTime,
+            Option<uuid::Uuid>,
+            Option<uuid::Uuid>,
+            String,
+            String,
+            String,
+            String,
+            bool,
+        );
+        let rows: Vec<Listed> = match &pool {
+            DbPool::Postgres(p) => sqlx::query_as(&sql).fetch_all(p).await?,
+            DbPool::MySql(p) => sqlx::query_as(&sql).fetch_all(p).await?,
+        };
         if rows.is_empty() {
             println!("no audit rows match");
             return Ok(ExitCode::SUCCESS);
         }
-        for row in rows {
-            let at: time::OffsetDateTime = row.try_get("at")?;
-            let tenant_id: Option<uuid::Uuid> = row.try_get("tenant_id")?;
-            let principal_id: Option<uuid::Uuid> = row.try_get("principal_id")?;
-            let action: String = row.try_get("action")?;
-            let resource: String = row.try_get("resource")?;
-            let authority: String = row.try_get("authority")?;
-            let outcome: String = row.try_get("outcome")?;
-            let chained: bool = row.try_get("chained")?;
+        for (at, tenant_id, principal_id, action, resource, authority, outcome, chained) in rows {
             println!(
                 "{}  tenant={}  principal={}  {}  {}/{}  outcome={}  chained={}",
                 at,
@@ -906,16 +939,38 @@ async fn audit(
         return Ok(ExitCode::SUCCESS);
     }
 
-    // --verify: recompute the chain per (tenant, chain_id) segment.
-    let rows = sqlx::query(&format!(
+    // --verify: recompute the chain per (tenant, chain_id) segment. The
+    // ORDER BY splits by driver: pg sorts NULLs last by default, MySQL has
+    // no NULLS FIRST syntax but already sorts NULLs before every value.
+    let order_by = match &pool {
+        DbPool::Postgres(_) => "ORDER BY tenant_id NULLS FIRST, chain_id, at, id",
+        DbPool::MySql(_) => "ORDER BY tenant_id, chain_id, at, id",
+    };
+    let sql = format!(
         "SELECT id, tenant_id, principal_id, action, resource, authority, outcome, detail, at,
                 chain_id, prev_hash, chain_hash
            FROM audit_records
           WHERE {where_clause}
-          ORDER BY tenant_id NULLS FIRST, chain_id, at, id"
-    ))
-    .fetch_all(&pool)
-    .await?;
+          {order_by}"
+    );
+    type Chained = (
+        uuid::Uuid,
+        Option<uuid::Uuid>,
+        Option<uuid::Uuid>,
+        String,
+        String,
+        String,
+        String,
+        serde_json::Value,
+        time::OffsetDateTime,
+        uuid::Uuid,
+        Vec<u8>,
+        Vec<u8>,
+    );
+    let rows: Vec<Chained> = match &pool {
+        DbPool::Postgres(p) => sqlx::query_as(&sql).fetch_all(p).await?,
+        DbPool::MySql(p) => sqlx::query_as(&sql).fetch_all(p).await?,
+    };
     if rows.is_empty() {
         println!("no chained audit rows; nothing to verify");
         return Ok(ExitCode::SUCCESS);
@@ -923,19 +978,8 @@ async fn audit(
 
     let mut segments: BTreeMap<(Option<uuid::Uuid>, uuid::Uuid), Vec<keel_integrity::ChainRow>> =
         BTreeMap::new();
-    for row in &rows {
-        let id: uuid::Uuid = row.try_get("id")?;
-        let tenant_id: Option<uuid::Uuid> = row.try_get("tenant_id")?;
-        let principal_id: Option<uuid::Uuid> = row.try_get("principal_id")?;
-        let action: String = row.try_get("action")?;
-        let resource: String = row.try_get("resource")?;
-        let authority: String = row.try_get("authority")?;
-        let outcome: String = row.try_get("outcome")?;
-        let detail: serde_json::Value = row.try_get("detail")?;
-        let at: time::OffsetDateTime = row.try_get("at")?;
-        let chain_id: uuid::Uuid = row.try_get("chain_id")?;
-        let prev_hash: Vec<u8> = row.try_get("prev_hash")?;
-        let chain_hash: Vec<u8> = row.try_get("chain_hash")?;
+    for (id, tenant_id, principal_id, action, resource, authority, outcome, detail, at, chain_id, prev_hash, chain_hash) in rows
+    {
 
         // Mirror the write path (keel-postgres tx): merged detail + Rfc3339.
         let merged_detail = serde_json::json!({ "detail": detail, "outcome": outcome });

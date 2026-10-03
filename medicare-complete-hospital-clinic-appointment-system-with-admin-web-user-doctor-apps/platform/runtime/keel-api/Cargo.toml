@@ -36,6 +36,7 @@ keel-models = { workspace = true }
 keel-jobs = { workspace = true }
 keel-scheduling = { workspace = true }
 keel-postgres = { workspace = true }
+keel-mysql = { workspace = true }
 keel-observability = { workspace = true }
 keel-notifications = { workspace = true }
 keel-feature-flags = { workspace = true }

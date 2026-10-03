@@ -106,6 +106,47 @@ fn default_true() -> bool {
     true
 }
 
+/// `[database].driver` (Wave 9 B-31, docs/19): which first-class SQL driver
+/// boot selects for the probe, the migration runner and the store set.
+/// `postgres` (the default) is today's byte-identical path; `mysql` switches
+/// to the `keel-mysql` fabric. The key is declared in CONFIG_SCHEMA and
+/// typed here, so an unknown driver refuses config load (fail-closed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DatabaseDriver {
+    #[default]
+    Postgres,
+    MySql,
+}
+
+/// `[database]` as a file section: `driver` plus the flattened connection
+/// settings, so the driver key and `url`/`max_connections`/... stay ONE TOML
+/// table. `Deref`/`DerefMut` target [`DatabaseConfig`] so every existing
+/// `[database]` field consumer (and the frozen getters) reads through
+/// unchanged — the section adds a key, it does not move the old ones.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseSection {
+    /// Which driver boot selects (serde-default: `postgres`).
+    #[serde(default)]
+    pub driver: DatabaseDriver,
+    /// The connection settings themselves, flattened into `[database]`.
+    #[serde(flatten)]
+    pub conn: DatabaseConfig,
+}
+
+impl std::ops::Deref for DatabaseSection {
+    type Target = DatabaseConfig;
+    fn deref(&self) -> &DatabaseConfig {
+        &self.conn
+    }
+}
+
+impl std::ops::DerefMut for DatabaseSection {
+    fn deref_mut(&mut self) -> &mut DatabaseConfig {
+        &mut self.conn
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthConfig {
     #[serde(default)]
@@ -704,7 +745,7 @@ pub struct PlatformConfig {
     #[serde(default)]
     pub app: AppConfig,
     #[serde(default)]
-    pub database: Option<DatabaseConfig>,
+    pub database: Option<DatabaseSection>,
     #[serde(default)]
     pub auth: AuthConfig,
     #[serde(default)]
@@ -761,7 +802,10 @@ pub const CONFIG_SCHEMA: &[(&str, &[&str])] = &[
         "auth",
         &["jwt_secret", "confirm_timeout_secs", "password_policy"],
     ),
-    ("database", &["url", "max_connections", "run_migrations", "required"]),
+    (
+        "database",
+        &["driver", "url", "max_connections", "run_migrations", "required"],
+    ),
     ("http", &["problem_json", "encrypt_cookies"]),
     ("i18n", &["default", "paths"]),
     ("identity", &["memory", "time", "parallelism"]),
@@ -955,11 +999,14 @@ impl PlatformConfig {
             match self.database.as_mut() {
                 Some(db) => db.url = v,
                 None => {
-                    self.database = Some(DatabaseConfig {
-                        url: v,
-                        max_connections: default_max_conn(),
-                        run_migrations: true,
-                        required: false,
+                    self.database = Some(DatabaseSection {
+                        driver: DatabaseDriver::default(),
+                        conn: DatabaseConfig {
+                            url: v,
+                            max_connections: default_max_conn(),
+                            run_migrations: true,
+                            required: false,
+                        },
                     });
                 }
             }
@@ -1025,6 +1072,16 @@ impl PlatformConfig {
         self.database.as_ref().map(|d| d.url.as_str())
     }
 
+    /// `[database].driver` (Wave 9 B-31): the SQL driver boot selects for the
+    /// probe, migrations and stores. `postgres` when no section is set, so
+    /// the default path stays byte-identical.
+    pub fn database_driver(&self) -> DatabaseDriver {
+        self.database
+            .as_ref()
+            .map(|section| section.driver)
+            .unwrap_or_default()
+    }
+
     /// Wave 4 Phase 5 (docs/19 L209, closes L02): freeze into the post-load
     /// handle boot consumes. After `freeze()` configuration cannot be
     /// mutated by type — `FrozenConfig` exposes getters only (no setters,
@@ -1047,7 +1104,12 @@ impl FrozenConfig {
     }
 
     pub fn database(&self) -> Option<&DatabaseConfig> {
-        self.0.database.as_ref()
+        self.0.database.as_ref().map(|section| &section.conn)
+    }
+
+    /// `[database].driver` (Wave 9 B-31): `postgres` when no section is set.
+    pub fn database_driver(&self) -> DatabaseDriver {
+        self.0.database_driver()
     }
 
     pub fn auth(&self) -> &AuthConfig {
@@ -1638,6 +1700,45 @@ mod phase5_config_schema_tests {
                 );
             }
         }
+    }
+
+    /// Wave 9 B-31 (docs/19): `[database].driver` defaults to `postgres`
+    /// (the byte-identical default path), parses `mysql`, refuses anything
+    /// else at load time, and is declared in CONFIG_SCHEMA. The flattened
+    /// section keeps the connection keys readable exactly where they were.
+    #[test]
+    fn database_driver_defaults_to_postgres_and_is_schema_declared() {
+        let cfg: PlatformConfig =
+            toml::from_str("[database]\nurl = \"postgres://localhost/keel\"\n")
+                .expect("postgres section parses");
+        let section = cfg.database.as_ref().expect("database section");
+        assert_eq!(section.driver, DatabaseDriver::Postgres);
+        assert_eq!(
+            section.url, "postgres://localhost/keel",
+            "flattened connection keys read through the section wrapper"
+        );
+        assert_eq!(cfg.database_driver(), DatabaseDriver::Postgres);
+
+        let cfg: PlatformConfig =
+            toml::from_str("[database]\ndriver = \"mysql\"\nurl = \"mysql://localhost/keel\"\n")
+                .expect("mysql section parses");
+        assert_eq!(cfg.database_driver(), DatabaseDriver::MySql);
+        assert_eq!(cfg.database_url(), Some("mysql://localhost/keel"));
+
+        let err = toml::from_str::<PlatformConfig>(
+            "[database]\ndriver = \"oracle\"\nurl = \"oracle://localhost/keel\"\n",
+        );
+        assert!(err.is_err(), "an unknown driver must refuse config load");
+
+        assert!(
+            schema_violations("[database]\ndriver = \"mysql\"\nurl = \"mysql://x\"\n").is_empty(),
+            "driver must be a declared key under [database]"
+        );
+        let (_, known) = CONFIG_SCHEMA
+            .iter()
+            .find(|(section, _)| *section == "database")
+            .expect("database section declared");
+        assert!(known.contains(&"driver"), "driver must be in CONFIG_SCHEMA");
     }
 }
 
