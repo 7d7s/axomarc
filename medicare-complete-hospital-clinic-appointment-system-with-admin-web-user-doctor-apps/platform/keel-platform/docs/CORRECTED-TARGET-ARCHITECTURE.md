@@ -897,11 +897,31 @@ impl PromotionPipeline {
     median over 300 iterations. A 4-writer/4-reader chaos hammer additionally proved the swap never
     tears or regresses a revision — it found a real commit-order race (subscribers notified
     `[.. 7, 6 ..]`, i.e. stale routes installed), fixed by serializing commit.
-  - `rollback < 30s` **`requires-DB`**: the deployment `RollbackExecutor` figure needs a live
-    database. The Phase 5 environment has no Docker, no `psql`/`mysql` on PATH and an empty
-    `DATABASE_URL`; an automated test would either no-op the migrations dimension (meaningless
-    number) or unwind real batches (destructive). Staged as a procedure in `platform/docs/13-OPERATIONS.md`
-    §Performance baseline and **not claimed**.
+  - `rollback < 30s` **`requires-DB` — and provably cannot be substituted or staged here.**
+    Three independent legs, each verified:
+    1. **It must be PostgreSQL; MySQL cannot stand in, by design.** The platform ships a
+       MySQL driver (`crates/data/mysql/`), but it is *forward-only*: `mysql/src/lib.rs:15`
+       documents **"rollback-capable pairs are PostgreSQL-only"** and `:200` enforces it —
+       `pair {base}: rollback-capable pairs are PostgreSQL-only (B-31)` — with
+       `refuse_shipped_pairs()` failing the MySQL run closed rather than pretending.
+       Only `crates/data/postgres/src/pairs.rs:264 rollback()` exists; MySQL has no
+       migration-rollback path at all (`mysql`'s sole `rollback` is the transaction method in
+       `txport.rs:108`).
+    2. **No PostgreSQL is available in this environment.** No `postgres`/`pg_ctl`/`initdb`/`psql`
+       on PATH and none installed (`C:\Program Files\PostgreSQL\16` contains only a leftover
+       `data/` directory — no `bin/`, no service), port **5432 closed**, no docker or podman,
+       and **no `DATABASE_URL` in either `.env`** (`platform/config/.env`,
+       `platform/keel-kernel/config/.env`). The repo's own example expects
+       `postgres://medicare:medicare@127.0.0.1:5432/medicare` from a compose file that cannot be
+       started. *Note: MySQL 8.0 **is** installed and listening on 3306 — it is excluded by
+       leg 1, not by its absence.*
+    3. **Even with PostgreSQL there is nothing to unwind.** Both rollback-capable directories —
+       `platform/database/migrations-pairs` and `platform/keel-platform/database/migrations-pairs` —
+       are **README-only (0 pair subdirs)**, which `mysql/src/lib.rs:171` itself classifies as
+       "no pairs yet". `pairs::rollback()` would therefore unwind zero steps, i.e. exactly the
+       "no-op migrations dimension (meaningless number)" this box refuses to report.
+    Measuring it requires a PostgreSQL instance *and* at least one shipped pair. Staged as a
+    procedure in `platform/docs/13-OPERATIONS.md` §Performance baseline and **not claimed**.
 - [x] Documentation + runbooks for each component
 
 ---
