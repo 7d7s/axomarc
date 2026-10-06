@@ -79,7 +79,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.86"
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/7d7s/axomarc"
 readme = "README.md"
@@ -193,10 +193,18 @@ lettre = { version = "0.11", default-features = false, features = ["builder", "s
 redis = { version = "0.27", default-features = false, features = ["script"] }
 # SECURITY BUMP (wasmtime advisories; see deny.toml governance note): the 34.x
 # line is unpatched. 36.0.16 is the LOWEST version satisfying every wasmtime
-# advisory (each patched range is ">=36.0.x, <37.0.0"), hence staying on 36.x
-# rather than jumping to 43/46/49. Consequence: wasmtime 36 declares
-# rust-version = 1.86.0, so workspace MSRV moved 1.85 -> 1.86 (all four
-# workspace roots + the keel-publish msrv job + 01-GETTING-STARTED).
+# advisory (binding: RUSTSEC-2026-0316, lo=36.0.16, across all 49 wasmtime
+# advisories), hence staying on 36.x rather than jumping to 43/46/49.
+# Consequence: wasmtime 36 declares rust-version = 1.86.0 -- but that is only the
+# floor wasmtime imposes, NOT ours. The real floors come from the lockfiles and
+# each was verified by running `cargo check --workspace --locked` on that exact
+# toolchain (1.86 was rejected outright by cargo for home / icu_* / time /
+# wasm-{encoder,wast,wat} 261, all requiring 1.88):
+#   platform       1.88  (uuid 1.24.1 -> green at 1.88, red at 1.86)
+#   keel-platform  1.89  (uuid 1.27.0 "requires rustc 1.89.0" -> red at 1.88)
+#   keel-kernel    1.89  (same)
+#   your-app       1.89  (same)
+# keel-publish.yml's msrv job therefore runs a matrix, one workspace per floor.
 # Default features OFF for supply-chain weight: no
 # component-model, no disk cache, no profiling/native extras — cranelift +
 # runtime + wat + std only (check-in `.wat` fixtures compile at test time, so no

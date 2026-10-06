@@ -61,24 +61,48 @@ jobs:
         run: cargo run -p xtask -- dep-rules
 
   msrv:
-    name: msrv (1.86.0)
+    # Per-workspace floors, not one shared number: `platform`'s lock resolves
+    # uuid 1.24.1 and builds green on 1.88, while the other three resolve
+    # uuid 1.27.0 ("requires rustc 1.89.0") and are rejected below 1.89. A single
+    # number would either understate -- 1.86 is rejected outright by cargo for
+    # home / icu_* / time / wasm-{encoder,wast,wat} 261, all needing 1.88 -- or
+    # overstate platform's real floor. Each leg below is the exact command run
+    # locally to verify that workspace's floor.
+    #
+    # RUSTUP_TOOLCHAIN is mandatory here, not cosmetic: `platform/rust-toolchain.toml`
+    # pins channel 1.92.0 and rustup resolves that FILE above `rustup default`, so
+    # the previous `rustup default 1.86.0` form still built 1.92.0 and reported the
+    # floor as met without ever testing it - a silent no-op gate. Verified locally
+    # inside platform/: cargo resolves 1.92.0 normally, 1.86.0 with the variable set.
+    name: msrv (${{ matrix.ws }} @ ${{ matrix.toolchain }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { ws: platform,      dir: platform,              toolchain: "1.88.0" }
+          - { ws: keel-platform, dir: platform/keel-platform, toolchain: "1.89.0" }
+          - { ws: keel-kernel,   dir: platform/keel-kernel,   toolchain: "1.89.0" }
+          - { ws: your-app,      dir: platform/your-app,      toolchain: "1.89.0" }
     steps:
       - uses: actions/checkout@v4
-      - name: Install MSRV Rust 1.86.0
-        run: rustup toolchain install 1.86.0 --profile minimal && rustup default 1.86.0
+      - name: Install MSRV Rust ${{ matrix.toolchain }}
+        run: rustup toolchain install ${{ matrix.toolchain }} --profile minimal
       - name: Cache cargo
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            platform/target
-          key: keel-msrv-${{ hashFiles('platform/Cargo.lock') }}
+            ${{ matrix.dir }}/target
+          key: keel-msrv-${{ matrix.ws }}-${{ hashFiles(format('{0}/Cargo.lock', matrix.dir)) }}
           restore-keys: |
-            keel-msrv-
+            keel-msrv-${{ matrix.ws }}-
       - name: cargo check at MSRV
         run: cargo check --workspace --locked
+        working-directory: ${{ matrix.dir }}
+        env:
+          RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
 
   deny:
     name: cargo-deny (supply chain)

@@ -6,7 +6,8 @@ diagnostics/AI), and an enterprise control plane (tenancy/flags/deployment).
 
 ## Prerequisites
 
-- Rust stable, MSRV **1.86** (workspace `rust-version`), edition 2021.
+- Rust stable, MSRV **1.88** for `platform` and **1.89** for `keel-platform`,
+  `keel-kernel` and `your-app` (each workspace root's `rust-version`), edition 2021.
 - Cargo (workspace lives in `platform/`).
 - Optional, for postgres-backed dev: docker compose (`docker-compose.yml` provides postgres + minio).
 

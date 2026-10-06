@@ -697,10 +697,21 @@ impl PromotionPipeline {
     *"No safe upgrade is available"* — `RUSTSEC-2023-0071` (`rsa`, RustSec `patched = []`, reached
     only transitively via sqlx-mysql) — gets the governance note `deny.toml` demands rather than a
     silent ignore: accepted risk, database connection must be TLS-protected or network-local.
-  - *Knock-on: MSRV **1.85 → 1.86**.* wasmtime 36 declares `rust-version = 1.86.0`, and 34.x had
-    been chosen deliberately as the *"MSRV-aware"* line. Updated in all four workspace roots
-    (`platform`, `keel-platform`, `keel-kernel`, `your-app`), the `keel-publish.yml` `msrv` job
-    (1.86.0), and `docs/01-GETTING-STARTED.md`.
+  - *Knock-on: MSRV **1.85 → 1.88 / 1.89** (per workspace).* wasmtime 36 declares
+    `rust-version = 1.86.0`, and 34.x had been chosen deliberately as the *"MSRV-aware"* line —
+    but that is only the floor wasmtime imposes, and 1.86 is rejected outright by cargo for
+    `home`, `icu_*`, `time` and `wasm-{encoder,wast,wat}` 261 (all requiring 1.88). The
+    lockfiles then split the four roots: `platform` resolves `uuid 1.24.1` → **1.88**;
+    `keel-platform`, `keel-kernel` and `your-app` resolve `uuid 1.27.0`
+    (*"requires rustc 1.89.0"*) → **1.89**. Each floor is proved by a real
+    `cargo check --workspace --locked` on that exact toolchain — `platform` exit 0 @1.88,
+    the other three exit 0 @1.89, all four red at 1.86. Updated in all four workspace roots,
+    `keel-publish.yml`'s `msrv` job (now a per-floor matrix) and `docs/01-GETTING-STARTED.md`.
+  - *The `msrv` gate itself was a no-op; now fixed.* `platform/rust-toolchain.toml` pins
+    channel 1.92.0 and rustup resolves that file **above** `rustup default`, so installing
+    1.86.0 and defaulting to it still built 1.92.0 — the gate reported the floor as met
+    without testing it. The job now sets `RUSTUP_TOOLCHAIN`, which outranks the file
+    (proved: inside `platform/`, cargo resolves 1.92.0 normally and 1.86.0 with it set).
   - **Proven:** `cargo deny check` → **exit 0**, `advisories ok, bans ok, licenses ok, sources ok`
     from **both** `platform/` and `keel-platform/` (each workspace's own `Cargo.lock` carries
     wasmtime 36.0.17).
@@ -822,8 +833,8 @@ impl PromotionPipeline {
        `medicare-api` vs `my-app-api` — but the path is identical).
     2. **Two patient modules:** `modules/patient` (`mod-patient`) vs your-app's existing
        `modules/patients` (`mod-patients`).
-    3. **`rust-version`:** medicare-kernel declares **1.92**, your-app **1.86** (the wasmtime-36
-       floor set earlier); a merged workspace has exactly one.
+    3. **`rust-version`:** medicare-kernel declares **1.92**, your-app **1.89** (the floor its own lockfile
+       forces — uuid 1.27.0 requires rustc 1.89.0); a merged workspace has exactly one.
     4. **Dependency divergence:** `axum 0.8.9` vs an **exact pin** `=0.8.6`; `reqwest 0.13` vs
        `0.12`; `uuid 1.24` vs `1`; `rand 0.10` vs `0.8`; `toml 0.9` vs `0.8`; `sqlx` postgres-only
        vs postgres+mysql. Reconciling `[workspace.dependencies]` may change resolved versions.
@@ -856,7 +867,7 @@ impl PromotionPipeline {
     `keel-kernel` **15 / 240 / 0**, `your-app` **3 / 0**, and
     `cargo check --workspace --locked` exit 0 in all four. Supporting gates the jobs run:
     `cargo run -p xtask -- dep-rules` → exit 0 (`dep-rules: clean`), `cargo deny check` →
-    exit 0, `keel-publish.yml` `msrv` job → 1.86.0. Both workflow files parse as valid YAML, and
+    exit 0, `keel-publish.yml` `msrv` job → a 4-leg matrix at each workspace's verified floor (1.88 for `platform`, 1.89 for the other three). Both workflow files parse as valid YAML, and
     the `keel.yml` steps that carry over from the old job were checked to reference packages that
     actually exist (`keel-observability`, `keel-api`, `xtask`) and tests that actually exist
     (`g18`, `telemetry_incident`).
