@@ -14,8 +14,12 @@ keel-foundation = { workspace = true }
 keel-context = { workspace = true }
 # §3.2 extension traits: Enterprise may depend on Services (cache/storage)
 # and Async (jobs/events/scheduler) per the allowed_deps matrix.
-keel-caching = { workspace = true }
-keel-storage = { workspace = true }
+# `tenant-ports` is requested explicitly, NOT inherited from a default: the
+# scoped extensions below ARE the tenant-scoped ports, so building this crate
+# without them is meaningless. Reliance on a `default = [...]` elsewhere would
+# make a `--no-default-features` rebuild silently drop §3.2.
+keel-caching = { workspace = true, features = ["tenant-ports"] }
+keel-storage = { workspace = true, features = ["tenant-ports"] }
 keel-jobs = { workspace = true }
 keel-event = { workspace = true }
 keel-scheduling = { workspace = true }

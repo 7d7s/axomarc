@@ -60,6 +60,7 @@ pub trait CachePort: Send + Sync {
 /// port; the physical [`CachePort`] stays the platform layer (edge state,
 /// infrastructure locks) reachable only as break-glass, mirroring the
 /// `keel_platform` database role.
+#[cfg(feature = "tenant-ports")]
 pub trait TenantCachePort: Send + Sync {
     fn get(&self, tenant: TenantId, key: &str) -> Option<Vec<u8>>;
     fn put(&self, tenant: TenantId, key: &str, value: Vec<u8>, ttl_secs: Option<u64>);
@@ -84,10 +85,12 @@ pub trait TenantCachePort: Send + Sync {
 /// scheme from §3.3 applied at the wrapper, so memory/redis/fake adapters
 /// all gain isolation without being rewritten. Key construction lives here,
 /// in one place, so a new adapter inherits scoping for free.
+#[cfg(feature = "tenant-ports")]
 pub struct TenantCacheShard {
     inner: std::sync::Arc<dyn CachePort>,
 }
 
+#[cfg(feature = "tenant-ports")]
 impl TenantCacheShard {
     pub fn new(inner: std::sync::Arc<dyn CachePort>) -> Self {
         Self { inner }
@@ -99,6 +102,7 @@ impl TenantCacheShard {
     }
 }
 
+#[cfg(feature = "tenant-ports")]
 impl TenantCachePort for TenantCacheShard {
     fn get(&self, tenant: TenantId, key: &str) -> Option<Vec<u8>> {
         self.inner.get(&Self::k(tenant, key))
@@ -301,6 +305,7 @@ mod tests {
     /// Cross-tenant read/write probe: same logical key, two tenants — each
     /// sees only its own value, and one tenant's delete never erases the
     /// other's entry.
+    #[cfg(feature = "tenant-ports")]
     #[test]
     fn tenant_isolation_cache_entries_do_not_cross_tenants() {
         let shard = TenantCacheShard::new(std::sync::Arc::new(FakePort::default()));
@@ -327,6 +332,7 @@ mod tests {
     }
 
     /// Prefix invalidation (tag-style) stays inside the calling tenant.
+    #[cfg(feature = "tenant-ports")]
     #[test]
     fn tenant_isolation_cache_prefix_invalidation_stays_inside_one_tenant() {
         let shard = TenantCacheShard::new(std::sync::Arc::new(FakePort::default()));
@@ -350,6 +356,7 @@ mod tests {
     /// The atomic primitives (set-if-not-exists, compare-and-delete) are
     /// per-tenant slots: same lock NAME under two tenants is two slots, and
     /// neither side can free the other's token.
+    #[cfg(feature = "tenant-ports")]
     #[test]
     fn tenant_isolation_cache_atomic_slots_are_per_tenant() {
         let shard = TenantCacheShard::new(std::sync::Arc::new(FakePort::default()));
@@ -387,6 +394,7 @@ mod tests {
     /// no `FromStr` (`foundation/core/src/id.rs`), UUID text carries no `:`,
     /// and every UUID is exactly 36 chars — so no namespace can contain
     /// another. This pins that structural invariant behaviorally.
+    #[cfg(feature = "tenant-ports")]
     #[test]
     fn pentest_cache_hostile_keys_and_prefixes_cannot_escape_the_caller() {
         let shard = TenantCacheShard::new(std::sync::Arc::new(FakePort::default()));

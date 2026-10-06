@@ -2,7 +2,9 @@
 //! Storage port (11-SPEC §45). The domain never touches S3/MinIO directly;
 //! adapters implement this port.
 
-use keel_foundation::{AppError, TenantId};
+use keel_foundation::AppError;
+#[cfg(feature = "tenant-ports")]
+use keel_foundation::TenantId;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -168,6 +170,7 @@ impl<P: StoragePort + ?Sized> ObjectWriter for BufferedWriter<'_, P> {
 /// `bucket/key` prefix contract of [`StoragePort`], scoped by the adapter.
 /// The physical port stays the platform layer (break-glass, mirroring the
 /// `keel_platform` database role).
+#[cfg(feature = "tenant-ports")]
 pub trait TenantStoragePort: Send + Sync {
     fn put(
         &self,
@@ -224,10 +227,12 @@ pub trait TenantStoragePort: Send + Sync {
 /// §3.3 transition adapter (`TenantShardedAdapter`): wraps ANY physical
 /// [`StoragePort`] and rewrites every key into the tenant's namespace —
 /// memory/local/S3 adapters gain isolation without being rewritten.
+#[cfg(feature = "tenant-ports")]
 pub struct TenantStorageShard {
     inner: Arc<dyn StoragePort>,
 }
 
+#[cfg(feature = "tenant-ports")]
 impl TenantStorageShard {
     pub fn new(inner: Arc<dyn StoragePort>) -> Self {
         Self { inner }
@@ -276,6 +281,7 @@ impl TenantStorageShard {
     }
 }
 
+#[cfg(feature = "tenant-ports")]
 impl TenantStoragePort for TenantStorageShard {
     fn put(
         &self,
@@ -729,9 +735,11 @@ mod tests {
 
     /// Map-backed fake with the full surface (incl. directory ops) — the
     /// isolation probes' substrate (Services must not depend on Adapters).
+    #[cfg(feature = "tenant-ports")]
     #[derive(Default)]
     struct MapStore(std::sync::Mutex<BTreeMap<String, Vec<u8>>>); // "bucket/key"
 
+    #[cfg(feature = "tenant-ports")]
     impl StoragePort for MapStore {
         fn put(&self, bucket: &str, key: &str, bytes: Vec<u8>) -> Result<ObjectRef, AppError> {
             self.0
@@ -790,11 +798,13 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "tenant-ports")]
     fn shard() -> TenantStorageShard {
         TenantStorageShard::new(Arc::new(MapStore::default()))
     }
 
     /// Cross-tenant read/write/delete probe over object storage.
+    #[cfg(feature = "tenant-ports")]
     #[test]
     fn tenant_isolation_storage_objects_do_not_cross_tenants() {
         let shard = shard();
@@ -837,6 +847,7 @@ mod tests {
     }
 
     /// Directory listing returns logical keys scoped to the calling tenant.
+    #[cfg(feature = "tenant-ports")]
     #[test]
     fn tenant_isolation_storage_listing_is_namespaced() {
         let shard = shard();
@@ -881,6 +892,7 @@ mod tests {
 
     /// Traversal keys are refused at the shard — no crafted key can reach
     /// outside the tenant namespace, regardless of adapter strictness.
+    #[cfg(feature = "tenant-ports")]
     #[test]
     fn tenant_isolation_storage_traversal_keys_are_refused() {
         let shard = shard();
@@ -899,6 +911,7 @@ mod tests {
     }
 
     /// Presigned URLs point at the tenant's own namespace only.
+    #[cfg(feature = "tenant-ports")]
     #[test]
     fn tenant_isolation_storage_presign_stays_inside_namespace() {
         let shard = shard();
@@ -929,6 +942,7 @@ mod tests {
     /// dropped or misplaced for one call, a single tenant could erase every
     /// tenant's objects in a bucket. It must be scoped in BOTH directions —
     /// refuses to walk out, and cannot reach sideways.
+    #[cfg(feature = "tenant-ports")]
     #[test]
     fn pentest_storage_hostile_prefixes_and_delete_dir_stay_inside_the_tenant() {
         let shard = shard();

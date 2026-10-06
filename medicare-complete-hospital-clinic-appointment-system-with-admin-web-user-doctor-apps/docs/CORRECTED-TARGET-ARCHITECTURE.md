@@ -710,15 +710,38 @@ impl PromotionPipeline {
     and `config_reload_swaps_routes_and_flags_under_50ms`.
   - *Naming note:* no type is named `ConfigWatcher` — the §4.1 file-mtime trigger ships as
     `FileConfigSource` (mtime stamp, `runtime.rs:89`) plus `ConfigRuntime::poll()` (`runtime.rs:257`).
-- [ ] Implement tenant-scoped port traits in each crate (parallel, behind feature flags)
-  - **open — the feature-flag half is false.** The port traits exist and Phase 2 migrated the
-    adapters — `TenantCachePort` (`crates/services/cache/src/lib.rs:63`) and `TenantStoragePort`
-    (`crates/services/storage/src/lib.rs:171`) — but both are declared **unconditionally**, with no
-    `cfg` around them beyond `#[cfg(test)]`. The only feature gating in the entire workspace is
-    `#![cfg(feature = "pg-tests")]` on five live-database integration tests (`pg_bridge`,
-    `pg_integration`, `pg_modelstore`, `pg_pairs`, `pg_search`), with `pg-tests = []` declared in
-    three member `Cargo.toml`s — unrelated to port traits. No tenant-scoped port is behind a
-    feature flag.
+- [x] Implement tenant-scoped port traits in each crate (parallel, behind feature flags)
+  - **proved — the feature-flag gap is closed, and the flag is real rather than decorative.**
+    Only two crates *define* tenant-scoped ports — `keel-caching` and `keel-storage` (the note's
+    `cache/src/lib.rs:63` / `storage/src/lib.rs:171`; `keel-tenancy` merely consumes them), so
+    those are the two gated. Each `Cargo.toml` now declares
+    `[features] default = ["tenant-ports"]` + `tenant-ports = []`, and the entire tenant layer is
+    wrapped in `#[cfg(feature = "tenant-ports")]` — the trait, its `…Shard` adapter (struct +
+    inherent impl + trait impl), the `MapStore` test substrate, and the tenant tests
+    (4 in cache, 5 in storage). Storage's `TenantId` import is gated too, since nothing outside
+    the tenant section uses it (cache's is left alone: `TenantId` is still used by the authz key
+    fingerprint at `cache/src/lib.rs:190`).
+  - **`keel-tenancy` requests the feature explicitly, not by inheritance:**
+    `keel-caching = { workspace = true, features = ["tenant-ports"] }` (and storage likewise).
+    The scoped extensions *are* the tenant ports, so relying on someone else's `default = [...]`
+    would let a `--no-default-features` rebuild silently delete §3.2. Verified by feature graph:
+    `cargo tree -p keel-tenancy -e features` → `keel-caching feature "tenant-ports"` +
+    `keel-storage feature "tenant-ports"`, and `cargo check -p keel-tenancy --no-default-features`
+    exits 0.
+  - **Why it is not an inert flag — the OFF state is executable, not asserted.**
+    `cargo check -p keel-caching|keel-storage --no-default-features --tests` → exit 0 with
+    **zero errors and zero warnings**. `cargo test --no-default-features` runs **17 → 13** tests
+    for `keel-caching` and **11 → 6** for `keel-storage`: exactly the 9 gated tenant tests
+    disappear while every non-tenant test (locks, authz key, writer/session, registry,
+    `validate_dir_prefix`, `default_get_capped`) survives. The intermediate state is
+    self-evidencing too — before the test-level `cfg`s were added, the OFF build failed with
+    `E0433: use of undeclared type TenantCacheShard`, proving the attribute reaches real code
+    rather than decorating it.
+  - **Default stays ON, so nothing changes in any normal build:** `keel-platform`
+    **141 suites / 1244 passed / 0 failed** — identical to the pre-change baseline — plus
+    `cargo run -p xtask -- dep-rules` exit 0. The note's other observation is untouched: the
+    `#![cfg(feature = "pg-tests")]` gating on the five live-database integration tests was and
+    remains unrelated to port traits.
 - [x] Add `JobMigrator` trait + `IdempotencyKey` to `keel-jobs`/`keel-events`
   - **proved.** `pub trait JobMigrator` at `crates/async/jobs/src/lib.rs:375` (= `keel-jobs`) with a
     migrator registry (`:203`), `register_migrator` (`:321`) and two impls (`LocaleMigrator:2999`,

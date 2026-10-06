@@ -13,5 +13,15 @@ description = "Keel framework: storage port (documents, images, exports)."
 keel-foundation = { workspace = true }
 serde = { workspace = true }
 
+[features]
+# §3.1 tenant-scoped port (`TenantStoragePort` + the `TenantStorageShard`
+# namespace-rewriting adapter). ON by default: §3.2's `TenantScopedStorage`
+# extension in keel-tenancy cannot exist without it, so `keel-tenancy` also
+# requests this feature explicitly rather than relying on the default.
+# `--no-default-features` compiles a physical-port-only build (`StoragePort`
+# alone) for deployments with no tenants at all.
+default = ["tenant-ports"]
+tenant-ports = []
+
 [package.metadata.docs.rs]
 all-features = true
