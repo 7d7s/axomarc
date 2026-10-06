@@ -1,0 +1,34 @@
+[package]
+name = "keel-http"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Keel framework: MVVM presentation adapter — axum, envelope, problem+json, view models."
+
+[dependencies]
+keel-foundation = { workspace = true }
+keel-context = { workspace = true }
+keel-command = { workspace = true }
+keel-registry = { workspace = true }
+keel-session = { workspace = true }
+keel-storage = { workspace = true }
+keel-tokens = { workspace = true }
+axum = { workspace = true }
+tower-http = { workspace = true }
+rand = { workspace = true }
+sha2 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tower = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

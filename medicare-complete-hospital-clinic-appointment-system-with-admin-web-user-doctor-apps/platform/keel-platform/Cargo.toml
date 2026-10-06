@@ -1,0 +1,191 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/foundation/core",
+  "crates/foundation/context",
+  "crates/foundation/contracts",
+  "crates/foundation/lifecycle",
+  "crates/foundation/validation",
+  "crates/execution/engine",
+  "crates/execution/command",
+  "crates/execution/query",
+  "crates/execution/transaction",
+  "crates/application/registry",
+  "crates/application/configuration",
+  "crates/web/http",
+  "crates/web/views",
+  "crates/security/identity",
+  "crates/security/scopes",
+  "crates/security/ownership",
+  "crates/security/policies",
+  "crates/security/elevation",
+  "crates/security/tokens",
+  "crates/security/sessions",
+  "crates/security/integrity",
+  "crates/data/postgres",
+  "crates/data/mysql",
+  "crates/data/models",
+  "crates/async/events",
+  "crates/async/jobs",
+  "crates/async/workflows",
+  "crates/async/scheduler",
+  "crates/services/cache",
+  "crates/services/storage",
+  "crates/services/notifications",
+  "crates/services/http-client",
+  "crates/services/realtime",
+  "crates/services/search",
+  "crates/ai/client",
+  "crates/ai/tools",
+  "crates/ai/agents",
+  "crates/ai/mcp",
+  "crates/observability/logging",
+  "crates/observability/telemetry",
+  "crates/observability/tracing",
+  "crates/observability/metrics",
+  "crates/observability/audit",
+  "crates/observability/pipeline",
+  "crates/observability/buffer",
+  "crates/observability/export",
+  "crates/enterprise/tenancy",
+  "crates/enterprise/feature-flags",
+  "crates/enterprise/deployment",
+  "crates/extension/wasm",
+  "adapters/keel-cache-memory",
+  "adapters/keel-cache-redis",
+  "adapters/keel-session-redis",
+  "adapters/keel-session-postgres",
+  "adapters/keel-sms-msg91",
+  "adapters/keel-mail-smtp",
+  "adapters/keel-storage-s3",
+  "adapters/keel-storage-local",
+  "adapters/keel-push-fcm",
+  "adapters/keel-webhooks",
+  "adapters/keel-search-pgvector",
+  "tools/keel-console",
+  "tools/keel-analyzer",
+  "tools/keel-codegen",
+  "xtask",
+  "tests/architecture",
+  "testing/testkit",
+  "examples/minimal",
+  "examples/reference",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/7d7s/axomarc"
+readme = "README.md"
+keywords = ["keel", "framework"]
+
+[workspace.dependencies]
+# --- internal (FOUNDATION) ---
+keel-foundation = { version = "0.1.0", path = "crates/foundation/core" }
+keel-context = { version = "0.1.0", path = "crates/foundation/context" }
+keel-contracts = { version = "0.1.0", path = "crates/foundation/contracts" }
+keel-lifecycle = { version = "0.1.0", path = "crates/foundation/lifecycle" }
+keel-validation = { version = "0.1.0", path = "crates/foundation/validation" }
+# --- internal (EXECUTION) ---
+keel-execution = { version = "0.1.0", path = "crates/execution/engine" }
+keel-command = { version = "0.1.0", path = "crates/execution/command" }
+keel-query = { version = "0.1.0", path = "crates/execution/query" }
+keel-transaction = { version = "0.1.0", path = "crates/execution/transaction" }
+# --- internal (APPLICATION) ---
+keel-registry = { version = "0.1.0", path = "crates/application/registry" }
+keel-config = { version = "0.1.0", path = "crates/application/configuration" }
+# --- internal (WEB) ---
+keel-http = { version = "0.1.0", path = "crates/web/http" }
+keel-views = { version = "0.1.0", path = "crates/web/views" }
+# --- internal (SECURITY) ---
+keel-identity = { version = "0.1.0", path = "crates/security/identity" }
+keel-scope = { version = "0.1.0", path = "crates/security/scopes" }
+keel-ownership = { version = "0.1.0", path = "crates/security/ownership" }
+keel-policy = { version = "0.1.0", path = "crates/security/policies" }
+keel-elevation = { version = "0.1.0", path = "crates/security/elevation" }
+keel-tokens = { version = "0.1.0", path = "crates/security/tokens" }
+keel-session = { version = "0.1.0", path = "crates/security/sessions" }
+keel-integrity = { version = "0.1.0", path = "crates/security/integrity" }
+# --- internal (DATA) ---
+keel-postgres = { version = "0.1.0", path = "crates/data/postgres" }
+keel-mysql = { version = "0.1.0", path = "crates/data/mysql" }
+keel-models = { version = "0.1.0", path = "crates/data/models" }
+# --- internal (ASYNC) ---
+keel-event = { version = "0.1.0", path = "crates/async/events" }
+keel-jobs = { version = "0.1.0", path = "crates/async/jobs" }
+keel-workflow = { version = "0.1.0", path = "crates/async/workflows" }
+keel-scheduling = { version = "0.1.0", path = "crates/async/scheduler" }
+# --- internal (SERVICES) ---
+keel-caching = { version = "0.1.0", path = "crates/services/cache" }
+keel-storage = { version = "0.1.0", path = "crates/services/storage" }
+keel-notifications = { version = "0.1.0", path = "crates/services/notifications" }
+keel-http-client = { version = "0.1.0", path = "crates/services/http-client" }
+keel-search = { version = "0.1.0", path = "crates/services/search" }
+keel-ai = { version = "0.1.0", path = "crates/ai/client" }
+keel-ai-tools = { version = "0.1.0", path = "crates/ai/tools" }
+keel-ai-agents = { version = "0.1.0", path = "crates/ai/agents" }
+keel-ai-mcp = { version = "0.1.0", path = "crates/ai/mcp" }
+keel-realtime = { version = "0.1.0", path = "crates/services/realtime" }
+# --- internal (ENTERPRISE) ---
+keel-tenancy = { version = "0.1.0", path = "crates/enterprise/tenancy" }
+keel-feature-flags = { version = "0.1.0", path = "crates/enterprise/feature-flags" }
+keel-deployment = { version = "0.1.0", path = "crates/enterprise/deployment" }
+# --- internal (EXTENSION) ---
+keel-wasm = { path = "crates/extension/wasm" }
+# --- internal (OBSERVABILITY) ---
+keel-observability = { version = "0.1.0", path = "crates/observability/logging" }
+keel-telemetry = { version = "0.1.0", path = "crates/observability/telemetry" }
+keel-tracing = { version = "0.1.0", path = "crates/observability/tracing" }
+keel-metrics = { version = "0.1.0", path = "crates/observability/metrics" }
+keel-audit = { version = "0.1.0", path = "crates/observability/audit" }
+keel-pipeline = { version = "0.1.0", path = "crates/observability/pipeline" }
+keel-buffer = { version = "0.1.0", path = "crates/observability/buffer" }
+keel-export = { version = "0.1.0", path = "crates/observability/export" }
+# --- internal (TESTING) ---
+keel-testkit = { version = "0.1.0", path = "testing/testkit" }
+# --- internal (TOOLS) ---
+keel-analyzer = { version = "0.1.0", path = "tools/keel-analyzer" }
+keel-codegen = { version = "0.1.0", path = "tools/keel-codegen" }
+# --- adapters (only runtime wires these) ---
+keel-cache-memory = { version = "0.1.0", path = "adapters/keel-cache-memory" }
+keel-cache-redis = { version = "0.1.0", path = "adapters/keel-cache-redis" }
+keel-session-redis = { version = "0.1.0", path = "adapters/keel-session-redis" }
+keel-session-postgres = { version = "0.1.0", path = "adapters/keel-session-postgres" }
+keel-sms-msg91 = { version = "0.1.0", path = "adapters/keel-sms-msg91" }
+keel-mail-smtp = { version = "0.1.0", path = "adapters/keel-mail-smtp" }
+keel-storage-s3 = { version = "0.1.0", path = "adapters/keel-storage-s3" }
+keel-storage-local = { version = "0.1.0", path = "adapters/keel-storage-local" }
+keel-push-fcm = { version = "0.1.0", path = "adapters/keel-push-fcm" }
+keel-webhooks = { version = "0.1.0", path = "adapters/keel-webhooks" }
+keel-search-pgvector = { version = "0.1.0", path = "adapters/keel-search-pgvector" }
+# --- external (budget: policy v2 D-62, cap 25; see DEPENDENCY-POLICY.md) ---
+axum = { version = "=0.8.6", features = ["ws", "multipart"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
+tower = "0.5"
+tower-http = { version = "0.7", features = ["trace", "cors"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "mysql", "uuid", "time", "json", "macros", "migrate"] }
+uuid = { version = "1", features = ["v4", "v5", "v7", "serde"] }
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+moka = { version = "0.12", features = ["future", "sync"] }
+clap = { version = "4", features = ["derive"] }
+toml = "0.8"
+argon2 = "0.5"
+anyhow = "1"
+rand = "0.8"
+sha2 = "0.10"
+aes-gcm = "0.10"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "rustls-tls"] }
+redis = { version = "0.27", default-features = false, features = ["script"] }
+wasmtime = { version = "34", default-features = false, features = ["cranelift", "runtime", "wat", "std"] }
+
+[profile.dev]
+debug = 1

@@ -40,6 +40,7 @@ pub use tx::PostgresBackend;
 pub use txport::{PgTxHandle, PostgresTransactions};
 
 use keel_foundation::AppError;
+use sqlx::Acquire;
 use uuid::Uuid;
 
 pub async fn create_pool(url: &str, max_connections: u32) -> Result<PgPool, AppError> {
@@ -178,4 +179,151 @@ pub async fn seed_tenant(pool: &PgPool, id: Uuid, slug: &str, name: &str) -> Res
     .await
     .map_err(|e| AppError::persistence(format!("seed tenant: {e}")))?;
     Ok(())
+}
+
+/// Tenant-guarded pool: wraps both pools and ensures session state is reset
+/// on connection release (SEC-002, no GUC leakage). Pooled connections
+/// guarded by tenant context (RLS enforcement).
+///
+/// Two pools: tenant (`keel_tenant` role, RLS enforced) and platform
+/// (`keel_platform` role, break-glass, NO RLS policies applied).
+pub struct TenantGuardedPool {
+    tenant_pool: PgPool,      // connects as keel_tenant (RLS enforced)
+    platform_pool: PgPool,    // connects as keel_platform (break-glass, NO RLS)
+}
+
+/// Boxed async task bound to a borrowed transaction: the callback passed to
+/// [`TenantGuardedPool::with_tenant`] / [`TenantGuardedPool::platform`] returns
+/// this so queries can `.await` inside while the transaction is alive.
+pub type TxnTask<'a, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, AppError>> + Send + 'a>>;
+
+impl TenantGuardedPool {
+    /// Create both pools from config. `tenant_url` uses `keel_tenant` role,
+    /// `platform_url` uses `keel_platform` role (separate connection strings).
+    pub async fn new(
+        tenant_url: &str,
+        platform_url: &str,
+        max_connections: u32,
+    ) -> Result<Self, AppError> {
+        let tenant_pool = create_pool(tenant_url, max_connections).await?;
+        let platform_pool = create_pool(platform_url, max_connections).await?;
+        Ok(Self {
+            tenant_pool,
+            platform_pool,
+        })
+    }
+
+    /// Execute an async closure within a tenant transaction.
+    /// ALWAYS sets `keel.tenant_id` GUC, verifies it on commit, and
+    /// resets session state on release via `DISCARD ALL`.
+    ///
+    /// Callers write `|tx| Box::pin(async move { ... })` — the future
+    /// borrows the transaction for its whole execution:
+    ///
+    /// ```ignore
+    /// pool.with_tenant(tenant, |tx| Box::pin(async move {
+    ///     sqlx::query("SELECT 1").fetch_all(&mut *tx).await.map_err(...)
+    /// })).await?
+    /// ```
+    pub async fn with_tenant<T, F>(&self, tenant_id: keel_foundation::TenantId, f: F) -> Result<T, AppError>
+    where
+        T: Send,
+        F: for<'a, 'b> FnOnce(
+            &'a mut sqlx::Transaction<'b, sqlx::Postgres>,
+        ) -> TxnTask<'a, T>
+            + Send,
+    {
+        let mut conn = self
+            .tenant_pool
+            .acquire()
+            .await
+            .map_err(|e| AppError::persistence(format!("acquire: {e}")))?;
+
+        // Set session-scoped GUC (not LOCAL — persists across transaction)
+        sqlx::query("SELECT set_config('keel.tenant_id', $1, false)")
+            .bind(tenant_id.to_string())
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| AppError::persistence(format!("set tenant guc: {e}")))?;
+
+        let mut tx = conn
+            .begin()
+            .await
+            .map_err(|e| AppError::persistence(format!("begin: {e}")))?;
+
+        let result = f(&mut tx).await?;
+
+        // Verify GUC still set before commit (catches handler bugs that RESET it)
+        let guc: Option<String> = sqlx::query_scalar("SHOW keel.tenant_id")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| AppError::persistence(format!("verify guc: {e}")))?;
+        if guc != Some(tenant_id.to_string()) {
+            return Err(AppError::persistence(
+                "tenant GUC mismatch: handler must not RESET keel.tenant_id",
+            ));
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| AppError::persistence(format!("commit: {e}")))?;
+
+        // DISCARD ALL on release: resets GUC, advisory locks, prepared statements, etc.
+        sqlx::query("DISCARD ALL")
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| AppError::persistence(format!("discard all: {e}")))?;
+
+        Ok(result)
+    }
+
+    /// Execute an async closure within a platform (break-glass) transaction.
+    /// NEVER sets `keel.tenant_id` — uses separate pool with `keel_platform` role.
+    /// RLS policies do NOT apply to this role. Same call shape as
+    /// [`with_tenant`](Self::with_tenant): `|tx| Box::pin(async move { ... })`.
+    pub async fn platform<T, F>(&self, f: F) -> Result<T, AppError>
+    where
+        T: Send,
+        F: for<'a, 'b> FnOnce(
+            &'a mut sqlx::Transaction<'b, sqlx::Postgres>,
+        ) -> TxnTask<'a, T>
+            + Send,
+    {
+        let mut conn = self
+            .platform_pool
+            .acquire()
+            .await
+            .map_err(|e| AppError::persistence(format!("platform acquire: {e}")))?;
+
+        let mut tx = conn
+            .begin()
+            .await
+            .map_err(|e| AppError::persistence(format!("platform begin: {e}")))?;
+
+        let result = f(&mut tx).await?;
+
+        tx.commit()
+            .await
+            .map_err(|e| AppError::persistence(format!("platform commit: {e}")))?;
+
+        // DISCARD ALL for hygiene (no GUC was set, but cleans advisory locks etc.)
+        sqlx::query("DISCARD ALL")
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| AppError::persistence(format!("platform discard all: {e}")))?;
+
+        Ok(result)
+    }
+
+    /// Get reference to tenant pool for read-only operations that don't need transactions.
+    /// Caller MUST manually set/verify GUC if used outside `with_tenant`.
+    pub fn tenant_pool(&self) -> &PgPool {
+        &self.tenant_pool
+    }
+
+    /// Get reference to platform pool for break-glass operations.
+    pub fn platform_pool(&self) -> &PgPool {
+        &self.platform_pool
+    }
 }

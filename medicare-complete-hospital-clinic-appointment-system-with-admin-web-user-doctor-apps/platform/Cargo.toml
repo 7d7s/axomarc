@@ -60,6 +60,8 @@ members = [
   "adapters/keel-push-fcm",
   "adapters/keel-webhooks",
   "adapters/keel-search-pgvector",
+  "adapters/keel-session-redis",
+  "adapters/keel-session-postgres",
   "runtime/keel-api",
   "runtime/keel-worker",
   "tools/keel-console",
@@ -160,6 +162,8 @@ keel-storage-local = { version = "0.1.0", path = "adapters/keel-storage-local" }
 keel-push-fcm = { version = "0.1.0", path = "adapters/keel-push-fcm" }
 keel-webhooks = { version = "0.1.0", path = "adapters/keel-webhooks" }
 keel-search-pgvector = { version = "0.1.0", path = "adapters/keel-search-pgvector" }
+keel-session-redis = { version = "0.1.0", path = "adapters/keel-session-redis" }
+keel-session-postgres = { version = "0.1.0", path = "adapters/keel-session-postgres" }
 keel-mod-appointments = { path = "applications/appointments" }
 keel-mod-oauth2 = { path = "applications/oauth2" }
 # --- external (budget: policy v2 D-62, cap 25; see DEPENDENCY-POLICY.md) ---

@@ -1,0 +1,31 @@
+[package]
+name = "keel-observability"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Keel framework: Sentinel (S5) telemetry runtime — event bus, DAG, policy, WAL, exporters, incidents — plus the S1 logging API (LogConfig, redaction, ChainSink)."
+
+[dependencies]
+keel-foundation = { workspace = true }
+keel-telemetry = { workspace = true }
+keel-pipeline = { workspace = true }
+keel-buffer = { workspace = true }
+keel-export = { workspace = true }
+keel-tracing = { workspace = true }
+keel-metrics = { workspace = true }
+keel-lifecycle = { workspace = true }
+moka = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+toml = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

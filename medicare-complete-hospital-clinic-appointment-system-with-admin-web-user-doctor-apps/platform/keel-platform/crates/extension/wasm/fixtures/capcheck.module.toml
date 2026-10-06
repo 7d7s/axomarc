@@ -1,0 +1,5 @@
+[module]
+name = "capcheck"
+
+[capabilities.probe]
+profile = "READ"

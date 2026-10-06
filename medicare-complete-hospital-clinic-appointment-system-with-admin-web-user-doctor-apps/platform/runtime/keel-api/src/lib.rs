@@ -1134,10 +1134,11 @@ pub fn password_policy_from(
 /// in, the web layer's `CsrfGuard` out — the same conversion pattern as
 /// `security_headers_from`. The guard itself is ALWAYS attached to
 /// web-plane routes (default-on, no flag or env); this resolves only its
-/// skip paths, so a deployment names receivers in config alone.
+/// skip paths and the Secure cookie flag, so a deployment names receivers in config alone.
 pub fn csrf_guard_from(section: &keel_config::SecuritySection) -> keel_http::CsrfGuard {
     keel_http::CsrfGuard {
         bypass_paths: section.csrf.skip_paths.clone(),
+        secure_cookie: section.csrf.secure_cookie,
     }
 }
 

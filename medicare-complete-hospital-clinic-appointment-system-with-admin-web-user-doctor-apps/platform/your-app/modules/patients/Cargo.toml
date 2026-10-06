@@ -1,0 +1,18 @@
+[package]
+name = "mod-patients"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Kernel facade ONLY — application modules depend on the re-exported
+# surface, never on keel-platform internals directly.
+keel-kernel = { workspace = true }
+
+# Wire + storage externals
+axum = { workspace = true }
+serde = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+time = { workspace = true }

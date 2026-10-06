@@ -1,0 +1,22 @@
+[package]
+name = "keel-context"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Keel TCB: immutable ExecutionContext, snapshots, builder."
+
+[dependencies]
+keel-foundation = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+time = { workspace = true }
+
+[dev-dependencies]
+
+[package.metadata.docs.rs]
+all-features = true

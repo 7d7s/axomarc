@@ -53,6 +53,16 @@ singles-before-pairs run order are documented in `database/migrations-pairs/READ
 pg-gated round trip (`pair_migrations_apply_rollback_and_reset_with_batches` in
 `crates/data/postgres/tests/pg_pairs.rs`) writes its own pair fixtures.
 
+**Promotion watermark (Phase 4, §7.1).** A promotion target's `db_version` is a **batch**
+watermark, not a migration count: it is read back from `pairs::applied`, which reports the batch
+each pair landed in. Rollback therefore asks `pairs::rollback` for the number of distinct batches
+*strictly above* the target, derived from `applied` rather than assuming batches are contiguous
+from 1 — two runs sharing a batch number count once. `db_version: None` skips the database
+dimension entirely, which is how a release with no schema change promotes without touching DDL
+(proven by `release_without_schema_change_skips_the_database` in `keel-deployment`). The
+deployment-side semantics and the four-stage pipeline are in `14-DEPLOYMENT.md` §Promotion
+pipeline.
+
 **Notifications inbox (Wave 6 P5).** `20261001000001_notifications.sql` creates the `notifications`
 table (`id uuid PK, principal_id FK → principals, tenant_id FK → tenants NULL, type, data jsonb,
 read_at timestamptz NULL, created_at timestamptz`) with `principal_id + created_at DESC` for the

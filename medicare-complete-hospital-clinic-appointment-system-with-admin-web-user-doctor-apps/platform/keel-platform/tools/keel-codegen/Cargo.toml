@@ -1,0 +1,18 @@
+[package]
+name = "keel-codegen"
+description = "Keel codegen: module scaffolding templates (keel make:module, 11-SPEC §8 module tree)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+
+[dependencies]
+keel-registry = { workspace = true }
+keel-validation = { workspace = true }
+serde_json = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

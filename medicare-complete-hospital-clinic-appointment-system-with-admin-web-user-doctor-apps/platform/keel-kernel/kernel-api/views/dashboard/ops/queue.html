@@ -1,0 +1,12 @@
+<section>
+  <h2>Queue depth</h2>
+  @if(sections.queue.ok)
+    <span class="stat">pending <b>{{ sections.queue.pending }}</b></span>
+    <span class="stat">running <b>{{ sections.queue.running }}</b></span>
+    <span class="stat">dead <b>{{ sections.queue.dead }}</b></span>
+    <span class="stat">succeeded <b>{{ sections.queue.succeeded }}</b></span>
+    <span class="stat">oldest pending <b>{{ sections.queue.oldest_pending_age_secs | default("n/a") }}</b></span>
+  @else
+    <span class="note">{{ sections.queue.note }}</span>
+  @endif
+</section>

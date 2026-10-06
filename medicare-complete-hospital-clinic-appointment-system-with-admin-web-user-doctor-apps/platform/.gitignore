@@ -6,3 +6,7 @@ docker-data/
 # `crates/services/storage` crate stays under version control.
 /storage/
 *.log
+# Nested workspace build dirs (keel-platform/, keel-kernel/, your-app/):
+# unanchored so each workspace's target/ is ignored — the anchored /target
+# above only covers platform/target itself.
+target/

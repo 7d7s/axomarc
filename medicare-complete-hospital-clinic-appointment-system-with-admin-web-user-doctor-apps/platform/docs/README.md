@@ -17,8 +17,8 @@ Normative specs live in `specs/` (platform) and `docs/rust/` (repo root).
 | [10-AI](10-AI.md) | AiClient port, tools, agents, MCP |
 | [11-TESTING](11-TESTING.md) | TestKit, fakes, assertions, time control, golden path |
 | [12-CLI](12-CLI.md) | full `keel` command reference |
-| [13-OPERATIONS](13-OPERATIONS.md) | runbooks: diagnostics, queues, telemetry/incident (S5), benchmarks, upgrades |
-| [14-DEPLOYMENT](14-DEPLOYMENT.md) | binaries, build, config layering, rollout discipline |
+| [13-OPERATIONS](13-OPERATIONS.md) | runbooks: diagnostics, queues, telemetry/incident (S5), benchmarks, upgrades — plus config reload/rollback, promotion failure, tenant-isolation incident, forward-only migration rollback, performance baseline |
+| [14-DEPLOYMENT](14-DEPLOYMENT.md) | binaries, build, config layering, rollout discipline, promotion pipeline (four stages, checkpoint + auto-rollback) |
 | [15-EXTENSION](15-EXTENSION.md) | ports/adapters, providers, modules, plugin roadmap, API governance |
 | [16-MIGRATION-FROM-LARAVEL](16-MIGRATION-FROM-LARAVEL.md) | vocabulary map + per-concept strategy |
 | [17-REFERENCE](17-REFERENCE.md) | crate map, profiles, codes, decisions, glossary |

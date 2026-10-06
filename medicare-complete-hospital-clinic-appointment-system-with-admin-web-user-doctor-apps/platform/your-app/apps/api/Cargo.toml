@@ -1,0 +1,19 @@
+[package]
+name = "my-app-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Kernel facade — the app-facing surface of the platform.
+keel-kernel = { workspace = true }
+
+# This application's modules (compile-time until ModuleLoader::discover lands)
+mod-patients = { path = "../../modules/patients" }
+
+# External
+axum = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }

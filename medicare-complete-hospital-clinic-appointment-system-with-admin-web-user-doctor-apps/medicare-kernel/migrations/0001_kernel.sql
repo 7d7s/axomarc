@@ -4,6 +4,9 @@
 -- idempotent role creation (CI containers lack the init script roles)
 DO $$
 BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'medicare_owner') THEN
+    CREATE ROLE medicare_owner NOLOGIN;
+  END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'medicare_app') THEN
     CREATE ROLE medicare_app LOGIN;
   END IF;
@@ -223,10 +226,11 @@ DROP POLICY IF EXISTS tenant_isolation ON users;
 CREATE POLICY tenant_isolation ON users
   USING (tenant_id = current_setting('medicare.tenant_id', true)::uuid);
 DROP POLICY IF EXISTS tenant_isolation ON memberships;
-CREATE POLICY tenant_isolation ON memberships USING (true); -- joined via users in queries; hardened M2-04
+CREATE POLICY tenant_isolation ON memberships
+  USING (tenant_id = current_setting('medicare.tenant_id', true)::uuid);
 DROP POLICY IF EXISTS tenant_isolation ON roles;
 CREATE POLICY tenant_isolation ON roles
-  USING (tenant_id IS NULL OR tenant_id = current_setting('medicare.tenant_id', true)::uuid);
+  USING (tenant_id = current_setting('medicare.tenant_id', true)::uuid);
 DROP POLICY IF EXISTS tenant_isolation ON grants;
 CREATE POLICY tenant_isolation ON grants
   USING (tenant_id = current_setting('medicare.tenant_id', true)::uuid);
@@ -235,7 +239,7 @@ CREATE POLICY tenant_isolation ON idempotency_keys
   USING (tenant_id = current_setting('medicare.tenant_id', true)::uuid);
 DROP POLICY IF EXISTS tenant_isolation ON feature_flags;
 CREATE POLICY tenant_isolation ON feature_flags
-  USING (tenant_id IS NULL OR tenant_id = current_setting('medicare.tenant_id', true)::uuid);
+  USING (tenant_id = current_setting('medicare.tenant_id', true)::uuid);
 DROP POLICY IF EXISTS tenant_isolation ON deltas;
 CREATE POLICY tenant_isolation ON deltas
   USING (tenant_id = current_setting('medicare.tenant_id', true)::uuid);
@@ -244,10 +248,13 @@ CREATE POLICY tenant_isolation ON tenants
   USING (id = current_setting('medicare.tenant_id', true)::uuid);
 
 -- ---------- grants to the two plane roles ----------
+-- Platform runtime uses DEFAULT PRIVILEGES (like keel framework) — no explicit GRANT ALL.
+-- This prevents RLS bypass: medicare_platform has no table grants unless owner grants them.
 GRANT USAGE ON SCHEMA public TO medicare_app, medicare_platform;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO medicare_app;
-GRANT ALL ON ALL TABLES IN SCHEMA public TO medicare_platform;
-GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO medicare_app, medicare_platform;
+-- medicare_platform: NO explicit table grants. Break-glass access uses SECURITY DEFINER functions.
+ALTER DEFAULT PRIVILEGES FOR ROLE medicare_owner GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO medicare_platform;
+ALTER DEFAULT PRIVILEGES FOR ROLE medicare_owner GRANT USAGE, SELECT ON SEQUENCES TO medicare_app, medicare_platform;
 
 -- platform-only tables denied to the app role (belt & braces pre-schema split)
 REVOKE SELECT, INSERT, UPDATE, DELETE ON platform_grants, tenant_limits FROM medicare_app;

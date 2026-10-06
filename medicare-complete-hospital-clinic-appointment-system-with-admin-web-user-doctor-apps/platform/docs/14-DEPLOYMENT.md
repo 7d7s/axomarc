@@ -59,3 +59,57 @@ Full probe/shutdown semantics and the deployment-cache rationale live in `13-OPE
 - Releases carry the API surface delta (`keel upgrade`, G14 semver gate) so breaking changes are
   visible before they ship.
 - Maintenance mode (`keel down --retry 60`) drains cleanly with a Retry-After for clients.
+
+## Promotion pipeline (Phase 4, §7)
+
+`keel promote` drives a release through four stages and auto-rolls-back on a failed health gate
+(KEEL-004). The dimension ports live in `keel-deployment` (Enterprise class, which may reach
+neither `Data` nor `Extension`); `keel-console` is the Tools-class composition root that supplies
+the concrete adapters.
+
+| Stage | Gate | Mutates |
+|---|---|---|
+| 1. deploy | `post-deploy` | module pins |
+| 2. migrate | `post-migrate` | pair-migration batches |
+| 3. activate | `post-traffic` | config |
+| 4. canary | `canary` | — (final gate before success) |
+
+**Order guarantees.** The two read-only guards (jobs, events) are hoisted **before any mutation**
+so an incompatible target fails closed with *nothing* half-applied; the three mutating dimensions
+keep the doc order config → migrations → modules. This is a deliberate, documented deviation from
+§7.1's literal line order — §7.1 lists dimensions 1..5 as config, migrations, modules, jobs,
+events, and hoisting the read-only two is the only way to get a fail-closed refusal rather than a
+post-mutation one.
+
+**Checkpoint then restore.** A checkpoint of all four targeted dimensions is captured first; any
+failed gate restores it and the error carries the failing stage, the restored config version and
+the batches unwound.
+
+**Fail-closed wiring.** `PromotionPipeline::new` refuses to build a pipeline missing, or carrying
+a duplicate or unknown, stage probe — validated at wiring time rather than mid-promotion, when
+some dimensions would already have moved. A probe returning `Ok(false)` **or** `Err(_)` both count
+as unhealthy: a health check that cannot answer is not evidence of health.
+
+**Target semantics (`PromotionTarget`).**
+
+- `config_version: 0` is a sentinel meaning *source-driven config* — stage 3 reads from the
+  configured source rather than activating a held revision. A non-zero value activates that exact
+  held revision, which is what makes rollback a version swap rather than a re-read.
+- `db_version: Option<u32>` is the **pair-migration batch watermark** taken from `keel_migrations`
+  via `pairs::applied`; `None` skips the database dimension entirely (see `05-DATABASE.md`).
+- `module_versions` are applied to a separate artifact, `storage/framework/module-pins.json` —
+  **not** a rewrite of the package index.
+- `job_schema_versions` are checked against the job registry *and* the queue's in-flight rows; a
+  job unlisted in the target is treated as `v1` (fail closed).
+
+**Known limits (Phase 5 recorded, not fixed).**
+
+- The config dimension of `keel rollback` is **process-local**: it swaps the running revision and
+  the subscribers' route/flag views, and never rewrites the source file. Another process reading
+  the file sees the old value — see `13-OPERATIONS.md` §Config reload and rollback.
+- `storage/framework/module-pins.json` has no runtime host reader yet; the pin state is written
+  and reported by the CLI but not yet consulted at boot.
+- The CLI's `JobRegistry` is empty (it does not link application handlers, same posture as
+  `keel call`), so `supported_versions` falls back to the queue's in-flight maximum.
+- No live-DB integration test covers promotion or rollback (same posture as `migrate:rollback`);
+  the measurement procedure is in `13-OPERATIONS.md` §Performance baseline.

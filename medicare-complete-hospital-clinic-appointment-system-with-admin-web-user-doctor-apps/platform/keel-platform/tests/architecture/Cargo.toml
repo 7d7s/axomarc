@@ -1,0 +1,19 @@
+[package]
+name = "keel-arch-validation"
+# Internal-only crate: not published to crates.io.
+publish = false
+description = "Keel architecture validation: CI-enforced gate asserting zero dependency-matrix violations"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+
+[dev-dependencies]
+keel-analyzer = { workspace = true }
+keel-registry = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

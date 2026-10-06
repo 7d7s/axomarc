@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>__PROJECT_NAME__ — SPA starter</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; }
+    section { margin-bottom: 2rem; padding: 1rem; border: 1px solid #ddd; border-radius: 8px; }
+    input { display: block; margin: .5rem 0; padding: .4rem; width: 100%; box-sizing: border-box; }
+    button { padding: .5rem 1rem; }
+    pre { background: #f6f8fa; padding: .75rem; border-radius: 6px; overflow-x: auto; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>__PROJECT_NAME__</h1>
+
+  <section id="auth">
+    <h2>Sign in</h2>
+    <input id="email" type="email" placeholder="email" />
+    <input id="password" type="password" placeholder="password" />
+    <button id="login">Log in</button>
+    <button id="register">Register</button>
+    <button id="logout" class="hidden">Log out</button>
+  </section>
+
+  <section id="app" class="hidden">
+    <h2>Notes</h2>
+    <input id="body" placeholder="note body" />
+    <button id="create">Create note</button>
+    <pre id="out"></pre>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>

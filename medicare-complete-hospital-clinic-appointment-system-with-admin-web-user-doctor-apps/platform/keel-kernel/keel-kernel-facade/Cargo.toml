@@ -1,0 +1,41 @@
+[package]
+name = "keel-kernel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository = "https://github.com/7d7s/axomarc"
+readme = "README.md"
+keywords = ["keel", "kernel", "facade"]
+description = "Keel kernel facade: re-exports framework crates for kernel binaries"
+
+[dependencies]
+# Re-export framework crates (local path to keel-platform for dev; switch to registry for release)
+keel-config = { version = "0.1", path = "../../keel-platform/crates/application/configuration" }
+keel-execution = { version = "0.1", path = "../../keel-platform/crates/execution/engine" }
+keel-tenancy = { version = "0.1", path = "../../keel-platform/crates/enterprise/tenancy" }
+keel-registry = { version = "0.1", path = "../../keel-platform/crates/application/registry" }
+keel-http = { version = "0.1", path = "../../keel-platform/crates/web/http" }
+keel-jobs = { version = "0.1", path = "../../keel-platform/crates/async/jobs" }
+keel-event = { version = "0.1", path = "../../keel-platform/crates/async/events" }
+keel-wasm = { version = "0.1", path = "../../keel-platform/crates/extension/wasm" }
+keel-caching = { version = "0.1", path = "../../keel-platform/crates/services/cache" }
+keel-scheduling = { version = "0.1", path = "../../keel-platform/crates/async/scheduler" }
+keel-storage = { version = "0.1", path = "../../keel-platform/crates/services/storage" }
+keel-search = { version = "0.1", path = "../../keel-platform/crates/services/search" }
+keel-realtime = { version = "0.1", path = "../../keel-platform/crates/services/realtime" }
+keel-deployment = { version = "0.1", path = "../../keel-platform/crates/enterprise/deployment" }
+keel-postgres = { version = "0.1", path = "../../keel-platform/crates/data/postgres" }
+keel-mysql = { version = "0.1", path = "../../keel-platform/crates/data/mysql" }
+keel-feature-flags = { version = "0.1", path = "../../keel-platform/crates/enterprise/feature-flags" }
+keel-session = { version = "0.1", path = "../../keel-platform/crates/security/sessions" }
+keel-identity = { version = "0.1", path = "../../keel-platform/crates/security/identity" }
+keel-policy = { version = "0.1", path = "../../keel-platform/crates/security/policies" }
+keel-integrity = { version = "0.1", path = "../../keel-platform/crates/security/integrity" }
+keel-observability = { version = "0.1", path = "../../keel-platform/crates/observability/logging" }
+keel-telemetry = { version = "0.1", path = "../../keel-platform/crates/observability/telemetry" }
+keel-foundation = { version = "0.1", path = "../../keel-platform/crates/foundation/core" }
+keel-context = { version = "0.1", path = "../../keel-platform/crates/foundation/context" }
+
+# Lifecycle trait (for module discovery)
+keel-lifecycle = { version = "0.1", path = "../../keel-platform/crates/foundation/lifecycle" }

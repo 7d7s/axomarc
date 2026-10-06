@@ -1,0 +1,33 @@
+[package]
+name = "keel-mod-appointments"
+# Internal-only crate: not published to crates.io.
+publish = false
+description = "Clinic appointments: book, cancel, list"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+
+[dependencies]
+keel-foundation = { workspace = true }
+keel-context = { workspace = true }
+keel-execution = { workspace = true }
+keel-lifecycle = { workspace = true }
+keel-models = { workspace = true }
+keel-notifications = { workspace = true }
+keel-query = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+keel-policy = { workspace = true }
+keel-registry = { workspace = true }
+tokio = { workspace = true }
+time = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

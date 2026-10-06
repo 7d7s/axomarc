@@ -146,7 +146,11 @@ impl Class {
                 Async,
                 Data,
             ],
-            Adapters => &[Foundation, Services, Async, Adapters],
+            // Session adapters implement the security-class `SessionStore`
+            // port: an adapter necessarily depends on the crate that defines
+            // its port (direction adapter -> port owner stays acyclic; the
+            // security layer never depends on adapters).
+            Adapters => &[Foundation, Security, Services, Async, Adapters],
             // D-77 (recorded as D-73 before Sentinel renumbering): runtime hosts boot domain application modules.
             // Extension joins for Wave 9 B-30: the runtime host instantiates
             // and dispatches WASM plugin handlers.

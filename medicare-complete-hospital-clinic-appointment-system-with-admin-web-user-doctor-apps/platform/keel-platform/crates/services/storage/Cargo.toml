@@ -1,0 +1,17 @@
+[package]
+name = "keel-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Keel framework: storage port (documents, images, exports)."
+
+[dependencies]
+keel-foundation = { workspace = true }
+serde = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

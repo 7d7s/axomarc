@@ -1,0 +1,19 @@
+[package]
+name = "keel-ai-mcp"
+description = "Keel MCP surface (item 34, L49): tool manifests generated from Command/Query contracts; MCP calls enter the same ToolSpec -> operation -> Engine path, so authorization is unchanged."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+
+[dependencies]
+keel-foundation = { workspace = true }
+keel-ai-tools = { workspace = true }
+keel-registry = { workspace = true }
+serde_json = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

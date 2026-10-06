@@ -215,3 +215,258 @@ hash-pinned route artifact for deployments:
   and verified by the benchmark gate), a serialized graph snapshot would be a startup optimization
   only — never a correctness dependency — because the live compile path remains the source of
   truth.
+
+---
+
+# Runbooks
+
+> **Known doc-location gap (Phase 5, recorded not fixed).** `keel-console` builds paths from
+> `workspace_root()` (`tools/keel-console/src/main.rs:553`), which walks up to the first
+> `[workspace]` `Cargo.toml`. Run from `platform/keel-platform/`, that root is `keel-platform/`
+> itself — so the `docs/13-OPERATIONS.md` pointer emitted by `keel profile` and by the
+> `keel benchmark` report resolves to `platform/keel-platform/docs/13-OPERATIONS.md`, **which does
+> not exist**. The framework docs live here in `platform/docs/`. The Phase 2 relocation carried
+> source but not the framework docs (nor `benchmarks/baseline.json`, see §Performance baseline
+> below). Fixing it means either carrying this doc set into `keel-platform/docs/` or re-pointing
+> the CLI; carrying was declined in favour of editing these files in place, so the gap stands as a
+> known operator-facing rough edge.
+
+## Runbook: config reload and rollback
+
+**What reload does.** `ConfigRuntime` keeps an immutable, content-addressed revision
+(SHA-256 over the canonical effective config) plus a history ring of the last `HISTORY_MAX`
+revisions. A reload loads, schema-gates, hashes, compares, and — only if the hash differs — swaps
+the current revision and notifies subscribers (route cache, feature flags). Equal configs hash
+equal, so a *touched but unchanged* file does not bump the version and does not notify.
+
+Triggers: file mtime via `poll()` (a cheap probe — no work when unchanged) and `reload()` (the
+`keel config:reload` CLI path). SIGHUP and etcd/consul are explicit plug points — implement
+`ConfigSource`; no watcher dependency ships.
+
+**Pre-flight.**
+
+```powershell
+keel config:reload
+```
+
+Schema-gates the file, prints the content hash and the drift state against the pinned
+`storage/framework/config.json`, with timing. **Exits non-zero on invalid config** — so it is safe
+to wire as a gate in front of the edit reaching a running server.
+
+**Budget.** A reload swaps the revision and the subscribers' route/flag views with **no restart in
+well under 50 ms** (§10 "boot-time freeze"), asserted by
+`config_reload_swaps_routes_and_flags_under_50ms` (`crates/application/configuration/src/runtime.rs`)
+and measured as the `config-reload` phase of `keel benchmark` (≈ 2.0 ms median over 300 iterations
+in the Phase 5 baseline run).
+
+**Limitation you must plan around — rollback is process-local (§5.4).** `ConfigRuntime::rollback`
+swaps the *running* revision and the subscribers' views. It **never rewrites the source file**.
+Consequences:
+
+- The file on disk still holds the rejected value. A second process reading it sees the old config.
+- A multi-instance fleet does **not** converge by running `keel rollback` on one instance.
+- To make a rollback durable: fix the source (or restore it from version control), then let each
+  instance's poller converge on the next mtime change. The in-process rollback is for stopping the
+  bleeding on one running process while you do that.
+
+**Fail-safe posture.** A half-written or invalid file makes the reload return an error with the
+current revision **untouched** — it never partially applies.
+
+**Chaos evidence (Phase 5).** `config_reload_under_load_never_tears_or_regresses_a_revision`
+hammers `get()` from four reader threads while four writers reload a mutating file, asserting that
+every observed snapshot is content-addressed, that the revision never goes backwards, that
+subscribers are notified once per swap in ascending order, and that the last notified revision is
+the active one.
+
+> **This test found a real race.** `reload()` drew version numbers with `fetch_add` and then took
+> the write lock, so two concurrent reloads could commit in the *reverse* order — regressing the
+> active revision to an older payload (a lost update) and notifying subscribers `[.. 7, 6 ..]`,
+> i.e. installing stale routes. Fixed by a `commit` mutex serializing
+> load → compare → version bump → swap → history push → notify. Readers deliberately do not take
+> that lock, so the reader guarantee above is preserved.
+
+## Runbook: promotion failure
+
+`keel promote` checkpoints first, then runs four stages, and restores the checkpoint automatically
+if any health gate fails. Stage semantics and the target fields are in
+`14-DEPLOYMENT.md` §Promotion pipeline.
+
+**Reading the failure.** The error is a `WORKFLOW` failure carrying:
+
+| Field | Meaning |
+|---|---|
+| `stage` | which gate failed — `post-deploy`, `post-migrate`, `post-traffic`, `canary` |
+| `release` | the release id from the plan |
+| `rolled_back` | `true` = the restore completed; if absent, the restore itself failed — **stop and escalate** |
+| `config_version` | the revision now live after the restore |
+| `reverted` | pair-migration batches unwound (named by the batch they took the watermark past) |
+| `pins_written` | module pins written back |
+
+**Decide by stage.**
+
+1. **`post-deploy`** — nothing but module pins had moved. The restore pins them back. Diagnose the
+   deployment itself (artifact, module ABI), then re-run.
+2. **`post-migrate`** — the database moved. `reverted` lists the batches unwound; confirm the
+   watermark with `keel migrate:status` before doing anything else. Do **not** re-run until the
+   migration failure is understood.
+3. **`post-traffic`** — config was activated and then restored. Confirm the effective hash matches
+   the pre-promotion value (`keel config:reload`).
+4. **`canary`** — everything applied and the final gate failed. This is a *behavioral* failure, not
+   a wiring one: the system is back at the checkpoint, so investigate the canary signal itself.
+
+**Inspect without acting:**
+
+```powershell
+keel promote --dry-run        # plan + stages that would run
+keel rollback --dry-run       # the checkpoint that would be restored
+keel rollback                 # restore all five dimensions deliberately
+```
+
+**Guarantee under failure.** The read-only job and event compatibility guards run **before any
+mutation**, so an incompatible target refuses with *nothing* half-applied — you will not find a
+config rolled forward with a database left behind.
+
+**Chaos evidence (Phase 5).**
+`every_stage_fails_closed_and_restores_the_checkpoint` walks all four stages × both failure modes
+(`Ok(false)` and `Err(_)`), asserting per cell that the failing stage is named, every dimension is
+byte-identical to the start, work the failed stage had already done is actually undone, no later
+stage's probe ever ran, and the restore ran strictly after the failure with the guards first.
+
+## Runbook: tenant isolation incident
+
+**Trigger.** A tenant sees data, names, counters, jobs, schedules or objects it should not — or its
+own work silently disappears (suppressed events, stolen locks, vanished schedules).
+
+**Do first:** capture the affected tenant ids, the subsystem, and the exact operation. Then check
+whether it is *visibility* (data returned) or *suppression* (its own work not happening) — they
+point at different layers.
+
+**Per subsystem.**
+
+| Subsystem | Check | Contain by |
+|---|---|---|
+| cache | Same logical key resolving across tenants | `invalidate_prefix` with `""` under the affected tenant — wipes that tenant's namespace only (see below) |
+| queue | A job claimed, completed or failed under the wrong tenant | Re-queue from the ledger; the scoped APIs refuse foreign ids with `NOT_FOUND` |
+| events | An event suppressed as a "duplicate" it never emitted | Inspect the idempotency key: `tenant` is a first-class member of the hash, so a cross-tenant collision means the key formula regressed |
+| scheduler | A schedule not firing, or firing into the wrong tenant | Guard locks and last-fired state are `t:{tenant}:{name}`-qualified; check for a name collision (below) |
+| storage | An object reachable under the wrong tenant | Namespacing is `tenant/{id}/{key}`; verify with `list` under each tenant |
+
+**Two invariants that must hold — and the defects that broke them (Phase 5):**
+
+1. **`t:{tenant}:` must not be injectable.** It is safe only because `TenantId` is a UUID newtype
+   with **no `FromStr`** (`crates/foundation/core/src/id.rs`): UUID text carries no `:`, and every
+   UUID is exactly 36 characters, so no namespace can contain another. If anyone adds a
+   string-constructed tenant id, an empty-prefix cache wipe becomes a cross-tenant wipe. The cache
+   pentest pins this behaviorally.
+2. **Schedule uniqueness must be checked on the runtime key.** Registration deduplicates on
+   `(name, tenant)` while the runtime keys state on `scoped_name` — a platform schedule named
+   literally `t:{uuid}:{name}` would otherwise alias a tenant schedule's lock and last-fired slot.
+   *Fixed in Phase 5*: `ScheduleRegistry::register` now rejects a `scoped_name` collision.
+
+**Evidence and full method:** `keel-platform/docs/PENTEST-TENANT-ISOLATION.md` — threat model,
+the 15 pre-existing probes, the 7 adversarial tests added in Phase 5, and the composed
+cache → queue → events → scheduler escalation test.
+
+**Not covered by this runbook:** the live-database RLS probes
+(`pg_modelstore_tenant_isolation_end_to_end` and its MySQL twin) skip when `DATABASE_URL` is
+unset. Run them when a database is available:
+
+```powershell
+$env:DATABASE_URL = "postgres://user:pass@localhost:5432/keel"
+cargo test -p keel-postgres --features pg-tests
+```
+
+## Runbook: manual rollback of forward-only migrations
+
+> `CORRECTED-TARGET-ARCHITECTURE.md` §11 records "foundation migrations remain forward-only with
+> manual rollback runbook". That runbook did not exist until this section — `keel migrate:rollback`
+> **explicitly skips** forward-only single-file migrations (it applies only `NNN.up.sql` /
+> `NNN.down.sql` pairs), so there was no documented path for the case the spec assumed.
+
+**Scope.** Single-file migrations under `database/migrations/` (and their MySQL mirror under
+`database/migrations-mysql/`). Pair migrations are covered by `keel migrate:rollback` and must
+**not** be handled here.
+
+**Procedure.**
+
+1. **Confirm it is forward-only.** `keel migrate:status` — the file has no `.down.sql` sibling.
+2. **Stop writes.** `keel down --retry 60`, or place the affected service in maintenance mode.
+   Concurrent DDL against live traffic is the main way this goes wrong.
+3. **Write the inverse by hand.** Additive-first discipline applies (`COMPATIBILITY.md`):
+   dropping a column, dropping an index, or dropping a table each need an explicit, reviewed
+   statement. Preserve data you may need — a forward-only rollback that destroys data is
+   unrecoverable by design.
+4. **Take the advisory lock.** Hold `pg_advisory_lock(7259)` for the manual run, exactly as
+   `keel migrate` does, so you cannot interleave with a scheduled migrator. On MySQL use
+   `GET_LOCK('keel:migrate', …)`.
+5. **Apply, then verify.** Run the statements, then `keel migrate:status` and `keel db:show` to
+   confirm row counts and schema shape.
+6. **Record it.** Forward-only files are not tracked as reverted, so the bookkeeping table will not
+   show this. Note the file, the timestamp, the statements and the operator in the change record,
+   otherwise the next `keel migrate` may re-apply against a schema you changed underneath it.
+
+**Never** hand-edit a foundation migration file in place: migrations are ordered by filename and
+G08 enforces ordering, so editing an applied file silently desynchronizes every environment that
+already ran it.
+
+## Performance baseline (hot-reload, rollback)
+
+**Measured — hot-reload < 50 ms.** Two independent pieces of evidence:
+
+| Source | Result |
+|---|---|
+| `config_reload_swaps_routes_and_flags_under_50ms` | asserts elapsed < 50 ms on a real file edit + reload |
+| `keel benchmark` → `config-reload` phase | ≈ 2.0 ms median over 300 iterations (Phase 5 run) |
+
+`keel benchmark` also reports `config-rollback` (≈ 0.5 µs — process-local in-memory swap, §5.4).
+Neither phase is in `benchmarks/baseline.json`, so they are **reported but do not gate** until
+someone deliberately runs `keel benchmark --save-baseline` (G15 policy: a phase without a baseline
+entry is reported, not gated).
+
+**Not measurable here — deployment rollback < 30 s.** The `RollbackExecutor` figure needs a live
+database; without one the migrations dimension no-ops and the number would be meaningless, and
+with one the test would be **destructive** (a real checkpoint drives `pairs::rollback`, unwinding
+real batches). That is why it is a procedure and not an automated test — the same posture
+`migrate:rollback` has.
+
+**Procedure (use a scratch database, never production):**
+
+```powershell
+# 1. disposable database with the schema at the target state
+$env:DATABASE_URL = "postgres://user:pass@localhost:5432/keel_rollback_bench"
+keel migrate
+
+# 2. a promotion that lands somewhere we can roll back FROM
+keel promote --dry-run          # confirm plan + stages first
+keel promote                    # writes storage/framework/promotion.checkpoint.json
+
+# 3. time the restore
+Measure-Command { keel rollback }    # budget: < 30 s
+```
+
+Judge the result against 30 s and record the machine, the migration count and the batch count with
+it — the number is dominated by how many pair batches `pairs::rollback` has to unwind, so a figure
+without those is not comparable to the next run.
+
+**Finding — the G15 baseline is inert in `keel-platform`.** `benchmarks/baseline.json` exists only
+at `platform/benchmarks/`; it was never carried into the workspace during the Phase 2 relocation,
+so `keel benchmark` run from `keel-platform` reports every phase as `-` and gates nothing.
+
+For reference, the original file (captured 2026-08-22 against pre-Phase-2 code) compared against
+the current workspace in the Phase 5 run:
+
+| Phase | Baseline | Current | Delta |
+|---|---|---|---|
+| authorization | 3.0 µs | 1.1 µs | −63.3% |
+| delta-write | 46.6 µs | 24.0 µs | −48.5% |
+| serialization | 144.7 µs | 59.1 µs | −59.2% |
+| read | 10.5 µs | 8.6 µs | −18.1% |
+| routing | 0.3 µs | 0.2 µs | −33.3% |
+| memory | 307783 B | 307783 B | ±0.0% |
+| **startup** | 1363.4 µs | 1608.2 µs | **+18.0%** |
+
+Restoring that file makes `keel benchmark` **exit 1** on `startup` (+18.0% against a 10% budget).
+Six phases reading 18–63% *faster* while memory is byte-identical indicates the old baseline is not
+a fair reference for the post-relocation code, so the file was left **absent** (status quo) rather
+than restored or re-baselined. Establishing the reference for `keel-platform` is an operator
+decision: run `keel benchmark --save-baseline` there once the current numbers are accepted.

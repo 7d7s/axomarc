@@ -483,6 +483,7 @@ async fn csrf_skip_paths_carry_a_declared_receiver_through() {
     let router = router_with(|state| {
         state.csrf = keel_http::CsrfGuard {
             bypass_paths: vec!["/web/submit".into()],
+            secure_cookie: false,
         };
     });
     let reply = post(&router, "/web/submit").await;

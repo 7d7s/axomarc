@@ -1,0 +1,25 @@
+[package]
+name = "keel-realtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Keel services: realtime broadcasting hub with WebSocket + SSE transports (axum)."
+
+[dependencies]
+keel-foundation = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

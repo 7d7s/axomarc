@@ -19,6 +19,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use keel_foundation::AppError;
 use rand::RngCore;
+use serde::{Deserialize, Serialize};
 
 use crate::{Envelope, ErrorBody};
 
@@ -29,11 +30,15 @@ pub const CSRF_COOKIE: &str = "keel_csrf";
 pub const CSRF_HEADER: &str = "x-csrf-token";
 
 /// CSRF posture (Wave 7 P7): always on for the web plane; the only config
-/// is the set of paths that skip the check.
-#[derive(Debug, Clone, Default)]
+/// is the set of paths that skip the check and the Secure flag for the cookie.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CsrfGuard {
     /// Paths that skip CSRF (webhook receivers signed by provider HMAC, etc.).
     pub bypass_paths: Vec<String>,
+    /// If true, the CSRF cookie gets the `Secure` attribute (HTTPS only).
+    /// Set to true in production via config; false in dev for localhost HTTP.
+    #[serde(default)]
+    pub secure_cookie: bool,
 }
 
 impl CsrfGuard {
@@ -107,7 +112,7 @@ pub(crate) async fn csrf_fn(
         // echo the header, and the double-submit roundtrip starts on the
         // GET that renders the form.
         let mut res = next.run(req).await;
-        ensure_cookie(&mut res);
+        ensure_cookie(&mut res, guard.secure_cookie);
         return res;
     }
     if guard.bypass_paths.iter().any(|p| req.uri().path() == p) {
@@ -132,18 +137,19 @@ pub(crate) async fn csrf_fn(
         return (StatusCode::FORBIDDEN, Json(body)).into_response();
     }
     let mut res = next.run(req).await;
-    ensure_cookie(&mut res);
+    ensure_cookie(&mut res, guard.secure_cookie);
     res
 }
 
 /// Set/refresh the CSRF cookie on responses that passed the check (keeps the
 /// token fresh without an extra endpoint).
-fn ensure_cookie(res: &mut Response<Body>) {
+fn ensure_cookie(res: &mut Response<Body>, secure_cookie: bool) {
     if res.headers().contains_key(header::SET_COOKIE) {
         return;
     }
     let token = issue_token();
-    let cookie = format!("{CSRF_COOKIE}={token}; Path=/; SameSite=Strict");
+    let secure_attr = if secure_cookie { "; Secure" } else { "" };
+    let cookie = format!("{CSRF_COOKIE}={token}; Path=/; SameSite=Strict{secure_attr}");
     if let Ok(value) = cookie.parse() {
         res.headers_mut().insert(header::SET_COOKIE, value);
     }
@@ -163,6 +169,7 @@ mod tests {
             .route("/hook", post(|| async { "hooked" }));
         CsrfGuard {
             bypass_paths: vec!["/hook".into()],
+            secure_cookie: false,
         }
         .apply(router)
     }
@@ -289,6 +296,7 @@ mod tests {
             "/submit",
             CsrfGuard {
                 bypass_paths: Vec::new(),
+                secure_cookie: false,
             }
             .apply_route(post(|| async { "accepted" })),
         );

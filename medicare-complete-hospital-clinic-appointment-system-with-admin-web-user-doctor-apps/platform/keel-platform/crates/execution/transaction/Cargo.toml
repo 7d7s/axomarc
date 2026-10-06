@@ -1,0 +1,16 @@
+[package]
+name = "keel-transaction"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Keel execution contracts: transaction options/isolation, Tx ports, advisory + FOR UPDATE lock helpers (SQL lives in data/postgres)."
+
+[dependencies]
+keel-foundation = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

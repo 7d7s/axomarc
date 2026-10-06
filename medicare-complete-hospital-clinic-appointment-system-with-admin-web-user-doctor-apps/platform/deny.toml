@@ -42,6 +42,11 @@ allow = [
   "Zlib",
   "OpenSSL",
   "MPL-2.0",
+  # 0BSD (BSD Zero Clause) and CDLA-Permissive-2.0: both OSI-approved and
+  # permissive, arriving only via transitive dependencies. Added in Phase 5 to
+  # stop `cargo deny check licenses` rejecting them (4 `rejected` findings).
+  "0BSD",
+  "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.93
 
@@ -49,6 +54,11 @@ confidence-threshold = 0.93
 multiple-versions = "warn"
 wildcards = "deny"
 highlight = "all"
+# `keel-mod-*` and friends are declared in [workspace.dependencies] as path-only
+# entries with no version, which cargo-deny reads as `*`. They are internal
+# workspace crates rather than published deps, so version-less PATH wildcards
+# are allowed here; wildcard versions on registry crates remain denied.
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"

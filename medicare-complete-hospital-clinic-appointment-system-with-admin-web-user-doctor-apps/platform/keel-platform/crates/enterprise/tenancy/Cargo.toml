@@ -1,0 +1,29 @@
+[package]
+name = "keel-tenancy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Keel enterprise control plane: tenancy service (resolution, plan/status enforcement, TENANT lifetime scope)."
+
+[dependencies]
+keel-foundation = { workspace = true }
+keel-context = { workspace = true }
+# §3.2 extension traits: Enterprise may depend on Services (cache/storage)
+# and Async (jobs/events/scheduler) per the allowed_deps matrix.
+keel-caching = { workspace = true }
+keel-storage = { workspace = true }
+keel-jobs = { workspace = true }
+keel-event = { workspace = true }
+keel-scheduling = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

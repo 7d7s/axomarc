@@ -1,0 +1,37 @@
+# module.toml — immutable contract shape (11-SPEC SS7). `keel graph` compiles it.
+[module]
+name = "patients"
+api = 1
+version = "0.1.0"
+maturity = "L0"
+plane = "tenant"
+description = "Patient records: list, create, read (tenant-scoped via RLS)"
+
+[capabilities]
+list = { profile = "READ", inputs = ["page"] }
+create = { profile = "COMMAND", inputs = ["name", "dob"] }
+get = { profile = "READ", inputs = ["id"] }
+
+[dependencies]
+contracts = []
+
+[[routes]]
+method = "GET"
+path = "/api/v1/patients"
+operation = "list"
+capability = "list"
+name = "list"
+
+[[routes]]
+method = "POST"
+path = "/api/v1/patients"
+operation = "create"
+capability = "create"
+name = "create"
+
+[[routes]]
+method = "GET"
+path = "/api/v1/patients/{id}"
+operation = "get"
+capability = "get"
+name = "get"

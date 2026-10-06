@@ -1,0 +1,35 @@
+# routes/console.toml — CLI-invokable operations for `keel call <name> [json]`
+# (docs/19 Wave 5, parity with Laravel's artisan-routable console surface).
+#
+# Every `operation` must be a qualified module.operation declared by a module
+# manifest; unknown operations refuse boot with GRAPH-ROUTEFILE-OP (the shared
+# Wave 2 route-file gate — `keel call` inherits the same validation).
+#
+# Dispatch posture: keel-console spawns `keel-api --call ...`, which executes
+# the operation through the CommandBus under the operator principal with the
+# same PolicyAuthz capability checks as the HTTP edge. The default operator
+# (first active principal) exists in dev/test only — pass `--principal` in
+# staging/production.
+
+[[command]]
+name = "book"
+operation = "appointments.book"
+
+[[command]]
+name = "cancel"
+operation = "appointments.cancel"
+
+[[command]]
+name = "list"
+operation = "appointments.list"
+
+[[command]]
+name = "availability"
+operation = "appointments.availability"
+
+# Wave 8 P5 (B-21): the OAuth2 client registry runs through `keel call` —
+# one operation with an `action` discriminator (create / list / update /
+# delete); create prints the client secret EXACTLY once.
+[[command]]
+name = "oauth-clients"
+operation = "oauth2.clients.manage"

@@ -2111,6 +2111,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "keel-session-postgres"
+version = "0.1.0"
+dependencies = [
+ "keel-foundation",
+ "keel-session",
+ "serde_json",
+ "sqlx",
+ "time",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "keel-session-redis"
+version = "0.1.0"
+dependencies = [
+ "keel-foundation",
+ "keel-session",
+ "redis",
+ "serde_json",
+ "time",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "keel-sms-msg91"
 version = "0.1.0"
 dependencies = [

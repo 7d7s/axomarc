@@ -1,0 +1,19 @@
+[package]
+name = "keel-lifecycle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Keel TCB: ApplicationHost, Provider lifecycle, typed service registry."
+
+[dependencies]
+keel-foundation = { workspace = true }
+serde_json = { workspace = true }
+[dev-dependencies]
+tokio = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

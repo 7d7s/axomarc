@@ -1,0 +1,71 @@
+[workspace]
+resolver = "2"
+members = [
+  "modules/*",
+  "apps/*",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/7d7s/axomarc"
+keywords = ["keel", "app"]
+
+[workspace.dependencies]
+# Kernel facade (re-exports keel-platform crates).
+# Local path sources for dev; switch to registry sources for release.
+keel-kernel = { version = "0.1", path = "../keel-kernel/keel-kernel-facade" }
+
+# Framework crates (direct deps for modules that need them)
+keel-jobs = { version = "0.1", path = "../keel-platform/crates/async/jobs" }
+keel-event = { version = "0.1", path = "../keel-platform/crates/async/events" }
+keel-wasm = { version = "0.1", path = "../keel-platform/crates/extension/wasm" }
+keel-caching = { version = "0.1", path = "../keel-platform/crates/services/cache" }
+keel-scheduling = { version = "0.1", path = "../keel-platform/crates/async/scheduler" }
+keel-storage = { version = "0.1", path = "../keel-platform/crates/services/storage" }
+keel-search = { version = "0.1", path = "../keel-platform/crates/services/search" }
+keel-realtime = { version = "0.1", path = "../keel-platform/crates/services/realtime" }
+keel-deployment = { version = "0.1", path = "../keel-platform/crates/enterprise/deployment" }
+keel-postgres = { version = "0.1", path = "../keel-platform/crates/data/postgres" }
+keel-feature-flags = { version = "0.1", path = "../keel-platform/crates/enterprise/feature-flags" }
+keel-session = { version = "0.1", path = "../keel-platform/crates/security/sessions" }
+keel-identity = { version = "0.1", path = "../keel-platform/crates/security/identity" }
+keel-policy = { version = "0.1", path = "../keel-platform/crates/security/policies" }
+keel-integrity = { version = "0.1", path = "../keel-platform/crates/security/integrity" }
+keel-observability = { version = "0.1", path = "../keel-platform/crates/observability/logging" }
+keel-telemetry = { version = "0.1", path = "../keel-platform/crates/observability/telemetry" }
+keel-tenancy = { version = "0.1", path = "../keel-platform/crates/enterprise/tenancy" }
+keel-execution = { version = "0.1", path = "../keel-platform/crates/execution/engine" }
+keel-config = { version = "0.1", path = "../keel-platform/crates/application/configuration" }
+keel-registry = { version = "0.1", path = "../keel-platform/crates/application/registry" }
+keel-http = { version = "0.1", path = "../keel-platform/crates/web/http" }
+
+# External
+axum = { version = "=0.8.6", features = ["ws", "multipart"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
+tower = "0.5"
+tower-http = { version = "0.7", features = ["trace", "cors"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "mysql", "uuid", "time", "json", "macros", "migrate"] }
+uuid = { version = "1", features = ["v4", "v5", "v7", "serde"] }
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+clap = { version = "4", features = ["derive"] }
+toml = "0.8"
+anyhow = "1"
+rand = "0.8"
+sha2 = "0.10"
+aes-gcm = "0.10"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "rustls-tls"] }
+redis = { version = "0.27", default-features = false, features = ["script"] }
+wasmtime = { version = "34", default-features = false, features = ["cranelift", "runtime", "wat", "std"] }
+
+[profile.dev]
+debug = 1

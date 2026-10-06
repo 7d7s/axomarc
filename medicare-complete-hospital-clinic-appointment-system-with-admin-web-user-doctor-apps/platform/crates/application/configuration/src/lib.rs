@@ -495,6 +495,10 @@ pub struct CsrfSection {
     /// declares a receiver here.
     #[serde(default)]
     pub skip_paths: Vec<String>,
+    /// If true, the CSRF cookie gets the `Secure` attribute (HTTPS only).
+    /// Set to true in production; false in dev for localhost HTTP.
+    #[serde(default)]
+    pub secure_cookie: bool,
 }
 
 /// Identity section (Wave 7 P5, `[identity]`): argon2id work factors for

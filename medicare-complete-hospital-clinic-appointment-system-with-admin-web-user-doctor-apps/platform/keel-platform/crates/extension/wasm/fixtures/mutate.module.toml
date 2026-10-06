@@ -1,0 +1,5 @@
+[module]
+name = "mutate"
+
+[capabilities.write_all]
+profile = "COMMAND"

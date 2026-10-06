@@ -1,0 +1,26 @@
+[package]
+name = "keel-session-redis"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Keel adapter: Redis SessionStore (SET EX / GET / DEL / SCAN)."
+
+[dependencies]
+keel-foundation = { workspace = true }
+keel-session = { workspace = true }
+redis = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[features]
+# Integration tests that require a live Redis (REDIS_URL); skipped otherwise.
+redis-tests = []
+
+[package.metadata.docs.rs]
+all-features = true

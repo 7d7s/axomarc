@@ -1,0 +1,16 @@
+[package]
+name = "keel-views"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Keel framework: zero-dep interpreted-AST views engine (Wave 2) - Blade-familiar directives over a JSON context, deliberately superseding arbitrary PHP eval."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+toml = { workspace = true }
