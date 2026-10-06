@@ -799,11 +799,43 @@ impl PromotionPipeline {
     replacing the lockstep bumper with per-crate release tooling — not attempted
     here while there is no registry to publish to.
 - [ ] Update `medicare-kernel` → `your-app` workspace structure
-  - **open — not a migration.** `your-app` is a greenfield skeleton: `apps/api` plus a single
-    `modules/patients`, with path dependencies on `keel-kernel-facade` and the `keel-platform`
-    crates. `medicare-kernel` remains a full independent workspace (8 `kernel/*` crates, 11
-    modules, its own workflow, `docker-compose.yml`, `justfile`), and `your-app/Cargo.toml` does
-    not reference it at all.
+  - **open — scoping report only; nothing moved (awaiting approval of the map).**
+    `your-app` is a greenfield skeleton — 2 crates (`apps/api` = `my-app-api`,
+    `modules/patients` = `mod-patients`, the latter carrying the keel `module.toml`
+    manifest) — while `medicare-kernel` is a full independent workspace with **21 members**
+    over **42 `.rs` files** (21 in `modules/`, 17 in `kernel/`, 3 in `apps/`, 1 in `xtask/`),
+    and `your-app/Cargo.toml` does not reference it at all.
+  - **Inventory.** Root holds `Cargo.toml` + its own `Cargo.lock`, `docker-compose.yml`,
+    `justfile`, `rust-toolchain.toml`, `.env.example`, `README.md`; plus `config/`,
+    `database/`, `migrations/`, an empty `tests/`, and `.github/workflows/ci.yml`.
+    Members: `apps/api` (1) + `kernel/{core,runtime,db,delta,auth,capability,workflow,notify}`
+    (8, packages `kernel-*`) + `modules/{org,clinic,doctor,patient,appointment,rx,billing,inventory,notifycfg,reports,platform}`
+    (11, packages `mod-*`) + `xtask` (1); `default-members = ["apps/api"]`.
+  - **Proposed map (not executed).** `modules/*` → `your-app/modules/*` (its `members` glob
+    already matches); `apps/api` → needs a new path, see collision; `kernel/*` → **no
+    destination exists** (your-app has no `kernel/`, it takes `keel-kernel` as a *facade* path
+    dep); `xtask` → not covered by the `modules/*` + `apps/*` globs, would need adding to
+    `members`; `migrations/`, `database/`, `config/` → copied to `your-app/` (nothing to merge
+    with); the two workspace manifests merge into `your-app/Cargo.toml`.
+  - **Eight conflicts that must be decided before any move** — this is why it is not a file move:
+    1. **Directory collision:** both workspaces already have `apps/api` (packages differ —
+       `medicare-api` vs `my-app-api` — but the path is identical).
+    2. **Two patient modules:** `modules/patient` (`mod-patient`) vs your-app's existing
+       `modules/patients` (`mod-patients`).
+    3. **`rust-version`:** medicare-kernel declares **1.92**, your-app **1.86** (the wasmtime-36
+       floor set earlier); a merged workspace has exactly one.
+    4. **Dependency divergence:** `axum 0.8.9` vs an **exact pin** `=0.8.6`; `reqwest 0.13` vs
+       `0.12`; `uuid 1.24` vs `1`; `rand 0.10` vs `0.8`; `toml 0.9` vs `0.8`; `sqlx` postgres-only
+       vs postgres+mysql. Reconciling `[workspace.dependencies]` may change resolved versions.
+    5. **Kernel naming overlap:** 8 `kernel-*` crates vs your-app's `keel-kernel` facade.
+    6. **`modules/platform`** would sit inside a tree that already has `platform/` semantics.
+    7. **CI activation:** `.github/workflows/ci.yml` is currently **inert** (GitHub only runs
+       *repo-root* `.github/workflows/`). Moving it to the root would **start a new CI workflow**
+       whose paths do not exist there — a behavior change, not a relocation.
+    8. **Architectural rewrite, not translation:** medicare-kernel is plain axum/sqlx and has
+       **0 `module.toml`**; your-app's pattern has one. Landing 11 modules means authoring 11
+       keel manifests and rewiring onto the `keel-*` deps your-app already declares — the bulk of
+       the work is framework adaptation, not file movement.
 - [x] CI: separate pipelines for platform / kernel / app
   - **proved.** `.github/workflows/keel.yml` now declares **four jobs, one per Cargo
     workspace**, each with its own job-level `defaults.run.working-directory` and its own target
