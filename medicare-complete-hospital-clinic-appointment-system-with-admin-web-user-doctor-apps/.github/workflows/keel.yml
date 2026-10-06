@@ -50,7 +50,11 @@ jobs:
           key: keel-platform-orig-${{ hashFiles('platform/Cargo.lock') }}
           restore-keys: |
             keel-platform-orig-
-            keel-
+          # Deliberately NOT a bare `keel-` fallback: that prefix matches every
+          # other key in these workflows (`keel-platform-new-`, `keel-kernel-`,
+          # `keel-app-`, `keel-msrv-*`), so a lockfile change would restore
+          # another workspace's archive -- a target/ built for a different tree
+          # and toolchain, i.e. a cold build with an extra wasted download.
       - name: cargo check
         run: cargo check --workspace --locked
       - name: cargo test (includes architecture gate)
