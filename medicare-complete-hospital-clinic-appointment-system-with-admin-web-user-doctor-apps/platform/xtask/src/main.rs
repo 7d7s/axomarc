@@ -132,6 +132,7 @@ fn dep_rules() -> ExitCode {
 /// dotenv); everything else here is a binary entrypoint's boot concern
 /// (config path, logging overrides, operational gates).
 const SANCTIONED_ENV_PATHS: &[&str] = &[
+    // --- original `platform` workspace tree ---
     "crates/application/configuration/src/lib.rs",
     "crates/application/configuration/src/dotenv.rs",
     "crates/observability/logging/src/config.rs",
@@ -139,6 +140,28 @@ const SANCTIONED_ENV_PATHS: &[&str] = &[
     "runtime/keel-api/src/shell.rs",
     "runtime/keel-worker/src/main.rs",
     "tools/keel-console/src/main.rs",
+    // --- keel-platform (added by the three-workspace split) ---
+    // The entries above are paths relative to `platform/`, so an exact match can
+    // never reach a file that lives one workspace root deeper. These carry the
+    // SAME two sanctioned roles: keel-config layering (`dotenv.rs` and
+    // `logging/config.rs` are byte-identical to their originals; `configuration`
+    // and `keel-console` have since diverged but hold the same responsibility),
+    // and a binary entrypoint respectively. Nothing here gains a capability its
+    // original counterpart did not already have.
+    "keel-platform/crates/application/configuration/src/lib.rs",
+    "keel-platform/crates/application/configuration/src/dotenv.rs",
+    "keel-platform/crates/observability/logging/src/config.rs",
+    "keel-platform/tools/keel-console/src/main.rs",
+    // --- keel-kernel ---
+    // Binary/boot paths, the same class as the sanctioned `runtime/keel-api` +
+    // `runtime/keel-worker` above: config path, logging overrides and
+    // operational gates read once during boot.
+    "keel-kernel/kernel-api/src/lib.rs",
+    "keel-kernel/kernel-api/src/shell.rs",
+    "keel-kernel/kernel-worker/src/main.rs",
+    // --- your-app ---
+    // Application binary entrypoint — same boot concern as `runtime/keel-worker`.
+    "your-app/apps/api/src/main.rs",
 ];
 
 /// The env-read needles, assembled at runtime so this scanner cannot match

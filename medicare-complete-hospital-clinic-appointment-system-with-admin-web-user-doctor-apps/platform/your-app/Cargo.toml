@@ -8,7 +8,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.86"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/7d7s/axomarc"
 keywords = ["keel", "app"]
@@ -65,7 +65,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tokio-stream = { version = "0.1", features = ["sync"] }
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "rustls-tls"] }
 redis = { version = "0.27", default-features = false, features = ["script"] }
-wasmtime = { version = "34", default-features = false, features = ["cranelift", "runtime", "wat", "std"] }
+wasmtime = { version = "36", default-features = false, features = ["cranelift", "runtime", "wat", "std"] }
 
 [profile.dev]
 debug = 1

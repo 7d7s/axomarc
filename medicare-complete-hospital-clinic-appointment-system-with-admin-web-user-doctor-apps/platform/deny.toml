@@ -15,7 +15,20 @@ version = 2
 yanked = "deny"
 # RUSTSEC advisories are denied by default. Only explicitly reviewed,
 # accepted advisories may be ignored here (with a linked justification).
-ignore = []
+ignore = [
+  # --- governance note: RUSTSEC-2023-0071 (rsa "Marvin Attack" timing sidechannel)
+  # There is NO upstream fix. RustSec marks `patched = []` intentionally: rsa
+  # 0.9.10 (latest stable) and 0.10.0-rc.18 are both still affected as of
+  # 2026-09-12 (RustCrypto/RSA#626, #680, #702 all open). We do not call `rsa`
+  # directly -- it arrives only transitively via sqlx-mysql, which needs it for
+  # MySQL `caching_sha2_password` / `sha256_password` authentication, so the
+  # only ways to drop it are forking sqlx or dropping MySQL support.
+  # Accepted risk, per the advisory's own workaround ("local use on a
+  # non-compromised computer is fine"): the database connection must be
+  # TLS-protected or network-local. Enforce that in deployment (05-DATABASE).
+  # Revisit if sqlx drops the dependency or RustSec records a patch.
+  { id = "RUSTSEC-2023-0071", reason = "No upstream fix (patched=[]); transitive via sqlx-mysql only; DB connection must be TLS or local" },
+]
 
 [licenses]
 version = 2

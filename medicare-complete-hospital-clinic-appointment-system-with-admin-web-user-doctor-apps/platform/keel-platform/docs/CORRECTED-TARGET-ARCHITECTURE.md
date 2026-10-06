@@ -690,10 +690,20 @@ impl PromotionPipeline {
     basis: the outcome the box asks for (architecture rules gating the workspace split, enforced by
     tooling in CI) exists and is proven — the tool named in the box is simply not where those rules
     live.
-  - *Open, surfaced by repairing the gate:* `advisories FAILED` — **21 RUSTSEC advisories**, notably
-    `wasmtime 34.0.2` (needs ≥36.0.16) and `rustls` (needs ≥0.23.45), one with *"No safe upgrade is
-    available"*. `deny.toml` sets `ignore = []` and requires a governance note per advisory, so
-    these are left failing rather than silently ignored; closing them requires dependency upgrades.
+  - *Resolved — the **21 RUSTSEC advisories** that were surfacing as `advisories FAILED`.* Closed by
+    dependency upgrades, not by ignoring: `wasmtime` 34.0.2 → **36.0.17** (36.0.16 is the lowest
+    version whose patched range covers *every* wasmtime advisory — each is `>=36.0.x, <37.0.0`, so
+    37.0.2 would *not* have sufficed) and `rustls` 0.23.43 → **0.23.45**. The one advisory carrying
+    *"No safe upgrade is available"* — `RUSTSEC-2023-0071` (`rsa`, RustSec `patched = []`, reached
+    only transitively via sqlx-mysql) — gets the governance note `deny.toml` demands rather than a
+    silent ignore: accepted risk, database connection must be TLS-protected or network-local.
+  - *Knock-on: MSRV **1.85 → 1.86**.* wasmtime 36 declares `rust-version = 1.86.0`, and 34.x had
+    been chosen deliberately as the *"MSRV-aware"* line. Updated in all four workspace roots
+    (`platform`, `keel-platform`, `keel-kernel`, `your-app`), the `keel-publish.yml` `msrv` job
+    (1.86.0), and `docs/01-GETTING-STARTED.md`.
+  - **Proven:** `cargo deny check` → **exit 0**, `advisories ok, bans ok, licenses ok, sources ok`
+    from **both** `platform/` and `keel-platform/` (each workspace's own `Cargo.lock` carries
+    wasmtime 36.0.17).
 - [x] Implement `ConfigRuntime` + `ConfigWatcher` in `keel-config` (new crate)
   - **proved.** `ConfigRuntime` at `crates/application/configuration/src/runtime.rs:134`, exported
     from `lib.rs:20`; `keel-config` **59 passed / 0 failed**, including the Phase 5 reload hammer
@@ -743,20 +753,67 @@ impl PromotionPipeline {
     workspace-level `version = "0.1.0"` shared by all crates, not per-crate versions.
     *For the record the publish pipeline itself is substantial* — verify / msrv / cargo-deny /
     semver gate / dry-run / registry smoke test / release tag / changelog.
+  - *Blocker A — the chosen registry cannot host Cargo.* **GitHub Packages has no
+    Cargo/Rust support**: `docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-cargo-registry`
+    returns **404**, and community discussion
+    [#12067 "Cargo (Rust) registry support for Github Packages"](https://github.com/orgs/community/discussions/12067)
+    is still *Unanswered* after 4.5 years (newest reply 2026-08-28: *"When are we
+    getting this?"* / *"considering the current trajectory likely never"*). A
+    `[registries]` entry pointing there would be a config that cannot work, so it
+    was not written. Closing this needs a real cargo-capable endpoint (Cloudsmith,
+    Artifactory, AWS CodeArtifact, self-hosted GitLab) supplied as
+    `CARGO_REGISTRIES_*_INDEX` + token; until one exists, `publish` still targets
+    crates.io and stays **dry-run by default** (`CARGO_REGISTRY_TOKEN` is empty
+    unless a maintainer explicitly dispatches `dry_run: false`), so nothing is
+    uploaded by accident.
+  - *Blocker B — "independent versioning" is a release-model change, not a config
+    tweak.* `keel-platform` holds **64 crates** and **62** internal
+    `keel-* = { version = "0.1.0", path = ... }` entries under
+    `[workspace.dependencies]`, all moved together by one lockstep
+    `cargo xtask bump <X.Y.Z>` that rewrites `[workspace.package].version` plus
+    every internal dep literal in a single pass (`xtask/src/main.rs:558`). Going
+    per-crate means rewriting all 62 entries into individual constraints and
+    replacing the lockstep bumper with per-crate release tooling — not attempted
+    here while there is no registry to publish to.
 - [ ] Update `medicare-kernel` → `your-app` workspace structure
   - **open — not a migration.** `your-app` is a greenfield skeleton: `apps/api` plus a single
     `modules/patients`, with path dependencies on `keel-kernel-facade` and the `keel-platform`
     crates. `medicare-kernel` remains a full independent workspace (8 `kernel/*` crates, 11
     modules, its own workflow, `docker-compose.yml`, `justfile`), and `your-app/Cargo.toml` does
     not reference it at all.
-- [ ] CI: separate pipelines for platform / kernel / app
-  - **open — one pipeline exists, and it misses all three new workspaces.**
-    `.github/workflows/keel.yml` is 46 lines with a single `foundation` job,
-    `working-directory: platform` and `paths: ["platform/**"]`, running `cargo check --workspace`
-    and `cargo test --workspace` against the **original** `platform` workspace — whose members do
-    **not** include `keel-platform`, `keel-kernel` or `your-app`. `keel-publish.yml` runs from the
-    same directory. `medicare-kernel/.github/workflows/ci.yml` is inert, since GitHub only executes
-    workflows located at the repo root's `.github/workflows/`.
+- [x] CI: separate pipelines for platform / kernel / app
+  - **proved.** `.github/workflows/keel.yml` now declares **four jobs, one per Cargo
+    workspace**, each with its own job-level `defaults.run.working-directory` and its own target
+    cache keyed on that workspace's *own* `Cargo.lock`: `platform`,
+    `platform/keel-platform`, `platform/keel-kernel`, `platform/your-app`.
+    `defaults` moved from workflow-level to job-level deliberately — a workflow-level
+    default would silently run keel-kernel or your-app commands against the platform tree.
+  - *Why four rather than three:* the box names platform / kernel / app, but `platform/Cargo.toml`
+    is itself a workspace root whose `members` exclude all three new workspaces
+    (`members` mentions none of them). Dropping it would have removed the only coverage for the
+    original tree — including the `xtask dep-rules` architecture gate and the publishability
+    dry-run — so it is retained alongside the three the box asks for.
+  - *Why they were invisible before:* each of the three is a separate workspace root with a
+    separate `Cargo.lock`, so a single `working-directory: platform` job could never reach them;
+    the note above was correct that the old 46-line `foundation` job covered only the original tree.
+  - **Executable — each workspace independently with `--locked`, the flag CI uses:**
+    `platform` **154 suites / 1412 passed / 0 failed**, `keel-platform` **141 / 1244 / 0**,
+    `keel-kernel` **15 / 240 / 0**, `your-app` **3 / 0**, and
+    `cargo check --workspace --locked` exit 0 in all four. Supporting gates the jobs run:
+    `cargo run -p xtask -- dep-rules` → exit 0 (`dep-rules: clean`), `cargo deny check` →
+    exit 0, `keel-publish.yml` `msrv` job → 1.86.0. Both workflow files parse as valid YAML, and
+    the `keel.yml` steps that carry over from the old job were checked to reference packages that
+    actually exist (`keel-observability`, `keel-api`, `xtask`) and tests that actually exist
+    (`g18`, `telemetry_incident`).
+  - *Pre-existing blocker cleared to get here:* `dep-rules` and
+    `env_lint_tests::platform_tree_is_env_lint_clean` both failed **before** this work — not from
+    it (every violating file is tracked and unmodified at `303a2ed`, and the scanner reads only
+    `.rs` content plus `SANCTIONED_ENV_PATHS`, none of which these changes touched). Root cause:
+    `SANCTIONED_ENV_PATHS` holds paths relative to `platform/` and was never extended when the
+    three workspace roots were added, so the already-sanctioned config/entrypoint roles were
+    unreachable one root deeper — 29 violations, `lint [!!]`. Repaired by appending those paths
+    explicitly (each justified by a sanctioned counterpart of the same role); now
+    `lint: clean`, `dep-rules: clean`.
 
 ### Phase 2: Tenant Scoping (Week 3-4)
 - [x] Migrate all framework adapters to tenant-scoped ports

@@ -43,7 +43,7 @@ Current count: 25.
 | lettre | SMTP mail delivery | MIT | default-features OFF; builder + smtp-transport + rustls-tls; pure-Rust TLS; used by keel-mail-smtp adapter |
 | aes-gcm | At-rest secret encryption (AES-256-GCM envelopes, L27) | MIT/Apache-2.0 | Pure Rust, RustCrypto; audited cipher line next to sha2; used by keel-tokens only |
 | redis | Optional bounded-cache/queue driver (adapters) | MIT/Apache-2.0 | socket feature only; used by the keel-cache-redis adapter; not on the default path |
-| wasmtime | Sandboxed WASM plugin runtime (Wave 9 B-30) | Apache-2.0 WITH LLVM-exception | D-62 amendment recorded by docs/19 Wave 9 B-30; 34.x line, MSRV 1.85 = workspace MSRV; default features OFF (cranelift/runtime/wat/std only: no component-model, no cache, no profiling); fuel metering + store-limits sandbox, fail-closed import surface; reaches the 25-crate cap (25/25) |
+| wasmtime | Sandboxed WASM plugin runtime (Wave 9 B-30) | Apache-2.0 WITH LLVM-exception | D-62 amendment recorded by docs/19 Wave 9 B-30; 36.x line (36.0.17), MSRV 1.86 = workspace MSRV — security bump: 34.x is unpatched for the wasmtime advisories and 36.0.16 is the lowest version whose patched range covers all of them (37.0.2 would not); MSRV moved 1.85 → 1.86 because wasmtime 36 declares rust-version 1.86.0; default features OFF (cranelift/runtime/wat/std only: no component-model, no cache, no profiling); fuel metering + store-limits sandbox, fail-closed import surface; reaches the 25-crate cap (25/25) |
 
 ## Rules
 - Core (crates/foundation/core) uses only the pinned minimal set (serde, serde_json, time, uuid,

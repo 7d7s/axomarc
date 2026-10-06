@@ -7,13 +7,33 @@ on:
   pull_request:
     paths: ["platform/**", ".github/workflows/keel.yml"]
 
-defaults:
-  run:
-    working-directory: platform
+# FOUR independent Cargo workspaces -> four independent pipelines
+# (CORRECTED-TARGET-ARCHITECTURE section 9, P1-4).
+#
+# `platform/Cargo.toml` is a workspace root whose `members` do NOT include
+# keel-platform, keel-kernel or your-app - each of those is its own workspace
+# root with its own Cargo.lock. A single `working-directory: platform` job
+# therefore covered only the original tree and missed all three new ones.
+#
+# Each job pins its own working-directory and its own target cache, so a red
+# build names the workspace that broke. `defaults` is deliberately per-job rather
+# than workflow-level: a workflow-level default would silently run keel-kernel or
+# your-app commands against the platform tree.
+#
+# Cache keys are per-workspace and hash that workspace's OWN Cargo.lock, because
+# the four resolve independently.
+#
+# `platform` (the original tree) is kept as its own job: it still owns the
+# xtask dep-rules architecture gate and the publishability dry-run, and it is
+# not superseded by keel-platform - they are separate workspaces.
 
 jobs:
-  foundation:
+  platform:
+    name: platform
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: platform
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust 1.92.0
@@ -27,8 +47,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             platform/target
-          key: keel-${{ hashFiles('platform/Cargo.lock') }}
+          key: keel-platform-orig-${{ hashFiles('platform/Cargo.lock') }}
           restore-keys: |
+            keel-platform-orig-
             keel-
       - name: cargo check
         run: cargo check --workspace --locked
@@ -40,7 +61,89 @@ jobs:
           cargo test -p keel-api --test http_integration --locked telemetry_incident
       - name: architecture analyzer (xtask dep-rules)
         run: cargo run -p xtask -- dep-rules
-
       - name: publishability dry-run (main only)
         if: github.event_name == 'push'
         run: cargo run -p xtask -- publish --dry-run
+
+  keel-platform:
+    name: keel-platform
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: platform/keel-platform
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.92.0
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          rustup default 1.92.0
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            platform/keel-platform/target
+          key: keel-platform-new-${{ hashFiles('platform/keel-platform/Cargo.lock') }}
+          restore-keys: |
+            keel-platform-new-
+      - name: cargo check
+        run: cargo check --workspace --locked
+      - name: cargo test
+        run: cargo test --workspace --locked
+      - name: architecture analyzer (xtask dep-rules)
+        run: cargo run -p xtask -- dep-rules
+
+  keel-kernel:
+    name: keel-kernel
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: platform/keel-kernel
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.92.0
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          rustup default 1.92.0
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            platform/keel-kernel/target
+          key: keel-kernel-${{ hashFiles('platform/keel-kernel/Cargo.lock') }}
+          restore-keys: |
+            keel-kernel-
+      - name: cargo check
+        run: cargo check --workspace --locked
+      - name: cargo test
+        run: cargo test --workspace --locked
+
+  your-app:
+    name: your-app
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: platform/your-app
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.92.0
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          rustup default 1.92.0
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            platform/your-app/target
+          key: keel-app-${{ hashFiles('platform/your-app/Cargo.lock') }}
+          restore-keys: |
+            keel-app-
+      - name: cargo check
+        run: cargo check --workspace --locked
+      - name: cargo test
+        run: cargo test --workspace --locked

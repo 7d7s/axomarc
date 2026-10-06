@@ -61,12 +61,12 @@ jobs:
         run: cargo run -p xtask -- dep-rules
 
   msrv:
-    name: msrv (1.85.0)
+    name: msrv (1.86.0)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install MSRV Rust 1.85.0
-        run: rustup toolchain install 1.85.0 --profile minimal && rustup default 1.85.0
+      - name: Install MSRV Rust 1.86.0
+        run: rustup toolchain install 1.86.0 --profile minimal && rustup default 1.86.0
       - name: Cache cargo
         uses: actions/cache@v4
         with:

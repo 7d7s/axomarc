@@ -79,7 +79,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.86"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/7d7s/axomarc"
 readme = "README.md"
@@ -191,12 +191,17 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tokio-stream = { version = "0.1", features = ["sync"] }
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "rustls-tls"] }
 redis = { version = "0.27", default-features = false, features = ["script"] }
-# Wave 9 B-30 (D-62 amendment, docs/19): MSRV-aware 34.x line (rust-version 1.85
-# = workspace MSRV). Default features OFF for supply-chain weight: no
+# SECURITY BUMP (wasmtime advisories; see deny.toml governance note): the 34.x
+# line is unpatched. 36.0.16 is the LOWEST version satisfying every wasmtime
+# advisory (each patched range is ">=36.0.x, <37.0.0"), hence staying on 36.x
+# rather than jumping to 43/46/49. Consequence: wasmtime 36 declares
+# rust-version = 1.86.0, so workspace MSRV moved 1.85 -> 1.86 (all four
+# workspace roots + the keel-publish msrv job + 01-GETTING-STARTED).
+# Default features OFF for supply-chain weight: no
 # component-model, no disk cache, no profiling/native extras — cranelift +
 # runtime + wat + std only (check-in `.wat` fixtures compile at test time, so no
 # wasm target or binary fixtures are needed).
-wasmtime = { version = "34", default-features = false, features = ["cranelift", "runtime", "wat", "std"] }
+wasmtime = { version = "36", default-features = false, features = ["cranelift", "runtime", "wat", "std"] }
 
 [profile.dev]
 debug = 1
