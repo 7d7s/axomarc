@@ -177,19 +177,53 @@ impl JobStore for MySqlJobStore {
             // One connection, one transaction: the candidate lock read has to
             // outlive the UPDATE it feeds (autocommit would drop the row lock
             // between the two statements and two workers could claim twice).
+            //
+            // MySQL divergence, measured live against 8.0.44
+            // (REPEATABLE-READ): the one-statement
+            // `ORDER BY ... LIMIT 1 FOR UPDATE SKIP LOCKED` locks EVERY row
+            // the sort reads, not only the row it returns — the filesort has
+            // to consume all candidates before LIMIT can stop it — so a second
+            // worker running the claim concurrently gets ZERO rows back while
+            // pending work still exists (starvation). The pg store issues the
+            // same shape of query and is deliberately untouched here: only the
+            // MySQL behaviour above was measured (no pg instance is available
+            // in this environment), and this fix is scoped to MySQL.
+            // Removing ORDER BY alone fixes the starvation, but it would
+            // silently drop priority ordering.
+            //
+            // Instead: read a bounded batch of candidates UNLOCKED in
+            // priority order, then lock them one at a time by primary key.
+            // Locking a single row by PK cannot sweep up its neighbours, so
+            // the next worker skips exactly that row and takes the next
+            // candidate — priority order is kept and no claimant is starved.
             let mut tx = pool.begin().await.map_err(my)?;
-            let candidate: Option<Uuid> = sqlx::query_scalar(
+            let candidates: Vec<Uuid> = sqlx::query_scalar(
                 "SELECT id FROM jobs_queue
                  WHERE status = 'pending' AND available_at <= NOW(6)
                  ORDER BY priority DESC, available_at, enqueued_at
-                 LIMIT 1
-                 FOR UPDATE SKIP LOCKED",
+                 LIMIT 8",
             )
-            .fetch_optional(&mut *tx)
+            .fetch_all(&mut *tx)
             .await
             .map_err(my)?;
-            let Some(id) = candidate else {
-                // pg: the RETURNING UPDATE matched no row -> None.
+            let mut claimed: Option<Uuid> = None;
+            for candidate in candidates {
+                let locked: Option<Uuid> = sqlx::query_scalar(
+                    "SELECT id FROM jobs_queue WHERE id = ? FOR UPDATE SKIP LOCKED",
+                )
+                .bind(candidate)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(my)?;
+                if locked.is_some() {
+                    claimed = Some(candidate);
+                    break;
+                }
+            }
+            let Some(id) = claimed else {
+                // The queue is empty, or every candidate in the batch is held
+                // by a concurrent worker: report the same None pg does on a
+                // miss and let the caller ask again.
                 tx.rollback().await.map_err(my)?;
                 return Ok(None);
             };

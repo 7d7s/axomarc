@@ -960,6 +960,78 @@ async fn mysql_transaction_rollback_isolates_two_tests_sharing_a_table() {
     assert_eq!(total, 0, "no transactional row survives its scope");
 }
 
+/// Phase B: the savepoint scope on the second fabric — the exact
+/// counterpart of `pg_savepoint_rollback_isolates_two_tests_sharing_a_table`,
+/// now over `keel_mysql::test_support::Savepoint`, so both drivers expose the
+/// same RefreshDatabase-equivalent primitive. (The existing
+/// `mysql_transaction_rollback_*` test covers whole-transaction rollback via
+/// `pool.begin()`, which is a different shape: it cannot scope a body that
+/// keeps its connection and its transaction open.) Body A's insert lives only
+/// inside its `BEGIN; SAVEPOINT keel_test` scope, `rollback()` leaves no
+/// residue for body B, and no schema drops/truncation are involved.
+/// (DATABASE_URL-gated like every mysql matrix test; skips cleanly without
+/// it. DDL inside the scope is NOT rolled back on MySQL — see the module doc.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mysql_savepoint_rollback_isolates_two_tests_sharing_a_table() {
+    let Some(pool) = mysql_pool().await else { return };
+    let email_a = format!("mysql-sp-a-{}@it.test", uuid::Uuid::now_v7());
+    let email_b = format!("mysql-sp-b-{}@it.test", uuid::Uuid::now_v7());
+
+    // Test body A: writes inside the savepoint, sees them, rolls them back.
+    {
+        let mut conn = pool.acquire().await.expect("connection A");
+        let mut sp = keel_mysql::test_support::Savepoint::begin(&mut conn)
+            .await
+            .expect("BEGIN + SAVEPOINT keel_test");
+        sqlx::query("INSERT INTO principals (id, email) VALUES (?, ?)")
+            .bind(uuid::Uuid::now_v7())
+            .bind(&email_a)
+            .execute(sp.conn())
+            .await
+            .expect("insert inside the scope");
+        let seen: i64 = sqlx::query_scalar("SELECT count(*) FROM principals WHERE email = ?")
+            .bind(&email_a)
+            .fetch_one(sp.conn())
+            .await
+            .expect("count inside the scope");
+        assert_eq!(seen, 1, "the body sees its own write");
+        sp.rollback().await.expect("ROLLBACK TO keel_test");
+    }
+
+    // Test body B: a separate connection — A's row never existed for it,
+    // and the shared table still accepts writes through its own scope.
+    {
+        let mut conn = pool.acquire().await.expect("connection B");
+        let residue: i64 = sqlx::query_scalar("SELECT count(*) FROM principals WHERE email = ?")
+            .bind(&email_a)
+            .fetch_one(&mut *conn)
+            .await
+            .expect("count after A rolled back");
+        assert_eq!(residue, 0, "body A left no residue behind");
+
+        let mut sp = keel_mysql::test_support::Savepoint::begin(&mut conn)
+            .await
+            .expect("second scope begins");
+        sqlx::query("INSERT INTO principals (id, email) VALUES (?, ?)")
+            .bind(uuid::Uuid::now_v7())
+            .bind(&email_b)
+            .execute(sp.conn())
+            .await
+            .expect("second body writes to the same table");
+        sp.rollback().await.expect("second rollback");
+    }
+
+    // Final state: the table is exactly as both bodies found it.
+    let mut conn = pool.acquire().await.expect("connection C");
+    let total: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM principals WHERE email LIKE 'mysql-sp-%@it.test'",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .expect("final count");
+    assert_eq!(total, 0, "no savepoint row survives its scope");
+}
+
 /// B-31 skip-locked leg: every claim runs the port's
 /// `FOR UPDATE SKIP LOCKED` transaction on MySQL 8. Concurrent claims over
 /// separate connections take distinct rows (never a double-claim, never a

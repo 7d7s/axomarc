@@ -28,7 +28,12 @@ keel-storage = { version = "0.1", path = "../keel-platform/crates/services/stora
 keel-search = { version = "0.1", path = "../keel-platform/crates/services/search" }
 keel-realtime = { version = "0.1", path = "../keel-platform/crates/services/realtime" }
 keel-deployment = { version = "0.1", path = "../keel-platform/crates/enterprise/deployment" }
+# Both fabrics are declared: the driver itself is chosen at runtime by
+# keel-kernel (`match cfg.database()` -> DbPool::Postgres | DbPool::MySql),
+# so an application module may reach for either store directly instead of
+# inheriting a Postgres-only assumption from this list.
 keel-postgres = { version = "0.1", path = "../keel-platform/crates/data/postgres" }
+keel-mysql = { version = "0.1", path = "../keel-platform/crates/data/mysql" }
 keel-feature-flags = { version = "0.1", path = "../keel-platform/crates/enterprise/feature-flags" }
 keel-session = { version = "0.1", path = "../keel-platform/crates/security/sessions" }
 keel-identity = { version = "0.1", path = "../keel-platform/crates/security/identity" }

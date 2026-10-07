@@ -151,3 +151,64 @@ jobs:
         run: cargo check --workspace --locked
       - name: cargo test
         run: cargo test --workspace --locked
+
+  # Wave 9 B-31 / Phase B: the live-MySQL driver matrix.
+  #
+  # Every test in pg_integration.rs is DATABASE_URL-gated and scheme-selected,
+  # so with `mysql://` the pg_* half self-skips (its create_pool refuses that
+  # scheme) and the mysql_* half runs against a real MySQL 8 with migrations
+  # applied by the test itself. Without a service container this suite is an
+  # all-skip green -- which is exactly how the MySQL-specific defects it now
+  # catches stayed invisible (a `unique` probe that never fired, a savepoint
+  # scope that could not be written, and a claim path that starved a second
+  # worker while work was pending). The container is the point of this job.
+  platform-mysql:
+    name: platform (mysql matrix)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: platform
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: keel
+          MYSQL_USER: keel
+          MYSQL_PASSWORD: keel
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      DATABASE_URL: mysql://keel:keel@127.0.0.1:3306/keel
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.92.0
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          rustup default 1.92.0
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            platform/target
+          key: keel-platform-mysql-${{ hashFiles('platform/Cargo.lock') }}
+          restore-keys: |
+            keel-platform-mysql-
+            keel-platform-orig-
+      - name: mysql driver matrix (pg half self-skips on mysql://)
+        run: cargo test -p keel-postgres --features pg-tests --test pg_integration --locked
+      # The claim race only reproduces when two workers overlap, so one green
+      # run would not be evidence. Repeat it: a regression here means a worker
+      # fleet idles while jobs are queued.
+      - name: queue claim concurrency (5 repeats, starvation regression)
+        run: |
+          for i in 1 2 3 4 5; do
+            cargo test -p keel-postgres --features pg-tests --test pg_integration --locked mysql_job_store_claim
+          done
