@@ -5,7 +5,7 @@
 
 use keel_foundation::{AppError, TenantId};
 use keel_models::{
-    json_value_to_bind, record_to_columns, ExistsFilter, FieldFilter, FieldType, FilterOp,
+    json_value_to_bind, record_to_columns_for, ExistsFilter, FieldFilter, FieldType, FilterOp,
     ListOpts, ModelDef, ModelStore, Record,
 };
 use keel_models::store::{
@@ -517,7 +517,7 @@ impl ModelStore for PgModelStore {
     }
 
     fn insert(&self, model: &ModelDef, record: &Record) -> Result<Record, AppError> {
-        let (columns, params) = record_to_columns(record)?;
+        let (columns, params) = record_to_columns_for(record, model)?;
         let mut insert = Insert::into_table(ident(&model.table)?).columns(columns);
         insert = insert.row(params);
         if model.tenant_scoped {
@@ -605,7 +605,7 @@ impl ModelStore for PgModelStore {
         if conflict.is_empty() {
             return Err(AppError::validation("upsert needs conflict fields"));
         }
-        let (columns, params) = record_to_columns(record)?;
+        let (columns, params) = record_to_columns_for(record, model)?;
         let conflict_columns: Vec<Ident> = conflict
             .iter()
             .map(|c| ident(c))
@@ -710,7 +710,7 @@ impl ModelStore for PgModelStore {
     }
 
     fn insert_or_ignore(&self, model: &ModelDef, record: &Record) -> Result<Option<Record>, AppError> {
-        let (columns, params) = record_to_columns(record)?;
+        let (columns, params) = record_to_columns_for(record, model)?;
         let mut insert = Insert::into_table(ident(&model.table)?)
             .columns(columns)
             .row(params)

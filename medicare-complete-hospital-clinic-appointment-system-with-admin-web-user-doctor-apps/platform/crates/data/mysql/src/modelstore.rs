@@ -72,10 +72,15 @@
 //!   `::date`/`TO_CHAR` date parts, `FOR SHARE`, arrays) never occur here:
 //!   `FilterOp` compiles only to `= <> IN IS [NOT] NULL < <= > >=`, so no
 //!   operator translation was needed.
+//! - Generated columns (rule 17): `20260822000002_appointments.sql` emulates
+//!   pg's partial unique index with STORED generated `*_active` columns that
+//!   no `ModelDef` declares. Reads keep `SELECT *` (like pg) and drop those
+//!   columns in [`row_to_record`], so the Record matches the pg row exactly
+//!   instead of decoding BINARY(16) as VARCHAR.
 
 use keel_foundation::{AppError, TenantId};
 use keel_models::{
-    json_value_to_bind, record_to_columns, ExistsFilter, FieldFilter, FieldType, FilterOp,
+    json_value_to_bind, record_to_columns_for, ExistsFilter, FieldFilter, FieldType, FilterOp,
     ListOpts, ModelDef, ModelStore, Record,
 };
 use keel_models::store::{
@@ -161,6 +166,18 @@ fn row_to_record(row: &MySqlRow, model: &ModelDef) -> Result<Record, AppError> {
     let mut record = Record::new();
     for column in row.columns() {
         let name = column.name();
+        // Driver-only STORED generated columns (`tenant_id_active`,
+        // `patient_active`, `slot_active` -- the partial-unique-index
+        // emulation in 20260822000002_appointments.sql) are not model
+        // fields. A pg table has no such columns, so dropping them keeps
+        // the Record byte-equivalent across the two drivers; keeping them
+        // would also ask VARCHAR out of BINARY(16), because no ModelDef
+        // declares a type for them (that is the 503 seen on
+        // `GET /api/v1/appointments`). A model that DOES declare an
+        // `_active` field keeps it (declared type wins in `decode_column`).
+        if name.ends_with("_active") && model.field_named(name).is_none() {
+            continue;
+        }
         let value = decode_column(row, name, model)?;
         record.insert(name.to_string(), value);
     }
@@ -716,7 +733,7 @@ impl ModelStore for MySqlModelStore {
         // is validated BEFORE the INSERT executes (like `InMemoryModelStore`,
         // a record without one cannot be written here).
         let id = record_uuid(record, "id")?;
-        let (columns, params) = record_to_columns(record)?;
+        let (columns, params) = record_to_columns_for(record, model)?;
         let mut insert = Insert::into_table(ident(&model.table)?).columns(columns);
         insert = insert.row(params);
         if model.tenant_scoped {
@@ -837,7 +854,7 @@ impl ModelStore for MySqlModelStore {
         }
         // Rule 10: the readback re-selects by the record's uuid `id`.
         let id = record_uuid(record, "id")?;
-        let (columns, params) = record_to_columns(record)?;
+        let (columns, params) = record_to_columns_for(record, model)?;
         let conflict_columns: Vec<Ident> = conflict
             .iter()
             .map(|c| ident(c))
@@ -995,7 +1012,7 @@ impl ModelStore for MySqlModelStore {
         // Rule 10: the readback re-selects by the record's uuid `id`, so it
         // is validated BEFORE the INSERT executes.
         let id = record_uuid(record, "id")?;
-        let (columns, params) = record_to_columns(record)?;
+        let (columns, params) = record_to_columns_for(record, model)?;
         let mut insert = Insert::into_table(ident(&model.table)?)
             .columns(columns)
             .row(params);

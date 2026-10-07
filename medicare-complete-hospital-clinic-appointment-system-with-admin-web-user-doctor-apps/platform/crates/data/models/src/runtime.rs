@@ -3042,6 +3042,50 @@ pub fn record_to_columns(record: &Record) -> Result<(Vec<Ident>, Vec<Bind>), App
     Ok((columns, binds))
 }
 
+/// Field-aware twin of [`record_to_columns`] for stores persisting a
+/// [`ModelDef`] (`PgModelStore` / `MySqlModelStore`).
+///
+/// A declared `Text`/`TextLarge`/`Date` field stores its **raw string**.
+/// The field-blind sniffing in [`json_value_to_bind`] promotes
+/// `"2026-12-01T10:00:00Z"` (>= 20 chars, contains `T`) to a native
+/// timestamp, so the row holds the normalized `2026-12-01 10:00:00` while
+/// the `unique` row probe compares against the untouched request value and
+/// finds nothing — a silent `unique` false pass, i.e. a second appointment
+/// booked into a slot the manifest already guards. (`update` already binds
+/// field-aware; this aligns the insert paths with it.)
+///
+/// Every other value keeps the untyped path unchanged, so nothing that
+/// binds today binds differently tomorrow.
+pub fn record_to_columns_for(
+    record: &Record,
+    model: &ModelDef,
+) -> Result<(Vec<Ident>, Vec<Bind>), AppError> {
+    let mut columns = Vec::with_capacity(record.len());
+    let mut binds = Vec::with_capacity(record.len());
+    for (key, value) in record {
+        columns.push(Ident::new(key.clone())?);
+        binds.push(bind_for_field(key, value, model)?);
+    }
+    Ok((columns, binds))
+}
+
+/// Bind one record entry: a declared text-like field keeps its raw string,
+/// everything else (framework timestamps, undeclared columns, non-string
+/// values) goes through the untyped converter exactly as before.
+fn bind_for_field(key: &str, value: &Json, model: &ModelDef) -> Result<Bind, AppError> {
+    if let Json::String(s) = value {
+        if let Some(field) = model.field_named(key) {
+            if matches!(
+                field.field_type,
+                FieldType::Text | FieldType::TextLarge | FieldType::Date
+            ) {
+                return Ok(Bind::Text(s.clone()));
+            }
+        }
+    }
+    json_value_to_bind(value)
+}
+
 /// Untyped JSON -> bind conversion for store rows (schema-free columns like
 /// framework timestamps). Uuid/timestamp strings are detected so they bind
 /// as native types; everything else stays text/json.
@@ -3240,6 +3284,81 @@ mod tests {
                 ModelPhase::Deleting,
                 ModelPhase::Deleted
             ]
+        );
+    }
+
+    /// Regression guard for a silent `unique` false pass (found live against
+    /// MySQL in Phase A): a declared `Text` field must store its **raw**
+    /// string. Field-blind sniffing promotes `"2026-12-01T10:00:00Z"`
+    /// (>= 20 chars, contains `T`) to a native timestamp, the row keeps the
+    /// normalized `2026-12-01 10:00:00`, and the `unique` row probe — which
+    /// compares the untouched request value — then finds no match and lets a
+    /// second appointment book a slot the manifest already guards.
+    #[test]
+    fn record_to_columns_for_keeps_raw_text_for_declared_text_fields() {
+        fn bind_of<'a>(cols: &'a [Ident], binds: &'a [Bind], name: &str) -> &'a Bind {
+            let idx = cols
+                .iter()
+                .position(|c| c.as_str() == name)
+                .unwrap_or_else(|| panic!("missing column {name}"));
+            &binds[idx]
+        }
+
+        let model = ModelDef::new("Appointment", "appointments")
+            .field(FieldDef::new("id", FieldType::Uuid).required())
+            .field(FieldDef::new("patient", FieldType::Text).required())
+            .field(FieldDef::new("slot", FieldType::Text).required())
+            .field(FieldDef::new("created_at", FieldType::Timestamp));
+        let mut record = Record::new();
+        record.insert("id".into(), Json::String(Uuid::now_v7().to_string()));
+        record.insert("patient".into(), Json::from("alice"));
+        record.insert("slot".into(), Json::from("2026-12-01T10:00:00Z"));
+        record.insert("created_at".into(), Json::from("2026-12-01T10:00:00Z"));
+        // not a model field at all -> untyped sniffing still applies
+        record.insert("external_ref".into(), Json::from("2026-12-01T10:00:00Z"));
+
+        let (cols, binds) = record_to_columns_for(&record, &model).unwrap();
+        assert_eq!(cols.len(), 5);
+
+        // declared Text field: raw request value, never a timestamp
+        assert!(
+            matches!(bind_of(&cols, &binds, "slot"), Bind::Text(t) if t == "2026-12-01T10:00:00Z"),
+            "slot = {:?}; must keep the raw request value",
+            bind_of(&cols, &binds, "slot")
+        );
+        assert!(
+            matches!(bind_of(&cols, &binds, "patient"), Bind::Text(t) if t == "alice"),
+            "patient = {:?}",
+            bind_of(&cols, &binds, "patient")
+        );
+        // the SAME value in an undeclared column still sniffs to a timestamp:
+        // only declared text-like fields changed, nothing else did
+        assert!(matches!(
+            bind_of(&cols, &binds, "external_ref"),
+            Bind::Timestamp(_)
+        ));
+        // declared Timestamp keeps timestamp semantics; uuid keeps uuid
+        assert!(matches!(
+            bind_of(&cols, &binds, "created_at"),
+            Bind::Timestamp(_)
+        ));
+        assert!(matches!(bind_of(&cols, &binds, "id"), Bind::Uuid(_)));
+    }
+
+    /// Nothing that binds today may stop binding: a non-string landing in a
+    /// `Text` field takes the untyped path instead of erroring out.
+    #[test]
+    fn record_to_columns_for_never_rejects_a_value_that_bound_before() {
+        let model = ModelDef::new("Reading", "readings")
+            .field(FieldDef::new("value", FieldType::Text));
+        let mut record = Record::new();
+        record.insert("value".into(), Json::from(7));
+        let (cols, binds) = record_to_columns_for(&record, &model).unwrap();
+        assert_eq!(cols.len(), 1);
+        assert!(
+            matches!(&binds[0], Bind::Int(7)),
+            "non-string in a Text field = {:?}; must fall back to the untyped path",
+            binds[0]
         );
     }
 

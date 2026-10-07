@@ -26,8 +26,9 @@ pub use casts::{Cast, EncryptedCast};
 pub use probes::{ModelProbe, ProbeRegistry, ProbeRegistryRef, StoreProbe};
 pub use prune::{PruneRegistry, PruneRegistryRef};
 pub use runtime::{
-    json_to_bind, json_value_to_bind, parse_timestamp, record_to_columns, EagerConstraint,
-    ModelEvent, ModelObserver, ModelPhase, ModelRuntime, PivotSync, PrunePredicate, RecordChanges,
+    json_to_bind, json_value_to_bind, parse_timestamp, record_to_columns, record_to_columns_for,
+    EagerConstraint, ModelEvent, ModelObserver, ModelPhase, ModelRuntime, PivotSync,
+    PrunePredicate, RecordChanges,
 };
 pub use store::{
     now_rfc3339, AggregateOp, ExistsFilter, FieldFilter, FilterOp, InMemoryModelStore,
