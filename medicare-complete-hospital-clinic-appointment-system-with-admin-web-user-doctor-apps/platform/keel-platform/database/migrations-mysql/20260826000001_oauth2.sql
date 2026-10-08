@@ -9,13 +9,13 @@
 -- client_id, while the authorization endpoint resolves it from the
 -- session's tenant context through the same unique key.
 CREATE TABLE IF NOT EXISTS oauth_clients (
-    id            BINARY(16) PRIMARY KEY,
-    name          TEXT NOT NULL,
-    client_id     VARCHAR(191) NOT NULL UNIQUE,
-    secret_hash   TEXT NOT NULL,
-    redirect_uris JSON NOT NULL,
-    scopes        JSON NOT NULL,
-    version       bigint NOT NULL DEFAULT 1,
-    created_at    DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-    updated_at    DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+    id             BINARY(16) PRIMARY KEY,
+    name           TEXT NOT NULL,
+    client_id      VARCHAR(191) NOT NULL UNIQUE,
+    secret_hash    TEXT NOT NULL,
+    redirect_uris  JSON NOT NULL,
+    scopes         JSON NOT NULL,
+    version        bigint NOT NULL DEFAULT 1,
+    created_at     DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at     DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
 ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

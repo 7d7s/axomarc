@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS principals (
 CREATE TABLE IF NOT EXISTS credentials (
     id            BINARY(16) PRIMARY KEY,
     principal_id  BINARY(16) NOT NULL,
-    kind          TEXT NOT NULL,             -- password_argon2 | otp | api_key
+    kind          TEXT NOT NULL,  -- password_argon2 | otp | api_key
     secret_hash   TEXT NOT NULL,
     created_at    DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     expires_at    DATETIME(6),
@@ -36,23 +36,23 @@ CREATE TABLE IF NOT EXISTS credentials (
 ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS sessions (
-    id           BINARY(16) PRIMARY KEY,
-    principal_id BINARY(16) NOT NULL,
-    expires_at   DATETIME(6) NOT NULL,
-    source_ip    TEXT,
-    user_agent   TEXT,
+    id            BINARY(16) PRIMARY KEY,
+    principal_id  BINARY(16) NOT NULL,
+    expires_at    DATETIME(6) NOT NULL,
+    source_ip     TEXT,
+    user_agent    TEXT,
     FOREIGN KEY (principal_id) REFERENCES principals(id)
 ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 -- Global revision counters (single-row table).
 CREATE TABLE IF NOT EXISTS revisions (
-    id           TINYINT(1) NOT NULL DEFAULT 1 PRIMARY KEY CHECK (id = 1),
-    platform_rev bigint NOT NULL DEFAULT 0,
-    tenant_rev   bigint NOT NULL DEFAULT 0,
-    auth_rev     bigint NOT NULL DEFAULT 0,
-    module_rev   bigint NOT NULL DEFAULT 0,
-    feature_rev  bigint NOT NULL DEFAULT 0,
-    schema_rev   bigint NOT NULL DEFAULT 0
+    id            TINYINT(1) NOT NULL DEFAULT 1 PRIMARY KEY CHECK (id = 1),
+    platform_rev  bigint NOT NULL DEFAULT 0,
+    tenant_rev    bigint NOT NULL DEFAULT 0,
+    auth_rev      bigint NOT NULL DEFAULT 0,
+    module_rev    bigint NOT NULL DEFAULT 0,
+    feature_rev   bigint NOT NULL DEFAULT 0,
+    schema_rev    bigint NOT NULL DEFAULT 0
 ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 -- pg: INSERT ... DEFAULT VALUES ON CONFLICT DO NOTHING (single-row table).
 INSERT INTO revisions (id) SELECT 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM revisions);
@@ -60,11 +60,11 @@ INSERT INTO revisions (id) SELECT 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM re
 -- ============ TENANT-ANCHORED TABLES (RLS) ============
 
 CREATE TABLE IF NOT EXISTS memberships (
-    id           BINARY(16) PRIMARY KEY,
-    principal_id BINARY(16) NOT NULL,
-    tenant_id    BINARY(16) NOT NULL,
-    status       TEXT NOT NULL DEFAULT ('active'),
-    joined_at    DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    id            BINARY(16) PRIMARY KEY,
+    principal_id  BINARY(16) NOT NULL,
+    tenant_id     BINARY(16) NOT NULL,
+    status        TEXT NOT NULL DEFAULT ('active'),
+    joined_at     DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     FOREIGN KEY (principal_id) REFERENCES principals(id),
     FOREIGN KEY (tenant_id) REFERENCES tenants(id)
 ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
@@ -110,23 +110,23 @@ CREATE TABLE IF NOT EXISTS delta_streams (
 ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS delta_stones (
-    id                 BINARY(16) PRIMARY KEY,
-    stream_key         VARCHAR(191) NOT NULL,
-    sequence           bigint NOT NULL,
-    resource_type      VARCHAR(64) NOT NULL,
-    resource_id        BINARY(16),
-    resource_version   bigint NOT NULL,
-    execution_id       BINARY(16) NOT NULL,
-    principal_id       BINARY(16),
-    tenant_id          BINARY(16),
-    scope_snapshot     JSON NOT NULL DEFAULT ('[]'),
-    ownership_snapshot JSON NOT NULL DEFAULT ('[]'),
-    `before`           JSON,
-    command            TEXT NOT NULL,
-    `after`            JSON NOT NULL,
-    causation_id       BINARY(16),
-    correlation_id     BINARY(16),
-    at                 DATETIME(6) NOT NULL,
+    id                  BINARY(16) PRIMARY KEY,
+    stream_key          VARCHAR(191) NOT NULL,
+    sequence            bigint NOT NULL,
+    resource_type       VARCHAR(64) NOT NULL,
+    resource_id         BINARY(16),
+    resource_version    bigint NOT NULL,
+    execution_id        BINARY(16) NOT NULL,
+    principal_id        BINARY(16),
+    tenant_id           BINARY(16),
+    scope_snapshot      JSON NOT NULL DEFAULT ('[]'),
+    ownership_snapshot  JSON NOT NULL DEFAULT ('[]'),
+    `before`            JSON,
+    command             TEXT NOT NULL,
+    `after`             JSON NOT NULL,
+    causation_id        BINARY(16),
+    correlation_id      BINARY(16),
+    at                  DATETIME(6) NOT NULL,
     UNIQUE (stream_key, sequence),
     FOREIGN KEY (stream_key) REFERENCES delta_streams(stream_key),
     FOREIGN KEY (tenant_id) REFERENCES tenants(id)

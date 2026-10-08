@@ -28,6 +28,7 @@ pub mod notificationstore;
 pub mod outboxstore;
 pub mod pairs;
 pub mod principalstore;
+pub mod schema;
 pub mod seeders;
 pub mod sessionstore;
 pub mod store;

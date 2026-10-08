@@ -19,5 +19,4 @@ CREATE TABLE IF NOT EXISTS job_batches (
 -- MySQL has no partial index: WHERE finished_at IS NOT NULL is dropped
 -- (non-unique index, so only index size diverges; the prune query keeps its
 -- explicit finished_at IS NOT NULL predicate).
-CREATE INDEX ix_job_batches_finished_at
-    ON job_batches (finished_at);
+CREATE INDEX ix_job_batches_finished_at ON job_batches (finished_at);

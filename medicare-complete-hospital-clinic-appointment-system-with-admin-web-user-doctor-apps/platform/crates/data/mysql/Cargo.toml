@@ -34,10 +34,11 @@ tracing = { workspace = true }
 all-features = true
 
 [lib]
-# Wave 9 B-31: every keel-mysql test lives in an EXISTING suite (the live
-# store matrix rides the keel-postgres `pg-tests` integration files, which
-# skip unless DATABASE_URL points at a MySQL 8 instance), so the crate opts
-# out of its own lib test target and doctests — the suite count stays 150
-# (keel-wasm / oauth2 precedent).
+# Wave 9 B-31: lib unit tests and doctests are off; the DB-backed keel-mysql
+# matrix rides the keel-postgres `pg-tests` integration files (which skip
+# unless DATABASE_URL points at a MySQL 8 instance). The one target this crate
+# does own is tests/schema_roundtrip.rs (Phase D): the fluent schema-builder
+# gate is pure — no database — so it runs in every workspace gate and keeps
+# the shipped migrations builder-reproducible byte for byte (suite +1).
 test = false
 doctest = false

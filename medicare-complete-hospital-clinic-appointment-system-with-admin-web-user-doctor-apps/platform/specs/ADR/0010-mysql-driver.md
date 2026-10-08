@@ -66,6 +66,25 @@ Constraints that bound the answer:
   filenames in the same order, adapted to MySQL dialect (below). sqlx bookkeeping
   stays the shared `_sqlx_migrations` table per database; each driver embeds its
   own directory.
+- **Canonical bytes — added by B-31 Phase D (2026-10-09).** Those nine files are
+  builder-generated artifacts: `keel_mysql::schema` is a fluent schema builder
+  (`Migration::create_table` / `alter_table` / `create_index` / `comment` /
+  `section` over `Table`/`Alter` column helpers) that renders every shipped
+  migration byte-for-byte, and the pure gate
+  `crates/data/mysql/tests/schema_roundtrip.rs` — no database, runs in every
+  workspace gate — asserts builder output ≡ file bytes, so a hand edit the
+  builder cannot represent fails the gate. Phase D canonicalized the files'
+  layout once (name field = longest name + two, in `CREATE TABLE` bodies and
+  `ALTER` groups alike; two-space inline comments; one-line `CREATE INDEX`) and
+  proved the change whitespace-only — character-stripped equality against the
+  pre-canonicalization bytes plus byte-identical SQL literals and backtick
+  identifiers — before re-applying all nine to MySQL 8.0.44 from a dropped
+  database (25 tables, nine fresh `_sqlx_migrations` checksums,
+  `migrate:status` 9 applied / 0 pending). The SQL-first decision itself is
+  unchanged: the builder authors the committed bytes; it does not generate DDL
+  at `keel migrate` runtime the way Laravel's `Blueprint` closures do, and the
+  gateway that decision protects (`migrate:status` before anything runs) is
+  untouched.
 - **Pairs — amended by B-31 Phase C (2026-10-08).** The decision as accepted
   read: "`keel-mysql::run_migrations` **fails closed** if
   `database/migrations-pairs` ships any `.up.sql`/`.down.sql` pair: pairs are an

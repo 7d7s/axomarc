@@ -202,6 +202,27 @@ set is forward-only: `keel migrate` applies it under `GET_LOCK` (the `pg_advisor
 twin), `migrate:fresh` drops every table with FK checks off instead of cascading a schema, and
 `migrate:status` lists the MySQL set.
 
+**Migrations are builder-generated artifacts (B-31 Phase D).** The authoring DX Laravel
+ships — `Schema::create(...)` over a `Blueprint` — has a keel twin in `keel_mysql::schema`,
+a fluent, byte-stable builder: `Migration::create_table` / `alter_table` / `create_index` /
+`comment` / `section` over `Table`/`Alter` column helpers (`t.uuid("id").primary_key()`,
+`t.varchar("slug", 128).not_null().unique()`, `.generated_stored(expr)` for the
+partial-unique substitute below). The claim is byte-exact, not "equivalent SQL":
+`crates/data/mysql/tests/schema_roundtrip.rs` — a pure target (no database) that runs in
+every workspace gate — authors all nine migrations as builder programs and asserts the
+rendered bytes equal `database/migrations-mysql/*.sql`, so a hand edit the builder cannot
+represent fails the gate. Phase D canonicalized the shipped files' layout once (name field =
+longest name + two, in both `CREATE TABLE` bodies and `ALTER` groups alike; two-space inline
+comments; one-line `CREATE INDEX`) and proved the result whitespace-only: character-stripped
+equality against the pre-canonicalization bytes, plus byte-identical SQL literals and
+backtick identifiers. The canonicalized set was then re-applied to MySQL 8.0.44 from a
+dropped database — 25 tables, nine fresh `_sqlx_migrations` checksums, `migrate:status` =
+9 applied / 0 pending — so the builder round-trip inherits Phase A's execution proof
+transitively (builder ≡ files ≡ bytes known to execute). `KEEL_SCHEMA_REGENERATE=1 cargo
+test -p keel-mysql --test schema_roundtrip` rewrites the canonical files from the programs;
+`platform/` and `keel-platform/` carry byte-identical copies of the builder, the gate, and
+all nine files.
+
 **Revertible pairs work on both drivers (B-31 Phase C).** `keel_mysql::pairs` is
 `keel_postgres::pairs` — the same `<ts>_<name>.up.sql` / `.down.sql` shipment in
 `database/migrations-pairs`, the same `keel_migrations` bookkeeping table

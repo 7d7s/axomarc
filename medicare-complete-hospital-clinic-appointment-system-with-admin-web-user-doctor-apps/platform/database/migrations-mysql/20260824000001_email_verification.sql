@@ -4,4 +4,4 @@
 -- migration discipline, G08); existing rows stay unverified until proven.
 -- MySQL has no ADD COLUMN IF NOT EXISTS; plain ADD COLUMN (sqlx runs each
 -- migration file exactly once).
-ALTER TABLE principals ADD COLUMN email_verified_at DATETIME(6);
+ALTER TABLE principals ADD COLUMN email_verified_at  DATETIME(6);

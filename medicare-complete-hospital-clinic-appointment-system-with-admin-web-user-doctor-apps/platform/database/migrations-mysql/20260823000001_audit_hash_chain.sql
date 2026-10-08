@@ -7,9 +7,8 @@
 -- MySQL has no ADD COLUMN IF NOT EXISTS; plain ADD COLUMN (sqlx runs each
 -- migration file exactly once).
 
-ALTER TABLE audit_records ADD COLUMN chain_id   BINARY(16);
+ALTER TABLE audit_records ADD COLUMN chain_id  BINARY(16);
 ALTER TABLE audit_records ADD COLUMN prev_hash  BLOB;
-ALTER TABLE audit_records ADD COLUMN chain_hash BLOB;
+ALTER TABLE audit_records ADD COLUMN chain_hash  BLOB;
 
-CREATE INDEX ix_audit_chain
-    ON audit_records (tenant_id, chain_id, at);
+CREATE INDEX ix_audit_chain ON audit_records (tenant_id, chain_id, at);
