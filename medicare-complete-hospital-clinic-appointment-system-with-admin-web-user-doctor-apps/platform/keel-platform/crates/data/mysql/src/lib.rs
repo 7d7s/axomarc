@@ -12,9 +12,11 @@
 //! - **no `RETURNING`** — writes re-select by key on the same connection;
 //! - **no advisory-lock keys** — the migration lock is `GET_LOCK()`, the
 //!   same session-scoped fail-closed contract as `pg_try_advisory_lock`;
-//! - **rollback-capable pairs are PostgreSQL-only** — a shipped pair under
-//!   `database/migrations-pairs` refuses the MySQL run (fail-closed) instead
-//!   of silently skipping DDL that would never apply;
+//! - **rollback-capable pairs are transaction-free** — the same
+//!   `database/migrations-pairs` shipment, `keel_migrations` bookkeeping and
+//!   Laravel batches as `keel_postgres::pairs`, but applied statement by
+//!   statement with fail-stop-and-report, because MySQL DDL auto-commits
+//!   (see [`pairs`] for the whole divergence list);
 //! - uuid columns are `BINARY(16)` (sqlx's MySQL `Uuid` codec is binary),
 //!   timestamps are `DATETIME(6)` (sqlx stores `OffsetDateTime` as UTC).
 
@@ -24,6 +26,7 @@ pub mod jobstore;
 pub mod modelstore;
 pub mod notificationstore;
 pub mod outboxstore;
+pub mod pairs;
 pub mod principalstore;
 pub mod seeders;
 pub mod sessionstore;
@@ -160,65 +163,20 @@ pub async fn release_migration_lock(conn: &mut sqlx::MySqlConnection) -> Result<
     }
 }
 
-/// Where the Postgres runner's rollback-capable pairs live (mirrors
-/// `keel_postgres::pairs::PAIRS_DIR`; kept as a literal so this crate stays
-/// independent of the Postgres fabric).
-const PAIRS_DIR: &str = "database/migrations-pairs";
-
-/// MySQL runs forward-only sqlx singles from `database/migrations-mysql`.
-/// A shipped `.up.sql`/`.down.sql` pair would silently never apply — the
-/// schema would be half-built — so its presence refuses the run instead
-/// (fail-closed, the docs/05 documented divergence). A missing directory or
-/// a README-only directory means "no pairs yet" and passes.
-fn refuse_shipped_pairs(root: &std::path::Path) -> Result<(), AppError> {
-    let dir = root.join(PAIRS_DIR);
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => {
-            return Err(AppError::persistence(format!(
-                "pair migrations: cannot read {}: {e}",
-                dir.display()
-            )))
-        }
-    };
-    for entry in entries {
-        let entry = entry.map_err(|e| {
-            AppError::persistence(format!("pair migrations: cannot list {}: {e}", dir.display()))
-        })?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue; // subdirectories and the README are not migrations
-        }
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        if let Some(base) = name
-            .strip_suffix(".up.sql")
-            .or_else(|| name.strip_suffix(".down.sql"))
-        {
-            return Err(AppError::persistence(format!(
-                "pair {base}: rollback-capable pairs are PostgreSQL-only (B-31); \
-                 switch [database].driver back to \"postgres\", or move the pair into \
-                 database/migrations as a forward-only migration for the MySQL driver"
-            )));
-        }
-    }
-    Ok(())
-}
-
 /// Migrations from ../../../database/migrations-mysql (boot-time,
-/// idempotent, SQL-first — no schema is built from Rust). The whole run
-/// holds [`MIGRATION_LOCK_NAME`] on a single pooled connection, so
-/// concurrent runs serialize (fail-closed on timeout). Applied-pair names
-/// are the Postgres runner's return; the forward-only MySQL run has none,
-/// so it returns an empty list (sqlx bookkeeping lives in `_sqlx_migrations`).
+/// idempotent, SQL-first — no schema is built from Rust), then the
+/// rollback-capable pairs under `database/migrations-pairs` (validated
+/// fail-closed before any DDL; pairs carry the batch bookkeeping and return
+/// their applied names). The whole run holds [`MIGRATION_LOCK_NAME`] on a
+/// single pooled connection, so concurrent runs serialize (fail-closed on
+/// timeout).
 pub async fn run_migrations(
     pool: &MySqlPool,
     root: &std::path::Path,
 ) -> Result<Vec<String>, AppError> {
-    // A broken pair shipment refuses the run before the first statement.
-    refuse_shipped_pairs(root)?;
+    // Validate the pairs directory first: a broken pair shipment refuses
+    // the run before the first statement (sqlx singles included).
+    let _validated = pairs::scan_pairs(root)?;
     let mut conn = pool
         .acquire()
         .await
@@ -233,20 +191,20 @@ pub async fn run_migrations(
     Ok(names)
 }
 
-/// The migration run proper on a connection the caller already holds the
-/// lock on. External callers take the lock first via
-/// [`acquire_migration_lock`]; prefer [`run_migrations`] otherwise.
+/// The migration run proper — sqlx singles, then pairs — on a connection
+/// the caller already holds [`MIGRATION_LOCK_NAME`] on. External callers
+/// take the lock first via [`acquire_migration_lock`]; prefer
+/// [`run_migrations`] otherwise.
 pub async fn run_migrations_held(
     conn: &mut sqlx::MySqlConnection,
     root: &std::path::Path,
 ) -> Result<Vec<String>, AppError> {
-    refuse_shipped_pairs(root)?;
     let migrator = sqlx::migrate!("../../../database/migrations-mysql");
     migrator
         .run(&mut *conn)
         .await
         .map_err(|e| AppError::persistence(format!("migrate: {e}")))?;
-    Ok(Vec::new())
+    pairs::apply_pending(&mut *conn, root).await
 }
 
 /// Dev seeder: tenant row (platform plane writes — run with a platform

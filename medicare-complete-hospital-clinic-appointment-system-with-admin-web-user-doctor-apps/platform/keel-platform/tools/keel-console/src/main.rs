@@ -2130,21 +2130,11 @@ async fn migrate_status() -> anyhow::Result<ExitCode> {
             migration.description
         );
     }
-    if matches!(pool, DbPool::MySql(_)) {
-        // Pairs never run on MySQL (migrate refuses them fail-closed): surface
-        // the posture instead of silently under-reporting pending work.
-        if !keel_postgres::pairs::scan_pairs(&root).map_err(db_err)?.is_empty() {
-            println!(
-                "  note: rollback-capable pairs exist in database/migrations-pairs but are \
-                 PostgreSQL-only; `keel migrate` refuses them on driver = \"mysql\" (docs/05-DATABASE)"
-            );
-        }
-        println!("{pending} pending migration(s).");
-        return Ok(ExitCode::SUCCESS);
-    }
     // Wave 5: rollback-capable pairs (keel_migrations may not exist yet —
     // status stays read-only, so a missing bookkeeping table just means
-    // every pair is pending).
+    // every pair is pending). B-31 Phase C: both drivers share one pairs
+    // directory and one bookkeeping table, so the listing is driver-agnostic
+    // — only the connection (and which crate scans) changes.
     let pair_applied: Vec<String> = match &pool {
         DbPool::Postgres(p) => {
             sqlx::query_scalar("SELECT migration FROM keel_migrations ORDER BY migration")
@@ -2152,17 +2142,34 @@ async fn migrate_status() -> anyhow::Result<ExitCode> {
                 .await
                 .unwrap_or_default()
         }
-        DbPool::MySql(_) => Vec::new(),
+        DbPool::MySql(p) => {
+            sqlx::query_scalar("SELECT migration FROM keel_migrations ORDER BY migration")
+                .fetch_all(p)
+                .await
+                .unwrap_or_default()
+        }
     };
-    for pair in keel_postgres::pairs::scan_pairs(&root).map_err(db_err)? {
-        let is_applied = pair_applied.contains(&pair.migration);
+    let scanned: Vec<String> = match &pool {
+        DbPool::Postgres(_) => keel_postgres::pairs::scan_pairs(&root)
+            .map_err(db_err)?
+            .into_iter()
+            .map(|p| p.migration)
+            .collect(),
+        DbPool::MySql(_) => keel_mysql::pairs::scan_pairs(&root)
+            .map_err(db_err)?
+            .into_iter()
+            .map(|p| p.migration)
+            .collect(),
+    };
+    for pair in scanned {
+        let is_applied = pair_applied.contains(&pair);
         if !is_applied {
             pending += 1;
         }
         println!(
             "  {:<8} {} (pair)",
             if is_applied { "applied" } else { "PENDING" },
-            pair.migration
+            pair
         );
     }
     println!("{pending} pending migration(s).");
@@ -2239,23 +2246,41 @@ async fn migrate_fresh() -> anyhow::Result<ExitCode> {
 async fn migrate_rollback(steps: u32) -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
     let pool = db_pool(&root).await?;
-    let DbPool::Postgres(pool) = pool else {
-        return Err(pg_only_on_mysql("migrate:rollback"));
+    // Session-scoped lock on both drivers (`pg_advisory_lock(7259)` /
+    // `GET_LOCK('keel:migrate')`): acquire, roll back, and release on one
+    // pooled connection (a concurrent migrate serializes instead of
+    // interleaving). The MySQL pair runs without a transaction — DDL
+    // auto-commits — so a failure reports which statements already ran.
+    let reverted = match pool {
+        DbPool::Postgres(pool) => {
+            let mut conn = pool
+                .acquire()
+                .await
+                .map_err(|e| anyhow::anyhow!("migrate: connect: {e}"))?;
+            keel_postgres::acquire_migration_lock(&mut conn)
+                .await
+                .map_err(db_err)?;
+            let outcome = keel_postgres::pairs::rollback(&mut *conn, &root, steps).await;
+            let released = keel_postgres::release_migration_lock(&mut conn).await;
+            let reverted = outcome.map_err(db_err)?;
+            released.map_err(db_err)?;
+            reverted
+        }
+        DbPool::MySql(pool) => {
+            let mut conn = pool
+                .acquire()
+                .await
+                .map_err(|e| anyhow::anyhow!("migrate: connect: {e}"))?;
+            keel_mysql::acquire_migration_lock(&mut conn)
+                .await
+                .map_err(db_err)?;
+            let outcome = keel_mysql::pairs::rollback(&mut *conn, &root, steps).await;
+            let released = keel_mysql::release_migration_lock(&mut conn).await;
+            let reverted = outcome.map_err(db_err)?;
+            released.map_err(db_err)?;
+            reverted
+        }
     };
-    // The advisory lock is session-scoped: acquire, roll back, and release
-    // on one pooled connection (a concurrent migrate serializes instead of
-    // interleaving).
-    let mut conn = pool
-        .acquire()
-        .await
-        .map_err(|e| anyhow::anyhow!("migrate: connect: {e}"))?;
-    keel_postgres::acquire_migration_lock(&mut conn)
-        .await
-        .map_err(db_err)?;
-    let outcome = keel_postgres::pairs::rollback(&mut *conn, &root, steps).await;
-    let released = keel_postgres::release_migration_lock(&mut conn).await;
-    let reverted = outcome.map_err(db_err)?;
-    released.map_err(db_err)?;
     if reverted.is_empty() {
         println!("nothing to roll back ({steps} batch(es) requested).");
         return Ok(ExitCode::SUCCESS);
@@ -2282,9 +2307,9 @@ struct PromotionWiring {
     pool: keel_postgres::PgPool,
 }
 
-/// Build the wiring against `db`. PostgreSQL-only, for the same reason
-/// `migrate:rollback` is: the pair-migration machinery drives advisory locks
-/// and pg_catalog and has no MySQL equivalent (docs/05-DATABASE).
+/// Build the wiring against `db`. PostgreSQL-only because every pooled port
+/// below is `PgPool`-typed (events, migration adapter, health probes); the
+/// pairs machinery itself reached MySQL in B-31 Phase C, this wiring did not.
 fn wire_promotion(root: &Path, db: &DbPool) -> anyhow::Result<PromotionWiring> {
     let DbPool::Postgres(pool) = db else {
         return Err(pg_only_on_mysql("promote/rollback"));
@@ -2435,20 +2460,36 @@ async fn migrate_reset() -> anyhow::Result<ExitCode> {
         anyhow::bail!("aborted (set KEEL_FORCE=1 to skip the prompt in scripts)");
     }
     let pool = db_pool(&root).await?;
-    let DbPool::Postgres(pool) = pool else {
-        return Err(pg_only_on_mysql("migrate:reset"));
+    let reverted = match pool {
+        DbPool::Postgres(pool) => {
+            let mut conn = pool
+                .acquire()
+                .await
+                .map_err(|e| anyhow::anyhow!("migrate: connect: {e}"))?;
+            keel_postgres::acquire_migration_lock(&mut conn)
+                .await
+                .map_err(db_err)?;
+            let outcome = keel_postgres::pairs::reset(&mut *conn, &root).await;
+            let released = keel_postgres::release_migration_lock(&mut conn).await;
+            let reverted = outcome.map_err(db_err)?;
+            released.map_err(db_err)?;
+            reverted
+        }
+        DbPool::MySql(pool) => {
+            let mut conn = pool
+                .acquire()
+                .await
+                .map_err(|e| anyhow::anyhow!("migrate: connect: {e}"))?;
+            keel_mysql::acquire_migration_lock(&mut conn)
+                .await
+                .map_err(db_err)?;
+            let outcome = keel_mysql::pairs::reset(&mut *conn, &root).await;
+            let released = keel_mysql::release_migration_lock(&mut conn).await;
+            let reverted = outcome.map_err(db_err)?;
+            released.map_err(db_err)?;
+            reverted
+        }
     };
-    let mut conn = pool
-        .acquire()
-        .await
-        .map_err(|e| anyhow::anyhow!("migrate: connect: {e}"))?;
-    keel_postgres::acquire_migration_lock(&mut conn)
-        .await
-        .map_err(db_err)?;
-    let outcome = keel_postgres::pairs::reset(&mut *conn, &root).await;
-    let released = keel_postgres::release_migration_lock(&mut conn).await;
-    let reverted = outcome.map_err(db_err)?;
-    released.map_err(db_err)?;
     for name in &reverted {
         println!("  - {name}");
     }
@@ -2475,28 +2516,51 @@ async fn migrate_refresh(steps: u32) -> anyhow::Result<ExitCode> {
         anyhow::bail!("aborted (set KEEL_FORCE=1 to skip the prompt in scripts)");
     }
     let pool = db_pool(&root).await?;
-    let DbPool::Postgres(pool) = pool else {
-        return Err(pg_only_on_mysql("migrate:refresh"));
-    };
     // One lock across rollback + re-apply so no run interleaves between the
-    // two phases.
-    let mut conn = pool
-        .acquire()
-        .await
-        .map_err(|e| anyhow::anyhow!("migrate: connect: {e}"))?;
-    keel_postgres::acquire_migration_lock(&mut conn)
-        .await
-        .map_err(db_err)?;
-    let outcome = match keel_postgres::pairs::rollback(&mut *conn, &root, steps).await {
-        Err(e) => Err(e),
-        Ok(reverted) => match keel_postgres::run_migrations_held(&mut conn, &root).await {
-            Ok(pair_applied) => Ok((reverted, pair_applied)),
-            Err(e) => Err(e),
-        },
+    // two phases (session-scoped on both drivers).
+    let outcome = match pool {
+        DbPool::Postgres(pool) => {
+            let mut conn = pool
+                .acquire()
+                .await
+                .map_err(|e| anyhow::anyhow!("migrate: connect: {e}"))?;
+            keel_postgres::acquire_migration_lock(&mut conn)
+                .await
+                .map_err(db_err)?;
+            let outcome = match keel_postgres::pairs::rollback(&mut *conn, &root, steps).await {
+                Err(e) => Err(e),
+                Ok(reverted) => match keel_postgres::run_migrations_held(&mut conn, &root).await {
+                    Ok(pair_applied) => Ok((reverted, pair_applied)),
+                    Err(e) => Err(e),
+                },
+            };
+            let released = keel_postgres::release_migration_lock(&mut conn).await;
+            let outcome = outcome.map_err(db_err)?;
+            released.map_err(db_err)?;
+            outcome
+        }
+        DbPool::MySql(pool) => {
+            let mut conn = pool
+                .acquire()
+                .await
+                .map_err(|e| anyhow::anyhow!("migrate: connect: {e}"))?;
+            keel_mysql::acquire_migration_lock(&mut conn)
+                .await
+                .map_err(db_err)?;
+            let outcome = match keel_mysql::pairs::rollback(&mut *conn, &root, steps).await {
+                Err(e) => Err(e),
+                Ok(reverted) => match keel_mysql::run_migrations_held(&mut conn, &root).await {
+                    Ok(pair_applied) => Ok((reverted, pair_applied)),
+                    Err(e) => Err(e),
+                },
+            };
+            let released = keel_mysql::release_migration_lock(&mut conn).await;
+            let outcome = outcome.map_err(db_err)?;
+            released.map_err(db_err)?;
+            outcome
+        }
     };
-    let released = keel_postgres::release_migration_lock(&mut conn).await;
-    let (reverted, pair_applied) = outcome.map_err(db_err)?;
-    released.map_err(db_err)?;
+    let (reverted, pair_applied) = outcome;
     for name in &reverted {
         println!("  - {name}");
     }
@@ -2515,12 +2579,12 @@ async fn migrate_refresh(steps: u32) -> anyhow::Result<ExitCode> {
 async fn migrate_install() -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
     let pool = db_pool(&root).await?;
-    let DbPool::Postgres(pool) = pool else {
-        return Err(pg_only_on_mysql("migrate:install"));
-    };
-    keel_postgres::pairs::install(&pool)
-        .await
-        .map_err(db_err)?;
+    // Same table name and columns on both drivers (B-31 Phase C): the
+    // bookkeeping table is driver-owned, the statement is identical.
+    match &pool {
+        DbPool::Postgres(p) => keel_postgres::pairs::install(p).await.map_err(db_err)?,
+        DbPool::MySql(p) => keel_mysql::pairs::install(p).await.map_err(db_err)?,
+    }
     println!(
         "{} bookkeeping table ready (no migration files run).",
         keel_postgres::pairs::PAIRS_TABLE

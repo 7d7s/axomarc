@@ -52,12 +52,17 @@ against the same workspace/config the runtime uses.
 
 **MySQL driver (B-31).** With `[database].driver = "mysql"` the whole Database table keeps
 working — `migrate` applies the forward-only `database/migrations-mysql/` set, `migrate:fresh`
-drops every table (FK checks off) and rebuilds, `migrate:status` lists the MySQL set (plus a
-note when pairs exist), `seed`/`db:show`/`db:inspect` run against information_schema. Five
-commands refuse on this driver with a message naming the command, the reason, and
-docs/05-DATABASE: `migrate:rollback`, `migrate:reset`, `migrate:refresh`, `migrate:install`
-(the pairs machinery is PostgreSQL-only) and `db:schema:dump` (the snapshot reads pg_catalog).
-`keel migrate` itself refuses fail-closed if `database/migrations-pairs` ships a pair.
+drops every table (FK checks off) and rebuilds, `migrate:status` lists the MySQL set, `seed`/
+`db:show`/`db:inspect` run against information_schema, and (B-31 Phase C) the pair family
+`migrate:rollback` / `migrate:reset` / `migrate:refresh` / `migrate:install` reads the same
+`database/migrations-pairs` shipment and `keel_migrations` bookkeeping as Postgres — applied
+statement by statement with fail-stop-and-report, because MySQL DDL auto-commits (docs/05
+records the divergence and the four live tests that prove it). One command of
+this table still refuses on this driver with a message naming the command, the
+reason, and docs/05-DATABASE: `db:schema:dump` (the snapshot reads
+pg_catalog). Separately — Operations table, `keel-platform` console only —
+`keel promote` / `keel rollback` keep their own `pg_only_on_mysql("promote/rollback")`
+gate at `wire_promotion` (Phase 4 wiring is `PgPool`-typed; untouched by Phase C).
 
 ## Operations
 

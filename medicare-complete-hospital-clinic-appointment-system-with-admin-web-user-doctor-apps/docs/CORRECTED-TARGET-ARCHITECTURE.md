@@ -909,30 +909,54 @@ impl PromotionPipeline {
     tears or regresses a revision — it found a real commit-order race (subscribers notified
     `[.. 7, 6 ..]`, i.e. stale routes installed), fixed by serializing commit.
   - `rollback < 30s` **`requires-DB` — and provably cannot be substituted or staged here.**
-    Three independent legs, each verified:
-    1. **It must be PostgreSQL; MySQL cannot stand in, by design.** The platform ships a
+    Three independent legs, each verified. **Leg 1 was revised by B-31 Phase C
+    (2026-10-08/09) — its original reason no longer holds, its conclusion does; legs 2 and 3
+    stand unchanged, and leg 3 remains the binding constraint.**
+    1. ~~**It must be PostgreSQL; MySQL cannot stand in, by design.** The platform ships a
        MySQL driver (`crates/data/mysql/`), but it is *forward-only*: `mysql/src/lib.rs:15`
        documents **"rollback-capable pairs are PostgreSQL-only"** and `:200` enforces it —
        `pair {base}: rollback-capable pairs are PostgreSQL-only (B-31)` — with
        `refuse_shipped_pairs()` failing the MySQL run closed rather than pretending.
        Only `crates/data/postgres/src/pairs.rs:264 rollback()` exists; MySQL has no
        migration-rollback path at all (`mysql`'s sole `rollback` is the transaction method in
-       `txport.rs:108`).
+       `txport.rs:108`).~~ **Revised:** Phase C replaced the refusal with
+       `keel_mysql::pairs`, a full port of `keel_postgres::pairs::rollback()` — same
+       `database/migrations-pairs` shipment, same `keel_migrations` bookkeeping, same Laravel
+       batches — executed without a transaction because MySQL DDL auto-commits, with the live
+       round trip `mysql_pair_migrations_apply_rollback_and_reset_with_batches` (plus the
+       `keel migrate:rollback --step 1` operator transcript) proving apply → rollback → reset
+       against MySQL 8.0.44. **But this box's figure does not travel that path.** It runs
+       `keel promote` / `keel rollback` → `RollbackExecutor`, whose composition root still
+       refuses a MySQL pool: `wire_promotion`
+       (`keel-platform/tools/keel-console/src/main.rs:2313`) returns
+       `pg_only_on_mysql("promote/rollback")` unless `db` is `DbPool::Postgres`, because the
+       ports it wires — `promotion::EventAdapter`, `promotion::MigrationAdapter` (which
+       drives `keel_postgres::pairs`) and the health probes — are `PgPool`-typed. Phase C
+       deliberately left promotion scope alone, so **the conclusion of this leg stands for
+       this measurement (PostgreSQL is required) while its original *reason* — MySQL "has no
+       migration-rollback path at all" — does not.** The struck-through text is kept as the
+       record the verdict was written against: the pairs exclusion was real until 2026-10-08.
     2. **No PostgreSQL is available in this environment.** No `postgres`/`pg_ctl`/`initdb`/`psql`
        on PATH and none installed (`C:\Program Files\PostgreSQL\16` contains only a leftover
        `data/` directory — no `bin/`, no service), port **5432 closed**, no docker or podman,
        and **no `DATABASE_URL` in either `.env`** (`platform/config/.env`,
        `platform/keel-kernel/config/.env`). The repo's own example expects
        `postgres://medicare:medicare@127.0.0.1:5432/medicare` from a compose file that cannot be
-       started. *Note: MySQL 8.0 **is** installed and listening on 3306 — it is excluded by
-       leg 1, not by its absence.*
-    3. **Even with PostgreSQL there is nothing to unwind.** Both rollback-capable directories —
+       started. *Note: MySQL 8.0 **is** installed and listening on 3306 and, since Phase C,
+       reverts pairs through `keel migrate:rollback` — but `keel promote`/`keel rollback`
+       still refuse it (leg 1), so it cannot stand in for this figure either.*
+    3. **Even with a database there is nothing to unwind.** Both rollback-capable directories —
        `platform/database/migrations-pairs` and `platform/keel-platform/database/migrations-pairs` —
-       are **README-only (0 pair subdirs)**, which `mysql/src/lib.rs:171` itself classifies as
-       "no pairs yet". `pairs::rollback()` would therefore unwind zero steps, i.e. exactly the
-       "no-op migrations dimension (meaningless number)" this box refuses to report.
-    Measuring it requires a PostgreSQL instance *and* at least one shipped pair. Staged as a
-    procedure in `platform/docs/13-OPERATIONS.md` §Performance baseline and **not claimed**.
+       are **README-only (0 pair subdirs)**, which `pairs::scan_pairs()` (both fabrics) classifies
+       as "no pairs yet" and returns empty. `pairs::rollback()` on either driver would therefore
+       unwind zero steps, i.e. exactly the "no-op migrations dimension (meaningless number)" this
+       box refuses to report. The 25th table the MySQL runner creates, `keel_migrations`, holds
+       **0 rows** for the same reason.
+    Measuring it therefore requires *PostgreSQL* (the promotion wiring still gates on it) **and**
+    *at least one shipped pair* — and neither exists here: PostgreSQL is absent (leg 2), both
+    `migrations-pairs` directories ship zero pairs (leg 3), so the migrations dimension would
+    unwind zero batches on any fabric. Staged as a procedure in
+    `platform/docs/13-OPERATIONS.md` §Performance baseline and **not claimed**.
 - [x] Documentation + runbooks for each component
 
 ---

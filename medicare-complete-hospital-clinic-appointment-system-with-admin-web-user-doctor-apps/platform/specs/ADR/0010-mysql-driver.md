@@ -60,20 +60,39 @@ Constraints that bound the answer:
   Degraded boot (D-52) is untouched — no database or unreachable + not required
   still lands on the in-memory stores, on both drivers.
 
-### 4. Migrations stay SQL-first; rollback-capable pairs are PostgreSQL-only
+### 4. Migrations stay SQL-first; pairs ship one directory to both drivers
 
 - A parallel set **`database/migrations-mysql/`** carries the same nine migration
   filenames in the same order, adapted to MySQL dialect (below). sqlx bookkeeping
   stays the shared `_sqlx_migrations` table per database; each driver embeds its
   own directory.
-- `keel-mysql::run_migrations` **fails closed** if `database/migrations-pairs`
-  ships any `.up.sql`/`.down.sql` pair: pairs are an advisory-lock/`ON CONFLICT`
-  Postgres feature and are never half-ported.
-- Console refusals on the mysql driver, each with a message that names the
-  command, the reason, and docs/05: `migrate:rollback`, `migrate:reset`,
-  `migrate:refresh`, `migrate:install`, `db:schema:dump` (pg_catalog snapshot).
-  `migrate`/`migrate:fresh`/`migrate:status`/`seed`/`db:show`/`db:inspect` all
-  work (status lists the MySQL set and notes when pairs exist but will refuse).
+- **Pairs — amended by B-31 Phase C (2026-10-08).** The decision as accepted
+  read: "`keel-mysql::run_migrations` **fails closed** if
+  `database/migrations-pairs` ships any `.up.sql`/`.down.sql` pair: pairs are an
+  advisory-lock/`ON CONFLICT` Postgres feature and are never half-ported"
+  (enforced by `refuse_shipped_pairs()`). That clause is **superseded**:
+  `keel_mysql::pairs` is a full port of `keel_postgres::pairs` — same shipment,
+  same `keel_migrations` bookkeeping, same Laravel batches, same fail-closed
+  scan — executed without a transaction because MySQL DDL causes an implicit
+  commit: statement by statement, fail-stop-and-report. The fail-closed *intent*
+  of the original decision is unchanged and still holds: a broken shipment
+  (missing/orphan `.down.sql`, bad base name) refuses `keel migrate` before the
+  first statement, now through the shared `pairs::scan_pairs()` instead of an
+  outright refusal, because there is no longer anything to refuse. Advisory
+  locks and `ON CONFLICT` remain genuinely Postgres-only and stay documented as
+  such (§5, docs/05).
+- Console on the mysql driver (as amended by Phase C): `migrate:rollback`,
+  `migrate:reset`, `migrate:refresh` and `migrate:install` dispatch to
+  `keel_mysql::pairs` behind `keel_mysql::acquire_migration_lock`. The one
+  remaining refusal of these — a message naming the command, the reason, and
+  docs/05 — is `db:schema:dump` (pg_catalog snapshot). Separately, and
+  untouched by Phase C, the Phase 4 pair `keel promote` / `keel rollback`
+  (console of the `keel-platform` workspace only) keeps its own
+  `pg_only_on_mysql("promote/rollback")` gate at `wire_promotion`, because its
+  events/migration/probe ports are `PgPool`-typed — that is promotion scope,
+  not the migration commands this ADR governs. `migrate`/`migrate:fresh`/
+  `migrate:status`/`seed`/`db:show`/`db:inspect` all work on both drivers
+  (status lists the MySQL set and the pairs applied to it).
 
 ### 5. Dialect rules that make the store matrix pass unchanged
 
@@ -118,8 +137,12 @@ Constraints that bound the answer:
 - Publish count moves to 62 (recorded deviation); `PUBLISHING.md` carries
   69 members / 62 publishable / 7 gated.
 - PostgreSQL-only surfaces are explicit refusals with docs pointers, not silent
-  no-ops: pairs machinery, `db:schema:dump`, and the RLS/array/collation
-  divergences are documented in docs/05-DATABASE and docs/12-CONSOLE.
+  no-ops: `db:schema:dump`, plus the RLS/array/collation divergences, are
+  documented in docs/05-DATABASE and docs/12-CONSOLE. (Pairs stopped being one
+  as of Phase C — see §4's amendment — the refusal mechanism itself is
+  unchanged and still guards `db:schema:dump`; the Phase 4 pair
+  `keel promote`/`keel rollback` carries a separate, unrelated pg gate, also
+  noted in §4.)
 - Non-goals for B-31: no cross-driver migration (a Postgres dump does not apply
   to MySQL — each database runs its own migration set), no sharding/failover,
   no driver switching at runtime (selection is boot-time config only).

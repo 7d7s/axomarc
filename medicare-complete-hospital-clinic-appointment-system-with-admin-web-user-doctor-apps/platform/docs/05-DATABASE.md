@@ -200,15 +200,41 @@ the same order as `database/migrations/`, each adapted to MySQL 8 (sqlx bookkeep
 the shared `_sqlx_migrations` table per database; each driver embeds its own directory). The
 set is forward-only: `keel migrate` applies it under `GET_LOCK` (the `pg_advisory_lock(7259)`
 twin), `migrate:fresh` drops every table with FK checks off instead of cascading a schema, and
-`migrate:status` lists the MySQL set. Revertible pairs are **PostgreSQL-only**: if
-`database/migrations-pairs` ships any `.up.sql`/`.down.sql`, `keel-mysql::run_migrations`
-fails closed with a clear refusal rather than half-running them.
+`migrate:status` lists the MySQL set.
+
+**Revertible pairs work on both drivers (B-31 Phase C).** `keel_mysql::pairs` is
+`keel_postgres::pairs` — the same `<ts>_<name>.up.sql` / `.down.sql` shipment in
+`database/migrations-pairs`, the same `keel_migrations` bookkeeping table
+(`migration VARCHAR(255)` PRIMARY KEY, `batch INT NOT NULL`,
+`applied_at DATETIME(6) DEFAULT CURRENT_TIMESTAMP(6)` — InnoDB cannot key a TEXT column and
+MySQL has no `timestamptz`), the same Laravel batch arithmetic and the same fail-closed scan
+— with one execution difference: **no transaction**. MySQL DDL causes an implicit commit, so
+the Postgres runner's "forward SQL + bookkeeping row commit together or not at all" cannot
+hold, and a pair runs statement by statement, fail-stop-and-report: the first error stops the
+run, names the pair, and states that statements before it remain applied (never a silent
+half-rollback). Laravel concedes the same engine rule — `MySQLGrammar` inherits
+`$transactions = false` from `Grammar`, so `Migrator`'s `supportsSchemaTransactions()` gate
+runs a MySQL `up`/`down` outside any transaction too. Pair SQL travels over the text protocol
+(`COM_QUERY` with the `MULTI_STATEMENTS` capability sqlx declares at handshake), the path the
+nine forward files already take: probed against 8.0.44, `COM_STMT_PREPARE` accepts exactly
+one statement (two `CREATE TABLE`s -> ERROR 1064 near the second) and refuses transaction
+control (ERROR 1295). A broken shipment — missing `.down.sql`, orphan `.down.sql`, bad base
+name — still refuses `keel migrate` before the first statement. Evidence (pg-tests suite,
+live MySQL): `mysql_pair_migrations_apply_rollback_and_reset_with_batches`,
+`mysql_pair_apply_fails_stopped_and_reports_what_already_ran`,
+`mysql_run_migrations_refuses_broken_shipments_then_applies_and_rolls_back`,
+`mysql_pair_scan_orders_files_and_refuses_broken_shipments`.
 
 **Console surface on `driver = "mysql"`:**
 
 | Works | Refuses (clear message + docs/05 pointer) |
 |---|---|
-| `migrate`, `migrate:fresh`, `migrate:status`, `seed`, `db:show`, `db:inspect`, the `queue:*`/`schedule:*` commands | `migrate:rollback`, `migrate:reset`, `migrate:refresh`, `migrate:install` (pairs machinery), `db:schema:dump` (pg_catalog snapshot) |
+| `migrate`, `migrate:fresh`, `migrate:status`, `migrate:rollback`, `migrate:reset`, `migrate:refresh`, `migrate:install`, `seed`, `db:show`, `db:inspect`, the `queue:*`/`schedule:*` commands | `db:schema:dump` (pg_catalog snapshot) |
+
+(`keel promote` / `keel rollback` — Phase 4, console of the `keel-platform`
+workspace only — refuse this driver as well, at `wire_promotion`
+(`pg_only_on_mysql("promote/rollback")`): their events/migration/probe ports are
+`PgPool`-typed. Promotion scope; Phase C did not touch it.)
 
 **Dialect divergences (documented, not gaps):**
 

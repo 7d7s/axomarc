@@ -1044,6 +1044,20 @@ async fn mysql_job_store_claim_completes_and_fails_with_skip_locked() {
     let Some(pool) = mysql_pool().await else { return };
     let store = keel_mysql::MySqlJobStore::new(pool.clone());
 
+    // `claim` takes the globally first pending row (`ORDER BY priority DESC,
+    // available_at, enqueued_at`, jobstore.rs) and THIS test deliberately
+    // strands a pending row of its own — the `fail` requeue at the end
+    // leaves attempt 1 re-queued. Re-running against that row (or against
+    // rows an earlier interrupted run left behind) claims THOSE instead of
+    // the two rows just enqueued, and the exact-ids assertion below fails
+    // for a reason that has nothing to do with SKIP LOCKED. So start from an
+    // empty claimable set: `jobs_queue` has no other writer inside this test
+    // binary, and non-claimable rows are left alone.
+    sqlx::query("DELETE FROM jobs_queue WHERE status IN ('pending', 'running')")
+        .execute(&pool)
+        .await
+        .expect("clean claimable queue");
+
     let mut def = keel_jobs::JobDef::new("mysql.claim.probe");
     def.max_attempts = 3;
     let now = OffsetDateTime::now_utc();
