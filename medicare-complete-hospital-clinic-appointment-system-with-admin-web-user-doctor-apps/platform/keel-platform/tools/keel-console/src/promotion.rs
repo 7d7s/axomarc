@@ -31,6 +31,7 @@ use keel_deployment::promote::ReleaseArtifact;
 use keel_deployment::rollback::PromotionTarget;
 use keel_foundation::AppError;
 use keel_jobs::{JobRegistry, JobStatus, JobStoreAdmin};
+use keel_mysql::DbPool;
 use keel_postgres::PgOutboxStore;
 use keel_registry::PackageIndex;
 
@@ -164,19 +165,38 @@ impl ConfigPort for ConfigAdapter {
 /// `&mut PgConnection` is only implemented for ONE lifetime, so asking for it
 /// from a boxed future's generic context fails with "implementation of
 /// `Executor` is not general enough". A named fn sidesteps the HRTB entirely.
-async fn applied_batches(pool: keel_postgres::PgPool) -> Result<Vec<i32>, AppError> {
-    let mut conn = pool
-        .acquire()
-        .await
-        .map_err(|e| AppError::persistence(format!("migrations: connect: {e}")))?;
-    let applied = keel_postgres::pairs::applied(&mut *conn).await?;
+/// Distinct applied batch numbers, ascending — shared by both drivers
+/// (`pairs::applied` returns one `(migration, batch)` row per file; `0` =
+/// nothing applied).
+fn distinct_batches(applied: Vec<(String, i32)>) -> Vec<i32> {
     let mut batches: Vec<i32> = applied.iter().map(|(_, b)| *b).collect();
     batches.sort_unstable();
     batches.dedup();
-    Ok(batches)
+    batches
 }
 
-async fn db_watermark(pool: keel_postgres::PgPool) -> Result<u32, AppError> {
+async fn applied_batches(pool: DbPool) -> Result<Vec<i32>, AppError> {
+    match pool {
+        DbPool::Postgres(pool) => {
+            let mut conn = pool
+                .acquire()
+                .await
+                .map_err(|e| AppError::persistence(format!("migrations: connect: {e}")))?;
+            let applied = keel_postgres::pairs::applied(&mut *conn).await?;
+            Ok(distinct_batches(applied))
+        }
+        DbPool::MySql(pool) => {
+            let mut conn = pool
+                .acquire()
+                .await
+                .map_err(|e| AppError::persistence(format!("migrations: connect: {e}")))?;
+            let applied = keel_mysql::pairs::applied(&mut *conn).await?;
+            Ok(distinct_batches(applied))
+        }
+    }
+}
+
+async fn db_watermark(pool: DbPool) -> Result<u32, AppError> {
     let batches = applied_batches(pool).await?;
     Ok(batches.last().map(|b| *b).unwrap_or(0).max(0) as u32)
 }
@@ -207,14 +227,25 @@ where
     tokio::task::block_in_place(f)
 }
 
-async fn apply_at(pool: keel_postgres::PgPool, root: PathBuf) -> Result<Vec<String>, AppError> {
+async fn apply_at(pool: DbPool, root: PathBuf) -> Result<Vec<String>, AppError> {
     block_db(move || {
         tokio::runtime::Handle::current().block_on(async move {
-            let mut conn = pool
-                .acquire()
-                .await
-                .map_err(|e| AppError::persistence(format!("migrations: connect: {e}")))?;
-            keel_postgres::pairs::apply_pending(&mut *conn, &root).await
+            match pool {
+                DbPool::Postgres(pool) => {
+                    let mut conn = pool
+                        .acquire()
+                        .await
+                        .map_err(|e| AppError::persistence(format!("migrations: connect: {e}")))?;
+                    keel_postgres::pairs::apply_pending(&mut *conn, &root).await
+                }
+                DbPool::MySql(pool) => {
+                    let mut conn = pool
+                        .acquire()
+                        .await
+                        .map_err(|e| AppError::persistence(format!("migrations: connect: {e}")))?;
+                    keel_mysql::pairs::apply_pending(&mut *conn, &root).await
+                }
+            }
         })
     })
 }
@@ -223,22 +254,26 @@ async fn apply_at(pool: keel_postgres::PgPool, root: PathBuf) -> Result<Vec<Stri
 /// reverts the LAST `steps` distinct batches, so `steps` counts the batches
 /// strictly above `target` — derived from `applied` rather than assuming
 /// batches are contiguous from 1.
-async fn rollback_at(
-    pool: keel_postgres::PgPool,
-    root: PathBuf,
-    target: u32,
-) -> Result<Vec<String>, AppError> {
+async fn rollback_at(pool: DbPool, root: PathBuf, target: u32) -> Result<Vec<String>, AppError> {
     let steps = block_db({
         let pool = pool.clone();
         move || {
             tokio::runtime::Handle::current().block_on(async move {
-                let mut conn = pool.acquire().await.map_err(|e| {
-                    AppError::persistence(format!("migrations: connect: {e}"))
-                })?;
-                let applied = keel_postgres::pairs::applied(&mut *conn).await?;
-                let mut batches: Vec<i32> = applied.iter().map(|(_, b)| *b).collect();
-                batches.sort_unstable();
-                batches.dedup();
+                let applied = match pool {
+                    DbPool::Postgres(pool) => {
+                        let mut conn = pool.acquire().await.map_err(|e| {
+                            AppError::persistence(format!("migrations: connect: {e}"))
+                        })?;
+                        keel_postgres::pairs::applied(&mut *conn).await?
+                    }
+                    DbPool::MySql(pool) => {
+                        let mut conn = pool.acquire().await.map_err(|e| {
+                            AppError::persistence(format!("migrations: connect: {e}"))
+                        })?;
+                        keel_mysql::pairs::applied(&mut *conn).await?
+                    }
+                };
+                let batches = distinct_batches(applied);
                 Ok::<u32, AppError>(
                     batches.iter().filter(|b| **b > target as i32).count() as u32,
                 )
@@ -250,22 +285,33 @@ async fn rollback_at(
     }
     block_db(move || {
         tokio::runtime::Handle::current().block_on(async move {
-            let mut conn = pool
-                .acquire()
-                .await
-                .map_err(|e| AppError::persistence(format!("migrations: connect: {e}")))?;
-            keel_postgres::pairs::rollback(&mut *conn, &root, steps).await
+            match pool {
+                DbPool::Postgres(pool) => {
+                    let mut conn = pool
+                        .acquire()
+                        .await
+                        .map_err(|e| AppError::persistence(format!("migrations: connect: {e}")))?;
+                    keel_postgres::pairs::rollback(&mut *conn, &root, steps).await
+                }
+                DbPool::MySql(pool) => {
+                    let mut conn = pool
+                        .acquire()
+                        .await
+                        .map_err(|e| AppError::persistence(format!("migrations: connect: {e}")))?;
+                    keel_mysql::pairs::rollback(&mut *conn, &root, steps).await
+                }
+            }
         })
     })
 }
 
 pub struct MigrationAdapter {
     root: PathBuf,
-    pool: keel_postgres::PgPool,
+    pool: DbPool,
 }
 
 impl MigrationAdapter {
-    pub fn new(root: PathBuf, pool: keel_postgres::PgPool) -> Self {
+    pub fn new(root: PathBuf, pool: DbPool) -> Self {
         Self { root, pool }
     }
 }
@@ -461,16 +507,20 @@ impl JobPort for JobAdapter {
 /// Rows with an empty/NULL key are skipped: they predate the column and are
 /// dispatched WITHOUT dedup by design (`keel-event`'s documented back-compat).
 ///
-/// `claim_unpublished` is a pure `SELECT` (see `keel-postgres::outboxstore`)
-/// — it never writes, so verification cannot perturb the queue.
+/// `claim_unpublished` is a pure `SELECT` (see `keel-postgres::outboxstore`
+/// and its `keel-mysql::outboxstore` twin) — it never writes, so
+/// verification cannot perturb the queue.
 pub struct EventAdapter {
     store: Arc<dyn keel_event::OutboxStore>,
 }
 
 impl EventAdapter {
-    pub fn new(pool: keel_postgres::PgPool) -> Self {
+    pub fn new(pool: DbPool) -> Self {
         Self {
-            store: Arc::new(PgOutboxStore::new(pool)),
+            store: match pool {
+                DbPool::Postgres(p) => Arc::new(PgOutboxStore::new(p)),
+                DbPool::MySql(p) => Arc::new(keel_mysql::MySqlOutboxStore::new(p)),
+            },
         }
     }
 }
@@ -574,7 +624,7 @@ pub fn post_deploy_probe(root: PathBuf) -> Probe {
 
 /// Stage 2 probe: the pair-migration watermark is readable and, when the
 /// release claims a watermark, has actually reached it.
-pub fn post_migrate_probe(root: PathBuf, pool: keel_postgres::PgPool, expected: Option<u32>) -> Probe {
+pub fn post_migrate_probe(root: PathBuf, pool: DbPool, expected: Option<u32>) -> Probe {
     Probe::new("post-migrate", move || {
         let root = root.clone();
         let pool = pool.clone();
@@ -632,7 +682,7 @@ pub fn canary_probe(event_store: Arc<EventAdapter>) -> Probe {
 /// The four probes, in stage order, for a promotion over `root`.
 pub fn promotion_probes(
     root: &Path,
-    pool: keel_postgres::PgPool,
+    pool: DbPool,
     expected_watermark: Option<u32>,
     config: Arc<ConfigAdapter>,
     event_store: Arc<EventAdapter>,

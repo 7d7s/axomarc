@@ -64,9 +64,11 @@ contract, normalized for byte-stable replay (the `AUTO_INCREMENT` counter
 and column `CHARACTER SET`/`COLLATE` clauses that merely repeat the
 statement's own table options are stripped — docs/05). Separately —
 Operations table, `keel-platform` console only —
-`keel promote` / `keel rollback` keep their own `pg_only_on_mysql("promote/rollback")`
-gate at `wire_promotion` (Phase 4 wiring is `PgPool`-typed; untouched by
-Phases C–E).
+`keel promote` / `keel rollback` dispatch on the driver too as of B-31
+Phase F: `wire_promotion` wires their events/migration/probe ports on the
+driver-selected `DbPool` (pairs + outbox store per driver), and the last
+`pg_only_on_mysql` gate is deleted — promotion was its final user, so no
+console command refuses this driver anymore.
 
 ## Operations
 

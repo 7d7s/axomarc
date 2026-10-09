@@ -598,8 +598,9 @@ fn rt<F: std::future::Future<Output = anyhow::Result<ExitCode>>>(
 /// Wave 9 B-31: driver-selected pool — `[database].driver` picks the
 /// Postgres or MySQL probe. Every database command dispatches on the
 /// selected driver (Phase C lifted the pairs family, Phase E lifted
-/// `db:schema:dump`); the only pg-only gate left here is promotion
-/// (`keel promote`/`keel rollback`, PgPool-typed wiring at `wire_promotion`).
+/// `db:schema:dump`, Phase F lifted promotion — `keel promote`/
+/// `keel rollback` wire their events/migration/probe ports on this same
+/// enum); no command in this console is pg-only anymore.
 async fn db_pool(root: &Path) -> anyhow::Result<DbPool> {
     let cfg = load_config(root)?;
     let db = cfg.database.as_ref().ok_or_else(|| {
@@ -672,19 +673,6 @@ async fn current_database(pool: &DbPool) -> anyhow::Result<String> {
             .await
             .map_err(|e| anyhow::anyhow!("current database: {e}")),
     }
-}
-
-/// The refusal behind the only PostgreSQL-only command left on the mysql
-/// driver (docs/05-DATABASE): `keel promote`/`keel rollback` (Phase 4)
-/// wire PgPool-typed events/migration/probe ports, so promotion never runs
-/// on MySQL. B-31 Phase C lifted the pairs family and Phase E lifted
-/// `db:schema:dump` — this gate is now promotion-only.
-fn pg_only_on_mysql(command: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "{command} is PostgreSQL-only: its wiring (events/migration/probe \
-         ports) is PgPool-typed ([database].driver = \"mysql\" cannot run it). \
-         Switch [database].driver to \"postgres\" to use it (docs/05-DATABASE)"
-    )
 }
 
 fn main() -> ExitCode {
@@ -2308,20 +2296,20 @@ struct PromotionWiring {
     executor: Arc<keel_deployment::rollback::RollbackExecutor>,
     config: Arc<promotion::ConfigAdapter>,
     events: Arc<promotion::EventAdapter>,
-    pool: keel_postgres::PgPool,
+    pool: DbPool,
 }
 
-/// Build the wiring against `db`. PostgreSQL-only because every pooled port
-/// below is `PgPool`-typed (events, migration adapter, health probes); the
-/// pairs machinery itself reached MySQL in B-31 Phase C, this wiring did not.
+/// Build the wiring against `db` — either driver (B-31 Phase F). The pooled
+/// ports below (events, migration adapter, health probes) dispatch on
+/// `DbPool`, the same enum every other console command selects on; Phase 4
+/// wired `PgPool` directly and this function used to refuse MySQL — the
+/// last pg-only code path in either console (the refusal helper is deleted
+/// with it).
 fn wire_promotion(root: &Path, db: &DbPool) -> anyhow::Result<PromotionWiring> {
-    let DbPool::Postgres(pool) = db else {
-        return Err(pg_only_on_mysql("promote/rollback"));
-    };
     let config = Arc::new(
         promotion::ConfigAdapter::boot(root).map_err(|e| anyhow::anyhow!("{e}"))?,
     );
-    let events = Arc::new(promotion::EventAdapter::new(pool.clone()));
+    let events = Arc::new(promotion::EventAdapter::new(db.clone()));
     let modules = promotion::ModulePinAdapter::new(root);
     // No application `JobRegistry`: the CLI does not link application
     // handlers (same posture as `keel call`). The queue itself is still
@@ -2330,7 +2318,7 @@ fn wire_promotion(root: &Path, db: &DbPool) -> anyhow::Result<PromotionWiring> {
         job_store_admin(db),
         Arc::new(keel_jobs::JobRegistry::new()),
     ));
-    let migrations = promotion::MigrationAdapter::new(root.to_path_buf(), pool.clone());
+    let migrations = promotion::MigrationAdapter::new(root.to_path_buf(), db.clone());
 
     let executor = Arc::new(keel_deployment::rollback::RollbackExecutor::new(
         config.clone(),
@@ -2343,7 +2331,7 @@ fn wire_promotion(root: &Path, db: &DbPool) -> anyhow::Result<PromotionWiring> {
         executor,
         config,
         events,
-        pool: pool.clone(),
+        pool: db.clone(),
     })
 }
 
@@ -6509,6 +6497,42 @@ middleware = ["ghost"]
         assert_eq!(restored, target, "the checkpoint round-trips");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// B-31 Phase F: `wire_promotion` builds on EITHER driver — the
+    /// `pg_only_on_mysql` refusal at this seam is deleted (the last pg-only
+    /// code path in the console). The pools are LAZY (syntactically valid
+    /// URLs, never connected): wiring construction is I/O-free by design —
+    /// config boot, the five adapters and the executor constructor only
+    /// build — so both dispatch arms assert in every workspace gate with no
+    /// database attached. The live prove-out (promote + rollback against
+    /// MySQL 8.0.44) is the operator transcript recorded in the Phase F
+    /// CHANGELOG entry.
+    #[test]
+    fn promotion_wiring_builds_on_both_drivers() {
+        // sqlx's `connect_lazy` asks for a Tokio context (the pool holds a
+        // lazy initialization task); a throwaway runtime supplies it. The
+        // wiring build itself never awaits — no query ever runs.
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+
+        let root = workspace_root().expect("workspace root resolves");
+
+        let mysql = DbPool::MySql(
+            keel_mysql::MySqlPoolOptions::new()
+                .connect_lazy("mysql://user:pass@127.0.0.1:3306/keel")
+                .expect("mysql url parses"),
+        );
+        let wiring = wire_promotion(&root, &mysql).expect("wiring builds on mysql");
+        assert_eq!(wiring.pool.driver_name(), "mysql");
+
+        let pg = DbPool::Postgres(
+            sqlx::postgres::PgPoolOptions::new()
+                .connect_lazy("postgres://user:pass@127.0.0.1:5432/keel")
+                .expect("postgres url parses"),
+        );
+        let wiring = wire_promotion(&root, &pg).expect("wiring builds on postgres");
+        assert_eq!(wiring.pool.driver_name(), "postgres");
     }
 
     /// Wave 5 Phase 3: the advisory-lock key matches the program spec

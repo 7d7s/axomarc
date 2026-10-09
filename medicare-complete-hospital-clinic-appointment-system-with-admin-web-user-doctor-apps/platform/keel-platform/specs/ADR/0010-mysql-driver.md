@@ -119,12 +119,15 @@ Constraints that bound the answer:
   because charset and collation come from the table, and it is what the
   server renders back byte-identically: dump → replay → dump and
   reset → migrate → dump both equal the original bytes). The `platform`
-  console deletes `pg_only_on_mysql` (dump was its only user); the Phase 4
-  pair `keel promote` / `keel rollback` (console of the `keel-platform`
-  workspace only) keeps its own `pg_only_on_mysql("promote/rollback")` gate
-  at `wire_promotion`, because its events/migration/probe ports are
-  `PgPool`-typed — that is promotion scope, not the migration commands this
-  ADR governs. `migrate`/`migrate:fresh`/`migrate:status`/`seed`/`db:show`/
+  console deletes `pg_only_on_mysql` (dump was its only user). **Phase F lifted the
+  last pg-only code path: the Phase 4 pair `keel promote` / `keel rollback`
+  (console of the `keel-platform` workspace only) now run on this driver too.**
+  `wire_promotion` no longer refuses `mysql`; its events/migration/probe ports
+  (`EventAdapter`, `MigrationAdapter`, the health probes) dispatch on the
+  driver-selected `DbPool` to `keel_postgres::pairs`/`PgOutboxStore` or
+  `keel_mysql::pairs`/`MySqlOutboxStore` — the same enum every other console
+  command selects on — and the twin's `pg_only_on_mysql` helper is deleted
+  (promotion was its last user, so neither console refuses any command). `migrate`/`migrate:fresh`/`migrate:status`/`seed`/`db:show`/
   `db:inspect` all work on both drivers (status lists the MySQL set and the
   pairs applied to it).
 
@@ -172,13 +175,13 @@ Constraints that bound the answer:
   69 members / 62 publishable / 7 gated.
 - PostgreSQL-only surfaces are explicit refusals with docs pointers, not
   silent no-ops — plus the RLS/array/collation divergences documented in
-  docs/05-DATABASE and docs/12-CLI. (Neither pairs nor `db:schema:dump`
-  is one anymore — see §4's amendments: pairs as of Phase C, the dump as of
-  Phase E, which also deletes the `platform` console's `pg_only_on_mysql`
-  helper — dump was its only user there. The refusal mechanism itself still
-  guards the remaining pg-only surface: the Phase 4 pair `keel promote`/
-  `keel rollback`'s separate, unrelated gate at `wire_promotion` in the
-  `keel-platform` console, also noted in §4.)
+  docs/05-DATABASE and docs/12-CLI. (No console command is pg-only as of
+  B-31 Phase F — see §4's amendments: pairs as of Phase C, `db:schema:dump`
+  as of Phase E, promotion as of Phase F, which also deletes the last
+  `pg_only_on_mysql` helper (the `keel-platform` console's; the `platform`
+  console's was dropped in Phase E). The refusal mechanism is now retired
+  from both consoles: nothing remains for it to guard. The RLS/array/
+  collation dialect divergences are unaffected and stay documented.)
 - Non-goals for B-31: no cross-driver migration (a Postgres dump does not apply
   to MySQL — each database runs its own migration set), no sharding/failover,
   no driver switching at runtime (selection is boot-time config only).
