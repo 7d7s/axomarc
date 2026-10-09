@@ -27,6 +27,12 @@ pub enum Class {
     Tests,
     Examples,
     Applications,
+    /// `crates/framework`: the umbrella crate (`keel-framework`) re-exporting
+    /// the published framework surface as one dependency (PUBLISHING.md Wave 2
+    /// step 3). Added by the distribution program — STAGE-0-SPEC §2 predates
+    /// the umbrella and stays FROZEN (the `Extension` precedent): the addition
+    /// is recorded in CHANGELOG + docs/19 delivery note, not by rewriting §2.
+    Framework,
     /// Extension crates (`crates/extension/<name>`): sandboxed plugin runtimes
     /// hosted by the runtime (docs/19 Wave 9 B-30). Added by the Wave 9
     /// program — STAGE-0-SPEC §2 predates the class.
@@ -54,6 +60,7 @@ impl Class {
             Class::Tests => "tests",
             Class::Examples => "examples",
             Class::Applications => "applications",
+            Class::Framework => "framework",
             Class::Extension => "extension",
         }
     }
@@ -77,6 +84,7 @@ impl Class {
                 "enterprise" => Some(Class::Enterprise),
                 "testing" => Some(Class::Testing),
                 "ai" => Some(Class::Ai),
+                "framework" => Some(Class::Framework),
                 "extension" => Some(Class::Extension),
                 _ => None,
             },
@@ -215,6 +223,25 @@ impl Class {
                 Enterprise,
                 Adapters,
                 Applications,
+            ],
+            // The umbrella re-exports the published framework surface, so it
+            // spans every library layer a host or application module reaches.
+            // It deliberately does NOT depend on Adapters/Runtime/Tools/Tests/
+            // Examples/Applications: wiring, binaries and scaffolding are not
+            // part of the surface an application imports.
+            Framework => &[
+                Foundation,
+                Security,
+                Execution,
+                Application,
+                Web,
+                Services,
+                Async,
+                Observability,
+                Data,
+                Enterprise,
+                Extension,
+                Framework,
             ],
             // docs/19 Wave 9 B-30: the WASM plugin runtime hosts module
             // manifests (Application), builds ExecutionPlans and dispatches

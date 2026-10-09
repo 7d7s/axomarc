@@ -1,12 +1,17 @@
-//! keel-kernel: Kernel facade crate.
-//! 
-//! Re-exports the framework crates that kernel binaries (keel-api, keel-worker)
-//! and application modules depend on. This crate is published to the registry
-//! independently of keel-platform, enabling:
-//! - Independent kernel releases (keel-api, keel-worker binaries)
-//! - Application modules depending on `keel-kernel` without pulling in
-//!   all 75+ keel-platform internal crates
-//! - Clear dependency boundaries: apps don't depend on keel-platform internals
+//! keel-framework: the framework umbrella crate.
+//!
+//! Re-exports the published framework surface that host binaries (`keel-api`,
+//! `keel-worker`) and application modules depend on. This is the one
+//! dependency an application takes:
+//!
+//! - Applications depend on `keel-framework` without pulling in all 60+
+//!   internal workspace crates
+//! - Clear dependency boundaries: apps don't depend on framework internals
+//! - A single, reviewable public surface governed by `docs/API-STABILITY.md`
+//!
+//! This crate is re-exports only — it contains no logic and declares no new
+//! external dependencies, so the D-62 external dependency budget (25/25) is
+//! untouched by depending on it.
 
 // Re-export framework crates
 pub use keel_config;

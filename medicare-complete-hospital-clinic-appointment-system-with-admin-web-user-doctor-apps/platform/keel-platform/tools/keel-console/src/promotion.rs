@@ -198,7 +198,7 @@ async fn applied_batches(pool: DbPool) -> Result<Vec<i32>, AppError> {
 
 async fn db_watermark(pool: DbPool) -> Result<u32, AppError> {
     let batches = applied_batches(pool).await?;
-    Ok(batches.last().map(|b| *b).unwrap_or(0).max(0) as u32)
+    Ok(batches.last().copied().unwrap_or(0).max(0) as u32)
 }
 
 /// sqlx guard: drive the pair machinery to completion on a blocking worker.
@@ -673,7 +673,7 @@ pub fn canary_probe(event_store: Arc<EventAdapter>) -> Probe {
             event_store
                 .verify_idempotency_stability()
                 .await
-                .map_err(|e| format!("{}", e.public_message))?;
+                .map_err(|e| e.public_message.to_string())?;
             Ok(true)
         })
     })

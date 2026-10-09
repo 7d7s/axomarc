@@ -1395,7 +1395,7 @@ pub fn build_app_state(
     // Graph from the real appointments manifest (compile-path parity with
     // `keel graph`, independent of process cwd).
     let manifest = keel_registry::ModuleManifest::from_toml(include_str!(
-        "../../applications/appointments/module.toml"
+        "../../../applications/appointments/module.toml"
     ))
     .expect("appointments manifest parses");
     // Wave 8 P5 (B-21): the harness graph carries BOTH modules — routes,
@@ -1403,7 +1403,7 @@ pub fn build_app_state(
     // register installs then match production discovery, which compiles
     // every `applications/*/module.toml`.
     let oauth_manifest = keel_registry::ModuleManifest::from_toml(include_str!(
-        "../../applications/oauth2/module.toml"
+        "../../../applications/oauth2/module.toml"
     ))
     .expect("oauth2 manifest parses");
     let graph = keel_registry::PlatformGraph::compile(vec![manifest, oauth_manifest])
@@ -1952,7 +1952,7 @@ mod wave6_mail_tests {
             Channel, Mailable, MailPort, NotificationContext, NotifyHub, ResolvedMailAttachment,
         };
 
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let catalog = std::sync::Arc::new(
             keel_config::load_messages(&root, &keel_config::I18nSection::default())
                 .expect("shipped lang files load"),
@@ -2074,7 +2074,7 @@ mod wave6_mail_tests {
             }
         }
 
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let catalog = std::sync::Arc::new(
             keel_config::load_messages(&root, &keel_config::I18nSection::default())
                 .expect("shipped lang files load"),

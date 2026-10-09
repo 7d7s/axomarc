@@ -493,8 +493,11 @@ fn job_batches() -> Migration {
         .create_index("ix_job_batches_finished_at", "job_batches", "finished_at")
 }
 
+/// One shipped migration: its filename and the builder that renders it.
+type ShippedMigration = (&'static str, fn() -> Migration);
+
 /// The canonical fleet: every shipped MySQL migration and its builder program.
-const MIGRATIONS: &[(&str, fn() -> Migration)] = &[
+const MIGRATIONS: &[ShippedMigration] = &[
     ("20260819000001_foundation.sql", foundation),
     ("20260820000002_services.sql", services),
     ("20260822000001_http_sessions.sql", http_sessions),

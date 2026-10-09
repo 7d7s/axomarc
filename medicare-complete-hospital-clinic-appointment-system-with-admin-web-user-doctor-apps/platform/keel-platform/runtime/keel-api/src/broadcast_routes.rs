@@ -293,7 +293,7 @@ mod tests {
     #[test]
     fn resolve_channels_qualifies_bare_capabilities_and_keeps_dotted() {
         let manifest = keel_registry::ModuleManifest::from_toml(include_str!(
-            "../../applications/appointments/module.toml"
+            "../../../applications/appointments/module.toml"
         ))
         .expect("appointments manifest parses");
         let graph = keel_registry::PlatformGraph::compile(vec![manifest]).expect("graph compiles");

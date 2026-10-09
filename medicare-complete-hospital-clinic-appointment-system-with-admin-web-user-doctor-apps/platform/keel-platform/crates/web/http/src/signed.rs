@@ -291,7 +291,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn parse_hex(raw: &str) -> Option<Vec<u8>> {
-    if raw.len() % 2 != 0 {
+    if !raw.len().is_multiple_of(2) {
         return None;
     }
     (0..raw.len())

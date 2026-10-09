@@ -103,7 +103,7 @@ fn fixture(with_error_view: bool) -> Fixture {
     let (state, _, _) = keel_api::build_app_state(&dir, true, true);
     let raw = format!(
         "{}{EXTRA_ROUTES}",
-        include_str!("../../applications/appointments/module.toml")
+        include_str!("../../../applications/appointments/module.toml")
     );
     let manifest = keel_registry::ModuleManifest::from_toml(&raw).expect("fixture manifest parses");
     let graph =
@@ -410,7 +410,7 @@ fn i18n_fixture() -> Fixture {
     let (state, _, _) = keel_api::build_app_state(&dir, true, true);
     let raw = format!(
         "{}{EXTRA_ROUTES}",
-        include_str!("../../applications/appointments/module.toml")
+        include_str!("../../../applications/appointments/module.toml")
     );
     let manifest = keel_registry::ModuleManifest::from_toml(&raw).expect("fixture manifest parses");
     let graph =

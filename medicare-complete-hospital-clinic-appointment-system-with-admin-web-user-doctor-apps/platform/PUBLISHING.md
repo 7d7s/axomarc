@@ -34,7 +34,7 @@ the workspace builds green (`cargo check` / `cargo test --locked` /
 | `keel-sessions` | `keel-session` | `crates/security/sessions` dir unchanged; imports `keel_sessions` -> `keel_session` |
 | `keel-events` | `keel-event` | `crates/async/events` dir unchanged; imports `keel_events` -> `keel_event` |
 | `keel-cli` | `keel-console` | dir moved `tools/keel-cli` -> `tools/keel-console`; self-reinvoke in `src/main.rs` is `-p keel-console`; `[[bin]] name = "keel"` unchanged |
-| (new) `keel-framework` | `keel-framework` | umbrella crate in `crates/framework` re-exporting all 39 `crates/**` crates - NOT built yet |
+| (new) `keel-framework` | `keel-framework` | umbrella crate in `crates/framework` re-exporting the published framework surface - **BUILT (Phase O)**: `crates/framework/{Cargo.toml,README.md,src/lib.rs}` landed with 26 `{ workspace = true }` deps, added to `members` + `[workspace.dependencies]`, and consumed by `your-app` |
 
 Every framework crate transitively depends on `keel-foundation`, so nothing
 else could upload until this rename landed. Replacement names were verified
@@ -46,7 +46,7 @@ available on crates.io before the sweep.
    references in `platform/docs/*` and `platform/API-STABILITY.md`)~~ - DONE.
 2. ~~Remove the `publish = false` gate (and the Wave 2 comment) from the four
    renamed crates' manifests~~ - DONE.
-3. Add `keel-framework` to `members` and `[workspace.dependencies]`.
+3. ~~Add `keel-framework` to `members` and `[workspace.dependencies]`~~ - DONE (Phase O).
 4. `just deny && just publish-dry` must both pass.
 5. Publish the wave: `just publish` (local) or dispatch `keel-publish.yml`
    with `dry_run=false`. The topologically ordered run publishes all 62

@@ -1337,6 +1337,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "keel-framework"
+version = "0.1.0"
+dependencies = [
+ "keel-caching",
+ "keel-config",
+ "keel-context",
+ "keel-deployment",
+ "keel-event",
+ "keel-execution",
+ "keel-feature-flags",
+ "keel-foundation",
+ "keel-http",
+ "keel-identity",
+ "keel-integrity",
+ "keel-jobs",
+ "keel-lifecycle",
+ "keel-mysql",
+ "keel-observability",
+ "keel-policy",
+ "keel-postgres",
+ "keel-realtime",
+ "keel-registry",
+ "keel-scheduling",
+ "keel-search",
+ "keel-session",
+ "keel-storage",
+ "keel-telemetry",
+ "keel-tenancy",
+ "keel-wasm",
+]
+
+[[package]]
 name = "keel-http"
 version = "0.1.0"
 dependencies = [
@@ -1390,38 +1422,6 @@ dependencies = [
  "serde_json",
  "time",
  "uuid",
-]
-
-[[package]]
-name = "keel-kernel"
-version = "0.1.0"
-dependencies = [
- "keel-caching",
- "keel-config",
- "keel-context",
- "keel-deployment",
- "keel-event",
- "keel-execution",
- "keel-feature-flags",
- "keel-foundation",
- "keel-http",
- "keel-identity",
- "keel-integrity",
- "keel-jobs",
- "keel-lifecycle",
- "keel-mysql",
- "keel-observability",
- "keel-policy",
- "keel-postgres",
- "keel-realtime",
- "keel-registry",
- "keel-scheduling",
- "keel-search",
- "keel-session",
- "keel-storage",
- "keel-telemetry",
- "keel-tenancy",
- "keel-wasm",
 ]
 
 [[package]]
@@ -1885,7 +1885,7 @@ name = "mod-patients"
 version = "0.1.0"
 dependencies = [
  "axum",
- "keel-kernel",
+ "keel-framework",
  "serde",
  "sqlx",
  "time",
@@ -1940,7 +1940,7 @@ name = "my-app-api"
 version = "0.1.0"
 dependencies = [
  "axum",
- "keel-kernel",
+ "keel-framework",
  "mod-patients",
  "tokio",
  "tracing",

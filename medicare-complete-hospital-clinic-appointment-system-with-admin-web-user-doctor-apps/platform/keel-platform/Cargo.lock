@@ -1401,6 +1401,58 @@ dependencies = [
 ]
 
 [[package]]
+name = "keel-api"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "keel-cache-memory",
+ "keel-cache-redis",
+ "keel-caching",
+ "keel-command",
+ "keel-config",
+ "keel-context",
+ "keel-execution",
+ "keel-feature-flags",
+ "keel-foundation",
+ "keel-http",
+ "keel-identity",
+ "keel-jobs",
+ "keel-lifecycle",
+ "keel-metrics",
+ "keel-mod-appointments",
+ "keel-mod-oauth2",
+ "keel-models",
+ "keel-mysql",
+ "keel-notifications",
+ "keel-observability",
+ "keel-policy",
+ "keel-postgres",
+ "keel-query",
+ "keel-realtime",
+ "keel-registry",
+ "keel-scheduling",
+ "keel-scope",
+ "keel-session",
+ "keel-storage",
+ "keel-storage-local",
+ "keel-storage-s3",
+ "keel-tenancy",
+ "keel-tokens",
+ "keel-validation",
+ "keel-views",
+ "keel-wasm",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
+ "tokio-stream",
+ "tower",
+ "tower-http 0.7.1",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "keel-arch-validation"
 version = "0.1.0"
 dependencies = [
@@ -1682,6 +1734,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "keel-framework"
+version = "0.1.0"
+dependencies = [
+ "keel-caching",
+ "keel-config",
+ "keel-context",
+ "keel-deployment",
+ "keel-event",
+ "keel-execution",
+ "keel-feature-flags",
+ "keel-foundation",
+ "keel-http",
+ "keel-identity",
+ "keel-integrity",
+ "keel-jobs",
+ "keel-lifecycle",
+ "keel-mysql",
+ "keel-observability",
+ "keel-policy",
+ "keel-postgres",
+ "keel-realtime",
+ "keel-registry",
+ "keel-scheduling",
+ "keel-search",
+ "keel-session",
+ "keel-storage",
+ "keel-telemetry",
+ "keel-tenancy",
+ "keel-wasm",
+]
+
+[[package]]
 name = "keel-http"
 version = "0.1.0"
 dependencies = [
@@ -1786,6 +1870,43 @@ dependencies = [
  "serde",
  "serde_json",
  "time",
+]
+
+[[package]]
+name = "keel-mod-appointments"
+version = "0.1.0"
+dependencies = [
+ "keel-context",
+ "keel-execution",
+ "keel-foundation",
+ "keel-lifecycle",
+ "keel-models",
+ "keel-notifications",
+ "keel-policy",
+ "keel-query",
+ "keel-registry",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "keel-mod-oauth2"
+version = "0.1.0"
+dependencies = [
+ "keel-context",
+ "keel-execution",
+ "keel-foundation",
+ "keel-identity",
+ "keel-lifecycle",
+ "keel-models",
+ "keel-tokens",
+ "serde",
+ "serde_json",
+ "time",
+ "uuid",
 ]
 
 [[package]]
@@ -2229,6 +2350,34 @@ dependencies = [
  "time",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "keel-worker"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "keel-cache-memory",
+ "keel-cache-redis",
+ "keel-caching",
+ "keel-config",
+ "keel-event",
+ "keel-foundation",
+ "keel-jobs",
+ "keel-lifecycle",
+ "keel-mail-smtp",
+ "keel-mysql",
+ "keel-notifications",
+ "keel-observability",
+ "keel-postgres",
+ "keel-scheduling",
+ "keel-storage",
+ "keel-storage-local",
+ "keel-storage-s3",
+ "serde_json",
+ "time",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

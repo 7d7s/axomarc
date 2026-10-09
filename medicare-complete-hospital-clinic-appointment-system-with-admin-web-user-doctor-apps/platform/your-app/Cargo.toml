@@ -14,9 +14,9 @@ repository = "https://github.com/7d7s/axomarc"
 keywords = ["keel", "app"]
 
 [workspace.dependencies]
-# Kernel facade (re-exports keel-platform crates).
+# Framework umbrella (re-exports the published framework surface).
 # Local path sources for dev; switch to registry sources for release.
-keel-kernel = { version = "0.1", path = "../keel-kernel/keel-kernel-facade" }
+keel-framework = { version = "0.1", path = "../keel-platform/crates/framework" }
 
 # Framework crates (direct deps for modules that need them)
 keel-jobs = { version = "0.1", path = "../keel-platform/crates/async/jobs" }
@@ -29,7 +29,7 @@ keel-search = { version = "0.1", path = "../keel-platform/crates/services/search
 keel-realtime = { version = "0.1", path = "../keel-platform/crates/services/realtime" }
 keel-deployment = { version = "0.1", path = "../keel-platform/crates/enterprise/deployment" }
 # Both fabrics are declared: the driver itself is chosen at runtime by
-# keel-kernel (`match cfg.database()` -> DbPool::Postgres | DbPool::MySql),
+# the host (`match cfg.database()` -> DbPool::Postgres | DbPool::MySql),
 # so an application module may reach for either store directly instead of
 # inheriting a Postgres-only assumption from this list.
 keel-postgres = { version = "0.1", path = "../keel-platform/crates/data/postgres" }

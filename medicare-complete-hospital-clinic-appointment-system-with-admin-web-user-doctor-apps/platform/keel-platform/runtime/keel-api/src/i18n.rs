@@ -213,7 +213,7 @@ mod tests {
     /// validation keys and the CLDR choice vocabulary present.
     #[test]
     fn shipped_workspace_lang_files_load() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let catalog = keel_config::load_messages(&root, &keel_config::I18nSection::default())
             .expect("shipped lang files load");
         assert_eq!(catalog.default_locale(), "en");

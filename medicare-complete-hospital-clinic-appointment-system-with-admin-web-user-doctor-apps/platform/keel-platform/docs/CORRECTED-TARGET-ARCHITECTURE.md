@@ -27,6 +27,7 @@ keel-platform/          ← Framework crates (75+ crates, versioned independentl
 ├── Cargo.toml          ← workspace: kernel, config, execution, tenancy, jobs, events, wasm, ...
 ├── crates/
 │   ├── kernel/         ← keel-kernel (lifecycle, registry, graph)
+│   ├── framework/      ← keel-framework (application-facing umbrella; re-exports only)
 │   ├── config/         ← keel-config (layered config + hot reload)
 │   ├── execution/      ← keel-execution (plan, engine, idempotency)
 │   ├── tenancy/        ← keel-tenancy (TenantScope, RLS enforcement)
@@ -39,12 +40,18 @@ keel-platform/          ← Framework crates (75+ crates, versioned independentl
 │   ├── search/         ← keel-search (tenant-enforced SearchEngine)
 │   ├── realtime/       ← keel-realtime (tenant-scoped channels)
 │   └── deployment/     ← keel-deployment (RollbackExecutor + promotion)
+├── runtime/
+│   ├── keel-api/       ← keel-api (HTTP server, route registry, middleware)
+│   └── keel-worker/    ← keel-worker (job runner, scheduler, outbox pump)
+├── applications/       ← optional opt-in modules (appointments, oauth2)
 └── tools/keel-cli/     ← keel binary (build, promote, rollback, config:reload)
 
-keel-kernel/            ← Application-agnostic kernel binary
-├── Cargo.toml          ← members: [kernel-api, kernel-worker]
-├── kernel-api/         ← keel-api (HTTP server, route registry, middleware)
-└── kernel-worker/      ← keel-worker (job runner, scheduler, outbox pump)
+# Phase O (2026-10-10): the former `keel-kernel/` workspace was MERGED into
+# `keel-platform/`. `kernel-api` -> `runtime/keel-api`, `kernel-worker` ->
+# `runtime/keel-worker`, the `keel-kernel-facade` -> `crates/framework`
+# (`keel-framework`), and `applications/`, `lang/` moved across whole. There is
+# no longer a third workspace: `your-app` consumes the `keel-framework`
+# umbrella directly.
 
 your-app/               ← Application workspace (YOUR code, YOUR release cadence)
 ├── Cargo.toml          ← members: [modules/*, apps/*]
@@ -66,9 +73,9 @@ your-app/               ← Application workspace (YOUR code, YOUR release caden
 [workspace.lints.rust]
 workspace = true
 
-# keel-kernel/Cargo.toml
+# runtime/keel-api/Cargo.toml (host binary — consumes the umbrella)
 dependencies = [
-    "keel-kernel",      # lifecycle, registry, graph
+    "keel-framework",   # re-exported facade (lifecycle, registry, graph, config, ...)
     "keel-config",      # FrozenConfig + ConfigReloader
     "keel-execution",   # ExecutionEngine
     "keel-tenancy",     # TenantScope, RLS
@@ -77,7 +84,7 @@ dependencies = [
 
 # your-app/Cargo.toml
 dependencies = [
-    "keel-kernel",      # re-exported facade
+    "keel-framework",   # re-exported facade (since Phase O; was `keel-kernel`)
     "keel-jobs",        # job definitions
     "keel-events",      # event definitions
     "keel-wasm",        # plugin definitions
@@ -90,7 +97,7 @@ dependencies = [
 | Workspace | Release Trigger | Versioning | Deploy Artifact |
 |---|---|---|---|
 | `keel-platform` | Framework feature/fix | SemVer minor/patch | Crates.io + GitHub Releases |
-| `keel-kernel` | Kernel API change | SemVer major/minor | `keel-api`, `keel-worker` binaries |
+| `keel-platform/runtime` (`keel-api`, `keel-worker`) | Host binary change | SemVer major/minor | `keel-api`, `keel-worker` binaries |
 | `your-app` | Business feature/fix | SemVer patch/minor | Container images + WASM plugins |
 
 **Critical**: `your-app` **never** rebuilds `keel-platform`. Module changes → WASM plugin rebuild (seconds) or hot-reload (milliseconds).
@@ -707,6 +714,10 @@ impl PromotionPipeline {
     `cargo check --workspace --locked` on that exact toolchain — `platform` exit 0 @1.88,
     the other three exit 0 @1.89, all four red at 1.86. Updated in all four workspace roots,
     `keel-publish.yml`'s `msrv` job (now a per-floor matrix) and `docs/01-GETTING-STARTED.md`.
+    > **Superseded by Phase O (2026-10-10):** the four roots are now **three** —
+    > `keel-kernel` was merged into `keel-platform` and deleted. The floors are
+    > unchanged (`platform` @1.88; `keel-platform` + `your-app` @1.89). The text
+    > above is kept verbatim as the record of the measurement as taken.
   - *The `msrv` gate itself was a no-op; now fixed.* `platform/rust-toolchain.toml` pins
     channel 1.92.0 and rustup resolves that file **above** `rustup default`, so installing
     1.86.0 and defaulting to it still built 1.92.0 — the gate reported the floor as met
@@ -779,6 +790,17 @@ impl PromotionPipeline {
   - **proved.** `keel-kernel/Cargo.toml` declares members `kernel-api` and `kernel-worker`;
     executable: `cargo test --workspace` in `keel-kernel` → **15 suites / 240 passed / 0 failed**.
     Consumed downstream by `your-app` via `keel-kernel-facade`.
+  - **Superseded by Phase O (2026-10-10) — topology change, not a revert.** The three-tree
+    split proved here was subsequently merged into a **two-tree** topology so the framework
+    ships as one publishable unit: `kernel-api` → `keel-platform/runtime/keel-api`,
+    `kernel-worker` → `keel-platform/runtime/keel-worker`, `keel-kernel-facade` →
+    `keel-platform/crates/framework` (renamed `keel-framework`), and `applications/` +
+    `lang/` moved across whole. `platform/keel-kernel/` was deleted (52 tracked files).
+    `your-app` now depends on `keel-framework`. Post-merge evidence: `keel-platform`
+    **158 suites / 1493 passed / 0 failed** (2 known load-sensitive 50 ms wall-clock
+    flakes, both green 3/3 in isolation), root `xtask`
+    `platform_tree_is_env_lint_clean` **ok**, `your-app` **3 / 0**, and
+    `cargo clippy --workspace --all-targets -- -D warnings` **exit 0** (D-34).
 - [ ] Move `keel-platform` crates to independent versioning (publish to private registry)
   - **open — it targets a public registry.** `.github/workflows/keel-publish.yml` defines the job
     `name: publish to crates.io`, and its smoke test builds against crates.io explicitly. No

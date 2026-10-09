@@ -82,7 +82,6 @@ jobs:
         include:
           - { ws: platform,      dir: platform,              toolchain: "1.88.0" }
           - { ws: keel-platform, dir: platform/keel-platform, toolchain: "1.89.0" }
-          - { ws: keel-kernel,   dir: platform/keel-kernel,   toolchain: "1.89.0" }
           - { ws: your-app,      dir: platform/your-app,      toolchain: "1.89.0" }
     steps:
       - uses: actions/checkout@v4

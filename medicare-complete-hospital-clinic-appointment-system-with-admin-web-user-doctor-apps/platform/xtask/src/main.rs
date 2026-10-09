@@ -152,13 +152,16 @@ const SANCTIONED_ENV_PATHS: &[&str] = &[
     "keel-platform/crates/application/configuration/src/dotenv.rs",
     "keel-platform/crates/observability/logging/src/config.rs",
     "keel-platform/tools/keel-console/src/main.rs",
-    // --- keel-kernel ---
+    // --- keel-platform runtime (merged from the former keel-kernel tree) ---
     // Binary/boot paths, the same class as the sanctioned `runtime/keel-api` +
     // `runtime/keel-worker` above: config path, logging overrides and
-    // operational gates read once during boot.
-    "keel-kernel/kernel-api/src/lib.rs",
-    "keel-kernel/kernel-api/src/shell.rs",
-    "keel-kernel/kernel-worker/src/main.rs",
+    // operational gates read once during boot. These three carried the
+    // sanctioned role while they lived in `keel-kernel/kernel-api` +
+    // `keel-kernel/kernel-worker`; the merge into `keel-platform` moved the
+    // files, not the capability.
+    "keel-platform/runtime/keel-api/src/lib.rs",
+    "keel-platform/runtime/keel-api/src/shell.rs",
+    "keel-platform/runtime/keel-worker/src/main.rs",
     // --- your-app ---
     // Application binary entrypoint — same boot concern as `runtime/keel-worker`.
     "your-app/apps/api/src/main.rs",

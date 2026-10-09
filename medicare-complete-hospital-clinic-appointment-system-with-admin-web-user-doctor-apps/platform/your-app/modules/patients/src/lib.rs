@@ -14,8 +14,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Json;
-use keel_kernel::keel_http;
-use keel_kernel::{AppError, TenantGuardedPool, TenantId};
+use keel_framework::keel_http;
+use keel_framework::{AppError, TenantGuardedPool, TenantId};
 
 /// Router for the patients module. The composition root (`apps/api`) merges
 /// this into its router behind tenant resolution — `Extension<TenantId>` is

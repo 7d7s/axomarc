@@ -97,7 +97,7 @@ fn router_with(prepare: impl FnOnce(&mut keel_api::routes::AppState)) -> axum::R
     prepare(&mut state);
     let raw = format!(
         "{}{EXTRA_ROUTES}",
-        include_str!("../../applications/appointments/module.toml")
+        include_str!("../../../applications/appointments/module.toml")
     );
     let manifest = keel_registry::ModuleManifest::from_toml(&raw).expect("fixture manifest parses");
     let graph =

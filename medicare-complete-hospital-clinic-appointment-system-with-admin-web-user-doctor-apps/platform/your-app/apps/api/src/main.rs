@@ -17,12 +17,12 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
-use keel_kernel::keel_config::Environment;
-use keel_kernel::keel_observability::{
+use keel_framework::keel_config::Environment;
+use keel_framework::keel_observability::{
     ObservabilityRuntime, ServiceIdentity, TelemetryConfig,
 };
-use keel_kernel::keel_http;
-use keel_kernel::{CsrfGuard, PlatformConfig, SecurityHeaders, TenantGuardedPool, TenantId};
+use keel_framework::keel_http;
+use keel_framework::{CsrfGuard, PlatformConfig, SecurityHeaders, TenantGuardedPool, TenantId};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

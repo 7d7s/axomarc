@@ -26,7 +26,7 @@ use serde_json::{json, Value};
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../keel-platform/crates/extension/wasm/fixtures"
+        "/../../crates/extension/wasm/fixtures"
     ))
 }
 
