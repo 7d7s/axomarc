@@ -250,12 +250,35 @@ live MySQL): `mysql_pair_migrations_apply_rollback_and_reset_with_batches`,
 
 | Works | Refuses (clear message + docs/05 pointer) |
 |---|---|
-| `migrate`, `migrate:fresh`, `migrate:status`, `migrate:rollback`, `migrate:reset`, `migrate:refresh`, `migrate:install`, `seed`, `db:show`, `db:inspect`, the `queue:*`/`schedule:*` commands | `db:schema:dump` (pg_catalog snapshot) |
+| `migrate`, `migrate:fresh`, `migrate:status`, `migrate:rollback`, `migrate:reset`, `migrate:refresh`, `migrate:install`, `seed`, `db:show`, `db:inspect`, `db:schema:dump` (B-31 Phase E), the `queue:*`/`schedule:*` commands | — (nothing refuses since B-31 Phase E; `db:schema:dump` was the last original refusal) |
 
 (`keel promote` / `keel rollback` — Phase 4, console of the `keel-platform`
 workspace only — refuse this driver as well, at `wire_promotion`
 (`pg_only_on_mysql("promote/rollback")`): their events/migration/probe ports are
-`PgPool`-typed. Promotion scope; Phase C did not touch it.)
+`PgPool`-typed. Promotion scope; untouched by Phases C and E — Phase E removed
+the helper only from the `platform` console, where `db:schema:dump` was its
+sole user.)
+
+**`db:schema:dump` on MySQL (B-31 Phase E).** The dump fetches one
+`SHOW CREATE TABLE` per base table — MySQL's only source that preserves
+generated-column expressions (`information_schema` cannot express them), the
+same bytes `mysqldump` and Laravel's `schema:dump` read — and renders the
+same `database/schema.sql` contract as Postgres (banner + dialect line,
+byte-order sorted, `;`-terminated statements, blank line between, honest
+empty marker). Two byte-stability normalizations make dump → replay → dump
+byte-identical on 8.0.44: the `AUTO_INCREMENT=<n>` counter is stripped, and
+a column's `CHARACTER SET`/`COLLATE` clause is stripped when it merely
+repeats the statement's own table options (an inherited collation renders
+as `COLLATE <table collation>` on first dump, replaying that marks the
+column explicit, and the next dump expands it to `CHARACTER SET … COLLATE …`
+— the fixed point only arrives at generation 2; the stripped inherited form
+is what the server renders back unchanged, and only the two bookkeeping
+tables in this `utf8mb4_unicode_ci` database hit it). Neither
+normalization changes semantics: the table options own the charset and
+collation. Proven live on 8.0.44: 25/25 statements cross-check the server's
+bytes modulo those rules, repeat-dump determinism, replay round trip and
+reset→migrate round trip are all byte-identical, and the `keel-platform`
+dump matches.
 
 **Dialect divergences (documented, not gaps):**
 

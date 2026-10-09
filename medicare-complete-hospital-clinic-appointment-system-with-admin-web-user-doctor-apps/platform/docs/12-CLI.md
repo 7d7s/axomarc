@@ -57,12 +57,16 @@ drops every table (FK checks off) and rebuilds, `migrate:status` lists the MySQL
 `migrate:rollback` / `migrate:reset` / `migrate:refresh` / `migrate:install` reads the same
 `database/migrations-pairs` shipment and `keel_migrations` bookkeeping as Postgres — applied
 statement by statement with fail-stop-and-report, because MySQL DDL auto-commits (docs/05
-records the divergence and the four live tests that prove it). One command of
-this table still refuses on this driver with a message naming the command, the
-reason, and docs/05-DATABASE: `db:schema:dump` (the snapshot reads
-pg_catalog). Separately — Operations table, `keel-platform` console only —
+records the divergence and the four live tests that prove it). (B-31
+Phase E) `db:schema:dump` runs on this driver too: it writes one
+`SHOW CREATE TABLE` per base table into the same `database/schema.sql`
+contract, normalized for byte-stable replay (the `AUTO_INCREMENT` counter
+and column `CHARACTER SET`/`COLLATE` clauses that merely repeat the
+statement's own table options are stripped — docs/05). Separately —
+Operations table, `keel-platform` console only —
 `keel promote` / `keel rollback` keep their own `pg_only_on_mysql("promote/rollback")`
-gate at `wire_promotion` (Phase 4 wiring is `PgPool`-typed; untouched by Phase C).
+gate at `wire_promotion` (Phase 4 wiring is `PgPool`-typed; untouched by
+Phases C–E).
 
 ## Operations
 

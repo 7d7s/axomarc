@@ -10,3 +10,6 @@ docker-data/
 # unanchored so each workspace's target/ is ignored — the anchored /target
 # above only covers platform/target itself.
 target/
+# db:schema:dump review artifact — generated on demand per driver in
+# whichever workspace ran it; never committed (docs/12-CLI contract).
+schema.sql

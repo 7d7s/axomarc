@@ -100,18 +100,33 @@ Constraints that bound the answer:
   outright refusal, because there is no longer anything to refuse. Advisory
   locks and `ON CONFLICT` remain genuinely Postgres-only and stay documented as
   such (§5, docs/05).
-- Console on the mysql driver (as amended by Phase C): `migrate:rollback`,
-  `migrate:reset`, `migrate:refresh` and `migrate:install` dispatch to
-  `keel_mysql::pairs` behind `keel_mysql::acquire_migration_lock`. The one
-  remaining refusal of these — a message naming the command, the reason, and
-  docs/05 — is `db:schema:dump` (pg_catalog snapshot). Separately, and
-  untouched by Phase C, the Phase 4 pair `keel promote` / `keel rollback`
-  (console of the `keel-platform` workspace only) keeps its own
-  `pg_only_on_mysql("promote/rollback")` gate at `wire_promotion`, because its
-  events/migration/probe ports are `PgPool`-typed — that is promotion scope,
-  not the migration commands this ADR governs. `migrate`/`migrate:fresh`/
-  `migrate:status`/`seed`/`db:show`/`db:inspect` all work on both drivers
-  (status lists the MySQL set and the pairs applied to it).
+- Console on the mysql driver (as amended by Phases C and E):
+  `migrate:rollback`, `migrate:reset`, `migrate:refresh` and
+  `migrate:install` dispatch to `keel_mysql::pairs` behind
+  `keel_mysql::acquire_migration_lock`. **Phase E lifted the fifth and last
+  refusal: `db:schema:dump` now runs on this driver.** The fetch is one
+  `SHOW CREATE TABLE` per base table — MySQL's only lossless source
+  (`information_schema` cannot express generated-column expressions;
+  preparable via `COM_STMT_PREPARE` on 8.0.44; the same bytes `mysqldump`
+  and Laravel's `schema:dump` read) — rendered into the same
+  `database/schema.sql` contract with exactly two byte-stability
+  normalizations, both proven necessary on 8.0.44: strip the
+  `AUTO_INCREMENT=<n>` counter, and strip column `CHARACTER SET`/`COLLATE`
+  clauses that merely repeat the statement's own table options
+  (`SHOW CREATE TABLE` is a one-shot non-round-trip — inherited →
+  `COLLATE x` → replay marks explicit → next render expands → fixed point
+  from generation 2; the stripped inherited form is semantics-preserving
+  because charset and collation come from the table, and it is what the
+  server renders back byte-identically: dump → replay → dump and
+  reset → migrate → dump both equal the original bytes). The `platform`
+  console deletes `pg_only_on_mysql` (dump was its only user); the Phase 4
+  pair `keel promote` / `keel rollback` (console of the `keel-platform`
+  workspace only) keeps its own `pg_only_on_mysql("promote/rollback")` gate
+  at `wire_promotion`, because its events/migration/probe ports are
+  `PgPool`-typed — that is promotion scope, not the migration commands this
+  ADR governs. `migrate`/`migrate:fresh`/`migrate:status`/`seed`/`db:show`/
+  `db:inspect` all work on both drivers (status lists the MySQL set and the
+  pairs applied to it).
 
 ### 5. Dialect rules that make the store matrix pass unchanged
 
@@ -155,13 +170,15 @@ Constraints that bound the answer:
   one new driver test).
 - Publish count moves to 62 (recorded deviation); `PUBLISHING.md` carries
   69 members / 62 publishable / 7 gated.
-- PostgreSQL-only surfaces are explicit refusals with docs pointers, not silent
-  no-ops: `db:schema:dump`, plus the RLS/array/collation divergences, are
-  documented in docs/05-DATABASE and docs/12-CONSOLE. (Pairs stopped being one
-  as of Phase C — see §4's amendment — the refusal mechanism itself is
-  unchanged and still guards `db:schema:dump`; the Phase 4 pair
-  `keel promote`/`keel rollback` carries a separate, unrelated pg gate, also
-  noted in §4.)
+- PostgreSQL-only surfaces are explicit refusals with docs pointers, not
+  silent no-ops — plus the RLS/array/collation divergences documented in
+  docs/05-DATABASE and docs/12-CLI. (Neither pairs nor `db:schema:dump`
+  is one anymore — see §4's amendments: pairs as of Phase C, the dump as of
+  Phase E, which also deletes the `platform` console's `pg_only_on_mysql`
+  helper — dump was its only user there. The refusal mechanism itself still
+  guards the remaining pg-only surface: the Phase 4 pair `keel promote`/
+  `keel rollback`'s separate, unrelated gate at `wire_promotion` in the
+  `keel-platform` console, also noted in §4.)
 - Non-goals for B-31: no cross-driver migration (a Postgres dump does not apply
   to MySQL — each database runs its own migration set), no sharding/failover,
   no driver switching at runtime (selection is boot-time config only).

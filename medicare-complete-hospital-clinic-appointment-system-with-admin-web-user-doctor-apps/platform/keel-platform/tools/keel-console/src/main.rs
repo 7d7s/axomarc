@@ -596,8 +596,10 @@ fn rt<F: std::future::Future<Output = anyhow::Result<ExitCode>>>(
 }
 
 /// Wave 9 B-31: driver-selected pool — `[database].driver` picks the
-/// Postgres or MySQL probe. Postgres-only commands (the pairs machinery,
-/// pg_catalog introspection) refuse the mysql variant with a clear message.
+/// Postgres or MySQL probe. Every database command dispatches on the
+/// selected driver (Phase C lifted the pairs family, Phase E lifted
+/// `db:schema:dump`); the only pg-only gate left here is promotion
+/// (`keel promote`/`keel rollback`, PgPool-typed wiring at `wire_promotion`).
 async fn db_pool(root: &Path) -> anyhow::Result<DbPool> {
     let cfg = load_config(root)?;
     let db = cfg.database.as_ref().ok_or_else(|| {
@@ -672,13 +674,15 @@ async fn current_database(pool: &DbPool) -> anyhow::Result<String> {
     }
 }
 
-/// The refusal shared by the PostgreSQL-only commands on the mysql driver
-/// (docs/05-DATABASE documented divergence): pairs machinery, advisory
-/// lock flow and pg_catalog introspection never run against MySQL.
+/// The refusal behind the only PostgreSQL-only command left on the mysql
+/// driver (docs/05-DATABASE): `keel promote`/`keel rollback` (Phase 4)
+/// wire PgPool-typed events/migration/probe ports, so promotion never runs
+/// on MySQL. B-31 Phase C lifted the pairs family and Phase E lifted
+/// `db:schema:dump` — this gate is now promotion-only.
 fn pg_only_on_mysql(command: &str) -> anyhow::Error {
     anyhow::anyhow!(
-        "{command} is PostgreSQL-only: it drives rollback-capable pairs / pg_catalog \
-         ([database].driver = \"mysql\" runs forward-only SQL-first singles). \
+        "{command} is PostgreSQL-only: its wiring (events/migration/probe \
+         ports) is PgPool-typed ([database].driver = \"mysql\" cannot run it). \
          Switch [database].driver to \"postgres\" to use it (docs/05-DATABASE)"
     )
 }
@@ -3791,20 +3795,77 @@ async fn fetch_schema_tables(pool: &keel_postgres::PgPool) -> anyhow::Result<Vec
     Ok(tables.into_values().collect())
 }
 
+/// One table of the MySQL snapshot: the server's own `SHOW CREATE TABLE`
+/// statement (B-31 Phase E). MySQL has no catalog function that
+/// reconstructs table DDL, and `information_schema` cannot express
+/// generated-column expressions, so the server's rendering is the source —
+/// `mysqldump` and Laravel's `schema:dump` read the same bytes (the
+/// render fn applies the two byte-stability normalizations).
+struct MySqlSchemaTable {
+    name: String,
+    create_sql: String,
+}
+
+/// Base tables of the current database — the same inventory `db:show`
+/// reports through information_schema.
+const MYSQL_SCHEMA_TABLES_SQL: &str = r#"SELECT table_name
+  FROM information_schema.tables
+ WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE'
+ ORDER BY table_name"#;
+
+/// Fetch the MySQL schema: the connected database's name plus one
+/// `SHOW CREATE TABLE` per base table, keyed through a BTreeMap so the
+/// render order is byte-deterministic (the same ordering rule as the
+/// Postgres renderer). `SHOW CREATE TABLE` is preparable on MySQL 8.0.44
+/// (probed — the same COM_STMT_PREPARE path sqlx's `query_as` takes).
+async fn fetch_mysql_schema_tables(
+    pool: &keel_mysql::MySqlPool,
+) -> anyhow::Result<(String, Vec<MySqlSchemaTable>)> {
+    let database: String = sqlx::query_scalar("SELECT DATABASE()")
+        .fetch_one(pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("current database: {e}"))?;
+    let names: Vec<String> = sqlx::query_scalar(MYSQL_SCHEMA_TABLES_SQL)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("schema tables: {e}"))?;
+    let mut statements: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    for name in names {
+        let row: (String, String) = sqlx::query_as(&format!("SHOW CREATE TABLE `{name}`"))
+            .fetch_one(pool)
+            .await
+            .map_err(|e| anyhow::anyhow!("show create table {name}: {e}"))?;
+        statements.insert(name, row.1);
+    }
+    let tables = statements
+        .into_iter()
+        .map(|(name, create_sql)| MySqlSchemaTable { name, create_sql })
+        .collect();
+    Ok((database, tables))
+}
+
 /// Wave 5: `db:schema:dump` — normalized DDL snapshot of the migrated
 /// schema, written to database/schema.sql for review. The file is never
 /// executed by migrate (migrations stay the source of truth).
-/// Wave 9 B-31: the snapshot reads pg_catalog, so the mysql driver refuses
-/// it (documented divergence, docs/05-DATABASE) — `db:show` still reports
-/// the MySQL table inventory via information_schema.
+/// B-31 Phase E: the snapshot dispatches on driver — Postgres renders the
+/// pg_catalog reconstruction, MySQL renders the server's own
+/// `SHOW CREATE TABLE` statements (docs/05-DATABASE); same banner, same
+/// layout, each dialect's own DDL (a Postgres dump never applies to MySQL
+/// — ADR 0010 non-goal).
 async fn db_schema_dump() -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
     let pool = db_pool(&root).await?;
-    let DbPool::Postgres(pool) = pool else {
-        return Err(pg_only_on_mysql("db:schema:dump"));
+    let (snapshot, table_count) = match pool {
+        DbPool::Postgres(pool) => {
+            let tables = fetch_schema_tables(&pool).await?;
+            (render_schema_snapshot(&tables), tables.len())
+        }
+        DbPool::MySql(pool) => {
+            let (database, tables) = fetch_mysql_schema_tables(&pool).await?;
+            (render_mysql_schema_snapshot(&database, &tables), tables.len())
+        }
     };
-    let tables = fetch_schema_tables(&pool).await?;
-    let snapshot = render_schema_snapshot(&tables);
     let path = root.join("database").join("schema.sql");
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -3815,7 +3876,7 @@ async fn db_schema_dump() -> anyhow::Result<ExitCode> {
     println!(
         "  + {} ({} table(s), normalized DDL)",
         rel.display(),
-        tables.len()
+        table_count
     );
     println!("database/schema.sql written — review artifact; migrate never executes it.");
     Ok(ExitCode::SUCCESS)
@@ -3864,6 +3925,139 @@ fn render_schema_snapshot(tables: &[SchemaTable]) -> String {
             out.push_str(&format!("{index};\n"));
         }
         out.push('\n');
+    }
+    out
+}
+
+/// Strip the data-dependent `AUTO_INCREMENT=<n>` table option so the
+/// snapshot depends on the schema alone (defensive: 0/25 shipped tables
+/// carry an AUTO_INCREMENT column — probed on 8.0.44 — but a future
+/// migration could). The clause only appears in the table options,
+/// space-separated; any other continuation after `=` is kept verbatim
+/// (never guess at DDL bytes we do not recognize).
+fn strip_auto_increment(create_sql: &str) -> String {
+    let mut out = String::with_capacity(create_sql.len());
+    let mut rest = create_sql;
+    while let Some(pos) = rest.find(" AUTO_INCREMENT=") {
+        let (head, tail) = rest.split_at(pos);
+        let after = &tail[" AUTO_INCREMENT=".len()..];
+        out.push_str(head);
+        if !after.starts_with(|c: char| c.is_ascii_digit()) {
+            out.push_str(" AUTO_INCREMENT=");
+            rest = after;
+            continue;
+        }
+        let digits = after
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(after.len());
+        rest = &after[digits..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Strip column-level `CHARACTER SET`/`COLLATE` clauses that merely repeat
+/// the statement's own table options, so the snapshot replays to bytes the
+/// server renders back unchanged. MySQL's `SHOW CREATE TABLE` is not a
+/// round trip: a column that inherited the table charset renders as
+/// ``x COLLATE <table collation>`` (the two bookkeeping tables'
+/// `utf8mb4_unicode_ci`), and replaying *that* text marks the column
+/// explicit — the next render expands it to `CHARACTER SET utf8mb4
+/// COLLATE ...`, a one-shot difference on every re-apply (probed on
+/// 8.0.44: inherited -> COLLATE-only -> explicit -> fixed point).
+/// Restoring the inherited form is semantics-preserving (charset and
+/// collation come from the table) and makes dump -> replay -> dump
+/// byte-identical. Only backtick-quoted column lines are touched; the
+/// options line and any collation differing from the table's stay verbatim.
+fn strip_table_redundant_collation(create_sql: &str) -> String {
+    let table_collation = match create_sql.find("COLLATE=") {
+        Some(pos) => {
+            let rest = &create_sql[pos + "COLLATE=".len()..];
+            let end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(rest.len());
+            &rest[..end]
+        }
+        None => return create_sql.to_string(),
+    };
+    if table_collation.is_empty() {
+        return create_sql.to_string();
+    }
+    let collate_token = format!("COLLATE {table_collation}");
+    let mut out = String::with_capacity(create_sql.len());
+    for line in create_sql.split_inclusive('\n') {
+        // Column definitions only: two-space indent + backtick-quoted name.
+        // Options, KEY and CONSTRAINT lines never match.
+        if !line.starts_with("  `") {
+            out.push_str(line);
+            continue;
+        }
+        let stripped = match line.find(&collate_token) {
+            Some(pos) => {
+                let after = pos + collate_token.len();
+                let boundary = line[after..]
+                    .chars()
+                    .next()
+                    .map(|c| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .unwrap_or(true);
+                if !boundary {
+                    out.push_str(line);
+                    continue;
+                }
+                // Include `CHARACTER SET <charset> ` when it precedes the collation.
+                let mut start = pos;
+                if let Some(cs) = line[..pos].rfind("CHARACTER SET ") {
+                    let between = &line[cs + "CHARACTER SET ".len()..pos];
+                    let adjacent = between.ends_with(' ')
+                        && between[..between.len() - 1]
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '_');
+                    if adjacent {
+                        start = cs;
+                    }
+                }
+                // Consume exactly one separating space to the left.
+                if start > 0 && line.as_bytes()[start - 1] == b' ' {
+                    start -= 1;
+                }
+                format!("{}{}", &line[..start], &line[after..])
+            }
+            None => line.to_string(),
+        };
+        out.push_str(&stripped);
+    }
+    out
+}
+
+/// Render the MySQL snapshot (pure — unit-tested without a database): the
+/// same banner and layout contract as the Postgres renderer — tables sorted
+/// by name, one statement per table, `;`-terminated, a blank line after
+/// each table — where each statement is the server's `SHOW CREATE TABLE`
+/// output narrowed by exactly two byte-stability normalizations
+/// ([`strip_auto_increment`], [`strip_table_redundant_collation`]) so
+/// dump -> replay -> dump is byte-identical. The dialect line records
+/// provenance: this file is MySQL DDL, and a Postgres snapshot never
+/// applies to it (ADR 0010 non-goal).
+fn render_mysql_schema_snapshot(database: &str, tables: &[MySqlSchemaTable]) -> String {
+    let mut out = String::new();
+    out.push_str("-- keel normalized schema snapshot (generated by `keel db:schema:dump`)\n");
+    out.push_str("-- Review artifact: `keel migrate` never executes this file.\n");
+    out.push_str(
+        "-- mysql dialect: SHOW CREATE TABLE per table (AUTO_INCREMENT counter \
+         / table-redundant column COLLATE stripped - byte-stable replay).\n",
+    );
+    if tables.is_empty() {
+        out.push_str(&format!("-- (no tables in database `{database}`)\n"));
+        return out;
+    }
+    let mut sorted: Vec<&MySqlSchemaTable> = tables.iter().collect();
+    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    for table in sorted {
+        let stmt = strip_auto_increment(table.create_sql.trim_end());
+        let stmt = strip_table_redundant_collation(&stmt);
+        let stmt = stmt.strip_suffix(';').unwrap_or(stmt.as_str());
+        out.push_str(stmt);
+        out.push_str(";\n\n");
     }
     out
 }
@@ -6451,6 +6645,105 @@ middleware = ["ghost"]
         let out = render_schema_snapshot(&[]);
         assert!(out.contains("(no tables in schema public)"), "{out}");
         assert!(out.contains("never executes this file"), "{out}");
+    }
+
+    /// B-31 Phase E: the MySQL snapshot is the server's SHOW CREATE TABLE
+    /// output — statements sorted by name regardless of input order,
+    /// verbatim column bytes, `;`-terminated with a blank line after each
+    /// table, the data-dependent AUTO_INCREMENT counter stripped, and
+    /// banner + dialect provenance recorded.
+    #[test]
+    fn mysql_schema_dump_renders_normalized_sorted_ddl() {
+        let tables = vec![
+            MySqlSchemaTable {
+                name: "zebras".into(),
+                create_sql: "CREATE TABLE `zebras` (\n  `id` bigint NOT NULL,\n  `label` varchar(191) DEFAULT NULL\n) ENGINE=InnoDB AUTO_INCREMENT=42 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci".into(),
+            },
+            MySqlSchemaTable {
+                name: "apples".into(),
+                create_sql: "CREATE TABLE `apples` (\n  `id` binary(16) NOT NULL,\n  `sku` varchar(64) NOT NULL,\n  PRIMARY KEY (`id`,`sku`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci".into(),
+            },
+        ];
+        let out = render_mysql_schema_snapshot("keel", &tables);
+        // Banner + dialect provenance (this snapshot is MySQL DDL).
+        assert!(
+            out.contains("keel normalized schema snapshot")
+                && out.contains("never executes this file"),
+            "{out}"
+        );
+        assert!(
+            out.contains("mysql dialect: SHOW CREATE TABLE per table"),
+            "{out}"
+        );
+        // Tables sorted by name regardless of input order.
+        let apples = out.find("CREATE TABLE `apples`").expect("apples present");
+        let zebras = out.find("CREATE TABLE `zebras`").expect("zebras present");
+        assert!(apples < zebras, "sorted output:\n{out}");
+        // The last table's block is byte-exact: server columns verbatim,
+        // AUTO_INCREMENT counter stripped, `;`-terminated + blank line.
+        let tail = &out[zebras..];
+        assert_eq!(
+            tail,
+            "CREATE TABLE `zebras` (\n  `id` bigint NOT NULL,\n  `label` varchar(191) DEFAULT NULL\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;\n\n"
+        );
+        // The counter value is gone; the dialect line still names the rule.
+        assert!(!out.contains("AUTO_INCREMENT=42"), "counter stripped:\n{out}");
+    }
+
+    /// B-31 Phase E: an empty database still produces a valid, honest
+    /// snapshot (banner + marker naming the database) — the MySQL twin of
+    /// the empty-schema marker.
+    #[test]
+    fn mysql_schema_dump_renders_an_empty_marker_for_an_empty_database() {
+        let out = render_mysql_schema_snapshot("keel", &[]);
+        assert!(out.contains("(no tables in database `keel`)"), "{out}");
+        assert!(out.contains("never executes this file"), "{out}");
+    }
+
+    /// B-31 Phase E: the AUTO_INCREMENT stripper removes only the digit
+    /// counter it knows; any other continuation after `=` passes through
+    /// byte-for-byte (never guess at unrecognized DDL).
+    #[test]
+    fn mysql_schema_dump_strips_only_the_auto_increment_counter() {
+        assert_eq!(
+            strip_auto_increment(") ENGINE=InnoDB AUTO_INCREMENT=12 DEFAULT CHARSET=utf8mb4"),
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        );
+        let unknown = ") ENGINE=InnoDB AUTO_INCREMENT=DEFAULT)";
+        assert_eq!(strip_auto_increment(unknown), unknown);
+    }
+
+    /// B-31 Phase E: column COLLATE/CHARACTER SET clauses that merely
+    /// repeat the statement's own table options are stripped (the inherited
+    /// form the server renders back byte-identically); a collation
+    /// differing from the table's and the options line stay verbatim.
+    #[test]
+    fn mysql_schema_dump_strips_table_redundant_column_collation() {
+        let tables = vec![MySqlSchemaTable {
+            name: "_sqlx_migrations".into(),
+            create_sql: "CREATE TABLE `_sqlx_migrations` (\n  `version` bigint NOT NULL,\n  `description` text COLLATE utf8mb4_unicode_ci NOT NULL,\n  `applied` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,\n  `other` varchar(64) COLLATE utf8mb4_0900_ai_ci NOT NULL,\n  `kind2` varchar(32) COLLATE utf8mb4_unicode_ci2 NOT NULL,\n  PRIMARY KEY (`version`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+                .into(),
+        }];
+        let out = render_mysql_schema_snapshot("keel", &tables);
+        // Redundant (== table's) COLLATE removed, with its CHARACTER SET when present.
+        assert!(out.contains("`description` text NOT NULL,"), "{out}");
+        assert!(out.contains("`applied` varchar(255) NOT NULL,"), "{out}");
+        // Collations differing from the table's — including a longer name the
+        // table's collation is only a prefix of — stay verbatim.
+        assert!(
+            out.contains("`other` varchar(64) COLLATE utf8mb4_0900_ai_ci NOT NULL,"),
+            "{out}"
+        );
+        assert!(
+            out.contains("`kind2` varchar(32) COLLATE utf8mb4_unicode_ci2 NOT NULL,"),
+            "{out}"
+        );
+        // Non-column lines (options, PK) stay verbatim.
+        assert!(
+            out.contains(") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;\n"),
+            "{out}"
+        );
+        assert!(out.contains("PRIMARY KEY (`version`)"), "{out}");
     }
 
     /// Wave 5 Phase 5: queue:monitor renders every depth counter plus the
