@@ -2159,26 +2159,36 @@ async fn migrate_fresh() -> anyhow::Result<ExitCode> {
             // B-31: MySQL has no cascadeable schema inside a database — drop
             // every table (bookkeeping included) with FK checks off, then the
             // forward run rebuilds from zero. Dev/test only, like pg.
+            //
+            // Phase H: FOREIGN_KEY_CHECKS is SESSION-scoped, so the switch
+            // and every DROP must share ONE pooled connection — as pooled
+            // checkouts the SET never reached the drops and MySQL refused the
+            // first FK-referenced table (error 3730 on `memberships`). The
+            // held-connection shape matches migrate_rollback below.
+            let mut conn = p
+                .acquire()
+                .await
+                .map_err(|e| anyhow::anyhow!("drop schema: connect: {e}"))?;
             sqlx::query("SET FOREIGN_KEY_CHECKS = 0")
-                .execute(p)
+                .execute(&mut *conn)
                 .await
                 .map_err(|e| anyhow::anyhow!("drop schema: {e}"))?;
             let tables: Vec<String> = sqlx::query_scalar(
                 "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE()",
             )
-            .fetch_all(p)
+            .fetch_all(&mut *conn)
             .await
             .map_err(|e| anyhow::anyhow!("list tables: {e}"))?;
             for table in &tables {
                 sqlx::query(&format!("DROP TABLE IF EXISTS `{table}`"))
-                    .execute(p)
+                    .execute(&mut *conn)
                     .await
                     .map_err(|e| anyhow::anyhow!("drop table {table}: {e}"))?;
             }
             sqlx::query("SET FOREIGN_KEY_CHECKS = 1")
-                .execute(p)
+                .execute(&mut *conn)
                 .await
-                .map_err(|e| anyhow::anyhow!("create schema: {e}"))?;
+                .map_err(|e| anyhow::anyhow!("restore FK checks: {e}"))?;
         }
     }
     let pair_applied = match &pool {
