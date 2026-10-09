@@ -182,6 +182,20 @@ Constraints that bound the answer:
   console's was dropped in Phase E). The refusal mechanism is now retired
   from both consoles: nothing remains for it to guard. The RLS/array/
   collation dialect divergences are unaffected and stay documented.)
+- The base/twin MySQL migration-set divergence is an intentional, tested
+  boundary as of B-31 Phase G: the product's nine-file
+  `database/migrations-mysql/` set is a byte-identical subset of the
+  `keel-platform` twin's twelve — the twin adds exactly the three
+  target-architecture migrations the product has not adopted (§3.1 job
+  tenant scoping, §5.2 event idempotency, §5.1 job payload versioning) — and
+  `keel-platform/crates/data/mysql/tests/migration_set_parity.rs` enforces
+  both directions (every shared migration byte-identical; twin extras
+  exactly those three, enumerated in `TWIN_ONLY`). Each console therefore
+  pairs with its own schema — the product's nine for the Phase C/E live
+  gates, the twin's twelve for the Phase F promotion gate — while any
+  silent foundation drift or unexpected extra fails the twin's workspace
+  gate before it can ship. No schema change; folding the three target-arch
+  phases into the product set stays a separate decision.
 - Non-goals for B-31: no cross-driver migration (a Postgres dump does not apply
   to MySQL — each database runs its own migration set), no sharding/failover,
   no driver switching at runtime (selection is boot-time config only).
