@@ -1,5 +1,5 @@
 [package]
-name = "keel-buffer"
+name = "kelson-buffer"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,11 +7,11 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel Sentinel: bounded buffers, durability classes, disk-backed WAL with checksummed replay, backpressure."
+description = "Kelson Sentinel: bounded buffers, durability classes, disk-backed WAL with checksummed replay, backpressure."
 
 [dependencies]
-keel-foundation = { workspace = true }
-keel-telemetry = { workspace = true }
+kelson-foundation = { workspace = true }
+kelson-telemetry = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

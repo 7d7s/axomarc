@@ -1,6 +1,6 @@
 //! Wave 4 Phase 5 (docs/19 L211): the config cache artifact.
 //!
-//! `keel config:cache` pins the frozen effective config to
+//! `kelson config:cache` pins the frozen effective config to
 //! `storage/framework/config.json` together with its content hash; boot
 //! re-derives the effective config and hash-checks the artifact with
 //! **drift-refuse semantics identical to the Wave 1 route cache**: absent
@@ -77,7 +77,7 @@ pub fn config_hash(config_json: &serde_json::Value) -> String {
 
 /// Boot gate: absent artifact -> `Ok(())` (live config); present artifact
 /// must hash-match the current effective config, else boot is refused with
-/// a pointer to `keel config:cache` / `keel config:clear`. Corrupt
+/// a pointer to `kelson config:cache` / `kelson config:clear`. Corrupt
 /// artifacts refuse boot too.
 pub fn config_cache_check(root: &Path, current_hash: &str) -> Result<(), String> {
     let path = config_cache_path(root);
@@ -86,7 +86,7 @@ pub fn config_cache_check(root: &Path, current_hash: &str) -> Result<(), String>
     };
     if !artifact.matches_hash(current_hash) {
         return Err(format!(
-            "{CONFIG_CACHE_CODE}: config cache {} is stale (config file or environment drift); run keel config:cache to rebuild or keel config:clear to drop it",
+            "{CONFIG_CACHE_CODE}: config cache {} is stale (config file or environment drift); run kelson config:cache to rebuild or kelson config:clear to drop it",
             path.display()
         ));
     }
@@ -99,7 +99,7 @@ mod tests {
 
     fn sample() -> serde_json::Value {
         serde_json::json!({
-            "app": { "name": "keel", "env": "dev" },
+            "app": { "name": "kelson", "env": "dev" },
             "auth": { "jwt_secret": "dev-only-not-for-prod" },
         })
     }
@@ -117,7 +117,7 @@ mod tests {
     #[test]
     fn check_accepts_matching_pin_and_absent_artifact() {
         let dir = std::env::temp_dir().join(format!(
-            "keel-registry-configcache-ok-{}",
+            "kelson-registry-configcache-ok-{}",
             std::process::id()
         ));
         std::fs::create_dir_all(&dir).unwrap();
@@ -141,7 +141,7 @@ mod tests {
     #[test]
     fn check_refuses_drift_abi_mismatch_and_corruption() {
         let dir = std::env::temp_dir().join(format!(
-            "keel-registry-configcache-stale-{}",
+            "kelson-registry-configcache-stale-{}",
             std::process::id()
         ));
         std::fs::create_dir_all(&dir).unwrap();

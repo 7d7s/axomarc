@@ -1,4 +1,4 @@
-//! Keel reference application (S6 public ecosystem): a small clinic-appointments
+//! Kelson reference application (S6 public ecosystem): a small clinic-appointments
 //! domain that exercises the platform end-to-end, the way a real module would —
 //! module manifest -> platform graph -> policy-gated execution -> delta + outbox
 //! -> search -> MCP tool manifest. Everything runs on the in-memory reference
@@ -7,24 +7,24 @@
 
 use std::sync::{Arc, Mutex};
 
-use keel_command::CommandBus;
-use keel_context::{ExecutionContext, PrincipalContext, ScopeSnapshot, TenantContext};
-use keel_foundation::{
+use kelson_command::CommandBus;
+use kelson_context::{ExecutionContext, PrincipalContext, ScopeSnapshot, TenantContext};
+use kelson_foundation::{
     AppError, AuthorizationRevision, ExecutionProfileKind, FeatureRevision, ModuleRevision,
     OperationId, PrincipalId, TenantId,
 };
-use keel_execution::{
+use kelson_execution::{
     BoxFuture, ExecutionPlan, ExecutionUnit, IdempotencyKey, InMemoryBackend, InMemoryIdempotency,
     MutationRecord, OperationHandler, OutboxMessage,
 };
-use keel_lifecycle::{ApplicationHost, BootError, Phase, Provider, ServiceRegistry};
-use keel_policy::{AccessSnapshot, PolicyAuthz, PolicyEngine};
-use keel_registry::{ModuleManifest, PlatformGraph};
-use keel_search::{InMemorySearchEngine, Index, SearchDocument, SearchEngine, SearchQuery};
+use kelson_lifecycle::{ApplicationHost, BootError, Phase, Provider, ServiceRegistry};
+use kelson_policy::{AccessSnapshot, PolicyAuthz, PolicyEngine};
+use kelson_registry::{ModuleManifest, PlatformGraph};
+use kelson_search::{InMemorySearchEngine, Index, SearchDocument, SearchEngine, SearchQuery};
 use serde_json::json;
 use time::OffsetDateTime;
 
-/// The appointments module manifest — the exact shape `keel new` + `keel make:module`
+/// The appointments module manifest — the exact shape `kelson new` + `kelson make:module`
 /// emit for real modules, validated by the same graph compiler (G05/G06).
 pub const MANIFEST: &str = include_str!("../module.toml");
 
@@ -201,7 +201,7 @@ impl Provider for KernelProvider {
             module_revision: ModuleRevision(1),
             computed_at: OffsetDateTime::now_utc(),
         });
-        let engine = Arc::new(keel_execution::Engine::new(
+        let engine = Arc::new(kelson_execution::Engine::new(
             Arc::new(PolicyAuthz {
                 engine: policy.clone(),
             }),
@@ -222,7 +222,7 @@ impl Provider for ModuleProvider {
         Phase::Modules
     }
     fn init(&self, registry: &mut ServiceRegistry) -> Result<(), BootError> {
-        let engine = registry.get::<keel_execution::Engine>()?;
+        let engine = registry.get::<kelson_execution::Engine>()?;
         let store = Arc::new(AppointmentStore::default());
         let search = Arc::new(InMemorySearchEngine::new());
         let mut bus = CommandBus::new(engine);
@@ -263,19 +263,19 @@ pub struct Report {
 /// through the provider lifecycle, exactly like production hosts do
 /// (STAGE-SENTINEL-SPEC §18). Storage paths live in a per-run temp dir so
 /// tests never touch the workspace `storage/`.
-fn telemetry_provider() -> keel_observability::ObservabilityProvider {
+fn telemetry_provider() -> kelson_observability::ObservabilityProvider {
     let base = std::env::temp_dir().join(format!(
-        "keel-example-reference-telemetry-{}",
+        "kelson-example-reference-telemetry-{}",
         uuid::Uuid::now_v7()
     ));
-    let mut tcfg = keel_observability::TelemetryConfig::default();
+    let mut tcfg = kelson_observability::TelemetryConfig::default();
     tcfg.wal.dir = base.join("wal");
     tcfg.paths.incident_dir = base.join("control");
     tcfg.paths.cost_file = base.join("cost.json");
     tcfg.paths.health_dir = base.join("exporters");
     tcfg.exporters.insert(
         "file".into(),
-        keel_observability::ExporterConfig {
+        kelson_observability::ExporterConfig {
             kind: "file".into(),
             target: Some(base.join("events.jsonl").to_string_lossy().into_owned()),
             format: None,
@@ -285,9 +285,9 @@ fn telemetry_provider() -> keel_observability::ObservabilityProvider {
             breaker: None,
         },
     );
-    keel_observability::ObservabilityProvider::new(
+    kelson_observability::ObservabilityProvider::new(
         tcfg,
-        keel_observability::ServiceIdentity::new("keel-example-reference", "test"),
+        kelson_observability::ServiceIdentity::new("kelson-example-reference", "test"),
     )
 }
 
@@ -399,7 +399,7 @@ pub async fn run() -> Result<Report, Box<dyn std::error::Error>> {
     )?;
 
     // 6. The ecosystem surface is generated from the same graph.
-    let tools = keel_ai_mcp::tools_from_graph(&graph);
+    let tools = kelson_ai_mcp::tools_from_graph(&graph);
 
     Ok(Report {
         graph_operations: graph.operations.len(),

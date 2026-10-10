@@ -3,7 +3,7 @@
 //!
 //! Responsibilities:
 //! - mass-assignment boundary (declared fields only, unknown keys rejected)
-//! - field-level casts between JSON wire values and [`keel_query::Value`]
+//! - field-level casts between JSON wire values and [`kelson_query::Value`]
 //! - required/enum/tenant validation on write
 //! - hidden (`sensitive`) field redaction on serialization
 //! - soft-delete runtime (honors `ModelDef::soft_deletes`)
@@ -21,8 +21,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use keel_foundation::{codes, AppError, ErrorCategory, Retryability, Sealer, Severity, TenantId};
-use keel_query::{Ident, PageReq, Value as Bind};
+use kelson_foundation::{codes, AppError, ErrorCategory, Retryability, Sealer, Severity, TenantId};
+use kelson_query::{Ident, PageReq, Value as Bind};
 use serde_json::Value as Json;
 use uuid::Uuid;
 
@@ -54,7 +54,7 @@ pub struct ModelEvent {
     pub record: Record,
 }
 
-/// Observer hook (bridge to keel-event/outbox lives in the engine layer).
+/// Observer hook (bridge to kelson-event/outbox lives in the engine layer).
 pub trait ModelObserver: Send + Sync {
     fn on_model_event(&self, event: &ModelEvent);
 }
@@ -173,7 +173,7 @@ impl WireBuilder<'_> {
 
     /// Assert these accessor names exist and their computed values appear in
     /// the projection (accessors are on by default; this pins them and
-    /// rejects unknown names with `KER_VALIDATION`).
+    /// rejects unknown names with `KSN_VALIDATION`).
     pub fn append(mut self, names: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.opts.append.extend(names.into_iter().map(Into::into));
         self
@@ -427,7 +427,7 @@ impl ModelRuntime {
 
     /// Bind the foundation encryption port so `cast = "encrypted"` works.
     /// Ships the [`EncryptedCast`] under the `encrypted` name; the concrete
-    /// AES-256-GCM cipher is `keel_tokens::AesGcmSealer`.
+    /// AES-256-GCM cipher is `kelson_tokens::AesGcmSealer`.
     pub fn with_sealer(mut self, sealer: Arc<dyn Sealer>) -> Self {
         self.casts
             .insert("encrypted".into(), Arc::new(EncryptedCast::new(sealer)));
@@ -849,7 +849,7 @@ impl ModelRuntime {
         filters: Vec<FieldFilter>,
         scope_names: &[String],
         page: Option<PageReq>,
-    ) -> Result<keel_query::Page<Record>, AppError> {
+    ) -> Result<kelson_query::Page<Record>, AppError> {
         // Pipeline: global scopes FIRST, then named scopes, then validation.
         let mut filters = self.apply_global_scopes(filters);
         for name in scope_names {
@@ -878,7 +878,7 @@ impl ModelRuntime {
         filters: Vec<FieldFilter>,
         scope_names: &[String],
         page: Option<PageReq>,
-    ) -> Result<keel_query::Page<Record>, AppError> {
+    ) -> Result<kelson_query::Page<Record>, AppError> {
         let mut filters = self.apply_global_scopes(filters);
         for name in scope_names {
             let scope = self
@@ -907,7 +907,7 @@ impl ModelRuntime {
         filters: Vec<FieldFilter>,
         scope_names: &[String],
         page: Option<PageReq>,
-    ) -> Result<keel_query::Page<Record>, AppError> {
+    ) -> Result<kelson_query::Page<Record>, AppError> {
         if !self.model.soft_deletes {
             return Err(AppError::validation(format!(
                 "only_trashed requires soft_deletes on model {}",
@@ -944,7 +944,7 @@ impl ModelRuntime {
         tenant: Option<TenantId>,
         filters: Vec<FieldFilter>,
         opts: &ListOpts,
-    ) -> Result<keel_query::Page<Record>, AppError> {
+    ) -> Result<kelson_query::Page<Record>, AppError> {
         self.validate_predicates(&filters)?;
         store.list(&self.model, tenant, &filters, opts)
     }
@@ -3495,7 +3495,7 @@ mod tests {
         rt.insert(store, &r, None).unwrap()
     }
 
-    fn listed_names(page: keel_query::Page<Record>) -> Vec<String> {
+    fn listed_names(page: kelson_query::Page<Record>) -> Vec<String> {
         page.items
             .iter()
             .map(|r| r["name"].as_str().unwrap_or("?").to_string())
@@ -4315,7 +4315,7 @@ mod tests {
                 None,
             )
             .unwrap_err();
-        assert_eq!(err.code, "KER_NOT_FOUND");
+        assert_eq!(err.code, "KSN_NOT_FOUND");
     }
 
     #[test]
@@ -4619,11 +4619,11 @@ mod tests {
         // ...while the error finders raise typed NOT_FOUND (the Wave 2
         // error-registry 404 path).
         let err = rt().get(&store, Uuid::now_v7(), Some(tenant)).unwrap_err();
-        assert_eq!(err.code, "KER_NOT_FOUND");
+        assert_eq!(err.code, "KSN_NOT_FOUND");
         let err = rt()
             .first_or_not_found(&store, Some(tenant), &[FieldFilter::eq("patient", "ghost")])
             .unwrap_err();
-        assert_eq!(err.code, "KER_NOT_FOUND");
+        assert_eq!(err.code, "KSN_NOT_FOUND");
         // A hit satisfies first_or_not_found.
         rt().insert(&store, &input("here"), Some(tenant)).unwrap();
         let found = rt()
@@ -4894,7 +4894,7 @@ mod tests {
         let err = rt()
             .increment(&store, Uuid::now_v7(), Some(tenant), "visits", 1, &Record::new())
             .unwrap_err();
-        assert_eq!(err.code, "KER_NOT_FOUND");
+        assert_eq!(err.code, "KSN_NOT_FOUND");
         // ...validation for undeclared, non-numeric, and immutable fields.
         let err = rt()
             .increment(&store, id, Some(tenant), "nope", 1, &Record::new())
@@ -5088,7 +5088,7 @@ mod tests {
         let mut bogus = Record::new();
         bogus.insert("id".into(), Json::String(Uuid::now_v7().to_string()));
         let err = rt().replicate(&store, &bogus, Some(tenant), &[], true).unwrap_err();
-        assert_eq!(err.code, "KER_NOT_FOUND");
+        assert_eq!(err.code, "KSN_NOT_FOUND");
     }
 
     #[test]
@@ -5153,7 +5153,7 @@ mod tests {
         // Deleted meanwhile: refresh → typed NOT_FOUND, fresh → None.
         rt().delete(&store, rid(&a), Some(tenant)).unwrap();
         let err = rt().refresh(&store, &mut snapshot, Some(tenant)).unwrap_err();
-        assert_eq!(err.code, "KER_NOT_FOUND");
+        assert_eq!(err.code, "KSN_NOT_FOUND");
         assert!(rt().fresh(&store, &snapshot, Some(tenant)).unwrap().is_none());
     }
 
@@ -5219,7 +5219,7 @@ mod tests {
         );
         // Missing row → typed NOT_FOUND.
         let err = rt().touch(&store, Uuid::now_v7(), Some(tenant)).unwrap_err();
-        assert_eq!(err.code, "KER_NOT_FOUND");
+        assert_eq!(err.code, "KSN_NOT_FOUND");
 
         // Models without an updated_at column are refused.
         let plain = ModelDef::new("Plain", "plains")
@@ -5391,7 +5391,7 @@ mod tests {
 
     #[test]
     fn encrypted_cast_seals_through_the_runtime_sealer() {
-        use keel_tokens::{AesGcmSealer, KEY_LEN};
+        use kelson_tokens::{AesGcmSealer, KEY_LEN};
 
         let store = InMemoryModelStore::new();
         let sealed_rt = ModelRuntime::new(cast_model())
@@ -5752,8 +5752,8 @@ mod tests {
         let err = rt.update(&store, rid(&row), None, &changes).unwrap_err();
 
         assert!(interferer.fired.load(Ordering::SeqCst), "interferer ran");
-        assert_eq!(err.code, keel_foundation::codes::STALE_RECORD);
-        assert_eq!(err.category, keel_foundation::ErrorCategory::Conflict);
+        assert_eq!(err.code, kelson_foundation::codes::STALE_RECORD);
+        assert_eq!(err.category, kelson_foundation::ErrorCategory::Conflict);
         // The stale write was refused: the row keeps the interfering version
         // and the original note.
         let current = rt.get(&store, rid(&row), None).unwrap();
@@ -5776,7 +5776,7 @@ mod tests {
         let mut changes = Record::new();
         changes.insert("note".into(), Json::String("x".into()));
         let err = rt.update(&store, id, None, &changes).unwrap_err();
-        assert_eq!(err.code, keel_foundation::codes::VALIDATION);
+        assert_eq!(err.code, kelson_foundation::codes::VALIDATION);
         assert!(
             err.public_message.contains("version"),
             "{}",
@@ -5900,7 +5900,7 @@ mod tests {
         let missing = Uuid::now_v7();
         assert_eq!(
             rt.restore(&store, missing, Some(tenant)).unwrap_err().code,
-            keel_foundation::codes::NOT_FOUND
+            kelson_foundation::codes::NOT_FOUND
         );
 
         // force_delete purges outright; a second call misses.
@@ -5910,7 +5910,7 @@ mod tests {
             rt.force_delete(&store, id, Some(tenant))
                 .unwrap_err()
                 .code,
-            keel_foundation::codes::NOT_FOUND
+            kelson_foundation::codes::NOT_FOUND
         );
     }
 
@@ -5926,13 +5926,13 @@ mod tests {
         let err = rt
             .only_trashed(&store, None, vec![], &[], None)
             .unwrap_err();
-        assert_eq!(err.code, keel_foundation::codes::VALIDATION);
+        assert_eq!(err.code, kelson_foundation::codes::VALIDATION);
         let err = rt.restore(&store, Uuid::now_v7(), None).unwrap_err();
-        assert_eq!(err.code, keel_foundation::codes::VALIDATION);
+        assert_eq!(err.code, kelson_foundation::codes::VALIDATION);
         // force_delete needs no soft-delete posture — a missing row is
         // simply 404.
         let err = rt.force_delete(&store, Uuid::now_v7(), None).unwrap_err();
-        assert_eq!(err.code, keel_foundation::codes::NOT_FOUND);
+        assert_eq!(err.code, kelson_foundation::codes::NOT_FOUND);
     }
 
     // ------------------------------------------ Wave 3 Phase 6: global scopes
@@ -6081,7 +6081,7 @@ mod tests {
         assert!(!rt.is_prunable());
         let store = InMemoryModelStore::new();
         let err = rt.prune(&store, None, 10).unwrap_err();
-        assert_eq!(err.code, keel_foundation::codes::VALIDATION);
+        assert_eq!(err.code, kelson_foundation::codes::VALIDATION);
         assert!(err.public_message.contains("not prunable"));
     }
 

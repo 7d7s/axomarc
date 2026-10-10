@@ -2,7 +2,7 @@
 
 #[tokio::main]
 async fn main() {
-    match keel_example_reference::run().await {
+    match kelson_example_reference::run().await {
         Ok(report) => {
             println!("reference application OK:");
             println!("  graph operations     : {}", report.graph_operations);

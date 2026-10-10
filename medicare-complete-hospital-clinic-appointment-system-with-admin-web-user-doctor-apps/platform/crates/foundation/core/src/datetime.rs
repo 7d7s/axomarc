@@ -3,7 +3,7 @@
 //! table ([`tz`](crate::tz)).
 //!
 //! The token grammar is THE grammar the `date_format` validation rule
-//! enforces — `keel-validation` delegates its spec check and value match
+//! enforces — `kelson-validation` delegates its spec check and value match
 //! here, so "same tokens as the `date_format` rule" is structural, not a
 //! convention. Every ASCII letter outside the closed set is a fail-closed
 //! error (identical message on both the rule and the helper path); any
@@ -16,7 +16,7 @@ pub const DATE_FORMAT_TOKENS: &str = "YmdHis";
 
 /// Boot validation for the format spec: closed PHP-style token set
 /// (`Y m d H i s`); every other ASCII letter is a fail-closed error and
-/// any non-letter is a literal separator. `keel-validation`'s
+/// any non-letter is a literal separator. `kelson-validation`'s
 /// `date_format:<fmt>` rule parse calls this.
 pub fn check_date_format_spec(fmt: &str) -> Result<(), String> {
     if fmt.is_empty() {

@@ -1,10 +1,10 @@
 //! Wave 6 P5 database channel on MySQL 8: durable `notifications` rows
-//! (19-PARITY "Notifications v2"). Implements the keel-notifications
+//! (19-PARITY "Notifications v2"). Implements the kelson-notifications
 //! `NotificationStore` port so the inbox survives restarts and scales
 //! across instances; the in-memory store backs degraded boot (D-52).
 //!
 //! MySQL port notes (B-31), vs the Postgres twin
-//! (`keel_postgres::notificationstore`):
+//! (`kelson_postgres::notificationstore`):
 //! - `$n` placeholders become `?` in bind order (rule 1); uuid binds stay
 //!   raw `BINARY(16)` (rule 2), timestamp binds stay `OffsetDateTime` over
 //!   `DATETIME(6)` (rule 3) and `data` stays a `serde_json::Value` over a
@@ -16,7 +16,7 @@
 //! - `id = ANY($3)` over the id list becomes a rebuilt `IN (?, ...)`
 //!   list (rule 8); an empty list short-circuits to `Ok(0)` without a
 //!   query (pg matches no rows there anyway).
-//! - no RLS and no `SET LOCAL keel.tenant_id` (rule 11): every pg
+//! - no RLS and no `SET LOCAL kelson.tenant_id` (rule 11): every pg
 //!   statement already carried its explicit `principal_id` predicate, and
 //!   all three are principal-scoped - those predicates are kept verbatim
 //!   and are the isolation story here; nothing was added or dropped.
@@ -25,8 +25,8 @@
 //!   guard makes matched == changed, so re-marking already-read rows
 //!   still reports 0 exactly like pg.
 
-use keel_foundation::{AppError, PrincipalId};
-use keel_notifications::{BoxFuture, NotificationPage, NotificationRow, NotificationStore};
+use kelson_foundation::{AppError, PrincipalId};
+use kelson_notifications::{BoxFuture, NotificationPage, NotificationRow, NotificationStore};
 use sqlx::mysql::MySqlPool;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -53,7 +53,7 @@ fn row_to_notification(row: sqlx::mysql::MySqlRow) -> Result<NotificationRow, Ap
     Ok(NotificationRow {
         id,
         principal_id: PrincipalId::from_uuid(principal),
-        tenant_id: tenant.map(keel_foundation::TenantId::from_uuid),
+        tenant_id: tenant.map(kelson_foundation::TenantId::from_uuid),
         kind: row.try_get("type").map_err(my)?,
         data: row.try_get("data").map_err(my)?,
         read_at: row.try_get("read_at").map_err(my)?,

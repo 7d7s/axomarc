@@ -1,14 +1,14 @@
-//! # keel-tenancy
+//! # kelson-tenancy
 //! Enterprise tenancy service (blueprint L76, S3). Tenants are the isolation
 //! boundary of the tenant plane: every tenant-plane execution carries a
-//! resolved `TenantContext` (keel-context) and the postgres adapter anchors
-//! rows with `SET LOCAL keel.tenant_id` + RLS. This crate adds the control
+//! resolved `TenantContext` (kelson-context) and the postgres adapter anchors
+//! rows with `SET LOCAL kelson.tenant_id` + RLS. This crate adds the control
 //! plane ABOVE that: tenant records, resolution, plan/status enforcement and
 //! the S3 TENANT service lifetime.
 //!
 //! **Service lifetimes added in S3** (STAGE-0-SPEC §6, ServiceLifetime):
 //! - REQUEST: one per HTTP request (sessions + request-scoped services; see
-//!   keel-session / keel-http).
+//!   kelson-session / kelson-http).
 //! - TENANT: one per tenant per process — `TenantScope` below. Long-lived
 //!   tenant-keyed services (per-tenant config cache, rate buckets) register
 //!   here instead of in the process-wide Application registry.
@@ -16,8 +16,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
 
-use keel_context::TenantContext;
-use keel_foundation::{AppError, TenantId, TenantRevision};
+use kelson_context::TenantContext;
+use kelson_foundation::{AppError, TenantId, TenantRevision};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -46,7 +46,7 @@ impl TenantStatus {
     }
 }
 
-/// Control-plane tenant record (persistence: `tenants` table, keel-postgres).
+/// Control-plane tenant record (persistence: `tenants` table, kelson-postgres).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TenantRecord {
     pub id: TenantId,
@@ -66,7 +66,7 @@ pub struct TenantRecord {
     pub revision: TenantRevision,
 }
 
-/// Tenant storage port. keel-postgres implements it on the `tenants` table;
+/// Tenant storage port. kelson-postgres implements it on the `tenants` table;
 /// the in-memory registry serves degraded boot and tests.
 pub trait TenantStore: Send + Sync {
     fn by_id(&self, id: TenantId) -> Result<Option<TenantRecord>, AppError>;
@@ -183,7 +183,7 @@ impl TenantService {
         &self.store
     }
 
-    /// Resolve a hint to a record. Unknown tenant = `KER_NOT_FOUND`.
+    /// Resolve a hint to a record. Unknown tenant = `KSN_NOT_FOUND`.
     pub fn resolve(&self, hint: &TenantHint) -> Result<TenantRecord, AppError> {
         let found = match hint {
             TenantHint::Id(id) => self.store.by_id(*id)?,
@@ -212,7 +212,7 @@ impl TenantService {
         Ok(record)
     }
 
-    /// Project a record into the execution-context carrier (keel-context).
+    /// Project a record into the execution-context carrier (kelson-context).
     pub fn context(&self, record: &TenantRecord) -> TenantContext {
         TenantContext {
             id: record.id,
@@ -409,7 +409,7 @@ mod tests {
         rec.status = TenantStatus::Suspended;
         store.upsert(rec).unwrap();
         let err = svc.authorize(&TenantHint::Slug("acme".into())).unwrap_err();
-        assert_eq!(err.code, keel_foundation::codes::DENIED);
+        assert_eq!(err.code, kelson_foundation::codes::DENIED);
         assert!(
             svc.resolve(&TenantHint::Slug("acme".into())).is_ok(),
             "resolve still finds it"
@@ -456,7 +456,7 @@ mod tests {
         let policy = PlanPolicy::defaults();
         assert!(policy.check("standard", PlanMetric::Users, 49).is_ok());
         let err = policy.check("standard", PlanMetric::Users, 50).unwrap_err();
-        assert_eq!(err.code, keel_foundation::codes::CAP_LIMIT);
+        assert_eq!(err.code, kelson_foundation::codes::CAP_LIMIT);
         assert!(policy.limits("ghost-plan").is_err());
     }
 

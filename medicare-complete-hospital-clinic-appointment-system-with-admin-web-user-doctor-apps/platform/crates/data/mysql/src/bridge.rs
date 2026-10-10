@@ -19,7 +19,7 @@
 //!
 //! NOTE: a deliberate copy of this module lives in
 //! `crates/data/postgres/src/bridge.rs` (and, for the frozen G07 matrix,
-//! `adapters/keel-search-pgvector/src/bridge.rs`). The publishable data
+//! `adapters/kelson-search-pgvector/src/bridge.rs`). The publishable data
 //! fabrics never depend on each other; keep the copies in sync.
 //!
 //! Futures must be owned (`'static + Send`): clone the pool (cheap `Arc`)
@@ -58,17 +58,17 @@ fn bridge() -> &'static Bridge {
     BRIDGE.get_or_init(|| {
         let (tx, rx) = mpsc::sync_channel::<Job>(64);
         std::thread::Builder::new()
-            .name("keel-mysql-bridge".into())
+            .name("kelson-mysql-bridge".into())
             .spawn(move || {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .expect("keel-mysql-bridge runtime");
+                    .expect("kelson-mysql-bridge runtime");
                 for job in rx {
                     runtime.block_on(job);
                 }
             })
-            .expect("keel-mysql-bridge thread");
+            .expect("kelson-mysql-bridge thread");
         Bridge { tx }
     })
 }
@@ -80,7 +80,7 @@ impl Bridge {
             let out = fut.await;
             let _ = done_tx.send(out);
         });
-        self.tx.send(job).expect("keel-mysql-bridge alive");
-        done_rx.recv().expect("keel-mysql-bridge result")
+        self.tx.send(job).expect("kelson-mysql-bridge alive");
+        done_rx.recv().expect("kelson-mysql-bridge result")
     }
 }

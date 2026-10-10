@@ -1,8 +1,8 @@
-# keel-example-minimal
+# kelson-example-minimal
 
-Keel golden path: host boot -> module registration -> engine execution -> delta stone
+Kelson golden path: host boot -> module registration -> engine execution -> delta stone
 
-Part of the [Keel](../../README.md) platform - a typed, plane-separated, delta-first application framework for Rust. See [PUBLISHING.md](../../PUBLISHING.md) for the release process and the [workspace README](../../README.md) for architecture.
+Part of the [Kelson](../../README.md) platform - a typed, plane-separated, delta-first application framework for Rust. See [PUBLISHING.md](../../PUBLISHING.md) for the release process and the [workspace README](../../README.md) for architecture.
 
 ## License
 

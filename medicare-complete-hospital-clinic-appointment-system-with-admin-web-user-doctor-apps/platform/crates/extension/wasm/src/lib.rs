@@ -1,8 +1,8 @@
-//! # keel-wasm — Wave 9 B-30: the sandboxed WASM plugin runtime.
+//! # kelson-wasm — Wave 9 B-30: the sandboxed WASM plugin runtime.
 //!
 //! Executes plugin binaries (docs/19 Wave 9) inside a fuel-metered
 //! [`wasmtime`] store with a fail-closed import surface (see [`mod imports`]).
-//! The runtime is discovery-agnostic: the keel-api boot path reads the root
+//! The runtime is discovery-agnostic: the kelson-api boot path reads the root
 //! `packages.toml` `[[wasm]]` sidecar entries, and this crate validates,
 //! instantiates and dispatches them.
 //!
@@ -12,15 +12,15 @@
 //! at [`WasmHost::load`]; a missing or mistyped export refuses the load):
 //!
 //! * `memory` — the linear memory the host reads/writes through.
-//! * `keel_manifest() -> i64` — returns the packed `(ptr << 32) | len` of a
+//! * `kelson_manifest() -> i64` — returns the packed `(ptr << 32) | len` of a
 //!   NUL-terminated JSON document shaped like `module.toml`
-//!   (`keel_registry::ModuleManifest`). It is parsed with
+//!   (`kelson_registry::ModuleManifest`). It is parsed with
 //!   `ModuleManifest::from_json` and must serialize IDENTICALLY to the
 //!   sidecar TOML the index shipped (a mismatch is [`WasmError::Drift`],
 //!   refusing boot) — the guest cannot smuggle capabilities past review.
-//! * `keel_alloc(len: i32) -> i32` — host-driven scratch allocation; 0 on
+//! * `kelson_alloc(len: i32) -> i32` — host-driven scratch allocation; 0 on
 //!   out-of-memory (the host treats that as a call error, never a panic).
-//! * `keel_call(op_ptr, op_len, in_ptr, in_len) -> i64` — dispatch one
+//! * `kelson_call(op_ptr, op_len, in_ptr, in_len) -> i64` — dispatch one
 //!   operation; input/output are UTF-8 JSON strings, returned packed the
 //!   same way as the manifest. Any guest-side failure is a trap: the host
 //!   maps it to an internal error, or to [`WasmError::Fuel`] when the
@@ -29,7 +29,7 @@
 //! ## Sandbox posture
 //!
 //! * Fuel metering ([`DEFAULT_FUEL`]) bounds CPU; exhaustion becomes the
-//!   append-only `KER_WASM_FUEL` error, pinned to HTTP 503 at boot.
+//!   append-only `KSN_WASM_FUEL` error, pinned to HTTP 503 at boot.
 //! * A store-level memory limit ([`DEFAULT_MEMORY_BYTES`]) bounds the heap.
 //! * `host.capability_check` only ever answers from the sidecar-verified
 //!   capability set — a plugin cannot grant itself anything (see
@@ -41,12 +41,12 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use keel_context::{ExecutionContext, ScopeSnapshot};
-use keel_execution::{BoxFuture, ExecutionPlan, ExecutionUnit, OperationHandler};
-use keel_foundation::{
+use kelson_context::{ExecutionContext, ScopeSnapshot};
+use kelson_execution::{BoxFuture, ExecutionPlan, ExecutionUnit, OperationHandler};
+use kelson_foundation::{
     codes, AppError, ErrorCategory, ExecutionProfile, OperationId, Retryability, Severity,
 };
-use keel_registry::ModuleManifest;
+use kelson_registry::ModuleManifest;
 use serde_json::Value;
 use wasmtime::{
     Config, Engine, Instance, InstancePre, Linker, Module, Store, StoreLimits, StoreLimitsBuilder,
@@ -83,15 +83,15 @@ pub(crate) struct CallState {
 pub enum WasmError {
     /// Compile/link/ABI-surface failure (boot refusal).
     Load(String),
-    /// The guest's `keel_manifest()` output is missing, malformed or not a
+    /// The guest's `kelson_manifest()` output is missing, malformed or not a
     /// valid `module.toml` shape (boot refusal).
     Manifest(String),
     /// The guest manifest and the reviewed sidecar TOML disagree (boot
     /// refusal; both documents are included for the diagnostic).
     Drift { plugin: String, sidecar: String },
-    /// The instruction budget ran out mid-call (mapped to `KER_WASM_FUEL`).
+    /// The instruction budget ran out mid-call (mapped to `KSN_WASM_FUEL`).
     Fuel,
-    /// A runtime failure inside one `keel_call`.
+    /// A runtime failure inside one `kelson_call`.
     Call(String),
 }
 
@@ -171,7 +171,7 @@ impl WasmHost {
     }
 
     /// A host whose every plugin call burns at most `fuel` instructions
-    /// (tests use this to exercise the `KER_WASM_FUEL` path cheaply).
+    /// (tests use this to exercise the `KSN_WASM_FUEL` path cheaply).
     pub fn with_fuel(fuel: u64) -> Result<Self, WasmError> {
         Self::with_limits(fuel, DEFAULT_MEMORY_BYTES)
     }
@@ -240,27 +240,27 @@ impl WasmHost {
                 .instantiate(&mut store)
                 .map_err(|e| WasmError::Load(format!("instantiate: {e}")))?;
             let manifest_fn = instance
-                .get_typed_func::<(), i64>(&mut store, "keel_manifest")
-                .map_err(|e| WasmError::Load(format!("export keel_manifest: {e}")))?;
+                .get_typed_func::<(), i64>(&mut store, "kelson_manifest")
+                .map_err(|e| WasmError::Load(format!("export kelson_manifest: {e}")))?;
             instance
-                .get_typed_func::<i32, i32>(&mut store, "keel_alloc")
-                .map_err(|e| WasmError::Load(format!("export keel_alloc: {e}")))?;
+                .get_typed_func::<i32, i32>(&mut store, "kelson_alloc")
+                .map_err(|e| WasmError::Load(format!("export kelson_alloc: {e}")))?;
             instance
-                .get_typed_func::<(i32, i32, i32, i32), i64>(&mut store, "keel_call")
-                .map_err(|e| WasmError::Load(format!("export keel_call: {e}")))?;
+                .get_typed_func::<(i32, i32, i32, i32), i64>(&mut store, "kelson_call")
+                .map_err(|e| WasmError::Load(format!("export kelson_call: {e}")))?;
 
             let packed = manifest_fn
                 .call(&mut store, ())
-                .map_err(|e| call_error("keel_manifest", e))?;
+                .map_err(|e| call_error("kelson_manifest", e))?;
             let raw = read_result(
                 &mut store,
                 &instance,
                 packed,
-                "keel_manifest",
+                "kelson_manifest",
                 self.memory_bytes,
             )?;
             String::from_utf8(raw)
-                .map_err(|e| WasmError::Manifest(format!("keel_manifest is not UTF-8: {e}")))?
+                .map_err(|e| WasmError::Manifest(format!("kelson_manifest is not UTF-8: {e}")))?
         };
 
         let parsed = ModuleManifest::from_json(&json).map_err(|v| WasmError::Manifest(v.message))?;
@@ -346,11 +346,11 @@ impl WasmPlugin {
             ));
         };
         let alloc = instance
-            .get_typed_func::<i32, i32>(&mut store, "keel_alloc")
-            .map_err(|e| WasmError::Call(format!("export keel_alloc: {e}")))?;
-        let keel_call = instance
-            .get_typed_func::<(i32, i32, i32, i32), i64>(&mut store, "keel_call")
-            .map_err(|e| WasmError::Call(format!("export keel_call: {e}")))?;
+            .get_typed_func::<i32, i32>(&mut store, "kelson_alloc")
+            .map_err(|e| WasmError::Call(format!("export kelson_alloc: {e}")))?;
+        let kelson_call = instance
+            .get_typed_func::<(i32, i32, i32, i32), i64>(&mut store, "kelson_call")
+            .map_err(|e| WasmError::Call(format!("export kelson_call: {e}")))?;
 
         let op = operation.as_bytes();
         let input = input_json.as_bytes();
@@ -366,10 +366,10 @@ impl WasmPlugin {
         }
         let base = alloc
             .call(&mut store, total as i32)
-            .map_err(|e| call_error("keel_alloc", e))?;
+            .map_err(|e| call_error("kelson_alloc", e))?;
         if base <= 0 {
             return Err(WasmError::Call(
-                "keel_alloc returned null (out of memory)".to_string(),
+                "kelson_alloc returned null (out of memory)".to_string(),
             ));
         }
         let base = base as usize;
@@ -380,7 +380,7 @@ impl WasmPlugin {
             .write(&mut store, base + op.len(), input)
             .map_err(|e| WasmError::Call(format!("write input: {e}")))?;
 
-        let packed = keel_call
+        let packed = kelson_call
             .call(
                 &mut store,
                 (
@@ -390,8 +390,8 @@ impl WasmPlugin {
                     input.len() as i32,
                 ),
             )
-            .map_err(|e| call_error("keel_call", e))?;
-        let raw = read_result(&mut store, &instance, packed, "keel_call", self.memory_bytes)?;
+            .map_err(|e| call_error("kelson_call", e))?;
+        let raw = read_result(&mut store, &instance, packed, "kelson_call", self.memory_bytes)?;
         String::from_utf8(raw).map_err(|e| WasmError::Call(format!("output is not UTF-8: {e}")))
     }
 }

@@ -1,17 +1,17 @@
-//! # keel-scheduling
+//! # kelson-scheduling
 //! Recurring execution contracts (11-SPEC §29): schedules declare WHEN; the jobs
 //! layer decides HOW (durable job enqueue). Next-run math is deterministic —
 //! UTC in the kernel, with optional per-item wall clocks (Wave 6 P4: a
 //! zero-dep cron parser, bundled timezones — the IANA offset table moved to
-//! `keel-foundation` in Wave 8 P2 and is re-exported here — overlap/one-server
+//! `kelson-foundation` in Wave 8 P2 and is re-exported here — overlap/one-server
 //! guards and hooks).
 
 pub mod cron;
 
 pub use cron::{daily, daily_at, every_minutes, hourly, monthly, weekly, CronExpr};
-pub use keel_foundation::timezone_offset_secs;
+pub use kelson_foundation::timezone_offset_secs;
 
-use keel_foundation::{AppError, TenantId};
+use kelson_foundation::{AppError, TenantId};
 use serde::{Deserialize, Serialize};
 use time::{Date, Duration, OffsetDateTime, Time, Weekday};
 
@@ -894,7 +894,7 @@ mod tests {
     #[test]
     fn state_roundtrips_through_disk() {
         let root = std::env::temp_dir().join(format!(
-            "keel-sched-test-{}",
+            "kelson-sched-test-{}",
             time::OffsetDateTime::now_utc().unix_timestamp()
         ));
         std::fs::create_dir_all(&root).unwrap();
@@ -1250,7 +1250,7 @@ mod tests {
 
         // The state doc round-trips both halves.
         let root = std::env::temp_dir().join(format!(
-            "keel-sched-doc-{}",
+            "kelson-sched-doc-{}",
             time::OffsetDateTime::now_utc().unix_timestamp_nanos()
         ));
         std::fs::create_dir_all(&root).unwrap();

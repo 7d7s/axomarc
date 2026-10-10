@@ -1,4 +1,4 @@
-//! # keel-ai-mcp — MCP tool surface (item 34, L49)
+//! # kelson-ai-mcp — MCP tool surface (item 34, L49)
 //!
 //! The MCP manifest is *generated* from the same `Command`/`Query` contracts
 //! that feed the in-process agent runtime. There is no parallel authorization
@@ -7,9 +7,9 @@
 //! apply unchanged. The manifest only describes what exists — it grants
 //! nothing.
 
-use keel_ai_tools::ToolSpec;
-use keel_foundation::OperationId;
-use keel_registry::PlatformGraph;
+use kelson_ai_tools::ToolSpec;
+use kelson_foundation::OperationId;
+use kelson_registry::PlatformGraph;
 
 /// Permissive argument schema for tools whose operation input shape is not
 /// declared at manifest level. Validation stays on the operation side.

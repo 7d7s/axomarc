@@ -4,18 +4,18 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use keel_caching::CachePort;
-use keel_foundation::{AppError, Clock, FixedClock, PrincipalId, TenantId};
-use keel_event::{InMemoryOutbox, OutboxEvent};
-use keel_execution::{AuditOutcome, AuditRecord};
-use keel_jobs::{DurableJob, InMemoryJobStore, JobStore, JobStoreAdmin};
-use keel_notifications::{
+use kelson_caching::CachePort;
+use kelson_foundation::{AppError, Clock, FixedClock, PrincipalId, TenantId};
+use kelson_event::{InMemoryOutbox, OutboxEvent};
+use kelson_execution::{AuditOutcome, AuditRecord};
+use kelson_jobs::{DurableJob, InMemoryJobStore, JobStore, JobStoreAdmin};
+use kelson_notifications::{
     Channel, DispatchRecord, DispatchTap, MailPort, Mailable, NotifyMessage, ResolvedMailAttachment,
 };
-use keel_search::{
+use kelson_search::{
     InMemorySearchEngine, Index, SearchDocument, SearchEngine, SearchQuery, SearchResult,
 };
-use keel_storage::{ObjectRef, StoragePort};
+use kelson_storage::{ObjectRef, StoragePort};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -677,10 +677,10 @@ impl AuditRecorder {
 /// Delta assertion against the in-memory execution backend: all stones for a
 /// resource type.
 pub fn assert_delta(
-    backend: &keel_execution::InMemoryBackend,
+    backend: &kelson_execution::InMemoryBackend,
     resource_type: &str,
-) -> Vec<keel_foundation::DeltaStone> {
-    let stones: Vec<keel_foundation::DeltaStone> = backend
+) -> Vec<kelson_foundation::DeltaStone> {
+    let stones: Vec<kelson_foundation::DeltaStone> = backend
         .stones()
         .into_iter()
         .filter(|s| s.resource_type == resource_type)
@@ -730,13 +730,13 @@ impl FakeSearch {
             .expect("fake search succeeds")
     }
 
-    pub fn vector_search(&self, index: &str, query: &keel_search::VectorQuery) -> SearchResult {
+    pub fn vector_search(&self, index: &str, query: &kelson_search::VectorQuery) -> SearchResult {
         self.engine
             .vector_search(&Index(index.to_string()), query)
             .expect("fake vector search succeeds")
     }
 
-    pub fn hybrid_search(&self, index: &str, query: &keel_search::HybridQuery) -> SearchResult {
+    pub fn hybrid_search(&self, index: &str, query: &kelson_search::HybridQuery) -> SearchResult {
         self.engine
             .hybrid_search(&Index(index.to_string()), query)
             .expect("fake hybrid search succeeds")
@@ -792,8 +792,8 @@ impl FakeSearch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keel_foundation::TenantId;
-    use keel_notifications::{MailAttachment, NotificationContext, NotificationDef, NotifyHub};
+    use kelson_foundation::TenantId;
+    use kelson_notifications::{MailAttachment, NotificationContext, NotificationDef, NotifyHub};
     use serde_json::json;
     use time::Duration;
 
@@ -864,7 +864,7 @@ mod tests {
             bcc: vec![],
             from: None,
             reply_to: None,
-            subject: "Welcome to Keel".into(),
+            subject: "Welcome to Kelson".into(),
             text: Some("hello".into()),
             html: None,
             headers: vec![],
@@ -888,7 +888,7 @@ mod tests {
             bcc: vec![],
             from: None,
             reply_to: None,
-            subject: "Welcome to Keel".into(),
+            subject: "Welcome to Kelson".into(),
             text: Some("hello".into()),
             html: None,
             headers: vec![],
@@ -992,7 +992,7 @@ mod tests {
         fake.send_mailable(&welcome_mailable(), &[]).expect("valid mailable sends");
 
         let sent = fake.assert_sent(|m| {
-            m.subject == "Welcome to Keel"
+            m.subject == "Welcome to Kelson"
                 && m.to.len() == 1
                 && m.to[0] == "ada@example.com"
                 && m.attachments.len() == 1
@@ -1170,7 +1170,7 @@ mod tests {
         fake.assert_sent_to(principal, "testkit.note", Channel::Email);
         // The dispatcher filled the recipient and delivered through the
         // wired MailFake.
-        let delivered = mail.assert_sent(|m| m.subject == "Welcome to Keel");
+        let delivered = mail.assert_sent(|m| m.subject == "Welcome to Kelson");
         assert_eq!(delivered.to, vec!["ada@example.com".to_string()]);
         assert_eq!(mail.mailables().len(), 1);
     }

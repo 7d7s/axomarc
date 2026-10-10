@@ -1,7 +1,7 @@
-//! # keel-transaction
+//! # kelson-transaction
 //! Transaction contracts (S1 split, STAGE-0-SPEC §8/S1 item 14): execution-neutral
 //! traits + deterministic lock helpers. The SQL implementations live in
-//! `keel-postgres` (data layer); this crate carries no SQL client.
+//! `kelson-postgres` (data layer); this crate carries no SQL client.
 //!
 //! Consumers: the execution backend (plan-driven options), and later the outbox
 //! pump / job store / migration runners — all open transactions through the same
@@ -10,7 +10,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 
 /// Local alias: contracts stay independent of the engine's BoxFuture.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;

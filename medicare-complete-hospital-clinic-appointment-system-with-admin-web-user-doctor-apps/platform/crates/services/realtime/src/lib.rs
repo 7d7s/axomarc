@@ -1,4 +1,4 @@
-//! # keel-realtime
+//! # kelson-realtime
 //! Broadcasting + realtime transports (blueprint L42/L43, S3). The hub is
 //! the contract: application code publishes `RealtimeEvent`s to named
 //! channels; transports (WebSocket / SSE) are interchangeable subscribers.
@@ -19,22 +19,22 @@ use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use keel_foundation::{AppError, TenantId};
+use kelson_foundation::{AppError, TenantId};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use tokio::sync::broadcast;
 use tokio_stream::StreamExt;
 
-/// Render the public error envelope without depending on keel-http (Web
+/// Render the public error envelope without depending on kelson-http (Web
 /// class is above Services in the layer matrix). Shape must stay in sync
-/// with keel_http::Envelope/ErrorBody.
+/// with kelson_http::Envelope/ErrorBody.
 fn error_response(err: &AppError, status: StatusCode) -> Response {
     let body = serde_json::json!({
         "ok": false,
         "error": {
             "code": err.code,
             "message": err.public_message,
-            "retryable": err.retryable == keel_foundation::Retryability::Retryable,
+            "retryable": err.retryable == kelson_foundation::Retryability::Retryable,
         },
     });
     (status, axum::Json(body)).into_response()
@@ -235,8 +235,8 @@ fn transport_admit(
 /// any other authorizer denial = 403.
 fn admission_status(err: &AppError) -> StatusCode {
     match err.code.as_str() {
-        keel_foundation::codes::VALIDATION => StatusCode::BAD_REQUEST,
-        keel_foundation::codes::UNAUTHENTICATED => StatusCode::UNAUTHORIZED,
+        kelson_foundation::codes::VALIDATION => StatusCode::BAD_REQUEST,
+        kelson_foundation::codes::UNAUTHENTICATED => StatusCode::UNAUTHORIZED,
         _ => StatusCode::FORBIDDEN,
     }
 }

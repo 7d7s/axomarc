@@ -1,5 +1,5 @@
 -- OAuth2 module (B-21, Wave 8 P5): the client registry.
--- Secrets are argon2 hashed by the module (keel-identity password helpers);
+-- Secrets are argon2 hashed by the module (kelson-identity password helpers);
 -- the plaintext is shown exactly once at creation. The redirect allowlist
 -- and scopes ride jsonb so membership checks are data, not string parsing.
 -- Global registry (no tenant column): the token/revoke endpoints are

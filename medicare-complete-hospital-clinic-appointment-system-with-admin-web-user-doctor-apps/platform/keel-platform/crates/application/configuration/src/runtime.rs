@@ -9,11 +9,11 @@
 //!
 //! Triggers (§4.1): file mtime via [`ConfigRuntime::poll`] (cheap probe,
 //! no work when unchanged), manual via [`ConfigRuntime::reload`] (the
-//! `keel config:reload` CLI path). SIGHUP and etcd/consul are explicit
+//! `kelson config:reload` CLI path). SIGHUP and etcd/consul are explicit
 //! plug points — implement [`ConfigSource`] for them; no watcher
 //! dependency ships in this crate.
 //!
-//! Class note: `ConfigSnapshot` carries ONLY keel-config's own
+//! Class note: `ConfigSnapshot` carries ONLY kelson-config's own
 //! [`PlatformConfig`]. The §4.1 sketch inlines `tenant_overrides`,
 //! `feature_flags` and `route_manifest` into the snapshot — those are
 //! Enterprise/registry-class types this crate may not depend on (arch
@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::SystemTime;
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 
 use crate::{FrozenConfig, PlatformConfig};
 
@@ -158,12 +158,12 @@ pub struct ConfigRuntime {
 }
 
 /// Content hash over the canonical effective config — delegates to the
-/// shared `keel-registry` primitive so the runtime, `keel config:cache`
+/// shared `kelson-registry` primitive so the runtime, `kelson config:cache`
 /// and the boot drift-refuse gate all agree byte-for-byte.
 pub fn hash_of(config: &PlatformConfig) -> Result<String, AppError> {
     let value = serde_json::to_value(config)
         .map_err(|e| AppError::internal(format!("config hash: {e}")))?;
-    Ok(keel_registry::config_hash(&value))
+    Ok(kelson_registry::config_hash(&value))
 }
 
 impl ConfigRuntime {
@@ -359,7 +359,7 @@ mod tests {
     /// 50 ms budget.
     #[test]
     fn config_reload_swaps_routes_and_flags_under_50ms() {
-        let dir = std::env::temp_dir().join(format!("keel-cfg-reload-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("kelson-cfg-reload-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (runtime, recorder) = runtime_with(&dir, 100_000);
 
@@ -388,7 +388,7 @@ mod tests {
     /// Touched-but-identical file: hash equal → no bump, no notify.
     #[test]
     fn config_reload_unchanged_content_is_a_noop() {
-        let dir = std::env::temp_dir().join(format!("keel-cfg-noop-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("kelson-cfg-noop-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (runtime, recorder) = runtime_with(&dir, 100_000);
 
@@ -404,7 +404,7 @@ mod tests {
     /// revision stays, subscribers stay silent, error surfaces.
     #[test]
     fn config_reload_invalid_config_keeps_current_revision() {
-        let dir = std::env::temp_dir().join(format!("keel-cfg-bad-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("kelson-cfg-bad-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (runtime, recorder) = runtime_with(&dir, 100_000);
 
@@ -424,7 +424,7 @@ mod tests {
     /// after reload the stamp is current again.
     #[test]
     fn config_poll_detects_file_change_once() {
-        let dir = std::env::temp_dir().join(format!("keel-cfg-poll-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("kelson-cfg-poll-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (runtime, _recorder) = runtime_with(&dir, 100_000);
 
@@ -444,7 +444,7 @@ mod tests {
     /// reuse a version number.
     #[test]
     fn config_rollback_returns_a_held_revision() {
-        let dir = std::env::temp_dir().join(format!("keel-cfg-rb-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("kelson-cfg-rb-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (runtime, recorder) = runtime_with(&dir, 100_000);
 
@@ -470,7 +470,7 @@ mod tests {
     /// History ring caps at HISTORY_MAX (oldest evicted).
     #[test]
     fn config_history_ring_caps_at_max() {
-        let dir = std::env::temp_dir().join(format!("keel-cfg-ring-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("kelson-cfg-ring-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (runtime, _recorder) = runtime_with(&dir, 1);
 
@@ -486,7 +486,7 @@ mod tests {
     /// The frozen compatibility view maps to the snapshot's revision.
     #[test]
     fn config_snapshot_frozen_view_matches_revision() {
-        let dir = std::env::temp_dir().join(format!("keel-cfg-frz-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("kelson-cfg-frz-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (runtime, _recorder) = runtime_with(&dir, 100_000);
         let frozen = runtime.get().frozen();
@@ -515,7 +515,7 @@ mod tests {
         const READERS: usize = 4;
         const PER_WRITER: usize = 50;
 
-        let dir = std::env::temp_dir().join(format!("keel-cfg-hammer-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("kelson-cfg-hammer-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (runtime, recorder) = runtime_with(&dir, 100_000);
         let runtime = Arc::new(runtime);

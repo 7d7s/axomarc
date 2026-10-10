@@ -3,7 +3,7 @@
 //!
 //! The well-known `model.probes` service mirrors `route.bindings`: modules
 //! register one [`ModelProbe`] per model in `Provider::init`, and the HTTP
-//! edge adapts the registry behind keel-validation's `DbProbeLookup` before
+//! edge adapts the registry behind kelson-validation's `DbProbeLookup` before
 //! running validation. A probe that cannot answer — an undeclared column or
 //! a store failure — returns `Err`, which the edge renders as a `DB_ERROR`
 //! 503: validation never passes against a store that cannot reply.
@@ -11,7 +11,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
-use keel_foundation::TenantId;
+use kelson_foundation::TenantId;
 use serde_json::Value as Json;
 
 use crate::store::{FieldFilter, ListOpts, ModelStore};

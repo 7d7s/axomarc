@@ -35,7 +35,7 @@ name = "appointments"
 api = 1            # optional; defaults to the current MODULE_ABI
 ```
 
-- `keel_registry::MODULE_ABI` (currently `1`) is the version of the module contract the framework
+- `kelson_registry::MODULE_ABI` (currently `1`) is the version of the module contract the framework
   speaks. Missing `api` defaults to it, so existing manifests keep compiling.
 - `PlatformGraph::compile` rejects any module whose `api != MODULE_ABI` with the
   `GRAPH-MANIFEST-ABI` violation. A framework upgrade therefore never silently reinterprets an
@@ -54,10 +54,10 @@ Local-path package discovery ships in v1:
 - The root `packages.toml` index lists `[[package]] { name, version, path }` entries (relative
   paths resolve against the workspace root; absolute paths work too). v1 is local-path only —
   git fetch stays out under the zero-dependency rule.
-- `keel pkg:add <path>` validates the package's `module.toml` (the package v1 contract:
-  a manifest + an optional workspace crate member) and appends it; `keel pkg:list` prints the
+- `kelson pkg:add <path>` validates the package's `module.toml` (the package v1 contract:
+  a manifest + an optional workspace crate member) and appends it; `kelson pkg:list` prints the
   index with each manifest's ABI status and fails when any entry is unusable.
-- Graph compile (`keel check` / `keel graph` / boot) merges every indexed package's manifest
+- Graph compile (`kelson check` / `kelson graph` / boot) merges every indexed package's manifest
   into the same fail-closed pass as `applications/` and `modules/`: a missing or malformed
   manifest refuses discovery, `GRAPH-MANIFEST-ABI` rejects an incompatible `api`, and the route
   cache pin covers `packages.toml` + indexed manifests (drift = boot refusal, never a silent
@@ -69,13 +69,13 @@ Local-path package discovery ships in v1:
 
 ## Package publishing (B-25, Wave 8)
 
-`keel publish <package> [--force]` materializes an indexed package's resources into the host
-app (Laravel's `vendor:publish`, scoped to one package). `keel config:publish <package>
+`kelson publish <package> [--force]` materializes an indexed package's resources into the host
+app (Laravel's `vendor:publish`, scoped to one package). `kelson config:publish <package>
 [--force]` publishes only the config layer. Source layout → target:
 
 | Package source | Published target | Semantics |
 | --- | --- | --- |
-| `<pkg>/database/migrations/{v}_{desc}.sql` | `database/migrations/{v}_{name}_{desc}.sql` | sqlx keys applied migrations by the leading integer, so the version stays first and the package name namespaces the rest (lowercase `[a-z0-9_]` description, the rule `keel make:migration` enforces). A version already owned by a differently named file is refused (a duplicate would break `keel migrate`), as are two sources sharing one version. |
+| `<pkg>/database/migrations/{v}_{desc}.sql` | `database/migrations/{v}_{name}_{desc}.sql` | sqlx keys applied migrations by the leading integer, so the version stays first and the package name namespaces the rest (lowercase `[a-z0-9_]` description, the rule `kelson make:migration` enforces). A version already owned by a differently named file is refused (a duplicate would break `kelson migrate`), as are two sources sharing one version. |
 | manifest `[config]` table | `config/packages/<name>.toml` | The editable overlay boot reads: package manifest defaults ← published copy ← config file (each layer schema-checked on its own; the published file's errors name the file). Deterministic bytes (header + body) keep re-publish idempotent. |
 | `<pkg>/public/**` | `public/vendor/<name>/**` | Plain file copy, recursive. |
 | `<pkg>/views/**` | *no copy* | Registered under the `<name>::` view namespace at boot (Wave 2 resolver): `billing::welcome` renders `<pkg>/views/welcome.html`. Without an index the namespaces fail closed. |
@@ -87,15 +87,15 @@ Publish contract:
   command exits non-zero — review the drift, then re-run with `--force` to overwrite.
   `config:publish` cycles through the same semantics for its one target, and refuses packages
   that ship no `[config]` table.
-- **Fail-closed inputs:** the package must be indexed (`keel pkg:list`) and its index entry
+- **Fail-closed inputs:** the package must be indexed (`kelson pkg:list`) and its index entry
   must match its manifest name; `config:publish` additionally requires `[config]`.
-- Rebuild after publishing migrations: they are embedded at compile time (`keel migrate` runs
+- Rebuild after publishing migrations: they are embedded at compile time (`kelson migrate` runs
   the embedded set).
 
 ## WASM plugins (B-30, Wave 9)
 
 The D-62 amendment (wasmtime, recorded in the dependency ledger + `deny.toml`) ships the third
-roadmap step as an opt-in runtime — `crates/extension/wasm` (`keel-wasm`, workspace-internal,
+roadmap step as an opt-in runtime — `crates/extension/wasm` (`kelson-wasm`, workspace-internal,
 `publish = false`):
 
 - **Discovery (sidecar manifests).** The root `packages.toml` gains `[[wasm]] { name, version,
@@ -103,15 +103,15 @@ roadmap step as an opt-in runtime — `crates/extension/wasm` (`keel-wasm`, work
   byte-identical). Each binary ships a reviewed `<binary>.module.toml` sidecar parsed with the
   same `ModuleManifest` + GRAPH gates as a crate module. `manifests()`, `contains_name()` and
   the route-cache `manifests_hash` all cover WASM entries — the hash mixes in the sidecar AND
-  the binary bytes, so editing a plugin refuses boot until `keel route:cache` is cleared.
-- **Guest ABI v1.** A module exports `memory`, `keel_manifest() -> i64` (packed
-  `ptr << 32 | len` of a NUL-terminated `module.toml`-shaped JSON), `keel_alloc(len) -> i32`
-  and `keel_call(op_ptr, op_len, in_ptr, in_len) -> i64`. Load validates every export,
+  the binary bytes, so editing a plugin refuses boot until `kelson route:cache` is cleared.
+- **Guest ABI v1.** A module exports `memory`, `kelson_manifest() -> i64` (packed
+  `ptr << 32 | len` of a NUL-terminated `module.toml`-shaped JSON), `kelson_alloc(len) -> i32`
+  and `kelson_call(op_ptr, op_len, in_ptr, in_len) -> i64`. Load validates every export,
   compiles, instantiates, reads the guest manifest and refuses boot on **drift**: the guest's
   document must serialize IDENTICALLY to the reviewed sidecar — a plugin cannot smuggle a
   capability past review.
 - **Sandbox.** Fuel metering (`DEFAULT_FUEL` = 10M instructions) + a 16 MiB store memory cap;
-  exhaustion maps to the append-only `KER_WASM_FUEL` code pinned to HTTP 503 at both boot
+  exhaustion maps to the append-only `KSN_WASM_FUEL` code pinned to HTTP 503 at both boot
   sites. The import surface is a hand-rolled WASI-preview1 subset (`fd_write`, `proc_exit`,
   `clock_time_get`, `random_get`, `sched_yield`, `fd_close`; empty args/environ) plus
   `host.log` and `host.capability_check` — there is no `sock_*`, so any module that imports
@@ -141,5 +141,5 @@ Deliberate order, smallest trusted core first:
 
 Every public item is Public-API (versioned, API-ID tracked) or Internal (`#[doc(hidden)]`/
 crate-private). The registry lives in `crates/foundation/contracts/api-registry.toml`;
-`cargo-semver-checks` gates releases (G14); `keel upgrade` reports deprecations with
+`cargo-semver-checks` gates releases (G14); `kelson upgrade` reports deprecations with
 replacements. Breaking changes only in a new major, with a one-minor deprecation window.

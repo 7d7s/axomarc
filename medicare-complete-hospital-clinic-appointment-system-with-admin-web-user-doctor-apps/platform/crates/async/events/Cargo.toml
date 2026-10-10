@@ -1,5 +1,5 @@
 [package]
-name = "keel-event"
+name = "kelson-event"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,11 +7,11 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel framework: event model + listener declarations + outbox contract."
+description = "Kelson framework: event model + listener declarations + outbox contract."
 
 [dependencies]
 tracing = { workspace = true }
-keel-foundation = { workspace = true }
+kelson-foundation = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 time = { workspace = true }

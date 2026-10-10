@@ -1,11 +1,11 @@
 # Compatibility
 
 ## Rust toolchain
-Keel builds on the pinned channel in `rust-toolchain.toml` (currently 1.92.0).
+Kelson builds on the pinned channel in `rust-toolchain.toml` (currently 1.92.0).
 `workspace.package.rust-version` states the MSRV for published crates.
 
 ## Wire format
-The public envelope (`keel-http::Envelope`) and error body are the only wire
+The public envelope (`kelson-http::Envelope`) and error body are the only wire
 contracts. Fields may be added; existing fields never change meaning or vanish
 without a deprecation window (see DEPRECATION.md).
 

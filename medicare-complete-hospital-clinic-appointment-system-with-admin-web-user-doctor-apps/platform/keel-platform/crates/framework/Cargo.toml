@@ -1,41 +1,41 @@
 [package]
-name = "keel-framework"
-description = "Keel framework umbrella: the one dependency an application needs - re-exports the published framework surface"
+name = "kelson-framework"
+description = "Kelson framework umbrella: the one dependency an application needs - re-exports the published framework surface"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
-keywords = ["keel", "framework", "umbrella"]
+keywords = ["kelson", "framework", "umbrella"]
 categories = ["web-programming"]
 
 # The umbrella is a re-export surface only: no logic, no new dependencies.
 # D-62 (external dependency budget, 25/25) is untouched by this crate.
 [dependencies]
-keel-foundation = { workspace = true }
-keel-context = { workspace = true }
-keel-lifecycle = { workspace = true }
-keel-config = { workspace = true }
-keel-execution = { workspace = true }
-keel-registry = { workspace = true }
-keel-http = { workspace = true }
-keel-jobs = { workspace = true }
-keel-event = { workspace = true }
-keel-caching = { workspace = true }
-keel-scheduling = { workspace = true }
-keel-storage = { workspace = true }
-keel-search = { workspace = true }
-keel-realtime = { workspace = true }
-keel-session = { workspace = true }
-keel-identity = { workspace = true }
-keel-policy = { workspace = true }
-keel-integrity = { workspace = true }
-keel-postgres = { workspace = true }
-keel-mysql = { workspace = true }
-keel-feature-flags = { workspace = true }
-keel-tenancy = { workspace = true }
-keel-deployment = { workspace = true }
-keel-observability = { workspace = true }
-keel-telemetry = { workspace = true }
-keel-wasm = { workspace = true }
+kelson-foundation = { workspace = true }
+kelson-context = { workspace = true }
+kelson-lifecycle = { workspace = true }
+kelson-config = { workspace = true }
+kelson-execution = { workspace = true }
+kelson-registry = { workspace = true }
+kelson-http = { workspace = true }
+kelson-jobs = { workspace = true }
+kelson-event = { workspace = true }
+kelson-caching = { workspace = true }
+kelson-scheduling = { workspace = true }
+kelson-storage = { workspace = true }
+kelson-search = { workspace = true }
+kelson-realtime = { workspace = true }
+kelson-session = { workspace = true }
+kelson-identity = { workspace = true }
+kelson-policy = { workspace = true }
+kelson-integrity = { workspace = true }
+kelson-postgres = { workspace = true }
+kelson-mysql = { workspace = true }
+kelson-feature-flags = { workspace = true }
+kelson-tenancy = { workspace = true }
+kelson-deployment = { workspace = true }
+kelson-observability = { workspace = true }
+kelson-telemetry = { workspace = true }
+kelson-wasm = { workspace = true }

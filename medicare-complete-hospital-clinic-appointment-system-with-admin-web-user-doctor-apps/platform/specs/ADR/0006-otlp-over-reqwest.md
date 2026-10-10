@@ -18,7 +18,7 @@ Collector, vendor backends). The canonical route is the `opentelemetry*` crate f
 
 ## Decision
 
-- Implement OTLP export directly in `keel-export` as **OTLP/HTTP with JSON encoding over
+- Implement OTLP export directly in `kelson-export` as **OTLP/HTTP with JSON encoding over
   reqwest** (`POST {endpoint}/v1/logs|traces|metrics` with the OTLP JSON wire shape). reqwest is
   already an admitted dependency (default-features OFF; json + rustls-tls).
 - **No `opentelemetry*` dependencies.** Protobuf encoding is deferred; JSON is accepted by all

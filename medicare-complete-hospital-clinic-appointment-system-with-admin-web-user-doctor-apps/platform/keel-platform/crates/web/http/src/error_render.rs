@@ -1,4 +1,4 @@
-//! # keel-http error rendering (19-PARITY "Error rendering")
+//! # kelson-http error rendering (19-PARITY "Error rendering")
 //! Typed `AppError` → HTTP status mapping registry with an extensible
 //! per-code override table, the `reportable`/`renderable` split, per-code
 //! custom renderers (modules register them from `Provider::init`) and the
@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::sync::{PoisonError, RwLock};
 
 use axum::http::StatusCode;
-use keel_foundation::{AppError, ErrorCategory};
+use kelson_foundation::{AppError, ErrorCategory};
 
 use crate::status_for_error;
 use crate::ErrorBody;
@@ -171,7 +171,7 @@ pub fn problem_json(
     let mut problem = serde_json::Map::new();
     problem.insert(
         "type".into(),
-        serde_json::Value::String(format!("urn:keel:error:{}", body.code)),
+        serde_json::Value::String(format!("urn:kelson:error:{}", body.code)),
     );
     problem.insert(
         "title".into(),
@@ -231,10 +231,10 @@ mod tests {
     #[test]
     fn per_code_overrides_win_over_the_default_table() {
         let reg = ErrorRenderRegistry::new();
-        reg.set_status("KER_NOT_FOUND", StatusCode::GONE);
-        reg.set_reportable("KER_NOT_FOUND", true);
-        reg.set_renderable("KER_INTERNAL", false);
-        reg.set_view("KER_NOT_FOUND", "errors.410");
+        reg.set_status("KSN_NOT_FOUND", StatusCode::GONE);
+        reg.set_reportable("KSN_NOT_FOUND", true);
+        reg.set_renderable("KSN_INTERNAL", false);
+        reg.set_view("KSN_NOT_FOUND", "errors.410");
 
         let missing = AppError::not_found("Appointment");
         let plan = reg.plan(&missing);
@@ -256,7 +256,7 @@ mod tests {
         let reg = ErrorRenderRegistry::new();
         assert!(reg.detail(&AppError::not_found("x")).is_none());
 
-        reg.register("KER_NOT_FOUND", {
+        reg.register("KSN_NOT_FOUND", {
             let renderer: ErrorRenderer = Arc::new(|err| {
                 Some(json!({ "resource": err.code, "docs": "https://example.test/404" }))
             });
@@ -291,13 +291,13 @@ mod tests {
         let body = ErrorBody::from_app_error(&err).with_detail(json!({ "resource": "appointment" }));
 
         let problem = problem_json(status, &body, Some("/api/v1/appointments/x"));
-        assert_eq!(problem["type"], json!("urn:keel:error:KER_NOT_FOUND"));
+        assert_eq!(problem["type"], json!("urn:kelson:error:KSN_NOT_FOUND"));
         assert_eq!(problem["title"], json!("Not Found"));
         assert_eq!(problem["status"], json!(404));
         assert_eq!(problem["detail"], json!(body.message));
         assert_eq!(problem["instance"], json!("/api/v1/appointments/x"));
         // Extensions keep the Envelope vocabulary clients already branch on.
-        assert_eq!(problem["code"], json!("KER_NOT_FOUND"));
+        assert_eq!(problem["code"], json!("KSN_NOT_FOUND"));
         assert_eq!(problem["meta"]["lookup"], json!("tenant-scoped"));
         assert_eq!(problem["meta"]["resource"], json!("appointment"));
         assert!(problem.get("debug").is_none(), "debug never renders unasked");
@@ -306,9 +306,9 @@ mod tests {
     #[test]
     fn reportable_flag_can_be_forced_both_ways() {
         let reg = ErrorRenderRegistry::new();
-        reg.set_reportable("KER_NOT_FOUND", true);
+        reg.set_reportable("KSN_NOT_FOUND", true);
         assert!(reg.plan(&AppError::not_found("x")).reportable);
-        reg.set_reportable("KER_INTERNAL", false);
+        reg.set_reportable("KSN_INTERNAL", false);
         assert!(!reg.plan(&AppError::internal("x")).reportable);
     }
 

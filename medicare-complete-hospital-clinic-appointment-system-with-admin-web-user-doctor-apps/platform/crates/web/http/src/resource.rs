@@ -58,7 +58,7 @@ pub const DEFAULT_WRAP: &str = "data";
 /// [`Fields::when`]; lists render through [`ResourceCollection`] with
 /// pagination-meta passthrough.
 ///
-/// The `keel make resource` scaffold implements exactly this shape — the
+/// The `kelson make resource` scaffold implements exactly this shape — the
 /// doctest below compiles verbatim as the build proof (codegen templates
 /// are string-checked only, so this is where the shape is proven real):
 ///
@@ -67,11 +67,11 @@ pub const DEFAULT_WRAP: &str = "data";
 ///
 /// pub struct WidgetResource;
 ///
-/// impl keel_http::Resource for WidgetResource {
+/// impl kelson_http::Resource for WidgetResource {
 ///     type Source = Widget;
 ///
 ///     fn from_source(_source: &Self::Source) -> serde_json::Value {
-///         keel_http::Fields::new()
+///         kelson_http::Fields::new()
 ///             .field("type", "widget")
 ///             .into_value()
 ///     }

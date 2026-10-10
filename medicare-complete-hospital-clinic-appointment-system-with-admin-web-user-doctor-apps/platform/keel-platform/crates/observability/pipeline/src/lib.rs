@@ -1,4 +1,4 @@
-//! # keel-pipeline
+//! # kelson-pipeline
 //! Sentinel (S5) telemetry processing: declarative stage chain (normalize →
 //! classify → redact → fingerprint → sample → dedupe → correlate → route),
 //! built-in processors, the restricted-grammar policy engine (no arbitrary

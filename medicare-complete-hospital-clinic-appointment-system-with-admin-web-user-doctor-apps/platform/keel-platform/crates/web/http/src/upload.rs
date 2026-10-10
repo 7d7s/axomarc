@@ -10,8 +10,8 @@
 //! - storage keys are namespaced by a caller-supplied prefix
 
 use axum::extract::Multipart;
-use keel_foundation::AppError;
-use keel_storage::{ObjectRef, StoragePort};
+use kelson_foundation::AppError;
+use kelson_storage::{ObjectRef, StoragePort};
 use uuid::Uuid;
 
 /// Upload limits. All bounds are hard; reading stops at the first violation.
@@ -428,7 +428,7 @@ mod multipart_tests {
     fn multipart(
         body_parts: Vec<(&'static str, Option<&'static str>, &'static str, Vec<u8>)>,
     ) -> Request<Body> {
-        let boundary = "keel-boundary";
+        let boundary = "kelson-boundary";
         let mut body = Vec::new();
         for (name, filename, content_type, data) in body_parts {
             body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
@@ -549,7 +549,7 @@ mod multipart_tests {
             vec![0u8; 64],
         )]);
         let err = run(req, &limits, vec![]).await.unwrap_err();
-        assert_eq!(err.category, keel_foundation::ErrorCategory::ResourceExhausted);
+        assert_eq!(err.category, kelson_foundation::ErrorCategory::ResourceExhausted);
     }
 
     #[tokio::test]
@@ -563,7 +563,7 @@ mod multipart_tests {
         let err = run(req, &UploadLimits::default(), vec!["text/plain".into()])
             .await
             .unwrap_err();
-        assert_eq!(err.category, keel_foundation::ErrorCategory::Validation);
+        assert_eq!(err.category, kelson_foundation::ErrorCategory::Validation);
         let ok = multipart(vec![("file", Some("x.txt"), "text/plain", vec![1, 2])]);
         assert!(run(ok, &UploadLimits::default(), vec!["text/plain".into()])
             .await
@@ -581,7 +581,7 @@ mod multipart_tests {
             ("b", Some("2.txt"), "text/plain", vec![2]),
         ]);
         let err = run(req, &limits, vec![]).await.unwrap_err();
-        assert_eq!(err.category, keel_foundation::ErrorCategory::ResourceExhausted);
+        assert_eq!(err.category, kelson_foundation::ErrorCategory::ResourceExhausted);
     }
 
     #[tokio::test]
@@ -590,6 +590,6 @@ mod multipart_tests {
         let err = run(req, &UploadLimits::default(), vec![])
             .await
             .unwrap_err();
-        assert_eq!(err.category, keel_foundation::ErrorCategory::Validation);
+        assert_eq!(err.category, kelson_foundation::ErrorCategory::Validation);
     }
 }

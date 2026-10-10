@@ -1,6 +1,6 @@
 //! Exception group registry (Sentinel S5 §24): bounded in-process grouping of
 //! exceptions by fingerprint with counts, first/last seen and affected
-//! routes/tenants. Surfaced by `keel observe errors` and the incident view.
+//! routes/tenants. Surfaced by `kelson observe errors` and the incident view.
 
 use std::collections::BTreeSet;
 

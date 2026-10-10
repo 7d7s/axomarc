@@ -1,7 +1,7 @@
 //! Patients module — tenant-scoped CRUD example for the `your-app` workspace.
 //!
 //! Every handler executes inside [`TenantGuardedPool::with_tenant`], so the
-//! queries run with `keel.tenant_id` set and PostgreSQL RLS policies
+//! queries run with `kelson.tenant_id` set and PostgreSQL RLS policies
 //! enforcing isolation — the handlers never filter by tenant themselves.
 //!
 //! The module's graph contract ships beside this crate as `module.toml`
@@ -14,8 +14,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Json;
-use keel_framework::keel_http;
-use keel_framework::{AppError, TenantGuardedPool, TenantId};
+use kelson_framework::kelson_http;
+use kelson_framework::{AppError, TenantGuardedPool, TenantId};
 
 /// Router for the patients module. The composition root (`apps/api`) merges
 /// this into its router behind tenant resolution — `Extension<TenantId>` is
@@ -30,7 +30,7 @@ pub fn router(pool: Arc<TenantGuardedPool>) -> axum::Router {
 /// `AppError` → wire: status from the transport mapping, body is the
 /// standard error envelope (public fields only).
 fn wire_err(err: AppError) -> Response {
-    keel_http::error_response(&err).into_response()
+    kelson_http::error_response(&err).into_response()
 }
 
 /// List patients (RLS scopes rows to the request's tenant).

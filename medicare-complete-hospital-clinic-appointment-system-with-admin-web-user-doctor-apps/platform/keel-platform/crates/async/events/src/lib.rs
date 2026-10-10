@@ -1,4 +1,4 @@
-//! # keel-event
+//! # kelson-event
 //! Events are business facts, declared explicitly (11-SPEC §39/§42/§40). No global
 //! listener magic: every listener declares event, handler, delivery mode, retry,
 //! idempotency and ordering. Publication only happens post-commit via the outbox
@@ -8,7 +8,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
-use keel_foundation::{AppError, TenantId};
+use kelson_foundation::{AppError, TenantId};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -102,8 +102,8 @@ pub fn idempotency_key(
         .get("correlation_id")
         .cloned()
         .unwrap_or(serde_json::Value::Null);
-    let payload_hash = keel_registry::config_hash(payload);
-    IdempotencyKey(keel_registry::config_hash(&serde_json::json!({
+    let payload_hash = kelson_registry::config_hash(payload);
+    IdempotencyKey(kelson_registry::config_hash(&serde_json::json!({
         "event": event,
         "tenant": tenant_id,
         "correlation_id": correlation_id,
@@ -117,7 +117,7 @@ pub struct OutboxEvent {
     pub id: Uuid,
     pub event: String,
     pub topic: String,
-    pub tenant_id: Option<keel_foundation::TenantId>,
+    pub tenant_id: Option<kelson_foundation::TenantId>,
     pub payload: serde_json::Value,
     /// §5.2 (KEEL-006/KEEL-V10): computed at append time by
     /// [`idempotency_key`]; empty for pre-migration rows (no dedup).
@@ -221,7 +221,7 @@ impl ListenerRegistry {
 
 // ------------------------------------------------------------------- outbox
 
-/// Outbox access port. Implemented by keel-postgres (outbox table) and by
+/// Outbox access port. Implemented by kelson-postgres (outbox table) and by
 /// InMemoryOutbox for degraded boot/tests.
 pub trait OutboxStore: Send + Sync {
     /// Unpublished rows, oldest first, up to batch.

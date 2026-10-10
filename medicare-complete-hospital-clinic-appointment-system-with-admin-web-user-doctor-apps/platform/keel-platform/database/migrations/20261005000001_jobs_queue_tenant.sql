@@ -2,7 +2,7 @@
 -- the queue can be claimed / completed / failed per tenant (TenantJobStore).
 -- NULL = platform job (infrastructure enqueues and pre-Phase-2 rows) —
 -- visible only through the break-glass physical JobStore, mirroring the
--- keel_platform database role. Tenant is stamped at the port boundary and
+-- kelson_platform database role. Tenant is stamped at the port boundary and
 -- never changes on an existing row.
 ALTER TABLE jobs_queue ADD COLUMN IF NOT EXISTS tenant_id uuid;
 

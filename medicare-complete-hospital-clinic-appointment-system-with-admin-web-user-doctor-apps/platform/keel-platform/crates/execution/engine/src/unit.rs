@@ -5,12 +5,12 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use keel_foundation::{AppError, StreamRef, TenantId};
+use kelson_foundation::{AppError, StreamRef, TenantId};
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::plan::ExecutionPlan;
-use keel_context::ExecutionContext;
+use kelson_context::ExecutionContext;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -97,10 +97,10 @@ pub struct RunOutcome {
 pub fn guard(plan: &ExecutionPlan, mutation_count: usize) -> Result<(), AppError> {
     if plan.delta.required && mutation_count == 0 {
         return Err(AppError::new(
-            keel_foundation::codes::NO_EFFECT,
-            keel_foundation::ErrorCategory::Domain,
-            keel_foundation::Severity::Medium,
-            keel_foundation::Retryability::NotRetryable,
+            kelson_foundation::codes::NO_EFFECT,
+            kelson_foundation::ErrorCategory::Domain,
+            kelson_foundation::Severity::Medium,
+            kelson_foundation::Retryability::NotRetryable,
             format!(
                 "operation {} declared mutations but emitted none",
                 plan.operation
@@ -109,10 +109,10 @@ pub fn guard(plan: &ExecutionPlan, mutation_count: usize) -> Result<(), AppError
     }
     if plan.profile.is_readonly() && mutation_count > 0 {
         return Err(AppError::new(
-            keel_foundation::codes::READ_MUTATED,
-            keel_foundation::ErrorCategory::Domain,
-            keel_foundation::Severity::High,
-            keel_foundation::Retryability::NotRetryable,
+            kelson_foundation::codes::READ_MUTATED,
+            kelson_foundation::ErrorCategory::Domain,
+            kelson_foundation::Severity::High,
+            kelson_foundation::Retryability::NotRetryable,
             format!(
                 "read operation {} attempted a state transition",
                 plan.operation

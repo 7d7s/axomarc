@@ -1,8 +1,8 @@
-# keel-deployment
+# kelson-deployment
 
-Keel enterprise control plane: deployment model — release manifest, build matrix, promotion states.
+Kelson enterprise control plane: deployment model — release manifest, build matrix, promotion states.
 
-Part of the [Keel](../../../README.md) platform - a typed, plane-separated, delta-first application framework for Rust. See [PUBLISHING.md](../../../PUBLISHING.md) for the release process and the [workspace README](../../../README.md) for architecture.
+Part of the [Kelson](../../../README.md) platform - a typed, plane-separated, delta-first application framework for Rust. See [PUBLISHING.md](../../../PUBLISHING.md) for the release process and the [workspace README](../../../README.md) for architecture.
 
 ## License
 

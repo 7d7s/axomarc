@@ -1,10 +1,10 @@
-# module.toml — immutable contract shape (11-SPEC SS7). `keel graph` compiles it.
+# module.toml — immutable contract shape (11-SPEC SS7). `kelson graph` compiles it.
 [module]
 name = "appointments"
 version = "0.1.0"
 maturity = "L0"
 plane = "tenant"
-description = "Keel reference application: clinic appointments end-to-end"
+description = "Kelson reference application: clinic appointments end-to-end"
 
 [capabilities]
 book = { profile = "COMMAND" }

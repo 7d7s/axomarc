@@ -1,7 +1,7 @@
 ;; Phase 3 §5.3 fixture: mutate — a COMMAND-profiled guest exercising
 ;; host.capability_write + host.capability_audit.
 ;;
-;; Every keel_call attempts one write and one audit of static payloads
+;; Every kelson_call attempts one write and one audit of static payloads
 ;; under the action named by the input JSON string, and returns the host
 ;; verdicts: {"write":W,"audit":A} with W/A = 1 recorded, 0 refused. The
 ;; host-side tests assert the verdicts AND the committed effects (delta
@@ -26,7 +26,7 @@
   (data (i32.const 1264) "}")                                            ;; 1 byte
   (data (i32.const 1272) "mutate invoked")                               ;; 14 bytes
 
-  (func $alloc (export "keel_alloc") (param $n i32) (result i32)
+  (func $alloc (export "kelson_alloc") (param $n i32) (result i32)
     (local $p i32)
     (local.set $p (global.get $heap))
     (global.set $heap
@@ -48,7 +48,7 @@
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $l))))
 
-  (func (export "keel_manifest") (result i64)
+  (func (export "kelson_manifest") (result i64)
     (local $p i32)
     (local.set $p (i32.const 1024))
     (block $done
@@ -60,7 +60,7 @@
       (i64.shl (i64.extend_i32_u (i32.const 1024)) (i64.const 32))
       (i64.extend_i32_u (i32.sub (local.get $p) (i32.const 1024)))))
 
-  (func (export "keel_call")
+  (func (export "kelson_call")
         (param $op i32) (param $op_len i32) (param $in i32) (param $in_len i32)
         (result i64)
     (local $span i32)      ;; first content byte (quotes stripped)

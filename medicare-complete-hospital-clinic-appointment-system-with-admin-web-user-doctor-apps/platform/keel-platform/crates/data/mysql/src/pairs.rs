@@ -1,16 +1,16 @@
 //! Wave 9 B-31: rollback-capable pair migrations on MySQL.
 //!
 //! The shipment, the bookkeeping table and the batch arithmetic are
-//! `keel_postgres::pairs` — same `<ts>_<name>.up.sql` / `<ts>_<name>.down.sql`
+//! `kelson_postgres::pairs` — same `<ts>_<name>.up.sql` / `<ts>_<name>.down.sql`
 //! files under `database/migrations-pairs`, same `keel_migrations` table,
 //! same Laravel batch semantics, same fail-closed scan — so one directory
-//! drives both fabrics and `keel migrate:status` reads one bookkeeping
+//! drives both fabrics and `kelson migrate:status` reads one bookkeeping
 //! table with one statement. What differs is execution, and only because
 //! MySQL DDL cannot be transactional:
 //!
 //! ```text
-//! <ts>_<name>.up.sql     applied by `keel migrate` (filename order)
-//! <ts>_<name>.down.sql   required; applied by `keel migrate:rollback`
+//! <ts>_<name>.up.sql     applied by `kelson migrate` (filename order)
+//! <ts>_<name>.down.sql   required; applied by `kelson migrate:rollback`
 //! ```
 //!
 //! Applied pairs are recorded in the [`PAIRS_TABLE`] bookkeeping table with
@@ -61,7 +61,7 @@
 
 use std::path::{Path, PathBuf};
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 
 /// Pair-migration directory, relative to the workspace root. Separate from
 /// `database/migrations-mysql` on purpose: sqlx's embedded migrator treats
@@ -186,7 +186,7 @@ fn validate_base(base: &str) -> Result<(), AppError> {
 }
 
 /// Create the bookkeeping table if it does not exist (idempotent; runs no
-/// migration files — this is `keel migrate:install`). Any executor works:
+/// migration files — this is `kelson migrate:install`). Any executor works:
 /// a pool, or the connection currently holding the migration lock.
 pub async fn install<'e, E>(exec: E) -> Result<(), AppError>
 where

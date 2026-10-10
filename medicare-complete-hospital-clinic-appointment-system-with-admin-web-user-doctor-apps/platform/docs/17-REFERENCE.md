@@ -6,24 +6,24 @@ Quick lookup tables for the platform surface.
 
 | Class | Crates |
 |---|---|
-| foundation | keel-foundation, keel-context, keel-contracts, keel-validation, keel-lifecycle |
-| execution | keel-execution (engine), keel-command, keel-query |
-| application | keel-config, keel-registry |
-| web | keel-http |
-| security | keel-identity, keel-policy, keel-scope, keel-ownership, keel-elevation, keel-session, keel-tokens, keel-integrity |
-| data | keel-postgres |
-| async | keel-event, keel-jobs, keel-workflows, keel-scheduler |
-| services | keel-cache, keel-storage, keel-notifications, keel-realtime, keel-http-client, keel-search |
-| observability | keel-observability (Sentinel runtime), keel-telemetry, keel-tracing, keel-metrics, keel-audit, keel-pipeline, keel-buffer, keel-export |
-| enterprise | keel-tenancy, keel-feature-flags, keel-deployment |
-| ai | keel-ai, keel-ai-tools, keel-ai-agents, keel-ai-mcp |
-| adapters | keel-cache-memory, keel-mail-smtp, keel-sms-msg91, keel-push-fcm, keel-storage-s3 |
-| testing | keel-testkit |
-| runtime | keel-api, keel-worker |
-| tools | keel-console, keel, keel-analyzer, keel-codegen, xtask |
+| foundation | kelson-foundation, kelson-context, kelson-contracts, kelson-validation, kelson-lifecycle |
+| execution | kelson-execution (engine), kelson-command, kelson-query |
+| application | kelson-config, kelson-registry |
+| web | kelson-http |
+| security | kelson-identity, kelson-policy, kelson-scope, kelson-ownership, kelson-elevation, kelson-session, kelson-tokens, kelson-integrity |
+| data | kelson-postgres |
+| async | kelson-event, kelson-jobs, kelson-workflows, kelson-scheduler |
+| services | kelson-cache, kelson-storage, kelson-notifications, kelson-realtime, kelson-http-client, kelson-search |
+| observability | kelson-observability (Sentinel runtime), kelson-telemetry, kelson-tracing, kelson-metrics, kelson-audit, kelson-pipeline, kelson-buffer, kelson-export |
+| enterprise | kelson-tenancy, kelson-feature-flags, kelson-deployment |
+| ai | kelson-ai, kelson-ai-tools, kelson-ai-agents, kelson-ai-mcp |
+| adapters | kelson-cache-memory, kelson-mail-smtp, kelson-sms-msg91, kelson-push-fcm, kelson-storage-s3 |
+| testing | kelson-testkit |
+| runtime | kelson-api, kelson-worker |
+| tools | kelson-console, kelson, kelson-analyzer, kelson-codegen, xtask |
 
-Package names keep the `keel-*` prefix (D-63); directory names may differ from package names
-(`crates/execution/engine` = `keel-execution`).
+Package names keep the `kelson-*` prefix (D-63); directory names may differ from package names
+(`crates/execution/engine` = `kelson-execution`).
 
 ## Error categories (frozen)
 
@@ -49,13 +49,13 @@ ACCEPTED -> PLANNED -> AUTHORIZED -> RUNNING -> COMMITTED -> DELIVERED
 - `DEP-CLASS`, `DEP-UNKNOWN-CRATE`, `DEP-UNKNOWN-MEMBER` — dependency matrix violations (G07).
 - `GRAPH-DUP-MODULE`, `GRAPH-DUP-OP`, `GRAPH-DUP-ROUTE`, `GRAPH-DUP-EVENT`, `GRAPH-ROUTE-OP`,
   `GRAPH-CYCLE`, `GRAPH-MANIFEST` — platform graph violations (G05/G06).
-- `KER-*` — kernel error codes; module-prefixed codes for domain errors.
+- `KSN-*` — kernel error codes; module-prefixed codes for domain errors.
 
 ## API governance registry
 
 Public APIs carry stable API-IDs (`crates/foundation/contracts/api-registry.toml`), e.g.
 `EXEC-API-0001`, `SEARCH-API-0001`, `AGENT-API-0001`, `MCP-API-0001`. Stability ladder:
-stable | beta | experimental | deprecated (with replacement). `keel upgrade` reports them;
+stable | beta | experimental | deprecated (with replacement). `kelson upgrade` reports them;
 `cargo-semver-checks` enforces the Rust surface at release (G14).
 
 ## Frozen decisions (D- index)

@@ -5,7 +5,7 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use keel_telemetry::{Event, ExportError, ExportOk, Exporter, Level, SpanStatus, TelemetryPayload};
+use kelson_telemetry::{Event, ExportError, ExportOk, Exporter, Level, SpanStatus, TelemetryPayload};
 
 pub struct OtlpExporterConfig {
     /// Collector base URL, e.g. `http://localhost:4318`.
@@ -101,12 +101,12 @@ fn log_record(event: &Event, body: String, level: Level) -> serde_json::Value {
         record["spanId"] = serde_json::json!(hex_8(span.as_uuid()));
     }
     let mut attrs = vec![
-        kv("keel.schema", &serde_json::json!(event.schema)),
-        kv("keel.service", &serde_json::json!(event.service.name)),
-        kv("keel.env", &serde_json::json!(event.service.environment)),
+        kv("kelson.schema", &serde_json::json!(event.schema)),
+        kv("kelson.service", &serde_json::json!(event.service.name)),
+        kv("kelson.env", &serde_json::json!(event.service.environment)),
     ];
     if let Some(tenant) = event.context.tenant_id {
-        attrs.push(kv("keel.tenant", &serde_json::json!(tenant.to_string())));
+        attrs.push(kv("kelson.tenant", &serde_json::json!(tenant.to_string())));
     }
     if let Some(fields) = event.payload.fields_ref() {
         for (k, v) in fields.iter().take(32) {

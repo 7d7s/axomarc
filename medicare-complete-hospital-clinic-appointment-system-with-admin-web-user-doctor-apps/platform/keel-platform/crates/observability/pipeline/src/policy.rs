@@ -3,7 +3,7 @@
 //! resolves to exactly one terminal routing (rule-merged exporters or the
 //! default route; `drop` wins over everything).
 
-use keel_telemetry::Level;
+use kelson_telemetry::Level;
 use serde::{Deserialize, Serialize};
 
 /// Event facts the grammar can see.
@@ -358,7 +358,7 @@ fn level_rank(level: Level) -> u8 {
     }
 }
 
-fn fact_str(event: &keel_telemetry::Event, facts: &PolicyFacts, field: Field) -> Option<String> {
+fn fact_str(event: &kelson_telemetry::Event, facts: &PolicyFacts, field: Field) -> Option<String> {
     Some(match field {
         Field::Environment => event.service.environment.clone(),
         Field::Level => event.payload.level_hint()?.as_str().to_string(),
@@ -388,7 +388,7 @@ fn fact_str(event: &keel_telemetry::Event, facts: &PolicyFacts, field: Field) ->
 }
 
 fn eval_cmp(
-    event: &keel_telemetry::Event,
+    event: &kelson_telemetry::Event,
     facts: &PolicyFacts,
     field: Field,
     op: CmpOp,
@@ -428,7 +428,7 @@ fn eval_cmp(
     }
 }
 
-fn eval_expr(event: &keel_telemetry::Event, facts: &PolicyFacts, expr: &Expr) -> bool {
+fn eval_expr(event: &kelson_telemetry::Event, facts: &PolicyFacts, expr: &Expr) -> bool {
     match expr {
         Expr::True => true,
         Expr::And(a, b) => eval_expr(event, facts, a) && eval_expr(event, facts, b),
@@ -452,7 +452,7 @@ impl PolicyEngine {
         }
     }
 
-    pub fn evaluate(&self, event: &keel_telemetry::Event, facts: &PolicyFacts) -> PolicyDecision {
+    pub fn evaluate(&self, event: &kelson_telemetry::Event, facts: &PolicyFacts) -> PolicyDecision {
         let mut d = PolicyDecision::default();
         for rule in &self.rules {
             if !eval_expr(event, facts, &rule.when) {
@@ -485,7 +485,7 @@ impl PolicyEngine {
     /// Tenant-consistency guard (S5 §20): an event whose payload claims a
     /// different tenant than its propagation context is a policy violation;
     /// drop it loudly rather than leak it across isolation boundaries.
-    pub fn enforce_tenant_consistency(event: &keel_telemetry::Event) -> Result<(), String> {
+    pub fn enforce_tenant_consistency(event: &kelson_telemetry::Event) -> Result<(), String> {
         let Some(ctx_tenant) = event.context.tenant_id else {
             return Ok(());
         };
@@ -505,13 +505,13 @@ impl PolicyEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keel_foundation::TelemetryContext;
-    use keel_telemetry::{
+    use kelson_foundation::TelemetryContext;
+    use kelson_telemetry::{
         EventEnvelope, Fields, LogPayload, ServiceIdentity, TelemetryPayload, SCHEMA_LOG,
         SCHEMA_LOG_VERSION,
     };
 
-    pub(crate) fn log_event(env: &str, level: Level, msg: &str) -> keel_telemetry::Event {
+    pub(crate) fn log_event(env: &str, level: Level, msg: &str) -> kelson_telemetry::Event {
         EventEnvelope::new(
             SCHEMA_LOG,
             SCHEMA_LOG_VERSION,
@@ -602,7 +602,7 @@ mod tests {
     #[test]
     fn tenant_consistency_guard() {
         let mut ev = log_event("dev", Level::Info, "x");
-        ev.context.tenant_id = Some(keel_foundation::TenantId::new());
+        ev.context.tenant_id = Some(kelson_foundation::TenantId::new());
         assert!(PolicyEngine::enforce_tenant_consistency(&ev).is_ok());
         if let TelemetryPayload::Log(l) = &mut ev.payload {
             l.fields.insert(

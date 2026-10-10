@@ -1,10 +1,10 @@
-# Runbook: Keel platform release (crates.io)
+# Runbook: Kelson platform release (crates.io)
 
 Owner: release manager. Companion doc: `platform/PUBLISHING.md`.
 
 ## Preflight (T-1 day)
 
-- [ ] Working tree clean; `main` green (keel CI badge green, publish-dry passing on main)
+- [ ] Working tree clean; `main` green (kelson CI badge green, publish-dry passing on main)
 - [ ] `CHANGELOG.md` reflects everything in this release (Conventional Commits since last tag)
 - [ ] Version decided: lockstep `X.Y.Z` (`just bump X.Y.Z` if bumping)
 - [ ] crates.io account: 2FA on, scoped token valid (`cargo whoami` succeeds)
@@ -15,7 +15,7 @@ Owner: release manager. Companion doc: `platform/PUBLISHING.md`.
 ## Execute
 
 - [ ] Local path: `just publish-dry` (all crates package cleanly) then `just publish`
-  - OR CI path: Actions -> keel-publish -> Run workflow with `dry_run=true`,
+  - OR CI path: Actions -> kelson-publish -> Run workflow with `dry_run=true`,
     inspect logs, then re-run with `dry_run=false`
 - [ ] Watch the run: verify matrix (ubuntu+windows), MSRV, deny, semver, publish, smoke, tag
 - [ ] Confirm `XTASK-PUBLISH:` summary line: version + crate list + count
@@ -23,15 +23,15 @@ Owner: release manager. Companion doc: `platform/PUBLISHING.md`.
 ## Verify (post-publish)
 
 - [ ] Each published crate visible on crates.io at `X.Y.Z`
-- [ ] docs.rs builds succeed (may take minutes; check https://docs.rs/keel-analyzer)
+- [ ] docs.rs builds succeed (may take minutes; check https://docs.rs/kelson-analyzer)
 - [ ] Smoke job green (fresh project builds against registry versions)
-- [ ] Tag `keel/platform-vX.Y.Z` exists and changelog commit landed
+- [ ] Tag `kelson/platform-vX.Y.Z` exists and changelog commit landed
 
 ## Rollback
 
 crates.io versions cannot be deleted.
 
-- Broken version: yank it (`cargo yank --version X.Y.Z keel-analyzer`), record
+- Broken version: yank it (`cargo yank --version X.Y.Z kelson-analyzer`), record
   in CHANGELOG, ship a patch release the same day.
 - Token compromise: revoke the scoped token immediately in crates.io settings,
   rotate the `CARGO_REGISTRY_TOKEN` secret, audit crate/team activity.
@@ -39,5 +39,5 @@ crates.io versions cannot be deleted.
 ## Wave 2 checklist (future)
 
 Follow `platform/PUBLISHING.md` -> "Wave 2": apply the pre-approved rename
-table, un-gate the four crates, add the `keel-framework` umbrella, run the
+table, un-gate the four crates, add the `kelson-framework` umbrella, run the
 full preflight above, then publish the wave in one coordinated run.

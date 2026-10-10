@@ -1,4 +1,4 @@
-//! # keel-metrics
+//! # kelson-metrics
 //! Sentinel (S5) metrics: bounded-cardinality registry (counters, gauges,
 //! histograms), hand-rolled Prometheus text exposition (gap B-17) and the
 //! telemetry cost ledger (S5 section 21).

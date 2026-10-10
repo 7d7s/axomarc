@@ -1,11 +1,11 @@
 //! Identity store ports (S7): `PrincipalStore` + `CredentialStore`.
 //! The HTTP auth flows (register/login/reset) resolve identity through these
-//! ports; `keel-postgres` implements them on the `principals`/`credentials`
+//! ports; `kelson-postgres` implements them on the `principals`/`credentials`
 //! tables, and the in-memory impls serve degraded boot and tests.
 
 use std::sync::RwLock;
 
-use keel_foundation::{AppError, PrincipalId};
+use kelson_foundation::{AppError, PrincipalId};
 
 use crate::{Credential, CredentialKind, Principal, PrincipalStatus, Secret};
 
@@ -17,7 +17,7 @@ pub trait PrincipalStore: Send + Sync {
     fn update_status(&self, id: PrincipalId, status: PrincipalStatus) -> Result<(), AppError>;
     /// Record contact proof (B-23): set the email verification timestamp.
     fn mark_email_verified(&self, id: PrincipalId) -> Result<(), AppError>;
-    /// Wave 5 (`keel call`): the first ACTIVE principal in stable creation
+    /// Wave 5 (`kelson call`): the first ACTIVE principal in stable creation
     /// order — the dev/test default operator. None when no active principal
     /// exists yet. (There is no admin-role column yet: "first admin" is
     /// first active — documented in docs/18 §11.)

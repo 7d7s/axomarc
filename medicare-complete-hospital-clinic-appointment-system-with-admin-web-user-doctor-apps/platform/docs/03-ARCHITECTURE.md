@@ -12,19 +12,19 @@ crates/
   data/          postgres (implements execution/service ports)
   async/         events, jobs, workflows, scheduler
   services/      cache, storage, notifications, realtime, http-client, search
-  observability/ Sentinel (S5) telemetry runtime: logging (keel-observability), telemetry, tracing, metrics, audit, pipeline, buffer, export
+  observability/ Sentinel (S5) telemetry runtime: logging (kelson-observability), telemetry, tracing, metrics, audit, pipeline, buffer, export
   enterprise/    tenancy, feature-flags, deployment
   ai/            client, tools, agents, mcp
-adapters/        keel-cache-memory, keel-mail-smtp, keel-sms-msg91, keel-push-fcm,
-                 keel-storage-s3, keel-storage-local
-runtime/         keel-api, keel-worker
+adapters/        kelson-cache-memory, kelson-mail-smtp, kelson-sms-msg91, kelson-push-fcm,
+                 kelson-storage-s3, kelson-storage-local
+runtime/         kelson-api, kelson-worker
 applications/    generated/domain apps (platform NEVER imports these)
 ```
 
 ## Dependency direction (gate G07)
 
 Layers may depend only same-or-lower. The frozen matrix (STAGE-0-SPEC section 3) is enforced by
-`keel-analyzer` on every `keel check`:
+`kelson-analyzer` on every `kelson check`:
 
 - foundation depends on nothing; security on foundation; execution on foundation+security.
 - application/web/services/async build downward; data implements their ports.

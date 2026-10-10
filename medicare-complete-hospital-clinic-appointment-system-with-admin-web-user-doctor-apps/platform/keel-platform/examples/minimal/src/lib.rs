@@ -1,21 +1,21 @@
-//! Keel golden path (11-SPEC §4): host boot -> kernel wiring -> module handler ->
+//! Kelson golden path (11-SPEC §4): host boot -> kernel wiring -> module handler ->
 //! engine execution -> delta stone, proven through the REAL pipeline
 //! (PolicyAuthz + CommandBus + InMemoryBackend + idempotency).
 
 use std::sync::Arc;
 
-use keel_command::CommandBus;
-use keel_context::{ExecutionContext, PrincipalContext, ScopeSnapshot, TenantContext};
-use keel_foundation::{
+use kelson_command::CommandBus;
+use kelson_context::{ExecutionContext, PrincipalContext, ScopeSnapshot, TenantContext};
+use kelson_foundation::{
     AppError, AuthorizationRevision, ExecutionProfileKind, FeatureRevision, ModuleRevision,
     OperationId, PrincipalId, TenantId,
 };
-use keel_execution::{
+use kelson_execution::{
     BoxFuture, ExecutionPlan, ExecutionUnit, IdempotencyKey, InMemoryBackend, InMemoryIdempotency,
     MutationRecord, OperationHandler,
 };
-use keel_lifecycle::{BootError, Phase, Provider, ServiceRegistry};
-use keel_policy::{AccessSnapshot, PolicyAuthz, PolicyEngine};
+use kelson_lifecycle::{BootError, Phase, Provider, ServiceRegistry};
+use kelson_policy::{AccessSnapshot, PolicyAuthz, PolicyEngine};
 use serde_json::json;
 use time::OffsetDateTime;
 
@@ -89,7 +89,7 @@ impl Provider for KernelProvider {
             module_revision: ModuleRevision(1),
             computed_at: OffsetDateTime::now_utc(),
         });
-        let engine = Arc::new(keel_execution::Engine::new(
+        let engine = Arc::new(kelson_execution::Engine::new(
             Arc::new(PolicyAuthz {
                 engine: policy.clone(),
             }),
@@ -110,7 +110,7 @@ impl Provider for ModuleProvider {
         Phase::Modules
     }
     fn init(&self, r: &mut ServiceRegistry) -> Result<(), BootError> {
-        let engine = r.get::<keel_execution::Engine>()?;
+        let engine = r.get::<kelson_execution::Engine>()?;
         let mut bus = CommandBus::new(engine);
         bus.register(Arc::new(CreateNote::new()))
             .map_err(|e| BootError::ProviderFailed {
@@ -125,19 +125,19 @@ impl Provider for ModuleProvider {
 /// provider lifecycle, exactly like production hosts do (STAGE-SENTINEL-SPEC
 /// §18). Storage paths live in a per-run temp dir so tests never touch the
 /// workspace `storage/`.
-fn telemetry_provider() -> keel_observability::ObservabilityProvider {
+fn telemetry_provider() -> kelson_observability::ObservabilityProvider {
     let base = std::env::temp_dir().join(format!(
-        "keel-example-minimal-telemetry-{}",
+        "kelson-example-minimal-telemetry-{}",
         uuid::Uuid::now_v7()
     ));
-    let mut tcfg = keel_observability::TelemetryConfig::default();
+    let mut tcfg = kelson_observability::TelemetryConfig::default();
     tcfg.wal.dir = base.join("wal");
     tcfg.paths.incident_dir = base.join("control");
     tcfg.paths.cost_file = base.join("cost.json");
     tcfg.paths.health_dir = base.join("exporters");
     tcfg.exporters.insert(
         "file".into(),
-        keel_observability::ExporterConfig {
+        kelson_observability::ExporterConfig {
             kind: "file".into(),
             target: Some(base.join("events.jsonl").to_string_lossy().into_owned()),
             format: None,
@@ -147,9 +147,9 @@ fn telemetry_provider() -> keel_observability::ObservabilityProvider {
             breaker: None,
         },
     );
-    keel_observability::ObservabilityProvider::new(
+    kelson_observability::ObservabilityProvider::new(
         tcfg,
-        keel_observability::ServiceIdentity::new("keel-example-minimal", "test"),
+        kelson_observability::ServiceIdentity::new("kelson-example-minimal", "test"),
     )
 }
 
@@ -157,7 +157,7 @@ fn telemetry_provider() -> keel_observability::ObservabilityProvider {
 pub async fn run() -> Result<Report, Box<dyn std::error::Error>> {
     let principal = PrincipalId::new();
     let tenant = TenantId::new();
-    let mut host = keel_lifecycle::ApplicationHost::new();
+    let mut host = kelson_lifecycle::ApplicationHost::new();
     host.add_provider(Box::new(telemetry_provider()));
     host.add_provider(Box::new(KernelProvider { principal, tenant }));
     host.add_provider(Box::new(ModuleProvider));
@@ -187,7 +187,7 @@ pub async fn run() -> Result<Report, Box<dyn std::error::Error>> {
         .dispatch(
             ctx.clone(),
             &op,
-            json!({ "body": "hello keel" }),
+            json!({ "body": "hello kelson" }),
             Some(IdempotencyKey("g1".into())),
         )
         .await?;
@@ -201,7 +201,7 @@ pub async fn run() -> Result<Report, Box<dyn std::error::Error>> {
         .dispatch(
             ctx.clone(),
             &op,
-            json!({ "body": "hello keel" }),
+            json!({ "body": "hello kelson" }),
             Some(IdempotencyKey("g1".into())),
         )
         .await?;
@@ -237,7 +237,7 @@ pub async fn run() -> Result<Report, Box<dyn std::error::Error>> {
         )
         .await
         .unwrap_err();
-    assert_eq!(denied.code, keel_foundation::codes::DENIED);
+    assert_eq!(denied.code, kelson_foundation::codes::DENIED);
 
     Ok(Report {
         stones_written: first.receipt.deltas_written,

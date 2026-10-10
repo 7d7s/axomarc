@@ -1,9 +1,9 @@
 //! Durable HTTP sessions on PostgreSQL (S7 C6/B-03): http_sessions table.
-//! Implements the keel-session `SessionStore` port so browser sessions
+//! Implements the kelson-session `SessionStore` port so browser sessions
 //! survive restarts and scale across instances.
 
-use keel_foundation::{AppError, PrincipalId, TenantId};
-use keel_session::{Session, SessionId, SessionPolicy, SessionStore};
+use kelson_foundation::{AppError, PrincipalId, TenantId};
+use kelson_session::{Session, SessionId, SessionPolicy, SessionStore};
 use sqlx::postgres::PgPool;
 use time::OffsetDateTime;
 use uuid::Uuid;

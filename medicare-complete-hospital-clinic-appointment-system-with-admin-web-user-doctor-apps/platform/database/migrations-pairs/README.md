@@ -6,21 +6,21 @@ Forward-only single-file migrations live in [`../migrations/`](../migrations/)
 Every rollback-capable migration ships here as a pair:
 
 ```text
-<ts>_<name>.up.sql     applied by `keel migrate` (filename order)
-<ts>_<name>.down.sql   required; applied by `keel migrate:rollback`
+<ts>_<name>.up.sql     applied by `kelson migrate` (filename order)
+<ts>_<name>.down.sql   required; applied by `kelson migrate:rollback`
 ```
 
 Applied pairs are recorded in the `keel_migrations` bookkeeping table
-(`migration`, `batch`) — one batch number per `keel migrate` run that applied
+(`migration`, `batch`) — one batch number per `kelson migrate` run that applied
 at least one pair (Laravel semantics).
 
 | Command | Effect |
 | --- | --- |
-| `keel migrate:install` | create `keel_migrations` without running any files |
-| `keel migrate:rollback [--step n]` | revert the last `n` batches (default 1), newest batch first, reverse filename order inside a batch |
-| `keel migrate:reset` | revert every applied pair in reverse order (dev/test only) |
-| `keel migrate:refresh [--step n]` | rollback `n` batches, then migrate (dev/test only) |
-| `keel migrate:status` | shows singles and pairs with their applied/pending state |
+| `kelson migrate:install` | create `keel_migrations` without running any files |
+| `kelson migrate:rollback [--step n]` | revert the last `n` batches (default 1), newest batch first, reverse filename order inside a batch |
+| `kelson migrate:reset` | revert every applied pair in reverse order (dev/test only) |
+| `kelson migrate:refresh [--step n]` | rollback `n` batches, then migrate (dev/test only) |
+| `kelson migrate:status` | shows singles and pairs with their applied/pending state |
 
 Rules (fail-closed):
 

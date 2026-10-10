@@ -8,7 +8,7 @@
 //! the same parse serves UTC items and per-timezone items. Day-of-week is
 //! `0..=6` with Sunday = 0 (`7` is accepted and normalized to Sunday).
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 use time::{Date, Duration, Month, OffsetDateTime, Time, UtcOffset, Weekday};
 
 /// A parsed, validated cron expression. Values are stored ascending and

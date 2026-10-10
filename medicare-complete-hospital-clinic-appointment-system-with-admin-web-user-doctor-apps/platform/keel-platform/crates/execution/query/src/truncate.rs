@@ -3,11 +3,11 @@
 //! TRUNCATE is structural and destructive, so the compiled form is gated:
 //! [`Truncate::build_gated`] refuses outside dev/test. The builder itself
 //! stays environment-agnostic — the Execution class cannot depend on
-//! `keel-config` — so callers pass `cfg.app.env.as_str()` and the gate
+//! `kelson-config` — so callers pass `cfg.app.env.as_str()` and the gate
 //! matches the two allowed tokens (`dev`, `test`) fail-closed on anything
 //! else.
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 
 use crate::select::Ident;
 use crate::CompiledWrite;

@@ -1,16 +1,16 @@
-//! # keel-models
+//! # kelson-models
 //! Data model + relationship contracts (blueprint L15/L16, S3 item 42).
 //!
 //! Framework-level schema descriptions: models declare typed fields plus
 //! relationships; the registry validates the whole graph before anything can
 //! render SQL or seed stores. Deliberately contract-only — no ORM execution.
 //! Codegen (L66) and stores consume these definitions; identifiers validated
-//! here reuse the same charset as [`keel_query::Ident`] so nothing unsafe can
+//! here reuse the same charset as [`kelson_query::Ident`] so nothing unsafe can
 //! reach generated SQL. S8 adds the model runtime (mass-assignment boundary,
 //! casts, scopes, accessors/mutators, events, relation loading) and the
 //! semantic [`store::ModelStore`] CRUD port.
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -471,7 +471,7 @@ pub struct ModelRegistry {
     pub morph_map: BTreeMap<String, String>,
 }
 
-/// Identifier charset shared with [`keel_query::Ident`]: lowercase, digits,
+/// Identifier charset shared with [`kelson_query::Ident`]: lowercase, digits,
 /// underscores; leading letter/underscore; <= 64 chars.
 fn validate_ident(raw: &str, what: &str) -> Result<(), AppError> {
     let err = |why: &str| AppError::validation(format!("invalid {what} identifier {raw:?}: {why}"));

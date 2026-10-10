@@ -1,10 +1,10 @@
-//! # keel-registry
+//! # kelson-registry
 //! Module manifests + PlatformGraph compilation (G11/G12). Only a valid graph may
-//! produce a release artifact. Violations carry stable codes for `keel check`.
+//! produce a release artifact. Violations carry stable codes for `kelson check`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use keel_foundation::{ExecutionProfileKind, SecurityPlane};
+use kelson_foundation::{ExecutionProfileKind, SecurityPlane};
 use serde::{Deserialize, Serialize};
 
 pub mod config_cache;
@@ -193,7 +193,7 @@ pub struct RouteGroupSpec {
     pub plane: Option<String>,
 }
 
-/// Console route (Wave 2, `routes/console.toml`): `keel call <name>`
+/// Console route (Wave 2, `routes/console.toml`): `kelson call <name>`
 /// (Wave 5) executes the referenced module operation under the caller's
 /// principal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -245,7 +245,7 @@ pub struct RouteSpec {
     pub capability: Option<String>,
     #[serde(default = "default_version")]
     pub version: String,
-    /// Optional route name (S9): enables URL generation and `keel route:list`
+    /// Optional route name (S9): enables URL generation and `kelson route:list`
     /// names. Unique within a module (GRAPH-DUP-ROUTENAME).
     #[serde(default)]
     pub name: Option<String>,
@@ -575,7 +575,7 @@ impl ModulePlane {
 /// bound to one field of one operation's merged input. The HTTP edge compiles
 /// these into a collect-all Validator per operation and enforces them before
 /// CommandBus dispatch (422 envelope with `fields` meta). Rule grammar lives
-/// in keel_validation::Rule::from_token; the graph gate GRAPH-VALIDATION-RULE
+/// in kelson_validation::Rule::from_token; the graph gate GRAPH-VALIDATION-RULE
 /// rejects unparseable rules at boot (fail closed). Wave 4 Phase 4 adds the
 /// `custom` rule reference, the `messages`/`attribute` overrides and (via
 /// `CapabilitySpec::inputs`) the GRAPH-VALIDATION-FIELD shape declaration.
@@ -623,7 +623,7 @@ pub struct ModuleManifest {
     #[serde(default)]
     pub route_groups: Vec<RouteGroupSpec>,
     /// Console commands (Wave 2): merged from `routes/console.toml` via
-    /// [RouteFileManifest::into_module]; `keel call <name>` (Wave 5)
+    /// [RouteFileManifest::into_module]; `kelson call <name>` (Wave 5)
     /// executes the referenced operation. Unknown operations fail the
     /// GRAPH-ROUTEFILE-OP gate.
     #[serde(default)]
@@ -685,7 +685,7 @@ impl ModuleManifest {
         Ok(manifest)
     }
 
-    /// Parse a guest-supplied `keel_manifest()` JSON document (Wave 9 B-30,
+    /// Parse a guest-supplied `kelson_manifest()` JSON document (Wave 9 B-30,
     /// docs/19). Normalization mirrors [`ModuleManifest::from_toml`]
     /// (resource expansion runs) so the drift comparison against the
     /// reviewed sidecar compares like with like. A malformed document is
@@ -1039,7 +1039,7 @@ impl PlatformGraph {
                     });
                     continue;
                 };
-                if let Err(errs) = keel_validation::parse_rules(&spec.rules) {
+                if let Err(errs) = kelson_validation::parse_rules(&spec.rules) {
                     violations.push(GraphViolation {
                         code: "GRAPH-VALIDATION-RULE".into(),
                         message: format!(
@@ -1057,7 +1057,7 @@ impl PlatformGraph {
                 // field outside the declared input shape
                 // (GRAPH-VALIDATION-FIELD).
                 if let Some(name) = &spec.custom {
-                    if !keel_validation::custom_rule_names().iter().any(|n| n == name) {
+                    if !kelson_validation::custom_rule_names().iter().any(|n| n == name) {
                         violations.push(GraphViolation {
                             code: "GRAPH-RULE-UNKNOWN".into(),
                             message: format!(
@@ -1071,7 +1071,7 @@ impl PlatformGraph {
                     }
                 }
                 for key in spec.messages.keys() {
-                    if !keel_validation::is_known_rule_name(key) {
+                    if !kelson_validation::is_known_rule_name(key) {
                         violations.push(GraphViolation {
                             code: "GRAPH-VALIDATION-RULE".into(),
                             message: format!(
@@ -2098,7 +2098,7 @@ rules = ["required"]
     #[test]
     fn unknown_custom_rule_names_are_refused() {
         struct Noop;
-        impl keel_validation::CustomRule for Noop {
+        impl kelson_validation::CustomRule for Noop {
             fn check(
                 &self,
                 _field: &str,
@@ -2131,7 +2131,7 @@ custom = "unregistered_phase4_rule"
         );
 
         // Registered names pass (modules register before graph compile).
-        keel_validation::register_custom_rule("registered_phase4_rule", std::sync::Arc::new(Noop));
+        kelson_validation::register_custom_rule("registered_phase4_rule", std::sync::Arc::new(Noop));
         let toml = toml.replace("unregistered_phase4_rule", "registered_phase4_rule");
         let m = ModuleManifest::from_toml(&toml).expect("parses");
         PlatformGraph::compile(vec![m]).expect("registered custom rule compiles");

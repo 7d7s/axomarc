@@ -1,0 +1,25 @@
+[package]
+name = "kelson-webhooks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Kelson adapter: outbound webhooks — subscriptions, HMAC signing, delivery via the HTTP client port."
+
+[dependencies]
+kelson-foundation = { workspace = true }
+kelson-http-client = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

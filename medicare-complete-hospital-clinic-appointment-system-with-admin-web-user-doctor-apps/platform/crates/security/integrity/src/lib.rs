@@ -1,9 +1,9 @@
-//! # keel-integrity
+//! # kelson-integrity
 //!
 //! Sentinel (S5) audit-integrity primitives, placed in the security layer
-//! (D-74) so the data layer (`keel-postgres`) can compute chain hashes
+//! (D-74) so the data layer (`kelson-postgres`) can compute chain hashes
 //! inside the engine transaction even though it must not depend on the
-//! observability class. Verification tooling (`keel observe audit verify`)
+//! observability class. Verification tooling (`kelson observe audit verify`)
 //! lives in the CLI, which may depend on both layers.
 //!
 //! - [`chain`] — sha256 prev-hash chaining anchored per `(tenant, day)`

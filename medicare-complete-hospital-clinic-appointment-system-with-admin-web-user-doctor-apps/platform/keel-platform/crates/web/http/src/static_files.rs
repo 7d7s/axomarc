@@ -196,7 +196,7 @@ mod tests {
     use super::*;
 
     fn fixture() -> (PathBuf, StaticFiles) {
-        let dir = std::env::temp_dir().join(format!("keel-static-{}", uuid::Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("kelson-static-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(dir.join("assets")).expect("fixture dirs");
         std::fs::create_dir_all(dir.join("docs")).expect("fixture dirs");
         std::fs::write(dir.join("assets").join("app-B7f3k9Jh.css"), "body{}")
@@ -235,16 +235,16 @@ mod tests {
     fn traversal_is_refused_before_the_filesystem() {
         let (dir, files) = fixture();
         // A real secret one level above the root, reachable only via `..`.
-        let secret = dir.parent().expect("temp parent").join("keel-static-secret.txt");
+        let secret = dir.parent().expect("temp parent").join("kelson-static-secret.txt");
         std::fs::write(&secret, "hunter2").expect("secret writes");
 
         for attempt in [
-            "/../keel-static-secret.txt",
-            "/..%2Fkeel-static-secret.txt",
-            "/assets/../../keel-static-secret.txt",
-            "/%2e%2e/keel-static-secret.txt",
-            "/./../keel-static-secret.txt",
-            "/..\\keel-static-secret.txt",
+            "/../kelson-static-secret.txt",
+            "/..%2Fkelson-static-secret.txt",
+            "/assets/../../kelson-static-secret.txt",
+            "/%2e%2e/kelson-static-secret.txt",
+            "/./../kelson-static-secret.txt",
+            "/..\\kelson-static-secret.txt",
         ] {
             assert!(
                 files.resolve(&Method::GET, attempt).is_none(),
@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn symlink_escapes_fail_closed() {
         let (dir, files) = fixture();
-        let outside = dir.parent().expect("temp parent").join("keel-static-outside.txt");
+        let outside = dir.parent().expect("temp parent").join("kelson-static-outside.txt");
         std::fs::write(&outside, "outside").expect("outside writes");
         let link = dir.join("escape.txt");
         #[cfg(windows)]

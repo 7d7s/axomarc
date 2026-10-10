@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 use serde::{Deserialize, Serialize};
 
 use crate::ports::{ConfigPort, EventPort, JobPort, MigrationPort, ModulePort};
@@ -208,7 +208,7 @@ mod tests {
         assert!(target().job_schema_versions["mail.send"] < 2);
 
         let err = h.executor().rollback(&target()).await.unwrap_err();
-        assert_eq!(err.code, keel_foundation::codes::VALIDATION);
+        assert_eq!(err.code, kelson_foundation::codes::VALIDATION);
 
         assert_eq!(h.trace.calls(), vec!["jobs.ensure_compatibility".to_string()]);
         for prefix in ["config.", "db.", "modules."] {
@@ -223,7 +223,7 @@ mod tests {
         let h = crate::fakes::Harness::build(None, false);
 
         let err = h.executor().rollback(&target()).await.unwrap_err();
-        assert_eq!(err.code, keel_foundation::codes::VALIDATION);
+        assert_eq!(err.code, kelson_foundation::codes::VALIDATION);
 
         assert_eq!(
             h.trace.calls(),

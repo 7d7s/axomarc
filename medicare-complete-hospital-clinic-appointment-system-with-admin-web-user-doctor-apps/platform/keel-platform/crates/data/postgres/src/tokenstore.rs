@@ -3,8 +3,8 @@
 //! mark_consumed is atomic (UPDATE ... WHERE consumed_at IS NULL), so
 //! concurrent redemptions of a single-use token cannot both win.
 
-use keel_foundation::{AppError, PrincipalId};
-use keel_tokens::{AuthToken, TokenPurpose, TokenStore};
+use kelson_foundation::{AppError, PrincipalId};
+use kelson_tokens::{AuthToken, TokenPurpose, TokenStore};
 use sqlx::postgres::PgPool;
 
 use crate::bridge::block_on;

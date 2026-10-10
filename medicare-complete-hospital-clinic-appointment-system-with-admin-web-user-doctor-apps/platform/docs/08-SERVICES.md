@@ -5,7 +5,7 @@ local disk) implement ports and are wired only by runtime binaries.
 
 ## Cache (+ locks)
 
-`services/cache` with a memory adapter; `adapters/keel-cache-redis` (RedisCache) picks up
+`services/cache` with a memory adapter; `adapters/kelson-cache-redis` (RedisCache) picks up
 `REDIS_URL` for the distributed path. `CacheLock` provides atomic delete-if-equals locks
 for critical sections.
 
@@ -16,7 +16,7 @@ Wave 4 adds `CacheService` over the unchanged `CachePort`: `remember(key, ttl, f
 atomic locks `lock(key, ttl)` → `get`/`release`/`force_release` plus the closure form
 `lock.get(|| ...)`; stampede protection collapses concurrent `remember` misses onto one
 leader under a per-key lock with jittered wait. Values are serde_json-serialized at the
-service layer — `keel-caching` gains the workspace-budgeted `serde_json` dependency for
+service layer — `kelson-caching` gains the workspace-budgeted `serde_json` dependency for
 it (crate-level addition, no `[workspace.dependencies]` budget change); ports and
 adapters are untouched.
 
@@ -27,7 +27,7 @@ docker-compose). Guards enforce size/type policies.
 
 Wave 6 P2 adds the disk registry. `[storage]` carries `default` (default disk name, `local`) and
 `[storage.disks.<name>] { driver = "local"|"s3", root|bucket, visibility = "public"|"private",
-url }`. Runtime builders (keel-api's `StorageProvider`, keel-worker's `mail_job` — each runtime
+url }`. Runtime builders (kelson-api's `StorageProvider`, kelson-worker's `mail_job` — each runtime
 owns the conversion because the layer matrix keeps adapter constructors out of config and
 service crates) turn the section into a `DiskRegistry` at boot: a driver typo or level-3 key typo
 is caught by the typed parse / `CONFIG_SCHEMA_MAPS` walk, while a `local` disk without `root`, an
@@ -47,7 +47,7 @@ fallback), and every stored record names the disk it landed on.
 Wave 6 P10 adds a chunked write path for large downloads: `StoragePort::writer(bucket, key)` opens
 an `ObjectWriter` session (`write(chunk)` / `finish() -> ObjectRef`) that commits exactly once. The
 default implementation buffers the chunks and issues one `put` on `finish` — the port stays
-implementable with its core four methods — while `keel-storage-local` overrides it with direct file
+implementable with its core four methods — while `kelson-storage-local` overrides it with direct file
 writes and removes the partial file when a session is dropped without `finish`. A session that is
 never finished commits nothing, so an aborted download can never publish a truncated object.
 
@@ -59,7 +59,7 @@ never finished commits nothing, so an aborted download can never publish a trunc
 Mail gains the Wave 6 `Mailable` path (P1): subject, from/reply-to, to/cc/bcc, text + html
 bodies, custom RFC822 headers, and attachments that carry only an `ObjectRef` — never bytes.
 `resolve_attachments` streams them through `StoragePort::get_capped` under the upload cap
-(8 MiB, pinned to `UploadLimits` by a keel-api test; over-cap is `CAP_LIMIT_EXCEEDED`, never a
+(8 MiB, pinned to `UploadLimits` by a kelson-api test; over-cap is `CAP_LIMIT_EXCEEDED`, never a
 truncation, and `LocalDisk` stops reading at `max_bytes + 1`). The `[mail]` section declares
 the failover chain: `mail.default` is a comma-separated mailer list (`log` is built in and
 needs no declaration), `[mail.mailers.<name>]` sets `transport = "log"|"smtp"` +
@@ -68,10 +68,10 @@ empty chain, or an smtp mailer without a host refuses boot; level-3 key typos ar
 `CONFIG_SCHEMA_MAPS` walk plus `deny_unknown_fields`, and `redacted_json` masks every non-empty
 mailer password.
 
-`MailChain` (keel-mail-smtp) selects the first healthy transport per send — health is a TCP
+`MailChain` (kelson-mail-smtp) selects the first healthy transport per send — health is a TCP
 connect probe bounded by the mailer's timeout (`log` never probes) — and an all-unhealthy chain
 is a retryable external error whose detail lands in `last_error`. Queued sends ride the
-`mail.send` job: keel-worker registers the def + `MailSendHandler` at boot (P2: the handler
+`mail.send` job: kelson-worker registers the def + `MailSendHandler` at boot (P2: the handler
 carries the registry's default disk port, so attachment `ObjectRef`s resolve against the same
 disk the upload edge writes to, and a missing object still fails the attempt explicitly instead
 of being dropped), and `enqueue_mailable` validates the `Mailable` and builds the refs-only payload
@@ -89,7 +89,7 @@ nudge-not-payload: `signal` + optional `delta_cursor` only, never free-form data
 database channel through the new `NotificationStore` port (in-memory reference + a pg
 implementation behind the same degradation posture, shared as ONE instance between the hub and the
 HTTP routes). The inbox edges (`GET /api/v1/notifications`, `POST /api/v1/notifications/read`)
-live in `keel-api/src/notification_routes.rs`; the mark is gated by the `notifications.mark_read`
+live in `kelson-api/src/notification_routes.rs`; the mark is gated by the `notifications.mark_read`
 framework capability chained into the login-time grant set.
 
 Notifications P6 completes the v2 surface — on-demand notifiables, queued delivery, producer
@@ -105,9 +105,9 @@ dispatch (request-time locale, filled target, view HTML) and handed to
 whose `DeliveryPayload` is adjacently tagged Mail/Sms/Push/Database. The drain refuses an unknown
 envelope version loudly (retry → dead-letter, never a guess), and `queue_via` with no port fails
 closed (`not_implemented`). Both halves are runtime-owned (the layer matrix keeps Async off
-Services): keel-api enqueues pool-gated (`PgJobStore` + the registered `notification.send` def
+Services): kelson-api enqueues pool-gated (`PgJobStore` + the registered `notification.send` def
 wired onto the hub through `PlatformProvider.notification_queue`; no pool = no port =
-fail-closed), keel-worker drains (`notification_job` builds the hub over the boot catalog, the
+fail-closed), kelson-worker drains (`notification_job` builds the hub over the boot catalog, the
 pg/in-memory database store and a `ChainMail` adapter over the P1 `MailChain` — the chain does
 not implement `MailPort`; `NotificationDeliveryHandler` → `hub.deliver_queued`, registered beside
 `mail.send`). Producer dispatch: the appointments Book/Cancel handlers dispatch
@@ -173,7 +173,7 @@ gained a `PresenceHub` roster (idempotent join/leave per member id; `presence.jo
 takes the host's authorizer and joins a `presence-*` roster before handing over the SSE
 stream (a drop-guarded stream leaves on disconnect; the WS session leaves when its loop ends),
 while the raw `realtime_router(hub)` stays as the un-authorized transport primitive for the
-crate's own tests. The host side lives in `keel-api`'s `broadcast_routes.rs`: `POST
+crate's own tests. The host side lives in `kelson-api`'s `broadcast_routes.rs`: `POST
 /api/v1/broadcast/auth` mints the short-TTL channel-bound token after the resolved capability
 gate, `GET /api/v1/broadcast/members` reads the roster under the same gate, and
 `ChannelTokenAuthorizer` refuses anything but a valid token bound to the requested channel —
@@ -209,7 +209,7 @@ without buffering it (callers pass the target disk's port from the `DiskRegistry
 `NotRetryable` errors with a capped preview in `internal` — an error page is never sunk over the
 target key — and once streaming starts the download is not retried; an aborted session discards the
 partial object. The sink is an inherent method, not a port method — `HttpClientPort` keeps its
-single `execute` operation. The crate gains a `keel-storage` workspace dependency for it
+single `execute` operation. The crate gains a `kelson-storage` workspace dependency for it
 (Services→Services, the `notifications → storage` edge).
 
 ## Search

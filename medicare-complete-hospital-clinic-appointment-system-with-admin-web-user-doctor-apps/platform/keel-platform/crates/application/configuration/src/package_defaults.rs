@@ -3,7 +3,7 @@
 //! A package listed in the root `packages.toml` index may ship a
 //! `[config]` table in its `module.toml` manifest, and the operator may
 //! materialize an editable copy at `config/packages/<name>.toml`
-//! (`keel config:publish`). At boot the layers merge UNDER the app config
+//! (`kelson config:publish`). At boot the layers merge UNDER the app config
 //! file (documented layer: package `[config]` <- published copy <- config
 //! file <- .env <- environment): the config file wins per key, the
 //! published copy wins over the package's own manifest defaults, and
@@ -14,7 +14,7 @@
 
 use std::path::Path;
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 
 use crate::{schema_violations, CONFIG_SCHEMA_CODE};
 
@@ -26,7 +26,7 @@ pub(crate) fn apply(config_path: &Path, file_raw: String) -> Result<String, AppE
     let Some(root) = config_path.parent().and_then(|dir| dir.parent()) else {
         return Ok(file_raw);
     };
-    let index = keel_registry::PackageIndex::load(root)
+    let index = kelson_registry::PackageIndex::load(root)
         .map_err(|e| AppError::validation(format!("package index: {e}")))?;
     let mut defaults = toml::Value::Table(toml::map::Map::new());
     let mut shipped = false;
@@ -67,7 +67,7 @@ pub(crate) fn apply(config_path: &Path, file_raw: String) -> Result<String, AppE
             merge_first_wins(&mut pkg_defaults, config);
             any = true;
         }
-        // Wave 8 B-25: the published copy (`keel config:publish`) overlays
+        // Wave 8 B-25: the published copy (`kelson config:publish`) overlays
         // the package's manifest defaults — the operator's edits win per
         // key, still under the app config file. It is schema-checked on its
         // own so a typo names the file the operator edited.

@@ -8,7 +8,7 @@ license.workspace = true
 [dependencies]
 # Kernel facade ONLY — application modules depend on the re-exported
 # surface, never on keel-platform internals directly.
-keel-framework = { workspace = true }
+kelson-framework = { workspace = true }
 
 # Wire + storage externals
 axum = { workspace = true }

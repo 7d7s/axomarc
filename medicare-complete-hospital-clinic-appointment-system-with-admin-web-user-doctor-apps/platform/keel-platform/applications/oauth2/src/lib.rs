@@ -5,7 +5,7 @@
 //! registered on the shared CommandBus like any other module.
 //!
 //! Design posture (docs/19 B-21):
-//! - **Codes and refresh tokens reuse `keel-tokens`** — hashed, single-use,
+//! - **Codes and refresh tokens reuse `kelson-tokens`** — hashed, single-use,
 //!   TTL rows (`TokenPurpose::OauthCode` / `OauthRefresh`, landed earlier
 //!   for exactly this). Only sha256 hex of the plaintext is persisted.
 //! - **Access tokens are the platform's existing PATs** (`TokenPurpose::Api`)
@@ -25,15 +25,15 @@
 
 use std::sync::Arc;
 
-use keel_context::ExecutionContext;
-use keel_foundation::{AppError, ExecutionProfileKind, OperationId, PrincipalId, TenantId};
-use keel_execution::{BoxFuture, ExecutionPlan, ExecutionUnit, MutationRecord, OperationHandler};
-use keel_identity::{hash_password, verify_password, Secret};
-use keel_lifecycle::{BootError, Phase, Provider, ServiceRegistry};
-use keel_models::{
+use kelson_context::ExecutionContext;
+use kelson_foundation::{AppError, ExecutionProfileKind, OperationId, PrincipalId, TenantId};
+use kelson_execution::{BoxFuture, ExecutionPlan, ExecutionUnit, MutationRecord, OperationHandler};
+use kelson_identity::{hash_password, verify_password, Secret};
+use kelson_lifecycle::{BootError, Phase, Provider, ServiceRegistry};
+use kelson_models::{
     FieldDef, FieldFilter, FieldType, ModelDef, ModelRuntime, ModelStore, ModelStoreRef, Record,
 };
-use keel_tokens::{TokenPurpose, TokenService};
+use kelson_tokens::{TokenPurpose, TokenService};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use time::Duration;
@@ -167,7 +167,7 @@ impl OauthClientStore {
         redirect_uris: Vec<String>,
         scopes: Vec<String>,
     ) -> Result<(OauthClient, String), AppError> {
-        let secret = keel_tokens::generate_plaintext();
+        let secret = kelson_tokens::generate_plaintext();
         let secret_hash = hash_password(&Secret::new(secret.as_str()))?;
         let mut input = Record::new();
         input.insert("id".into(), json!(Uuid::now_v7().to_string()));
@@ -345,7 +345,7 @@ fn string_list(input: &Value, field: &str) -> Result<Vec<String>, AppError> {
 // ----------------------------------------------------------------- claims
 
 /// What an authorization code is bound to, carried in the token row's
-/// `label` (the only claim channel `keel-tokens` persists).
+/// `label` (the only claim channel `kelson-tokens` persists).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CodeClaims {
     client_id: String,
@@ -603,8 +603,8 @@ impl TokenHandler {
                 "redirect_uri does not match the authorization request",
             ));
         }
-        if !keel_tokens::valid_code_verifier(&verifier)
-            || keel_tokens::pkce_s256_challenge(&verifier) != claims.code_challenge
+        if !kelson_tokens::valid_code_verifier(&verifier)
+            || kelson_tokens::pkce_s256_challenge(&verifier) != claims.code_challenge
         {
             return Err(AppError::denied("PKCE verification failed"));
         }
@@ -787,7 +787,7 @@ impl OperationHandler for RevokeHandler {
 // --------------------------------------------------------- clients.manage
 
 /// `oauth2.clients.manage` (COMMAND): registry administration through
-/// `keel call oauth2.clients.manage` (routes/console.toml) — no HTTP
+/// `kelson call oauth2.clients.manage` (routes/console.toml) — no HTTP
 /// surface, the protocol endpoints stay exactly the four docs/19 names.
 /// One operation, an `action` discriminator: create / list / update /
 /// delete. Create returns the client secret EXACTLY once.

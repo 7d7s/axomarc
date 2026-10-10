@@ -1,11 +1,11 @@
-//! # keel-workflow
+//! # kelson-workflow
 //! Workflows are executable metadata (11-SPEC §28/§33/§34): states, transitions,
 //! guards, actions, compensation, permissions, timeout. The workflow compiler
 //! rejects unreachable states, dead ends, unknown states and duplicate transitions.
 
 use std::collections::{BTreeSet, VecDeque};
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

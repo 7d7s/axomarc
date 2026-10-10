@@ -1,0 +1,41 @@
+[package]
+name = "kelson-worker"
+description = "Kelson worker host: durable job runner (claim loop, handlers, outbox pump)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+
+[[bin]]
+name = "kelson-worker"
+path = "src/main.rs"
+
+[dependencies]
+kelson-cache-redis = { workspace = true }
+kelson-cache-memory = { workspace = true }
+kelson-caching = { workspace = true }
+kelson-foundation = { workspace = true }
+kelson-config = { workspace = true }
+kelson-lifecycle = { workspace = true }
+kelson-jobs = { workspace = true }
+kelson-event = { workspace = true }
+kelson-mail-smtp = { workspace = true }
+kelson-notifications = { workspace = true }
+kelson-storage = { workspace = true }
+kelson-storage-local = { workspace = true }
+kelson-storage-s3 = { workspace = true }
+kelson-scheduling = { workspace = true }
+kelson-postgres = { workspace = true }
+kelson-mysql = { workspace = true }
+kelson-observability = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

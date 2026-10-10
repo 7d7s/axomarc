@@ -1,4 +1,4 @@
-//! # keel-jobs
+//! # kelson-jobs
 //! Jobs are durable executions (11-SPEC §29/§41): same engine, same context,
 //! same delta/audit semantics as any other front door. Persistence lives in the
 //! postgres adapter (SKIP LOCKED, item 22); this crate defines the contract,
@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use keel_foundation::{AppError, CorrelationId, ExecutionId};
+use kelson_foundation::{AppError, CorrelationId, ExecutionId};
 use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
@@ -345,7 +345,7 @@ impl ChainSpec {
 
 // ------------------------------------------------------------------- stores
 
-/// Storage port (frozen, STAGE-0-SPEC §5). Implemented by keel-postgres on a
+/// Storage port (frozen, STAGE-0-SPEC §5). Implemented by kelson-postgres on a
 /// SKIP LOCKED table and by InMemoryJobStore for degraded boot.
 pub trait JobStore: Send + Sync {
     fn enqueue(&self, job: DurableJob) -> Result<Uuid, AppError>;
@@ -385,7 +385,7 @@ pub trait JobStoreAdmin: Send + Sync {
     fn kill(&self, id: Uuid, error: &str) -> Result<(), AppError>;
 }
 
-/// Queue depth + age facts behind `keel queue:monitor`, kept as data so the
+/// Queue depth + age facts behind `kelson queue:monitor`, kept as data so the
 /// rendering is unit-testable without a store.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QueueSnapshot {
@@ -630,7 +630,7 @@ pub fn flush_cutoff() -> OffsetDateTime {
     time::Date::MAX.midnight().assume_utc()
 }
 
-/// `keel queue:restart` signal file (storage/framework/queue.restart):
+/// `kelson queue:restart` signal file (storage/framework/queue.restart):
 /// running workers watch it and stop cooperatively between jobs; supervisors
 /// (queue:listen) then respawn them.
 pub fn queue_restart_path(root: &Path) -> PathBuf {
@@ -794,7 +794,7 @@ impl BatchRuntime {
 
     /// Wave 6 P9 (B-32): run against an explicit [`BatchLedger`] — the
     /// worker wires the pool-gated postgres ledger so another process
-    /// (keel-api, keel-console) sees the batches this one dispatches.
+    /// (kelson-api, kelson-console) sees the batches this one dispatches.
     pub fn with_ledger(store: Arc<dyn JobStore>, ledger: Arc<dyn BatchLedger>) -> Self {
         Self {
             store,
@@ -1180,7 +1180,7 @@ impl ChainRuntime {
 pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
 /// Executes a durable job: one implementation per job name. Handlers are
-/// registered in a WorkerRegistry and dispatched by the keel-worker claim
+/// registered in a WorkerRegistry and dispatched by the kelson-worker claim
 /// loop; Err maps to JobStore::fail (backoff, retry budget, then dead).
 pub trait JobHandler: Send + Sync {
     /// Job name served by this handler (must match a JobRegistry entry).
@@ -1707,7 +1707,7 @@ mod tests {
     fn restart_signal_is_ignored_when_older_than_the_worker_start() {
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let root = std::env::temp_dir().join(format!(
-            "keel-jobs-restart-{}-{}",
+            "kelson-jobs-restart-{}-{}",
             std::process::id(),
             SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         ));
@@ -2011,7 +2011,7 @@ mod tests {
         assert!(!progress.finished, "members still outstanding");
 
         let unknown = ops.status(Uuid::now_v7()).expect_err("unknown batch");
-        assert_eq!(unknown.code, keel_foundation::codes::NOT_FOUND);
+        assert_eq!(unknown.code, kelson_foundation::codes::NOT_FOUND);
     }
 
     /// Wave 6 P9: `batch.cancel` takes pending members to dead and leaves

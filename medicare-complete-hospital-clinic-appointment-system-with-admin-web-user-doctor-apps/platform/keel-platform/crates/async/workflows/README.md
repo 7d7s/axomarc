@@ -1,8 +1,8 @@
-# keel-workflow
+# kelson-workflow
 
-Keel framework: declarative state machines + workflow compiler validation.
+Kelson framework: declarative state machines + workflow compiler validation.
 
-Part of the [Keel](../../../README.md) platform - a typed, plane-separated, delta-first application framework for Rust. See [PUBLISHING.md](../../../PUBLISHING.md) for the release process and the [workspace README](../../../README.md) for architecture.
+Part of the [Kelson](../../../README.md) platform - a typed, plane-separated, delta-first application framework for Rust. See [PUBLISHING.md](../../../PUBLISHING.md) for the release process and the [workspace README](../../../README.md) for architecture.
 
 ## License
 

@@ -1,7 +1,7 @@
-//! # keel-buffer
+//! # kelson-buffer
 //! Sentinel (S5) buffering: bounded ingest queue with counted overflow,
 //! backpressure shed ladder, and a checksummed disk-backed WAL with watermark
-//! replay (durability classes are defined in `keel-telemetry::envelope`).
+//! replay (durability classes are defined in `kelson-telemetry::envelope`).
 
 pub mod backpressure;
 pub mod memqueue;

@@ -1,5 +1,5 @@
 //! Module: appointments — Clinic appointments: book, cancel, list.
-//! Scaffolded by `keel make:module`, then expanded into the first real domain
+//! Scaffolded by `kelson make:module`, then expanded into the first real domain
 //! module. Contracts live in module.toml; code lives here. State sits behind
 //! the framework `ModelStore` port (S8): `InMemoryModelStore` in tests and
 //! degraded boot, `PgModelStore` in production. Both backends speak the same
@@ -8,19 +8,19 @@
 
 use std::sync::Arc;
 
-use keel_context::ExecutionContext;
-use keel_foundation::{
+use kelson_context::ExecutionContext;
+use kelson_foundation::{
     codes, AppError, ErrorCategory, ExecutionProfileKind, OperationId, Retryability, Severity,
     TenantId,
 };
-use keel_execution::{
+use kelson_execution::{
     BoxFuture, ExecutionPlan, ExecutionUnit, MutationRecord, OperationHandler, OutboxMessage,
 };
-use keel_lifecycle::{BootError, Phase, Provider, ServiceRegistry};
-use keel_models::{
+use kelson_lifecycle::{BootError, Phase, Provider, ServiceRegistry};
+use kelson_models::{
     FieldDef, FieldFilter, FieldType, ModelDef, ModelRuntime, ModelStore, ModelStoreRef, Record,
 };
-use keel_notifications::{Channel, Mailable, NotificationContext, NotificationDef, NotifyHub};
+use kelson_notifications::{Channel, Mailable, NotificationContext, NotificationDef, NotifyHub};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -33,7 +33,7 @@ pub const EVENT_BOOKED: &str = "appointment.booked";
 pub const EVENT_CANCELLED: &str = "appointment.cancelled";
 
 /// Model names this module registers binding resolvers for in `route.bindings`
-/// (static knowledge for tooling such as the `keel check`
+/// (static knowledge for tooling such as the `kelson check`
 /// GRAPH-BINDING-RESOLVER gate; production registration happens in
 /// `Provider::init`).
 pub const REGISTERED_BINDING_MODELS: &[&str] = &["Appointment"];
@@ -148,7 +148,7 @@ impl AppointmentStore {
     /// TestKit convenience: private in-memory backend.
     #[cfg(test)]
     fn in_memory() -> Self {
-        Self::new(Arc::new(keel_models::InMemoryModelStore::new()))
+        Self::new(Arc::new(kelson_models::InMemoryModelStore::new()))
     }
 
     /// True when the patient already holds a BOOKED appointment in this slot.
@@ -253,8 +253,8 @@ impl AppointmentStore {
     pub fn list_paged(
         &self,
         tenant: TenantId,
-        page: keel_query::PageReq,
-    ) -> Result<keel_query::Page<Appointment>, AppError> {
+        page: kelson_query::PageReq,
+    ) -> Result<kelson_query::Page<Appointment>, AppError> {
         let page = page.validate()?;
         let result = self
             .runtime
@@ -264,7 +264,7 @@ impl AppointmentStore {
             .iter()
             .map(from_record)
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(keel_query::Page::new(
+        Ok(kelson_query::Page::new(
             items,
             result.page,
             result.per_page,
@@ -287,7 +287,7 @@ impl AppointmentBindingResolver {
     }
 }
 
-impl keel_models::RouteBindingResolver for AppointmentBindingResolver {
+impl kelson_models::RouteBindingResolver for AppointmentBindingResolver {
     fn model(&self) -> &str {
         "Appointment"
     }
@@ -447,7 +447,7 @@ impl Provider for ModuleProvider {
         // the route.bindings service when the platform provides one. Its
         // absence is tolerated so older hosts (and the ModelStore-only boot
         // failure test) are unaffected.
-        if let Ok(bindings) = registry.get::<keel_models::RouteBindingsRef>() {
+        if let Ok(bindings) = registry.get::<kelson_models::RouteBindingsRef>() {
             bindings
                 .0
                 .register(Arc::new(AppointmentBindingResolver::new(store.clone())));
@@ -455,10 +455,10 @@ impl Provider for ModuleProvider {
         // Wave 4 Phase 4: model.probes — register the Appointment row probe
         // for the `unique`/`exists` validation rules when the platform
         // provides the registry (same tolerance posture as route.bindings).
-        if let Ok(probes) = registry.get::<keel_models::ProbeRegistryRef>() {
+        if let Ok(probes) = registry.get::<kelson_models::ProbeRegistryRef>() {
             probes
                 .0
-                .register(Arc::new(keel_models::StoreProbe::new(
+                .register(Arc::new(kelson_models::StoreProbe::new(
                     appointment_model(),
                     backend.0.clone(),
                 )));
@@ -740,7 +740,7 @@ impl OperationHandler for ListHandler {
             let page_req = input.get("_page").and_then(|v| {
                 let page = v.get("page")?.as_u64()? as u32;
                 let per_page = v.get("per_page")?.as_u64()? as u32;
-                Some(keel_query::PageReq { page, per_page })
+                Some(kelson_query::PageReq { page, per_page })
             });
             match page_req {
                 Some(req) => {
@@ -815,11 +815,11 @@ impl OperationHandler for AvailabilityHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keel_context::{PrincipalContext, ScopeSnapshot, TenantContext};
-    use keel_notifications::NotificationStore;
-    use keel_foundation::{AuthorizationRevision, FeatureRevision, ModuleRevision, PrincipalId};
-    use keel_execution::{Engine, IdempotencyKey, InMemoryBackend, InMemoryIdempotency};
-    use keel_policy::{AccessSnapshot, PolicyAuthz, PolicyEngine};
+    use kelson_context::{PrincipalContext, ScopeSnapshot, TenantContext};
+    use kelson_notifications::NotificationStore;
+    use kelson_foundation::{AuthorizationRevision, FeatureRevision, ModuleRevision, PrincipalId};
+    use kelson_execution::{Engine, IdempotencyKey, InMemoryBackend, InMemoryIdempotency};
+    use kelson_policy::{AccessSnapshot, PolicyAuthz, PolicyEngine};
     use time::OffsetDateTime;
 
     fn fixture(
@@ -878,7 +878,7 @@ mod tests {
         handler: &BookHandler,
         patient: &str,
         slot: &str,
-    ) -> Result<keel_execution::OperationOutcome, AppError> {
+    ) -> Result<kelson_execution::OperationOutcome, AppError> {
         engine
             .execute(
                 context.clone(),
@@ -917,10 +917,10 @@ mod tests {
     /// hides it, `resolve_trashed` (`with_trashed` bindings) surfaces it.
     #[test]
     fn trashed_binding_resolver_surfaces_soft_deleted_rows() {
-        use keel_models::RouteBindingResolver;
+        use kelson_models::RouteBindingResolver;
 
         let tenant = TenantId::new();
-        let backend: Arc<dyn ModelStore> = keel_models::InMemoryModelStore::new();
+        let backend: Arc<dyn ModelStore> = kelson_models::InMemoryModelStore::new();
         let store = Arc::new(AppointmentStore::new(backend.clone()));
         let resolver = AppointmentBindingResolver::new(store);
 
@@ -1134,9 +1134,9 @@ mod tests {
 
     #[test]
     fn manifest_compiles_into_the_platform_graph() {
-        let manifest = keel_registry::ModuleManifest::from_toml(include_str!("../module.toml"))
+        let manifest = kelson_registry::ModuleManifest::from_toml(include_str!("../module.toml"))
             .expect("manifest parses");
-        let graph = keel_registry::PlatformGraph::compile(vec![manifest]).expect("graph compiles");
+        let graph = kelson_registry::PlatformGraph::compile(vec![manifest]).expect("graph compiles");
         assert_eq!(graph.operations.len(), 4, "book + cancel + list + availability");
         assert!(graph.operations.contains_key("appointments.book"));
         assert!(graph.operations.contains_key("appointments.cancel"));
@@ -1160,7 +1160,7 @@ mod tests {
             r.insert(
                 "model.store",
                 Arc::new(ModelStoreRef(Arc::new(
-                    keel_models::InMemoryModelStore::new(),
+                    kelson_models::InMemoryModelStore::new(),
                 ))),
             )?;
             Ok(())
@@ -1169,7 +1169,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_boots_and_registers_the_handler_bundle() {
-        let mut host = keel_lifecycle::ApplicationHost::new();
+        let mut host = kelson_lifecycle::ApplicationHost::new();
         host.add_provider(Box::new(TestModelStoreProvider));
         host.add_provider(Box::new(ModuleProvider));
         host.boot().await.expect("module boots");
@@ -1187,7 +1187,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_fails_boot_without_a_model_store() {
-        let mut host = keel_lifecycle::ApplicationHost::new();
+        let mut host = kelson_lifecycle::ApplicationHost::new();
         host.add_provider(Box::new(ModuleProvider));
         assert!(
             host.boot().await.is_err(),
@@ -1215,7 +1215,7 @@ mod tests {
                 revision: AuthorizationRevision(1),
                 computed_at: OffsetDateTime::now_utc(),
             })
-            .locale(keel_foundation::Locale {
+            .locale(kelson_foundation::Locale {
                 lang: lang.into(),
                 timezone: "UTC".into(),
             })
@@ -1231,8 +1231,8 @@ mod tests {
     async fn producer_dispatches_the_inbox_row_and_carries_the_locale() {
         let (engine, store, principal, tenant) = fixture(&[OP_BOOK, OP_LIST]);
         let context = ctx_lang(principal, tenant, "fr");
-        let inbox = Arc::new(keel_notifications::InMemoryNotificationStore::new());
-        let hub = Arc::new(keel_notifications::NotifyHub::empty().with_store(inbox.clone()));
+        let inbox = Arc::new(kelson_notifications::InMemoryNotificationStore::new());
+        let hub = Arc::new(kelson_notifications::NotifyHub::empty().with_store(inbox.clone()));
         let handler = BookHandler::new(store.clone()).with_notifier(Some(hub));
 
         book(&engine, &context, &handler, "A. Patient", "2026-09-01T10:00Z")
@@ -1258,8 +1258,8 @@ mod tests {
     async fn cancel_dispatches_the_cancelled_inbox_row() {
         let (engine, store, principal, tenant) = fixture(&[OP_BOOK, OP_CANCEL]);
         let context = ctx(principal, tenant);
-        let inbox = Arc::new(keel_notifications::InMemoryNotificationStore::new());
-        let hub = Arc::new(keel_notifications::NotifyHub::empty().with_store(inbox.clone()));
+        let inbox = Arc::new(kelson_notifications::InMemoryNotificationStore::new());
+        let hub = Arc::new(kelson_notifications::NotifyHub::empty().with_store(inbox.clone()));
         let book_handler = BookHandler::new(store.clone()).with_notifier(Some(hub.clone()));
         let outcome = book(
             &engine,
@@ -1298,7 +1298,7 @@ mod tests {
     async fn producer_dispatch_failure_fails_the_operation() {
         let (engine, store, principal, tenant) = fixture(&[OP_BOOK]);
         let context = ctx(principal, tenant);
-        let hub = Arc::new(keel_notifications::NotifyHub::empty());
+        let hub = Arc::new(kelson_notifications::NotifyHub::empty());
         let handler = BookHandler::new(store.clone()).with_notifier(Some(hub));
 
         let err = book(
@@ -1310,6 +1310,6 @@ mod tests {
         )
         .await
         .expect_err("dispatch failure fails the booking");
-        assert_eq!(err.code, keel_foundation::codes::NOT_IMPLEMENTED);
+        assert_eq!(err.code, kelson_foundation::codes::NOT_IMPLEMENTED);
     }
 }

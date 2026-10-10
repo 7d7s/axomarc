@@ -1,11 +1,11 @@
-//! # keel-elevation
+//! # kelson-elevation
 //! Cross-plane elevation (11-SPEC §3.19, invariants P4/P5). Never
 //! `platform_admin == tenant_all_access`: every elevated platform→tenant operation
 //! carries reason + capability + scope + approval + expiry + audit.
 
 use std::sync::RwLock;
 
-use keel_foundation::{AppError, LeaseId, PrincipalId, TenantId};
+use kelson_foundation::{AppError, LeaseId, PrincipalId, TenantId};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -47,10 +47,10 @@ impl ElevationLease {
         }
         if self.expires_at <= now {
             return Err(AppError::new(
-                keel_foundation::codes::ELEVATION,
-                keel_foundation::ErrorCategory::Authorization,
-                keel_foundation::Severity::Medium,
-                keel_foundation::Retryability::NotRetryable,
+                kelson_foundation::codes::ELEVATION,
+                kelson_foundation::ErrorCategory::Authorization,
+                kelson_foundation::Severity::Medium,
+                kelson_foundation::Retryability::NotRetryable,
                 "elevation lease expired",
             ));
         }

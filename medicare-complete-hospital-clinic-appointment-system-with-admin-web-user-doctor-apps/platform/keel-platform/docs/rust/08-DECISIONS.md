@@ -153,16 +153,16 @@ Supersedes: D-xx / A-xx (if any)
 - GraphQL gateway — deferred to V2 per `docs/14-MODULE-V2-STUBS.md`.
 ---
 
-## 6. Keel Foundation Decisions (D-44…D-53) — frozen 2026-08-19
+## 6. Kelson Foundation Decisions (D-44…D-53) — frozen 2026-08-19
 
-Frozen by `11-FOUNDATION-MASTER-SPEC.md` (§16). The platform workspace lives at `platform/` (own Cargo workspace, codename **Keel**).
+Frozen by `11-FOUNDATION-MASTER-SPEC.md` (§16). The platform workspace lives at `platform/` (own Cargo workspace, codename **Kelson**).
 
 | ID | Decision |
 |---|---|
-| D-44 | Platform codename **Keel**; CLI `keel`; crates `keel-*`; folder `platform/` (veto-able) |
+| D-44 | Platform codename **Kelson**; CLI `kelson`; crates `kelson-*`; folder `platform/` (veto-able) |
 | D-45 | Repository topology frozen per 11-SPEC §8 (topology refinement wins over 02-SYSTEM-DESIGN §5) |
 | D-46 | `medicare-kernel/` superseded by this foundation; kept compilable until reference-healthcare rebuild |
-| D-47 | Postgres GUC namespace renamed `medicare.*` → `keel.*` (RLS anchor `keel.tenant_id`) |
+| D-47 | Postgres GUC namespace renamed `medicare.*` → `kelson.*` (RLS anchor `kelson.tenant_id`) |
 | D-48 | No ORM. SQLx first-class; convenience is generated around SQL |
 | D-49 | Three data-access modes (aggregate / projection / reporting) replace repository-everywhere |
 | D-50 | Platform contains zero healthcare knowledge; Medicare becomes a vertical pack + reference app |
@@ -178,7 +178,7 @@ Foundation status 2026-08-20: `cargo check --workspace` + `cargo test --workspac
 |---|---|
 | D-61 | Adopt Laravel-Class Successor blueprint as frozen constitution; restructure `platform/` to blueprint topology in one wave before any parity feature (specs/STAGE-0-FOUNDATION-SPEC.md) |
 | D-62 | Dependency policy v2: hard cap 20 → justified-acceptance model with cap 25 (license/MSRV/audit/compile-time/unsafe/size table); first justified adds: sha2, lettre, reqwest |
-| D-63 | Public framework name **Keel**; crates keep `keel-*` package names; directory names follow blueprint |
+| D-63 | Public framework name **Kelson**; crates keep `kelson-*` package names; directory names follow blueprint |
 | D-64 | Consolidation: ids/errors/envelope stay in foundation/core; new crates only on real boundary + second consumer; blueprint dirs may start as modules |
 | D-65 | Delta kernel remains in execution engine; enterprise/delta = delivery/projection layer only |
 | D-66 | Sessions/CSRF become opt-in web capabilities in S3 (revises D-58 from excluded → opt-in); API-first token auth stays default |
@@ -197,6 +197,6 @@ Normative spec: `platform/specs/STAGE-SENTINEL-SPEC.md`; long-form rationale in 
 | ID | Decision |
 |---|---|
 | D-73 | Insert frozen stage **S5 "Sentinel"** (production observability runtime) between S4 and AI/MCP; AI/MCP → S6, public ecosystem → S7. Rescopes D-68 (metrics deferred stubs) into S5 and closes gap-analysis item B-17 (Prometheus-compatible `/metrics`). New CI gate G18 (telemetry resilience). |
-| D-74 | Crate split under `crates/observability/` (telemetry, tracing, metrics, audit, pipeline, buffer, export); `keel-observability` keeps its published name and hosts the runtime. `TelemetryContext` carrier lives in keel-foundation (no `keel-context` crate — the name is owned by foundation/context). Audit hash chain lives in new security crate `keel-integrity` (sha2): the data layer cannot depend on observability, and chain computation stays inside the engine transaction. |
-| D-75 | OTLP export = OTLP/HTTP + JSON encoding over reqwest (keel-export). No `opentelemetry*` dependencies; protobuf encoding deferred. Dependency budget stays 23/25. |
-| D-76 | Incident control plane: the file plane under `storage/framework/telemetry/control/` (`incident.json`) is the source of truth; the keel-api admin endpoint (`POST /admin/telemetry/incident`, capability `telemetry.incident.manage`) writes the same file; every host polls every 2 s. Base config remains frozen at boot (STAGE-0 §10) — only `TelemetryControlState` mutates at runtime, solely via this plane. |
+| D-74 | Crate split under `crates/observability/` (telemetry, tracing, metrics, audit, pipeline, buffer, export); `kelson-observability` keeps its published name and hosts the runtime. `TelemetryContext` carrier lives in kelson-foundation (no `kelson-context` crate — the name is owned by foundation/context). Audit hash chain lives in new security crate `kelson-integrity` (sha2): the data layer cannot depend on observability, and chain computation stays inside the engine transaction. |
+| D-75 | OTLP export = OTLP/HTTP + JSON encoding over reqwest (kelson-export). No `opentelemetry*` dependencies; protobuf encoding deferred. Dependency budget stays 23/25. |
+| D-76 | Incident control plane: the file plane under `storage/framework/telemetry/control/` (`incident.json`) is the source of truth; the kelson-api admin endpoint (`POST /admin/telemetry/incident`, capability `telemetry.incident.manage`) writes the same file; every host polls every 2 s. Base config remains frozen at boot (STAGE-0 §10) — only `TelemetryControlState` mutates at runtime, solely via this plane. |

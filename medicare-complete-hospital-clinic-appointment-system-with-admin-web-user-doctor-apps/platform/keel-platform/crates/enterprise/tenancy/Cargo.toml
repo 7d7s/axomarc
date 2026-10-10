@@ -1,5 +1,5 @@
 [package]
-name = "keel-tenancy"
+name = "kelson-tenancy"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,22 +7,22 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel enterprise control plane: tenancy service (resolution, plan/status enforcement, TENANT lifetime scope)."
+description = "Kelson enterprise control plane: tenancy service (resolution, plan/status enforcement, TENANT lifetime scope)."
 
 [dependencies]
-keel-foundation = { workspace = true }
-keel-context = { workspace = true }
+kelson-foundation = { workspace = true }
+kelson-context = { workspace = true }
 # §3.2 extension traits: Enterprise may depend on Services (cache/storage)
 # and Async (jobs/events/scheduler) per the allowed_deps matrix.
 # `tenant-ports` is requested explicitly, NOT inherited from a default: the
 # scoped extensions below ARE the tenant-scoped ports, so building this crate
 # without them is meaningless. Reliance on a `default = [...]` elsewhere would
 # make a `--no-default-features` rebuild silently drop §3.2.
-keel-caching = { workspace = true, features = ["tenant-ports"] }
-keel-storage = { workspace = true, features = ["tenant-ports"] }
-keel-jobs = { workspace = true }
-keel-event = { workspace = true }
-keel-scheduling = { workspace = true }
+kelson-caching = { workspace = true, features = ["tenant-ports"] }
+kelson-storage = { workspace = true, features = ["tenant-ports"] }
+kelson-jobs = { workspace = true }
+kelson-event = { workspace = true }
+kelson-scheduling = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -297,7 +297,7 @@ fn define_host(linker: &mut Linker<CallState>) -> Result<(), WasmError> {
                 return;
             };
             let plugin = caller.data().label.clone();
-            tracing::info!(target: "keel::wasm", plugin = %plugin, message = %message);
+            tracing::info!(target: "kelson::wasm", plugin = %plugin, message = %message);
         },
     )?;
 

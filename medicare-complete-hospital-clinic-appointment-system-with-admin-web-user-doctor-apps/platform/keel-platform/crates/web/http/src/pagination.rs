@@ -1,7 +1,7 @@
 //! Pagination (S2 item 26): Page<T> public wire shape + query parsing.
 //! Deterministic caps: page >= 1, per_page 1..=MAX_PER_PAGE (default 25).
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_PER_PAGE: u64 = 25;

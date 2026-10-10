@@ -1,5 +1,5 @@
 [package]
-name = "keel-models"
+name = "kelson-models"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,12 +7,12 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel framework: data model + relationship contracts (blueprint L15/L16)."
+description = "Kelson framework: data model + relationship contracts (blueprint L15/L16)."
 
 [dependencies]
-keel-foundation = { workspace = true }
-keel-identity = { workspace = true }
-keel-query = { workspace = true }
+kelson-foundation = { workspace = true }
+kelson-identity = { workspace = true }
+kelson-query = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 time = { workspace = true }
@@ -20,7 +20,7 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 # Real AES-GCM proof for the `encrypted` cast (Data -> Security edge, cycle-free).
-keel-tokens = { workspace = true }
+kelson-tokens = { workspace = true }
 
 [package.metadata.docs.rs]
 all-features = true

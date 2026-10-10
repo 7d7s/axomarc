@@ -19,29 +19,29 @@
 #[macro_export]
 macro_rules! assert_queries {
     (<= $max:expr, $body:expr $(,)?) => {{
-        let keel_qt_mark = $crate::QueryTap::mark();
-        let keel_qt_result = ($body).await;
-        let keel_qt_probes = $crate::QueryTap::take_since(keel_qt_mark);
-        let keel_qt_max: usize = $max;
+        let kelson_qt_mark = $crate::QueryTap::mark();
+        let kelson_qt_result = ($body).await;
+        let kelson_qt_probes = $crate::QueryTap::take_since(kelson_qt_mark);
+        let kelson_qt_max: usize = $max;
         assert!(
-            keel_qt_probes.len() <= keel_qt_max,
-            "query budget exceeded: {} probes recorded (budget <= {keel_qt_max})",
-            keel_qt_probes.len()
+            kelson_qt_probes.len() <= kelson_qt_max,
+            "query budget exceeded: {} probes recorded (budget <= {kelson_qt_max})",
+            kelson_qt_probes.len()
         );
-        keel_qt_result
+        kelson_qt_result
     }};
     (== $exact:expr, $body:expr $(,)?) => {{
-        let keel_qt_mark = $crate::QueryTap::mark();
-        let keel_qt_result = ($body).await;
-        let keel_qt_probes = $crate::QueryTap::take_since(keel_qt_mark);
-        let keel_qt_exact: usize = $exact;
+        let kelson_qt_mark = $crate::QueryTap::mark();
+        let kelson_qt_result = ($body).await;
+        let kelson_qt_probes = $crate::QueryTap::take_since(kelson_qt_mark);
+        let kelson_qt_exact: usize = $exact;
         assert_eq!(
-            keel_qt_probes.len(),
-            keel_qt_exact,
-            "query count mismatch: {} probes recorded (expected exactly {keel_qt_exact})",
-            keel_qt_probes.len()
+            kelson_qt_probes.len(),
+            kelson_qt_exact,
+            "query count mismatch: {} probes recorded (expected exactly {kelson_qt_exact})",
+            kelson_qt_probes.len()
         );
-        keel_qt_result
+        kelson_qt_result
     }};
 }
 

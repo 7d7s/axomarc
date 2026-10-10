@@ -1,11 +1,11 @@
-//! # keel-http-client
+//! # kelson-http-client
 //! Outbound HTTP client port (blueprint L44, S3). The platform TALKS to the
 //! outside world through this port so that timeout, retry and redaction
 //! policy is central + testable instead of scattered per adapter. Inbound
-//! traffic uses axum (keel-http); this crate never touches it.
+//! traffic uses axum (kelson-http); this crate never touches it.
 //!
 //! Behavior matrix (spec §31 external dependencies):
-//! - hard timeout on every attempt (`KER_DEADLINE`-shaped external error),
+//! - hard timeout on every attempt (`KSN_DEADLINE`-shaped external error),
 //! - retries with exponential backoff on 429/5xx and connect errors only
 //!   (4xx are caller bugs — never retried),
 //! - bodies are never logged; configured headers are redacted in errors.
@@ -17,13 +17,13 @@
 //! over a bounded tokio join-set, [`HttpTap`] observes every attempt with
 //! redacted headers, [`HttpFake`] asserts recorded requests in tests, and
 //! `ReqwestHttpClient::sink_to` streams a response body into a
-//! `keel_storage::StoragePort` writer without buffering it whole.
+//! `kelson_storage::StoragePort` writer without buffering it whole.
 
 use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
-use keel_foundation::{AppError, ErrorCategory, Retryability};
+use kelson_foundation::{AppError, ErrorCategory, Retryability};
 use serde::{Deserialize, Serialize};
 
 /// Boxed future used across the object-safe port surface.
@@ -272,9 +272,9 @@ impl ReqwestHttpClient {
     /// (shared shape between `execute` and `sink_to`).
     fn status_error(&self, status: u16) -> AppError {
         AppError::new(
-            keel_foundation::codes::EXTERNAL,
+            kelson_foundation::codes::EXTERNAL,
             ErrorCategory::External,
-            keel_foundation::Severity::Medium,
+            kelson_foundation::Severity::Medium,
             Retryability::Retryable,
             format!("external service http returned {status}"),
         )
@@ -287,9 +287,9 @@ impl ReqwestHttpClient {
         if attempt_no > self.config.max_retries || !self.config.retries(condition) {
             Some(
                 AppError::new(
-                    keel_foundation::codes::EXTERNAL,
+                    kelson_foundation::codes::EXTERNAL,
                     ErrorCategory::External,
-                    keel_foundation::Severity::Medium,
+                    kelson_foundation::Severity::Medium,
                     Retryability::Retryable,
                     "external service http unreachable",
                 )
@@ -366,7 +366,7 @@ impl ReqwestHttpClient {
     /// Wave 6 P10 (parity: response sink `sink_to(disk, path)`): stream a
     /// successful response body into `storage` without ever holding the
     /// whole payload — chunks go straight through
-    /// [`keel_storage::StoragePort::writer`], and the local-disk adapter
+    /// [`kelson_storage::StoragePort::writer`], and the local-disk adapter
     /// overrides the default buffered writer with direct file writes.
     ///
     /// Policy: `retry_on`/`max_retries` and the tap hooks apply while the
@@ -381,10 +381,10 @@ impl ReqwestHttpClient {
     pub async fn sink_to(
         &self,
         req: &HttpRequest,
-        storage: &dyn keel_storage::StoragePort,
+        storage: &dyn kelson_storage::StoragePort,
         bucket: &str,
         key: &str,
-    ) -> Result<keel_storage::ObjectRef, AppError> {
+    ) -> Result<kelson_storage::ObjectRef, AppError> {
         let mut attempt_no: u32 = 0;
         loop {
             attempt_no += 1;
@@ -472,9 +472,9 @@ impl ReqwestHttpClient {
                     Retryability::Retryable
                 };
                 let err = AppError::new(
-                    keel_foundation::codes::EXTERNAL,
+                    kelson_foundation::codes::EXTERNAL,
                     ErrorCategory::External,
-                    keel_foundation::Severity::Medium,
+                    kelson_foundation::Severity::Medium,
                     retryability,
                     format!("external service http returned {status}"),
                 )
@@ -644,7 +644,7 @@ impl HttpClientPort for MockHttpClient {
 /// Wave 6 P10 (parity: concurrency pool): run `requests` through `client`
 /// with at most `limit` in flight — a bounded tokio join-set refills as
 /// tasks finish. Results come back in input order (one slot per request;
-/// a panicked/cancelled task yields `KER_INTERNAL` for its slot).
+/// a panicked/cancelled task yields `KSN_INTERNAL` for its slot).
 /// `limit = 0` clamps to 1.
 pub async fn execute_pool<C>(
     client: C,
@@ -887,7 +887,7 @@ mod tests {
         assert!(res.succeeded());
         assert_eq!(mock.call_count(), 1);
         let err = mock.execute(&req).await.unwrap_err();
-        assert_eq!(err.code, keel_foundation::codes::NOT_IMPLEMENTED);
+        assert_eq!(err.code, kelson_foundation::codes::NOT_IMPLEMENTED);
     }
 
     #[tokio::test]
@@ -905,7 +905,7 @@ mod tests {
             body: b"nope".to_vec(),
         };
         let err: AppError = bad.body_json::<serde_json::Value>().unwrap_err();
-        assert_eq!(err.code, keel_foundation::codes::EXTERNAL);
+        assert_eq!(err.code, kelson_foundation::codes::EXTERNAL);
     }
 
     #[test]
@@ -1072,23 +1072,23 @@ mod tests {
     #[derive(Default)]
     struct MemStore(std::sync::Mutex<std::collections::HashMap<(String, String), Vec<u8>>>);
 
-    impl keel_storage::StoragePort for MemStore {
+    impl kelson_storage::StoragePort for MemStore {
         fn put(
             &self,
             bucket: &str,
             key: &str,
             bytes: Vec<u8>,
-        ) -> Result<keel_storage::ObjectRef, AppError> {
+        ) -> Result<kelson_storage::ObjectRef, AppError> {
             self.0
                 .lock()
                 .unwrap()
                 .insert((bucket.to_string(), key.to_string()), bytes);
-            Ok(keel_storage::ObjectRef {
+            Ok(kelson_storage::ObjectRef {
                 bucket: bucket.to_string(),
                 key: key.to_string(),
             })
         }
-        fn get(&self, obj: &keel_storage::ObjectRef) -> Result<Vec<u8>, AppError> {
+        fn get(&self, obj: &kelson_storage::ObjectRef) -> Result<Vec<u8>, AppError> {
             self.0
                 .lock()
                 .unwrap()
@@ -1096,7 +1096,7 @@ mod tests {
                 .cloned()
                 .ok_or_else(|| AppError::not_implemented("missing stored object"))
         }
-        fn delete(&self, obj: &keel_storage::ObjectRef) -> Result<(), AppError> {
+        fn delete(&self, obj: &kelson_storage::ObjectRef) -> Result<(), AppError> {
             self.0
                 .lock()
                 .unwrap()
@@ -1105,7 +1105,7 @@ mod tests {
         }
         fn presigned_url(
             &self,
-            _obj: &keel_storage::ObjectRef,
+            _obj: &kelson_storage::ObjectRef,
             _ttl_secs: u64,
         ) -> Result<String, AppError> {
             Err(AppError::not_implemented("presign"))
@@ -1142,7 +1142,7 @@ mod tests {
             Ok(_) => panic!("unknown retry_on condition must refuse the build"),
             Err(err) => err,
         };
-        assert_eq!(err.code, keel_foundation::codes::VALIDATION);
+        assert_eq!(err.code, kelson_foundation::codes::VALIDATION);
         assert!(
             err.public_message.contains("sometimes"),
             "{}",
@@ -1207,7 +1207,7 @@ mod tests {
         .unwrap();
         let req = HttpRequest::json("GET", &server.url("/hook"), &()).unwrap();
         let err = client.execute(&req).await.unwrap_err();
-        assert_eq!(err.code, keel_foundation::codes::EXTERNAL);
+        assert_eq!(err.code, kelson_foundation::codes::EXTERNAL);
         assert!(err.public_message.contains("503"), "{}", err.public_message);
         assert_eq!(server.hit_count(), 1, "5xx must not retry when excluded");
     }
@@ -1227,7 +1227,7 @@ mod tests {
         let started = std::time::Instant::now();
         let err = client.execute(&req).await.unwrap_err();
         let elapsed = started.elapsed();
-        assert_eq!(err.code, keel_foundation::codes::EXTERNAL);
+        assert_eq!(err.code, kelson_foundation::codes::EXTERNAL);
         assert!(
             elapsed < std::time::Duration::from_millis(500),
             "the 100ms override must fire, not the 700ms server sleep ({elapsed:?})"
@@ -1360,7 +1360,7 @@ mod tests {
             .sink_to(&req, &store, "exports", "missing.csv")
             .await
             .unwrap_err();
-        assert_eq!(err.code, keel_foundation::codes::EXTERNAL);
+        assert_eq!(err.code, kelson_foundation::codes::EXTERNAL);
         assert!(err.public_message.contains("404"), "{}", err.public_message);
         assert!(
             store.0.lock().unwrap().is_empty(),

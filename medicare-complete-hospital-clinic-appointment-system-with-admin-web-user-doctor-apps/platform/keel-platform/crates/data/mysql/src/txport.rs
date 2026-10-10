@@ -1,9 +1,9 @@
 //! `TransactionPort` over `MySqlPool` (S1 split): plain transactions through
-//! the keel-transaction contracts - no execution-unit semantics here. The
+//! the kelson-transaction contracts - no execution-unit semantics here. The
 //! execution backend (tx.rs) keeps its unit contract; the outbox pump / job
 //! store / maintenance flows use this port directly.
 //!
-//! MySQL port notes (divergences from `keel_postgres::txport`):
+//! MySQL port notes (divergences from `kelson_postgres::txport`):
 //! - Transaction characteristics are set with ONE
 //!   `SET TRANSACTION ISOLATION LEVEL ..., READ WRITE|READ ONLY` statement
 //!   BEFORE `BEGIN`: MySQL rejects `SET TRANSACTION` inside a transaction
@@ -38,8 +38,8 @@
 //! - `TxHandle::exec` counts `rows_affected()` the same as pg: sqlx-mysql
 //!   requests CLIENT_FOUND_ROWS, so UPDATE counts matched rows (rule 16).
 
-use keel_foundation::AppError;
-use keel_transaction::{BoxFuture, IsolationLevel, TransactionPort, TxHandle, TxOptions};
+use kelson_foundation::AppError;
+use kelson_transaction::{BoxFuture, IsolationLevel, TransactionPort, TxHandle, TxOptions};
 use sqlx::mysql::MySqlPool;
 use sqlx::Executor;
 

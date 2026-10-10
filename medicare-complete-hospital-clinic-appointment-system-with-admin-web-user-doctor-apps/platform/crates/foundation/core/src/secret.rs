@@ -5,7 +5,7 @@
 //!   through the explicit, grep-able [`Secret::expose`] / [`Secret::into_string`].
 //! - [`Envelope`]: serializable at-rest shape (alg, key id, nonce, ciphertext).
 //! - [`Sealer`]: the encryption port. Foundation defines the contract; the
-//!   security class ships concrete ciphers (AES-GCM in keel-tokens). Core
+//!   security class ships concrete ciphers (AES-GCM in kelson-tokens). Core
 //!   intentionally adds no crypto externals for this.
 
 use serde::{Deserialize, Serialize};

@@ -4,7 +4,7 @@
 //! as `$N` binds. Builds SQL without executing — execution belongs to the
 //! data class.
 
-use keel_foundation::{AppError, TenantId};
+use kelson_foundation::{AppError, TenantId};
 
 use crate::select::{Ident, Value};
 use crate::CompiledWrite;

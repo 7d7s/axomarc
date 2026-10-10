@@ -4,14 +4,14 @@
 //! `packages.toml` lists `[[package]] { name, version, path }` entries and
 //! every indexed package ships a `module.toml` manifest (the package v1
 //! contract: manifest + optional workspace crate member). Discovery in
-//! `graph_routes::discover_manifests` and `keel graph`/`keel check` merges
+//! `graph_routes::discover_manifests` and `kelson graph`/`kelson check` merges
 //! those manifests into the same fail-closed GRAPH compile as
 //! `applications/` and `modules/` — an entry whose manifest is missing or
 //! malformed refuses the compile instead of being skipped, and the index
 //! participates in the route-cache pin (`manifests_hash`).
 //!
 //! Relative paths resolve against the workspace root; absolute paths are
-//! used as-is. `keel pkg:add` maintains the file, `keel pkg:list` reports
+//! used as-is. `kelson pkg:add` maintains the file, `kelson pkg:list` reports
 //! each entry's manifest + [`MODULE_ABI`](crate::MODULE_ABI) compatibility.
 
 use std::path::{Path, PathBuf};
@@ -43,7 +43,7 @@ fn default_version() -> String {
 
 /// One indexed WASM plugin (Wave 9 B-30, docs/19): the compiled binary plus
 /// the reviewed sidecar manifest. The sidecar is the same shape as a
-/// `module.toml`, and at boot the guest's own `keel_manifest()` JSON must
+/// `module.toml`, and at boot the guest's own `kelson_manifest()` JSON must
 /// normalize to the IDENTICAL document (drift refuses the load) — so the
 /// index entry and the reviewed TOML are the two halves of the trust
 /// story: what was reviewed is what runs. Paths resolve like package
@@ -122,8 +122,8 @@ impl PackageIndex {
 
     /// Every indexed manifest, in index order — packages first, then WASM
     /// plugin sidecars — fail-closed (discovery feeds this straight into
-    /// graph compile; both discovery copies — keel-api and keel-console —
-    /// call it, so WASM plugins reach `keel graph`/`keel check`/boot with
+    /// graph compile; both discovery copies — kelson-api and kelson-console —
+    /// call it, so WASM plugins reach `kelson graph`/`kelson check`/boot with
     /// zero per-caller wiring).
     pub fn manifests(&self, root: &Path) -> Result<Vec<ModuleManifest>, String> {
         let mut out: Vec<ModuleManifest> = self
@@ -226,7 +226,7 @@ impl PackageIndex {
             .collect()
     }
 
-    /// True when the name is already indexed (`keel pkg:add` duplicate
+    /// True when the name is already indexed (`kelson pkg:add` duplicate
     /// gate; WASM plugins occupy the same module-name namespace).
     pub fn contains_name(&self, name: &str) -> bool {
         self.package.iter().any(|e| e.name == name) || self.wasm.iter().any(|e| e.name == name)
@@ -252,9 +252,9 @@ impl PackageIndex {
             .map_err(|e| format!("{}: package index serialize failed: {e}", path.display()))?;
         let raw = format!(
             "# Package index (Wave 8 B-24, docs/19): local-path packages merged\n\
-             # into graph compile (keel graph/check/boot) and boot config\n\
+             # into graph compile (kelson graph/check/boot) and boot config\n\
              # defaults ([config] in the package manifest). Maintained by\n\
-             # keel pkg:add / pkg:list.\n\
+             # kelson pkg:add / pkg:list.\n\
              {body}"
         );
         std::fs::write(&path, raw).map_err(|e| format!("{}: {e}", path.display()))
@@ -268,7 +268,7 @@ mod tests {
     fn temp_root(tag: &str) -> PathBuf {
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "keel-pkg-{tag}-{}-{}",
+            "kelson-pkg-{tag}-{}-{}",
             std::process::id(),
             SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         ));
@@ -464,7 +464,7 @@ mod tests {
         assert_eq!(manifests.len(), 1);
         assert_eq!(
             manifests[0].capabilities["write_all"].profile,
-            keel_foundation::ExecutionProfileKind::Command
+            kelson_foundation::ExecutionProfileKind::Command
         );
 
         // A plugin declaring nothing: refused (nothing to register).

@@ -1,4 +1,4 @@
-//! # keel-command
+//! # kelson-command
 //! The command bus: handler registry + dispatch into the execution engine.
 //! Authorization, idempotency, transaction, delta, audit all happen in the engine —
 //! handlers stay small and business-pure.
@@ -9,9 +9,9 @@ use std::sync::Arc;
 pub mod typed;
 pub use typed::{Json, TypedHandleFn, TypedHandler, TypedInput, TypedOutput};
 
-use keel_context::ExecutionContext;
-use keel_foundation::{AppError, OperationId};
-use keel_execution::{Engine, IdempotencyKey, OperationHandler, OperationOutcome};
+use kelson_context::ExecutionContext;
+use kelson_foundation::{AppError, OperationId};
+use kelson_execution::{Engine, IdempotencyKey, OperationHandler, OperationOutcome};
 use serde_json::Value;
 
 pub struct CommandBus {
@@ -65,7 +65,7 @@ impl CommandBus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keel_execution::{
+    use kelson_execution::{
         AuthorizationPort, AuthzDecision, AuthzRequest, BoxFuture, ExecutionPlan, ExecutionUnit,
         InMemoryBackend, InMemoryIdempotency, MutationRecord,
     };
@@ -106,7 +106,7 @@ mod tests {
         Arc::new(H {
             plan: ExecutionPlan::new(
                 OperationId::from_static("demo.op"),
-                keel_foundation::ExecutionProfileKind::Command,
+                kelson_foundation::ExecutionProfileKind::Command,
             ),
         })
     }

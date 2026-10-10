@@ -9,7 +9,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
-use keel_foundation::{AppError, TenantId};
+use kelson_foundation::{AppError, TenantId};
 use uuid::Uuid;
 
 use crate::store::Record;

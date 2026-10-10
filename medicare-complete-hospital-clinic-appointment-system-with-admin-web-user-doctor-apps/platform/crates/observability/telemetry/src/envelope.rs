@@ -4,24 +4,24 @@
 //! unknown fields survive round-trips (forward compatibility).
 
 use crate::classify::Sensitivity;
-use keel_foundation::{EventId, TelemetryContext};
+use kelson_foundation::{EventId, TelemetryContext};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 /// Current schema versions (bump on additive change; never reuse a number).
-pub const SCHEMA_LOG: &str = "keel.log";
+pub const SCHEMA_LOG: &str = "kelson.log";
 pub const SCHEMA_LOG_VERSION: u16 = 1;
-pub const SCHEMA_SPAN: &str = "keel.span";
+pub const SCHEMA_SPAN: &str = "kelson.span";
 pub const SCHEMA_SPAN_VERSION: u16 = 1;
-pub const SCHEMA_METRIC: &str = "keel.metric";
+pub const SCHEMA_METRIC: &str = "kelson.metric";
 pub const SCHEMA_METRIC_VERSION: u16 = 1;
-pub const SCHEMA_AUDIT: &str = "keel.audit";
+pub const SCHEMA_AUDIT: &str = "kelson.audit";
 pub const SCHEMA_AUDIT_VERSION: u16 = 1;
-pub const SCHEMA_EXCEPTION: &str = "keel.exception";
+pub const SCHEMA_EXCEPTION: &str = "kelson.exception";
 pub const SCHEMA_EXCEPTION_VERSION: u16 = 1;
-pub const SCHEMA_LIFECYCLE: &str = "keel.lifecycle";
+pub const SCHEMA_LIFECYCLE: &str = "kelson.lifecycle";
 pub const SCHEMA_LIFECYCLE_VERSION: u16 = 1;
-pub const SCHEMA_SECURITY: &str = "keel.security";
+pub const SCHEMA_SECURITY: &str = "kelson.security";
 pub const SCHEMA_SECURITY_VERSION: u16 = 1;
 
 /// How hard the runtime must try to keep an event (§18 durability classes).
@@ -70,7 +70,7 @@ pub struct EventEnvelope<T> {
     pub id: EventId,
     #[serde(with = "time::serde::iso8601")]
     pub at: OffsetDateTime,
-    /// Stable event schema name (e.g. `keel.log`).
+    /// Stable event schema name (e.g. `kelson.log`).
     pub schema: String,
     pub schema_version: u16,
     pub service: ServiceIdentity,
@@ -136,7 +136,7 @@ mod tests {
         let env = EventEnvelope::new(
             SCHEMA_LOG,
             SCHEMA_LOG_VERSION,
-            ServiceIdentity::new("keel-api", "dev"),
+            ServiceIdentity::new("kelson-api", "dev"),
             TelemetryContext::root(),
             serde_json::json!({ "message": "hello" }),
         );

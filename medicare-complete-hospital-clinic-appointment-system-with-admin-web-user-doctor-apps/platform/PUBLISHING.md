@@ -1,6 +1,6 @@
-# PUBLISHING.md - Keel platform release engineering
+# PUBLISHING.md - Kelson platform release engineering
 
-This document is the single source of truth for publishing Keel crates to
+This document is the single source of truth for publishing Kelson crates to
 crates.io. Tooling: `xtask publish` / `xtask bump` (see `platform/xtask`).
 Fast path: `just publish-dry` then `just publish`.
 
@@ -12,13 +12,13 @@ Fast path: `just publish-dry` then `just publish`.
 | License | MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`) |
 | Versioning | Lockstep: one workspace version for all crates (`[workspace.package].version`) |
 | Versioning history | All internal dependency entries in root `Cargo.toml` carry the same literal version |
-| Tags | Namespaced git tags: `keel/platform-vX.Y.Z` |
+| Tags | Namespaced git tags: `kelson/platform-vX.Y.Z` |
 
 ## Wave status
 
-### Wave 1 (live) - `keel-analyzer`
+### Wave 1 (live) - `kelson-analyzer`
 
-`keel-analyzer` is the only crate published so far.
+`kelson-analyzer` is the only crate published so far.
 
 ### Wave 2 rename - EXECUTED (2026-09-28)
 
@@ -30,13 +30,13 @@ the workspace builds green (`cargo check` / `cargo test --locked` /
 
 | Old package | New package | Notes |
 |---|---|---|
-| `keel-core` | `keel-foundation` | `crates/foundation/core` dir unchanged; imports `keel_core` -> `keel_foundation` |
-| `keel-sessions` | `keel-session` | `crates/security/sessions` dir unchanged; imports `keel_sessions` -> `keel_session` |
-| `keel-events` | `keel-event` | `crates/async/events` dir unchanged; imports `keel_events` -> `keel_event` |
-| `keel-cli` | `keel-console` | dir moved `tools/keel-cli` -> `tools/keel-console`; self-reinvoke in `src/main.rs` is `-p keel-console`; `[[bin]] name = "keel"` unchanged |
-| (new) `keel-framework` | `keel-framework` | umbrella crate in `crates/framework` re-exporting the published framework surface - **BUILT (Phase O)**: `crates/framework/{Cargo.toml,README.md,src/lib.rs}` landed with 26 `{ workspace = true }` deps, added to `members` + `[workspace.dependencies]`, and consumed by `your-app` |
+| `kelson-core` | `kelson-foundation` | `crates/foundation/core` dir unchanged; imports `kelson_core` -> `kelson_foundation` |
+| `kelson-sessions` | `kelson-session` | `crates/security/sessions` dir unchanged; imports `kelson_sessions` -> `kelson_session` |
+| `kelson-events` | `kelson-event` | `crates/async/events` dir unchanged; imports `kelson_events` -> `kelson_event` |
+| `kelson-cli` | `kelson-console` | dir moved `tools/kelson-cli` -> `tools/kelson-console`; self-reinvoke in `src/main.rs` is `-p kelson-console`; `[[bin]] name = "kelson"` unchanged |
+| (new) `kelson-framework` | `kelson-framework` | umbrella crate in `crates/framework` re-exporting the published framework surface - **BUILT (Phase O)**: `crates/framework/{Cargo.toml,README.md,src/lib.rs}` landed with 26 `{ workspace = true }` deps, added to `members` + `[workspace.dependencies]`, and consumed by `your-app` |
 
-Every framework crate transitively depends on `keel-foundation`, so nothing
+Every framework crate transitively depends on `kelson-foundation`, so nothing
 else could upload until this rename landed. Replacement names were verified
 available on crates.io before the sweep.
 
@@ -46,24 +46,24 @@ available on crates.io before the sweep.
    references in `platform/docs/*` and `platform/API-STABILITY.md`)~~ - DONE.
 2. ~~Remove the `publish = false` gate (and the Wave 2 comment) from the four
    renamed crates' manifests~~ - DONE.
-3. ~~Add `keel-framework` to `members` and `[workspace.dependencies]`~~ - DONE (Phase O).
+3. ~~Add `kelson-framework` to `members` and `[workspace.dependencies]`~~ - DONE (Phase O).
 4. `just deny && just publish-dry` must both pass.
 5. Publish the wave: `just publish` (local) or dispatch `keel-publish.yml`
    with `dry_run=false`. The topologically ordered run publishes all 62
-   crates in one pass (`keel-analyzer` is already live; `already exists` is
+   crates in one pass (`kelson-analyzer` is already live; `already exists` is
    treated as success) with registry-propagation retries.
 
 Publish-gate triage (2026-09-29, Wave 2 prep): the Wave 2 guard (`publishable
 crate depends on gated crate`) failed on 10 edges. Fixed per crate intent: the
 seven Sentinel/integrity crates whose READMEs say *internal-only until a
-release wave* had their gate lifted (`keel-metrics`, `keel-telemetry`,
-`keel-tracing`, `keel-pipeline`, `keel-buffer`, `keel-export`,
-`keel-integrity`), and `keel-api` gained `publish = false` — it is the demo
-API host that hard-wires `keel-mod-appointments` (application code, staying
+release wave* had their gate lifted (`kelson-metrics`, `kelson-telemetry`,
+`kelson-tracing`, `kelson-pipeline`, `kelson-buffer`, `kelson-export`,
+`kelson-integrity`), and `kelson-api` gained `publish = false` — it is the demo
+API host that hard-wires `kelson-mod-appointments` (application code, staying
 gated) and is not a library artifact. Result: 69 members, 62 publishable, 7
-gated (`keel-audit`, `keel-api`, `keel-mod-appointments`, `keel-arch-validation`,
-`keel-example-minimal`, `keel-example-reference`, `xtask`). Wave 9 B-31 moved
-the counts 68/61/7 -> 69/62/7 by adding the publishable `keel-mysql` fabric
+gated (`kelson-audit`, `kelson-api`, `kelson-mod-appointments`, `kelson-arch-validation`,
+`kelson-example-minimal`, `kelson-example-reference`, `xtask`). Wave 9 B-31 moved
+the counts 68/61/7 -> 69/62/7 by adding the publishable `kelson-mysql` fabric
 crate (ADR 0010 records the crate decision).
 
 Dry-run bootstrap semantics: `cargo publish --dry-run` resolves every
@@ -80,7 +80,7 @@ attempted.
    for publishing).
 2. API token: crates.io -> Settings -> API Tokens. Use a **scoped token**:
    - Wave 1: capability `publish-new` + `publish-update`, crate list restricted
-     to `keel-analyzer`.
+     to `kelson-analyzer`.
    - After Wave 1 lands: regenerate with `publish-update` only.
 3. Local login (stores the token in the Cargo credential store):
 
@@ -108,24 +108,24 @@ just publish       # cargo publish in dependency order (retries on propagation)
   `cargo publish -p <crate>` in order.
 - On failure: up to 5 retries with 30 s waits (registry propagation lag);
   "already exists" is treated as success (idempotent re-runs).
-- `--only keel-analyzer` restricts a run to a subset.
+- `--only kelson-analyzer` restricts a run to a subset.
 - Emits a machine-readable final line for CI:
   `XTASK-PUBLISH: version=... crates=... count=... dry-run=...`
 - Fails fast if a publishable crate depends on a gated crate (Wave 2 guard).
 - Dry-run: crates blocked only by the first-publish bootstrap gap
-  (workspace-internal `keel-*` deps absent from the crates.io index) are
+  (workspace-internal `kelson-*` deps absent from the crates.io index) are
   reported as `deferred` in the `XTASK-PUBLISH:` line; any other failure
   still fails the run.
 
 ## Release flow (CI)
 
 1. Ensure `CARGO_REGISTRY_TOKEN` repo secret is set.
-2. Actions -> `keel-publish` -> Run workflow:
+2. Actions -> `kelson-publish` -> Run workflow:
    - `dry_run=true` (default): full gate (ubuntu + windows verify matrix,
      MSRV check, cargo-deny, semver gate) + dry-run packaging.
    - `dry_run=false`: same gates, then actual upload, registry smoke test
      (fresh `cargo new` project depending on the published versions), git tag
-     `keel/platform-vX.Y.Z`, and git-cliff changelog regeneration.
+     `kelson/platform-vX.Y.Z`, and git-cliff changelog regeneration.
 3. The `crates` input optionally restricts the wave to a subset.
 
 ## Version bumps
@@ -139,13 +139,13 @@ just bump 0.2.0
 This updates `[workspace.package].version` and all 49 internal dependency
 version literals in the root `Cargo.toml`, and validates the replacement
 counts before writing. After bumping: update `CHANGELOG.md` (or regenerate
-with `just changelog keel/platform-vX.Y.Z` at tag time), then `just
+with `just changelog kelson/platform-vX.Y.Z` at tag time), then `just
 publish-dry`.
 
 ## Semver gate
 
 `cargo run -p xtask -- semver` runs `cargo-semver-checks check-release`.
-It skips gracefully while no `keel/platform-v*` tag exists (no baseline);
+It skips gracefully while no `kelson/platform-v*` tag exists (no baseline);
 after the first release it becomes a hard gate in the publish workflow.
 Breaking changes before 1.0 follow `API-STABILITY.md` (decision entry +
 CHANGELOG note + migration guidance).
@@ -158,7 +158,7 @@ Commit messages drive the changelog (git-cliff). Format:
 type(scope): summary
 
 type  = feat | fix | perf | refactor | docs | style | test | build | ci | chore
-scope = free-form, usually a crate name (keel-foundation, ci, release, ...)
+scope = free-form, usually a crate name (kelson-foundation, ci, release, ...)
 ```
 
 See `CONTRIBUTING.md`. Changelog regeneration: `just changelog <tag>`.

@@ -17,12 +17,12 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
-use keel_framework::keel_config::Environment;
-use keel_framework::keel_observability::{
+use kelson_framework::kelson_config::Environment;
+use kelson_framework::kelson_observability::{
     ObservabilityRuntime, ServiceIdentity, TelemetryConfig,
 };
-use keel_framework::keel_http;
-use keel_framework::{CsrfGuard, PlatformConfig, SecurityHeaders, TenantGuardedPool, TenantId};
+use kelson_framework::kelson_http;
+use kelson_framework::{CsrfGuard, PlatformConfig, SecurityHeaders, TenantGuardedPool, TenantId};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -58,8 +58,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     telemetry.start()?;
 
-    // Database: tenant pool (keel_tenant, RLS enforced) + platform pool
-    // (keel_platform, break-glass). Separate URLs in production; one URL in
+    // Database: tenant pool (kelson_tenant, RLS enforced) + platform pool
+    // (kelson_platform, break-glass). Separate URLs in production; one URL in
     // dev via [database].url.
     let db = cfg.database().ok_or("config [database] section required")?;
     let tenant_url = std::env::var("KEEL_TENANT_DATABASE_URL")
@@ -90,11 +90,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let router = Router::new()
-        .route("/healthz", get(keel_http::healthz))
+        .route("/healthz", get(kelson_http::healthz))
         .merge(modules)
         .layer(middleware::from_fn_with_state(
             headers,
-            keel_http::security_headers_fn,
+            kelson_http::security_headers_fn,
         ));
     let router = csrf.apply(router);
 

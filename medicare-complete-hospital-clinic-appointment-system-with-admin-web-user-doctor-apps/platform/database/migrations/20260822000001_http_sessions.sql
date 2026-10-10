@@ -1,6 +1,6 @@
--- HTTP session persistence (S7 C6/B-03): durable store for keel-session.
--- Separate from the legacy `sessions` table (keel-identity session rows):
--- keel-session ids are 64-hex strings with a JSON data bag.
+-- HTTP session persistence (S7 C6/B-03): durable store for kelson-session.
+-- Separate from the legacy `sessions` table (kelson-identity session rows):
+-- kelson-session ids are 64-hex strings with a JSON data bag.
 CREATE TABLE IF NOT EXISTS http_sessions (
     id           text PRIMARY KEY,
     principal_id uuid NOT NULL REFERENCES principals(id),

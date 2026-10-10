@@ -1,7 +1,7 @@
 //! Named middleware catalog (Wave 1, Laravel `$middlewareGroups` parity).
 //!
 //! Pure resolution half — the axum chain runtime lives in
-//! `keel_http::middleware_catalog`. Contract:
+//! `kelson_http::middleware_catalog`. Contract:
 //! - `middleware.toml` at the workspace discovery root (same root as
 //!   `applications/`) declares `[aliases]` (name -> builtin id), `[groups]`
 //!   (name -> ordered alias list) and `[throttle.<group>]` bucket configs.
@@ -281,7 +281,7 @@ impl MiddlewareCatalog {
     }
 
     /// Boot gate helper: validate one route's middleware entries (used by
-    /// keel-api boot and `keel check` before any route is registered). The
+    /// kelson-api boot and `kelson check` before any route is registered). The
     /// route's method/path only shape the violation message.
     pub fn validate_route(
         &self,
@@ -426,7 +426,7 @@ mod tests {
     fn middleware_toml_loads_and_rejects_bad_references() {
         static DIR_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "keel-mw-reg-{}-{}",
+            "kelson-mw-reg-{}-{}",
             std::process::id(),
             DIR_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         ));

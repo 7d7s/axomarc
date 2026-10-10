@@ -2,8 +2,8 @@
 //! exactly one redirect. Stored under the `_flash.*` namespace inside the
 //! session data bag; `flash_take` reads and removes atomically.
 
-use keel_foundation::AppError;
-use keel_session::{SessionId, SessionManager};
+use kelson_foundation::AppError;
+use kelson_session::{SessionId, SessionManager};
 use serde_json::Value as Json;
 
 const FLASH_PREFIX: &str = "_flash.";
@@ -38,8 +38,8 @@ pub fn flash_take(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keel_foundation::PrincipalId;
-    use keel_session::{InMemorySessionStore, SessionPolicy};
+    use kelson_foundation::PrincipalId;
+    use kelson_session::{InMemorySessionStore, SessionPolicy};
     use time::OffsetDateTime;
 
     fn manager() -> SessionManager {

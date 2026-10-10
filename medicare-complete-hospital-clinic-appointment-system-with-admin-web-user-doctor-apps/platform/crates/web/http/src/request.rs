@@ -178,11 +178,11 @@ mod tests {
     #[test]
     fn fingerprint_is_stable_and_field_separated() {
         let a = fingerprint(&headers(&[
-            ("user-agent", "keel-test/1.0"),
+            ("user-agent", "kelson-test/1.0"),
             ("accept-language", "en-GB"),
         ]));
         let b = fingerprint(&headers(&[
-            ("user-agent", "keel-test/1.0"),
+            ("user-agent", "kelson-test/1.0"),
             ("accept-language", "en-GB"),
         ]));
         assert_eq!(a, b, "same headers fingerprint identically");

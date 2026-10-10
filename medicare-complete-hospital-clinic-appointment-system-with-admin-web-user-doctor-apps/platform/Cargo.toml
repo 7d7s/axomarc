@@ -51,22 +51,22 @@ members = [
   "crates/enterprise/feature-flags",
   "crates/enterprise/deployment",
   "crates/extension/wasm",
-  "adapters/keel-cache-memory",
-  "adapters/keel-cache-redis",
-  "adapters/keel-sms-msg91",
-  "adapters/keel-mail-smtp",
-  "adapters/keel-storage-s3",
-  "adapters/keel-storage-local",
-  "adapters/keel-push-fcm",
-  "adapters/keel-webhooks",
-  "adapters/keel-search-pgvector",
-  "adapters/keel-session-redis",
-  "adapters/keel-session-postgres",
-  "runtime/keel-api",
-  "runtime/keel-worker",
-  "tools/keel-console",
-  "tools/keel-analyzer",
-  "tools/keel-codegen",
+  "adapters/kelson-cache-memory",
+  "adapters/kelson-cache-redis",
+  "adapters/kelson-sms-msg91",
+  "adapters/kelson-mail-smtp",
+  "adapters/kelson-storage-s3",
+  "adapters/kelson-storage-local",
+  "adapters/kelson-push-fcm",
+  "adapters/kelson-webhooks",
+  "adapters/kelson-search-pgvector",
+  "adapters/kelson-session-redis",
+  "adapters/kelson-session-postgres",
+  "runtime/kelson-api",
+  "runtime/kelson-worker",
+  "tools/kelson-console",
+  "tools/kelson-analyzer",
+  "tools/kelson-codegen",
   "xtask",
   "tests/architecture",
   "testing/testkit",
@@ -83,89 +83,89 @@ rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/7d7s/axomarc"
 readme = "README.md"
-keywords = ["keel", "framework"]
+keywords = ["kelson", "framework"]
 
 [workspace.dependencies]
 # --- internal (FOUNDATION) ---
-keel-foundation = { version = "0.1.0", path = "crates/foundation/core" }
-keel-context = { version = "0.1.0", path = "crates/foundation/context" }
-keel-contracts = { version = "0.1.0", path = "crates/foundation/contracts" }
-keel-lifecycle = { version = "0.1.0", path = "crates/foundation/lifecycle" }
-keel-validation = { version = "0.1.0", path = "crates/foundation/validation" }
+kelson-foundation = { version = "0.1.0", path = "crates/foundation/core" }
+kelson-context = { version = "0.1.0", path = "crates/foundation/context" }
+kelson-contracts = { version = "0.1.0", path = "crates/foundation/contracts" }
+kelson-lifecycle = { version = "0.1.0", path = "crates/foundation/lifecycle" }
+kelson-validation = { version = "0.1.0", path = "crates/foundation/validation" }
 # --- internal (EXECUTION) ---
-keel-execution = { version = "0.1.0", path = "crates/execution/engine" }
-keel-command = { version = "0.1.0", path = "crates/execution/command" }
-keel-query = { version = "0.1.0", path = "crates/execution/query" }
-keel-transaction = { version = "0.1.0", path = "crates/execution/transaction" }
+kelson-execution = { version = "0.1.0", path = "crates/execution/engine" }
+kelson-command = { version = "0.1.0", path = "crates/execution/command" }
+kelson-query = { version = "0.1.0", path = "crates/execution/query" }
+kelson-transaction = { version = "0.1.0", path = "crates/execution/transaction" }
 # --- internal (APPLICATION) ---
-keel-registry = { version = "0.1.0", path = "crates/application/registry" }
-keel-config = { version = "0.1.0", path = "crates/application/configuration" }
+kelson-registry = { version = "0.1.0", path = "crates/application/registry" }
+kelson-config = { version = "0.1.0", path = "crates/application/configuration" }
 # --- internal (WEB) ---
-keel-http = { version = "0.1.0", path = "crates/web/http" }
-keel-views = { version = "0.1.0", path = "crates/web/views" }
+kelson-http = { version = "0.1.0", path = "crates/web/http" }
+kelson-views = { version = "0.1.0", path = "crates/web/views" }
 # --- internal (SECURITY) ---
-keel-identity = { version = "0.1.0", path = "crates/security/identity" }
-keel-scope = { version = "0.1.0", path = "crates/security/scopes" }
-keel-ownership = { version = "0.1.0", path = "crates/security/ownership" }
-keel-policy = { version = "0.1.0", path = "crates/security/policies" }
-keel-elevation = { version = "0.1.0", path = "crates/security/elevation" }
-keel-tokens = { version = "0.1.0", path = "crates/security/tokens" }
-keel-session = { version = "0.1.0", path = "crates/security/sessions" }
-keel-integrity = { version = "0.1.0", path = "crates/security/integrity" }
+kelson-identity = { version = "0.1.0", path = "crates/security/identity" }
+kelson-scope = { version = "0.1.0", path = "crates/security/scopes" }
+kelson-ownership = { version = "0.1.0", path = "crates/security/ownership" }
+kelson-policy = { version = "0.1.0", path = "crates/security/policies" }
+kelson-elevation = { version = "0.1.0", path = "crates/security/elevation" }
+kelson-tokens = { version = "0.1.0", path = "crates/security/tokens" }
+kelson-session = { version = "0.1.0", path = "crates/security/sessions" }
+kelson-integrity = { version = "0.1.0", path = "crates/security/integrity" }
 # --- internal (DATA) ---
-keel-postgres = { version = "0.1.0", path = "crates/data/postgres" }
-keel-mysql = { version = "0.1.0", path = "crates/data/mysql" }
-keel-models = { version = "0.1.0", path = "crates/data/models" }
+kelson-postgres = { version = "0.1.0", path = "crates/data/postgres" }
+kelson-mysql = { version = "0.1.0", path = "crates/data/mysql" }
+kelson-models = { version = "0.1.0", path = "crates/data/models" }
 # --- internal (ASYNC) ---
-keel-event = { version = "0.1.0", path = "crates/async/events" }
-keel-jobs = { version = "0.1.0", path = "crates/async/jobs" }
-keel-workflow = { version = "0.1.0", path = "crates/async/workflows" }
-keel-scheduling = { version = "0.1.0", path = "crates/async/scheduler" }
+kelson-event = { version = "0.1.0", path = "crates/async/events" }
+kelson-jobs = { version = "0.1.0", path = "crates/async/jobs" }
+kelson-workflow = { version = "0.1.0", path = "crates/async/workflows" }
+kelson-scheduling = { version = "0.1.0", path = "crates/async/scheduler" }
 # --- internal (SERVICES) ---
-keel-caching = { version = "0.1.0", path = "crates/services/cache" }
-keel-storage = { version = "0.1.0", path = "crates/services/storage" }
-keel-notifications = { version = "0.1.0", path = "crates/services/notifications" }
-keel-http-client = { version = "0.1.0", path = "crates/services/http-client" }
-keel-search = { version = "0.1.0", path = "crates/services/search" }
-keel-ai = { version = "0.1.0", path = "crates/ai/client" }
-keel-ai-tools = { version = "0.1.0", path = "crates/ai/tools" }
-keel-ai-agents = { version = "0.1.0", path = "crates/ai/agents" }
-keel-ai-mcp = { version = "0.1.0", path = "crates/ai/mcp" }
-keel-realtime = { version = "0.1.0", path = "crates/services/realtime" }
+kelson-caching = { version = "0.1.0", path = "crates/services/cache" }
+kelson-storage = { version = "0.1.0", path = "crates/services/storage" }
+kelson-notifications = { version = "0.1.0", path = "crates/services/notifications" }
+kelson-http-client = { version = "0.1.0", path = "crates/services/http-client" }
+kelson-search = { version = "0.1.0", path = "crates/services/search" }
+kelson-ai = { version = "0.1.0", path = "crates/ai/client" }
+kelson-ai-tools = { version = "0.1.0", path = "crates/ai/tools" }
+kelson-ai-agents = { version = "0.1.0", path = "crates/ai/agents" }
+kelson-ai-mcp = { version = "0.1.0", path = "crates/ai/mcp" }
+kelson-realtime = { version = "0.1.0", path = "crates/services/realtime" }
 # --- internal (ENTERPRISE) ---
-keel-tenancy = { version = "0.1.0", path = "crates/enterprise/tenancy" }
-keel-feature-flags = { version = "0.1.0", path = "crates/enterprise/feature-flags" }
-keel-deployment = { version = "0.1.0", path = "crates/enterprise/deployment" }
+kelson-tenancy = { version = "0.1.0", path = "crates/enterprise/tenancy" }
+kelson-feature-flags = { version = "0.1.0", path = "crates/enterprise/feature-flags" }
+kelson-deployment = { version = "0.1.0", path = "crates/enterprise/deployment" }
 # --- internal (EXTENSION) ---
-keel-wasm = { path = "crates/extension/wasm" }
+kelson-wasm = { path = "crates/extension/wasm" }
 # --- internal (OBSERVABILITY) ---
-keel-observability = { version = "0.1.0", path = "crates/observability/logging" }
-keel-telemetry = { version = "0.1.0", path = "crates/observability/telemetry" }
-keel-tracing = { version = "0.1.0", path = "crates/observability/tracing" }
-keel-metrics = { version = "0.1.0", path = "crates/observability/metrics" }
-keel-audit = { version = "0.1.0", path = "crates/observability/audit" }
-keel-pipeline = { version = "0.1.0", path = "crates/observability/pipeline" }
-keel-buffer = { version = "0.1.0", path = "crates/observability/buffer" }
-keel-export = { version = "0.1.0", path = "crates/observability/export" }
+kelson-observability = { version = "0.1.0", path = "crates/observability/logging" }
+kelson-telemetry = { version = "0.1.0", path = "crates/observability/telemetry" }
+kelson-tracing = { version = "0.1.0", path = "crates/observability/tracing" }
+kelson-metrics = { version = "0.1.0", path = "crates/observability/metrics" }
+kelson-audit = { version = "0.1.0", path = "crates/observability/audit" }
+kelson-pipeline = { version = "0.1.0", path = "crates/observability/pipeline" }
+kelson-buffer = { version = "0.1.0", path = "crates/observability/buffer" }
+kelson-export = { version = "0.1.0", path = "crates/observability/export" }
 # --- internal (TESTING) ---
-keel-testkit = { version = "0.1.0", path = "testing/testkit" }
+kelson-testkit = { version = "0.1.0", path = "testing/testkit" }
 # --- internal (TOOLS) ---
-keel-analyzer = { version = "0.1.0", path = "tools/keel-analyzer" }
-keel-codegen = { version = "0.1.0", path = "tools/keel-codegen" }
+kelson-analyzer = { version = "0.1.0", path = "tools/kelson-analyzer" }
+kelson-codegen = { version = "0.1.0", path = "tools/kelson-codegen" }
 # --- adapters (only runtime wires these) ---
-keel-cache-memory = { version = "0.1.0", path = "adapters/keel-cache-memory" }
-keel-cache-redis = { version = "0.1.0", path = "adapters/keel-cache-redis" }
-keel-sms-msg91 = { version = "0.1.0", path = "adapters/keel-sms-msg91" }
-keel-mail-smtp = { version = "0.1.0", path = "adapters/keel-mail-smtp" }
-keel-storage-s3 = { version = "0.1.0", path = "adapters/keel-storage-s3" }
-keel-storage-local = { version = "0.1.0", path = "adapters/keel-storage-local" }
-keel-push-fcm = { version = "0.1.0", path = "adapters/keel-push-fcm" }
-keel-webhooks = { version = "0.1.0", path = "adapters/keel-webhooks" }
-keel-search-pgvector = { version = "0.1.0", path = "adapters/keel-search-pgvector" }
-keel-session-redis = { version = "0.1.0", path = "adapters/keel-session-redis" }
-keel-session-postgres = { version = "0.1.0", path = "adapters/keel-session-postgres" }
-keel-mod-appointments = { path = "applications/appointments" }
-keel-mod-oauth2 = { path = "applications/oauth2" }
+kelson-cache-memory = { version = "0.1.0", path = "adapters/kelson-cache-memory" }
+kelson-cache-redis = { version = "0.1.0", path = "adapters/kelson-cache-redis" }
+kelson-sms-msg91 = { version = "0.1.0", path = "adapters/kelson-sms-msg91" }
+kelson-mail-smtp = { version = "0.1.0", path = "adapters/kelson-mail-smtp" }
+kelson-storage-s3 = { version = "0.1.0", path = "adapters/kelson-storage-s3" }
+kelson-storage-local = { version = "0.1.0", path = "adapters/kelson-storage-local" }
+kelson-push-fcm = { version = "0.1.0", path = "adapters/kelson-push-fcm" }
+kelson-webhooks = { version = "0.1.0", path = "adapters/kelson-webhooks" }
+kelson-search-pgvector = { version = "0.1.0", path = "adapters/kelson-search-pgvector" }
+kelson-session-redis = { version = "0.1.0", path = "adapters/kelson-session-redis" }
+kelson-session-postgres = { version = "0.1.0", path = "adapters/kelson-session-postgres" }
+kelson-mod-appointments = { path = "applications/appointments" }
+kelson-mod-oauth2 = { path = "applications/oauth2" }
 # --- external (budget: policy v2 D-62, cap 25; see DEPENDENCY-POLICY.md) ---
 axum = { version = "=0.8.6", features = ["ws", "multipart"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }

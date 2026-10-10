@@ -1,7 +1,7 @@
 ;; Wave 9 B-30 fixture: echo — guest ABI v1 showcase.
 ;;
-;; Exports: memory, keel_manifest (NUL-terminated sidecar-equivalent JSON),
-;; keel_alloc (bump allocator), keel_call (returns {"echo": <input>}).
+;; Exports: memory, kelson_manifest (NUL-terminated sidecar-equivalent JSON),
+;; kelson_alloc (bump allocator), kelson_call (returns {"echo": <input>}).
 ;; Imports: host.log + wasi fd_write (exercises the stdout shim).
 (module
   (import "host" "log" (func $log (param i32 i32)))
@@ -17,7 +17,7 @@
   (data (i32.const 1200) "{\"echo\": ")         ;; 9 bytes
   (data (i32.const 1216) "echo invoked")        ;; 11 bytes
 
-  (func $alloc (export "keel_alloc") (param $n i32) (result i32)
+  (func $alloc (export "kelson_alloc") (param $n i32) (result i32)
     (local $p i32)
     (local.set $p (global.get $heap))
     (global.set $heap
@@ -40,7 +40,7 @@
         (br $l))))
 
   ;; NUL-scan the manifest and return packed (ptr << 32 | len).
-  (func (export "keel_manifest") (result i64)
+  (func (export "kelson_manifest") (result i64)
     (local $p i32)
     (local.set $p (i32.const 1024))
     (block $done
@@ -52,7 +52,7 @@
       (i64.shl (i64.extend_i32_u (i32.const 1024)) (i64.const 32))
       (i64.extend_i32_u (i32.sub (local.get $p) (i32.const 1024)))))
 
-  (func (export "keel_call")
+  (func (export "kelson_call")
         (param $op i32) (param $op_len i32) (param $in i32) (param $in_len i32)
         (result i64)
     (local $out i32)

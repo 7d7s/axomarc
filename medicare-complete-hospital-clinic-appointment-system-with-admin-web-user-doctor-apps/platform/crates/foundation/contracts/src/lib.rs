@@ -1,11 +1,11 @@
-//! # keel-contracts
+//! # kelson-contracts
 //! The public contract traits (11-SPEC §10). This is the surface modules implement;
 //! everything else stays crate-private until proven.
 
 pub mod api_registry;
 
-use keel_context::ExecutionContext;
-use keel_foundation::{DeltaKind, ExecutionProfileKind};
+use kelson_context::ExecutionContext;
+use kelson_foundation::{DeltaKind, ExecutionProfileKind};
 
 /// A write intention. No HTTP concepts inside — commands are transport-agnostic.
 /// `OPERATION` is the stable contract id (`module.operation`).
@@ -78,7 +78,7 @@ pub struct AuthzRequest<'a> {
 }
 
 /// Authorization boundary of the execution engine. Real implementation =
-/// keel-policy ALLOW conjunction; dev/test may inject allow-all (never in prod
+/// kelson-policy ALLOW conjunction; dev/test may inject allow-all (never in prod
 /// config).
 pub trait AuthorizationPort: Send + Sync {
     fn authorize(&self, ctx: &ExecutionContext, request: &AuthzRequest<'_>) -> AuthzDecision;

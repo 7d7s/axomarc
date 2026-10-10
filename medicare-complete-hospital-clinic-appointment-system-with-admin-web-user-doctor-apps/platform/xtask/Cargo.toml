@@ -2,7 +2,7 @@
 name = "xtask"
 # Internal-only crate: not published to crates.io.
 publish = false
-description = "Keel xtask: repo-level automation entry (dep-rules gate)"
+description = "Kelson xtask: repo-level automation entry (dep-rules gate)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,7 +13,7 @@ keywords.workspace = true
 
 [dependencies]
 toml = { workspace = true }
-keel-analyzer = { workspace = true }
+kelson-analyzer = { workspace = true }
 
 [package.metadata.docs.rs]
 all-features = true

@@ -6,11 +6,11 @@
 //! artifact `storage/framework/routes.json`, pinned to a content hash over
 //! every module manifest + `middleware.toml`. Boot semantics (strictly
 //! stricter than Laravel): the graph always recompiles; a present artifact with
-//! a mismatching hash refuses boot ("run `keel route:cache`").
+//! a mismatching hash refuses boot ("run `kelson route:cache`").
 
 use std::path::{Path, PathBuf};
 
-use keel_foundation::{ExecutionProfileKind, SecurityPlane};
+use kelson_foundation::{ExecutionProfileKind, SecurityPlane};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -403,7 +403,7 @@ constraints = [{ param = "id", kind = "number" }]
     fn route_files_participate_in_the_manifest_hash() {
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "keel-routefiles-{}-{}",
+            "kelson-routefiles-{}-{}",
             std::process::id(),
             SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         ));
@@ -431,7 +431,7 @@ constraints = [{ param = "id", kind = "number" }]
     fn packages_participate_in_the_manifest_hash() {
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "keel-pkghash-{}-{}",
+            "kelson-pkghash-{}-{}",
             std::process::id(),
             SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         ));
@@ -476,7 +476,7 @@ constraints = [{ param = "id", kind = "number" }]
     fn wasm_plugins_participate_in_the_manifest_hash() {
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "keel-wasmhash-{}-{}",
+            "kelson-wasmhash-{}-{}",
             std::process::id(),
             SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         ));
@@ -546,7 +546,7 @@ middleware = ["ghost", "phantom"]
     fn artifact_roundtrip_and_hash_pin() {
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "keel-routecache-{}-{}",
+            "kelson-routecache-{}-{}",
             std::process::id(),
             SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         ));
@@ -611,7 +611,7 @@ operation = "index"
     fn absent_artifact_loads_none_and_malformed_fails() {
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "keel-routecache2-{}-{}",
+            "kelson-routecache2-{}-{}",
             std::process::id(),
             SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         ));

@@ -1,4 +1,4 @@
--- Keel foundation DDL (G09 companion). All ids are application-generated UUID v7.
+-- Kelson foundation DDL (G09 companion). All ids are application-generated UUID v7.
 -- RLS here is the FINAL containment barrier; application authorization decides
 -- business permission. Runtime must connect with a NON-OWNER role (roles.sql).
 
@@ -177,24 +177,24 @@ ALTER TABLE audit_records      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE outbox             ENABLE ROW LEVEL SECURITY;
 ALTER TABLE idempotency_keys   ENABLE ROW LEVEL SECURITY;
 
--- Tenant GUC anchor: SET LOCAL keel.tenant_id (transaction-scoped).
-CREATE OR REPLACE FUNCTION keel_current_tenant() RETURNS uuid AS $$
-    SELECT NULLIF(current_setting('keel.tenant_id', true), '')::uuid
+-- Tenant GUC anchor: SET LOCAL kelson.tenant_id (transaction-scoped).
+CREATE OR REPLACE FUNCTION kelson_current_tenant() RETURNS uuid AS $$
+    SELECT NULLIF(current_setting('kelson.tenant_id', true), '')::uuid
 $$ LANGUAGE sql STABLE;
 
 CREATE POLICY tenant_isolation_memberships ON memberships
-    USING (tenant_id = keel_current_tenant() OR keel_current_tenant() IS NULL);
+    USING (tenant_id = kelson_current_tenant() OR kelson_current_tenant() IS NULL);
 CREATE POLICY tenant_isolation_scope_nodes ON scope_nodes
-    USING (tenant_id = keel_current_tenant() OR keel_current_tenant() IS NULL);
+    USING (tenant_id = kelson_current_tenant() OR kelson_current_tenant() IS NULL);
 CREATE POLICY tenant_isolation_scope_grants ON scope_grants
-    USING (tenant_id = keel_current_tenant() OR keel_current_tenant() IS NULL);
+    USING (tenant_id = kelson_current_tenant() OR kelson_current_tenant() IS NULL);
 CREATE POLICY tenant_isolation_capability_grants ON capability_grants
-    USING (tenant_id = keel_current_tenant() OR keel_current_tenant() IS NULL);
+    USING (tenant_id = kelson_current_tenant() OR kelson_current_tenant() IS NULL);
 CREATE POLICY tenant_isolation_delta_stones ON delta_stones
-    USING (tenant_id = keel_current_tenant() OR keel_current_tenant() IS NULL);
+    USING (tenant_id = kelson_current_tenant() OR kelson_current_tenant() IS NULL);
 CREATE POLICY tenant_isolation_audit ON audit_records
-    USING (tenant_id = keel_current_tenant() OR keel_current_tenant() IS NULL);
+    USING (tenant_id = kelson_current_tenant() OR kelson_current_tenant() IS NULL);
 CREATE POLICY tenant_isolation_outbox ON outbox
-    USING (tenant_id = keel_current_tenant() OR keel_current_tenant() IS NULL);
+    USING (tenant_id = kelson_current_tenant() OR kelson_current_tenant() IS NULL);
 CREATE POLICY tenant_isolation_idempotency ON idempotency_keys
-    USING (tenant_id = keel_current_tenant() OR keel_current_tenant() IS NULL);
+    USING (tenant_id = kelson_current_tenant() OR kelson_current_tenant() IS NULL);

@@ -1,18 +1,18 @@
 //! Durable model store on PostgreSQL (S8 C3/B-04/B-05): implements the
-//! keel-models `ModelStore` port by compiling records/filters through the
+//! kelson-models `ModelStore` port by compiling records/filters through the
 //! typed query builders and executing them here. Tenant isolation is applied
 //! on EVERY path (`tenant_scope`); soft deletes honor `ModelDef::soft_deletes`.
 
-use keel_foundation::{AppError, TenantId};
-use keel_models::{
+use kelson_foundation::{AppError, TenantId};
+use kelson_models::{
     json_value_to_bind, record_to_columns_for, ExistsFilter, FieldFilter, FieldType, FilterOp,
     ListOpts, ModelDef, ModelStore, Record,
 };
-use keel_models::store::{
+use kelson_models::store::{
     require_write_filters, validate_aggregate, validate_counter, validate_list_opts,
 };
-use keel_query::select::{Condition, Direction, Ident, Operator};
-use keel_query::{CompiledSelect, CompiledWrite, Delete, Insert, ConflictPolicy, Select, Update, Value as Bind};
+use kelson_query::select::{Condition, Direction, Ident, Operator};
+use kelson_query::{CompiledSelect, CompiledWrite, Delete, Insert, ConflictPolicy, Select, Update, Value as Bind};
 use serde_json::Value as Json;
 use sqlx::postgres::{PgArguments, PgPool, PgRow};
 use sqlx::{Column, Row};
@@ -220,7 +220,7 @@ fn filter_condition(model: Option<&ModelDef>, filter: &FieldFilter) -> Result<Co
     let field_def = model.and_then(|m| m.field_named(field));
     let bind_of = |value: &Json| -> Result<Bind, AppError> {
         match field_def {
-            Some(f) => keel_models::json_to_bind(value, f),
+            Some(f) => kelson_models::json_to_bind(value, f),
             None => json_value_to_bind(value),
         }
     };
@@ -446,7 +446,7 @@ impl ModelStore for PgModelStore {
         tenant: Option<TenantId>,
         filters: &[FieldFilter],
         opts: &ListOpts,
-    ) -> Result<keel_query::Page<Record>, AppError> {
+    ) -> Result<kelson_query::Page<Record>, AppError> {
         validate_list_opts(model, opts)?;
         let mut select = base_select(model, tenant, filters, opts.include_deleted)?;
         if let Some((field, desc)) = &opts.sort {
@@ -474,7 +474,7 @@ impl ModelStore for PgModelStore {
             // COUNT over the same shape (rebuild without limit/offset).
             let count_select = base_select(model, tenant, filters, opts.include_deleted)?.build()?;
             let count_sql = format!(
-                "SELECT COUNT(*) FROM ({}) AS _keel_count",
+                "SELECT COUNT(*) FROM ({}) AS _kelson_count",
                 count_select.sql
             );
             let params = count_select.params.clone();
@@ -489,7 +489,7 @@ impl ModelStore for PgModelStore {
             rows.len() as u64
         };
         let items = map_rows(rows, model)?;
-        Ok(keel_query::Page::new(items, page, per_page, Some(total)))
+        Ok(kelson_query::Page::new(items, page, per_page, Some(total)))
     }
 
     fn find(
@@ -523,7 +523,7 @@ impl ModelStore for PgModelStore {
         if model.tenant_scoped {
             insert = insert.tenant_scope(
                 ident("tenant_id")?,
-                keel_foundation::TenantId::from_uuid(record_uuid(record, "tenant_id")?),
+                kelson_foundation::TenantId::from_uuid(record_uuid(record, "tenant_id")?),
             );
         }
         let compiled = insert.returning(all_columns(model)?).build()?;
@@ -553,7 +553,7 @@ impl ModelStore for PgModelStore {
         }
         for (key, value) in changes {
             let bind = match model.field_named(key) {
-                Some(f) => keel_models::json_to_bind(value, f)?,
+                Some(f) => kelson_models::json_to_bind(value, f)?,
                 None => json_value_to_bind(value)?,
             };
             update = update.set(ident(key)?, bind);
@@ -620,7 +620,7 @@ impl ModelStore for PgModelStore {
         if model.tenant_scoped {
             insert = insert.tenant_scope(
                 ident("tenant_id")?,
-                keel_foundation::TenantId::from_uuid(record_uuid(record, "tenant_id")?),
+                kelson_foundation::TenantId::from_uuid(record_uuid(record, "tenant_id")?),
             );
         }
         let compiled = insert.returning(all_columns(model)?).build()?;
@@ -636,16 +636,16 @@ impl ModelStore for PgModelStore {
         model: &ModelDef,
         tenant: Option<TenantId>,
         filters: &[FieldFilter],
-        op: keel_models::AggregateOp,
+        op: kelson_models::AggregateOp,
     ) -> Result<Json, AppError> {
         let field_type = validate_aggregate(model, &op)?;
         let mut select = base_select(model, tenant, filters, false)?;
         select = match &op {
-            keel_models::AggregateOp::Count => select.count(),
-            keel_models::AggregateOp::Sum(f) => select.sum(ident(f)?),
-            keel_models::AggregateOp::Avg(f) => select.avg(ident(f)?),
-            keel_models::AggregateOp::Min(f) => select.min(ident(f)?),
-            keel_models::AggregateOp::Max(f) => select.max(ident(f)?),
+            kelson_models::AggregateOp::Count => select.count(),
+            kelson_models::AggregateOp::Sum(f) => select.sum(ident(f)?),
+            kelson_models::AggregateOp::Avg(f) => select.avg(ident(f)?),
+            kelson_models::AggregateOp::Min(f) => select.min(ident(f)?),
+            kelson_models::AggregateOp::Max(f) => select.max(ident(f)?),
         };
         let compiled = select.build()?;
         let rows = fetch_rows(&self.pool, &compiled)?;
@@ -719,7 +719,7 @@ impl ModelStore for PgModelStore {
         if model.tenant_scoped {
             insert = insert.tenant_scope(
                 ident("tenant_id")?,
-                keel_foundation::TenantId::from_uuid(record_uuid(record, "tenant_id")?),
+                kelson_foundation::TenantId::from_uuid(record_uuid(record, "tenant_id")?),
             );
         }
         let compiled = insert.returning(all_columns(model)?).build()?;
@@ -764,7 +764,7 @@ impl ModelStore for PgModelStore {
         }
         for (field, value) in changes {
             let bind = match model.field_named(field) {
-                Some(f) => keel_models::json_to_bind(value, f)?,
+                Some(f) => kelson_models::json_to_bind(value, f)?,
                 None => json_value_to_bind(value)?,
             };
             update = update.set(ident(field)?, bind);
@@ -783,7 +783,7 @@ impl ModelStore for PgModelStore {
         require_write_filters("delete_filtered", filters)?;
         if model.soft_deletes {
             let mut changes = Record::new();
-            changes.insert("deleted_at".into(), Json::String(keel_models::now_rfc3339()));
+            changes.insert("deleted_at".into(), Json::String(kelson_models::now_rfc3339()));
             return self.update_filtered(model, tenant, filters, &changes);
         }
         let mut delete = Delete::from_table(ident(&model.table)?);
@@ -831,7 +831,7 @@ impl ModelStore for PgModelStore {
     }
 
     fn truncate(&self, model: &ModelDef, env: &str) -> Result<(), AppError> {
-        let compiled = keel_query::Truncate::table(ident(&model.table)?).build_gated(env)?;
+        let compiled = kelson_query::Truncate::table(ident(&model.table)?).build_gated(env)?;
         let sql = compiled.sql;
         let params = compiled.params;
         let pool = self.pool.clone();
@@ -867,7 +867,7 @@ impl ModelStore for PgModelStore {
         }
         for (key, value) in extra {
             let bind = match model.field_named(key) {
-                Some(f) => keel_models::json_to_bind(value, f)?,
+                Some(f) => kelson_models::json_to_bind(value, f)?,
                 None => json_value_to_bind(value)?,
             };
             update = update.set(ident(key)?, bind);

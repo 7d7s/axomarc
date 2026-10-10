@@ -1,6 +1,6 @@
-//! Session middleware (S7 C6): binds `keel-session` to the HTTP edge.
+//! Session middleware (S7 C6): binds `kelson-session` to the HTTP edge.
 //!
-//! Request flow: parse the `keel_session` cookie (session id + HMAC-style tag
+//! Request flow: parse the `kelson_session` cookie (session id + HMAC-style tag
 //! over the server secret) -> `SessionManager::touch` -> insert a
 //! `ResolvedSession` extension for downstream handlers. Unknown/forged/expired
 //! cookies are treated as anonymous (never an error); the login/logout edge
@@ -12,14 +12,14 @@ use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderValue, Request, Response};
 use axum::middleware::Next;
-use keel_session::{Session, SessionId, SessionManager};
+use kelson_session::{Session, SessionId, SessionManager};
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
 use crate::cookie::{Cookie, CookieJar, SameSite};
 
 /// Browser session cookie name.
-pub const SESSION_COOKIE: &str = "keel_session";
+pub const SESSION_COOKIE: &str = "kelson_session";
 
 fn hex(bytes: &[u8]) -> String {
     const NIBBLES: &[u8; 16] = b"0123456789abcdef";
@@ -35,7 +35,7 @@ fn hex(bytes: &[u8]) -> String {
 fn tag(session_id: &str, secret: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(secret);
-    hasher.update(b"|keel-session-v1|");
+    hasher.update(b"|kelson-session-v1|");
     hasher.update(session_id.as_bytes());
     hex(&hasher.finalize())
 }
@@ -77,7 +77,7 @@ pub struct SessionMiddleware {
     pub secret: Vec<u8>,
     pub secure: bool,
     pub cookie_ttl_secs: u64,
-    pub clock: Arc<dyn keel_foundation::Clock>,
+    pub clock: Arc<dyn kelson_foundation::Clock>,
 }
 
 impl SessionMiddleware {
@@ -87,7 +87,7 @@ impl SessionMiddleware {
             secret: secret.as_ref().to_vec(),
             secure: false,
             cookie_ttl_secs: 0,
-            clock: Arc::new(keel_foundation::SystemClock),
+            clock: Arc::new(kelson_foundation::SystemClock),
         }
     }
 
@@ -102,7 +102,7 @@ impl SessionMiddleware {
     }
 
     /// Wave 7 P3: inject the time source (tests freeze it, then `travel`).
-    pub fn with_clock(mut self, clock: Arc<dyn keel_foundation::Clock>) -> Self {
+    pub fn with_clock(mut self, clock: Arc<dyn kelson_foundation::Clock>) -> Self {
         self.clock = clock;
         self
     }
@@ -119,7 +119,7 @@ impl SessionMiddleware {
     }
 
     /// Set-Cookie header for a fresh/rotated session (login, regenerate).
-    pub fn issue_cookie(&self, session: &Session) -> Result<HeaderValue, keel_foundation::AppError> {
+    pub fn issue_cookie(&self, session: &Session) -> Result<HeaderValue, kelson_foundation::AppError> {
         self.cookie_header(session, None)
     }
 
@@ -130,7 +130,7 @@ impl SessionMiddleware {
         &self,
         session: &Session,
         max_age_secs: u64,
-    ) -> Result<HeaderValue, keel_foundation::AppError> {
+    ) -> Result<HeaderValue, kelson_foundation::AppError> {
         self.cookie_header(session, Some(max_age_secs))
     }
 
@@ -138,7 +138,7 @@ impl SessionMiddleware {
         &self,
         session: &Session,
         max_age_secs: Option<u64>,
-    ) -> Result<HeaderValue, keel_foundation::AppError> {
+    ) -> Result<HeaderValue, kelson_foundation::AppError> {
         let mut cookie = Cookie::new(SESSION_COOKIE, session_cookie_value(session, &self.secret))?
             .same_site(SameSite::Lax)
             .secure(self.secure);
@@ -150,7 +150,7 @@ impl SessionMiddleware {
     }
 
     /// Set-Cookie header that clears the session cookie (logout).
-    pub fn clear_cookie(&self) -> Result<HeaderValue, keel_foundation::AppError> {
+    pub fn clear_cookie(&self) -> Result<HeaderValue, kelson_foundation::AppError> {
         Cookie::expire(SESSION_COOKIE, self.secure)?.header_value()
     }
 }
@@ -178,8 +178,8 @@ mod tests {
     use axum::extract::Extension;
     use axum::routing::get;
     use axum::Router;
-    use keel_foundation::PrincipalId;
-    use keel_session::{InMemorySessionStore, SessionPolicy};
+    use kelson_foundation::PrincipalId;
+    use kelson_session::{InMemorySessionStore, SessionPolicy};
     use tower::ServiceExt;
 
     fn app() -> (Router, Arc<SessionManager>) {
@@ -223,7 +223,7 @@ mod tests {
             .unwrap();
         let value = session_cookie_value(&session, b"cookie-secret");
         let res = router
-            .oneshot(get_req(Some(format!("keel_session={value}"))))
+            .oneshot(get_req(Some(format!("kelson_session={value}"))))
             .await
             .unwrap();
         assert_eq!(res.status(), axum::http::StatusCode::OK);
@@ -237,7 +237,7 @@ mod tests {
             .unwrap();
         let forged = format!("{}.deadbeef", session.id.as_str());
         let res = router
-            .oneshot(get_req(Some(format!("keel_session={forged}"))))
+            .oneshot(get_req(Some(format!("kelson_session={forged}"))))
             .await
             .unwrap();
         assert_eq!(res.status(), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
@@ -252,7 +252,7 @@ mod tests {
         let value = session_cookie_value(&session, b"cookie-secret");
         manager.destroy(&session.id).unwrap();
         let res = router
-            .oneshot(get_req(Some(format!("keel_session={value}"))))
+            .oneshot(get_req(Some(format!("kelson_session={value}"))))
             .await
             .unwrap();
         assert_eq!(res.status(), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
@@ -264,7 +264,7 @@ mod tests {
     #[tokio::test]
     async fn session_ttl_reads_the_injected_clock() {
         let t0 = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
-        let clock = Arc::new(keel_foundation::FixedClock::new(t0));
+        let clock = Arc::new(kelson_foundation::FixedClock::new(t0));
         let manager = Arc::new(SessionManager::new(
             InMemorySessionStore::shared(),
             SessionPolicy::default(),
@@ -283,7 +283,7 @@ mod tests {
             .start(PrincipalId::new(), None, t0)
             .expect("session stamped at the frozen instant");
         let cookie = Some(format!(
-            "keel_session={}",
+            "kelson_session={}",
             session_cookie_value(&session, b"cookie-secret")
         ));
 
@@ -349,7 +349,7 @@ mod tests {
             .to_str()
             .unwrap()
             .to_string();
-        assert!(issued.starts_with("keel_session="));
+        assert!(issued.starts_with("kelson_session="));
         assert!(issued.contains("HttpOnly"));
         assert!(issued.contains("Secure"));
         assert!(issued.contains("SameSite=Lax"));

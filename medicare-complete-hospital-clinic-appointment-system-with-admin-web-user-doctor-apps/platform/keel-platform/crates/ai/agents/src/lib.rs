@@ -1,4 +1,4 @@
-//! # keel-ai-agents — agent runtime (item 33, L48)
+//! # kelson-ai-agents — agent runtime (item 33, L48)
 //!
 //! The execution path is fixed: AI Agent -> Tool -> Execution -> Capability ->
 //! Scope -> Policy -> Command. An agent can never magically obtain elevated
@@ -9,11 +9,11 @@
 
 use std::sync::Arc;
 
-use keel_ai::{AiClient, AiMessage, CompletionRequest, ModelTool};
-use keel_ai_tools::{ToolRegistry, ToolSpec};
-use keel_context::ExecutionContext;
-use keel_foundation::{codes, AppError, OperationId};
-use keel_execution::{Engine, IdempotencyKey, OperationHandler};
+use kelson_ai::{AiClient, AiMessage, CompletionRequest, ModelTool};
+use kelson_ai_tools::{ToolRegistry, ToolSpec};
+use kelson_context::ExecutionContext;
+use kelson_foundation::{codes, AppError, OperationId};
+use kelson_execution::{Engine, IdempotencyKey, OperationHandler};
 use serde::{Deserialize, Serialize};
 
 /// Resolves the live handler for an operation id (wired by the runtime boot).
@@ -114,9 +114,9 @@ impl AgentRuntime {
 
         Err(AppError::new(
             codes::INTERNAL,
-            keel_foundation::ErrorCategory::Internal,
-            keel_foundation::Severity::Medium,
-            keel_foundation::Retryability::NotRetryable,
+            kelson_foundation::ErrorCategory::Internal,
+            kelson_foundation::Severity::Medium,
+            kelson_foundation::Retryability::NotRetryable,
             format!(
                 "agent exceeded {} steps without a final answer",
                 self.max_steps
@@ -127,7 +127,7 @@ impl AgentRuntime {
     async fn execute_tool(
         &self,
         ctx: Arc<ExecutionContext>,
-        call: &keel_ai::ToolCall,
+        call: &kelson_ai::ToolCall,
         tool_runs: &mut Vec<ToolRun>,
     ) -> String {
         let Some(spec) = self.tools.get(&call.name) else {
@@ -188,19 +188,19 @@ pub fn known_tool(registry: &dyn ToolRegistry, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keel_ai::{StubAiClient, ToolCall};
-    use keel_ai_tools::StaticToolRegistry;
-    use keel_context::{PrincipalContext, ScopeSnapshot, TenantContext};
-    use keel_foundation::{AuthorizationRevision, ExecutionProfileKind, PrincipalId, TenantId};
-    use keel_execution::{
+    use kelson_ai::{StubAiClient, ToolCall};
+    use kelson_ai_tools::StaticToolRegistry;
+    use kelson_context::{PrincipalContext, ScopeSnapshot, TenantContext};
+    use kelson_foundation::{AuthorizationRevision, ExecutionProfileKind, PrincipalId, TenantId};
+    use kelson_execution::{
         BoxFuture, ExecutionUnit, InMemoryBackend, InMemoryIdempotency, MutationRecord,
         PlanCompiler, PlanIntent,
     };
-    use keel_policy::{AccessSnapshot, PolicyAuthz, PolicyEngine};
+    use kelson_policy::{AccessSnapshot, PolicyAuthz, PolicyEngine};
     use std::collections::BTreeMap;
 
     struct NoteCreate {
-        plan: keel_execution::ExecutionPlan,
+        plan: kelson_execution::ExecutionPlan,
     }
     impl NoteCreate {
         fn new() -> Self {
@@ -215,7 +215,7 @@ mod tests {
         }
     }
     impl OperationHandler for NoteCreate {
-        fn plan(&self) -> &keel_execution::ExecutionPlan {
+        fn plan(&self) -> &kelson_execution::ExecutionPlan {
             &self.plan
         }
         fn handle(
@@ -237,7 +237,7 @@ mod tests {
     }
 
     struct BillingCharge {
-        plan: keel_execution::ExecutionPlan,
+        plan: kelson_execution::ExecutionPlan,
     }
     impl BillingCharge {
         fn new() -> Self {
@@ -252,7 +252,7 @@ mod tests {
         }
     }
     impl OperationHandler for BillingCharge {
-        fn plan(&self) -> &keel_execution::ExecutionPlan {
+        fn plan(&self) -> &kelson_execution::ExecutionPlan {
             &self.plan
         }
         fn handle(
@@ -306,8 +306,8 @@ mod tests {
                 .collect(),
             scope_paths: ["/".to_string()].into_iter().collect(),
             authorization_revision: policies.revision(),
-            feature_revision: keel_foundation::FeatureRevision(1),
-            module_revision: keel_foundation::ModuleRevision(1),
+            feature_revision: kelson_foundation::FeatureRevision(1),
+            module_revision: kelson_foundation::ModuleRevision(1),
             computed_at: time::OffsetDateTime::now_utc(),
         });
         let backend = Arc::new(InMemoryBackend::new());
@@ -331,13 +331,13 @@ mod tests {
             .collect(),
         });
         let tools = Arc::new(StaticToolRegistry::with_tools(vec![
-            keel_ai_tools::ToolSpec::new(
+            kelson_ai_tools::ToolSpec::new(
                 "notes__create",
                 "Create a note",
                 OperationId::from_static("notes.create"),
             )
             .with_capability("notes.create"),
-            keel_ai_tools::ToolSpec::new(
+            kelson_ai_tools::ToolSpec::new(
                 "billing__charge",
                 "Charge billing",
                 OperationId::from_static("billing.charge"),

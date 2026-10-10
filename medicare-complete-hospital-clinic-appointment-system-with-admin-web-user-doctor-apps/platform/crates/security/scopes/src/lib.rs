@@ -1,4 +1,4 @@
-//! # keel-scope
+//! # kelson-scope
 //! Scope graph (11-SPEC §3): NOT one strict tree — a tenant has many parallel
 //! hierarchies (LE / BU / Region / Location / Branch / Department / CostCenter /
 //! Warehouse / custom). Effective scope = grant nodes + their descendants, computed
@@ -6,8 +6,8 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use keel_context::ScopeSnapshot;
-use keel_foundation::{AppError, AuthorizationRevision, ScopeNodeId, TenantId};
+use kelson_context::ScopeSnapshot;
+use kelson_foundation::{AppError, AuthorizationRevision, ScopeNodeId, TenantId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -38,7 +38,7 @@ pub struct ScopeNode {
 /// A grant attaches a membership to a node; descendants are included.
 #[derive(Debug, Clone)]
 pub struct ScopeGrant {
-    pub membership_id: keel_foundation::MembershipId,
+    pub membership_id: kelson_foundation::MembershipId,
     pub node_id: ScopeNodeId,
 }
 
@@ -174,7 +174,7 @@ mod tests {
 
     fn grant(node: ScopeNodeId) -> ScopeGrant {
         ScopeGrant {
-            membership_id: keel_foundation::MembershipId::new(),
+            membership_id: kelson_foundation::MembershipId::new(),
             node_id: node,
         }
     }

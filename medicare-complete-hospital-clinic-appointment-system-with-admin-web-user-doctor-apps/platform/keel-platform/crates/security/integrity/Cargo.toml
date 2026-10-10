@@ -1,5 +1,5 @@
 [package]
-name = "keel-integrity"
+name = "kelson-integrity"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,10 +7,10 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel audit hash-chain primitives (sha2) + HMAC batch signing; consumable by data/execution layers (D-74)."
+description = "Kelson audit hash-chain primitives (sha2) + HMAC batch signing; consumable by data/execution layers (D-74)."
 
 [dependencies]
-keel-foundation = { workspace = true }
+kelson-foundation = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

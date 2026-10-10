@@ -1,6 +1,6 @@
 //! B-31 Phase D: the fluent, byte-stable MySQL schema builder.
 //!
-//! Laravel's migration DX is `Schema::create(...)` over a `Blueprint`; keel's
+//! Laravel's migration DX is `Schema::create(...)` over a `Blueprint`; kelson's
 //! migrations are SQL-first, so this builder's job is different and narrower:
 //! it is an *authoring* surface that renders the exact DDL bytes the shipped
 //! `database/migrations-mysql/*.sql` files contain. That claim is enforced,
@@ -29,7 +29,7 @@
 //!   own header line with each generated expression on an eight-space
 //!   continuation line (MySQL's generated-column syntax);
 //! - tables close with `) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;`
-//!   (utf8mb4 plus the 0900_ai_ci collation is keel's uniform MySQL default);
+//!   (utf8mb4 plus the 0900_ai_ci collation is kelson's uniform MySQL default);
 //! - blank lines are explicit (`Migration::blank`): layout belongs to the
 //!   program that authors the file, and the gate pins the result.
 //!
@@ -38,7 +38,7 @@
 //! the canonical form fixes *layout*, never spelling.
 //!
 //! Regenerate the canonical files from the programs with
-//! `KEEL_SCHEMA_REGENERATE=1 cargo test -p keel-mysql --test schema_roundtrip`.
+//! `KEEL_SCHEMA_REGENERATE=1 cargo test -p kelson-mysql --test schema_roundtrip`.
 
 /// A column definition plus its fluent modifiers.
 ///
@@ -94,7 +94,7 @@ impl Column {
         self.default("CURRENT_TIMESTAMP(6)")
     }
 
-    /// Inline column-level `PRIMARY KEY` (MySQL keys the row here; keel ids
+    /// Inline column-level `PRIMARY KEY` (MySQL keys the row here; kelson ids
     /// are application-generated uuids, so there is no auto-increment).
     pub fn primary_key(&mut self) -> &mut Column {
         self.primary_key = true;
@@ -186,14 +186,14 @@ fn name_field_width(columns: &[Column]) -> usize {
 macro_rules! column_helpers {
     () => {
         /// A column with a literal SQL type (`bigint`, `BIGINT UNSIGNED`, …)
-        /// — the escape hatch for types with no keel convention.
+        /// — the escape hatch for types with no kelson convention.
         pub fn col(&mut self, name: &str, ty: &str) -> &mut Column {
             self.columns_mut().push(Column::new(name, ty));
             let index = self.columns_mut().len() - 1;
             &mut self.columns_mut()[index]
         }
 
-        /// `BINARY(16)` — keel's uuid (sqlx's MySQL codec writes raw bytes).
+        /// `BINARY(16)` — kelson's uuid (sqlx's MySQL codec writes raw bytes).
         pub fn uuid(&mut self, name: &str) -> &mut Column {
             self.col(name, "BINARY(16)")
         }
@@ -208,17 +208,17 @@ macro_rules! column_helpers {
             self.col(name, "TEXT")
         }
 
-        /// `DATETIME(6)` — keel's timestamp (UTC, microsecond precision).
+        /// `DATETIME(6)` — kelson's timestamp (UTC, microsecond precision).
         pub fn datetime6(&mut self, name: &str) -> &mut Column {
             self.col(name, "DATETIME(6)")
         }
 
-        /// `JSON` — keel's document type (MySQL has no `jsonb`).
+        /// `JSON` — kelson's document type (MySQL has no `jsonb`).
         pub fn json(&mut self, name: &str) -> &mut Column {
             self.col(name, "JSON")
         }
 
-        /// `TINYINT(1)` — keel's boolean.
+        /// `TINYINT(1)` — kelson's boolean.
         pub fn tinyint1(&mut self, name: &str) -> &mut Column {
             self.col(name, "TINYINT(1)")
         }
@@ -269,7 +269,7 @@ impl Table {
     }
 
     /// Table-level `FOREIGN KEY (<column>) REFERENCES <table>(<column>)` —
-    /// MySQL parses but ignores inline `REFERENCES`, so every keel foreign
+    /// MySQL parses but ignores inline `REFERENCES`, so every kelson foreign
     /// key is rewritten into this clause.
     pub fn foreign_key(&mut self, column: &str, referenced_table: &str, referenced_column: &str) {
         self.constraints.push(format!(

@@ -1,8 +1,8 @@
-# keel-config
+# kelson-config
 
-Keel typed configuration: defaults <- file <- env, with boot-time secret asserts
+Kelson typed configuration: defaults <- file <- env, with boot-time secret asserts
 
-Part of the [Keel](../../../README.md) platform - a typed, plane-separated, delta-first application framework for Rust. See [PUBLISHING.md](../../../PUBLISHING.md) for the release process and the [workspace README](../../../README.md) for architecture.
+Part of the [Kelson](../../../README.md) platform - a typed, plane-separated, delta-first application framework for Rust. See [PUBLISHING.md](../../../PUBLISHING.md) for the release process and the [workspace README](../../../README.md) for architecture.
 
 ## License
 

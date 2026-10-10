@@ -2,13 +2,13 @@
 
 Status: **Accepted** (2026-10-02) · Gate: Wave 8 decision gate (docs/19, "Decision gates") ·
 Implementation: landed 2026-10-02, the day the gate passed review — `GET /_dashboard/ops`
-in `runtime/keel-api/src/dashboard.rs` plus `views/dashboard/ops.html` and its four
+in `runtime/kelson-api/src/dashboard.rs` plus `views/dashboard/ops.html` and its four
 partials, exactly as the Decision section specifies.
 Implementation-reconciliation notes are folded into the sections below.
 
 ## Context
 
-`/_dashboard` today is Horizon-lite (`runtime/keel-api/src/dashboard.rs`): a const HTML
+`/_dashboard` today is Horizon-lite (`runtime/kelson-api/src/dashboard.rs`): a const HTML
 page that fetches the JSON meta surface (`/healthz`, `/readyz`, `/meta/boot`,
 `/meta/flags`, `/meta/routes`, `/metrics`), served by a plain HTML route behind the
 `dashboard_enabled` gate (dev/test default; production needs the `app.dashboard` flag;
@@ -27,8 +27,8 @@ The stores exist and are already read by other surfaces:
   `storage/framework/schedule-state.json` (`state_path`/`load_state_doc`), written by
   `schedule:work`; `ScheduleRegistry` (names + `next_run`) is the in-process item set.
 - The engine saves an `ExecutionTrace` per execution (`engine.rs`: `tracer.save(&trace)`)
-  into `FileTraceStore::standard(root)` — the same file plane `keel inspect` reads.
-  `TraceStore` offers `recent(limit)` and `get(id)`. `keel-api` holds no trace store yet.
+  into `FileTraceStore::standard(root)` — the same file plane `kelson inspect` reads.
+  `TraceStore` offers `recent(limit)` and `get(id)`. `kelson-api` holds no trace store yet.
 - `ExecutionTrace` carries operation/profile/principal/tenant/plane/capability/authz,
   query taps, delta/audit/outbox counts, error, started_at — and `input`, which is
   documented as environment-internal ("must not leave the environment").
@@ -74,7 +74,7 @@ tests pin its output) and directly in the harness engine — so an app's own
 | Queue depth | `AppState.queue` → `JobStoreAdmin::snapshot()` | `pending`, `running`, `dead`, `succeeded`, oldest-pending age (`now - oldest_pending`); `None` handle → "queue store unavailable (degraded boot)" |
 | Recent jobs | `AppState.queue` → `JobStoreAdmin::list(None, 50)` | `id`, `name`, `queue`, `status`, `attempt`/`max_attempts`, `priority`, `enqueued_at`, `finished_at`, `last_error` — **`payload` is never rendered** (business data, not an audit surface) |
 | Schedule state | `load_state_doc(root)` (the file `schedule:work` persists) plus, when attached, `AppState.schedule: Option<Arc<ScheduleRegistry>>` | `last_fired` per item (name + instant), `failures[]` (name, at, error — operator-only state file content), registered items with `next_run(now)` from the registry; missing file → "no schedule state yet"; `None` registry (today) → "no schedules registered (registration is programmatic; see docs/13)" |
-| Execution inspect | `AppState.traces: Option<Arc<dyn TraceStore>>` — NEW optional AppState field wired to `FileTraceStore::standard(root)`, the byte-identical plane the engine saves to and `keel inspect` reads → `recent(50)`; detail row → `get(id)` | `execution_id`, `operation`, `profile`, `principal`, `tenant`, `capability`, `authz`, `ok`/error, query count + total ms, delta/audit/outbox counts, `started_at` — **`input` is never rendered** (documented environment-internal); `None` handle → "trace store unavailable" |
+| Execution inspect | `AppState.traces: Option<Arc<dyn TraceStore>>` — NEW optional AppState field wired to `FileTraceStore::standard(root)`, the byte-identical plane the engine saves to and `kelson inspect` reads → `recent(50)`; detail row → `get(id)` | `execution_id`, `operation`, `profile`, `principal`, `tenant`, `capability`, `authz`, `ok`/error, query count + total ms, delta/audit/outbox counts, `started_at` — **`input` is never rendered** (documented environment-internal); `None` handle → "trace store unavailable" |
 
 - All four sections read at render time from handles the process already has (or the
   state file / file-backed trace plane it already writes) — **no new writes, no new
@@ -101,10 +101,10 @@ no mutation. The `?trace=` detail row parses the query id with `uuid::Uuid::pars
 - Zero new dependencies, zero new env vars; no manifest changes (`MODULE_ABI` stays 1);
   the flag gate and disabled-404 posture of the existing dashboard are reused unchanged.
 - Suite count stays 150: evidence lands in EXISTING suites (view unit: four sections
-  render + per-section degradation + sensitive-field absence; keel-api route tests:
+  render + per-section degradation + sensitive-field absence; kelson-api route tests:
   404 flag-off, 401 anonymous, 200 principal + view, JSON degradation without views).
 - Operators get Horizon-class visibility (queue depth, recent jobs, schedule state,
-  execution inspect) from stores that already exist — `queue:monitor`/`keel inspect`
+  execution inspect) from stores that already exist — `queue:monitor`/`kelson inspect`
   remain the terminal equivalents of the same data.
 - Recorded non-goals for this gate: job payloads and trace inputs (never exposed),
   mutating actions (retry/kill/purge — those stay on the console commands), historical

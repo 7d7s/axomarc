@@ -4,7 +4,7 @@ import { test, expect } from '@playwright/test';
 
 // B-28 smoke: notes create + list through the graph routes after an auth
 // session. The notes path is read from ../module.toml so the spec follows
-// whatever project name `keel new` rendered (no hardcoded placeholder).
+// whatever project name `kelson new` rendered (no hardcoded placeholder).
 
 const manifest = readFileSync(resolve(__dirname, '..', 'module.toml'), 'utf8');
 const notesPath =

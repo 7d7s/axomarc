@@ -1,8 +1,8 @@
-# keel-command
+# kelson-command
 
-Keel framework: command bus — registry + dispatch through the execution engine.
+Kelson framework: command bus — registry + dispatch through the execution engine.
 
-Part of the [Keel](../../../README.md) platform - a typed, plane-separated, delta-first application framework for Rust. See [PUBLISHING.md](../../../PUBLISHING.md) for the release process and the [workspace README](../../../README.md) for architecture.
+Part of the [Kelson](../../../README.md) platform - a typed, plane-separated, delta-first application framework for Rust. See [PUBLISHING.md](../../../PUBLISHING.md) for the release process and the [workspace README](../../../README.md) for architecture.
 
 ## License
 

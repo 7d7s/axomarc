@@ -1,4 +1,4 @@
-;; Wave 9 B-30 fixture: garbage — a plugin whose keel_manifest() returns
+;; Wave 9 B-30 fixture: garbage — a plugin whose kelson_manifest() returns
 ;; junk ("not json"). Loading it must refuse with a manifest error before
 ;; any drift comparison (fail-closed boot refusal).
 (module
@@ -7,7 +7,7 @@
 
   (data (i32.const 1024) "not json\00")
 
-  (func $alloc (export "keel_alloc") (param $n i32) (result i32)
+  (func $alloc (export "kelson_alloc") (param $n i32) (result i32)
     (local $p i32)
     (local.set $p (global.get $heap))
     (global.set $heap
@@ -19,7 +19,7 @@
         (return (i32.const 0))))
     (local.get $p))
 
-  (func (export "keel_manifest") (result i64)
+  (func (export "kelson_manifest") (result i64)
     (local $p i32)
     (local.set $p (i32.const 1024))
     (block $done
@@ -31,7 +31,7 @@
       (i64.shl (i64.extend_i32_u (i32.const 1024)) (i64.const 32))
       (i64.extend_i32_u (i32.sub (local.get $p) (i32.const 1024)))))
 
-  (func (export "keel_call")
+  (func (export "kelson_call")
         (param $op i32) (param $op_len i32) (param $in i32) (param $in_len i32)
         (result i64)
     (unreachable)))

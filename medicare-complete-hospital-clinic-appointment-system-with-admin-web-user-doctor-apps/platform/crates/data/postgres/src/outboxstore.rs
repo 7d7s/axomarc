@@ -3,8 +3,8 @@
 //! after every listener succeeded. At-least-once: a failed event simply
 //! stays unpublished and is redelivered on the next pass.
 
-use keel_foundation::AppError;
-use keel_event::{BoxFuture, OutboxEvent, OutboxStore};
+use kelson_foundation::AppError;
+use kelson_event::{BoxFuture, OutboxEvent, OutboxStore};
 use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
@@ -43,7 +43,7 @@ impl OutboxStore for PgOutboxStore {
                         id: row.try_get("id").map_err(pg)?,
                         event: row.try_get("event").map_err(pg)?,
                         topic: row.try_get("topic").map_err(pg)?,
-                        tenant_id: tenant_id.map(keel_foundation::TenantId::from_uuid),
+                        tenant_id: tenant_id.map(kelson_foundation::TenantId::from_uuid),
                         payload: row.try_get("payload").map_err(pg)?,
                         published: row.try_get("published").map_err(pg)?,
                         created_at: row.try_get("created_at").map_err(pg)?,

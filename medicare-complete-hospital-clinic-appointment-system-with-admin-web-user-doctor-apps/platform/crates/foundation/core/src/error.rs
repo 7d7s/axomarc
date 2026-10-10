@@ -35,27 +35,27 @@ pub enum Retryability {
 
 /// Stable machine-oriented codes. Public API — never renumber, only append.
 pub mod codes {
-    pub const VALIDATION: &str = "KER_VALIDATION";
+    pub const VALIDATION: &str = "KSN_VALIDATION";
     pub const UNAUTHENTICATED: &str = "AUTH_UNAUTHENTICATED";
     pub const DENIED: &str = "AUTH_DENIED";
     pub const STALE_REVISION: &str = "AUTH_STALE_REVISION";
-    pub const NOT_FOUND: &str = "KER_NOT_FOUND";
-    pub const NOT_ACCEPTABLE: &str = "KER_NOT_ACCEPTABLE";
-    pub const CONFLICT: &str = "KER_CONFLICT";
-    pub const WORKFLOW: &str = "KER_WORKFLOW";
-    pub const MISSING_DELTA: &str = "KER_MISSING_DELTA";
-    pub const READ_MUTATED: &str = "KER_READ_MUTATED";
-    pub const NO_EFFECT: &str = "KER_NO_EFFECT";
+    pub const NOT_FOUND: &str = "KSN_NOT_FOUND";
+    pub const NOT_ACCEPTABLE: &str = "KSN_NOT_ACCEPTABLE";
+    pub const CONFLICT: &str = "KSN_CONFLICT";
+    pub const WORKFLOW: &str = "KSN_WORKFLOW";
+    pub const MISSING_DELTA: &str = "KSN_MISSING_DELTA";
+    pub const READ_MUTATED: &str = "KSN_READ_MUTATED";
+    pub const NO_EFFECT: &str = "KSN_NO_EFFECT";
     pub const CAP_LIMIT: &str = "CAP_LIMIT_EXCEEDED";
     pub const ELEVATION: &str = "SEC_ELEVATION";
     pub const PERSISTENCE: &str = "DB_ERROR";
     pub const EXTERNAL: &str = "EXT_ERROR";
-    pub const INTERNAL: &str = "KER_INTERNAL";
-    pub const NOT_IMPLEMENTED: &str = "KER_NOT_IMPLEMENTED";
-    pub const IDEMPOTENCY_CONFLICT: &str = "KER_IDEMPOTENCY_CONFLICT";
-    pub const DEADLINE: &str = "KER_DEADLINE";
-    pub const BOOT: &str = "KER_BOOT";
-    pub const MAINTENANCE: &str = "KER_MAINTENANCE";
+    pub const INTERNAL: &str = "KSN_INTERNAL";
+    pub const NOT_IMPLEMENTED: &str = "KSN_NOT_IMPLEMENTED";
+    pub const IDEMPOTENCY_CONFLICT: &str = "KSN_IDEMPOTENCY_CONFLICT";
+    pub const DEADLINE: &str = "KSN_DEADLINE";
+    pub const BOOT: &str = "KSN_BOOT";
+    pub const MAINTENANCE: &str = "KSN_MAINTENANCE";
     /// Wave 3 Phase 5 strict mode: `prevent_lazy_loading` tripped on
     /// `load_relation`/`load_missing` (the `with()` eager path stays legal).
     pub const LAZY_LOAD_PREVENTED: &str = "LAZY_LOAD_PREVENTED";
@@ -73,7 +73,7 @@ pub mod codes {
     /// budget (fuel metering). ResourceExhausted/Retryable; the runtime pins
     /// it to HTTP 503 at boot (`ErrorRenderRegistry::set_status`) because it
     /// behaves like a timeout, not a client-side rate limit.
-    pub const WASM_FUEL: &str = "KER_WASM_FUEL";
+    pub const WASM_FUEL: &str = "KSN_WASM_FUEL";
 }
 
 /// The one error type. `meta` must stay PHI-free (safe metadata only).

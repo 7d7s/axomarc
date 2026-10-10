@@ -5,7 +5,7 @@
 //! here; the engine consumes plans verbatim and never re-derives semantics at
 //! execution time.
 
-use keel_foundation::{
+use kelson_foundation::{
     AppError, ExecutionProfile, ExecutionProfileKind, OperationId, RetryPolicy, SecurityPlane,
     StreamRef,
 };
@@ -129,7 +129,7 @@ impl PlanCompiler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keel_foundation::ConcurrencyStrategy;
+    use kelson_foundation::ConcurrencyStrategy;
 
     fn op() -> OperationId {
         OperationId::from_static("demo.echo")

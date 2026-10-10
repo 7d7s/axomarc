@@ -1,4 +1,4 @@
-//! # keel-context
+//! # kelson-context
 //! `ExecutionContext` — the immutable, fully-resolved carrier of authority for one
 //! execution (spec §2). No ambient state, no mutation after `build()`.
 //!
@@ -13,7 +13,7 @@
 
 use std::collections::BTreeSet;
 
-use keel_foundation::{
+use kelson_foundation::{
     ActorId, AppError, AuthorizationRevision, CorrelationId, Deadline, ExecutionId,
     ExecutionProfile, ExecutionProfileKind, FeatureRevision, LeaseId, Locale, PrincipalId,
     RequestId, ScopeNodeId, SecurityPlane, TenantId, TimeZone, TraceId,

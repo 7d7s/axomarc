@@ -2,7 +2,7 @@
 //!
 //! Wave 6 P4 (docs/19) built this table for zoned schedule `next_run`; Wave 8
 //! P2 relocated it into the TCB so the date helpers (`now_in`, `in_tz`,
-//! `local_wall`) and the model casts can feed from it too — `keel-scheduler`
+//! `local_wall`) and the model casts can feed from it too — `kelson-scheduler`
 //! re-exports `timezone_offset_secs`, so the public path is unchanged.
 //!
 //! Zero-dep by policy (D-62: `chrono-tz` would be a new external

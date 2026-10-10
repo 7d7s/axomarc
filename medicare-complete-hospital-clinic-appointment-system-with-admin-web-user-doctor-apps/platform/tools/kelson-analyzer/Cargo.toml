@@ -1,0 +1,17 @@
+[package]
+name = "kelson-analyzer"
+description = "Kelson architecture analyzer: dependency-matrix enforcement (11-SPEC §9, gate G07)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+
+[dependencies]
+toml = { workspace = true }
+serde = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

@@ -19,13 +19,13 @@
 | [11-FOUNDATION-MASTER-SPEC.md](11-FOUNDATION-MASTER-SPEC.md) | Frozen foundation master spec: topology, dep rules, gates, D-44…D-53 |
 
 **One-paragraph summary:** a Rust modular monolith acting as an ERP execution kernel — every request flows identity → scope lattice → capability → transaction → delta; isolation is enforced at tenant (RLS), hierarchy (grants), field (PHI classes) and stream (delta filter) levels; modules plug in through a compile-time contract and switch on/off per tenant via the smart router; one delta engine powers audit, offline sync, webhooks and reports without a broker.
-## Keel foundation status (2026-08-20) — supersedes the M0 scaffold below
+## Kelson foundation status (2026-08-20) — supersedes the M0 scaffold below
 
 The authoritative platform foundation now lives at `platform/` (own Cargo workspace, 38 crates) — frozen spec: `11-FOUNDATION-MASTER-SPEC.md`, decisions D-44…D-53. `cargo check --workspace` and `cargo test --workspace --no-fail-fast` are green (~80 tests).
 
-- **Framework:** keel-foundation (typed ids, envelope, AppError) · identity/auth · tenant + RLS · capability scope lattice · execution engine (units, operations, delta stones) · command bus · delta engine · policy engine · notify hub · scheduling · config · cache (moka) · storage (MinIO/S3) · db (sqlx, Tx) · api host (axum) · worker.
-- **Toolchain:** `keel-console` — `doctor` / `check` (architecture rules) / `make:module` / `graph` / `modules` / `routes` / `capabilities` · keel-analyzer · keel-codegen · xtask dep-rules · `validation/architecture` CI-gate tests · `examples/minimal` golden-path proof (1 delta stone, replay true, stranger AUTH_DENIED).
-- **Verified live:** `keel-api` boots degraded without DB (D-52) — `/healthz` 200 `{ok,degraded:true}`, `/readyz` 503 `KER_BOOT`, `/meta/boot` lists 7 services, `POST /api/v1/demo/echo` returns the standard envelope.
+- **Framework:** kelson-foundation (typed ids, envelope, AppError) · identity/auth · tenant + RLS · capability scope lattice · execution engine (units, operations, delta stones) · command bus · delta engine · policy engine · notify hub · scheduling · config · cache (moka) · storage (MinIO/S3) · db (sqlx, Tx) · api host (axum) · worker.
+- **Toolchain:** `kelson-console` — `doctor` / `check` (architecture rules) / `make:module` / `graph` / `modules` / `routes` / `capabilities` · kelson-analyzer · kelson-codegen · xtask dep-rules · `validation/architecture` CI-gate tests · `examples/minimal` golden-path proof (1 delta stone, replay true, stranger AUTH_DENIED).
+- **Verified live:** `kelson-api` boots degraded without DB (D-52) — `/healthz` 200 `{ok,degraded:true}`, `/readyz` 503 `KSN_BOOT`, `/meta/boot` lists 7 services, `POST /api/v1/demo/echo` returns the standard envelope.
 - **Governance:** 13 root governance docs + `platform/docs/` + ADRs · `.github/workflows/keel.yml` · `database/roles.sql`.
 - `medicare-kernel/` is superseded by `platform/` (D-46) — kept compilable, will become `applications/reference-healthcare` later; the M0 section below is historical.
 

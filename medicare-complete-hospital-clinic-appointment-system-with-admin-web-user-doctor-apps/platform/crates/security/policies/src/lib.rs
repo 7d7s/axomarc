@@ -1,4 +1,4 @@
-//! # keel-policy
+//! # kelson-policy
 //! The authorization decision boundary (TCB boundary, 11-SPEC §3).
 //!
 //! ALLOW = IdentityValid ∧ MembershipActive ∧ CapabilityGranted ∧ ScopeContainsResource
@@ -11,9 +11,9 @@
 use std::collections::BTreeSet;
 use std::sync::RwLock;
 
-use keel_context::ExecutionContext;
-use keel_contracts::{AuthorizationPort, AuthzDecision, AuthzRequest};
-use keel_foundation::{
+use kelson_context::ExecutionContext;
+use kelson_contracts::{AuthorizationPort, AuthzDecision, AuthzRequest};
+use kelson_foundation::{
     codes, AppError, AuthorizationRevision, FeatureRevision, ModuleRevision, PrincipalId, TenantId,
 };
 use serde::{Deserialize, Serialize};
@@ -263,9 +263,9 @@ impl AuthorizationPort for PolicyAuthz {
 pub fn stale_snapshot_error() -> AppError {
     AppError::new(
         codes::STALE_REVISION,
-        keel_foundation::ErrorCategory::Authorization,
-        keel_foundation::Severity::Medium,
-        keel_foundation::Retryability::Retryable,
+        kelson_foundation::ErrorCategory::Authorization,
+        kelson_foundation::Severity::Medium,
+        kelson_foundation::Retryability::Retryable,
         "authorization snapshot stale; re-resolve on the safe path",
     )
 }

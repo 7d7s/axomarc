@@ -1,4 +1,4 @@
-//! # keel-identity
+//! # kelson-identity
 //! Identity model (11-SPEC §3): `Principal ≠ Actor ≠ Membership ≠ Credential ≠ Session`.
 //! No `user_id == principal_id == actor_id` shortcuts.
 
@@ -9,7 +9,7 @@ pub use store::{
     PrincipalStore,
 };
 
-use keel_foundation::{ActorId, AppError, MembershipId, PrincipalId, TenantId};
+use kelson_foundation::{ActorId, AppError, MembershipId, PrincipalId, TenantId};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;

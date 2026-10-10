@@ -1,0 +1,49 @@
+[package]
+name = "kelson-console"
+description = "Kelson CLI: doctor, check, graph, migrations, seed, keys, maintenance, queues and the operational parity surface"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+
+[[bin]]
+name = "kelson"
+path = "src/main.rs"
+
+[dependencies]
+kelson-foundation = { workspace = true }
+kelson-analyzer = { workspace = true }
+kelson-codegen = { workspace = true }
+kelson-registry = { workspace = true }
+kelson-ai-tools = { workspace = true }
+kelson-ai-mcp = { workspace = true }
+kelson-config = { workspace = true }
+kelson-context = { workspace = true }
+kelson-contracts = { workspace = true }
+kelson-execution = { workspace = true }
+kelson-policy = { workspace = true }
+kelson-postgres = { workspace = true }
+kelson-mysql = { workspace = true }
+kelson-integrity = { workspace = true }
+kelson-observability = { workspace = true }
+kelson-http = { workspace = true }
+kelson-views = { workspace = true }
+kelson-jobs = { workspace = true }
+kelson-scheduling = { workspace = true }
+kelson-deployment = { workspace = true }
+kelson-feature-flags = { workspace = true }
+clap = { workspace = true }
+toml = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

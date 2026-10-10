@@ -4,8 +4,8 @@
 //! Built-ins cover the parity-plan registry kinds — `date`, `datetime`,
 //! `decimal:<n>`, `json`, `array`, `enum:<a,b>` — plus the two security
 //! kinds: `encrypted` (seals through the foundation [`Sealer`] port; the
-//! AES-256-GCM implementation ships as `keel_tokens::AesGcmSealer`) and
-//! `hashed` (argon2id via `keel_identity::hash_password`, never
+//! AES-256-GCM implementation ships as `kelson_tokens::AesGcmSealer`) and
+//! `hashed` (argon2id via `kelson_identity::hash_password`, never
 //! round-trips). Modules register custom [`Cast`] implementations on the
 //! runtime with `ModelRuntime::with_cast`.
 //!
@@ -16,7 +16,7 @@
 //! base64 dependency (same posture as `application/configuration::keys` and
 //! `web::http::jwt`).
 
-use keel_foundation::{in_tz, timezone_offset_secs, AppError, Envelope, Sealer, Secret};
+use kelson_foundation::{in_tz, timezone_offset_secs, AppError, Envelope, Sealer, Secret};
 use serde_json::Value as Json;
 use std::sync::Arc;
 
@@ -25,7 +25,7 @@ use crate::runtime::parse_timestamp;
 /// One field-level value transform: wire JSON -> stored JSON ([`Cast::to_db`])
 /// and stored JSON -> wire JSON ([`Cast::from_db`]). Implementations must be
 /// deterministic on the read path and may validate/normalize on the write
-/// path (errors surface as `KER_VALIDATION` from the prepare boundary).
+/// path (errors surface as `KSN_VALIDATION` from the prepare boundary).
 pub trait Cast: Send + Sync {
     /// Transform a validated wire value into the value stored at rest.
     fn to_db(&self, wire: &Json) -> Result<Json, AppError>;
@@ -250,8 +250,8 @@ impl Cast for EnumCast {
 impl Cast for HashedCast {
     fn to_db(&self, wire: &Json) -> Result<Json, AppError> {
         let plain = require_string(wire, "hashed cast")?;
-        // keel-identity carries its own `Secret` wrapper (argon2 PHC at rest).
-        let hash = keel_identity::hash_password(&keel_identity::Secret::new(plain))?;
+        // kelson-identity carries its own `Secret` wrapper (argon2 PHC at rest).
+        let hash = kelson_identity::hash_password(&kelson_identity::Secret::new(plain))?;
         Ok(Json::String(hash))
     }
 
@@ -314,7 +314,7 @@ pub(crate) fn builtin_cast(spec: &str) -> Result<Box<dyn Cast>, AppError> {
         "hashed" => Ok(Box::new(HashedCast)),
         "encrypted" => Err(AppError::validation(
             "cast \"encrypted\" needs a sealing key — bind one with ModelRuntime::with_sealer \
-             (foundation Sealer port; AES-256-GCM ships as keel-tokens::AesGcmSealer)",
+             (foundation Sealer port; AES-256-GCM ships as kelson-tokens::AesGcmSealer)",
         )),
         _ => Err(AppError::validation(format!(
             "unknown cast {spec:?} — register it with ModelRuntime::with_cast"
@@ -452,7 +452,7 @@ fn base64_decode(text: &str) -> Result<Vec<u8>, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keel_tokens::{AesGcmSealer, KEY_LEN};
+    use kelson_tokens::{AesGcmSealer, KEY_LEN};
 
     fn builtin(spec: &str) -> Box<dyn Cast> {
         builtin_cast(spec).unwrap_or_else(|e| panic!("builtin {spec:?}: {}", e.public_message))
@@ -600,7 +600,7 @@ mod tests {
             .err()
             .expect("encrypted without a bound sealer must fail");
         assert!(err.public_message.contains("with_sealer"));
-        assert!(err.public_message.contains("keel-tokens"));
+        assert!(err.public_message.contains("kelson-tokens"));
     }
 
     #[test]

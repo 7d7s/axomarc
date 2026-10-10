@@ -1,10 +1,10 @@
-//! # keel-notifications
+//! # kelson-notifications
 //! Notification ports (MSG91 SMS / SMTP mail / FCM push per D-16..D-18).
 //! Adapters implement; hub dispatches; failures follow the external dependency
 //! behavior matrix (timeout, 429, duplicate risk...).
 
-use keel_foundation::{AppError, PrincipalId, TenantId};
-use keel_storage::{ObjectRef, StoragePort};
+use kelson_foundation::{AppError, PrincipalId, TenantId};
+use kelson_storage::{ObjectRef, StoragePort};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -61,7 +61,7 @@ pub struct ResolvedMailAttachment {
 }
 
 /// Default attachment cap for mail: mirrors
-/// `UploadLimits::default().max_file_bytes` (8 MiB). A keel-api test pins the
+/// `UploadLimits::default().max_file_bytes` (8 MiB). A kelson-api test pins the
 /// two together so an attachment the upload edge accepts is always sendable.
 pub const DEFAULT_MAX_ATTACHMENT_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -86,7 +86,7 @@ pub struct Mailable {
     pub text: Option<String>,
     #[serde(default)]
     pub html: Option<String>,
-    /// Extra RFC822 headers (`X-Keel-Tenant`, `List-Unsubscribe`, ...).
+    /// Extra RFC822 headers (`X-Kelson-Tenant`, `List-Unsubscribe`, ...).
     #[serde(default)]
     pub headers: Vec<(String, String)>,
     #[serde(default)]
@@ -321,8 +321,8 @@ impl QueuedNotificationDelivery {
 }
 
 /// Wave 6 P6: job name of the queued delivery — a def's `queue_via`
-/// returns it, keel-api registers the buildable def (enqueue side), and
-/// keel-worker registers the matching drain handler. One name, both
+/// returns it, kelson-api registers the buildable def (enqueue side), and
+/// kelson-worker registers the matching drain handler. One name, both
 /// halves: a typo fails `registry.build` loudly at dispatch.
 pub const NOTIFICATION_SEND_JOB: &str = "notification.send";
 
@@ -369,7 +369,7 @@ pub struct NotificationPage {
 /// the impl).
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// Wave 6 P5: database-channel port. Implemented by keel-postgres (the
+/// Wave 6 P5: database-channel port. Implemented by kelson-postgres (the
 /// `notifications` table) and by [`InMemoryNotificationStore`] for degraded
 /// boot and tests (D-52). Every method is principal-scoped: a caller can
 /// only ever read or mark its own rows.
@@ -465,7 +465,7 @@ impl NotificationStore for InMemoryNotificationStore {
 
 /// Wave 6 P5: HTML body seam (19-PARITY "HTML mail bodies rendered via
 /// Wave 2 views"). The service layer cannot depend on the web layer, so the
-/// views engine reaches the hub through this port — keel-api adapts
+/// views engine reaches the hub through this port — kelson-api adapts
 /// `ViewsEngine` onto it.
 pub trait NotificationViewRenderer: Send + Sync {
     fn render(&self, template: &str, context: serde_json::Value) -> Result<String, AppError>;
@@ -501,7 +501,7 @@ pub struct NotifyHub {
     pub push: Option<Box<dyn PushPort>>,
     /// Wave 6 P3: the boot-loaded message catalog for localized
     /// notification strings; `None` (`empty()`) keeps templates literal.
-    messages: Option<std::sync::Arc<keel_foundation::MessageCatalog>>,
+    messages: Option<std::sync::Arc<kelson_foundation::MessageCatalog>>,
     /// Wave 6 P5: database-channel store (`None` = unwired → the explicit
     /// missing-adapter error on the `Database` channel).
     store: Option<std::sync::Arc<dyn NotificationStore>>,
@@ -534,7 +534,7 @@ impl NotifyHub {
     /// Wave 6 P3: a hub that resolves notification strings through the
     /// boot-loaded catalog (producers carry the request locale per
     /// message; `None` falls back to the catalog default locale).
-    pub fn with_catalog(messages: std::sync::Arc<keel_foundation::MessageCatalog>) -> Self {
+    pub fn with_catalog(messages: std::sync::Arc<kelson_foundation::MessageCatalog>) -> Self {
         Self {
             sms: None,
             mail: None,
@@ -554,7 +554,7 @@ impl NotifyHub {
         self
     }
 
-    /// Wave 6 P5: attach the notification HTML view renderer (keel-api
+    /// Wave 6 P5: attach the notification HTML view renderer (kelson-api
     /// adapts the Wave 2 views engine onto the port).
     pub fn with_view_renderer(
         mut self,
@@ -657,7 +657,7 @@ impl NotifyHub {
             .iter()
             .map(|(key, value)| (key.as_str(), value.as_str()))
             .collect();
-        let out = keel_foundation::translate(catalog, resolved, text, &params);
+        let out = kelson_foundation::translate(catalog, resolved, text, &params);
         match out.locale_used {
             Some(_) => out.text,
             None => text.to_string(),
@@ -990,7 +990,7 @@ fn payload_vars(n: &dyn NotificationDef) -> BTreeMap<String, String> {
 fn view_context(
     n: &dyn NotificationDef,
     locale: Option<&str>,
-    catalog: Option<&keel_foundation::MessageCatalog>,
+    catalog: Option<&kelson_foundation::MessageCatalog>,
 ) -> serde_json::Value {
     let mut context = n.to_database();
     if let Some(catalog) = catalog {
@@ -1043,7 +1043,7 @@ mod tests {
             locale: None,
         };
         let err = hub.dispatch(&msg).unwrap_err();
-        assert_eq!(err.code, keel_foundation::codes::NOT_IMPLEMENTED);
+        assert_eq!(err.code, kelson_foundation::codes::NOT_IMPLEMENTED);
     }
 
     /// Wave 6 P3: a catalog-carrying hub resolves notification templates
@@ -1052,7 +1052,7 @@ mod tests {
     /// untouched.
     #[test]
     fn hub_localizes_template_keys_through_the_catalog() {
-        let mut catalog = keel_foundation::MessageCatalog::new("en");
+        let mut catalog = kelson_foundation::MessageCatalog::new("en");
         catalog
             .load("en", &[("notify.booked", "Booked for {patient}")])
             .unwrap();
@@ -1151,7 +1151,7 @@ mod tests {
         assert_eq!(resolved[0].bytes.len(), 512);
 
         let err = m.resolve_attachments(&storage, 511).unwrap_err();
-        assert_eq!(err.code, keel_foundation::codes::CAP_LIMIT);
+        assert_eq!(err.code, kelson_foundation::codes::CAP_LIMIT);
     }
 
     #[test]
@@ -1164,7 +1164,7 @@ mod tests {
         let mut m = mail();
         m.cc.push("not-an-address".into());
         let err = m.validate().unwrap_err();
-        assert_eq!(err.code, keel_foundation::codes::VALIDATION);
+        assert_eq!(err.code, kelson_foundation::codes::VALIDATION);
         // missing body
         let mut m = mail();
         m.text = None;
@@ -1190,7 +1190,7 @@ mod tests {
     fn mailable_job_payload_roundtrips_with_object_refs_only() {
         let mut m = mail();
         m.cc.push("audit@example.com".into());
-        m.headers.push(("X-Keel-Tenant".into(), "t-1".into()));
+        m.headers.push(("X-Kelson-Tenant".into(), "t-1".into()));
         m.attachments.push(attachment("invoice.pdf"));
 
         let payload = serde_json::to_value(&m).expect("serializes");
@@ -1471,7 +1471,7 @@ mod tests {
             .dispatch_notification(&note, Channel::Email, Some("ada@example.com"), &ctx)
             .await
             .expect_err("broken template refuses the send");
-        assert_eq!(err.code, keel_foundation::codes::INTERNAL);
+        assert_eq!(err.code, kelson_foundation::codes::INTERNAL);
     }
 
     /// Attachment-bearing mail cannot ride the dispatch path: the bytes need
@@ -1486,7 +1486,7 @@ mod tests {
             .dispatch_notification(&AttachmentsNotification, Channel::Email, Some("ops@example.com"), &ctx)
             .await
             .expect_err("attachments refuse");
-        assert_eq!(err.code, keel_foundation::codes::NOT_IMPLEMENTED);
+        assert_eq!(err.code, kelson_foundation::codes::NOT_IMPLEMENTED);
     }
 
     /// Missing targets, adapters and store ports are all explicit errors —
@@ -1506,25 +1506,25 @@ mod tests {
                 .dispatch_notification(&note, channel, None, &ctx)
                 .await
                 .expect_err("target required");
-            assert_eq!(err.code, keel_foundation::codes::VALIDATION, "{channel:?}");
+            assert_eq!(err.code, kelson_foundation::codes::VALIDATION, "{channel:?}");
             let err = hub
                 .dispatch_notification(&note, channel, Some("  "), &ctx)
                 .await
                 .expect_err("blank target refused");
-            assert_eq!(err.code, keel_foundation::codes::VALIDATION, "{channel:?}");
+            assert_eq!(err.code, kelson_foundation::codes::VALIDATION, "{channel:?}");
         }
 
         let err = hub
             .dispatch_notification(&note, Channel::Email, Some("ada@example.com"), &ctx)
             .await
             .expect_err("adapter missing");
-        assert_eq!(err.code, keel_foundation::codes::NOT_IMPLEMENTED);
+        assert_eq!(err.code, kelson_foundation::codes::NOT_IMPLEMENTED);
 
         let err = hub
             .dispatch_notification(&note, Channel::Database, None, &ctx)
             .await
             .expect_err("store missing");
-        assert_eq!(err.code, keel_foundation::codes::NOT_IMPLEMENTED);
+        assert_eq!(err.code, kelson_foundation::codes::NOT_IMPLEMENTED);
 
         let raw = NotifyMessage {
             channel: Channel::Database,
@@ -1535,7 +1535,7 @@ mod tests {
             locale: None,
         };
         let err = hub.dispatch(&raw).expect_err("raw path refuses rows");
-        assert_eq!(err.code, keel_foundation::codes::NOT_IMPLEMENTED);
+        assert_eq!(err.code, kelson_foundation::codes::NOT_IMPLEMENTED);
     }
 
     /// The database channel scoping + pagination contract: principal-scoped
@@ -1664,8 +1664,8 @@ mod tests {
         }
     }
 
-    fn appointment_catalog() -> keel_foundation::MessageCatalog {
-        let mut catalog = keel_foundation::MessageCatalog::new("en");
+    fn appointment_catalog() -> kelson_foundation::MessageCatalog {
+        let mut catalog = kelson_foundation::MessageCatalog::new("en");
         catalog
             .load(
                 "en",
@@ -1785,7 +1785,7 @@ mod tests {
             )
             .await
             .expect_err("no port refuses the dispatch");
-        assert_eq!(err.code, keel_foundation::codes::NOT_IMPLEMENTED);
+        assert_eq!(err.code, kelson_foundation::codes::NOT_IMPLEMENTED);
         assert!(
             mail_log.lock().unwrap().is_empty(),
             "nothing was delivered inline"
@@ -1865,13 +1865,13 @@ mod tests {
             .dispatch_on_demand(&note, Channel::Database, "ada@example.com", &OnDemandContext::default())
             .await
             .expect_err("database channel needs a principal");
-        assert_eq!(err.code, keel_foundation::codes::VALIDATION);
+        assert_eq!(err.code, kelson_foundation::codes::VALIDATION);
 
         let err = hub
             .dispatch_on_demand(&note, Channel::Email, "   ", &OnDemandContext::default())
             .await
             .expect_err("blank target refused");
-        assert_eq!(err.code, keel_foundation::codes::VALIDATION);
+        assert_eq!(err.code, kelson_foundation::codes::VALIDATION);
     }
 
     /// Wave 6 P6 localization: subject, text and SMS all resolve the
@@ -1966,7 +1966,7 @@ mod tests {
             .deliver_queued(future)
             .await
             .expect_err("unknown version refused");
-        assert_eq!(err.code, keel_foundation::codes::VALIDATION);
+        assert_eq!(err.code, kelson_foundation::codes::VALIDATION);
     }
 
     /// Wave 6 P6: the notification view context is `to_database()` plus

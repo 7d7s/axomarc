@@ -20,8 +20,8 @@ Dimensions: global, environment, tenant, percentage, capability, actor. Rollout 
 `disabled -> internal -> 1% -> 10% -> 50% -> 100%` with instant rollback.
 
 ```bash
-keel flag:list
-keel flag:set new-billing-engine 10% --tenant <uuid>
+kelson flag:list
+kelson flag:set new-billing-engine 10% --tenant <uuid>
 ```
 
 Snapshots resolve once per execution (context carries the `FeatureSnapshot`), so a run never
@@ -29,8 +29,8 @@ changes behavior mid-flight.
 
 ## Deployment model
 
-`enterprise/deployment` defines the release manifest and build gates. `keel build` wraps cargo
-profiles and writes `RELEASE.md`; `keel release` prints the current manifest. Runtime postures:
+`enterprise/deployment` defines the release manifest and build gates. `kelson build` wraps cargo
+profiles and writes `RELEASE.md`; `kelson release` prints the current manifest. Runtime postures:
 api binary vs worker binary vs migration runner — selected by config environment + binary.
 
 ## Control plane roadmap

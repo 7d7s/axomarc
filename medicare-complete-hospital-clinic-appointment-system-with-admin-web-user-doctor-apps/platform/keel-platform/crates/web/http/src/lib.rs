@@ -1,4 +1,4 @@
-//! # keel-http
+//! # kelson-http
 //! MVVM presentation adapter (11-SPEC §6/§20). Transport ONLY:
 //! `Controller → RequestViewModel → Command/Query → Execution → Result →
 //!  ResponseViewModel → Resource → wire`. The domain never knows HTTP; this crate
@@ -59,7 +59,7 @@ pub use upload::{
 };
 
 use axum::http::StatusCode;
-use keel_foundation::{AppError, ErrorCategory};
+use kelson_foundation::{AppError, ErrorCategory};
 use serde::{Deserialize, Serialize};
 
 /// Success envelope (public API shape).
@@ -110,7 +110,7 @@ impl ErrorBody {
         Self {
             code: err.code.clone(),
             message: err.public_message.clone(),
-            retryable: err.retryable == keel_foundation::Retryability::Retryable,
+            retryable: err.retryable == kelson_foundation::Retryability::Retryable,
             meta: if err.meta.is_empty() {
                 None
             } else {
@@ -222,7 +222,7 @@ mod tests {
     #[test]
     fn conflict_category_maps_to_409() {
         let e = AppError::stale_record("Ledger 1 was modified concurrently");
-        assert_eq!(e.code, keel_foundation::codes::STALE_RECORD);
+        assert_eq!(e.code, kelson_foundation::codes::STALE_RECORD);
         assert_eq!(e.category, ErrorCategory::Conflict);
         assert_eq!(status_for_error(&e), StatusCode::CONFLICT);
         let e = AppError::conflict("already taken");
@@ -235,6 +235,6 @@ mod tests {
         let body = ErrorBody::from_app_error(&e);
         let wire = serde_json::to_string(&body).unwrap();
         assert!(!wire.contains("secret stack trace"));
-        assert!(wire.contains("KER_INTERNAL"));
+        assert!(wire.contains("KSN_INTERNAL"));
     }
 }

@@ -1,4 +1,4 @@
-# Keel Architecture (summary)
+# Kelson Architecture (summary)
 
 Full normative text: `docs/rust/11-FOUNDATION-MASTER-SPEC.md`.
 
@@ -23,9 +23,9 @@ data→+services+async · observability→foundation ·
 adapters→foundation+services+async · tools→foundation+application ·
 tests→foundation+application+tools · runtime→all layers+adapters ·
 examples/applications→as published.
-Enforced by `tools/keel-analyzer` (`keel check`, `cargo xtask dep-rules`) and the
+Enforced by `tools/kelson-analyzer` (`kelson check`, `cargo xtask dep-rules`) and the
 `tests/architecture` gate.
 
 ## Multi-tenancy (§24)
-Typed ids → `ExecutionContext` → `SET LOCAL keel.tenant_id` → RLS. Runtime roles
+Typed ids → `ExecutionContext` → `SET LOCAL kelson.tenant_id` → RLS. Runtime roles
 never own tables (`database/roles.sql`).

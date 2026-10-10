@@ -1,17 +1,17 @@
-//! # keel-deployment
+//! # kelson-deployment
 //! Deployment model (blueprint L66, STAGE-0-SPEC §12, S3). Releases are
 //! described by an explicit manifest written at build time — what an
 //! operator promotes is a named artifact, never "whatever is in target/".
 //! The build matrix (which binaries, which profile) is documented in
-//! RELEASE.md at the workspace root and encoded here for `keel build`.
+//! RELEASE.md at the workspace root and encoded here for `kelson build`.
 
 use std::path::{Path, PathBuf};
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 use serde::{Deserialize, Serialize};
 
-/// Workspace-relative runtime binaries produced by `keel build`.
-pub const RELEASE_BINARIES: &[&str] = &["keel-api", "keel-worker", "keel"];
+/// Workspace-relative runtime binaries produced by `kelson build`.
+pub const RELEASE_BINARIES: &[&str] = &["kelson-api", "kelson-worker", "kelson"];
 
 /// Build profile selection (§12: dev/test/release postures).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,7 +55,7 @@ pub struct Artifact {
     pub profile: BuildProfile,
 }
 
-/// Release manifest (storage/framework/release.json). Written by `keel build`,
+/// Release manifest (storage/framework/release.json). Written by `kelson build`,
 /// read by operators and runtime self-reporting (`/meta/boot` style endpoints).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseManifest {
@@ -210,7 +210,7 @@ mod tests {
 
     #[test]
     fn manifest_roundtrip() {
-        let root = std::env::temp_dir().join(format!("keel-deploy-test-{}", uuid::Uuid::now_v7()));
+        let root = std::env::temp_dir().join(format!("kelson-deploy-test-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&root).unwrap();
         let written = write_manifest(&root, &sample_manifest()).unwrap();
         assert!(written.exists());
@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn missing_manifest_is_none_not_error() {
-        let root = std::env::temp_dir().join(format!("keel-deploy-none-{}", uuid::Uuid::now_v7()));
+        let root = std::env::temp_dir().join(format!("kelson-deploy-none-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&root).unwrap();
         assert!(read_manifest(&root).unwrap().is_none());
         std::fs::remove_dir_all(&root).ok();

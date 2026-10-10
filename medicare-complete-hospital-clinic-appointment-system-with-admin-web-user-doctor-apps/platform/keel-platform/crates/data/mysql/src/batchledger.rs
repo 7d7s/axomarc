@@ -6,10 +6,10 @@
 //! per-member state lives in `jobs_queue`, so reads are live queue truth and
 //! concurrent member finishes plus admin processes cannot lose updates.
 //!
-//! The ledger contract is sync (like [`keel_jobs::JobStore`]); MySQL calls
+//! The ledger contract is sync (like [`kelson_jobs::JobStore`]); MySQL calls
 //! bridge through [`crate::bridge::block_on`].
 //!
-//! MySQL port notes (every divergence from `keel_postgres::batchledger`):
+//! MySQL port notes (every divergence from `kelson_postgres::batchledger`):
 //!
 //! - `ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, on_complete =
 //!   EXCLUDED.on_complete` -> `INSERT ... VALUES (...) AS new ON DUPLICATE
@@ -33,8 +33,8 @@
 //!   `Vec<Uuid>`), the `finished_at IS NOT NULL AND finished_at < ?`
 //!   strictly-before cutoff is untouched.
 
-use keel_foundation::AppError;
-use keel_jobs::{BatchLedger, BatchRecord};
+use kelson_foundation::AppError;
+use kelson_jobs::{BatchLedger, BatchRecord};
 use sqlx::mysql::MySqlPool;
 use sqlx::Row;
 use time::OffsetDateTime;

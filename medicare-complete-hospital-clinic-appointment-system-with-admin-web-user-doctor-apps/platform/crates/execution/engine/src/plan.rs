@@ -1,7 +1,7 @@
 //! ExecutionPlan: developers declare intent; the plan compiler resolves semantics
 //! (S1). The engine consumes compiled plans verbatim and never re-derives them.
 
-use keel_foundation::{
+use kelson_foundation::{
     AppError, ConcurrencyStrategy, ExecutionProfile, ExecutionProfileKind, OperationId,
     RetryPolicy, SecurityPlane, StreamRef,
 };
@@ -145,7 +145,7 @@ impl ExecutionPlan {
                 self.operation
             )));
         }
-        if self.concurrency.strategy == keel_foundation::ConcurrencyStrategy::Serialized
+        if self.concurrency.strategy == kelson_foundation::ConcurrencyStrategy::Serialized
             && !self.transaction.required
         {
             return Err(AppError::internal(format!(

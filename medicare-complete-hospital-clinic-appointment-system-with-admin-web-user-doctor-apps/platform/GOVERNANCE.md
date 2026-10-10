@@ -1,6 +1,6 @@
 # Governance
 
-Keel is governed by frozen specs first, people second.
+Kelson is governed by frozen specs first, people second.
 
 ## Authority order
 1. `docs/rust/11-FOUNDATION-MASTER-SPEC.md` (topology, dependency rules, gates, decisions)
@@ -12,7 +12,7 @@ Keel is governed by frozen specs first, people second.
   `docs/rust/08-DECISIONS.md` and an ADR under `specs/ADR/`.
 - **Kernel change** (`crates/foundation/`, `crates/execution/`, `crates/security/`) — two reviewers minimum; all gates green.
 - **Framework/adapter change** — one reviewer; gates green.
-- **Module addition** — via `keel make:module`, then `keel check` + `keel graph`.
+- **Module addition** — via `kelson make:module`, then `kelson check` + `kelson graph`.
 
 ## Gates
 Release requires G00–G20 (spec §13) green. The architecture gate (G07) is

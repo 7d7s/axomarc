@@ -1,6 +1,6 @@
-//! xtask: repo-level automation for the Keel platform.
+//! xtask: repo-level automation for the Kelson platform.
 //!
-//! - `cargo xtask dep-rules`  architecture analyzer gate (same engine as `keel check` and CI)
+//! - `cargo xtask dep-rules`  architecture analyzer gate (same engine as `kelson check` and CI)
 //!   plus the Wave 4 boot env-var lint — the one gate command enforces both
 //! - `cargo xtask lint`       the boot env-var lint on its own (docs/19 L209)
 //! - `cargo xtask semver`     cargo-semver-checks release gate (skips before the first release tag)
@@ -50,13 +50,13 @@ fn root_dir() -> &'static Path {
 fn semver() -> ExitCode {
     let root = root_dir();
     match std::process::Command::new("git")
-        .args(["tag", "-l", "keel/platform-v*"])
+        .args(["tag", "-l", "kelson/platform-v*"])
         .current_dir(root)
         .output()
     {
         Ok(out) if out.status.success() => {
             if String::from_utf8_lossy(&out.stdout).trim().is_empty() {
-                println!("semver: no keel/platform-v* release tag yet — no baseline to compare (skipping gate)");
+                println!("semver: no kelson/platform-v* release tag yet — no baseline to compare (skipping gate)");
                 return ExitCode::SUCCESS;
             }
         }
@@ -97,7 +97,7 @@ fn semver() -> ExitCode {
 
 fn dep_rules() -> ExitCode {
     let root = root_dir();
-    let violations = keel_analyzer::analyze_workspace(root);
+    let violations = kelson_analyzer::analyze_workspace(root);
     let env_violations = env_var_violations(root);
     if violations.is_empty() && env_violations.is_empty() {
         println!("dep-rules: clean");
@@ -128,17 +128,17 @@ fn dep_rules() -> ExitCode {
 
 /// Wave 4 Phase 5 (docs/19 L209, closes L02): sanctioned boot paths — the
 /// only files outside `tests/` allowed to read the process environment
-/// directly. Configuration layering belongs in keel-config (`apply_env` +
+/// directly. Configuration layering belongs in kelson-config (`apply_env` +
 /// dotenv); everything else here is a binary entrypoint's boot concern
 /// (config path, logging overrides, operational gates).
 const SANCTIONED_ENV_PATHS: &[&str] = &[
     "crates/application/configuration/src/lib.rs",
     "crates/application/configuration/src/dotenv.rs",
     "crates/observability/logging/src/config.rs",
-    "runtime/keel-api/src/lib.rs",
-    "runtime/keel-api/src/shell.rs",
-    "runtime/keel-worker/src/main.rs",
-    "tools/keel-console/src/main.rs",
+    "runtime/kelson-api/src/lib.rs",
+    "runtime/kelson-api/src/shell.rs",
+    "runtime/kelson-worker/src/main.rs",
+    "tools/kelson-console/src/main.rs",
 ];
 
 /// The env-read needles, assembled at runtime so this scanner cannot match
@@ -239,7 +239,7 @@ fn load_workspace(root: &Path) -> Result<Vec<Pkg>, String> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| "no [workspace.package].version".to_string())?
         .to_string();
-    let members = keel_analyzer::parse_members(&root_toml)?;
+    let members = kelson_analyzer::parse_members(&root_toml)?;
 
     let mut pkgs = Vec::new();
     for member in members {
@@ -273,7 +273,7 @@ fn load_workspace(root: &Path) -> Result<Vec<Pkg>, String> {
         for table in ["dependencies", "dev-dependencies"] {
             if let Some(deps) = v.get(table).and_then(|d| d.as_table()) {
                 for key in deps.keys() {
-                    if key.starts_with("keel-") {
+                    if key.starts_with("kelson-") {
                         internal_deps.push(key.clone());
                     }
                 }
@@ -350,7 +350,7 @@ enum PublishOutcome {
     /// Uploaded (or dry-run packaged + verified).
     Ok,
     /// Dry-run only: cargo refused to package because workspace-internal
-    /// `keel-*` dependencies are not on crates.io yet (first-publish
+    /// `kelson-*` dependencies are not on crates.io yet (first-publish
     /// bootstrap gap). The real wave publishes in dependency order, which
     /// resolves each dep before its dependents are attempted.
     Deferred(String),
@@ -359,7 +359,7 @@ enum PublishOutcome {
 }
 
 /// The unresolved package name when the only failure is the first-publish
-/// bootstrap gap: workspace-internal `keel-*` crates are absent from the
+/// bootstrap gap: workspace-internal `kelson-*` crates are absent from the
 /// crates.io index until the wave runs, so cargo cannot package dependents.
 fn bootstrap_missing(stderr: &str) -> Option<&str> {
     if !stderr.contains("location searched: crates.io index") {
@@ -368,7 +368,7 @@ fn bootstrap_missing(stderr: &str) -> Option<&str> {
     const PAT: &str = "no matching package named `";
     let rest = stderr.get(stderr.find(PAT)? + PAT.len()..)?;
     let name = &rest[..rest.find('`')?];
-    name.starts_with("keel-").then_some(name)
+    name.starts_with("kelson-").then_some(name)
 }
 
 fn publish_one(root: &Path, name: &str, dry_run: bool) -> PublishOutcome {
@@ -422,7 +422,7 @@ fn publish_one(root: &Path, name: &str, dry_run: bool) -> PublishOutcome {
 /// Publish all publishable workspace crates to crates.io, in dependency order.
 ///
 /// `--dry-run` packages and validates without uploading (no retries: a dry-run
-/// failure is a real problem). Crates whose workspace-internal `keel-*` deps
+/// failure is a real problem). Crates whose workspace-internal `kelson-*` deps
 /// are not on crates.io yet are reported as `deferred` — the first-publish
 /// bootstrap gap; the real wave publishes in dependency order, which resolves
 /// each dep before its dependents are attempted. `--only a,b,c` restricts the
@@ -667,7 +667,7 @@ mod env_lint_tests {
     fn temp_root(tag: &str) -> std::path::PathBuf {
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "keel-xtask-envlint-{tag}-{}-{}",
+            "kelson-xtask-envlint-{tag}-{}-{}",
             std::process::id(),
             SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         ));
@@ -694,7 +694,7 @@ mod env_lint_tests {
             &format!("fn f() {{ let _ = {var_read}; }}\n"),
         );
         write(
-            "tools/keel-console/src/main.rs",
+            "tools/kelson-console/src/main.rs",
             &format!("fn f() {{ let _ = {var_read}; }}\n"),
         );
         write(

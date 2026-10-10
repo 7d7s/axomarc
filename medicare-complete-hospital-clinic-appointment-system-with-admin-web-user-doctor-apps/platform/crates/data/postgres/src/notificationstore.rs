@@ -1,10 +1,10 @@
 //! Wave 6 P5 database channel: durable `notifications` rows (19-PARITY
-//! "Notifications v2"). Implements the keel-notifications `NotificationStore`
+//! "Notifications v2"). Implements the kelson-notifications `NotificationStore`
 //! port so the inbox survives restarts and scales across instances; the
 //! in-memory store backs degraded boot (D-52).
 
-use keel_foundation::{AppError, PrincipalId};
-use keel_notifications::{BoxFuture, NotificationPage, NotificationRow, NotificationStore};
+use kelson_foundation::{AppError, PrincipalId};
+use kelson_notifications::{BoxFuture, NotificationPage, NotificationRow, NotificationStore};
 use sqlx::postgres::PgPool;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -31,7 +31,7 @@ fn row_to_notification(row: sqlx::postgres::PgRow) -> Result<NotificationRow, Ap
     Ok(NotificationRow {
         id,
         principal_id: PrincipalId::from_uuid(principal),
-        tenant_id: tenant.map(keel_foundation::TenantId::from_uuid),
+        tenant_id: tenant.map(kelson_foundation::TenantId::from_uuid),
         kind: row.try_get("type").map_err(pg)?,
         data: row.try_get("data").map_err(pg)?,
         read_at: row.try_get("read_at").map_err(pg)?,

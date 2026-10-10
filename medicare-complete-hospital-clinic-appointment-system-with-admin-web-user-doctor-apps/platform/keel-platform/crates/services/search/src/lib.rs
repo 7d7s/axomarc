@@ -1,4 +1,4 @@
-//! # keel-search — search contract (item 32, L45/L46)
+//! # kelson-search — search contract (item 32, L45/L46)
 //!
 //! Backend-agnostic search surface: `Searchable`, `Index`, `SearchQuery`,
 //! `SearchResult`, `Facet`, `VectorQuery`, `HybridQuery` (11-SPEC item 32).
@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use keel_foundation::{AppError, TenantId};
+use kelson_foundation::{AppError, TenantId};
 use serde::{Deserialize, Serialize};
 
 /// One indexable document. `text` feeds keyword scoring, `fields` feed filters

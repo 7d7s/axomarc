@@ -11,41 +11,41 @@ edition = "2021"
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/7d7s/axomarc"
-keywords = ["keel", "app"]
+keywords = ["kelson", "app"]
 
 [workspace.dependencies]
 # Framework umbrella (re-exports the published framework surface).
 # Local path sources for dev; switch to registry sources for release.
-keel-framework = { version = "0.1", path = "../keel-platform/crates/framework" }
+kelson-framework = { version = "0.1", path = "../keel-platform/crates/framework" }
 
 # Framework crates (direct deps for modules that need them)
-keel-jobs = { version = "0.1", path = "../keel-platform/crates/async/jobs" }
-keel-event = { version = "0.1", path = "../keel-platform/crates/async/events" }
-keel-wasm = { version = "0.1", path = "../keel-platform/crates/extension/wasm" }
-keel-caching = { version = "0.1", path = "../keel-platform/crates/services/cache" }
-keel-scheduling = { version = "0.1", path = "../keel-platform/crates/async/scheduler" }
-keel-storage = { version = "0.1", path = "../keel-platform/crates/services/storage" }
-keel-search = { version = "0.1", path = "../keel-platform/crates/services/search" }
-keel-realtime = { version = "0.1", path = "../keel-platform/crates/services/realtime" }
-keel-deployment = { version = "0.1", path = "../keel-platform/crates/enterprise/deployment" }
+kelson-jobs = { version = "0.1", path = "../keel-platform/crates/async/jobs" }
+kelson-event = { version = "0.1", path = "../keel-platform/crates/async/events" }
+kelson-wasm = { version = "0.1", path = "../keel-platform/crates/extension/wasm" }
+kelson-caching = { version = "0.1", path = "../keel-platform/crates/services/cache" }
+kelson-scheduling = { version = "0.1", path = "../keel-platform/crates/async/scheduler" }
+kelson-storage = { version = "0.1", path = "../keel-platform/crates/services/storage" }
+kelson-search = { version = "0.1", path = "../keel-platform/crates/services/search" }
+kelson-realtime = { version = "0.1", path = "../keel-platform/crates/services/realtime" }
+kelson-deployment = { version = "0.1", path = "../keel-platform/crates/enterprise/deployment" }
 # Both fabrics are declared: the driver itself is chosen at runtime by
 # the host (`match cfg.database()` -> DbPool::Postgres | DbPool::MySql),
 # so an application module may reach for either store directly instead of
 # inheriting a Postgres-only assumption from this list.
-keel-postgres = { version = "0.1", path = "../keel-platform/crates/data/postgres" }
-keel-mysql = { version = "0.1", path = "../keel-platform/crates/data/mysql" }
-keel-feature-flags = { version = "0.1", path = "../keel-platform/crates/enterprise/feature-flags" }
-keel-session = { version = "0.1", path = "../keel-platform/crates/security/sessions" }
-keel-identity = { version = "0.1", path = "../keel-platform/crates/security/identity" }
-keel-policy = { version = "0.1", path = "../keel-platform/crates/security/policies" }
-keel-integrity = { version = "0.1", path = "../keel-platform/crates/security/integrity" }
-keel-observability = { version = "0.1", path = "../keel-platform/crates/observability/logging" }
-keel-telemetry = { version = "0.1", path = "../keel-platform/crates/observability/telemetry" }
-keel-tenancy = { version = "0.1", path = "../keel-platform/crates/enterprise/tenancy" }
-keel-execution = { version = "0.1", path = "../keel-platform/crates/execution/engine" }
-keel-config = { version = "0.1", path = "../keel-platform/crates/application/configuration" }
-keel-registry = { version = "0.1", path = "../keel-platform/crates/application/registry" }
-keel-http = { version = "0.1", path = "../keel-platform/crates/web/http" }
+kelson-postgres = { version = "0.1", path = "../keel-platform/crates/data/postgres" }
+kelson-mysql = { version = "0.1", path = "../keel-platform/crates/data/mysql" }
+kelson-feature-flags = { version = "0.1", path = "../keel-platform/crates/enterprise/feature-flags" }
+kelson-session = { version = "0.1", path = "../keel-platform/crates/security/sessions" }
+kelson-identity = { version = "0.1", path = "../keel-platform/crates/security/identity" }
+kelson-policy = { version = "0.1", path = "../keel-platform/crates/security/policies" }
+kelson-integrity = { version = "0.1", path = "../keel-platform/crates/security/integrity" }
+kelson-observability = { version = "0.1", path = "../keel-platform/crates/observability/logging" }
+kelson-telemetry = { version = "0.1", path = "../keel-platform/crates/observability/telemetry" }
+kelson-tenancy = { version = "0.1", path = "../keel-platform/crates/enterprise/tenancy" }
+kelson-execution = { version = "0.1", path = "../keel-platform/crates/execution/engine" }
+kelson-config = { version = "0.1", path = "../keel-platform/crates/application/configuration" }
+kelson-registry = { version = "0.1", path = "../keel-platform/crates/application/registry" }
+kelson-http = { version = "0.1", path = "../keel-platform/crates/web/http" }
 
 # External
 axum = { version = "=0.8.6", features = ["ws", "multipart"] }

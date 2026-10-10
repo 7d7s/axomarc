@@ -2,7 +2,7 @@
 
 Supersedes the v1 "budget 20" note. Frozen by D-62 (STAGE-0-SPEC §15): a
 justification table replaces the soft count budget; hard cap 25 direct
-externals, enforced by the analyzer (keel check -> ANALYZER-BUDGET).
+externals, enforced by the analyzer (kelson check -> ANALYZER-BUDGET).
 
 ## Budget
 <= 25 direct external dependencies at the workspace level.
@@ -31,18 +31,18 @@ Current count: 25.
 | thiserror | Error derives | MIT/Apache-2.0 | Tiny proc-macro |
 | tracing | Structured events | MIT | Standard instrumentation |
 | tracing-subscriber | Log init (json/pretty) | MIT | json + env-filter features |
-| moka | Bounded cache; S5: bounded registries (dedupe windows, label cardinality, exception groups) | MIT/Apache-2.0 | future + sync features; used by keel-cache-memory adapter, keel-pipeline (dedupe), keel-metrics (label bound), keel-observability (exception groups) |
+| moka | Bounded cache; S5: bounded registries (dedupe windows, label cardinality, exception groups) | MIT/Apache-2.0 | future + sync features; used by kelson-cache-memory adapter, kelson-pipeline (dedupe), kelson-metrics (label bound), kelson-observability (exception groups) |
 | clap | CLI parsing | MIT/Apache-2.0 | derive feature |
 | toml | Config manifests | MIT/Apache-2.0 | Small parser |
 | argon2 | Password hashing | MIT/Apache-2.0 | Pure Rust; PHC format |
 | anyhow | CLI error plumbing | MIT/Apache-2.0 | Tools only |
 | rand | Key/token material, OTP, salts | MIT/Apache-2.0 | 0.8 line (matches argon2 salt usage); CSPRNG via getrandom; first justified D-62 add |
-| sha2 | Token hashing (sha256); S5: audit hash chain, WAL checksums, fingerprinting | MIT/Apache-2.0 | Pure Rust, RustCrypto; first justified D-62 add; used by keel-tokens, keel-session, keel-integrity (D-74 audit chain), keel-buffer (WAL record checksums), keel-telemetry/keel-pipeline (fingerprints), keel-http, keel-feature-flags, keel-webhooks |
-| reqwest | Outbound HTTP client (webhook delivery, live SMS transport) | MIT/Apache-2.0 | default-features OFF; json + rustls-tls + blocking only; used by keel-http-client + adapters |
-| tokio-stream | Broadcast -> SSE stream bridging | MIT | sync feature only; tiny tokio companion crate; used by keel-realtime |
-| lettre | SMTP mail delivery | MIT | default-features OFF; builder + smtp-transport + rustls-tls; pure-Rust TLS; used by keel-mail-smtp adapter |
-| aes-gcm | At-rest secret encryption (AES-256-GCM envelopes, L27) | MIT/Apache-2.0 | Pure Rust, RustCrypto; audited cipher line next to sha2; used by keel-tokens only |
-| redis | Optional bounded-cache/queue driver (adapters) | MIT/Apache-2.0 | socket feature only; used by the keel-cache-redis adapter; not on the default path |
+| sha2 | Token hashing (sha256); S5: audit hash chain, WAL checksums, fingerprinting | MIT/Apache-2.0 | Pure Rust, RustCrypto; first justified D-62 add; used by kelson-tokens, kelson-session, kelson-integrity (D-74 audit chain), kelson-buffer (WAL record checksums), kelson-telemetry/kelson-pipeline (fingerprints), kelson-http, kelson-feature-flags, kelson-webhooks |
+| reqwest | Outbound HTTP client (webhook delivery, live SMS transport) | MIT/Apache-2.0 | default-features OFF; json + rustls-tls + blocking only; used by kelson-http-client + adapters |
+| tokio-stream | Broadcast -> SSE stream bridging | MIT | sync feature only; tiny tokio companion crate; used by kelson-realtime |
+| lettre | SMTP mail delivery | MIT | default-features OFF; builder + smtp-transport + rustls-tls; pure-Rust TLS; used by kelson-mail-smtp adapter |
+| aes-gcm | At-rest secret encryption (AES-256-GCM envelopes, L27) | MIT/Apache-2.0 | Pure Rust, RustCrypto; audited cipher line next to sha2; used by kelson-tokens only |
+| redis | Optional bounded-cache/queue driver (adapters) | MIT/Apache-2.0 | socket feature only; used by the kelson-cache-redis adapter; not on the default path |
 | wasmtime | Sandboxed WASM plugin runtime (Wave 9 B-30) | Apache-2.0 WITH LLVM-exception | D-62 amendment recorded by docs/19 Wave 9 B-30; 36.x line (36.0.17), MSRV 1.88 (`platform`) / 1.89 (`keel-platform`, `keel-kernel`, `your-app`) = workspace MSRV — security bump: 34.x is unpatched for the wasmtime advisories and 36.0.16 is the lowest version whose patched range covers all of them (37.0.2 would not); wasmtime 36 declares rust-version 1.86.0 but that is only the floor it imposes, not ours — the lockfiles decide: `platform` resolves uuid 1.24.1 and is green on 1.88, the other three resolve uuid 1.27.0 ("requires rustc 1.89.0"), and 1.86 is rejected outright by cargo for home / icu_* / time / wasm-{encoder,wast,wat} 261, all requiring 1.88; each floor verified by `cargo check --workspace --locked` on that exact toolchain; default features OFF (cranelift/runtime/wat/std only: no component-model, no cache, no profiling); fuel metering + store-limits sandbox, fail-closed import surface; reaches the 25-crate cap (25/25) |
 
 ## Rules

@@ -5,8 +5,8 @@
 //! ships as a pair under [`PAIRS_DIR`]:
 //!
 //! ```text
-//! <ts>_<name>.up.sql     applied by `keel migrate` (filename order)
-//! <ts>_<name>.down.sql   required; applied by `keel migrate:rollback`
+//! <ts>_<name>.up.sql     applied by `kelson migrate` (filename order)
+//! <ts>_<name>.down.sql   required; applied by `kelson migrate:rollback`
 //! ```
 //!
 //! Applied pairs are recorded in the [`PAIRS_TABLE`] bookkeeping table with
@@ -22,7 +22,7 @@
 
 use std::path::{Path, PathBuf};
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 use sqlx::Connection as _; // `begin()` on the acquired connection
 
 /// Pair-migration directory, relative to the workspace root. Separate from
@@ -139,7 +139,7 @@ fn validate_base(base: &str) -> Result<(), AppError> {
 }
 
 /// Create the bookkeeping table if it does not exist (idempotent; runs no
-/// migration files — this is `keel migrate:install`). Any executor works:
+/// migration files — this is `kelson migrate:install`). Any executor works:
 /// a pool, the connection currently holding the migration lock, or a
 /// transaction.
 pub async fn install<'e, E>(exec: E) -> Result<(), AppError>
@@ -325,7 +325,7 @@ mod tests {
     fn temp_root(tag: &str) -> PathBuf {
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "keel-pairs-{tag}-{}-{}",
+            "kelson-pairs-{tag}-{}-{}",
             std::process::id(),
             SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         ));
@@ -416,7 +416,7 @@ mod tests {
     fn scan_pairs_treats_a_missing_directory_as_empty() {
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let root = std::env::temp_dir().join(format!(
-            "keel-pairs-absent-{}-{}",
+            "kelson-pairs-absent-{}-{}",
             std::process::id(),
             SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         ));

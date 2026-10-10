@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::http::{header, HeaderMap, HeaderValue};
-use keel_foundation::{AppError, Secret};
+use kelson_foundation::{AppError, Secret};
 use time::OffsetDateTime;
 
 /// Cookie name: RFC 6265 token subset — printable ASCII without separators.
@@ -297,7 +297,7 @@ impl CookieQueue {
 // --------------------------------------------------- cookie value encryption
 
 /// Optional cookie-value encryption (Wave 2): AES-256-GCM through the
-/// foundation [`keel_foundation::Sealer`] port, so the web layer never
+/// foundation [`kelson_foundation::Sealer`] port, so the web layer never
 /// learns which cipher a deployment picked — the security class supplies it.
 ///
 /// Wire format: `k1.<hex(JSON Envelope)>`. Hex keeps the sealed blob inside
@@ -307,12 +307,12 @@ impl CookieQueue {
 /// This is confidentiality for client-held values, not authentication: a
 /// tampered value fails the AEAD tag check and is rejected as malformed.
 pub struct CookieCipher {
-    sealer: Arc<dyn keel_foundation::Sealer>,
+    sealer: Arc<dyn kelson_foundation::Sealer>,
     key_id: String,
 }
 
 impl CookieCipher {
-    pub fn new(sealer: Arc<dyn keel_foundation::Sealer>, key_id: impl Into<String>) -> Self {
+    pub fn new(sealer: Arc<dyn kelson_foundation::Sealer>, key_id: impl Into<String>) -> Self {
         Self {
             sealer,
             key_id: key_id.into(),
@@ -341,9 +341,9 @@ impl CookieCipher {
         let raw = token.strip_prefix("k1.").ok_or_else(malformed)?;
         let bytes = hex_decode(raw).ok_or_else(malformed)?;
         let json = std::str::from_utf8(&bytes).map_err(|_| malformed())?;
-        let envelope: keel_foundation::Envelope =
+        let envelope: kelson_foundation::Envelope =
             serde_json::from_str(json).map_err(|_| malformed())?;
-        let secret = keel_foundation::open_for_key(&*self.sealer, &envelope, &self.key_id)
+        let secret = kelson_foundation::open_for_key(&*self.sealer, &envelope, &self.key_id)
             .map_err(|_| malformed())?;
         Ok(secret.expose().to_string())
     }
@@ -359,7 +359,7 @@ pub fn derive_cookie_key(secret: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(secret.as_bytes());
-    hasher.update(b"\x00keel.cookie.v1");
+    hasher.update(b"\x00kelson.cookie.v1");
     let digest = hasher.finalize();
     hex_encode(&digest[..16])
 }
@@ -374,7 +374,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 fn hex_decode(text: &str) -> Option<Vec<u8>> {
-    if text.len() % 2 != 0 {
+    if !text.len().is_multiple_of(2) {
         return None;
     }
     let digits = text.as_bytes();
@@ -393,11 +393,11 @@ mod tests {
 
     #[test]
     fn renders_secure_defaults() {
-        let raw = Cookie::new("keel_session", "abc123")
+        let raw = Cookie::new("kelson_session", "abc123")
             .unwrap()
             .render()
             .unwrap();
-        assert_eq!(raw, "keel_session=abc123; Path=/; HttpOnly; SameSite=Lax");
+        assert_eq!(raw, "kelson_session=abc123; Path=/; HttpOnly; SameSite=Lax");
     }
 
     #[test]
@@ -421,11 +421,11 @@ mod tests {
 
     #[test]
     fn expire_cookie_clears() {
-        let raw = Cookie::expire("keel_session", true)
+        let raw = Cookie::expire("kelson_session", true)
             .unwrap()
             .render()
             .unwrap();
-        assert!(raw.contains("keel_session="));
+        assert!(raw.contains("kelson_session="));
         assert!(raw.contains("Max-Age=0"));
         assert!(raw.contains("Expires=Thu, 01 Jan 1970 00:00:00 GMT"));
         assert!(raw.contains("Secure"));
@@ -480,19 +480,19 @@ mod tests {
         key: Vec<u8>,
     }
 
-    impl keel_foundation::Sealer for XorSealer {
+    impl kelson_foundation::Sealer for XorSealer {
         fn seal(
             &self,
             key_id: &str,
             secret: &Secret,
-        ) -> Result<keel_foundation::Envelope, AppError> {
+        ) -> Result<kelson_foundation::Envelope, AppError> {
             let ct = secret
                 .expose()
                 .bytes()
                 .enumerate()
                 .map(|(i, b)| b ^ self.key[i % self.key.len()] ^ 0x5a)
                 .collect();
-            Ok(keel_foundation::Envelope::new(
+            Ok(kelson_foundation::Envelope::new(
                 "TEST-XOR",
                 key_id,
                 vec![0u8; 12],
@@ -500,7 +500,7 @@ mod tests {
             ))
         }
 
-        fn open(&self, envelope: &keel_foundation::Envelope) -> Result<Secret, AppError> {
+        fn open(&self, envelope: &kelson_foundation::Envelope) -> Result<Secret, AppError> {
             if envelope.alg != "TEST-XOR" {
                 return Err(AppError::validation("unexpected algorithm"));
             }

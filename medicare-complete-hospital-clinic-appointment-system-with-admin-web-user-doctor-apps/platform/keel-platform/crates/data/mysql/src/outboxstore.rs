@@ -7,8 +7,8 @@
 //! `IN (?, ...)` list (empty list = no ids = no-op), and `LIMIT ?` takes a
 //! placeholder directly.
 
-use keel_foundation::AppError;
-use keel_event::{BoxFuture, OutboxEvent, OutboxStore};
+use kelson_foundation::AppError;
+use kelson_event::{BoxFuture, OutboxEvent, OutboxStore};
 use sqlx::mysql::MySqlPool;
 use uuid::Uuid;
 
@@ -50,9 +50,9 @@ impl OutboxStore for MySqlOutboxStore {
                         id: row.try_get("id").map_err(my)?,
                         event: row.try_get("event").map_err(my)?,
                         topic: row.try_get("topic").map_err(my)?,
-                        tenant_id: tenant_id.map(keel_foundation::TenantId::from_uuid),
+                        tenant_id: tenant_id.map(kelson_foundation::TenantId::from_uuid),
                         payload: row.try_get("payload").map_err(my)?,
-                        idempotency_key: keel_event::IdempotencyKey(
+                        idempotency_key: kelson_event::IdempotencyKey(
                             key.unwrap_or_default(),
                         ),
                         published: row.try_get("published").map_err(my)?,

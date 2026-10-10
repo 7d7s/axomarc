@@ -1,6 +1,6 @@
 [package]
-name = "keel-ai-tools"
-description = "Keel AI tool contract (item 33/34): tools bind names to operations with capability metadata; generated from Command/Query contracts."
+name = "kelson-ai-tools"
+description = "Kelson AI tool contract (item 33/34): tools bind names to operations with capability metadata; generated from Command/Query contracts."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,9 +10,9 @@ readme.workspace = true
 keywords.workspace = true
 
 [dependencies]
-keel-foundation = { workspace = true }
-keel-contracts = { workspace = true }
-keel-ai = { workspace = true }
+kelson-foundation = { workspace = true }
+kelson-contracts = { workspace = true }
+kelson-ai = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

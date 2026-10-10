@@ -2,7 +2,7 @@
 
 #[tokio::test]
 async fn reference_application_holds_all_invariants() {
-    let report = keel_example_reference::run()
+    let report = kelson_example_reference::run()
         .await
         .expect("reference application must pass");
 
@@ -30,7 +30,7 @@ async fn reference_application_holds_all_invariants() {
     assert!(report.replayed, "same key + same payload replays");
     assert_eq!(
         report.denied_code,
-        keel_foundation::codes::DENIED,
+        kelson_foundation::codes::DENIED,
         "stranger is denied"
     );
 
@@ -47,8 +47,8 @@ async fn reference_application_holds_all_invariants() {
 #[test]
 fn manifest_rejects_tampering() {
     // Duplicate operations across modules must not compile (G05).
-    let manifest = keel_registry::ModuleManifest::from_toml(keel_example_reference::MANIFEST)
+    let manifest = kelson_registry::ModuleManifest::from_toml(kelson_example_reference::MANIFEST)
         .expect("manifest parses");
-    let doubled = keel_registry::PlatformGraph::compile(vec![manifest.clone(), manifest]);
+    let doubled = kelson_registry::PlatformGraph::compile(vec![manifest.clone(), manifest]);
     assert!(doubled.is_err(), "duplicate module must violate the graph");
 }

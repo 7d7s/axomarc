@@ -1,9 +1,9 @@
-//! # keel-query
+//! # kelson-query
 //! Read side of the three data-access modes (11-SPEC §5): `ReadProjection` for
 //! operational reads, `ReportingQuery` for analytical reads. No write transactions.
 //! The typed SELECT builder (L14) generates parameterized SQL without executing.
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 use serde::{Deserialize, Serialize};
 
 pub mod delete;

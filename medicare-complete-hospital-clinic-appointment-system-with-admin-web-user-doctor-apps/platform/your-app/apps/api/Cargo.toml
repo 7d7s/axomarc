@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 # Kernel facade — the app-facing surface of the platform.
-keel-framework = { workspace = true }
+kelson-framework = { workspace = true }
 
 # This application's modules (compile-time until ModuleLoader::discover lands)
 mod-patients = { path = "../../modules/patients" }

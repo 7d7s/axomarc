@@ -1,6 +1,6 @@
 [package]
-name = "keel-ai-agents"
-description = "Keel agent runtime (item 33, L48): agent -> tool -> execution. Agents run under the caller's principal; capability/scope/policy apply unchanged."
+name = "kelson-ai-agents"
+description = "Kelson agent runtime (item 33, L48): agent -> tool -> execution. Agents run under the caller's principal; capability/scope/policy apply unchanged."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,16 +10,16 @@ readme.workspace = true
 keywords.workspace = true
 
 [dependencies]
-keel-foundation = { workspace = true }
-keel-context = { workspace = true }
-keel-execution = { workspace = true }
-keel-ai = { workspace = true }
-keel-ai-tools = { workspace = true }
+kelson-foundation = { workspace = true }
+kelson-context = { workspace = true }
+kelson-execution = { workspace = true }
+kelson-ai = { workspace = true }
+kelson-ai-tools = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
-keel-policy = { workspace = true }
+kelson-policy = { workspace = true }
 time = { workspace = true }
 uuid = { workspace = true }
 tokio = { workspace = true }

@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use keel_telemetry::{
+use kelson_telemetry::{
     EventEnvelope, Fields, Level, LogPayload, SpanKind, SpanPayload, SpanStatus, TelemetryPayload,
     SCHEMA_LOG, SCHEMA_LOG_VERSION, SCHEMA_SPAN, SCHEMA_SPAN_VERSION,
 };
@@ -20,11 +20,11 @@ use crate::runtime::ObservabilityRuntime;
 
 /// Targets emitted by the telemetry runtime itself (recursion guard).
 const INTERNAL_TARGETS: &[&str] = &[
-    "keel_observability",
-    "keel_telemetry",
-    "keel_pipeline",
-    "keel_buffer",
-    "keel_export",
+    "kelson_observability",
+    "kelson_telemetry",
+    "kelson_pipeline",
+    "kelson_buffer",
+    "kelson_export",
 ];
 
 fn is_internal(target: &str) -> bool {
@@ -143,7 +143,7 @@ impl TelemetryBridge {
             SCHEMA_LOG,
             SCHEMA_LOG_VERSION,
             self.runtime.service().clone(),
-            keel_foundation::TelemetryContext::root(),
+            kelson_foundation::TelemetryContext::root(),
             TelemetryPayload::Log(LogPayload {
                 level,
                 message,
@@ -226,9 +226,9 @@ where
             SCHEMA_SPAN,
             SCHEMA_SPAN_VERSION,
             self.runtime.service().clone(),
-            keel_foundation::TelemetryContext::root(),
+            kelson_foundation::TelemetryContext::root(),
             TelemetryPayload::Span(SpanPayload {
-                span_id: keel_foundation::SpanId::new(),
+                span_id: kelson_foundation::SpanId::new(),
                 parent_span_id: None,
                 name: data.name.clone(),
                 kind: span_kind(&data.name),
@@ -249,9 +249,9 @@ mod tests {
 
     #[test]
     fn internal_targets_are_skipped() {
-        assert!(is_internal("keel_observability::runtime"));
-        assert!(is_internal("keel_export"));
-        assert!(!is_internal("keel_api::routes"));
+        assert!(is_internal("kelson_observability::runtime"));
+        assert!(is_internal("kelson_export"));
+        assert!(!is_internal("kelson_api::routes"));
         assert!(!is_internal("my_app"));
     }
 }

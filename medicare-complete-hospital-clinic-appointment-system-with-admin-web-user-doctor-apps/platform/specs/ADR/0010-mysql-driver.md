@@ -1,4 +1,4 @@
-# ADR 0010 — MySQL as a first-class SQL driver (keel-mysql)
+# ADR 0010 — MySQL as a first-class SQL driver (kelson-mysql)
 
 Status: **Accepted** (2026-10-03) · Gate: Wave 9 B-31 (docs/19 parity program) ·
 Implementation: lands with the B-31 change set itself — the docs/18 DoD demands the
@@ -38,14 +38,14 @@ Constraints that bound the answer:
 
 ### 2. A new publishable crate owns the second fabric (crate decision)
 
-- **`keel-mysql` at `crates/data/mysql`**, mirroring the keel-postgres surface:
+- **`kelson-mysql` at `crates/data/mysql`**, mirroring the kelson-postgres surface:
   `create_pool`, `run_migrations` (+ `GET_LOCK` migration lock), `seed_tenant`, and
-  every pool-backed store behind the *same* `keel-*` traits (model store, session
+  every pool-backed store behind the *same* `kelson-*` traits (model store, session
   store, principal/credential/token stores, job store + admin, batch ledger,
   notification store, outbox store, idempotency, transaction backend, seeder
   registry). Both fabrics implement one trait set, so the store matrix tests run
   against either without changing assertions.
-- **`DbPool { Postgres(PgPool), MySql(MySqlPool) }`** lives in keel-mysql. The two
+- **`DbPool { Postgres(PgPool), MySql(MySqlPool) }`** lives in kelson-mysql. The two
   pool types both come from sqlx, so neither fabric crate depends on the other;
   boot code matches on the enum once and hands out trait objects everywhere else.
 - **Counts deviation, recorded deliberately:** members 68 → 69, publishable
@@ -55,7 +55,7 @@ Constraints that bound the answer:
 
 ### 3. Full switch scope
 
-- **keel-api, keel-worker, and keel-console** all select on
+- **kelson-api, kelson-worker, and kelson-console** all select on
   `database_driver()`: probe, migrate, seed, and every store construction site.
   Degraded boot (D-52) is untouched — no database or unreachable + not required
   still lands on the in-memory stores, on both drivers.
@@ -67,7 +67,7 @@ Constraints that bound the answer:
   stays the shared `_sqlx_migrations` table per database; each driver embeds its
   own directory.
 - **Canonical bytes — added by B-31 Phase D (2026-10-09).** Those nine files are
-  builder-generated artifacts: `keel_mysql::schema` is a fluent schema builder
+  builder-generated artifacts: `kelson_mysql::schema` is a fluent schema builder
   (`Migration::create_table` / `alter_table` / `create_index` / `comment` /
   `section` over `Table`/`Alter` column helpers) that renders every shipped
   migration byte-for-byte, and the pure gate
@@ -82,28 +82,28 @@ Constraints that bound the answer:
   database (25 tables, nine fresh `_sqlx_migrations` checksums,
   `migrate:status` 9 applied / 0 pending). The SQL-first decision itself is
   unchanged: the builder authors the committed bytes; it does not generate DDL
-  at `keel migrate` runtime the way Laravel's `Blueprint` closures do, and the
+  at `kelson migrate` runtime the way Laravel's `Blueprint` closures do, and the
   gateway that decision protects (`migrate:status` before anything runs) is
   untouched.
 - **Pairs — amended by B-31 Phase C (2026-10-08).** The decision as accepted
-  read: "`keel-mysql::run_migrations` **fails closed** if
+  read: "`kelson-mysql::run_migrations` **fails closed** if
   `database/migrations-pairs` ships any `.up.sql`/`.down.sql` pair: pairs are an
   advisory-lock/`ON CONFLICT` Postgres feature and are never half-ported"
   (enforced by `refuse_shipped_pairs()`). That clause is **superseded**:
-  `keel_mysql::pairs` is a full port of `keel_postgres::pairs` — same shipment,
+  `kelson_mysql::pairs` is a full port of `kelson_postgres::pairs` — same shipment,
   same `keel_migrations` bookkeeping, same Laravel batches, same fail-closed
   scan — executed without a transaction because MySQL DDL causes an implicit
   commit: statement by statement, fail-stop-and-report. The fail-closed *intent*
   of the original decision is unchanged and still holds: a broken shipment
-  (missing/orphan `.down.sql`, bad base name) refuses `keel migrate` before the
+  (missing/orphan `.down.sql`, bad base name) refuses `kelson migrate` before the
   first statement, now through the shared `pairs::scan_pairs()` instead of an
   outright refusal, because there is no longer anything to refuse. Advisory
   locks and `ON CONFLICT` remain genuinely Postgres-only and stay documented as
   such (§5, docs/05).
 - Console on the mysql driver (as amended by Phases C and E):
   `migrate:rollback`, `migrate:reset`, `migrate:refresh` and
-  `migrate:install` dispatch to `keel_mysql::pairs` behind
-  `keel_mysql::acquire_migration_lock`. **Phase E lifted the fifth and last
+  `migrate:install` dispatch to `kelson_mysql::pairs` behind
+  `kelson_mysql::acquire_migration_lock`. **Phase E lifted the fifth and last
   refusal: `db:schema:dump` now runs on this driver.** The fetch is one
   `SHOW CREATE TABLE` per base table — MySQL's only lossless source
   (`information_schema` cannot express generated-column expressions;
@@ -120,12 +120,12 @@ Constraints that bound the answer:
   server renders back byte-identically: dump → replay → dump and
   reset → migrate → dump both equal the original bytes). The `platform`
   console deletes `pg_only_on_mysql` (dump was its only user). **Phase F lifted the
-  last pg-only code path: the Phase 4 pair `keel promote` / `keel rollback`
+  last pg-only code path: the Phase 4 pair `kelson promote` / `kelson rollback`
   (console of the `keel-platform` workspace only) now run on this driver too.**
   `wire_promotion` no longer refuses `mysql`; its events/migration/probe ports
   (`EventAdapter`, `MigrationAdapter`, the health probes) dispatch on the
-  driver-selected `DbPool` to `keel_postgres::pairs`/`PgOutboxStore` or
-  `keel_mysql::pairs`/`MySqlOutboxStore` — the same enum every other console
+  driver-selected `DbPool` to `kelson_postgres::pairs`/`PgOutboxStore` or
+  `kelson_mysql::pairs`/`MySqlOutboxStore` — the same enum every other console
   command selects on — and the twin's `pg_only_on_mysql` helper is deleted
   (promotion was its last user, so neither console refuses any command). `migrate`/`migrate:fresh`/`migrate:status`/`seed`/`db:show`/
   `db:inspect` all work on both drivers (status lists the MySQL set and the

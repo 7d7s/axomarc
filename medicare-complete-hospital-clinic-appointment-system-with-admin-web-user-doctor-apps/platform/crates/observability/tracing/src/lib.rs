@@ -1,6 +1,6 @@
-//! # keel-tracing
+//! # kelson-tracing
 //! Sentinel (S5) span-side primitives: W3C `traceparent` parse/serialize over
-//! keel-foundation typed ids, and the deterministic adaptive sampling ladder.
+//! kelson-foundation typed ids, and the deterministic adaptive sampling ladder.
 
 pub mod sampler;
 pub mod traceparent;

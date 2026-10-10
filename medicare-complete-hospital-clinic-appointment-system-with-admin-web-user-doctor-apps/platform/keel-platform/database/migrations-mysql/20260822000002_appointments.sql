@@ -1,7 +1,7 @@
 -- MySQL 8 dialect twin of database/migrations/20260822000002_appointments.sql.
 -- uuid: BINARY(16) (sqlx MySQL Uuid codec is binary)
 -- Appointments domain table (S8 C3/B-04): first real module table persisted
--- through the framework ModelStore port (PgModelStore over keel-models).
+-- through the framework ModelStore port (PgModelStore over kelson-models).
 -- Partial unique index = the real double-booking contention guard: one BOOKED
 -- appointment per (tenant, patient, slot); cancelled rows do not block.
 CREATE TABLE IF NOT EXISTS appointments (

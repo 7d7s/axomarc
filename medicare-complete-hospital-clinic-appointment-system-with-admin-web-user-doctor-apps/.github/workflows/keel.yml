@@ -1,4 +1,4 @@
-name: keel
+name: kelson
 
 on:
   push:
@@ -11,8 +11,8 @@ on:
 # (CORRECTED-TARGET-ARCHITECTURE section 9, P1-4).
 #
 # Phase O (2026-10-10) merged the former `keel-kernel` workspace INTO
-# `keel-platform` (`kernel-api` -> `runtime/keel-api`, `kernel-worker` ->
-# `runtime/keel-worker`, facade -> `crates/framework`), so its dedicated job and
+# `keel-platform` (`kernel-api` -> `runtime/kelson-api`, `kernel-worker` ->
+# `runtime/kelson-worker`, facade -> `crates/framework`), so its dedicated job and
 # its `keel-publish.yml` MSRV leg were removed with it: `platform/keel-kernel`
 # no longer exists and a job pointing at it could never pass.
 #
@@ -56,10 +56,10 @@ jobs:
           key: keel-platform-orig-${{ hashFiles('platform/Cargo.lock') }}
           restore-keys: |
             keel-platform-orig-
-          # Deliberately NOT a bare `keel-` fallback: that prefix matches every
-          # other key in these workflows (`keel-platform-new-`, `keel-kernel-`,
-          # `keel-app-`, `keel-msrv-*`), so a lockfile change would restore
-          # another workspace's archive -- a target/ built for a different tree
+          # Deliberately NOT a bare `keel-` fallback: that prefix still matches every
+          # `keel-platform-*` key in these workflows (`keel-platform-orig-` above,
+          # `keel-platform-new-`, `keel-platform-mysql-`), so a lockfile change would
+          # restore another workspace's archive -- a target/ built for a different tree
           # and toolchain, i.e. a cold build with an extra wasted download.
       - name: cargo check
         run: cargo check --workspace --locked
@@ -67,8 +67,8 @@ jobs:
         run: cargo test --workspace --locked
       - name: G18 telemetry resilience (failure injection + tenant isolation)
         run: |
-          cargo test -p keel-observability --locked g18
-          cargo test -p keel-api --test http_integration --locked telemetry_incident
+          cargo test -p kelson-observability --locked g18
+          cargo test -p kelson-api --test http_integration --locked telemetry_incident
       - name: architecture analyzer (xtask dep-rules)
         run: cargo run -p xtask -- dep-rules
       - name: publishability dry-run (main only)
@@ -123,9 +123,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             platform/your-app/target
-          key: keel-app-${{ hashFiles('platform/your-app/Cargo.lock') }}
+          key: kelson-app-${{ hashFiles('platform/your-app/Cargo.lock') }}
           restore-keys: |
-            keel-app-
+            kelson-app-
       - name: cargo check
         run: cargo check --workspace --locked
       - name: cargo test
@@ -182,12 +182,12 @@ jobs:
             keel-platform-mysql-
             keel-platform-orig-
       - name: mysql driver matrix (pg half self-skips on mysql://)
-        run: cargo test -p keel-postgres --features pg-tests --test pg_integration --locked
+        run: cargo test -p kelson-postgres --features pg-tests --test pg_integration --locked
       # The claim race only reproduces when two workers overlap, so one green
       # run would not be evidence. Repeat it: a regression here means a worker
       # fleet idles while jobs are queued.
       - name: queue claim concurrency (5 repeats, starvation regression)
         run: |
           for i in 1 2 3 4 5; do
-            cargo test -p keel-postgres --features pg-tests --test pg_integration --locked mysql_job_store_claim
+            cargo test -p kelson-postgres --features pg-tests --test pg_integration --locked mysql_job_store_claim
           done

@@ -2,7 +2,7 @@
 //!
 //! Modules register a [`ModelRuntime`] that declared a
 //! [`crate::runtime::Prunable`] predicate in `Provider::init`; the
-//! `keel model:prune` maintenance command sweeps every registered model
+//! `kelson model:prune` maintenance command sweeps every registered model
 //! through the [`ModelStore`] port in `chunk`-sized pages (see
 //! [`ModelRuntime::prune`]). Runtimes without a predicate are skipped at
 //! registration, so an empty registry simply reports "none" — the same
@@ -10,7 +10,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use keel_foundation::{AppError, TenantId};
+use kelson_foundation::{AppError, TenantId};
 
 use crate::runtime::ModelRuntime;
 use crate::store::ModelStore;

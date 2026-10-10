@@ -1,10 +1,10 @@
 //! Factory primitives (L20): explicit, composable fixtures. Defaults always
 //! build; every override is visible at the call site.
 
-use keel_foundation::{AppError, CorrelationId, ExecutionId, TenantId};
-use keel_event::OutboxEvent;
-use keel_jobs::{DurableJob, JobStatus};
-use keel_models::{ModelDef, ModelStore, Record};
+use kelson_foundation::{AppError, CorrelationId, ExecutionId, TenantId};
+use kelson_event::OutboxEvent;
+use kelson_jobs::{DurableJob, JobStatus};
+use kelson_models::{ModelDef, ModelStore, Record};
 use serde_json::{json, Value};
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
@@ -251,7 +251,7 @@ pub fn sample_event(name: &str) -> OutboxEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keel_models::{InMemoryModelStore, ListOpts};
+    use kelson_models::{InMemoryModelStore, ListOpts};
 
     struct Patient {
         id: Uuid,

@@ -2,7 +2,7 @@
 
 #[tokio::main]
 async fn main() {
-    match keel_example_minimal::run().await {
+    match kelson_example_minimal::run().await {
         Ok(report) => {
             println!("golden path OK:");
             println!("  delta stones written : {}", report.stones_written);

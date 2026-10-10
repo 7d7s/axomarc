@@ -1,5 +1,5 @@
 [package]
-name = "keel-caching"
+name = "kelson-caching"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,16 +7,16 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel framework: named cache ports (identity/authorization/config/reference/query/edge)."
+description = "Kelson framework: named cache ports (identity/authorization/config/reference/query/edge)."
 
 [dependencies]
-keel-foundation = { workspace = true }
+kelson-foundation = { workspace = true }
 serde_json = { workspace = true }
 
 [features]
 # §3.1 tenant-scoped port (`TenantCachePort` + the `TenantCacheShard`
 # namespacing adapter). ON by default: §3.2's `TenantScopedCache` extension in
-# keel-tenancy cannot exist without it, so `keel-tenancy` also requests this
+# kelson-tenancy cannot exist without it, so `kelson-tenancy` also requests this
 # feature explicitly rather than relying on the default. `--no-default-features`
 # compiles a physical-port-only build (`CachePort` alone) for deployments with
 # no tenants at all.

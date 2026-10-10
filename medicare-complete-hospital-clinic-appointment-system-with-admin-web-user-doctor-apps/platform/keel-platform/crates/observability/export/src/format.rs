@@ -1,7 +1,7 @@
 //! Shared formatting + line-level defense-in-depth (log-injection escaping,
 //! secret-key redaction on rendered lines).
 
-use keel_telemetry::{Event, TelemetryPayload};
+use kelson_telemetry::{Event, TelemetryPayload};
 
 /// Escape CR/LF so one event can never forge additional console/file lines.
 pub fn sanitize_text(raw: &str) -> String {
@@ -15,7 +15,7 @@ pub fn redact_line(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let lower = line.to_ascii_lowercase();
     let bytes = line.as_bytes();
-    let fields: Vec<&str> = keel_telemetry::DEFAULT_SECRET_FIELDS.to_vec();
+    let fields: Vec<&str> = kelson_telemetry::DEFAULT_SECRET_FIELDS.to_vec();
     let mut i = 0usize;
     while i < bytes.len() {
         let boundary = i == 0 || matches!(bytes[i - 1], b'{' | b',' | b'"' | b' ' | b'(');

@@ -1,20 +1,20 @@
-# keel-framework
+# kelson-framework
 
-The Keel umbrella crate. One dependency instead of two dozen.
+The Kelson umbrella crate. One dependency instead of two dozen.
 
 ```toml
 [dependencies]
-keel-framework = "0.1"
+kelson-framework = "0.1"
 ```
 
 ## What it is
 
-`keel-framework` re-exports the published, consumer-facing surface of Keel.
+`kelson-framework` re-exports the published, consumer-facing surface of Kelson.
 Application modules depend on this crate rather than reaching into the
 framework's internal crates directly.
 
 ```rust
-use keel_framework::{
+use kelson_framework::{
     ApplicationHost, PlatformConfig, DbPool, PolicyEngine, SessionStore,
 };
 ```

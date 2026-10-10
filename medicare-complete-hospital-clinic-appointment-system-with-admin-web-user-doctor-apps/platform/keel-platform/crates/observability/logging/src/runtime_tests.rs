@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use keel_telemetry::{
+use kelson_telemetry::{
     ExportError, ExportOk, Exporter, ServiceIdentity, TelemetryPlugin, TelemetryRegistry,
 };
 
@@ -17,7 +17,7 @@ use crate::runtime::ObservabilityRuntime;
 
 fn temp_dir(name: &str) -> PathBuf {
     let dir =
-        std::env::temp_dir().join(format!("keel-runtime-test-{name}-{}", uuid::Uuid::now_v7()));
+        std::env::temp_dir().join(format!("kelson-runtime-test-{name}-{}", uuid::Uuid::now_v7()));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -131,7 +131,7 @@ impl Exporter for FlakyExporter {
     fn name(&self) -> &str {
         "flaky"
     }
-    fn export(&self, batch: &[keel_telemetry::Event]) -> Result<ExportOk, ExportError> {
+    fn export(&self, batch: &[kelson_telemetry::Event]) -> Result<ExportOk, ExportError> {
         let attempt = self.attempts.fetch_add(1, Ordering::Relaxed);
         if attempt < self.failures_until {
             Err(ExportError::Transport("injected failure".into()))
@@ -255,18 +255,18 @@ fn tenant_partitioned_file_exporter_separates_output() {
 
     // Emit through the bus with explicit tenant contexts.
     let mk = |tenant: &str, msg: &str| {
-        keel_telemetry::EventEnvelope::new(
-            keel_telemetry::SCHEMA_LOG,
-            keel_telemetry::SCHEMA_LOG_VERSION,
+        kelson_telemetry::EventEnvelope::new(
+            kelson_telemetry::SCHEMA_LOG,
+            kelson_telemetry::SCHEMA_LOG_VERSION,
             ServiceIdentity::new("t", "test"),
-            keel_foundation::TelemetryContext::root()
-                .with_tenant(keel_foundation::TenantId::from_uuid(uuid::Uuid::now_v7())),
-            keel_telemetry::TelemetryPayload::Log(keel_telemetry::LogPayload {
-                level: keel_telemetry::Level::Info,
+            kelson_foundation::TelemetryContext::root()
+                .with_tenant(kelson_foundation::TenantId::from_uuid(uuid::Uuid::now_v7())),
+            kelson_telemetry::TelemetryPayload::Log(kelson_telemetry::LogPayload {
+                level: kelson_telemetry::Level::Info,
                 message: msg.to_string(),
                 target: None,
                 fields: crate::fields!("tenant_hint" => tenant),
-                extra: keel_telemetry::Fields::new(),
+                extra: kelson_telemetry::Fields::new(),
             }),
         )
     };
@@ -310,7 +310,7 @@ fn g18_isolation_hammer_no_cross_tenant_leakage() {
     let runtime = ObservabilityRuntime::new(cfg, ServiceIdentity::new("g18", "test"), &[]).unwrap();
     runtime.start().unwrap();
 
-    let tenants: Vec<keel_foundation::TenantId> = (0..4).map(|_| keel_foundation::TenantId::new()).collect();
+    let tenants: Vec<kelson_foundation::TenantId> = (0..4).map(|_| kelson_foundation::TenantId::new()).collect();
     let per_tenant = 150usize;
 
     std::thread::scope(|scope| {
@@ -322,17 +322,17 @@ fn g18_isolation_hammer_no_cross_tenant_leakage() {
                     // Unique messages: dedupe keys on tenant|category|message
                     // for info-and-below, so nothing is legitimately suppressed.
                     let msg = format!("tenant-{idx} event {i} {}", uuid::Uuid::now_v7());
-                    let event = keel_telemetry::EventEnvelope::new(
-                        keel_telemetry::SCHEMA_LOG,
-                        keel_telemetry::SCHEMA_LOG_VERSION,
+                    let event = kelson_telemetry::EventEnvelope::new(
+                        kelson_telemetry::SCHEMA_LOG,
+                        kelson_telemetry::SCHEMA_LOG_VERSION,
                         ServiceIdentity::new("g18", "test"),
-                        keel_foundation::TelemetryContext::root().with_tenant(tenant),
-                        keel_telemetry::TelemetryPayload::Log(keel_telemetry::LogPayload {
-                            level: keel_telemetry::Level::Info,
+                        kelson_foundation::TelemetryContext::root().with_tenant(tenant),
+                        kelson_telemetry::TelemetryPayload::Log(kelson_telemetry::LogPayload {
+                            level: kelson_telemetry::Level::Info,
                             message: msg,
                             target: None,
                             fields: crate::fields!(),
-                            extra: keel_telemetry::Fields::new(),
+                            extra: kelson_telemetry::Fields::new(),
                         }),
                     );
                     runtime.emit(event);
@@ -394,7 +394,7 @@ impl Exporter for SlowExporter {
     fn name(&self) -> &str {
         "slow"
     }
-    fn export(&self, batch: &[keel_telemetry::Event]) -> Result<ExportOk, ExportError> {
+    fn export(&self, batch: &[kelson_telemetry::Event]) -> Result<ExportOk, ExportError> {
         std::thread::sleep(Duration::from_millis(self.sleep_ms));
         Ok(ExportOk {
             bytes: batch.len(),

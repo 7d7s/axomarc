@@ -1,4 +1,4 @@
-//! # keel-ai — AI client contract (item 33, L47, D-67)
+//! # kelson-ai — AI client contract (item 33, L47, D-67)
 //!
 //! AI plugs into the execution system, it is not an isolated module:
 //! agent -> tool -> execution -> capability -> scope -> policy -> command.
@@ -9,7 +9,7 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 use serde::{Deserialize, Serialize};
 
 /// Conversation role.

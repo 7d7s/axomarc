@@ -1,5 +1,5 @@
 [package]
-name = "keel-elevation"
+name = "kelson-elevation"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,10 +7,10 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel security: elevation leases (P4/P5) — explicit, time-bounded, audited cross-plane access."
+description = "Kelson security: elevation leases (P4/P5) — explicit, time-bounded, audited cross-plane access."
 
 [dependencies]
-keel-foundation = { workspace = true }
+kelson-foundation = { workspace = true }
 serde = { workspace = true }
 time = { workspace = true }
 

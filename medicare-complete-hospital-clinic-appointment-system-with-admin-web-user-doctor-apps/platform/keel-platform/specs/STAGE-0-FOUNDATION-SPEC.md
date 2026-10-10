@@ -1,7 +1,7 @@
-# Keel Stage-0 Foundation Specification (FROZEN — D-61)
+# Kelson Stage-0 Foundation Specification (FROZEN — D-61)
 
 > Status: FROZEN 2026-08-20. Supersedes 11-FOUNDATION-MASTER-SPEC.md topology sections (§8, §9); those remain historical.
-> Constitution: Keel is a **framework operating system** with four simultaneous identities:
+> Constitution: Kelson is a **framework operating system** with four simultaneous identities:
 > ① Application framework (Laravel parity) · ② Execution runtime (context/policy/transaction/workflow/delta) · ③ Developer platform (CLI/generators/testkit/diagnostics/graph/AI) · ④ Enterprise control plane (tenant/security/deployment/feature/governance).
 > Identity ① gives parity; ②③④ are the successor surface.
 
@@ -32,64 +32,64 @@ platform/
 │   ├── observability/ logging (+ S5 Sentinel: telemetry · tracing · metrics · audit · pipeline · buffer · export)
 │   ├── ai/           (S6 stubs: client · agents · tools · mcp)
 │   └── testing/      (S2: testkit)
-├── adapters/         keel-cache-memory · keel-sms-msg91 · keel-mail-smtp · keel-storage-s3 · keel-push-fcm (+ S2 storage-local, S3 webhooks)
-├── runtime/          keel-api · keel-worker
+├── adapters/         kelson-cache-memory · kelson-sms-msg91 · kelson-mail-smtp · kelson-storage-s3 · kelson-push-fcm (+ S2 storage-local, S3 webhooks)
+├── runtime/          kelson-api · kelson-worker
 ├── applications/     generated/domain apps (medicare reference later — D-46/D-70)
-├── templates/        project-template for `keel new`
+├── templates/        project-template for `kelson new`
 ├── examples/         minimal (golden path)
 ├── database/         migrations · roles.sql
-├── tools/            keel-console · keel-analyzer · keel-codegen
+├── tools/            kelson-console · kelson-analyzer · kelson-codegen
 ├── tests/            architecture (CI-gate tests)
 ├── xtask/  docs/  specs/  config/
 ```
 
-Package names keep the `keel-` prefix (D-63). Crate directories follow blueprint names; package name may differ from directory (e.g. `crates/execution/engine` = package `keel-execution`).
+Package names keep the `kelson-` prefix (D-63). Crate directories follow blueprint names; package name may differ from directory (e.g. `crates/execution/engine` = package `kelson-execution`).
 
 ### Crate responsibility table (current 47)
 
 | Path | Package | Responsibility |
 |---|---|---|
-| crates/foundation/core | keel-foundation | ids, error taxonomy+codes, envelope types, Money/Secret/Phi, Clock, Locale, Delta stone types, OperationId, Deadline |
-| crates/foundation/context | keel-context | ExecutionContext (immutable after build), builders, snapshots |
-| crates/foundation/contracts | keel-contracts | cross-layer port contracts shared by all layers |
-| crates/foundation/lifecycle | keel-lifecycle | Provider trait, ApplicationHost, service registry |
-| crates/foundation/validation | keel-validation | boundary validation primitives + Validator (S2: collect-all) |
-| crates/execution/engine | keel-execution | ExecutionUnit, OperationHandler, ExecutionPlan, engine pipeline, idempotency+concurrency ports |
-| crates/execution/command | keel-command | CommandBus dispatch front door |
-| crates/execution/query | keel-query | read-side query contract |
-| crates/execution/transaction | keel-transaction | tx contracts: TxOptions/isolation, TransactionPort/TxHandle, advisory + FOR-UPDATE lock helpers (SQL in keel-postgres) |
-| crates/application/registry | keel-registry | module manifests, PlatformGraph compile, capability catalog |
-| crates/application/configuration | keel-config | typed layered config (defaults←file←env), env profiles |
-| crates/web/http | keel-http | Envelope/ErrorBody wire, AppError→status, Request/ResponseViewModel, (S2: Page<T>) |
-| crates/security/identity | keel-identity | principal/authN: argon2, JWT, OTP skeleton, Secret |
-| crates/security/policies | keel-policy | policy engine decide |
-| crates/security/scopes | keel-scope | scope lattice |
-| crates/security/ownership | keel-ownership | ownership snapshots |
-| crates/security/elevation | keel-elevation | platform-plane elevation flow |
-| crates/data/postgres | keel-postgres | pool, embedded migrations, Tx engine, delta/audit/outbox/idempotency writers |
-| crates/async/events | keel-event | event/listener specs, outbox row contract |
-| crates/async/jobs | keel-jobs | DurableJob, JobStore port, retry semantics |
-| crates/async/workflows | keel-workflow | state machines |
-| crates/async/scheduler | keel-scheduling | schedule definitions/catalog |
-| crates/services/cache | keel-caching | CachePort + TTL entries |
-| crates/services/storage | keel-storage | StoragePort |
-| crates/services/notifications | keel-notifications | NotifyHub, MailPort/SmsPort/PushPort |
-| crates/observability/logging | keel-observability | S5 Sentinel runtime host: ObservabilityRuntime, policy engine, incident control plane, ObservabilityProvider; keeps the S1 API (init_logging, LogConfig, redact_str, chain records) |
-| crates/observability/telemetry | keel-telemetry | S5: event bus, EventEnvelope + schemas, typed event ids, classification, plugin traits |
-| crates/observability/tracing | keel-tracing | S5: span model + causality, W3C traceparent helpers, adaptive sampler |
-| crates/observability/metrics | keel-metrics | S5: counters/gauges/histograms, bounded label cardinality, Prometheus text renderer |
-| crates/observability/audit | keel-audit | S5: audit event schema, retention types, tamper/equivalence report models |
-| crates/observability/pipeline | keel-pipeline | S5: processing DAG (normalize, classify, enrich, redact, fingerprint, sample, dedupe, route), policy grammar |
-| crates/observability/buffer | keel-buffer | S5: bounded buffers, durability classes, backpressure policy, disk WAL |
-| crates/observability/export | keel-export | S5: Exporter trait + console/file/OTLP-JSON/HTTP/syslog, circuit breakers, retry budget, health snapshots |
-| crates/security/integrity | keel-integrity | S5: audit hash-chain primitives (sha2), HMAC batch signing |
+| crates/foundation/core | kelson-foundation | ids, error taxonomy+codes, envelope types, Money/Secret/Phi, Clock, Locale, Delta stone types, OperationId, Deadline |
+| crates/foundation/context | kelson-context | ExecutionContext (immutable after build), builders, snapshots |
+| crates/foundation/contracts | kelson-contracts | cross-layer port contracts shared by all layers |
+| crates/foundation/lifecycle | kelson-lifecycle | Provider trait, ApplicationHost, service registry |
+| crates/foundation/validation | kelson-validation | boundary validation primitives + Validator (S2: collect-all) |
+| crates/execution/engine | kelson-execution | ExecutionUnit, OperationHandler, ExecutionPlan, engine pipeline, idempotency+concurrency ports |
+| crates/execution/command | kelson-command | CommandBus dispatch front door |
+| crates/execution/query | kelson-query | read-side query contract |
+| crates/execution/transaction | kelson-transaction | tx contracts: TxOptions/isolation, TransactionPort/TxHandle, advisory + FOR-UPDATE lock helpers (SQL in kelson-postgres) |
+| crates/application/registry | kelson-registry | module manifests, PlatformGraph compile, capability catalog |
+| crates/application/configuration | kelson-config | typed layered config (defaults←file←env), env profiles |
+| crates/web/http | kelson-http | Envelope/ErrorBody wire, AppError→status, Request/ResponseViewModel, (S2: Page<T>) |
+| crates/security/identity | kelson-identity | principal/authN: argon2, JWT, OTP skeleton, Secret |
+| crates/security/policies | kelson-policy | policy engine decide |
+| crates/security/scopes | kelson-scope | scope lattice |
+| crates/security/ownership | kelson-ownership | ownership snapshots |
+| crates/security/elevation | kelson-elevation | platform-plane elevation flow |
+| crates/data/postgres | kelson-postgres | pool, embedded migrations, Tx engine, delta/audit/outbox/idempotency writers |
+| crates/async/events | kelson-event | event/listener specs, outbox row contract |
+| crates/async/jobs | kelson-jobs | DurableJob, JobStore port, retry semantics |
+| crates/async/workflows | kelson-workflow | state machines |
+| crates/async/scheduler | kelson-scheduling | schedule definitions/catalog |
+| crates/services/cache | kelson-caching | CachePort + TTL entries |
+| crates/services/storage | kelson-storage | StoragePort |
+| crates/services/notifications | kelson-notifications | NotifyHub, MailPort/SmsPort/PushPort |
+| crates/observability/logging | kelson-observability | S5 Sentinel runtime host: ObservabilityRuntime, policy engine, incident control plane, ObservabilityProvider; keeps the S1 API (init_logging, LogConfig, redact_str, chain records) |
+| crates/observability/telemetry | kelson-telemetry | S5: event bus, EventEnvelope + schemas, typed event ids, classification, plugin traits |
+| crates/observability/tracing | kelson-tracing | S5: span model + causality, W3C traceparent helpers, adaptive sampler |
+| crates/observability/metrics | kelson-metrics | S5: counters/gauges/histograms, bounded label cardinality, Prometheus text renderer |
+| crates/observability/audit | kelson-audit | S5: audit event schema, retention types, tamper/equivalence report models |
+| crates/observability/pipeline | kelson-pipeline | S5: processing DAG (normalize, classify, enrich, redact, fingerprint, sample, dedupe, route), policy grammar |
+| crates/observability/buffer | kelson-buffer | S5: bounded buffers, durability classes, backpressure policy, disk WAL |
+| crates/observability/export | kelson-export | S5: Exporter trait + console/file/OTLP-JSON/HTTP/syslog, circuit breakers, retry budget, health snapshots |
+| crates/security/integrity | kelson-integrity | S5: audit hash-chain primitives (sha2), HMAC batch signing |
 | adapters/* | 5 adapter crates | sandbox/external integrations |
-| runtime/keel-api | keel-api | axum host, degraded boot (D-52) |
-| runtime/keel-worker | keel-worker | worker binary (S2: real loop) |
-| tools/* | cli/analyzer/codegen | `keel` CLI, G07 dep-matrix analyzer, module scaffolder |
+| runtime/kelson-api | kelson-api | axum host, degraded boot (D-52) |
+| runtime/kelson-worker | kelson-worker | worker binary (S2: real loop) |
+| tools/* | cli/analyzer/codegen | `kelson` CLI, G07 dep-matrix analyzer, module scaffolder |
 | tests/architecture | architecture-tests | CI-gate architecture assertions |
 
-## 3. Dependency direction matrix (enforced by keel check)
+## 3. Dependency direction matrix (enforced by kelson check)
 
 Layers (may depend only on same-or-lower):
 
@@ -101,7 +101,7 @@ L3 application         (configuration, registry)                             →
 L4 web/services/async  (http, cache, storage, notifications, events, jobs, workflows, scheduler) → L0..L3
 L5 observability       (logging; S5: telemetry, tracing, metrics, audit, pipeline, buffer, export) → L0 (does NOT import runtime)
 L6 data                (postgres implements L2/L4 ports)                     → L0..L4
-L7 runtime             (keel-api, keel-worker)                               → all crates/, no adapters rule exception: runtime wires adapters
+L7 runtime             (kelson-api, kelson-worker)                               → all crates/, no adapters rule exception: runtime wires adapters
 L8 adapters            (implement service ports; never imported by crates/*) → L0..L4
 L9 applications/       (domain modules)                                      → platform crates; platform NEVER imports applications
 LA tools               (cli, analyzer, codegen, xtask)                       → anything except runtime binaries
@@ -167,7 +167,7 @@ register → dependency topo-sort (cycle = boot refusal) → boot in order → R
 
 ## 7. Registry & platform graph
 
-Modules declare `module.toml` (id, version, maturity, plane, dependencies, capabilities, routes, events, permissions). `PlatformGraph::compile` rejects: duplicate routes/capabilities/events, missing dependencies, plane violations. This feeds `keel graph|modules|routes|capabilities` and gate G05.
+Modules declare `module.toml` (id, version, maturity, plane, dependencies, capabilities, routes, events, permissions). `PlatformGraph::compile` rejects: duplicate routes/capabilities/events, missing dependencies, plane violations. This feeds `kelson graph|modules|routes|capabilities` and gate G05.
 
 ## 8. Execution state machine
 
@@ -184,7 +184,7 @@ Sources layered: `defaults ← config file (config/<env>.toml) ← .env (S2) ←
 
 ## 10. Error taxonomy (frozen)
 
-Categories: Validation, Authentication, Authorization, NotFound, Conflict, Workflow, Domain, Persistence, External, ResourceExhausted, Internal. Each carries code (KER_* / module prefix), public_message, severity, retryability, meta (field errors etc.). Wire shape = Envelope{ok:false,error:{code,message,retryable,meta}}; internals never leak.
+Categories: Validation, Authentication, Authorization, NotFound, Conflict, Workflow, Domain, Persistence, External, ResourceExhausted, Internal. Each carries code (KSN_* / module prefix), public_message, severity, retryability, meta (field errors etc.). Wire shape = Envelope{ok:false,error:{code,message,retryable,meta}}; internals never leak.
 
 ## 11. Feature flags (S3 service, contract now)
 
@@ -192,16 +192,16 @@ Dimensions: global · environment · tenant · region · percentage · capabilit
 
 ## 12. Build profiles
 
-cargo profiles: `dev` (debug=1), `test`, `release` (LTO later). Runtime postures selected by config env + binary (api vs worker vs migration). `keel build` wraps cargo with the matrix documented in RELEASE.md.
+cargo profiles: `dev` (debug=1), `test`, `release` (LTO later). Runtime postures selected by config env + binary (api vs worker vs migration). `kelson build` wraps cargo with the matrix documented in RELEASE.md.
 
 ## 13. CI gates
 
-G01 format (fmt) · G02 clippy -D warnings · G03 unit+integration tests · G04 workspace compile matrix · G05 platform graph compile (no duplicate routes/caps/events) · G06 module manifest validity · G07 dependency matrix (keel check, xtask rules incl. §3 layer directions) · G08 migrations ordered & present · G09 golden-path example passes · G10 degraded-boot smoke · G11 architecture tests (domain ⊥ transport; platform ⊄ applications; tenant cannot mutate platform) · G12 secrets hygiene (no key material in repo) · G13 docs links resolve · G14 API surface delta reported (S4: enforced via semver-checks) · G15 benchmark baseline (S4) · G16 diagnostic chain persistence (S2) · G17 **capability completion**: a capability is done only when all 13 facets exist — contract, runtime, API, configuration, CLI, generator, testkit, observability, security, documentation, extension points, performance budget, compatibility policy. · G18 **telemetry resilience**: failure-injection + tenant-isolation suite (WAL corruption recovery, exporter fault injection, backpressure, shutdown drain, cross-tenant leak hammer) green in CI.
+G01 format (fmt) · G02 clippy -D warnings · G03 unit+integration tests · G04 workspace compile matrix · G05 platform graph compile (no duplicate routes/caps/events) · G06 module manifest validity · G07 dependency matrix (kelson check, xtask rules incl. §3 layer directions) · G08 migrations ordered & present · G09 golden-path example passes · G10 degraded-boot smoke · G11 architecture tests (domain ⊥ transport; platform ⊄ applications; tenant cannot mutate platform) · G12 secrets hygiene (no key material in repo) · G13 docs links resolve · G14 API surface delta reported (S4: enforced via semver-checks) · G15 benchmark baseline (S4) · G16 diagnostic chain persistence (S2) · G17 **capability completion**: a capability is done only when all 13 facets exist — contract, runtime, API, configuration, CLI, generator, testkit, observability, security, documentation, extension points, performance budget, compatibility policy. · G18 **telemetry resilience**: failure-injection + tenant-isolation suite (WAL corruption recovery, exporter fault injection, backpressure, shutdown drain, cross-tenant leak hammer) green in CI.
 
 ## 14. Stage roadmap
 
-S0 freeze+restructure (this doc) → S1 core hardening (trace_id/timezone, plan compiler, tx contract split, logging, provider graph) → S2 parity surface (validator, .env, migrations CLI, seeders, tokens, job runtime, worker loop, outbox pump, middleware pipeline, pagination, storage-local, testkit v1, operational CLI, generators + keel new) → S3 enterprise control plane → S4 developer platform → S5 Sentinel (telemetry runtime) → S6 AI/MCP → S7 public ecosystem. Full L00–L80 matrix: docs/rust/13-FRAMEWORK-BLUEPRINT.md.
+S0 freeze+restructure (this doc) → S1 core hardening (trace_id/timezone, plan compiler, tx contract split, logging, provider graph) → S2 parity surface (validator, .env, migrations CLI, seeders, tokens, job runtime, worker loop, outbox pump, middleware pipeline, pagination, storage-local, testkit v1, operational CLI, generators + kelson new) → S3 enterprise control plane → S4 developer platform → S5 Sentinel (telemetry runtime) → S6 AI/MCP → S7 public ecosystem. Full L00–L80 matrix: docs/rust/13-FRAMEWORK-BLUEPRINT.md.
 
 ## 15. Frozen decisions recorded here
 
-D-61 restructure-now · D-62 dependency policy v2 (justify table; cap 25) · D-63 naming Keel/keel-* · D-64 consolidation granularity · D-65 delta kernel in engine · D-66 sessions opt-in S3 · D-67 AI stubs S6 (renumbered by D-73) · D-68 metrics deferred stubs · D-69 compile-time modules first · D-70 medicare isolation · D-71 API-ID + semver gate · D-72 G17 capability completion · D-73 Sentinel stage insertion (rescopes D-68 metrics deferral into S5; AI/MCP → S6, public ecosystem → S7) · D-74 crate split: TelemetryContext carrier in keel-foundation + audit hash chain in keel-integrity (security class; data layer cannot depend on observability) · D-75 OTLP over reqwest (OTLP/HTTP + JSON encoding), no opentelemetry* deps (budget 23/25 unbreached) · D-76 incident control plane = file plane under storage/framework/telemetry/control/ (source of truth) + keel-api admin HTTP endpoint writing the same file.
+D-61 restructure-now · D-62 dependency policy v2 (justify table; cap 25) · D-63 naming Kelson/kelson-* · D-64 consolidation granularity · D-65 delta kernel in engine · D-66 sessions opt-in S3 · D-67 AI stubs S6 (renumbered by D-73) · D-68 metrics deferred stubs · D-69 compile-time modules first · D-70 medicare isolation · D-71 API-ID + semver gate · D-72 G17 capability completion · D-73 Sentinel stage insertion (rescopes D-68 metrics deferral into S5; AI/MCP → S6, public ecosystem → S7) · D-74 crate split: TelemetryContext carrier in kelson-foundation + audit hash chain in kelson-integrity (security class; data layer cannot depend on observability) · D-75 OTLP over reqwest (OTLP/HTTP + JSON encoding), no opentelemetry* deps (budget 23/25 unbreached) · D-76 incident control plane = file plane under storage/framework/telemetry/control/ (source of truth) + kelson-api admin HTTP endpoint writing the same file.

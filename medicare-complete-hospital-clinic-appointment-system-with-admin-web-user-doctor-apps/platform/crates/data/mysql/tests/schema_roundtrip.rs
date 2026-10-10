@@ -1,24 +1,24 @@
 //! B-31 Phase D: the fluent-schema-builder round-trip gate.
 //!
 //! Every shipped `database/migrations-mysql/*.sql` file is authored here as a
-//! fluent [`keel_mysql::schema::Migration`] program, and the test asserts the
+//! fluent [`kelson_mysql::schema::Migration`] program, and the test asserts the
 //! rendered bytes equal the shipped bytes — so "the builder can express every
 //! construct the fleet ships" is an enforced invariant, and any hand-edit to a
 //! migration that the builder cannot represent fails the workspace gate.
 //!
-//! Layout rules live in the [`keel_mysql::schema`] module docs. The canonical
+//! Layout rules live in the [`kelson_mysql::schema`] module docs. The canonical
 //! form (name field = longest name + 2, single-line indexes, two-space inline
 //! comments) was adopted by the Phase D canonicalization; regeneration writes
 //! the files back from these programs with:
 //!
 //! ```text
-//! KEEL_SCHEMA_REGENERATE=1 cargo test -p keel-mysql --test schema_roundtrip
+//! KEEL_SCHEMA_REGENERATE=1 cargo test -p kelson-mysql --test schema_roundtrip
 //! ```
 //!
 //! Without that variable the test is read-only (byte-equality + formatting
 //! invariants) and needs no database.
 
-use keel_mysql::schema::Migration;
+use kelson_mysql::schema::Migration;
 
 fn foundation() -> Migration {
     Migration::new()
@@ -26,7 +26,7 @@ fn foundation() -> Migration {
         .comment("-- uuid: BINARY(16) (sqlx MySQL Uuid codec is binary)")
         .comment("-- MySQL: inline column REFERENCES is parsed but ignored by the server, so")
         .comment("-- every foreign key below is rewritten as a table-level FOREIGN KEY clause.")
-        .comment("-- Keel foundation DDL (G09 companion). All ids are application-generated UUID v7.")
+        .comment("-- Kelson foundation DDL (G09 companion). All ids are application-generated UUID v7.")
         .comment("-- RLS here is the FINAL containment barrier; application authorization decides")
         .comment("-- business permission. Runtime must connect with a NON-OWNER role (roles.sql).")
         .blank()
@@ -240,7 +240,7 @@ fn services() -> Migration {
     Migration::new()
         .comment("-- MySQL 8 dialect twin of database/migrations/20260820000002_services.sql.")
         .comment("-- uuid: BINARY(16) (sqlx MySQL Uuid codec is binary)")
-        .comment("-- Keel services DDL (S2 item 19): durable jobs, diagnostics chain, auth tokens.")
+        .comment("-- Kelson services DDL (S2 item 19): durable jobs, diagnostics chain, auth tokens.")
         .comment("-- The outbox table already exists in 20260819000001_foundation.sql (the outbox")
         .comment("-- writer landed with the engine); the pump (item 24) reads it. Same conventions:")
         .comment("-- application-generated UUID v7 ids, runtime role never owns tables (roles.sql).")
@@ -318,9 +318,9 @@ fn http_sessions() -> Migration {
     Migration::new()
         .comment("-- MySQL 8 dialect twin of database/migrations/20260822000001_http_sessions.sql.")
         .comment("-- uuid: BINARY(16) (sqlx MySQL Uuid codec is binary)")
-        .comment("-- HTTP session persistence (S7 C6/B-03): durable store for keel-session.")
-        .comment("-- Separate from the legacy `sessions` table (keel-identity session rows):")
-        .comment("-- keel-session ids are 64-hex strings with a JSON data bag.")
+        .comment("-- HTTP session persistence (S7 C6/B-03): durable store for kelson-session.")
+        .comment("-- Separate from the legacy `sessions` table (kelson-identity session rows):")
+        .comment("-- kelson-session ids are 64-hex strings with a JSON data bag.")
         .create_table("http_sessions", |t| {
             t.varchar("id", 64).primary_key();
             t.uuid("principal_id").not_null();
@@ -338,7 +338,7 @@ fn appointments() -> Migration {
         .comment("-- MySQL 8 dialect twin of database/migrations/20260822000002_appointments.sql.")
         .comment("-- uuid: BINARY(16) (sqlx MySQL Uuid codec is binary)")
         .comment("-- Appointments domain table (S8 C3/B-04): first real module table persisted")
-        .comment("-- through the framework ModelStore port (PgModelStore over keel-models).")
+        .comment("-- through the framework ModelStore port (PgModelStore over kelson-models).")
         .comment("-- Partial unique index = the real double-booking contention guard: one BOOKED")
         .comment("-- appointment per (tenant, patient, slot); cancelled rows do not block.")
         .create_table("appointments", |t| {
@@ -379,7 +379,7 @@ fn audit_hash_chain() -> Migration {
         .comment("-- uuid: BINARY(16) (sqlx MySQL Uuid codec is binary)")
         .comment("-- Sentinel (S5): audit hash-chain columns (D-74, STAGE-SENTINEL-SPEC).")
         .comment("-- Per-(tenant, day) chain segments; chain computation happens inside the")
-        .comment("-- engine transaction via keel-integrity (no side channels). Old rows keep")
+        .comment("-- engine transaction via kelson-integrity (no side channels). Old rows keep")
         .comment("-- NULL columns: pre-chain history is not backfilled, chains start fresh.")
         .comment("-- MySQL has no ADD COLUMN IF NOT EXISTS; plain ADD COLUMN (sqlx runs each")
         .comment("-- migration file exactly once).")
@@ -415,7 +415,7 @@ fn oauth2() -> Migration {
         .comment("-- MySQL 8 dialect twin of database/migrations/20260826000001_oauth2.sql.")
         .comment("-- uuid: BINARY(16) (sqlx MySQL Uuid codec is binary)")
         .comment("-- OAuth2 module (B-21, Wave 8 P5): the client registry.")
-        .comment("-- Secrets are argon2 hashed by the module (keel-identity password helpers);")
+        .comment("-- Secrets are argon2 hashed by the module (kelson-identity password helpers);")
         .comment("-- the plaintext is shown exactly once at creation. The redirect allowlist")
         .comment("-- and scopes ride jsonb so membership checks are data, not string parsing.")
         .comment("-- Global registry (no tenant column): the token/revoke endpoints are")
@@ -494,6 +494,7 @@ fn job_batches() -> Migration {
 }
 
 /// The canonical fleet: every shipped MySQL migration and its builder program.
+#[allow(clippy::type_complexity)]
 const MIGRATIONS: &[(&str, fn() -> Migration)] = &[
     ("20260819000001_foundation.sql", foundation),
     ("20260820000002_services.sql", services),

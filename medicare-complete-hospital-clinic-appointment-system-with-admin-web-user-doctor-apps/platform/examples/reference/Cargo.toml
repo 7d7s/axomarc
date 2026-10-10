@@ -1,8 +1,8 @@
 [package]
-name = "keel-example-reference"
+name = "kelson-example-reference"
 # Internal-only crate: not published to crates.io.
 publish = false
-description = "Keel reference application (S6): appointments domain end-to-end — manifest graph, policy-gated execution, delta+outbox, search, MCP tools"
+description = "Kelson reference application (S6): appointments domain end-to-end — manifest graph, policy-gated execution, delta+outbox, search, MCP tools"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,16 +12,16 @@ readme.workspace = true
 keywords.workspace = true
 
 [dependencies]
-keel-foundation = { workspace = true }
-keel-context = { workspace = true }
-keel-execution = { workspace = true }
-keel-lifecycle = { workspace = true }
-keel-policy = { workspace = true }
-keel-command = { workspace = true }
-keel-registry = { workspace = true }
-keel-search = { workspace = true }
-keel-ai-mcp = { workspace = true }
-keel-observability = { workspace = true }
+kelson-foundation = { workspace = true }
+kelson-context = { workspace = true }
+kelson-execution = { workspace = true }
+kelson-lifecycle = { workspace = true }
+kelson-policy = { workspace = true }
+kelson-command = { workspace = true }
+kelson-registry = { workspace = true }
+kelson-search = { workspace = true }
+kelson-ai-mcp = { workspace = true }
+kelson-observability = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 time = { workspace = true }

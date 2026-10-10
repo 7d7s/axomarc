@@ -6,8 +6,8 @@
 //! through crate::bridge (block_in_place inside multi-threaded runtimes, a
 //! persistent bridge runtime otherwise).
 
-use keel_foundation::AppError;
-use keel_jobs::{DurableJob, JobStatus, JobStore, JobStoreAdmin};
+use kelson_foundation::AppError;
+use kelson_jobs::{DurableJob, JobStatus, JobStore, JobStoreAdmin};
 use sqlx::postgres::PgPool;
 
 use crate::bridge::block_on;
@@ -50,7 +50,7 @@ fn job_from_row(row: sqlx::postgres::PgRow) -> Result<DurableJob, AppError> {
     let correlation: Option<Uuid> = row.try_get("correlation_id").map_err(pg)?;
     Ok(DurableJob {
         id: row.try_get("id").map_err(pg)?,
-        execution_id: keel_foundation::ExecutionId::from_uuid(row.try_get("execution_id").map_err(pg)?),
+        execution_id: kelson_foundation::ExecutionId::from_uuid(row.try_get("execution_id").map_err(pg)?),
         name: row.try_get("name").map_err(pg)?,
         payload: row.try_get("payload").map_err(pg)?,
         queue: row.try_get("queue").map_err(pg)?,
@@ -62,8 +62,8 @@ fn job_from_row(row: sqlx::postgres::PgRow) -> Result<DurableJob, AppError> {
         priority: row.try_get("priority").map_err(pg)?,
         claimed_by: row.try_get("claimed_by").map_err(pg)?,
         claimed_at: row.try_get("claimed_at").map_err(pg)?,
-        causation_id: causation.map(keel_foundation::CorrelationId::from_uuid),
-        correlation_id: correlation.map(keel_foundation::CorrelationId::from_uuid),
+        causation_id: causation.map(kelson_foundation::CorrelationId::from_uuid),
+        correlation_id: correlation.map(kelson_foundation::CorrelationId::from_uuid),
         last_error: row.try_get("last_error").map_err(pg)?,
         enqueued_at: row.try_get("enqueued_at").map_err(pg)?,
         finished_at: row.try_get("finished_at").map_err(pg)?,
@@ -278,7 +278,7 @@ impl JobStoreAdmin for PgJobStore {
         })
     }
 
-    fn snapshot(&self) -> Result<keel_jobs::QueueSnapshot, AppError> {
+    fn snapshot(&self) -> Result<kelson_jobs::QueueSnapshot, AppError> {
         let pool = self.pool.clone();
         block_on(async move {
             let row = sqlx::query(
@@ -296,7 +296,7 @@ impl JobStoreAdmin for PgJobStore {
                 let n: i64 = row.try_get(col).map_err(pg)?;
                 Ok(n.max(0) as usize)
             };
-            Ok(keel_jobs::QueueSnapshot {
+            Ok(kelson_jobs::QueueSnapshot {
                 pending: count("pending")?,
                 running: count("running")?,
                 dead: count("dead")?,

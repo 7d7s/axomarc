@@ -1,10 +1,10 @@
 // SPA-first starter (__PROJECT_NAME__).
-// Auth model: same-origin cookie session for the browser (keel_session),
+// Auth model: same-origin cookie session for the browser (kelson_session),
 // hashed PAT for non-browser API clients. The session cookie is HttpOnly;
 // no token handling in JS for the web flow.
 //
 // Generate a typed OpenAPI client for your framework surface with:
-//   keel sdk:openapi
+//   kelson sdk:openapi
 
 const API = {
   register: (email, password) =>

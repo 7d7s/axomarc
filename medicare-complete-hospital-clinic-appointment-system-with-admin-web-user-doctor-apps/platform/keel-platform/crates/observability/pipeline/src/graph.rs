@@ -2,7 +2,7 @@
 //! category flows through the full chain; per-category divergence happens at
 //! routing time (`router.rs`), which keeps the graph declarative and cheap.
 
-use keel_telemetry::{Event, ProcessOutcome, Processor};
+use kelson_telemetry::{Event, ProcessOutcome, Processor};
 
 pub struct PipelineGraph {
     stages: Vec<Box<dyn Processor>>,
@@ -67,8 +67,8 @@ mod tests {
     }
 
     fn event() -> Event {
-        use keel_foundation::TelemetryContext;
-        use keel_telemetry::{
+        use kelson_foundation::TelemetryContext;
+        use kelson_telemetry::{
             EventEnvelope, Fields, Level, LogPayload, ServiceIdentity, TelemetryPayload,
             SCHEMA_LOG, SCHEMA_LOG_VERSION,
         };

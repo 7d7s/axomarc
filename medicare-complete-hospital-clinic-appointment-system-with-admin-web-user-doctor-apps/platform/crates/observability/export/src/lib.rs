@@ -1,4 +1,4 @@
-//! # keel-export
+//! # kelson-export
 //! Sentinel (S5) export fabric: console, file (JSONL + rotation), OTLP/HTTP
 //! JSON (D-75, no opentelemetry deps), generic HTTP and RFC5424 syslog
 //! exporters, each wrappable in `ManagedExporter` for circuit breaking,

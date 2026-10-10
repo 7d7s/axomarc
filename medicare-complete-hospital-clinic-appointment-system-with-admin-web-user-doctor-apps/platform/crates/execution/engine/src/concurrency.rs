@@ -6,13 +6,13 @@
 //!   on an expanded key before the unit runs and holds it until completion.
 //!
 //! The in-memory implementation is the kernel reference; production durability
-//! comes from `keel-transaction` locks (postgres advisory locks) wired by the
+//! comes from `kelson-transaction` locks (postgres advisory locks) wired by the
 //! data layer.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};
 
-use keel_foundation::{AppError, OperationId, TenantId};
+use kelson_foundation::{AppError, OperationId, TenantId};
 
 /// Exclusive, RAII lease over one serialization key. Releasing (drop) wakes a
 /// single waiter.

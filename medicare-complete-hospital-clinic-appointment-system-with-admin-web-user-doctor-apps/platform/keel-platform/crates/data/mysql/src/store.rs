@@ -2,7 +2,7 @@
 //! (tenant, operation, key) + payload hash -> stored result.
 //!
 //! MySQL port notes (B-31), vs the Postgres twin
-//! (`keel_postgres::store`):
+//! (`kelson_postgres::store`):
 //! - `tenant_id IS NOT DISTINCT FROM $1` becomes MySQL's null-safe `<=>`
 //!   (rule 12): NULL tenant matches NULL tenant exactly like pg.
 //! - `ON CONFLICT (tenant_id, operation, key) DO NOTHING` (rule 6)
@@ -17,7 +17,7 @@
 //! - the `key` column is written `` `key` `` (backticked) everywhere:
 //!   KEY is a RESERVED word in MySQL 8 (rule 17), so the identifier must
 //!   be quoted; the column name itself is unchanged.
-//! - no RLS and no `SET LOCAL keel.tenant_id` (rule 11): on pg,
+//! - no RLS and no `SET LOCAL kelson.tenant_id` (rule 11): on pg,
 //!   `idempotency_keys` is guarded by the `tenant_isolation_idempotency`
 //!   policy as a final containment barrier, but both statements already
 //!   carried explicit `tenant_id` / `operation` / `key` predicates (the
@@ -34,9 +34,9 @@
 //!   (rule 2) and `result` stays a `serde_json::Value` over `JSON`
 //!   (rule 4).
 
-use keel_foundation::{AppError, OperationId, TenantId};
-use keel_execution::ports::{IdempotencyCheck, IdempotencyKey, IdempotencyPort};
-use keel_execution::BoxFuture;
+use kelson_foundation::{AppError, OperationId, TenantId};
+use kelson_execution::ports::{IdempotencyCheck, IdempotencyKey, IdempotencyPort};
+use kelson_execution::BoxFuture;
 use serde_json::Value;
 use sqlx::mysql::MySqlPool;
 use uuid::Uuid;

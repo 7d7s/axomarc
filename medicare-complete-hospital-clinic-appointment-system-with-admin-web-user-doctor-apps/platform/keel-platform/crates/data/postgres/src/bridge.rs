@@ -18,7 +18,7 @@
 //! hosts multi-threaded (the runtime hosts here are).
 //!
 //! NOTE: a deliberate copy of this module lives in
-//! `adapters/keel-search-pgvector/src/bridge.rs` (the frozen G07 matrix
+//! `adapters/kelson-search-pgvector/src/bridge.rs` (the frozen G07 matrix
 //! forbids adapters depending on Data crates). Keep the two in sync.
 //!
 //! Futures must be owned (`'static + Send`): clone the pool (cheap `Arc`)
@@ -57,17 +57,17 @@ fn bridge() -> &'static Bridge {
     BRIDGE.get_or_init(|| {
         let (tx, rx) = mpsc::sync_channel::<Job>(64);
         std::thread::Builder::new()
-            .name("keel-pg-bridge".into())
+            .name("kelson-pg-bridge".into())
             .spawn(move || {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .expect("keel-pg-bridge runtime");
+                    .expect("kelson-pg-bridge runtime");
                 for job in rx {
                     runtime.block_on(job);
                 }
             })
-            .expect("keel-pg-bridge thread");
+            .expect("kelson-pg-bridge thread");
         Bridge { tx }
     })
 }
@@ -79,7 +79,7 @@ impl Bridge {
             let out = fut.await;
             let _ = done_tx.send(out);
         });
-        self.tx.send(job).expect("keel-pg-bridge alive");
-        done_rx.recv().expect("keel-pg-bridge result")
+        self.tx.send(job).expect("kelson-pg-bridge alive");
+        done_rx.recv().expect("kelson-pg-bridge result")
     }
 }

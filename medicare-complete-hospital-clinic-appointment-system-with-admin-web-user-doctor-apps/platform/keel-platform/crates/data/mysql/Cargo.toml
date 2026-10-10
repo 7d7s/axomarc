@@ -1,5 +1,5 @@
 [package]
-name = "keel-mysql"
+name = "kelson-mysql"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,22 +7,22 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel adapter: MySQL 8 fabric — pool, SQL-first migrations, delta/audit/outbox, idempotency (Wave 9 B-31 second driver)."
+description = "Kelson adapter: MySQL 8 fabric — pool, SQL-first migrations, delta/audit/outbox, idempotency (Wave 9 B-31 second driver)."
 
 [dependencies]
-keel-foundation = { workspace = true }
-keel-context = { workspace = true }
-keel-execution = { workspace = true }
-keel-transaction = { workspace = true }
-keel-event = { workspace = true }
-keel-models = { workspace = true }
-keel-query = { workspace = true }
-keel-jobs = { workspace = true }
-keel-tokens = { workspace = true }
-keel-session = { workspace = true }
-keel-identity = { workspace = true }
-keel-integrity = { workspace = true }
-keel-notifications = { workspace = true }
+kelson-foundation = { workspace = true }
+kelson-context = { workspace = true }
+kelson-execution = { workspace = true }
+kelson-transaction = { workspace = true }
+kelson-event = { workspace = true }
+kelson-models = { workspace = true }
+kelson-query = { workspace = true }
+kelson-jobs = { workspace = true }
+kelson-tokens = { workspace = true }
+kelson-session = { workspace = true }
+kelson-identity = { workspace = true }
+kelson-integrity = { workspace = true }
+kelson-notifications = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
@@ -34,8 +34,8 @@ tracing = { workspace = true }
 all-features = true
 
 [lib]
-# Wave 9 B-31: lib unit tests and doctests are off; the DB-backed keel-mysql
-# matrix rides the keel-postgres `pg-tests` integration files (which skip
+# Wave 9 B-31: lib unit tests and doctests are off; the DB-backed kelson-mysql
+# matrix rides the kelson-postgres `pg-tests` integration files (which skip
 # unless DATABASE_URL points at a MySQL 8 instance). The one target this crate
 # does own is tests/schema_roundtrip.rs (Phase D): the fluent schema-builder
 # gate is pure — no database — so it runs in every workspace gate and keeps

@@ -1,6 +1,6 @@
 //! Public API registry (blueprint item 49, L70): every public framework API
 //! owns a stable API-ID plus governance metadata (stability, introduced,
-//! deprecated, replacement, breaking-version). `keel upgrade` reads this
+//! deprecated, replacement, breaking-version). `kelson upgrade` reads this
 //! registry; CI gates breaking changes against it (G14).
 
 use serde::Deserialize;

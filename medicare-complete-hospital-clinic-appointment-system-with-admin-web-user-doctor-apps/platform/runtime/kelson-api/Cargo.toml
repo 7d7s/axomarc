@@ -1,0 +1,73 @@
+[package]
+name = "kelson-api"
+description = "Kelson API host: boots the ApplicationHost, serves health/readiness and the first routes"
+# Demo/dev API host: hard-wires kelson-mod-appointments and the Sentinel# metrics layer, neither of which ships to crates.io (Wave 2 publish-dry triage).
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+
+[[bin]]
+name = "kelson-api"
+path = "src/main.rs"
+
+[dependencies]
+kelson-foundation = { workspace = true }
+kelson-context = { workspace = true }
+kelson-execution = { workspace = true }
+kelson-lifecycle = { workspace = true }
+kelson-registry = { workspace = true }
+kelson-command = { workspace = true }
+kelson-query = { workspace = true }
+kelson-http = { workspace = true }
+kelson-validation = { workspace = true }
+kelson-config = { workspace = true }
+kelson-caching = { workspace = true }
+kelson-cache-memory = { workspace = true }
+kelson-cache-redis = { workspace = true }
+kelson-metrics = { workspace = true }
+kelson-policy = { workspace = true }
+kelson-scope = { workspace = true }
+kelson-models = { workspace = true }
+kelson-jobs = { workspace = true }
+kelson-scheduling = { workspace = true }
+kelson-postgres = { workspace = true }
+kelson-mysql = { workspace = true }
+kelson-observability = { workspace = true }
+kelson-notifications = { workspace = true }
+kelson-feature-flags = { workspace = true }
+kelson-session = { workspace = true }
+kelson-realtime = { workspace = true }
+kelson-tokens = { workspace = true }
+kelson-tenancy = { workspace = true }
+kelson-identity = { workspace = true }
+kelson-storage = { workspace = true }
+kelson-storage-local = { workspace = true }
+kelson-storage-s3 = { workspace = true }
+kelson-views = { workspace = true }
+kelson-mod-appointments = { workspace = true }
+kelson-mod-oauth2 = { workspace = true }
+# Wave 9 B-30: the WASM plugin runtime (internal-only, publish = false — the
+# publish set stays 61; only this runtime hosts plugins, never the console).
+kelson-wasm = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dev-dependencies]
+tower = { workspace = true }
+kelson-policy = { workspace = true }
+kelson-foundation = { workspace = true }

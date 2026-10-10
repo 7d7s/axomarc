@@ -1,5 +1,5 @@
 [package]
-name = "keel-mod-oauth2"
+name = "kelson-mod-oauth2"
 # Internal-only crate: not published to crates.io.
 publish = false
 description = "OAuth2 authorization server: authorize, token, revoke, client registry"
@@ -12,13 +12,13 @@ readme.workspace = true
 keywords.workspace = true
 
 [dependencies]
-keel-foundation = { workspace = true }
-keel-context = { workspace = true }
-keel-execution = { workspace = true }
-keel-identity = { workspace = true }
-keel-lifecycle = { workspace = true }
-keel-models = { workspace = true }
-keel-tokens = { workspace = true }
+kelson-foundation = { workspace = true }
+kelson-context = { workspace = true }
+kelson-execution = { workspace = true }
+kelson-identity = { workspace = true }
+kelson-lifecycle = { workspace = true }
+kelson-models = { workspace = true }
+kelson-tokens = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 time = { workspace = true }
@@ -26,7 +26,7 @@ uuid = { workspace = true }
 
 [lib]
 # Wave 8 P5 (B-21): every oauth2 test lives in an EXISTING suite (the
-# keel-api http_integration suite drives the whole code flow over the real
+# kelson-api http_integration suite drives the whole code flow over the real
 # edge), so this crate opts out of its own test target — `cargo test
 # --workspace` keeps its suite count unchanged.
 test = false

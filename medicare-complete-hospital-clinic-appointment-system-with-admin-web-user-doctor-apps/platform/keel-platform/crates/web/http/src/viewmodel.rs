@@ -1,6 +1,6 @@
 //! View-model bridges for the TypedHandler adapter (Wave 1).
 //!
-//! `keel_command::TypedHandler` gives handlers compile-time typed
+//! `kelson_command::TypedHandler` gives handlers compile-time typed
 //! input/output over the raw `Value` contract. These bridges connect the
 //! MVVM presentation traits to that boundary:
 //! - [`Validated`] implements `TypedInput`: JSON -> `RequestViewModel` ->
@@ -14,8 +14,8 @@
 //! The traits live here (Web) because the Execution layer must not know
 //! HTTP; modules opt in by depending on both crates.
 
-use keel_command::{TypedInput, TypedOutput};
-use keel_foundation::AppError;
+use kelson_command::{TypedInput, TypedOutput};
+use kelson_foundation::AppError;
 use serde_json::Value;
 
 use crate::{RequestViewModel, ResponseViewModel};
@@ -97,9 +97,9 @@ mod tests {
 
     #[test]
     fn validated_parses_then_validates() {
-        let ok = <Validated<NameForm> as TypedInput>::from_value(serde_json::json!({ "name": " keel " }))
+        let ok = <Validated<NameForm> as TypedInput>::from_value(serde_json::json!({ "name": " kelson " }))
             .unwrap();
-        assert_eq!(ok.input, "keel");
+        assert_eq!(ok.input, "kelson");
 
         let blank = <Validated<NameForm> as TypedInput>::from_value(serde_json::json!({ "name": "  " }));
         assert!(blank.is_err());
@@ -112,11 +112,11 @@ mod tests {
     #[test]
     fn resource_renders_the_wire_representation() {
         let resource = TypedResource::<NameResource> {
-            source: "keel".to_string(),
+            source: "kelson".to_string(),
         };
         assert_eq!(
             <TypedResource<NameResource> as TypedOutput>::into_value(resource),
-            serde_json::json!({ "upper": "KEEL" })
+            serde_json::json!({ "upper": "KELSON" })
         );
     }
 }

@@ -30,7 +30,7 @@ Five products, one repository, deliberately decoupled:
 | 4 | **Reference implementations** | no (proof) | `applications/reference-erp`, later `reference-healthcare` (Medicare) |
 | 5 | **Governance system** | no (guardrails) | Dep rules, gates, maturity levels, CI, policies, ADRs |
 
-**Working codename: Keel** (D-44, veto-able). CLI binary: `keel`. Crate prefix `keel-`. Repo folder: `platform/`.
+**Working codename: Kelson** (D-44, veto-able). CLI binary: `kelson`. Crate prefix `kelson-`. Repo folder: `platform/`.
 
 ### Trusted computing base (ruthlessly small)
 
@@ -244,7 +244,7 @@ ReportingQuery       large analytical reads
 
 - **Tenant anchor**: every tenant-owned table carries `tenant_id` unless documented proof says platform-only or
   globally immutable. **RLS is the final containment barrier**; application authorization is the business decision.
-  Context flow: `ExecutionContext → SET LOCAL keel.tenant_id → RLS` (GUC renamed from `medicare.*`, D-47).
+  Context flow: `ExecutionContext → SET LOCAL kelson.tenant_id → RLS` (GUC renamed from `medicare.*`, D-47).
 - **Database roles** (created per environment, documented in `database/roles.sql`):
   `migration_owner · platform_runtime · tenant_runtime · reporting_reader · maintenance`.
   The runtime role never owns tables (RLS owner-bypass protection).
@@ -353,53 +353,53 @@ cycles without exit.
 ## 8. Repository topology (FROZEN)
 
 ```text
-platform/                          ← the Keel platform workspace (own Cargo workspace)
+platform/                          ← the Kelson platform workspace (own Cargo workspace)
 ├── core/                          CORE class — the TCB
-│   ├── keel-foundation/                 ids, AppError, planes, profiles, revisions, money, clock, DeltaStone types
-│   ├── keel-context/              ExecutionContext, snapshots, builder (immutability enforced)
-│   ├── keel-execution/            ExecutionPlan, engine trait + implementation, idempotency, concurrency types
-│   ├── keel-lifecycle/            ApplicationHost, Provider, phases, service registry (typemap), freeze
-│   ├── keel-registry/             ModuleManifest, PlatformGraph, validation (cycles/dupes/missing deps)
-│   └── keel-contracts/            public contract traits: Command, Query, Event, Job, Resource, Policy
+│   ├── kelson-foundation/                 ids, AppError, planes, profiles, revisions, money, clock, DeltaStone types
+│   ├── kelson-context/              ExecutionContext, snapshots, builder (immutability enforced)
+│   ├── kelson-execution/            ExecutionPlan, engine trait + implementation, idempotency, concurrency types
+│   ├── kelson-lifecycle/            ApplicationHost, Provider, phases, service registry (typemap), freeze
+│   ├── kelson-registry/             ModuleManifest, PlatformGraph, validation (cycles/dupes/missing deps)
+│   └── kelson-contracts/            public contract traits: Command, Query, Event, Job, Resource, Policy
 │
 ├── framework/                     PLATFORM class — reusable framework layer
-│   ├── keel-http/                 MVVM adapter: envelope, problem+json, ViewModels, route wiring, request_id
-│   ├── keel-command/              command bus (authz → idempotency → tx → handler pipeline)
-│   ├── keel-query/                query bus + projections
-│   ├── keel-workflow/             state machines + workflow compiler (graph checks)
-│   ├── keel-jobs/                 durable executions (not "queue jobs")
-│   ├── keel-event/               event model, listener declarations, outbox contract
-│   ├── keel-validation/           boundary validation primitives
-│   ├── keel-config/               typed · layered · immutable · secret-aware configuration
-│   ├── keel-caching/              named cache ports (identity/authorization/config/reference/query/edge)
-│   ├── keel-storage/              storage port
-│   ├── keel-notifications/        sms/mail/push ports
-│   ├── keel-scheduling/           schedule specs
-│   └── keel-observability/        execution/trace ids, diagnostic chain records
+│   ├── kelson-http/                 MVVM adapter: envelope, problem+json, ViewModels, route wiring, request_id
+│   ├── kelson-command/              command bus (authz → idempotency → tx → handler pipeline)
+│   ├── kelson-query/                query bus + projections
+│   ├── kelson-workflow/             state machines + workflow compiler (graph checks)
+│   ├── kelson-jobs/                 durable executions (not "queue jobs")
+│   ├── kelson-event/               event model, listener declarations, outbox contract
+│   ├── kelson-validation/           boundary validation primitives
+│   ├── kelson-config/               typed · layered · immutable · secret-aware configuration
+│   ├── kelson-caching/              named cache ports (identity/authorization/config/reference/query/edge)
+│   ├── kelson-storage/              storage port
+│   ├── kelson-notifications/        sms/mail/push ports
+│   ├── kelson-scheduling/           schedule specs
+│   └── kelson-observability/        execution/trace ids, diagnostic chain records
 │
 ├── security/                      PLATFORM class — security subsystems
-│   ├── keel-identity/             Principal · Actor · Membership · Credential · Session
-│   ├── keel-scope/                scope graph + effective-scope computation
-│   ├── keel-ownership/            ownership graph + snapshots
-│   ├── keel-policy/               capability model, AccessSnapshot, ALLOW decision, revision cache
-│   └── keel-elevation/            elevation leases (P4/P5)
+│   ├── kelson-identity/             Principal · Actor · Membership · Credential · Session
+│   ├── kelson-scope/                scope graph + effective-scope computation
+│   ├── kelson-ownership/            ownership graph + snapshots
+│   ├── kelson-policy/               capability model, AccessSnapshot, ALLOW decision, revision cache
+│   └── kelson-elevation/            elevation leases (P4/P5)
 │
 ├── adapters/                      PLATFORM class — replaceable implementations of ports
-│   ├── keel-postgres/             pool, tx engine, RLS context, delta/audit/outbox writers, revisions, idempotency store
-│   ├── keel-cache-memory/         in-process cache (moka)
-│   ├── keel-sms-msg91/            MSG91 (D-16; DLT details pending)
-│   ├── keel-mail-smtp/            SMTP (D-18)
-│   ├── keel-storage-s3/           MinIO/S3 (D-19)
-│   └── keel-push-fcm/             Firebase push (D-17)
+│   ├── kelson-postgres/             pool, tx engine, RLS context, delta/audit/outbox writers, revisions, idempotency store
+│   ├── kelson-cache-memory/         in-process cache (moka)
+│   ├── kelson-sms-msg91/            MSG91 (D-16; DLT details pending)
+│   ├── kelson-mail-smtp/            SMTP (D-18)
+│   ├── kelson-storage-s3/           MinIO/S3 (D-19)
+│   └── kelson-push-fcm/             Firebase push (D-17)
 │
 ├── runtime/                       deployable binaries
-│   ├── keel-api/                  HTTP runtime (ApplicationHost + axum)
-│   └── keel-worker/               durable-job worker
+│   ├── kelson-api/                  HTTP runtime (ApplicationHost + axum)
+│   └── kelson-worker/               durable-job worker
 │
 ├── toolchain/
-│   ├── keel-console/                  the `keel` binary (§11)
-│   ├── keel-analyzer/             architecture/security rule engine (ARCH/AUTH/SCOPE/DELTA/MOD/CONTRACT/MIG/CONC)
-│   ├── keel-codegen/              contract-driven generators (make:*)
+│   ├── kelson-console/                  the `kelson` binary (§11)
+│   ├── kelson-analyzer/             architecture/security rule engine (ARCH/AUTH/SCOPE/DELTA/MOD/CONTRACT/MIG/CONC)
+│   ├── kelson-codegen/              contract-driven generators (make:*)
 │   └── xtask/                     build tasks, dep-rules gate, sbom, release prep
 │
 ├── domains/                       APPLICATION class — vertical packs (empty at foundation; healthcare later)
@@ -465,8 +465,8 @@ Everything else stays crate-private until proven.
 Publishing order (not "40 crates at once"):
 
 ```text
-wave 1: keel-foundation · keel-app (= lifecycle+execution façade) · keel-http · keel-security (façade) · keel-postgres · keel-console
-wave 2: keel-cache · keel-storage · keel-search · keel-notifications
+wave 1: kelson-foundation · kelson-app (= lifecycle+execution façade) · kelson-http · kelson-security (façade) · kelson-postgres · kelson-console
+wave 2: kelson-cache · kelson-storage · kelson-search · kelson-notifications
 ```
 
 A crate goes public only when: API stable · docs complete · tests complete · compatibility defined · security
@@ -521,7 +521,7 @@ No business-domain implementation may bypass these gates.
 | G12 | Graph validator | cycles/dupes/missing-authz/missing-delta detected in test graph |
 | G13 | Delta/audit/outbox | KER-03 enforced; streams monotonic; post-commit emission |
 | G14 | Workflow/jobs | workflow compiler rejects bad graphs; durable job lifecycle test |
-| G15 | CLI/generators | `keel doctor`, `keel make:module` produce compiling module |
+| G15 | CLI/generators | `kelson doctor`, `kelson make:module` produce compiling module |
 | G16 | Diagnostics/replay | execution chain inspectable by id; replay modes typed (DRY_RUN safe) |
 | G17 | Architecture verifier | dep-rule violations fail CI (analyzer run) |
 | G18 | Performance harness | budgets table + first micro-bench (route lookup, authz decide) |
@@ -532,16 +532,16 @@ No business-domain implementation may bypass these gates.
 
 ---
 
-## 14. CLI surface (`keel`)
+## 14. CLI surface (`kelson`)
 
 ```text
-keel new · dev · build · check · test · doctor · routes · graph [security|routes|modules|dependencies]
-keel modules · capabilities · migrate · seed · worker · schedule
-keel make:module|resource|command|query|workflow|policy|job|event|integration|migration|test
-keel inspect execution|delta|authorization <id> · keel replay execution <id> · keel benchmark · keel release
+kelson new · dev · build · check · test · doctor · routes · graph [security|routes|modules|dependencies]
+kelson modules · capabilities · migrate · seed · worker · schedule
+kelson make:module|resource|command|query|workflow|policy|job|event|integration|migration|test
+kelson inspect execution|delta|authorization <id> · kelson replay execution <id> · kelson benchmark · kelson release
 ```
 
-`keel check` runs the analyzer and reports coded diagnostics:
+`kelson check` runs the analyzer and reports coded diagnostics:
 
 ```text
 ARCH-001 controller directly accesses persistence      AUTH-011 mutation without declared capability
@@ -572,10 +572,10 @@ MIG-004 destructive migration without exception        CONC-007 shared mutable r
 
 | ID | Decision |
 |---|---|
-| D-44 | Platform codename **Keel**; CLI `keel`; crates `keel-*`; folder `platform/` (veto-able) |
+| D-44 | Platform codename **Kelson**; CLI `kelson`; crates `kelson-*`; folder `platform/` (veto-able) |
 | D-45 | Repository topology frozen per §8 (spec-2 §55 refinement wins over spec-1 §5) |
 | D-46 | `medicare-kernel/` superseded by this foundation; kept compilable until reference-healthcare rebuild |
-| D-47 | Postgres GUC namespace renamed `medicare.*` → `keel.*` |
+| D-47 | Postgres GUC namespace renamed `medicare.*` → `kelson.*` |
 | D-48 | No ORM. SQLx first-class; convenience is generated around SQL |
 | D-49 | Three data-access modes (aggregate / projection / reporting) replace repository-everywhere |
 | D-50 | Platform contains zero healthcare knowledge; Medicare becomes a vertical pack + reference app |

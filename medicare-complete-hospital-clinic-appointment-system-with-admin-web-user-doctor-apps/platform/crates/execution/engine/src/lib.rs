@@ -1,6 +1,6 @@
-//! # keel-execution
+//! # kelson-execution
 //! Execution kernel (TCB): `ExecutionPlan`, the engine pipeline, backend ports and
-//! the in-memory reference backend. The postgres backend lives in `keel-postgres`.
+//! the in-memory reference backend. The postgres backend lives in `kelson-postgres`.
 
 pub mod concurrency;
 pub mod engine;
@@ -39,9 +39,9 @@ pub use unit::{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keel_context::{ExecutionContext, PrincipalContext, ScopeSnapshot, TenantContext};
-    use keel_foundation::AuthorizationRevision;
-    use keel_foundation::{ExecutionProfileKind, OperationId, SecurityPlane};
+    use kelson_context::{ExecutionContext, PrincipalContext, ScopeSnapshot, TenantContext};
+    use kelson_foundation::AuthorizationRevision;
+    use kelson_foundation::{ExecutionProfileKind, OperationId, SecurityPlane};
     use serde_json::json;
     use std::sync::Arc;
 
@@ -83,7 +83,7 @@ mod tests {
             _ctx: Arc<ExecutionContext>,
             input: serde_json::Value,
             unit: &mut dyn ExecutionUnit,
-        ) -> BoxFuture<'static, Result<serde_json::Value, keel_foundation::AppError>> {
+        ) -> BoxFuture<'static, Result<serde_json::Value, kelson_foundation::AppError>> {
             unit.record_mutation(MutationRecord {
                 resource_type: "note".into(),
                 resource_id: Some(uuid::Uuid::now_v7()),
@@ -108,7 +108,7 @@ mod tests {
             _ctx: Arc<ExecutionContext>,
             _input: serde_json::Value,
             _unit: &mut dyn ExecutionUnit,
-        ) -> BoxFuture<'static, Result<serde_json::Value, keel_foundation::AppError>> {
+        ) -> BoxFuture<'static, Result<serde_json::Value, kelson_foundation::AppError>> {
             Box::pin(async move { Ok(json!(null)) })
         }
     }
@@ -119,11 +119,11 @@ mod tests {
             time::OffsetDateTime::now_utc(),
         )
         .principal(PrincipalContext {
-            id: keel_foundation::PrincipalId::new(),
+            id: kelson_foundation::PrincipalId::new(),
             display: None,
         })
         .tenant(TenantContext {
-            id: keel_foundation::TenantId::new(),
+            id: kelson_foundation::TenantId::new(),
             slug: "acme".into(),
             plan: "standard".into(),
         })
@@ -211,7 +211,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert_eq!(err.code, keel_foundation::codes::IDEMPOTENCY_CONFLICT);
+        assert_eq!(err.code, kelson_foundation::codes::IDEMPOTENCY_CONFLICT);
     }
 
     #[tokio::test]
@@ -226,7 +226,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert_eq!(err.code, keel_foundation::codes::DENIED);
+        assert_eq!(err.code, kelson_foundation::codes::DENIED);
         assert!(backend.stones().is_empty());
     }
 
@@ -243,7 +243,7 @@ mod tests {
             .execute(ctx(), &op, json!({}), Some(IdempotencyKey("k".into())))
             .await
             .unwrap_err();
-        assert_eq!(err.code, keel_foundation::codes::NO_EFFECT);
+        assert_eq!(err.code, kelson_foundation::codes::NO_EFFECT);
     }
 
     #[tokio::test]
@@ -255,7 +255,7 @@ mod tests {
         );
         ctxb = ctxb
             .principal(PrincipalContext {
-                id: keel_foundation::PrincipalId::new(),
+                id: kelson_foundation::PrincipalId::new(),
                 display: None,
             })
             .plane(SecurityPlane::Platform);
@@ -269,6 +269,6 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert_eq!(err.code, keel_foundation::codes::DENIED);
+        assert_eq!(err.code, kelson_foundation::codes::DENIED);
     }
 }

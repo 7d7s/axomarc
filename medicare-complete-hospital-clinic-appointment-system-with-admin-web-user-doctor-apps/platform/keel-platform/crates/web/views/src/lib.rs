@@ -1,4 +1,4 @@
-//! Keel views engine (Wave 2): a zero-dep, interpreted-AST template engine
+//! Kelson views engine (Wave 2): a zero-dep, interpreted-AST template engine
 //! with Blade-familiar syntax over a JSON context.
 //!
 //! Deliberately SUPERSEDES Blade's arbitrary PHP eval: @php and @while are
@@ -17,7 +17,7 @@
 //!   conditionals, package view namespaces (pkg::view) with a resolution
 //!   hook, and view hooks (composer-equivalent callbacks).
 //! - Compiled cache: parsed AST serialized under the cache dir, pinned by
-//!   template mtime + content hash; keel view:cache / keel view:clear.
+//!   template mtime + content hash; kelson view:cache / kelson view:clear.
 //!
 //! # Context conventions (injected by the web edge)
 //! _csrf (token), _auth (principal), _errors (field -> message), _lang

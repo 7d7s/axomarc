@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping build Keel. Read `ARCHITECTURE.md` and GOVERNANCE.md first.
+Thanks for helping build Kelson. Read `ARCHITECTURE.md` and GOVERNANCE.md first.
 
 ## Workflow
 1. Pick or propose work aligned with the current milestone (`docs/rust/07-EXECUTION-PLAN.md`).
@@ -29,7 +29,7 @@ type(scope): summary
 ```
 
 - `type`: `feat` | `fix` | `perf` | `refactor` | `docs` | `style` | `test` | `build` | `ci` | `chore`
-- `scope`: free-form, usually a crate name (`keel-foundation`, `analyzer`, `ci`, `release`)
+- `scope`: free-form, usually a crate name (`kelson-foundation`, `analyzer`, `ci`, `release`)
 - Mark breaking changes with `!` after the type (e.g. `feat(http)!: ...`) and
   follow `DEPRECATION.md` + `API-STABILITY.md` for the migration guidance.
 

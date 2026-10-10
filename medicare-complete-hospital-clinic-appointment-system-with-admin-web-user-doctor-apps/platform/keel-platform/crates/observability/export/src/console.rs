@@ -3,7 +3,7 @@
 
 use std::io::Write;
 
-use keel_telemetry::{Event, ExportError, ExportOk, Exporter};
+use kelson_telemetry::{Event, ExportError, ExportOk, Exporter};
 
 use crate::format::{event_to_jsonl, event_to_pretty, redact_line};
 

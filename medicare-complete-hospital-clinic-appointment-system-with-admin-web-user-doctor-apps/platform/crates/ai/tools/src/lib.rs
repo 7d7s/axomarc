@@ -1,13 +1,13 @@
-//! # keel-ai-tools — tool contract (items 33/34)
+//! # kelson-ai-tools — tool contract (items 33/34)
 //!
 //! A tool is a named binding onto one platform operation: the model sees a
 //! schema, the runtime executes the operation through the normal pipeline —
 //! capability, scope and policy apply unchanged. Tools are generated from
 //! `Command`/`Query` contracts, never hand-wired around them.
 
-use keel_ai::ModelTool;
-use keel_contracts::{Command, Query};
-use keel_foundation::OperationId;
+use kelson_ai::ModelTool;
+use kelson_contracts::{Command, Query};
+use kelson_foundation::OperationId;
 use serde::{Deserialize, Serialize};
 
 /// One tool exposed to a model or MCP client.
@@ -137,7 +137,7 @@ impl ToolRegistry for StaticToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keel_foundation::ExecutionProfileKind;
+    use kelson_foundation::ExecutionProfileKind;
 
     struct CreateNote;
     impl Command for CreateNote {

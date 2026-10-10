@@ -634,7 +634,7 @@ mod tests {
 
     fn render_str(template: &str, ctx: Value) -> Result<String, ViewError> {
         let dir = std::env::temp_dir().join(format!(
-            "keel-views-render-{}",
+            "kelson-views-render-{}",
             std::process::id()
         ));
         let views = dir.join("resources").join("views");

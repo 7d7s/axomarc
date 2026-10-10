@@ -3,7 +3,7 @@
 //! The port is SEMANTIC (CRUD over validated records), not raw SQL: stores
 //! receive records that already passed the [`crate::runtime::ModelRuntime`]
 //! mass-assignment/type/tenant boundary. `InMemoryModelStore` backs TestKit
-//! and degraded boot; `PgModelStore` (keel-postgres) backs production.
+//! and degraded boot; `PgModelStore` (kelson-postgres) backs production.
 //!
 //! Canonical record encoding: one JSON object per row. UUIDs are strings,
 //! timestamps are RFC 3339 strings (UTC), numbers are JSON numbers, jsonb
@@ -13,8 +13,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use keel_foundation::{AppError, TenantId};
-use keel_query::PageReq;
+use kelson_foundation::{AppError, TenantId};
+use kelson_query::PageReq;
 use serde_json::Value as Json;
 use uuid::Uuid;
 
@@ -47,7 +47,7 @@ pub enum FilterOp {
 /// A filter list evaluates with SQL precedence — adjacent AND terms form
 /// groups split at OR-tagged [`FieldFilter::Exists`] terms and the groups OR
 /// together (the first term's junction is implicit, mirroring
-/// [`keel_query::Select`]'s clause rendering).
+/// [`kelson_query::Select`]'s clause rendering).
 #[derive(Debug, Clone)]
 pub enum FieldFilter {
     /// Column comparison against a declared field.
@@ -213,7 +213,7 @@ pub trait ModelStore: Send + Sync {
         tenant: Option<TenantId>,
         filters: &[FieldFilter],
         opts: &ListOpts,
-    ) -> Result<keel_query::Page<Record>, AppError>;
+    ) -> Result<kelson_query::Page<Record>, AppError>;
 
     fn find(
         &self,
@@ -373,7 +373,7 @@ impl<T: ModelStore + ?Sized> ModelStore for Arc<T> {
         tenant: Option<TenantId>,
         filters: &[FieldFilter],
         opts: &ListOpts,
-    ) -> Result<keel_query::Page<Record>, AppError> {
+    ) -> Result<kelson_query::Page<Record>, AppError> {
         (**self).list(model, tenant, filters, opts)
     }
 
@@ -972,7 +972,7 @@ impl ModelStore for InMemoryModelStore {
         tenant: Option<TenantId>,
         filters: &[FieldFilter],
         opts: &ListOpts,
-    ) -> Result<keel_query::Page<Record>, AppError> {
+    ) -> Result<kelson_query::Page<Record>, AppError> {
         validate_list_opts(model, opts)?;
         let plan = self.filter_plan(tenant, filters)?;
         let mut matched: Vec<Record> = self.with_table(&model.table, |rows| {
@@ -1004,7 +1004,7 @@ impl ModelStore for InMemoryModelStore {
             }
             None => (matched, 1, 0),
         };
-        Ok(keel_query::Page::new(items, page, per_page, Some(total)))
+        Ok(kelson_query::Page::new(items, page, per_page, Some(total)))
     }
 
     fn find(
@@ -1298,7 +1298,7 @@ impl ModelStore for InMemoryModelStore {
     }
 
     fn truncate(&self, model: &ModelDef, env: &str) -> Result<(), AppError> {
-        keel_query::truncate::check_env(env)?;
+        kelson_query::truncate::check_env(env)?;
         self.with_table(&model.table, |rows| {
             rows.clear();
             Ok(())
@@ -1433,7 +1433,7 @@ mod tests {
         let row = widget(tenant, "dup");
         store.insert(&model, &row).unwrap();
         let err = store.insert(&model, &row).unwrap_err();
-        assert_eq!(err.category, keel_foundation::ErrorCategory::Conflict);
+        assert_eq!(err.category, kelson_foundation::ErrorCategory::Conflict);
     }
 
     #[test]
@@ -2033,7 +2033,7 @@ mod tests {
         })
     }
 
-    fn names(page: keel_query::Page<Record>) -> Vec<String> {
+    fn names(page: kelson_query::Page<Record>) -> Vec<String> {
         page.items
             .iter()
             .map(|r| r["name"].as_str().unwrap_or("?").to_string())

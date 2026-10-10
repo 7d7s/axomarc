@@ -1,5 +1,5 @@
 [package]
-name = "keel-notifications"
+name = "kelson-notifications"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,11 +7,11 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel framework: notification ports — SMS / mail / push."
+description = "Kelson framework: notification ports — SMS / mail / push."
 
 [dependencies]
-keel-foundation = { workspace = true }
-keel-storage = { workspace = true }
+kelson-foundation = { workspace = true }
+kelson-storage = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

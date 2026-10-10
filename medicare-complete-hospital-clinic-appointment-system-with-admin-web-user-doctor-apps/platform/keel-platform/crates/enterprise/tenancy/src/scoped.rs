@@ -1,7 +1,7 @@
 //! # §3.2 compile-time tenant enforcement (target-arch §3.2)
 //!
 //! Port **extension traits** whose methods REQUIRE a `&TenantContext`
-//! (`keel-context`, produced only by a resolved execution path): a caller
+//! (`kelson-context`, produced only by a resolved execution path): a caller
 //! without a context cannot invoke tenant-scoped access at all — the
 //! compiler demands the argument. No ambient context, no thread-local and
 //! no implicit tenant exists anywhere in the platform; the tenant is either
@@ -13,19 +13,19 @@
 //! context-taking surface for free; the registry-shaped ports (events,
 //! scheduler) are structs, so they receive direct impls instead.
 //!
-//! All five extensions live here — in `keel-tenancy`, the enterprise crate —
-//! because the matrix (`allowed_deps`, tools/keel-analyzer) permits
+//! All five extensions live here — in `kelson-tenancy`, the enterprise crate —
+//! because the matrix (`allowed_deps`, tools/kelson-analyzer) permits
 //! Enterprise → Services (cache/storage) and Enterprise → Async
 //! (jobs/events/scheduler), and no workspace crate depends on
-//! keel-tenancy, so adding the five deps creates no cycle.
+//! kelson-tenancy, so adding the five deps creates no cycle.
 
-use keel_caching::TenantCachePort;
-use keel_context::TenantContext;
-use keel_event::{ListenerRegistry, RegisteredListener};
-use keel_foundation::AppError;
-use keel_jobs::{DurableJob, JobStatus, TenantJobStore};
-use keel_scheduling::{ScheduleItem, ScheduleRegistry};
-use keel_storage::{ObjectRef, TenantStoragePort};
+use kelson_caching::TenantCachePort;
+use kelson_context::TenantContext;
+use kelson_event::{ListenerRegistry, RegisteredListener};
+use kelson_foundation::AppError;
+use kelson_jobs::{DurableJob, JobStatus, TenantJobStore};
+use kelson_scheduling::{ScheduleItem, ScheduleRegistry};
+use kelson_storage::{ObjectRef, TenantStoragePort};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -196,11 +196,11 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
-    use keel_caching::{CachePort, TenantCacheShard};
-    use keel_event::{DeliveryMode, ListenerHandler, ListenerSpec, Ordering};
-    use keel_foundation::TenantId;
-    use keel_jobs::{build_from_def, InMemoryJobStore, JobDef};
-    use keel_scheduling::ScheduleSpec;
+    use kelson_caching::{CachePort, TenantCacheShard};
+    use kelson_event::{DeliveryMode, ListenerHandler, ListenerSpec, Ordering};
+    use kelson_foundation::TenantId;
+    use kelson_jobs::{build_from_def, InMemoryJobStore, JobDef};
+    use kelson_scheduling::ScheduleSpec;
 
     fn ctx_of(id: TenantId) -> TenantContext {
         TenantContext {
@@ -211,7 +211,7 @@ mod tests {
     }
 
     /// Map-backed CachePort fake — this crate can't depend on testkit
-    /// (testkit depends on the platform facades, not on keel-tenancy).
+    /// (testkit depends on the platform facades, not on kelson-tenancy).
     #[derive(Default)]
     struct FakeCache(Mutex<HashMap<String, Vec<u8>>>);
 
@@ -305,7 +305,7 @@ mod tests {
         assert_eq!(claimed.tenant_id, Some(a.id));
 
         let err = store.complete_scoped(&b, id).unwrap_err();
-        assert_eq!(err.code, keel_foundation::codes::NOT_FOUND);
+        assert_eq!(err.code, kelson_foundation::codes::NOT_FOUND);
         store.complete_scoped(&a, id).unwrap();
     }
 
@@ -314,8 +314,8 @@ mod tests {
     impl ListenerHandler for NoopHandler {
         fn handle(
             &self,
-            _event: &keel_event::OutboxEvent,
-        ) -> keel_event::BoxFuture<'_, Result<(), AppError>> {
+            _event: &kelson_event::OutboxEvent,
+        ) -> kelson_event::BoxFuture<'_, Result<(), AppError>> {
             Box::pin(std::future::ready(Ok(())))
         }
     }
@@ -433,7 +433,7 @@ mod tests {
         let refused = store.enqueue_scoped(&a, pre_stamped).unwrap_err();
         assert_eq!(
             refused.code,
-            keel_foundation::codes::VALIDATION,
+            kelson_foundation::codes::VALIDATION,
             "hop 2: a job pre-stamped for another tenant is refused outright"
         );
 
@@ -454,7 +454,7 @@ mod tests {
         );
         assert_eq!(
             store.complete_scoped(&b, id).unwrap_err().code,
-            keel_foundation::codes::NOT_FOUND,
+            kelson_foundation::codes::NOT_FOUND,
             "hop 2: carrying the id across fails closed"
         );
 
@@ -498,7 +498,7 @@ mod tests {
 
         // --- hop 4: scheduler — echo B's schedule name from A's context ---
         let mut sched = ScheduleRegistry::new();
-        let named = |tenant: keel_foundation::TenantId, name: &str| ScheduleItem {
+        let named = |tenant: kelson_foundation::TenantId, name: &str| ScheduleItem {
             name: name.into(),
             operation: "billing.close-day".into(),
             spec: ScheduleSpec::Interval { secs: 60 },

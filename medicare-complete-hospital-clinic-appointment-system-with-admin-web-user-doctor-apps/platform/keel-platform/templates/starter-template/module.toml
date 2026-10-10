@@ -1,4 +1,4 @@
-# module.toml — immutable contract shape (11-SPEC SS7). `keel graph` compiles it.
+# module.toml — immutable contract shape (11-SPEC SS7). `kelson graph` compiles it.
 # Starter (S9): one COMMAND + one READ over the framework ModelStore port.
 [module]
 name = "__PROJECT_NAME__"

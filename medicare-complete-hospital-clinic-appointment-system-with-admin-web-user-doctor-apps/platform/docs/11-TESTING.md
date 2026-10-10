@@ -1,6 +1,6 @@
 # 11 — Testing
 
-TestKit (`testing/testkit`, keel-testkit) is the framework test surface: harness, fakes, time
+TestKit (`testing/testkit`, kelson-testkit) is the framework test surface: harness, fakes, time
 control, factories, assertion macros.
 
 ## TestApp
@@ -27,7 +27,7 @@ with the visible body/header/context on failure:
 Probes are opt-in `TestApp` builders (an unwired assert fails with the wiring hint):
 
 - `with_session(mw)` — the SAME `SessionMiddleware` wired as `mw.clone().apply(router)`; a
-  `keel_session` Set-Cookie on the response is authoritative (login issues, logout clears),
+  `kelson_session` Set-Cookie on the response is authoritative (login issues, logout clears),
   else the request cookie carries the session forward.
 - `with_views(recorder)` — a `ViewRecorder` also handed to `ViewsEngine::set_tap(...)`; `send()`
   snapshots only this response's renders (a previous response's view never leaks in).
@@ -64,7 +64,7 @@ Test infrastructure (Wave 7 P3) — fake queue/scheduler + injected clock builde
 - `CacheFake` — in-memory `CachePort` with the production TTL posture (lazy expiry, `ttl = 0`
   immediately expired) on an injectable `freeze_time` clock (`with_clock`); `assert_has(key)`,
   `assert_missing(key)`, `ttl_secs(key)`.
-- `HttpFake` — re-exported from `keel-http-client`; wraps the mock recording:
+- `HttpFake` — re-exported from `kelson-http-client`; wraps the mock recording:
   `assert_request_count(n)`, `assert_sent(|req| ...)` (method/url/body), `assert_no_pending()`.
 - `FakeSearch` — backed by the in-memory search engine; `assert_indexed`, `assert_hits`
   (exact ordering), `assert_no_hits`, tenant-aware `count`.
@@ -77,7 +77,7 @@ Fakes exist per port so tests never need live postgres/smtp/minio.
 - `assert_delta!(...)` — delta stones written by an execution (count, resource type, stream).
 - `assert_event!(...)` — outbox events queued.
 - `assert_queries!` — N+1 guard: assert the exact query tap count for a block; repeated identical
-  queries beyond a threshold fail the test (pairs with the N+1 detector in `keel inspect`).
+  queries beyond a threshold fail the test (pairs with the N+1 detector in `kelson inspect`).
 
 ## Time control
 
@@ -85,7 +85,7 @@ Fakes exist per port so tests never need live postgres/smtp/minio.
 retries, deadlines in tests. Wave 7 P3 threads the same injectable clock through the production
 capture points, each defaulting to the wall clock (behavior without injection is unchanged):
 
-- `ApplicationHost::with_clock` — the host clock; keel-worker's scheduler tick reads
+- `ApplicationHost::with_clock` — the host clock; kelson-worker's scheduler tick reads
   `host.clock().now()` instead of a bare `now_utc()`.
 - `SessionMiddleware::with_clock` — the touch gate, the login session stamp, and the TestApp
   session probe all read `mw.now()`, so session TTLs follow the frozen clock.
@@ -115,26 +115,26 @@ violations. These are regressions gates, not style checks.
 idempotent replay, denial writes nothing). `examples/reference` extends it across the full module
 surface. Both run in CI (G09).
 
-## `keel test` (Wave 5)
+## `kelson test` (Wave 5)
 
-`keel test [--pg]` runs `cargo test --workspace --locked` from the workspace root, streams the
+`kelson test [--pg]` runs `cargo test --workspace --locked` from the workspace root, streams the
 lines, and tallies every `test result:` line into a final `PASS`/`FAIL` verdict with suite and
 test counts — the same tally the parity gates report. `--pg` adds `--features pg-tests` (the
 pg-gated matrix: migration pairs apply/rollback/reset round trip, advisory-lock contention,
 modelstore CRUD/tenant isolation, sessions/tokens, notification inbox round trip (Wave 6 P5),
 batch ledger round trip (Wave 6 P9), savepoint rollback isolation (Wave 7 P3), pgvector search) and fails closed with a
-`DATABASE_URL` pointer when the compose database is not configured — so `keel test` alone stays
-hermetic, `keel test --pg` is the full local matrix (backlog B-19 keeps the pg matrix out of the
+`DATABASE_URL` pointer when the compose database is not configured — so `kelson test` alone stays
+hermetic, `kelson test --pg` is the full local matrix (backlog B-19 keeps the pg matrix out of the
 shared CI).
 
 ## Transactional pg tests (Wave 7 P3)
 
-`keel_postgres::test_support::Savepoint` is the RefreshDatabase-equivalent suite setup for the
+`kelson_postgres::test_support::Savepoint` is the RefreshDatabase-equivalent suite setup for the
 live-pg matrix — per-test isolation WITHOUT schema drops or truncation:
 
-- `Savepoint::begin(&mut conn)` runs `BEGIN; SAVEPOINT keel_test;` — run the test body's SQL
+- `Savepoint::begin(&mut conn)` runs `BEGIN; SAVEPOINT kelson_test;` — run the test body's SQL
   through `sp.conn()` (its writes are visible inside the scope and to nothing else).
-- `sp.rollback()` executes `ROLLBACK TO SAVEPOINT keel_test` plus the outer `ROLLBACK`, so the
+- `sp.rollback()` executes `ROLLBACK TO SAVEPOINT kelson_test` plus the outer `ROLLBACK`, so the
   pooled connection is always returned idle with nothing half-open.
 
 Two tests can touch the same table on separate connections and neither leaks into the other
@@ -149,12 +149,12 @@ test).
 - `auth.spec.ts` — register → `/auth/me` resolves the principal; login rejects a bad
   password with the envelope error; login round-trips the same principal.
 - `notes.spec.ts` — session create + list roundtrip through the graph routes (the notes
-  path is read from `../module.toml`, so it follows any project name `keel new` rendered)
+  path is read from `../module.toml`, so it follows any project name `kelson new` rendered)
   and anonymous create is refused.
 - `playwright.config.ts` — `baseURL` defaults to `http://127.0.0.1:8180`
   (`PLAYWRIGHT_BASE_URL` overrides); traces retained on failure.
 
-Run it against a live `keel serve` from the rendered project:
+Run it against a live `kelson serve` from the rendered project:
 
 ```bash
 cd applications/<name>/e2e

@@ -9,14 +9,14 @@
 //! - [`TypedOutput`] serializes the business result back to wire JSON.
 //! - [`Json<T>`] is the parse-only boundary (serde shape check, no extra
 //!   validation). Richer validation lives in transport adapters (e.g.
-//!   `keel_http::Validated` over `RequestViewModel`) or in the domain.
+//!   `kelson_http::Validated` over `RequestViewModel`) or in the domain.
 //! - Existing raw-`Value` handlers remain valid; typed handlers are opt-in.
 
 use std::sync::Arc;
 
-use keel_context::ExecutionContext;
-use keel_foundation::AppError;
-use keel_execution::{BoxFuture, ExecutionPlan, ExecutionUnit, OperationHandler};
+use kelson_context::ExecutionContext;
+use kelson_foundation::AppError;
+use kelson_execution::{BoxFuture, ExecutionPlan, ExecutionUnit, OperationHandler};
 use serde_json::Value;
 
 /// Typed request boundary: raw JSON -> validated business input.
@@ -121,8 +121,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keel_foundation::{codes, ExecutionProfileKind, OperationId};
-    use keel_execution::{
+    use kelson_foundation::{codes, ExecutionProfileKind, OperationId};
+    use kelson_execution::{
         AuthorizationPort, AuthzDecision, AuthzRequest, Engine, InMemoryBackend,
         InMemoryIdempotency,
     };
@@ -153,8 +153,8 @@ mod tests {
     }
 
     fn context() -> Arc<ExecutionContext> {
-        use keel_context::{PrincipalContext, ScopeSnapshot, TenantContext};
-        use keel_foundation::{AuthorizationRevision, PrincipalId, TenantId};
+        use kelson_context::{PrincipalContext, ScopeSnapshot, TenantContext};
+        use kelson_foundation::{AuthorizationRevision, PrincipalId, TenantId};
         ExecutionContext::builder(ExecutionProfileKind::Read, time::OffsetDateTime::now_utc())
             .principal(PrincipalContext {
                 id: PrincipalId::new(),

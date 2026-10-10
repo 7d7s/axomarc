@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 
 /// Parse .env content: KEY=VALUE per line, optional quotes, export prefix,
 /// comments, CRLF tolerant. Malformed lines are skipped, never fatal.
@@ -91,7 +91,7 @@ mod tests {
 
     #[test]
     fn parses_common_shapes() {
-        let raw = "﻿NAME=keel
+        let raw = "﻿NAME=kelson
 # comment
 export KEEL_FLAG=on
 QUOTED=\"hello world\"
@@ -108,7 +108,7 @@ BAD LINE
                 .find(|(key, _)| key == k)
                 .map(|(_, v)| v.clone())
         };
-        assert_eq!(get("NAME").unwrap(), "keel");
+        assert_eq!(get("NAME").unwrap(), "kelson");
         assert_eq!(get("KEEL_FLAG").unwrap(), "on");
         assert_eq!(get("QUOTED").unwrap(), "hello world");
         assert_eq!(get("SINGLE").unwrap(), "keep #hash");
@@ -125,7 +125,7 @@ BAD LINE
 
     #[test]
     fn load_applies_only_unset_vars() {
-        let dir = std::env::temp_dir().join(format!("keel-dotenv-{}", uuid_like()));
+        let dir = std::env::temp_dir().join(format!("kelson-dotenv-{}", uuid_like()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join(".env"),

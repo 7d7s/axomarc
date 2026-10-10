@@ -5,7 +5,7 @@ Status: **Proposed** (2026-10-04) · Gate: Wave 9 advanced backlog (docs/19,
 
 ## Context
 
-`keel-query`'s clause tree renders subqueries into the same parameter
+`kelson-query`'s clause tree renders subqueries into the same parameter
 vector as the enclosing statement (recursive clause-tree rendering,
 `crates/execution/query/src/lib.rs`) and covers selects, aggregates,
 existence, unions and locks — but it has no `WITH` / `WITH RECURSIVE`
@@ -56,7 +56,7 @@ complexity + risk review passes. The gate conditions if it passes:
   is the depth cap (PG's `CYCLE` clause is not the portable story);
   dialect-specific path-array guards are additive follow-ups, not the
   contract.
-- **Evidence**: rendering-shape unit tests in the EXISTING keel-query
+- **Evidence**: rendering-shape unit tests in the EXISTING kelson-query
   suite (parameter vectors, the mandatory bound, refusal without it,
   tenant guard present on every leg, both dialects' keyword rendering),
   plus a live hierarchical round-trip appended to the existing
@@ -64,7 +64,7 @@ complexity + risk review passes. The gate conditions if it passes:
   fabrics) — suite count stays 150.
 - **Scope-out**: materialized-path and closure-table designs stay
   application-level strategies the builder does not need to know about;
-  a raw-SQL escape node does NOT exist in keel-query and would be its
+  a raw-SQL escape node does NOT exist in kelson-query and would be its
   own separate gate (injection surface), not a shortcut into this one.
 
 Alternatives considered: level-by-level iteration (status quo — correct

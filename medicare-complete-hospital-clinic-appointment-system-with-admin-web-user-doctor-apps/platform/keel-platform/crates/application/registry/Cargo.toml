@@ -1,5 +1,5 @@
 [package]
-name = "keel-registry"
+name = "kelson-registry"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,11 +7,11 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel TCB: module manifests (module.toml), PlatformGraph compilation + validation."
+description = "Kelson TCB: module manifests (module.toml), PlatformGraph compilation + validation."
 
 [dependencies]
-keel-foundation = { workspace = true }
-keel-validation = { workspace = true }
+kelson-foundation = { workspace = true }
+kelson-validation = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }

@@ -1,5 +1,5 @@
 [package]
-name = "keel-foundation"
+name = "kelson-foundation"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel TCB: typed ids, AppError protocol, planes, profiles, revisions, delta stones."
+description = "Kelson TCB: typed ids, AppError protocol, planes, profiles, revisions, delta stones."
 
 [dependencies]
 serde = { workspace = true }

@@ -1,5 +1,5 @@
 [package]
-name = "keel-tokens"
+name = "kelson-tokens"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,11 +7,11 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel security: hashed single-use TTL tokens (api/reset/verify) + password reset flows."
+description = "Kelson security: hashed single-use TTL tokens (api/reset/verify) + password reset flows."
 
 [dependencies]
-keel-foundation = { workspace = true }
-keel-identity = { workspace = true }
+kelson-foundation = { workspace = true }
+kelson-identity = { workspace = true }
 aes-gcm = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }

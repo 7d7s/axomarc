@@ -1,5 +1,5 @@
 [package]
-name = "keel-ownership"
+name = "kelson-ownership"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,12 +7,12 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel security: ownership graph — who owns the resource (separate from scope)."
+description = "Kelson security: ownership graph — who owns the resource (separate from scope)."
 
 [dependencies]
-keel-foundation = { workspace = true }
-keel-context = { workspace = true }
-keel-scope = { workspace = true }
+kelson-foundation = { workspace = true }
+kelson-context = { workspace = true }
+kelson-scope = { workspace = true }
 serde = { workspace = true }
 uuid = { workspace = true }
 

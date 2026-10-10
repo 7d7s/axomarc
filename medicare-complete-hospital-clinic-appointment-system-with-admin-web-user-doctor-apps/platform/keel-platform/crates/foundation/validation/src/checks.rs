@@ -1082,17 +1082,17 @@ fn date_cmp(
 }
 
 /// Boot validation for `date_format:<fmt>`: the closed `Y m d H i s` token
-/// set lives in `keel-foundation` (Wave 8 P2 moved the grammar into the TCB
+/// set lives in `kelson-foundation` (Wave 8 P2 moved the grammar into the TCB
 /// so the date helpers and this rule read ONE implementation).
 pub(crate) fn check_date_format_spec(fmt: &str) -> Result<(), String> {
-    keel_foundation::check_date_format_spec(fmt)
+    kelson_foundation::check_date_format_spec(fmt)
 }
 
 /// Match a value against the closed `Y m d H i s` format — the grammar now
-/// lives in `keel_foundation::parse_date_with` (Wave 8 P2: one source of
+/// lives in `kelson_foundation::parse_date_with` (Wave 8 P2: one source of
 /// truth for the rule and the helpers).
 fn date_format_ok(s: &str, fmt: &str) -> bool {
-    keel_foundation::parse_date_with(s, fmt).is_some()
+    kelson_foundation::parse_date_with(s, fmt).is_some()
 }
 
 /// `#` + exactly 3/4/6/8 hex digits (Laravel's hex_color regex verbatim:
@@ -1360,11 +1360,11 @@ mod tests {
         assert!(fails(Rule::Uppercase, json!("Abc")));
 
         assert!(passes(
-            Rule::StartsWith("keel".into()),
-            json!("keel-http")
+            Rule::StartsWith("kelson".into()),
+            json!("kelson-http")
         ));
-        assert!(fails(Rule::StartsWith("keel".into()), json!("axum")));
-        assert!(fails(Rule::StartsWith("keel".into()), json!(1)));
+        assert!(fails(Rule::StartsWith("kelson".into()), json!("axum")));
+        assert!(fails(Rule::StartsWith("kelson".into()), json!(1)));
 
         assert!(passes(Rule::EndsWith(".png".into()), json!("logo.png")));
         assert!(fails(Rule::EndsWith(".png".into()), json!("logo.jpg")));
@@ -1548,8 +1548,8 @@ mod tests {
         assert!(passes(Rule::Date, json!("2026-08-20")));
         assert!(is_email("alice@example.co.in"));
         assert!(!is_email("alice@@example.com"));
-        assert!(is_url("https://keel.dev/docs"));
-        assert!(!is_url("ftp://keel.dev"));
+        assert!(is_url("https://kelson.dev/docs"));
+        assert!(!is_url("ftp://kelson.dev"));
         assert!(is_e164("+919876543210"));
         assert!(is_date("2026-08-20T10:00Z"));
         assert!(!is_date("20/08/2026"));

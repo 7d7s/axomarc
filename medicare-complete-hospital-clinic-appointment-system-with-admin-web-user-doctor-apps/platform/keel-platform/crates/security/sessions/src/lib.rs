@@ -1,4 +1,4 @@
-//! # keel-session
+//! # kelson-session
 //! Opt-in server sessions (blueprint L25, D-66, S3). Sessions are OFF by
 //! default; the runtime enables them explicitly (stateless JWT covers most
 //! API traffic). When enabled they back browser flows that need revocable,
@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
-use keel_foundation::{AppError, PrincipalId, TenantId};
+use kelson_foundation::{AppError, PrincipalId, TenantId};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -156,7 +156,7 @@ impl Session {
     }
 }
 
-/// Session storage port. `keel-cache-memory`-style in-memory ships here;
+/// Session storage port. `kelson-cache-memory`-style in-memory ships here;
 /// redis/postgres adapters later share the same trait.
 pub trait SessionStore: Send + Sync {
     fn load(&self, id: &SessionId) -> Result<Option<Session>, AppError>;
@@ -482,6 +482,6 @@ mod tests {
         let err = mgr
             .put(&SessionId::generate(), "k", serde_json::json!(1))
             .unwrap_err();
-        assert_eq!(err.code, keel_foundation::codes::VALIDATION);
+        assert_eq!(err.code, kelson_foundation::codes::VALIDATION);
     }
 }

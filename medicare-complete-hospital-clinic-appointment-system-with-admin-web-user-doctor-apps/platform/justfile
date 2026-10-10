@@ -1,11 +1,11 @@
-# Keel platform — developer commands (G01)
+# Kelson platform — developer commands (G01)
 
 default: dev
 
 # one-command dev environment
 dev:
     docker compose up -d
-    cargo run -p keel-api
+    cargo run -p kelson-api
 
 check:
     cargo check --workspace
@@ -25,7 +25,7 @@ db-down:
     docker compose down
 
 migrate:
-    cargo run -p keel-api -- --migrate-only
+    cargo run -p kelson-api -- --migrate-only
 
 # --- release engineering (see PUBLISHING.md) ---
 
@@ -46,6 +46,6 @@ deny:
     cargo deny check
 
 # regenerate CHANGELOG.md at a release tag (`cargo install git-cliff`)
-# example: just changelog keel/platform-v0.1.0
+# example: just changelog kelson/platform-v0.1.0
 changelog TAG:
     git cliff --config cliff.toml --tag {{TAG}} --output CHANGELOG.md

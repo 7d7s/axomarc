@@ -1,9 +1,9 @@
-//! # keel-postgres
+//! # kelson-postgres
 //! The resource fabric for PostgreSQL (11-SPEC §5): pool + migrations + the
 //! transaction engine + delta/audit/outbox writers + execution-level idempotency.
 //!
 //! Invariants implemented here:
-//! - tenant anchor via `SET LOCAL keel.tenant_id` + RLS (final containment barrier)
+//! - tenant anchor via `SET LOCAL kelson.tenant_id` + RLS (final containment barrier)
 //! - single transaction: business state → DeltaStone → Audit → Outbox → COMMIT
 //! - events dispatch only after commit (D-53)
 //! - per-stream monotonic delta sequences
@@ -39,7 +39,7 @@ pub use tokenstore::PgTokenStore;
 pub use tx::PostgresBackend;
 pub use txport::{PgTxHandle, PostgresTransactions};
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 use sqlx::Acquire;
 use uuid::Uuid;
 
@@ -185,11 +185,11 @@ pub async fn seed_tenant(pool: &PgPool, id: Uuid, slug: &str, name: &str) -> Res
 /// on connection release (SEC-002, no GUC leakage). Pooled connections
 /// guarded by tenant context (RLS enforcement).
 ///
-/// Two pools: tenant (`keel_tenant` role, RLS enforced) and platform
-/// (`keel_platform` role, break-glass, NO RLS policies applied).
+/// Two pools: tenant (`kelson_tenant` role, RLS enforced) and platform
+/// (`kelson_platform` role, break-glass, NO RLS policies applied).
 pub struct TenantGuardedPool {
-    tenant_pool: PgPool,      // connects as keel_tenant (RLS enforced)
-    platform_pool: PgPool,    // connects as keel_platform (break-glass, NO RLS)
+    tenant_pool: PgPool,      // connects as kelson_tenant (RLS enforced)
+    platform_pool: PgPool,    // connects as kelson_platform (break-glass, NO RLS)
 }
 
 /// Boxed async task bound to a borrowed transaction: the callback passed to
@@ -199,8 +199,8 @@ pub type TxnTask<'a, T> =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, AppError>> + Send + 'a>>;
 
 impl TenantGuardedPool {
-    /// Create both pools from config. `tenant_url` uses `keel_tenant` role,
-    /// `platform_url` uses `keel_platform` role (separate connection strings).
+    /// Create both pools from config. `tenant_url` uses `kelson_tenant` role,
+    /// `platform_url` uses `kelson_platform` role (separate connection strings).
     pub async fn new(
         tenant_url: &str,
         platform_url: &str,
@@ -215,7 +215,7 @@ impl TenantGuardedPool {
     }
 
     /// Execute an async closure within a tenant transaction.
-    /// ALWAYS sets `keel.tenant_id` GUC, verifies it on commit, and
+    /// ALWAYS sets `kelson.tenant_id` GUC, verifies it on commit, and
     /// resets session state on release via `DISCARD ALL`.
     ///
     /// Callers write `|tx| Box::pin(async move { ... })` — the future
@@ -226,7 +226,7 @@ impl TenantGuardedPool {
     ///     sqlx::query("SELECT 1").fetch_all(&mut *tx).await.map_err(...)
     /// })).await?
     /// ```
-    pub async fn with_tenant<T, F>(&self, tenant_id: keel_foundation::TenantId, f: F) -> Result<T, AppError>
+    pub async fn with_tenant<T, F>(&self, tenant_id: kelson_foundation::TenantId, f: F) -> Result<T, AppError>
     where
         T: Send,
         F: for<'a, 'b> FnOnce(
@@ -241,7 +241,7 @@ impl TenantGuardedPool {
             .map_err(|e| AppError::persistence(format!("acquire: {e}")))?;
 
         // Set session-scoped GUC (not LOCAL — persists across transaction)
-        sqlx::query("SELECT set_config('keel.tenant_id', $1, false)")
+        sqlx::query("SELECT set_config('kelson.tenant_id', $1, false)")
             .bind(tenant_id.to_string())
             .execute(&mut *conn)
             .await
@@ -255,13 +255,13 @@ impl TenantGuardedPool {
         let result = f(&mut tx).await?;
 
         // Verify GUC still set before commit (catches handler bugs that RESET it)
-        let guc: Option<String> = sqlx::query_scalar("SHOW keel.tenant_id")
+        let guc: Option<String> = sqlx::query_scalar("SHOW kelson.tenant_id")
             .fetch_one(&mut *tx)
             .await
             .map_err(|e| AppError::persistence(format!("verify guc: {e}")))?;
         if guc != Some(tenant_id.to_string()) {
             return Err(AppError::persistence(
-                "tenant GUC mismatch: handler must not RESET keel.tenant_id",
+                "tenant GUC mismatch: handler must not RESET kelson.tenant_id",
             ));
         }
 
@@ -279,7 +279,7 @@ impl TenantGuardedPool {
     }
 
     /// Execute an async closure within a platform (break-glass) transaction.
-    /// NEVER sets `keel.tenant_id` — uses separate pool with `keel_platform` role.
+    /// NEVER sets `kelson.tenant_id` — uses separate pool with `kelson_platform` role.
     /// RLS policies do NOT apply to this role. Same call shape as
     /// [`with_tenant`](Self::with_tenant): `|tx| Box::pin(async move { ... })`.
     pub async fn platform<T, F>(&self, f: F) -> Result<T, AppError>

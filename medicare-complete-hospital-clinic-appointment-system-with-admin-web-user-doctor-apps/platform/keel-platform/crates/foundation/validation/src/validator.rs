@@ -21,7 +21,7 @@
 //! implicit-only as well (Laravel's `presentOrRuleIsImplicit` quirk), so an
 //! optional `""` skips format rules.
 
-use keel_foundation::{AppError, PrincipalId};
+use kelson_foundation::{AppError, PrincipalId};
 use serde_json::Value;
 
 use crate::checks::{check, check_presence, is_excluded};
@@ -987,7 +987,7 @@ impl PasswordPolicy {
 pub type PasswordVerifier = dyn Fn(&str) -> bool + Send + Sync;
 
 /// Upload part metadata visible to file rules (Wave 4 Phase 3). The edge's
-/// `StoredUpload` lives in keel-http, which foundation crates cannot depend
+/// `StoredUpload` lives in kelson-http, which foundation crates cannot depend
 /// on, so the descriptor shape is declared here and mapped at the edge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UploadMeta {
@@ -1015,12 +1015,12 @@ pub struct ValidationContext<'a> {
     uploads: &'a [UploadMeta],
     verifier: Option<&'a PasswordVerifier>,
     policy: PasswordPolicy,
-    tenant: Option<keel_foundation::TenantId>,
+    tenant: Option<kelson_foundation::TenantId>,
     probes: Option<&'a dyn crate::probe::DbProbeLookup>,
     custom: Option<&'a dyn crate::custom::CustomRuleLookup>,
     /// Wave 6 P3: localized `validation.<rule>` messages (the boot-loaded
     /// catalog); `None` keeps the built-in English wording.
-    messages: Option<&'a keel_foundation::MessageCatalog>,
+    messages: Option<&'a kelson_foundation::MessageCatalog>,
     /// Wave 6 P3: request locale for the catalog lookup (defaults to the
     /// catalog's own default when absent).
     locale: Option<&'a str>,
@@ -1065,7 +1065,7 @@ impl<'a> ValidationContext<'a> {
     /// the built-in wording through the normal fallback chain).
     pub fn with_messages(
         mut self,
-        messages: &'a keel_foundation::MessageCatalog,
+        messages: &'a kelson_foundation::MessageCatalog,
         locale: &'a str,
     ) -> Self {
         self.messages = Some(messages);
@@ -1099,7 +1099,7 @@ impl<'a> ValidationContext<'a> {
 
     /// Carry the request tenant (`unique`/`exists` probes are tenant-scoped,
     /// Phase 4).
-    pub fn with_tenant(mut self, tenant: Option<keel_foundation::TenantId>) -> Self {
+    pub fn with_tenant(mut self, tenant: Option<kelson_foundation::TenantId>) -> Self {
         self.tenant = tenant;
         self
     }
@@ -1128,7 +1128,7 @@ impl<'a> ValidationContext<'a> {
     }
 
     /// Request tenant for row probes (`unique`/`exists`).
-    pub fn tenant(&self) -> Option<keel_foundation::TenantId> {
+    pub fn tenant(&self) -> Option<kelson_foundation::TenantId> {
         self.tenant
     }
 
@@ -1216,7 +1216,7 @@ fn message_for(
     if let Some(catalog) = ctx.messages {
         let locale = ctx.locale.unwrap_or_else(|| catalog.default_locale());
         let key = format!("validation.{}", rule.name());
-        let out = keel_foundation::translate(catalog, locale, &key, &[]);
+        let out = kelson_foundation::translate(catalog, locale, &key, &[]);
         if out.locale_used.is_some() {
             return out.text.replace("{attribute}", spec.display_attribute());
         }
@@ -1661,7 +1661,7 @@ mod tests {
         report.push("email", "must be a valid email");
         report.push("email", "second message");
         let err = report.into_app_error();
-        assert_eq!(err.category, keel_foundation::ErrorCategory::Validation);
+        assert_eq!(err.category, kelson_foundation::ErrorCategory::Validation);
         let fields = err.meta.get("fields").expect("fields meta");
         assert_eq!(fields["email"].as_array().unwrap().len(), 2);
     }
@@ -1735,8 +1735,8 @@ mod tests {
         assert!(is_email("alice@example.co.in"));
         assert!(!is_email("alice@@example.com"));
         assert!(!is_email("alice@examplecom"));
-        assert!(is_url("https://keel.dev/docs"));
-        assert!(!is_url("ftp://keel.dev"));
+        assert!(is_url("https://kelson.dev/docs"));
+        assert!(!is_url("ftp://kelson.dev"));
         assert!(is_e164("+919876543210"));
         assert!(!is_e164("00919876543210"));
         assert!(is_date("2026-08-20"));
@@ -1804,7 +1804,7 @@ mod tests {
         assert!(ctx.principal().is_none());
         assert!(ctx.uploads().is_empty());
 
-        let principal = keel_foundation::PrincipalId::new();
+        let principal = kelson_foundation::PrincipalId::new();
         let ctx = ctx.with_principal(principal);
         assert_eq!(ctx.principal(), Some(principal));
     }
@@ -2842,7 +2842,7 @@ mod tests {
 
     use crate::custom::{custom_rule_names, register_custom_rule, CustomRule};
     use crate::probe::{DbProbe, DbProbeLookup};
-    use keel_foundation::TenantId;
+    use kelson_foundation::TenantId;
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
@@ -3046,7 +3046,7 @@ mod tests {
         assert!(report.fatal.is_some(), "fatal recorded: {report:?}");
         assert!(report.violations.is_empty());
         let err = report.into_app_error();
-        assert_eq!(err.category, keel_foundation::ErrorCategory::Persistence);
+        assert_eq!(err.category, kelson_foundation::ErrorCategory::Persistence);
 
         // Model without a registered probe → fatal.
         let empty = StubLookup(BTreeMap::new());
@@ -3206,7 +3206,7 @@ mod tests {
     /// all keeps the built-in wording (non-regression).
     #[test]
     fn catalog_localizes_messages_with_manifest_precedence() {
-        let mut catalog = keel_foundation::MessageCatalog::new("en");
+        let mut catalog = kelson_foundation::MessageCatalog::new("en");
         catalog
             .load(
                 "en",

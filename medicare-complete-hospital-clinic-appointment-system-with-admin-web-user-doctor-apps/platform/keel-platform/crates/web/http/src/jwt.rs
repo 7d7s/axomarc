@@ -1,7 +1,7 @@
 //! Stateless HS256 JWT bearer interop (B-22, report R5). Opt-in behind the
 //! `app.jwt` feature flag; hashed PAT + HMAC session stays the default auth
 //! model. This is an *interop verifier*: it accepts externally-issued HS256
-//! bearer tokens so stateless clients can call Keel without a PAT exchange.
+//! bearer tokens so stateless clients can call Kelson without a PAT exchange.
 //!
 //! Security posture:
 //! - Only `alg = HS256` is accepted. `none` and every other algorithm are
@@ -15,7 +15,7 @@
 //! - HMAC-SHA256 reuses the single tested `signed::hmac_sha256` (sha2-based,
 //!   RFC 2104) — no second HMAC implementation, no new crate.
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -100,7 +100,7 @@ impl JwtHs256 {
 
 // ------------------------------------------------------------- base64url
 
-/// URL-safe base64 without padding (RFC 4648 §5), matching keel-tokens.
+/// URL-safe base64 without padding (RFC 4648 §5), matching kelson-tokens.
 fn b64url_encode(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);

@@ -2,7 +2,7 @@
 -- uuid: BINARY(16) (sqlx MySQL Uuid codec is binary)
 -- Sentinel (S5): audit hash-chain columns (D-74, STAGE-SENTINEL-SPEC).
 -- Per-(tenant, day) chain segments; chain computation happens inside the
--- engine transaction via keel-integrity (no side channels). Old rows keep
+-- engine transaction via kelson-integrity (no side channels). Old rows keep
 -- NULL columns: pre-chain history is not backfilled, chains start fresh.
 -- MySQL has no ADD COLUMN IF NOT EXISTS; plain ADD COLUMN (sqlx runs each
 -- migration file exactly once).

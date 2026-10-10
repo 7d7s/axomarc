@@ -21,7 +21,7 @@ use uuid::Uuid;
 pub const GENESIS_HASH: [u8; 32] = [0u8; 32];
 
 fn chain_namespace() -> Uuid {
-    Uuid::new_v5(&Uuid::NAMESPACE_DNS, b"keel.audit.chain.v1")
+    Uuid::new_v5(&Uuid::NAMESPACE_DNS, b"kelson.audit.chain.v1")
 }
 
 /// Stable identifier for the chain segment covering `tenant` on `day`

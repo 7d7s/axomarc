@@ -1,13 +1,13 @@
 //! Managed exporter: wraps an `Exporter` with its circuit breaker, bounded
 //! retries, and the global retry budget; records health/throughput stats and
 //! renders health snapshots (written by the runtime under
-//! `storage/framework/telemetry/exporters/` for `keel observe exporters`).
+//! `storage/framework/telemetry/exporters/` for `kelson observe exporters`).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use time::OffsetDateTime;
 
-use keel_telemetry::{Event, ExportError, ExportOk, Exporter};
+use kelson_telemetry::{Event, ExportError, ExportOk, Exporter};
 use serde::{Deserialize, Serialize};
 
 use crate::breaker::{BreakerConfig, BreakerState, CircuitBreaker};
@@ -150,8 +150,8 @@ impl ManagedExporter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keel_foundation::TelemetryContext;
-    use keel_telemetry::{
+    use kelson_foundation::TelemetryContext;
+    use kelson_telemetry::{
         EventEnvelope, Fields, Level, LogPayload, ServiceIdentity, TelemetryPayload, SCHEMA_LOG,
         SCHEMA_LOG_VERSION,
     };

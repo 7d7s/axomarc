@@ -7,17 +7,17 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-keel-foundation = { workspace = true }
-keel-context = { workspace = true }
-keel-execution = { workspace = true }
-keel-lifecycle = { workspace = true }
-keel-models = { workspace = true }
+kelson-foundation = { workspace = true }
+kelson-context = { workspace = true }
+kelson-execution = { workspace = true }
+kelson-lifecycle = { workspace = true }
+kelson-models = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-keel-policy = { workspace = true }
-keel-registry = { workspace = true }
+kelson-policy = { workspace = true }
+kelson-registry = { workspace = true }
 tokio = { workspace = true }
 time = { workspace = true }

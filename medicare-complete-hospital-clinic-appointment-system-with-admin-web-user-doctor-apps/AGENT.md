@@ -10,7 +10,7 @@ Repo root: `medicare-complete-hospital-clinic-appointment-system-with-admin-web-
 ## 1. The working area (only these paths may be created, edited, or deleted)
 
 ```
-platform/**    ← the Keel framework (the ONLY code area in scope)
+platform/**    ← the Kelson framework (the ONLY code area in scope)
 docs/**        ← domain + Rust-track documentation
 runbooks/**    ← operational runbooks
 ```
@@ -52,7 +52,7 @@ scaffold that `platform/` replaced). **Reading is not permission to modify.**
 4. **Keep the boundary clean.** No new top-level folders. New framework code goes in
    an existing `platform/` subtree (`crates/`, `adapters/`, `runtime/`, `tools/`,
    `applications/`); new domain modules are scaffolded with
-   `cargo run -p keel-cli -- make:module <name>` inside `platform/applications/`.
+   `cargo run -p kelson-cli -- make:module <name>` inside `platform/applications/`.
 5. **Do not cross-contaminate.** Never copy files between `medicare-kernel/` and
    `platform/`, never add `medicare-kernel` as a path dependency, and never "fix"
    the old scaffold so it compiles with newer toolchains.
@@ -95,7 +95,7 @@ cd platform && cargo check --workspace && cargo test --workspace --locked
 | Question | Answer |
 |---|---|
 | Where is the framework? | `platform/` (70-crate workspace, `Cargo.toml`) |
-| Where is the runnable API? | `platform/runtime/keel-api` → `/healthz`, `/readyz`, `/api/v1/demo/echo` |
+| Where is the runnable API? | `platform/runtime/kelson-api` → `/healthz`, `/readyz`, `/api/v1/demo/echo` |
 | Where are domain modules? | `platform/applications/` (currently only `appointments`) |
 | Where are the rules? | `platform/justfile`, `platform/README.md`, `docs/rust/11-FOUNDATION-MASTER-SPEC.md` |
 | What is frozen/archived? | `medicare-kernel/` (superseded, D-46) |

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use keel_telemetry::{
+use kelson_telemetry::{
     classify_fields, exception_fingerprint, Event, Level, ProcessOutcome, Processor,
     TelemetryCategory, TelemetryPayload,
 };
@@ -38,10 +38,10 @@ impl Processor for Normalize {
         "normalize"
     }
     fn process(&self, event: &mut Event) -> ProcessOutcome {
-        if event.durability == keel_telemetry::Durability::Buffered
+        if event.durability == kelson_telemetry::Durability::Buffered
             && matches!(
                 event.payload.default_durability(),
-                keel_telemetry::Durability::Durable
+                kelson_telemetry::Durability::Durable
             )
         {
             event.durability = event.payload.default_durability();
@@ -101,7 +101,7 @@ pub struct Redact {
 impl Redact {
     pub fn new(fields: Vec<String>) -> Self {
         let mut lower: Vec<String> = fields.into_iter().map(|f| f.to_ascii_lowercase()).collect();
-        for builtin in keel_telemetry::DEFAULT_SECRET_FIELDS {
+        for builtin in kelson_telemetry::DEFAULT_SECRET_FIELDS {
             let b = builtin.to_ascii_lowercase();
             if !lower.contains(&b) {
                 lower.push(b);

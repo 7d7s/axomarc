@@ -1,5 +1,5 @@
 [package]
-name = "keel-http-client"
+name = "kelson-http-client"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,11 +7,11 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel services: outbound HTTP client port (timeout, retry, redaction) with a reqwest adapter."
+description = "Kelson services: outbound HTTP client port (timeout, retry, redaction) with a reqwest adapter."
 
 [dependencies]
-keel-foundation = { workspace = true }
-keel-storage = { workspace = true }
+kelson-foundation = { workspace = true }
+kelson-storage = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

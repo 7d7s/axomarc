@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use keel_telemetry::{Event, TelemetryCategory};
+use kelson_telemetry::{Event, TelemetryCategory};
 
 #[derive(Debug, Clone, Default)]
 pub struct RouteTable {
@@ -42,8 +42,8 @@ mod tests {
     fn category_route_falls_back_to_default() {
         let table = RouteTable::new(vec!["console".into()])
             .route_category(TelemetryCategory::Audit, vec!["audit_file".into()]);
-        use keel_foundation::TelemetryContext;
-        use keel_telemetry::{
+        use kelson_foundation::TelemetryContext;
+        use kelson_telemetry::{
             EventEnvelope, Fields, Level, LogPayload, ServiceIdentity, TelemetryPayload,
             SCHEMA_LOG, SCHEMA_LOG_VERSION,
         };

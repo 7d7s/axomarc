@@ -19,28 +19,28 @@ use std::time::{Duration, Instant};
 use crate::config::{ExporterConfig, TelemetryConfig};
 use crate::groups::ExceptionGroups;
 use crate::incident::{IncidentControlPlane, IncidentState};
-use keel_buffer::backpressure::{
+use kelson_buffer::backpressure::{
     decide as backpressure_decide, shed_level, DropDecision, ShedLevel,
 };
-use keel_buffer::wal::{Wal, WalConfig as BufferWalConfig, WalStats};
-use keel_export::{
+use kelson_buffer::wal::{Wal, WalConfig as BufferWalConfig, WalStats};
+use kelson_export::{
     BreakerConfig, ConsoleExporter, ConsoleFormat, ExporterHealth, FileExporter,
     FileExporterConfig, HttpExporter, HttpExporterConfig, ManagedExporter, OtlpExporter,
     OtlpExporterConfig, RetryBudget, RetryPolicy, SyslogExporter,
 };
-use keel_metrics::{CostLedger, MetricsRegistry};
-use keel_pipeline::graph::PipelineGraph;
-use keel_pipeline::policy::{PolicyEngine, PolicyFacts, PolicyRule};
-use keel_pipeline::processors::{
+use kelson_metrics::{CostLedger, MetricsRegistry};
+use kelson_pipeline::graph::PipelineGraph;
+use kelson_pipeline::policy::{PolicyEngine, PolicyFacts, PolicyRule};
+use kelson_pipeline::processors::{
     Classify, Correlate, Dedupe, Fingerprint, Normalize, Redact, Sample,
 };
-use keel_pipeline::router::RouteTable;
-use keel_telemetry::{
+use kelson_pipeline::router::RouteTable;
+use kelson_telemetry::{
     Durability, Event, EventEnvelope, Fields, Level, LifecyclePayload, LogPayload, ServiceIdentity,
     TelemetryCategory, TelemetryPayload, SCHEMA_LIFECYCLE, SCHEMA_LIFECYCLE_VERSION, SCHEMA_LOG,
     SCHEMA_LOG_VERSION,
 };
-use keel_tracing::sampler::{escalation, EscalationSignals, RateTier};
+use kelson_tracing::sampler::{escalation, EscalationSignals, RateTier};
 use std::sync::mpsc;
 
 /// Runtime-mutable control state (D-76): the ONLY mutable telemetry posture.
@@ -112,7 +112,7 @@ pub struct ObservabilityRuntime {
     shutdown_done: AtomicBool,
 }
 
-/// Operator-facing status snapshot (`keel observe status`).
+/// Operator-facing status snapshot (`kelson observe status`).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RuntimeStatus {
     pub service: String,
@@ -129,7 +129,7 @@ pub struct RuntimeStatus {
     pub wal: Option<WalStatus>,
 }
 
-/// Serializable WAL summary (keel-buffer's WalStats is storage-side).
+/// Serializable WAL summary (kelson-buffer's WalStats is storage-side).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WalStatus {
     pub segments: usize,
@@ -154,13 +154,13 @@ impl ObservabilityRuntime {
     pub fn new(
         config: TelemetryConfig,
         service: ServiceIdentity,
-        plugins: &[Box<dyn keel_telemetry::TelemetryPlugin>],
-    ) -> Result<Arc<Self>, keel_foundation::AppError> {
+        plugins: &[Box<dyn kelson_telemetry::TelemetryPlugin>],
+    ) -> Result<Arc<Self>, kelson_foundation::AppError> {
         let (tx, rx) = mpsc::sync_channel(config.buffer.capacity.max(1));
         let incident_plane = IncidentControlPlane::new(config.paths.incident_dir.clone());
 
         // Plugin registry: categories, processors, exporters (S5 §26).
-        let mut registry = keel_telemetry::plugin::TelemetryRegistry::new();
+        let mut registry = kelson_telemetry::plugin::TelemetryRegistry::new();
         for plugin in plugins {
             plugin.register(&mut registry);
         }
@@ -170,7 +170,7 @@ impl ObservabilityRuntime {
         let mut exporters: Vec<(String, Arc<ManagedExporter>)> = Vec::new();
         for (name, cfg) in &config.exporters {
             let built = build_exporter(name, cfg, &service.name).ok_or_else(|| {
-                keel_foundation::AppError::validation(format!(
+                kelson_foundation::AppError::validation(format!(
                     "telemetry exporter {name:?}: unsupported kind {:?}",
                     cfg.kind
                 ))
@@ -204,7 +204,7 @@ impl ObservabilityRuntime {
         // A runtime always has at least one destination.
         if exporters.is_empty() {
             let console = Arc::new(ConsoleExporter::stdout(console_format(&config.format)))
-                as Arc<dyn keel_telemetry::Exporter>;
+                as Arc<dyn kelson_telemetry::Exporter>;
             let default_cfg = ExporterConfig {
                 kind: "console".into(),
                 target: None,
@@ -243,7 +243,7 @@ impl ObservabilityRuntime {
                 Err(err) => {
                     // A broken rule is skipped, never fatal, and announced.
                     eprintln!(
-                        "keel-observability: policy rule {:?} skipped: {err}",
+                        "kelson-observability: policy rule {:?} skipped: {err}",
                         rule_cfg.name
                     );
                 }
@@ -287,7 +287,7 @@ impl ObservabilityRuntime {
     /// Boot: replay the WAL, start the worker + incident poller threads and
     /// install the tracing bridge (best-effort; an existing subscriber keeps
     /// working through the legacy path).
-    pub fn start(self: &Arc<Self>) -> Result<(), keel_foundation::AppError> {
+    pub fn start(self: &Arc<Self>) -> Result<(), kelson_foundation::AppError> {
         if self.inner.started.swap(true, Ordering::SeqCst) {
             return Ok(()); // idempotent
         }
@@ -297,19 +297,19 @@ impl ObservabilityRuntime {
             .lock()
             .expect("rx slot")
             .take()
-            .ok_or_else(|| keel_foundation::AppError::internal("telemetry runtime already started"))?;
+            .ok_or_else(|| kelson_foundation::AppError::internal("telemetry runtime already started"))?;
         let worker_runtime = Arc::clone(self);
         let handle = std::thread::Builder::new()
-            .name("keel-telemetry-worker".into())
+            .name("kelson-telemetry-worker".into())
             .spawn(move || worker_thread(worker_runtime, rx))
-            .map_err(|e| keel_foundation::AppError::internal(format!("telemetry worker spawn: {e}")))?;
+            .map_err(|e| kelson_foundation::AppError::internal(format!("telemetry worker spawn: {e}")))?;
         *self.worker.lock().expect("worker lock") = Some(handle);
 
         let poller_runtime = Arc::clone(self);
         let poller = std::thread::Builder::new()
-            .name("keel-telemetry-incident".into())
+            .name("kelson-telemetry-incident".into())
             .spawn(move || incident_poll_thread(poller_runtime))
-            .map_err(|e| keel_foundation::AppError::internal(format!("incident poller spawn: {e}")))?;
+            .map_err(|e| kelson_foundation::AppError::internal(format!("incident poller spawn: {e}")))?;
         *self.incident_poller.lock().expect("poller lock") = Some(poller);
 
         install_tracing_bridge(Arc::clone(self), &self.inner.config.level);
@@ -393,7 +393,7 @@ impl ObservabilityRuntime {
                     // Emergency path: durable events get a stderr fallback so
                     // a saturated runtime never silently loses audit data.
                     if let Ok(line) = serde_json::to_string(&item.event) {
-                        eprintln!("keel-telemetry EMERGENCY (queue full): {line}");
+                        eprintln!("kelson-telemetry EMERGENCY (queue full): {line}");
                     }
                 }
             }
@@ -406,7 +406,7 @@ impl ObservabilityRuntime {
             SCHEMA_LOG,
             SCHEMA_LOG_VERSION,
             self.inner.service.clone(),
-            keel_foundation::TelemetryContext::root(),
+            kelson_foundation::TelemetryContext::root(),
             TelemetryPayload::Log(LogPayload {
                 level,
                 message: message.into(),
@@ -437,7 +437,7 @@ impl ObservabilityRuntime {
             SCHEMA_LIFECYCLE,
             SCHEMA_LIFECYCLE_VERSION,
             self.inner.service.clone(),
-            keel_foundation::TelemetryContext::root(),
+            kelson_foundation::TelemetryContext::root(),
             TelemetryPayload::Lifecycle(LifecyclePayload {
                 kind: kind.into(),
                 fields,
@@ -503,7 +503,7 @@ impl ObservabilityRuntime {
         Wal::open(cfg).ok()?.stats().ok()
     }
 
-    /// Operator snapshot for `keel observe status`.
+    /// Operator snapshot for `kelson observe status`.
     pub fn status(&self) -> RuntimeStatus {
         let state = self.control_state();
         RuntimeStatus {
@@ -587,7 +587,7 @@ fn build_exporter(
     name: &str,
     cfg: &ExporterConfig,
     app_name: &str,
-) -> Option<Arc<dyn keel_telemetry::Exporter>> {
+) -> Option<Arc<dyn kelson_telemetry::Exporter>> {
     let target = cfg.target.clone().unwrap_or_default();
     match cfg.kind.as_str() {
         "console" => Some(Arc::new(ConsoleExporter::stdout(console_format(
@@ -595,7 +595,7 @@ fn build_exporter(
         )))),
         "file" => {
             if target.is_empty() {
-                eprintln!("keel-observability: exporter {name:?} (file) has no target; skipped");
+                eprintln!("kelson-observability: exporter {name:?} (file) has no target; skipped");
                 return None;
             }
             if cfg.partition_by_tenant {
@@ -622,7 +622,7 @@ fn build_exporter(
 
 fn wrap_exporter(
     name: String,
-    exporter: Arc<dyn keel_telemetry::Exporter>,
+    exporter: Arc<dyn kelson_telemetry::Exporter>,
     cfg: &ExporterConfig,
     budget: Arc<RetryBudget>,
 ) -> Arc<ManagedExporter> {
@@ -717,7 +717,7 @@ impl PartitioningFileExporter {
     }
 }
 
-impl keel_telemetry::Exporter for PartitioningFileExporter {
+impl kelson_telemetry::Exporter for PartitioningFileExporter {
     fn name(&self) -> &str {
         "file_partitioned"
     }
@@ -725,7 +725,7 @@ impl keel_telemetry::Exporter for PartitioningFileExporter {
     fn export(
         &self,
         batch: &[Event],
-    ) -> Result<keel_telemetry::ExportOk, keel_telemetry::ExportError> {
+    ) -> Result<kelson_telemetry::ExportOk, kelson_telemetry::ExportError> {
         let mut by_tenant: BTreeMap<String, Vec<&Event>> = BTreeMap::new();
         for event in batch {
             let tenant = event
@@ -735,7 +735,7 @@ impl keel_telemetry::Exporter for PartitioningFileExporter {
                 .unwrap_or_else(|| "default".into());
             by_tenant.entry(tenant).or_default().push(event);
         }
-        let mut total = keel_telemetry::ExportOk::default();
+        let mut total = kelson_telemetry::ExportOk::default();
         for (tenant, events) in &by_tenant {
             let owned: Vec<Event> = events.iter().map(|e| (*e).clone()).collect();
             let exporter = self.exporter_for(tenant);
@@ -760,7 +760,7 @@ fn worker_thread(runtime: Arc<ObservabilityRuntime>, rx: mpsc::Receiver<WorkItem
         worker_loop(&runtime, rx);
     }));
     if result.is_err() {
-        eprintln!("keel-observability: telemetry worker panicked; fallback logging only");
+        eprintln!("kelson-observability: telemetry worker panicked; fallback logging only");
         runtime.inner.stopping.store(true, Ordering::SeqCst);
         runtime.write_health_snapshots();
         runtime.write_cost_snapshot();
@@ -811,7 +811,7 @@ fn worker_loop(runtime: &Arc<ObservabilityRuntime>, rx: mpsc::Receiver<WorkItem>
         match Wal::open(wal_cfg) {
             Ok(w) => wal = Some(w),
             Err(e) => eprintln!(
-                "keel-observability: WAL unavailable ({}); durable events degrade to buffered",
+                "kelson-observability: WAL unavailable ({}); durable events degrade to buffered",
                 e
             ),
         }
@@ -824,7 +824,7 @@ fn worker_loop(runtime: &Arc<ObservabilityRuntime>, rx: mpsc::Receiver<WorkItem>
         match w.replay(since) {
             Ok((records, skipped)) => {
                 if skipped > 0 {
-                    eprintln!("keel-observability: WAL replay skipped {skipped} corrupted records");
+                    eprintln!("kelson-observability: WAL replay skipped {skipped} corrupted records");
                 }
                 for record in records {
                     match serde_json::from_slice::<Event>(&record.bytes) {
@@ -843,7 +843,7 @@ fn worker_loop(runtime: &Arc<ObservabilityRuntime>, rx: mpsc::Receiver<WorkItem>
                     }
                 }
             }
-            Err(e) => eprintln!("keel-observability: WAL replay failed: {e}"),
+            Err(e) => eprintln!("kelson-observability: WAL replay failed: {e}"),
         }
     }
     if !replay_pending.is_empty() {
@@ -1012,7 +1012,7 @@ fn process_one(
                             BTreeMap::new(),
                             1.0,
                         );
-                        eprintln!("keel-observability: WAL append failed: {e}");
+                        eprintln!("kelson-observability: WAL append failed: {e}");
                     }
                 }
             }
@@ -1144,7 +1144,7 @@ fn export_to(
                 if is_durable {
                     let msg = err.to_string().to_ascii_lowercase();
                     if msg.contains("space") || msg.contains("enospc") || msg.contains("disk") {
-                        eprintln!("keel-observability: disk pressure on exporter {name}: {err}");
+                        eprintln!("kelson-observability: disk pressure on exporter {name}: {err}");
                     }
                 }
             }
@@ -1168,7 +1168,7 @@ fn ack_watermark(wal: Option<&mut Wal>, pending: &[WorkItem], last_processed_lsn
     };
     if ack_to > w.watermark() {
         if let Err(e) = w.ack(ack_to) {
-            eprintln!("keel-observability: WAL ack failed: {e}");
+            eprintln!("kelson-observability: WAL ack failed: {e}");
         }
     }
 }
@@ -1184,7 +1184,7 @@ fn apply_field_actions(event: &mut Event, redact: &[String], hash: &[String]) {
     }
     for key in hash {
         if let Some(value) = fields.get(key).cloned() {
-            let digest = keel_telemetry::fingerprint::normalize_component(&value.to_string());
+            let digest = kelson_telemetry::fingerprint::normalize_component(&value.to_string());
             let mut bytes = [0u8; 8];
             let src = digest.as_bytes();
             let n = src.len().min(8);
@@ -1237,7 +1237,7 @@ fn run_tick(
         .exporters
         .iter()
         .filter(|(_, e)| e.is_critical())
-        .all(|(_, e)| e.breaker_state() != keel_export::BreakerState::Open);
+        .all(|(_, e)| e.breaker_state() != kelson_export::BreakerState::Open);
 
     // --- backpressure ladder ---
     let shed = shed_level(queue_fill, disk_healthy);
@@ -1287,18 +1287,18 @@ fn run_tick(
 
     // --- deterministic anomaly detectors (threshold, no ML) ---
     let mut anomalies: Vec<(&str, Vec<(&str, serde_json::Value)>)> = Vec::new();
-    if error_rate >= keel_tracing::ERROR_RATE_FULL {
+    if error_rate >= kelson_tracing::ERROR_RATE_FULL {
         anomalies.push((
             "error_rate_spike",
             vec![("error_rate", serde_json::json!(error_rate))],
         ));
-    } else if error_rate >= keel_tracing::ERROR_RATE_ELEVATED && events_delta >= 20 {
+    } else if error_rate >= kelson_tracing::ERROR_RATE_ELEVATED && events_delta >= 20 {
         anomalies.push((
             "error_rate_elevated",
             vec![("error_rate", serde_json::json!(error_rate))],
         ));
     }
-    if baseline > 0.0 && p95 >= baseline * keel_tracing::LATENCY_RATIO_FULL {
+    if baseline > 0.0 && p95 >= baseline * kelson_tracing::LATENCY_RATIO_FULL {
         anomalies.push((
             "latency_spike",
             vec![
@@ -1307,7 +1307,7 @@ fn run_tick(
             ],
         ));
     }
-    if queue_fill >= keel_tracing::QUEUE_FILL_FULL {
+    if queue_fill >= kelson_tracing::QUEUE_FILL_FULL {
         anomalies.push((
             "queue_backlog",
             vec![("queue_fill", serde_json::json!(queue_fill))],
@@ -1366,7 +1366,7 @@ fn baseline_p95(runtime: &Arc<ObservabilityRuntime>) -> f64 {
 }
 
 /// p95 from histogram buckets (linear interpolation over cumulative counts).
-fn histogram_p95(snapshot: &keel_metrics::MetricsSnapshot, name: &str) -> Option<f64> {
+fn histogram_p95(snapshot: &kelson_metrics::MetricsSnapshot, name: &str) -> Option<f64> {
     let (_, state) = snapshot.histograms.iter().find(|(n, _)| n == name)?;
     if state.count == 0 {
         return None;
@@ -1450,7 +1450,7 @@ fn install_tracing_bridge(runtime: Arc<ObservabilityRuntime>, level: &str) {
     let subscriber = tracing_subscriber::registry().with(filter).with(bridge);
     if subscriber.try_init().is_err() {
         eprintln!(
-            "keel-observability: global tracing subscriber already installed; \
+            "kelson-observability: global tracing subscriber already installed; \
              tracing events use the existing path, direct emits still flow"
         );
     }
@@ -1483,7 +1483,7 @@ pub fn emit_log_global(level: Level, message: impl Into<String>, fields: Fields)
         None => {
             let msg = message.into();
             eprintln!(
-                "[keel-telemetry {}] {msg}",
+                "[kelson-telemetry {}] {msg}",
                 level.as_str().to_ascii_uppercase()
             );
         }
@@ -1497,11 +1497,11 @@ pub fn emit_log_global(level: Level, message: impl Into<String>, fields: Fields)
 impl ObservabilityRuntime {
     fn emit_security(&self, kind: &str, fields: Fields) {
         let event = EventEnvelope::new(
-            keel_telemetry::SCHEMA_SECURITY,
-            keel_telemetry::SCHEMA_SECURITY_VERSION,
+            kelson_telemetry::SCHEMA_SECURITY,
+            kelson_telemetry::SCHEMA_SECURITY_VERSION,
             self.inner.service.clone(),
-            keel_foundation::TelemetryContext::root(),
-            TelemetryPayload::Security(keel_telemetry::SecurityPayload {
+            kelson_foundation::TelemetryContext::root(),
+            TelemetryPayload::Security(kelson_telemetry::SecurityPayload {
                 kind: kind.into(),
                 fields,
                 extra: Fields::new(),
@@ -1517,7 +1517,7 @@ impl ObservabilityRuntime {
             "telemetry.anomaly.detected",
             SCHEMA_LIFECYCLE_VERSION,
             self.inner.service.clone(),
-            keel_foundation::TelemetryContext::root(),
+            kelson_foundation::TelemetryContext::root(),
             TelemetryPayload::Lifecycle(LifecyclePayload {
                 kind: format!("anomaly.{kind}"),
                 fields,
@@ -1528,7 +1528,7 @@ impl ObservabilityRuntime {
     }
 
     /// Per-exporter health files under `storage/framework/telemetry/exporters/`
-    /// (consumed by `keel observe exporters` / `health`).
+    /// (consumed by `kelson observe exporters` / `health`).
     pub(crate) fn write_health_snapshots(&self) {
         let dir = &self.inner.config.paths.health_dir;
         if std::fs::create_dir_all(dir).is_err() {

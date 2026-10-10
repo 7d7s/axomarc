@@ -2,7 +2,7 @@
 //!
 //! The trait pair lives in the foundation so the validator evaluates DB
 //! rules without depending on the data layer: the HTTP edge adapts the
-//! module-registered `model.probes` service (keel-models) behind
+//! module-registered `model.probes` service (kelson-models) behind
 //! [`DbProbeLookup`] and attaches it to the [`crate::ValidationContext`].
 //!
 //! Failure model (docs/19 P4): a store error — or a probe that was never
@@ -10,7 +10,7 @@
 //! renders it as a `DB_ERROR` 503 envelope, so a down database refuses the
 //! request instead of letting validation "succeed" against no rows.
 
-use keel_foundation::TenantId;
+use kelson_foundation::TenantId;
 use std::sync::Arc;
 
 /// One model's membership probe (implemented over the module's

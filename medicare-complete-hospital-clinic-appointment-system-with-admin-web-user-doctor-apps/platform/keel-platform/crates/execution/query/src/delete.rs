@@ -2,7 +2,7 @@
 //! Same unfiltered guard as [`crate::update`]: DELETE without WHERE is
 //! refused unless explicitly allowed.
 
-use keel_foundation::{AppError, TenantId};
+use kelson_foundation::{AppError, TenantId};
 
 use crate::select::{Clause, Condition, Ident, Junction, Operator, Value};
 use crate::{ClauseContext, CompiledWrite};

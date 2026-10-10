@@ -1,9 +1,9 @@
 //! Identity stores on MySQL 8 (S7, B-31 second driver): principals +
 //! credentials tables. Mirrors the tokenstore.rs pattern: sync trait over
-//! sqlx via block_on; implements keel-identity's `PrincipalStore` and
+//! sqlx via block_on; implements kelson-identity's `PrincipalStore` and
 //! `CredentialStore` on the foundation tables.
 //!
-//! MySQL port notes (vs the Postgres twin `keel_postgres::principalstore`):
+//! MySQL port notes (vs the Postgres twin `kelson_postgres::principalstore`):
 //! - `$1, $2, ...` become `?` in bind order: the `SET x = $2 WHERE y = $1`
 //!   statements bind in MySQL appearance order (`SET x` first, then `WHERE
 //!   y`); no index is ever formatted into SQL.
@@ -31,8 +31,8 @@
 //!   (the SQL is unchanged per the port brief; a differently-cased email
 //!   now resolves to -- and collides with -- the stored one).
 
-use keel_foundation::{AppError, PrincipalId};
-use keel_identity::{
+use kelson_foundation::{AppError, PrincipalId};
+use kelson_identity::{
     store::{CredentialStore, PrincipalStore},
     Credential, CredentialKind, Principal, PrincipalStatus, Secret,
 };

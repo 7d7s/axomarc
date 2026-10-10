@@ -1,6 +1,6 @@
 [package]
-name = "keel-testkit"
-description = "Keel testkit v1: TestApp harness, fakes, time control, factory primitives (item 28, L58)."
+name = "kelson-testkit"
+description = "Kelson testkit v1: TestApp harness, fakes, time control, factory primitives (item 28, L58)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,21 +10,21 @@ readme.workspace = true
 keywords.workspace = true
 
 [dependencies]
-keel-foundation = { workspace = true }
-keel-registry = { workspace = true }
-keel-execution = { workspace = true }
-keel-jobs = { workspace = true }
-keel-event = { workspace = true }
-keel-storage = { workspace = true }
-keel-search = { workspace = true }
-keel-caching = { workspace = true }
-keel-http = { workspace = true }
-keel-http-client = { workspace = true }
-keel-models = { workspace = true }
-keel-notifications = { workspace = true }
-keel-scheduling = { workspace = true }
-keel-session = { workspace = true }
-keel-views = { workspace = true }
+kelson-foundation = { workspace = true }
+kelson-registry = { workspace = true }
+kelson-execution = { workspace = true }
+kelson-jobs = { workspace = true }
+kelson-event = { workspace = true }
+kelson-storage = { workspace = true }
+kelson-search = { workspace = true }
+kelson-caching = { workspace = true }
+kelson-http = { workspace = true }
+kelson-http-client = { workspace = true }
+kelson-models = { workspace = true }
+kelson-notifications = { workspace = true }
+kelson-scheduling = { workspace = true }
+kelson-session = { workspace = true }
+kelson-views = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }
 serde = { workspace = true }

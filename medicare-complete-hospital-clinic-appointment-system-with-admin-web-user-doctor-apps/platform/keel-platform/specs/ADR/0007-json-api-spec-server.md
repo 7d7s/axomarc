@@ -3,14 +3,14 @@
 Status: **Accepted** (2026-10-02) · Gate: Wave 8 decision gate (docs/19, "Decision gates") ·
 Implementation: landed 2026-10-02, the day the gate passed review — serializer in
 `crates/web/http/src/jsonapi.rs` (`negotiate`/`split`/`render_document`), consulted by
-`render_success`; the 406 refusal is `AppError::not_acceptable()` (`KER_NOT_ACCEPTABLE`)
-with its wire status pinned in both keel-api error-render registries.
+`render_success`; the 406 refusal is `AppError::not_acceptable()` (`KSN_NOT_ACCEPTABLE`)
+with its wire status pinned in both kelson-api error-render registries.
 Implementation-reconciliation notes are folded into the sections below.
 
 ## Context
 
-Wave 3 shipped the resource surface: `keel make resource` emits a compiling
-`keel_http::Resource` impl, resource routes are registry-validated (`RouteSpec.resource`,
+Wave 3 shipped the resource surface: `kelson make resource` emits a compiling
+`kelson_http::Resource` impl, resource routes are registry-validated (`RouteSpec.resource`,
 `GRAPH-RESOURCE-OP`), and rendering wraps the body under `Resource::wrap()` (default
 `DEFAULT_WRAP = "data"`). Laravel ships a first-class JSON:API server (json-api rendering
 classes); the platform's compound-document server — sparse fieldsets, includes, links — is
@@ -103,8 +103,8 @@ Serializer in `crates/web/http/src/jsonapi.rs` (pure: resource name + split payl
 included + query + request URI → `serde_json::Value`), consulted by `render_success` when
 negotiation matched on a `from_resource` route (`RouteDispatch.resource_type` carries the
 derived type name). The 406 refusal is `AppError::not_acceptable()` — code
-`KER_NOT_ACCEPTABLE`, Validation category (non-reportable client mistake) — with the
-wire status pinned to HTTP 406 by `ErrorRenderRegistry::set_status` at BOTH keel-api
+`KSN_NOT_ACCEPTABLE`, Validation category (non-reportable client mistake) — with the
+wire status pinned to HTTP 406 by `ErrorRenderRegistry::set_status` at BOTH kelson-api
 state constructors (production boot and the test harness); the registry itself stays
 empty until a module registers, per its contract. Deprecated routes merge
 `deprecated: true` into the document meta (envelope parity with `meta.deprecated`), and
@@ -115,9 +115,9 @@ engine, registry, config, or manifest surface moves.
 
 - Zero new dependencies (budget untouched); `MODULE_ABI` stays 1 (no manifest fields).
 - Default wire bytes are unchanged, so the existing suite count is unaffected; the
-  evidence matrix landed in EXISTING suites (keel-http unit matrix: item/collection,
+  evidence matrix landed in EXISTING suites (kelson-http unit matrix: item/collection,
   id+type lift, reserved-member stripping, relationships shape check, include dedupe +
-  bad-entry drop, sparse fieldsets, links at bounds, parameter-reject 406; keel-api:
+  bad-entry drop, sparse fieldsets, links at bounds, parameter-reject 406; kelson-api:
   negotiation roundtrip on a resource route) as 13 `jsonapi` unit tests plus 5
   `response_layer_integration` HTTP tests — including a byte-for-byte default-path
   assertion against `Envelope::ok` output for absent / `q=0` / plain-JSON `Accept` —

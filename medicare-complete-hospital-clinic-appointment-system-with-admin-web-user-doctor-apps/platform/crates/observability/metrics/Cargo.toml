@@ -1,5 +1,5 @@
 [package]
-name = "keel-metrics"
+name = "kelson-metrics"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,10 +7,10 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel Sentinel: metrics registry, cardinality protection, Prometheus text exposition, cost counters."
+description = "Kelson Sentinel: metrics registry, cardinality protection, Prometheus text exposition, cost counters."
 
 [dependencies]
-keel-foundation = { workspace = true }
+kelson-foundation = { workspace = true }
 moka = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

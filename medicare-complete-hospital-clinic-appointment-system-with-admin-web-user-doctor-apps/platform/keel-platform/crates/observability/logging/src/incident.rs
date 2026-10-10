@@ -1,13 +1,13 @@
 //! Incident control plane (Sentinel S5 §16, D-76): a file under
 //! `storage/framework/telemetry/control/` is the single source of truth for
-//! incident mode. `keel observe incident start|stop` writes/removes the file;
-//! the keel-api admin endpoint writes the same file; every host polls it
+//! incident mode. `kelson observe incident start|stop` writes/removes the file;
+//! the kelson-api admin endpoint writes the same file; every host polls it
 //! (2 s) and applies it to `TelemetryControlState`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use keel_foundation::IncidentId;
+use kelson_foundation::IncidentId;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -139,7 +139,7 @@ mod tests {
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "keel-incident-test-{name}-{}",
+            "kelson-incident-test-{name}-{}",
             uuid::Uuid::now_v7()
         ));
         std::fs::create_dir_all(&dir).unwrap();

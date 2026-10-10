@@ -1,15 +1,15 @@
-//! PostgreSQL execution backend: BEGIN → SET LOCAL keel.tenant_id → handler →
+//! PostgreSQL execution backend: BEGIN → SET LOCAL kelson.tenant_id → handler →
 //! guards → DeltaStone + Audit + Outbox writes → COMMIT (one transaction, D-53).
 
-use keel_context::ExecutionContext;
-use keel_foundation::{AppError, ConcurrencyStrategy, DeltaId, StreamRef};
-use keel_execution::concurrency::expand_key;
-use keel_execution::plan::ExecutionPlan;
-use keel_execution::unit::{
+use kelson_context::ExecutionContext;
+use kelson_foundation::{AppError, ConcurrencyStrategy, DeltaId, StreamRef};
+use kelson_execution::concurrency::expand_key;
+use kelson_execution::plan::ExecutionPlan;
+use kelson_execution::unit::{
     guard, AuditRecord, BoxFuture, CommitReceipt, ExecutionBackend, ExecutionUnit, HandlerFn,
     MutationRecord, OutboxMessage, RunOutcome,
 };
-use keel_transaction::{advisory_lock_key, IsolationLevel, TxOptions};
+use kelson_transaction::{advisory_lock_key, IsolationLevel, TxOptions};
 use sqlx::postgres::PgPool;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -52,10 +52,10 @@ async fn apply_tx_options(
 
 struct PgUnit<'c> {
     tx: sqlx::Transaction<'c, sqlx::Postgres>,
-    tenant_id: Option<keel_foundation::TenantId>,
-    execution_id: keel_foundation::ExecutionId,
-    principal_id: Option<keel_foundation::PrincipalId>,
-    correlation_id: keel_foundation::CorrelationId,
+    tenant_id: Option<kelson_foundation::TenantId>,
+    execution_id: kelson_foundation::ExecutionId,
+    principal_id: Option<kelson_foundation::PrincipalId>,
+    correlation_id: kelson_foundation::CorrelationId,
     command: String,
     default_stream: Option<StreamRef>,
     scope_paths: Vec<String>,
@@ -65,7 +65,7 @@ struct PgUnit<'c> {
 }
 
 impl ExecutionUnit for PgUnit<'_> {
-    fn tenant_id(&self) -> Option<keel_foundation::TenantId> {
+    fn tenant_id(&self) -> Option<kelson_foundation::TenantId> {
         self.tenant_id
     }
     fn record_mutation(&mut self, mutation: MutationRecord) {
@@ -106,7 +106,7 @@ impl ExecutionBackend for PostgresBackend {
                 .begin()
                 .await
                 .map_err(|e| AppError::persistence(format!("begin: {e}")))?;
-            keel_execution::QueryTap::record("pg:tx.begin", "BEGIN", t_begin.elapsed());
+            kelson_execution::QueryTap::record("pg:tx.begin", "BEGIN", t_begin.elapsed());
 
             // Plan-driven transaction options (S1): isolation + statement budget.
             let opts = TxOptions::from_plan_fields(
@@ -118,7 +118,7 @@ impl ExecutionBackend for PostgresBackend {
 
             // RLS anchor: tenant GUC for the whole transaction scope.
             if let Some(tenant) = ctx.tenant_id() {
-                sqlx::query("SELECT set_config('keel.tenant_id', $1, true)")
+                sqlx::query("SELECT set_config('kelson.tenant_id', $1, true)")
                     .bind(tenant.to_string())
                     .execute(&mut *tx)
                     .await
@@ -224,7 +224,7 @@ impl ExecutionBackend for PostgresBackend {
                 .execute(&mut *unit.tx)
                 .await
                 .map_err(|e| AppError::persistence(format!("delta stone: {e}")))?;
-                keel_execution::QueryTap::record(
+                kelson_execution::QueryTap::record(
                     "pg:delta.write",
                     "INSERT delta_stones",
                     t_delta.elapsed(),
@@ -248,7 +248,7 @@ impl ExecutionBackend for PostgresBackend {
                 let tenant_str = unit.tenant_id.map(|t| t.to_string());
                 let principal_str = unit.principal_id.map(|p| p.to_string());
                 let day = at.date().to_string();
-                let chain_id = keel_integrity::chain_id_for(tenant_str.as_deref(), &day);
+                let chain_id = kelson_integrity::chain_id_for(tenant_str.as_deref(), &day);
 
                 let prev_hash: [u8; 32] = match chain_prev.get(&chain_id) {
                     Some(h) => *h,
@@ -286,7 +286,7 @@ impl ExecutionBackend for PostgresBackend {
                         };
                         fetched
                             .and_then(|b| b.try_into().ok())
-                            .unwrap_or(keel_integrity::GENESIS_HASH)
+                            .unwrap_or(kelson_integrity::GENESIS_HASH)
                     }
                 };
 
@@ -296,7 +296,7 @@ impl ExecutionBackend for PostgresBackend {
                 let at_iso = at
                     .format(&time::format_description::well_known::Rfc3339)
                     .map_err(|e| AppError::persistence(format!("audit chain time: {e}")))?;
-                let canonical = keel_integrity::canonical_audit_row(
+                let canonical = kelson_integrity::canonical_audit_row(
                     tenant_str.as_deref(),
                     principal_str.as_deref(),
                     &a.action,
@@ -305,7 +305,7 @@ impl ExecutionBackend for PostgresBackend {
                     &merged_detail,
                     &at_iso,
                 );
-                let chain_hash = keel_integrity::audit_hash(&prev_hash, &canonical);
+                let chain_hash = kelson_integrity::audit_hash(&prev_hash, &canonical);
 
                 sqlx::query(
                     r"INSERT INTO audit_records
@@ -329,7 +329,7 @@ impl ExecutionBackend for PostgresBackend {
                 .await
                 .map_err(|e| AppError::persistence(format!("audit: {e}")))?;
                 chain_prev.insert(chain_id, chain_hash);
-                keel_execution::QueryTap::record(
+                kelson_execution::QueryTap::record(
                     "pg:audit.write",
                     "INSERT audit_records",
                     t_audit.elapsed(),
@@ -340,7 +340,7 @@ impl ExecutionBackend for PostgresBackend {
                 let t_outbox = std::time::Instant::now();
                 // §5.2: key computed at APPEND time inside the commit so
                 // the row and its key are atomic (KEEL-006).
-                let key = keel_event::idempotency_key(&o.event, unit.tenant_id, &o.payload);
+                let key = kelson_event::idempotency_key(&o.event, unit.tenant_id, &o.payload);
                 sqlx::query(
                     r"INSERT INTO outbox (id, tenant_id, event, topic, payload, idempotency_key, published, created_at)
                       VALUES ($1,$2,$3,$4,$5,$6,false,now())",
@@ -354,7 +354,7 @@ impl ExecutionBackend for PostgresBackend {
                 .execute(&mut *unit.tx)
                 .await
                 .map_err(|e| AppError::persistence(format!("outbox: {e}")))?;
-                keel_execution::QueryTap::record(
+                kelson_execution::QueryTap::record(
                     "pg:outbox.write",
                     "INSERT outbox",
                     t_outbox.elapsed(),
@@ -366,7 +366,7 @@ impl ExecutionBackend for PostgresBackend {
                 .commit()
                 .await
                 .map_err(|e| AppError::persistence(format!("commit: {e}")))?;
-            keel_execution::QueryTap::record("pg:tx.commit", "COMMIT", t_commit.elapsed());
+            kelson_execution::QueryTap::record("pg:tx.commit", "COMMIT", t_commit.elapsed());
 
             Ok(RunOutcome {
                 result,

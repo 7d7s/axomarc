@@ -6,7 +6,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use keel_telemetry::{Event, ExportError, ExportOk, Exporter};
+use kelson_telemetry::{Event, ExportError, ExportOk, Exporter};
 
 use crate::format::{event_to_jsonl, redact_line};
 
@@ -155,10 +155,10 @@ mod tests {
 
     #[test]
     fn rotation_path_shape() {
-        let p = PathBuf::from("/var/log/keel/app.log");
+        let p = PathBuf::from("/var/log/kelson/app.log");
         assert_eq!(
             rotation_path(&p, 1),
-            PathBuf::from("/var/log/keel/app.1.log")
+            PathBuf::from("/var/log/kelson/app.1.log")
         );
     }
 }

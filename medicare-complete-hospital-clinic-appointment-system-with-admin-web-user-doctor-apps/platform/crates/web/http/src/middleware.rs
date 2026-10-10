@@ -19,7 +19,7 @@ use axum::http::{header, HeaderMap, Request, Response, StatusCode};
 use axum::middleware::Next;
 use axum::response::IntoResponse;
 use axum::Json;
-use keel_foundation::{codes, AppError, ErrorCategory, RequestId, Retryability, Severity, TraceId};
+use kelson_foundation::{codes, AppError, ErrorCategory, RequestId, Retryability, Severity, TraceId};
 use serde::{Deserialize, Serialize};
 
 use crate::{Envelope, ErrorBody};
@@ -596,7 +596,7 @@ mod tests {
         let res = app(admission).oneshot(r).await.unwrap();
         assert_eq!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
         let body = body_string(res.into_body()).await;
-        assert!(body.contains("KER_VALIDATION"));
+        assert!(body.contains("KSN_VALIDATION"));
     }
 
     #[tokio::test]
@@ -619,7 +619,7 @@ mod tests {
         assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(res.headers().get("retry-after").unwrap(), "30");
         let body = body_string(res.into_body()).await;
-        assert!(body.contains("KER_MAINTENANCE"));
+        assert!(body.contains("KSN_MAINTENANCE"));
 
         let res = app(admission.clone())
             .oneshot(req("GET", "/healthz"))
@@ -708,7 +708,7 @@ mod tests {
 
     #[test]
     fn down_file_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("keel-down-{}", uuid::Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("kelson-down-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         assert!(read_down_file(&dir).is_none());
         let file = MaintenanceFile {

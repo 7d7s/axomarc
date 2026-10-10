@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 
 use crate::ports::{BoxFuture, ConfigPort, EventPort, HealthCheck, JobPort, MigrationPort, ModulePort};
 use crate::rollback::{PromotionTarget, RollbackExecutor};

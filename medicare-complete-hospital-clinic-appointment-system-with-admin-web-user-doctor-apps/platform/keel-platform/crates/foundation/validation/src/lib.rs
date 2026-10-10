@@ -1,4 +1,4 @@
-//! # keel-validation
+//! # kelson-validation
 //! Boundary validation: small composable primitives PLUS the collect-all
 //! Validator (S2 item 17, FormRequest role). Error-uniform (AppError).
 //! Used by Request ViewModels; domain invariants stay in the domain.
@@ -25,7 +25,7 @@ pub use validator::{
     ValidationReport, Validator, RULE_NAMES,
 };
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 
 pub fn non_empty(field: &str, value: &str) -> Result<(), AppError> {
     if value.trim().is_empty() {

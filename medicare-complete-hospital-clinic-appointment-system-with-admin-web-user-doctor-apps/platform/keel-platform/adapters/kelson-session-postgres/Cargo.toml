@@ -1,0 +1,27 @@
+[package]
+name = "kelson-session-postgres"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Kelson adapter: PostgreSQL SessionStore (kelson-session)."
+
+[dependencies]
+kelson-foundation = { workspace = true }
+kelson-session = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+
+[features]
+# Integration tests that require a live PostgreSQL (DATABASE_URL); skipped otherwise.
+pg-tests = []
+
+[package.metadata.docs.rs]
+all-features = true

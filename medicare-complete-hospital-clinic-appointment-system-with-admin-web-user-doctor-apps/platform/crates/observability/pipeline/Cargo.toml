@@ -1,5 +1,5 @@
 [package]
-name = "keel-pipeline"
+name = "kelson-pipeline"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,11 +7,11 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel Sentinel: telemetry processing DAG (normalize, classify, enrich, redact, fingerprint, sample, dedupe, correlate, route)."
+description = "Kelson Sentinel: telemetry processing DAG (normalize, classify, enrich, redact, fingerprint, sample, dedupe, correlate, route)."
 
 [dependencies]
-keel-foundation = { workspace = true }
-keel-telemetry = { workspace = true }
+kelson-foundation = { workspace = true }
+kelson-telemetry = { workspace = true }
 sha2 = { workspace = true }
 moka = { workspace = true }
 serde = { workspace = true }

@@ -1,8 +1,8 @@
 //! Identity stores on PostgreSQL (S7): principals + credentials tables.
 //! Mirrors the tokenstore.rs pattern: sync trait over sqlx via block_on.
 
-use keel_foundation::{AppError, PrincipalId};
-use keel_identity::{
+use kelson_foundation::{AppError, PrincipalId};
+use kelson_identity::{
     store::{CredentialStore, PrincipalStore},
     Credential, CredentialKind, Principal, PrincipalStatus, Secret,
 };

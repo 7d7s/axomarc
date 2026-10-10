@@ -5,7 +5,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use keel_foundation::{AppError, RequestId, TraceId};
+use kelson_foundation::{AppError, RequestId, TraceId};
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::EnvFilter;
 
@@ -22,7 +22,7 @@ pub enum LogFormat {
 /// Process logging posture. Built by the host from config; defaults are safe.
 #[derive(Debug, Clone)]
 pub struct LogConfig {
-    /// `EnvFilter` directive string, e.g. `info`, `keel_api=debug,info`.
+    /// `EnvFilter` directive string, e.g. `info`, `kelson_api=debug,info`.
     pub level: String,
     pub format: LogFormat,
     /// Optional file mirror (append; parent dir must exist).

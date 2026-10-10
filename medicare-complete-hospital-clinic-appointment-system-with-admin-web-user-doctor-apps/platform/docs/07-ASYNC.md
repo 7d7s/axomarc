@@ -16,32 +16,32 @@ Declaring events is manifest-level:
 name = "appointment.booked"
 ```
 
-`keel event:list` prints the catalog; duplicates are graph violations (G05).
+`kelson event:list` prints the catalog; duplicates are graph violations (G05).
 
 ## Jobs and queues
 
 Durable jobs (`DurableJob`) with statuses pending/running/succeeded/failed/dead. Claims use
-`SELECT ... FOR UPDATE SKIP LOCKED` (postgres) or the same semantics in-memory. `keel-worker` is
+`SELECT ... FOR UPDATE SKIP LOCKED` (postgres) or the same semantics in-memory. `kelson-worker` is
 the worker binary.
 
 ```bash
-keel job:list --status failed
-keel queue:work --once
-keel queue:failed
-keel queue:retry <job-id>
-keel queue:listen                      # supervise the worker: respawn + crash-loop backoff
-keel queue:monitor                     # depth + oldest-age snapshot
-keel queue:clear                       # purge pending (dev/test-only, KEEL_FORCE=1 to script)
-keel queue:flush                       # delete every dead job
-keel queue:forget <id>                 # delete one dead job
-keel queue:prune-failed --hours 168    # age-bounded dead-letter pruning (default 168h)
-keel queue:prune-batches --hours 72    # prune terminal batch records (default 72h)
-keel queue:restart                     # restart-signal file: workers stop after the current job
-keel queue:retry-batch <id>            # requeue every failed/dead member of a batch (B-32)
+kelson job:list --status failed
+kelson queue:work --once
+kelson queue:failed
+kelson queue:retry <job-id>
+kelson queue:listen                      # supervise the worker: respawn + crash-loop backoff
+kelson queue:monitor                     # depth + oldest-age snapshot
+kelson queue:clear                       # purge pending (dev/test-only, KEEL_FORCE=1 to script)
+kelson queue:flush                       # delete every dead job
+kelson queue:forget <id>                 # delete one dead job
+kelson queue:prune-failed --hours 168    # age-bounded dead-letter pruning (default 168h)
+kelson queue:prune-batches --hours 72    # prune terminal batch records (default 72h)
+kelson queue:restart                     # restart-signal file: workers stop after the current job
+kelson queue:retry-batch <id>            # requeue every failed/dead member of a batch (B-32)
 ```
 
 Wave 5 added the admin surface (clear/flush/forget/monitor/prune-*/restart/retry-batch) and
-promoted `queue:listen` to a real supervisor that respawns `keel-worker` on every exit with a
+promoted `queue:listen` to a real supervisor that respawns `kelson-worker` on every exit with a
 crash-loop backoff. `queue:restart` writes the signal file; the worker races it against its own
 start time, so a signal older than the worker is ignored (test:
 `restart_signal_is_ignored_when_older_than_the_worker_start`). Wave 6 P9 closed the batch gap
@@ -54,7 +54,7 @@ so a ledger refusal aborts dispatch with nothing enqueued — `PgBatchLedger` at
 Wave 6 P1 registers two job defs at boot: `demo.job` (smoke handler) and `mail.send` (queued
 mail — the def owns the retry budget; the handler resolves storage-capped attachments and sends
 through the first healthy `[mail]` chain transport, recording the chain detail in `last_error`
-on failure). Producers build through the registry with `keel_mail_smtp::enqueue_mailable`,
+on failure). Producers build through the registry with `kelson_mail_smtp::enqueue_mailable`,
 which validates the `Mailable` and refuses an unregistered job name (tests:
 `queued_send_retries_then_dead_letters`, `enqueue_requires_registered_def_and_valid_mail`,
 `registries_accept_the_mail_job_once`).
@@ -78,8 +78,8 @@ Wave 6 P8 advanced the queue admission plane (all `serde(default)` additions to 
   `kill` implement on the in-memory, Postgres and Redis stores. Registration refuses
   impossible admission configs (empty unique key, zero TTL, zero capacity,
   non-finite/non-positive refill).
-- **Metrics** — `/metrics` gains the scrape-time queue census (`keel_queue_depth{status}`,
-  `keel_queue_oldest_age_seconds`, `keel_queue_finished{outcome}`; see 13-OPERATIONS).
+- **Metrics** — `/metrics` gains the scrape-time queue census (`kelson_queue_depth{status}`,
+  `kelson_queue_oldest_age_seconds`, `kelson_queue_finished{outcome}`; see 13-OPERATIONS).
 
 Tests (jobs): `unique_admission_holds_locked_claims_until_release`,
 `rate_limited_admission_holds_until_the_bucket_refills`,
@@ -88,7 +88,7 @@ Tests (jobs): `unique_admission_holds_locked_claims_until_release`,
 `stacks_compose_builtins_then_module_layers`, `registry_refuses_impossible_admission_configs`;
 (worker): `dispatch_holds_a_rate_limited_job_without_failing_it`,
 `dispatch_skips_a_locked_unique_job`, `dispatch_runs_module_middleware_around_the_handler`,
-`dispatch_kills_an_over_budget_job`; (keel-api):
+`dispatch_kills_an_over_budget_job`; (kelson-api):
 `metrics_expose_queue_depth_age_and_throughput`. The codegen `job-middleware` kind now emits
 `impl JobMiddleware` with the real before/after shape (needle pinned by
 `wave5_templates_reference_real_platform_surface`).
@@ -116,14 +116,14 @@ operation profile (`WORKFLOW`) with plan enforcement like any other command.
 
 ## Scheduler
 
-Registered schedules tick in the runner; `keel schedule:list` / `keel schedule:run` for inspection
+Registered schedules tick in the runner; `kelson schedule:list` / `kelson schedule:run` for inspection
 and one-shot due runs.
 
 Wave 5 added the daemon and dry-run surfaces:
 
 ```bash
-keel schedule:work [--every n]   # tick loop (default 60s): fire due items as durable jobs, save state
-keel schedule:test               # pure dry run: registered vs due-now (nothing fires, no writes)
+kelson schedule:work [--every n]   # tick loop (default 60s): fire due items as durable jobs, save state
+kelson schedule:test               # pure dry run: registered vs due-now (nothing fires, no writes)
 ```
 
 `schedule:work` fires each due item as a durable job (`max_attempts = 1`, the item's payload) and

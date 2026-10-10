@@ -32,7 +32,7 @@ after commit. Same key + same payload replays the stored result — no second ef
 
 ## 7. Delta and audit
 Every committed mutation is a delta stone (resource, version, before/after, stream). Audit is
-derived from the same chain. This is what powers `keel inspect`, `keel replay`, and downstream
+derived from the same chain. This is what powers `kelson inspect`, `kelson replay`, and downstream
 sync/reporting.
 
 ## 8. Transactional outbox

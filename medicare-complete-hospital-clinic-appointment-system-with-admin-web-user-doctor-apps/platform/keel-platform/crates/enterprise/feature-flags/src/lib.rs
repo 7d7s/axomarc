@@ -1,4 +1,4 @@
-//! # keel-feature-flags
+//! # kelson-feature-flags
 //! Feature-flag service (blueprint L68, STAGE-0-SPEC §11, S3). Dimensions:
 //! global · environment · tenant · region · percentage · capability · actor.
 //! Rollout ladder: disabled → internal → 1% → 10% → 50% → 100%, one step at a
@@ -7,15 +7,15 @@
 //!
 //! Evaluation is deterministic and pure: `evaluate(def, input)` never
 //! touches clocks or IO, so flag decisions are replayable and testable. A
-//! request resolves its `FeatureSnapshot` ONCE (keel-context) and carries it
+//! request resolves its `FeatureSnapshot` ONCE (kelson-context) and carries it
 //! through the whole execution — no mid-request flips.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
-use keel_context::FeatureSnapshot;
-use keel_foundation::{AppError, FeatureRevision, PrincipalId, TenantId};
+use kelson_context::FeatureSnapshot;
+use kelson_foundation::{AppError, FeatureRevision, PrincipalId, TenantId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -112,7 +112,7 @@ pub enum FlagRule {
     Tenant { id: TenantId, enable: bool },
     /// Deployment region (`in`, `eu`, ...).
     Region { name: String, enable: bool },
-    /// Named capability granted to the tenant (keel-tenancy capabilities).
+    /// Named capability granted to the tenant (kelson-tenancy capabilities).
     Capability { name: String, enable: bool },
     /// Explicit actor allow/deny (support staff, beta users).
     Actor { id: PrincipalId, enable: bool },
@@ -795,7 +795,7 @@ mod tests {
 
     #[test]
     fn file_store_persists_across_instances() {
-        let dir = std::env::temp_dir().join(format!("keel-flags-test-{}", uuid::Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("kelson-flags-test-{}", uuid::Uuid::now_v7()));
         let path = dir.join("flags.json");
         let store = FileFlagStore::new(&path);
         store

@@ -1,9 +1,9 @@
 //! Wave 9 B-31 / Phase B: transactional test isolation against live MySQL.
 //!
 //! The RefreshDatabase-equivalent suite setup for the mysql matrix — the
-//! exact counterpart of [`keel_postgres::test_support::Savepoint`]: each
-//! test body wraps its writes in `BEGIN; SAVEPOINT keel_test; … ; ROLLBACK
-//! TO SAVEPOINT keel_test`, so two tests can touch the SAME table without
+//! exact counterpart of [`kelson_postgres::test_support::Savepoint`]: each
+//! test body wraps its writes in `BEGIN; SAVEPOINT kelson_test; … ; ROLLBACK
+//! TO SAVEPOINT kelson_test`, so two tests can touch the SAME table without
 //! schema drops, without truncation, and without leaking rows into each
 //! other. The outer `ROLLBACK` closes the scope, so the pooled connection
 //! is always returned idle (no open transaction can leak into the next test
@@ -27,13 +27,13 @@
 //! 1295 (HY000, "This command is not supported in the prepared statement
 //! protocol yet"), so every statement in this module runs unprepared through
 //! `raw_sql`, while a body's parameterized DML stays prepared as usual.
-//! Postgres has no such restriction, so `keel_postgres::test_support` may
+//! Postgres has no such restriction, so `kelson_postgres::test_support` may
 //! issue the same statements through `sqlx::query`.
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 
 /// Savepoint name used by [`Savepoint::begin`] (docs/19 L341).
-pub const TEST_SAVEPOINT: &str = "keel_test";
+pub const TEST_SAVEPOINT: &str = "kelson_test";
 
 /// One test body's transactional isolation scope over MySQL.
 ///
@@ -41,14 +41,14 @@ pub const TEST_SAVEPOINT: &str = "keel_test";
 /// let mut conn = pool.acquire().await?;
 /// let mut sp = Savepoint::begin(&mut conn).await?;
 /// // ... the body's SQL runs through sp.conn() ...
-/// sp.rollback().await?; // ROLLBACK TO keel_test — nothing survives
+/// sp.rollback().await?; // ROLLBACK TO kelson_test — nothing survives
 /// ```
 pub struct Savepoint<'c> {
     conn: &'c mut sqlx::MySqlConnection,
 }
 
 impl<'c> Savepoint<'c> {
-    /// `BEGIN` + `SAVEPOINT keel_test` on this connection (fail-closed:
+    /// `BEGIN` + `SAVEPOINT kelson_test` on this connection (fail-closed:
     /// any step erroring leaves nothing half-open on the caller's side —
     /// the borrow is returned with the `Err`).
     pub async fn begin(conn: &'c mut sqlx::MySqlConnection) -> Result<Self, AppError> {
@@ -71,7 +71,7 @@ impl<'c> Savepoint<'c> {
         self.conn
     }
 
-    /// `ROLLBACK TO SAVEPOINT keel_test` — every write the body made is
+    /// `ROLLBACK TO SAVEPOINT kelson_test` — every write the body made is
     /// discarded — then rolls the outer `BEGIN` closed so the connection
     /// returns to the pool idle, exactly as found.
     pub async fn rollback(self) -> Result<(), AppError> {

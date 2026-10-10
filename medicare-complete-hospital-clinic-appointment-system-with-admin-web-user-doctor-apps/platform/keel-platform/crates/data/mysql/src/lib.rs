@@ -1,20 +1,20 @@
-//! # keel-mysql
+//! # kelson-mysql
 //! The resource fabric for MySQL 8.0.19+ (Wave 9 B-31, docs/19): pool +
 //! SQL-first migrations + the second driver behind the existing store ports.
-//! `keel-postgres` stays the Postgres fabric; this crate never depends on it
+//! `kelson-postgres` stays the Postgres fabric; this crate never depends on it
 //! (the shared sync-store bridge and the pool handle are deliberate copies /
 //! a neutral enum, so neither publishable fabric reaches the other).
 //!
 //! Divergences from the Postgres blade, all documented in docs/05-DATABASE:
 //! - **no RLS** — tenant isolation rests solely on the tenant-guarded query
 //!   builders (every port keeps the explicit `tenant_id` predicate it already
-//!   carried for the `SET LOCAL keel.tenant_id` anchor);
+//!   carried for the `SET LOCAL kelson.tenant_id` anchor);
 //! - **no `RETURNING`** — writes re-select by key on the same connection;
 //! - **no advisory-lock keys** — the migration lock is `GET_LOCK()`, the
 //!   same session-scoped fail-closed contract as `pg_try_advisory_lock`;
 //! - **rollback-capable pairs are transaction-free** — the same
 //!   `database/migrations-pairs` shipment, `keel_migrations` bookkeeping and
-//!   Laravel batches as `keel_postgres::pairs`, but applied statement by
+//!   Laravel batches as `kelson_postgres::pairs`, but applied statement by
 //!   statement with fail-stop-and-report, because MySQL DDL auto-commits
 //!   (see [`pairs`] for the whole divergence list);
 //! - uuid columns are `BINARY(16)` (sqlx's MySQL `Uuid` codec is binary),
@@ -51,13 +51,13 @@ pub use tokenstore::MySqlTokenStore;
 pub use tx::MySqlBackend;
 pub use txport::{MySqlTxHandle, MySqlTransactions};
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 use uuid::Uuid;
 
 /// The boot-time driver switch (B-31): boot constructs exactly one variant
 /// from `[database].driver` + the probe, then hands it to the store
-/// constructors in keel-api / keel-worker / keel-console. The Postgres
-/// variant carries `sqlx::PgPool` — the same type `keel_postgres::PgPool`
+/// constructors in kelson-api / kelson-worker / kelson-console. The Postgres
+/// variant carries `sqlx::PgPool` — the same type `kelson_postgres::PgPool`
 /// aliases — which is what keeps the two publishable fabrics independent.
 #[derive(Clone, Debug)]
 pub enum DbPool {
@@ -87,7 +87,7 @@ pub async fn create_pool(url: &str, max_connections: u32) -> Result<MySqlPool, A
 /// Migration lock name (server-wide, session-scoped): the MySQL counterpart
 /// of the Postgres advisory key — two concurrent runs serialize instead of
 /// corrupting the bookkeeping.
-pub const MIGRATION_LOCK_NAME: &str = "keel:migrate";
+pub const MIGRATION_LOCK_NAME: &str = "kelson:migrate";
 
 /// Fail-closed acquisition deadline: a lock holder wedged this long refuses
 /// the run with an error instead of hanging it.

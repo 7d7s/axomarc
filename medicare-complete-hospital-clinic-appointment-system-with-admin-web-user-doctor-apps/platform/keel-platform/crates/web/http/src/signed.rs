@@ -9,8 +9,8 @@
 
 use std::sync::Arc;
 
-use keel_foundation::{codes, AppError, ErrorCategory, PrincipalId, Retryability, Severity};
-use keel_tokens::{TokenPurpose, TokenService};
+use kelson_foundation::{codes, AppError, ErrorCategory, PrincipalId, Retryability, Severity};
+use kelson_tokens::{TokenPurpose, TokenService};
 use sha2::{Digest, Sha256};
 use time::{Duration, OffsetDateTime};
 
@@ -82,7 +82,7 @@ pub fn derive_signed_key(app_key: &str) -> Vec<u8> {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(app_key.as_bytes());
-    hasher.update(b"\x00keel.signed-url.v1");
+    hasher.update(b"\x00kelson.signed-url.v1");
     hasher.finalize().to_vec()
 }
 
@@ -103,13 +103,13 @@ pub struct SignedGate {
     urls: SignedUrls,
     tokens: Arc<TokenService>,
     /// Wave 7 P6: the hard bound on any minted TTL (seconds). Pairs with
-    /// keel-config's `[security.signed_urls].max_ttl_secs` default — boot
+    /// kelson-config's `[security.signed_urls].max_ttl_secs` default — boot
     /// always rebinds it to the configured value via [`Self::with_max_ttl`].
     max_ttl_secs: u64,
 }
 
 /// Default bound when no configured value is threaded: 7 days, the same
-/// figure keel-config's `max_ttl_secs` serde default carries.
+/// figure kelson-config's `max_ttl_secs` serde default carries.
 const DEFAULT_MAX_TTL_SECS: u64 = 604_800;
 
 impl SignedGate {
@@ -303,7 +303,7 @@ fn parse_hex(raw: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keel_foundation::ErrorCategory;
+    use kelson_foundation::ErrorCategory;
 
     fn signer() -> SignedUrls {
         SignedUrls::new(b"signed-url-test-secret".to_vec())
@@ -395,8 +395,8 @@ mod tests {
     // ------------------------- Wave 2 one-time signed URLs (19-PARITY URL gen)
 
     fn gate() -> SignedGate {
-        let tokens = Arc::new(keel_tokens::TokenService::new(Arc::new(
-            keel_tokens::InMemoryTokenStore::new(),
+        let tokens = Arc::new(kelson_tokens::TokenService::new(Arc::new(
+            kelson_tokens::InMemoryTokenStore::new(),
         )));
         SignedGate::new(b"signed-url-test-secret".to_vec(), tokens)
     }
@@ -410,7 +410,7 @@ mod tests {
         let g = gate().with_max_ttl(3_600);
         let err = g
             .sign_once(
-                keel_foundation::PrincipalId::new(),
+                kelson_foundation::PrincipalId::new(),
                 "/downloads/1",
                 Duration::minutes(61),
             )
@@ -421,7 +421,7 @@ mod tests {
             err.public_message
         );
         g.sign_once(
-            keel_foundation::PrincipalId::new(),
+            kelson_foundation::PrincipalId::new(),
             "/downloads/1",
             Duration::minutes(60),
         )
@@ -433,7 +433,7 @@ mod tests {
         let g = gate();
         let url = g
             .sign_once(
-                keel_foundation::PrincipalId::new(),
+                kelson_foundation::PrincipalId::new(),
                 "/downloads/1?scope=csv",
                 Duration::minutes(10),
             )
@@ -454,7 +454,7 @@ mod tests {
         let g = gate();
         let url = g
             .sign_once(
-                keel_foundation::PrincipalId::new(),
+                kelson_foundation::PrincipalId::new(),
                 "/downloads/1",
                 Duration::minutes(10),
             )
@@ -497,7 +497,7 @@ mod constant_time_tests {
 
     #[test]
     fn equal_inputs_match() {
-        assert!(constant_time_eq(b"keel-tag-value", b"keel-tag-value"));
+        assert!(constant_time_eq(b"kelson-tag-value", b"kelson-tag-value"));
         assert!(constant_time_eq(b"", b""));
     }
 

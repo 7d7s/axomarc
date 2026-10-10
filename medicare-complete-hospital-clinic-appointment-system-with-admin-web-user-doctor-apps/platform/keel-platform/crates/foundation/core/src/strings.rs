@@ -114,7 +114,7 @@ pub fn to_slug(raw: &str) -> String {
 /// Title case (Wave 8, docs/19 "Helpers"): every word stem capitalized,
 /// identifiers included — `hello_world` / `helloWorld` -> `Hello World`.
 /// Documented divergence from Laravel `Str::title` (whose `ucwords` keeps
-/// `_` inside a word): Keel normalizes every separator to a single space,
+/// `_` inside a word): Kelson normalizes every separator to a single space,
 /// because snake_case identifiers ARE words here.
 pub fn to_title_case(raw: &str) -> String {
     split_words(raw)

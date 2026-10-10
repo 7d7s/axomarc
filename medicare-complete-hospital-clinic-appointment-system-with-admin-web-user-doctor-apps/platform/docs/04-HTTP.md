@@ -17,7 +17,7 @@ capability = "book"
 version = "1.0"
 ```
 
-`keel route:list` prints the catalog; `keel sdk:openapi` emits OpenAPI 3.1 from the same source.
+`kelson route:list` prints the catalog; `kelson sdk:openapi` emits OpenAPI 3.1 from the same source.
 
 ## Wire envelope (frozen)
 
@@ -25,7 +25,7 @@ Every response is an envelope:
 
 ```json
 { "ok": true, "data": ... }
-{ "ok": false, "error": { "code": "KER-*", "message": "...", "retryable": false, "meta": {} } }
+{ "ok": false, "error": { "code": "KSN-*", "message": "...", "retryable": false, "meta": {} } }
 ```
 
 `Envelope::ok(data)`, `Envelope::error(&err)`, `status_for_error(&err)` map the frozen error
@@ -42,9 +42,9 @@ taxonomy onto HTTP status codes. Internal details never leak across the wire.
 
 These are traits, checked by the compiler, not by runtime reflection.
 
-**Typed bridge (Wave 1, opt-in).** `TypedHandler<I, O>` (keel-command) adapts a typed
+**Typed bridge (Wave 1, opt-in).** `TypedHandler<I, O>` (kelson-command) adapts a typed
 `I -> O` handler function to the `OperationHandler` interface; `Validated<M: RequestViewModel>`
-and `TypedResource<R: ResponseViewModel>` (keel-http) supply the JSON → view-model → JSON halves
+and `TypedResource<R: ResponseViewModel>` (kelson-http) supply the JSON → view-model → JSON halves
 (`TypedResource` was named `Resource` until Wave 3 Phase 7 gave the name to the transformer trait).
 Handlers that don't need the bridge stay raw JSON (the appointments reference handlers are raw).
 
@@ -74,7 +74,7 @@ fills gaps (06-SECURITY).
 **CSRF (Wave 7 P7).** Double-submit protection is on by default for web-plane routes:
 `graph_router` layers `CsrfGuard` inside the security-headers layer (so a rejection
 still carries the posture) on every `plane = "web"` route. Safe methods pass through
-but carry the `keel_csrf` bootstrap cookie — the roundtrip starts on the GET that
+but carry the `kelson_csrf` bootstrap cookie — the roundtrip starts on the GET that
 renders the form — and state-changing requests must echo it in `X-CSRF-TOKEN`, else
 they are refused 403 (`CSRF token missing or mismatched`, rendered through the
 standard envelope or web error view). The deployment's `[security.csrf].skip_paths`
@@ -111,7 +111,7 @@ Modules cannot define custom middleware in v1 — the catalog is framework-owned
 
 **Boot gates.** Unknown route middleware entries and malformed `middleware.toml` files
 refuse boot fail-closed: `GRAPH-MW-UNKNOWN` collects every violation (enforced by both
-`keel check` and `keel-api` boot). Resolved chains are serialized into the route-cache
+`kelson check` and `kelson-api` boot). Resolved chains are serialized into the route-cache
 artifact (below).
 
 ## Realtime
@@ -121,8 +121,8 @@ see `08-SERVICES.md`.
 
 ## Graph → HTTP dispatch (S7, extended Wave 1)
 
-At boot, `keel-api` compiles the PlatformGraph from every `applications/*/module.toml`
-(boot gate: a manifest error refuses boot, parity with `keel check`) and registers one axum route
+At boot, `kelson-api` compiles the PlatformGraph from every `applications/*/module.toml`
+(boot gate: a manifest error refuses boot, parity with `kelson check`) and registers one axum route
 per `RouteSpec` (`{param}` manifest syntax is axum 0.8 capture syntax), attaching each route's
 resolved middleware chain as a per-route layer. The dispatcher then:
 
@@ -172,7 +172,7 @@ bindings = [{ param = "id", model = "Appointment" }]
 
 Modules register a resolver per model name into the `route.bindings` registry service at boot
 (appointments registers `"Appointment"`); a manifest binding whose model has no registered
-resolver fails the `GRAPH-BINDING-RESOLVER` boot gate (fail-closed, at keel-api boot — the
+resolver fails the `GRAPH-BINDING-RESOLVER` boot gate (fail-closed, at kelson-api boot — the
 registry only exists once providers have run). At the edge the resolver runs tenant-scoped:
 `Ok(Some(record))` injects `_bindings.<param>` (the full record) into the operation input;
 malformed UUID, miss, and cross-tenant lookups all answer 404 envelopes (no existence leaking).
@@ -190,30 +190,30 @@ Stores may omit `total`; `has_more` then falls back to the full-page heuristic.
 
 `deprecated = true` on a route keeps it fully functional and advertises the sunset: success
 responses carry a `Deprecation: true` header and `meta.deprecated = true` in the envelope.
-`keel sdk:openapi` emits OpenAPI-native `deprecated: true` for the same routes.
+`kelson sdk:openapi` emits OpenAPI-native `deprecated: true` for the same routes.
 
 Wave 4 completes versioning (L72 ◐ → done): every route's `version` (default `v1`) must
 parse as `v<N>` (lowercase `v` + digits) and must agree with any version-looking path
 segment (`/api/v2/...`), enforced by the boot-refusing `GRAPH-VERSION-SEMVER` gate.
-`keel route:list` prints the VERSION and DEPRECATED columns, and OpenAPI carries the
-per-route version as the `x-keel-version` operation extension beside `deprecated: true`.
+`kelson route:list` prints the VERSION and DEPRECATED columns, and OpenAPI carries the
+per-route version as the `x-kelson-version` operation extension beside `deprecated: true`.
 
 ## Route cache (Wave 1)
 
-`keel route:cache` resolves every route's dispatch plan (chain, bindings, validators, flags) and
+`kelson route:cache` resolves every route's dispatch plan (chain, bindings, validators, flags) and
 writes `storage/framework/routes.json`, pinned to a SHA-256 content hash over every
 `applications/*/module.toml` + `modules/*/module.toml` + `middleware.toml` + `MODULE_ABI`.
-`keel route:clear` deletes the artifact. Boot semantics are strictly stricter than Laravel: the
+`kelson route:clear` deletes the artifact. Boot semantics are strictly stricter than Laravel: the
 graph always recompiles; an absent artifact falls back to live compilation; a present artifact
 with a matching hash registers routes from the plan list; a stale or corrupt artifact REFUSES
-boot with a pointer to `keel route:cache`. There is no silent live-fallback for drift.
+boot with a pointer to `kelson route:cache`. There is no silent live-fallback for drift.
 
 ## Sessions and cookies (S7)
 
 `web/http` ships a typed cookie layer (no cookie crate, D-62) and a session middleware: the
-`keel_session` cookie carries `session_id.hmac_tag` over the session secret. Posture: `Path=/`,
+`kelson_session` cookie carries `session_id.hmac_tag` over the session secret. Posture: `Path=/`,
 `HttpOnly`, `SameSite=Lax`, `Max-Age` from config (8h default), `Secure` in prod only. Sessions are
-feature-flag gated (`app.sessions`, default disabled — `keel flag:set app.sessions 100`), load via
+feature-flag gated (`app.sessions`, default disabled — `kelson flag:set app.sessions 100`), load via
 the `SessionStore` port (in-memory or `PgSessionStore` table `http_sessions`), touch on activity,
 and are swept by policy.
 
@@ -302,7 +302,7 @@ endpoint resolves identity through the shared resolver (session cookie or bearer
 requires its framework capability — `batches.status` / `batches.cancel` / `batches.retry` —
 granted at login through `FRAMEWORK_CAPABILITIES` (`notification_routes.rs`) and revocable per
 snapshot (403 `AUTH_DENIED`). Without a pool there is no ledger and no admin store: the
-endpoints answer `KER_NOT_IMPLEMENTED` (D-52 fail-closed) rather than reporting batches they
+endpoints answer `KSN_NOT_IMPLEMENTED` (D-52 fail-closed) rather than reporting batches they
 cannot see.
 
 ## Broadcast channel auth (Wave 6 P7)
@@ -327,10 +327,10 @@ dropping the SSE stream or ending the WS session leaves (broadcasting `presence.
 ## Stateless JWT bearer interop (B-22, v1.1)
 
 Opt-in and non-default (report R5): with the `app.jwt` feature flag on
-(`keel flag:set app.jwt 100`) and a non-empty `[auth].jwt_secret`, the edge accepts
+(`kelson flag:set app.jwt 100`) and a non-empty `[auth].jwt_secret`, the edge accepts
 externally-issued HS256 JWTs as `Authorization: Bearer` credentials. Bearer resolution
 order is session cookie → hashed PAT → JWT; PAT stays the preferred API credential.
-The verifier (`keel-http` `jwt.rs`, zero new dependencies — it reuses the tested sha2
+The verifier (`kelson-http` `jwt.rs`, zero new dependencies — it reuses the tested sha2
 `signed::hmac_sha256` + `constant_time_eq`) accepts only `alg = HS256` (`none` and every
 other algorithm are rejected before any crypto runs), verifies the signature over the
 exact received signing input (never a re-encoding), and requires `exp` (enforced).
@@ -348,11 +348,11 @@ transitive `ring` dependency to a direct one and a recorded budget decision.
 Routes may declare an optional `name` in `module.toml` (unique per module —
 the graph gate `GRAPH-DUP-ROUTENAME` enforces it). `PlatformGraph::resolve_url`
 generates concrete paths: every `{param}` is substituted (percent-encoded) and
-extra parameters become a sorted query string. `keel route:list` prints names.
+extra parameters become a sorted query string. `kelson route:list` prints names.
 
 ## Signed URLs (S9)
 
-`SignedUrls` (keel-http) signs a path with HMAC-SHA256 over the existing sha2
+`SignedUrls` (kelson-http) signs a path with HMAC-SHA256 over the existing sha2
 digest and an optional expiry: `sign(path, Some(Duration::minutes(30)))`
 appends `expires=` + `signature=`; `verify` rejects tampered paths,
 parameters, expiry values, and expired links (constant-time compare). This is
@@ -363,7 +363,7 @@ with no new dependency.
 604800 = 7 days) caps every TTL a `SignedGate` link may carry: `sign_once`
 refuses to mint above the configured bound, and boot refuses the whole
 config when that bound sits above the hard ceiling of 2 592 000 seconds
-(30 days, `keel_api::SIGNED_URL_TTL_CEILING_SECS`) — the spec's
+(30 days, `kelson_api::SIGNED_URL_TTL_CEILING_SECS`) — the spec's
 over-bound → boot-refusing config error, so a misconfiguration can never
 mint links that outlive a key-rotation window.
 
@@ -377,9 +377,9 @@ mint links that outlive a key-rotation window.
 
 ## SPA-first web story (S9 decision)
 
-Keel v1 is API-first/SPA-first: the framework serves JSON envelopes and emits
-OpenAPI (`keel sdk:openapi`); browser UIs are SPAs consuming that contract.
-`keel new --with-starter` scaffolds `templates/starter-template`: a
+Kelson v1 is API-first/SPA-first: the framework serves JSON envelopes and emits
+OpenAPI (`kelson sdk:openapi`); browser UIs are SPAs consuming that contract.
+`kelson new --with-starter` scaffolds `templates/starter-template`: a
 ModelStore-backed notes module (named routes, ModuleProvider over
 `ModelStoreRef`) plus a `web/` shell implementing the documented auth pattern
 (cookie session same-origin, hashed PAT for API clients). SSR/template engines
@@ -387,7 +387,7 @@ are deliberately deferred to v2.0.
 
 ## Metrics endpoint (S10, B-17)
 
-`keel-api` records process metrics unconditionally via `keel-metrics`
+`kelson-api` records process metrics unconditionally via `kelson-metrics`
 (registry with a hard 4096-series cardinality cap per kind) and exposes them
 at `GET /metrics` in Prometheus text format 0.0.4 — but only when the
 `app.metrics` feature flag is enabled; otherwise the route answers a 404
@@ -395,16 +395,16 @@ envelope. Recording paths:
 
 - `record_metrics` middleware — mounted **outermost** (outside admission and
   every per-route layer, CSRF included), so rate-limit/maintenance and
-  per-route CSRF rejections are counted alongside happy paths. Emits `keel_http_requests_total{method,status_class}`
-  and `keel_http_request_duration_seconds{method}` (fixed bucket histogram).
-- `/metrics` handler — refreshes `keel_uptime_seconds`, `keel_degraded`
-  (0/1) and `keel_routes_declared` gauges on every scrape, and (Wave 6
+  per-route CSRF rejections are counted alongside happy paths. Emits `kelson_http_requests_total{method,status_class}`
+  and `kelson_http_request_duration_seconds{method}` (fixed bucket histogram).
+- `/metrics` handler — refreshes `kelson_uptime_seconds`, `kelson_degraded`
+  (0/1) and `kelson_routes_declared` gauges on every scrape, and (Wave 6
   P8) the queue census when a durable store is wired:
-  `keel_queue_depth{status}`, `keel_queue_oldest_age_seconds`,
-  `keel_queue_finished{outcome}` — read at scrape time from the same
+  `kelson_queue_depth{status}`, `kelson_queue_oldest_age_seconds`,
+  `kelson_queue_finished{outcome}` — read at scrape time from the same
   store the worker drains; the series stays absent without one.
 - Dropped series (cardinality guard) surface as
-  `keel_metrics_dropped_series`.
+  `kelson_metrics_dropped_series`.
 
 Enable via `storage/framework/flags.json` (flag ladder, S3) — no restart
 state beyond the boot snapshot is consulted.
@@ -422,7 +422,7 @@ P8); cache internals land in v0.9+ behind the same surface.
 ## Redis cache backend (S10, B-12)
 
 When `REDIS_URL` is set and reachable, the platform cache port
-(`cache.port` / `CachePortRef` carrier) binds `keel-cache-redis::RedisCache`
+(`cache.port` / `CachePortRef` carrier) binds `kelson-cache-redis::RedisCache`
 instead of the moka in-memory adapter; unreachable Redis degrades to memory
 with a warning (D-52 parity). Redis primitives: `SET ... EX`, `SET NX` for
 `put_if_absent`, `SCAN MATCH` prefix invalidation and a Lua compare-and-
@@ -431,7 +431,7 @@ Cache failures degrade to misses — the cache is never a correctness barrier.
 
 ## Blocking notes (perf budget)
 
-`keel-metrics` uses one coarse lock around integer increments — fine at v0.5
+`kelson-metrics` uses one coarse lock around integer increments — fine at v0.5
 ops rates, revisit before v1.0 load targets. Redis cache serializes commands
 per instance connection (control-plane rates); a pooled variant is a later
 revision.

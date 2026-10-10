@@ -10,7 +10,7 @@ integrity.
 4. App → Postgres (RLS is the final barrier; runtime roles are least-privilege).
 
 ## Principal threats & mitigations
-- **Cross-tenant leakage** — typed context + policy + `SET LOCAL keel.tenant_id`
+- **Cross-tenant leakage** — typed context + policy + `SET LOCAL kelson.tenant_id`
   + RLS policies on every tenant table (defense in depth; any single layer
   failing does not leak).
 - **Privilege escalation** — capability conjunction, no deny-overrides needed

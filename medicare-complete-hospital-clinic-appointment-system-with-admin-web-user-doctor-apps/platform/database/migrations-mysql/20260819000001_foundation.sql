@@ -2,7 +2,7 @@
 -- uuid: BINARY(16) (sqlx MySQL Uuid codec is binary)
 -- MySQL: inline column REFERENCES is parsed but ignored by the server, so
 -- every foreign key below is rewritten as a table-level FOREIGN KEY clause.
--- Keel foundation DDL (G09 companion). All ids are application-generated UUID v7.
+-- Kelson foundation DDL (G09 companion). All ids are application-generated UUID v7.
 -- RLS here is the FINAL containment barrier; application authorization decides
 -- business permission. Runtime must connect with a NON-OWNER role (roles.sql).
 

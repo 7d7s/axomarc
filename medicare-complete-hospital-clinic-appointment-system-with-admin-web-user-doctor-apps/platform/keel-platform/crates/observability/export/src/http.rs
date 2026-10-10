@@ -4,7 +4,7 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use keel_telemetry::{Event, ExportError, ExportOk, Exporter};
+use kelson_telemetry::{Event, ExportError, ExportOk, Exporter};
 
 pub struct HttpExporterConfig {
     pub url: String,

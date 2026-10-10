@@ -9,7 +9,7 @@
 //! attaches nothing and stays token-authenticated. Safe requests pass
 //! through but carry the bootstrap cookie, so a form roundtrip starts on the
 //! GET that renders the form. Session-bound tokens (stronger, revocable with
-//! the session) are available through keel-session `Session::csrf_token`.
+//! the session) are available through kelson-session `Session::csrf_token`.
 
 use axum::body::Body;
 use axum::extract::State;
@@ -17,7 +17,7 @@ use axum::http::{header, Method, Request, Response, StatusCode};
 use axum::middleware::Next;
 use axum::response::IntoResponse;
 use axum::Json;
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
@@ -25,7 +25,7 @@ use crate::{Envelope, ErrorBody};
 
 /// Cookie carrying the double-submit token. NOT HttpOnly: browser JS must
 /// read it to set the header (that is the whole point of double-submit).
-pub const CSRF_COOKIE: &str = "keel_csrf";
+pub const CSRF_COOKIE: &str = "kelson_csrf";
 /// Header state-changing requests must echo the token in.
 pub const CSRF_HEADER: &str = "x-csrf-token";
 
@@ -63,8 +63,8 @@ impl CsrfGuard {
 
 /// Session-bound CSRF token (stronger than double-submit: revocable with
 /// the session, forged only with the server secret). Delegate to
-/// keel-session, kept here so web edges have one import.
-pub fn session_csrf_token(session: &keel_session::Session, secret: &[u8]) -> String {
+/// kelson-session, kept here so web edges have one import.
+pub fn session_csrf_token(session: &kelson_session::Session, secret: &[u8]) -> String {
     session.csrf_token(secret)
 }
 
@@ -226,7 +226,7 @@ mod tests {
             .to_str()
             .unwrap();
         assert!(
-            set.starts_with("keel_csrf="),
+            set.starts_with("kelson_csrf="),
             "refresh cookie issued: {set}"
         );
         assert!(set.contains("SameSite=Strict"));
@@ -253,7 +253,7 @@ mod tests {
             .expect("bootstrap cookie issued")
             .to_str()
             .unwrap();
-        assert!(set.starts_with("keel_csrf="), "{set}");
+        assert!(set.starts_with("kelson_csrf="), "{set}");
         assert!(set.contains("SameSite=Strict"), "{set}");
     }
 
@@ -274,7 +274,7 @@ mod tests {
             .unwrap()
             .to_string();
         let token = set
-            .strip_prefix("keel_csrf=")
+            .strip_prefix("kelson_csrf=")
             .and_then(|rest| rest.split(';').next())
             .expect("token value")
             .to_string();

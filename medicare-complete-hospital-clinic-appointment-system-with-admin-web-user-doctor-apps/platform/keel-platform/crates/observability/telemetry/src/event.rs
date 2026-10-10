@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use keel_foundation::{AuditId, SpanId};
+use kelson_foundation::{AuditId, SpanId};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -92,7 +92,7 @@ pub type Fields = serde_json::Map<String, serde_json::Value>;
 pub struct LogPayload {
     pub level: Level,
     pub message: String,
-    /// Emitting module/target (e.g. `keel_api::routes`).
+    /// Emitting module/target (e.g. `kelson_api::routes`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     #[serde(default, skip_serializing_if = "Fields::is_empty")]
@@ -162,7 +162,7 @@ pub struct MetricPayload {
     pub name: String,
     pub kind: MetricKind,
     pub value: f64,
-    /// Bounded labels (cardinality enforced by keel-metrics before emit).
+    /// Bounded labels (cardinality enforced by kelson-metrics before emit).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub labels: BTreeMap<String, String>,
     /// Bucket upper bound for `HistogramBucket` metrics.
@@ -323,7 +323,7 @@ pub type Event = EventEnvelope<TelemetryPayload>;
 mod tests {
     use super::*;
     use crate::envelope::{ServiceIdentity, SCHEMA_LOG, SCHEMA_LOG_VERSION};
-    use keel_foundation::TelemetryContext;
+    use kelson_foundation::TelemetryContext;
 
     fn log_event(level: Level, msg: &str) -> Event {
         EventEnvelope::new(

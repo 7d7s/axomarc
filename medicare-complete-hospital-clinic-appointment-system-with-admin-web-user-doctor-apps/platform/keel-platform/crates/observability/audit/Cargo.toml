@@ -1,5 +1,5 @@
 [package]
-name = "keel-audit"
+name = "kelson-audit"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,12 +7,12 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel Sentinel: audit event schema, retention policy, verification/tamper report models."
+description = "Kelson Sentinel: audit event schema, retention policy, verification/tamper report models."
 publish = false
 
 [dependencies]
-keel-foundation = { workspace = true }
-keel-telemetry = { workspace = true }
+kelson-foundation = { workspace = true }
+kelson-telemetry = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 time = { workspace = true }

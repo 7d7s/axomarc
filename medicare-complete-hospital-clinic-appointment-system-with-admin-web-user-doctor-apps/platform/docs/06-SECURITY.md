@@ -28,7 +28,7 @@ elevation (+ sessions/tokens opt-in).
    headers win over the middleware; an unparseable config value is skipped fail-closed (04-HTTP,
    19-PARITY Wave 7 P4).
 5. **CSRF (Wave 7 P7)** — web-plane routes only, always on: the double-submit guard pairs the
-   `keel_csrf` cookie with the `X-CSRF-TOKEN` header (safe requests bootstrap the cookie;
+   `kelson_csrf` cookie with the `X-CSRF-TOKEN` header (safe requests bootstrap the cookie;
    state-changing requests without the pair answer 403). The only configuration is
    `[security.csrf].skip_paths` — exact paths that skip the check (webhook receivers signed by
    provider HMAC, and the like); there is no flag or env, and the old `KEEL_CSRF` opt-in is gone.
@@ -46,7 +46,7 @@ AI agents execute tools through the exact same engine path under the caller prin
 
 ## Secrets hygiene
 
-Gate G12 + `keel security` scan for secrets, check dependency policy, and verify trace locality.
+Gate G12 + `kelson security` scan for secrets, check dependency policy, and verify trace locality.
 Secrets are asserted at boot (production refuses silent defaults); config dumps redact them.
 
 ## Error taxonomy (frozen)
@@ -57,8 +57,8 @@ severity, retryability, meta. Public messages are safe for the wire; internals s
 
 ## HTTP authentication flows (S7)
 
-- Register/login/logout/me and password reset are served on the platform plane by `keel-api`.
-  Passwords are hashed with argon2 (`keel-identity`) under the `[identity]` work factors
+- Register/login/logout/me and password reset are served on the platform plane by `kelson-api`.
+  Passwords are hashed with argon2 (`kelson-identity`) under the `[identity]` work factors
   (`memory`/`time`/`parallelism`, argon2 baseline defaults); a successful login re-hashes the
   password when the stored verifier's embedded factors drift from that config (rehash-on-login —
   a factor upgrade converges old verifiers on first login without ever blocking the login
@@ -68,7 +68,7 @@ severity, retryability, meta. Public messages are safe for the wire; internals s
   defaults), the same policy that feeds the Wave 4 `password` validation rule at the dispatch
   edge, so the composable and the flows never drift apart; a refused reset attempt never
   consumes the reset token.
-- Browser clients get an HMAC-tagged `keel_session` cookie (HttpOnly, SameSite=Lax, Secure in prod);
+- Browser clients get an HMAC-tagged `kelson_session` cookie (HttpOnly, SameSite=Lax, Secure in prod);
   API clients use hashed PATs via `Authorization: Bearer`. Session fixation is defended at login and
   register: any session the client presented *before* authenticating is destroyed server-side, then
   a fresh session id is issued (rotate-and-invalidate, tested in `http_integration.rs`). Logout
@@ -77,7 +77,7 @@ severity, retryability, meta. Public messages are safe for the wire; internals s
   error category; capability denials stay 403.
 - Login attempts are throttled per IP+identifier (burst 5) before credential checks run.
 - JWT stays non-default (report R5): B-22 (v1.1) ships an opt-in HS256 *interop verifier*
-  behind the `app.jwt` flag (`keel flag:set app.jwt 100` plus a non-empty `[auth].jwt_secret`).
+  behind the `app.jwt` flag (`kelson flag:set app.jwt 100` plus a non-empty `[auth].jwt_secret`).
   Only `alg = HS256` is accepted (`none` and every other algorithm rejected before any crypto),
   the signature is verified over the exact received signing input with the tested sha2 HMAC in
   constant time, `exp` is mandatory, and every failure collapses to the same uniform 401 as a
@@ -134,4 +134,4 @@ single-use codes, refresh rotation, RFC 7009 revocation (200 `{"revoked": bool}`
 unknown tokens), an argon2-hashed `oauth_clients` registry (redirect allowlist, scopes, secret
 shown once) and capability-gated client management — hashed PAT + HMAC sessions remain the
 platform's auth, and the module's web-plane POSTs ride the same CSRF double-submit guard as
-everything else (asserted by the `oauth_*` matrix in `runtime/keel-api/tests/http_integration.rs`).
+everything else (asserted by the `oauth_*` matrix in `runtime/kelson-api/tests/http_integration.rs`).

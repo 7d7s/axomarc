@@ -6,48 +6,48 @@ belongs" and then discover "this is safer and more powerful."
 
 ## Vocabulary map
 
-| Laravel | Keel successor | Where it lives |
+| Laravel | Kelson successor | Where it lives |
 |---|---|---|
-| Framework (Laravel core) | Keel platform framework | workspace `platform/` |
-| Artisan | `keel` CLI | `tools/keel-console` |
+| Framework (Laravel core) | Kelson platform framework | workspace `platform/` |
+| Artisan | `kelson` CLI | `tools/kelson-console` |
 | Eloquent | Data model runtime (ports + delta stones) | `crates/data/postgres`, execution backend |
 | FormRequest | Request schema (`RequestViewModel`) | `crates/web/http` |
 | Middleware | Middleware pipeline | `crates/web/http` |
 | Policy | Policy engine | `crates/security/policies` |
 | Gate | Capability | `module.toml` capabilities + policy engine |
-| Job | Durable job | `crates/async/jobs` + `keel-worker` |
+| Job | Durable job | `crates/async/jobs` + `kelson-worker` |
 | Event | Event (transactional outbox) | `crates/async/events` |
 | Listener | Listener (registered handler) | `crates/async/events` |
 | Notification | Notification hub (multi-channel) | `crates/services/notifications` |
 | Mailable | Mail (sandbox + SMTP) | notifications + `adapters/mail-smtp` |
 | Filesystem | Storage port + disks | `crates/services/storage` + adapters |
 | Cache | Cache port + locks | `crates/services/cache` + adapters |
-| Redis cache driver | `RedisCache` (cache port adapter) | `adapters/keel-cache-redis` |
-| Redis queue driver | `RedisJobStore` (job store adapter, Lua claim = SKIP-LOCKED) | `adapters/keel-cache-redis` |
-| Horizon | Operations dashboard (`/_dashboard`) | `runtime/keel-api` |
+| Redis cache driver | `RedisCache` (cache port adapter) | `adapters/kelson-cache-redis` |
+| Redis queue driver | `RedisJobStore` (job store adapter, Lua claim = SKIP-LOCKED) | `adapters/kelson-cache-redis` |
+| Horizon | Operations dashboard (`/_dashboard`) | `runtime/kelson-api` |
 | Pulse / metrics | Prometheus text `/metrics` + `MetricsRegistry` | `crates/observability/metrics` |
-| Scout | Search port + pgvector engine | `adapters/keel-search-pgvector` |
+| Scout | Search port + pgvector engine | `adapters/kelson-search-pgvector` |
 | Scheduler | Scheduler (runner + worker tick) | `crates/async/scheduler` |
 | `route()` / named routes | `PlatformGraph::resolve_url` + named `RouteSpec` (S9) | `crates/application/registry` |
 | `URL::signedRoute` | `SignedUrls` (HMAC + expiry) | `crates/web/http` |
 | `redirect()` | `Redirect::to/see_other/temporary` | `crates/web/http` |
 | `session()->flash()` | `flash_put` / `flash_take` | `crates/web/http` + sessions |
-| Blade | Not cloned — SPA-first (OpenAPI + your SPA toolchain); SSR revisited v2.0 | `keel sdk:openapi`, starter template |
-| Breeze / Jetstream | Starter template: `keel new --with-starter` | `templates/starter-template` |
-| Tinker | `keel shell` (B-29): typed REPL over the booted engine; dispatches through the engine under your principal, capability denial enforced | `runtime/keel-api --shell`, spawned by `tools/keel-console` |
+| Blade | Not cloned — SPA-first (OpenAPI + your SPA toolchain); SSR revisited v2.0 | `kelson sdk:openapi`, starter template |
+| Breeze / Jetstream | Starter template: `kelson new --with-starter` | `templates/starter-template` |
+| Tinker | `kelson shell` (B-29): typed REPL over the booted engine; dispatches through the engine under your principal, capability denial enforced | `runtime/kelson-api --shell`, spawned by `tools/kelson-console` |
 | `Str::slug/snake/camel/studly/title/words/excerpt/random` | String helpers: `to_slug`, `to_snake_case`, `to_camel_case`, `to_studly_case`, `to_title_case`, `words`, `excerpt`, `random` (CSPRNG alphanumeric) | `crates/foundation/core` |
 | `Str::uuid` / `Str::ulid` | `uuid()` (random v4) / `ulid()` (26-char Crockford base32) generators | `crates/foundation/core` |
 | `Str::plural` / `Str::singular` | `plural` / `singular` — documented English inflection subset | `crates/foundation/core` |
 | `Number::currency/percentage/precision/clamp` | Number helpers: `format_currency`, `format_percent`, `format_precision`, `clamp` (locale rules from the Wave 6 identities: en/fr/ar primary subtag, en fallback; curated ISO symbol + minor-unit tables) | `crates/foundation/core` |
 | `Carbon` (parse/format/timezone/now) | Date helpers: `parse_date_with` / `format_date_with` (closed `Y m d H i s` set — the `date_format` rule delegates here), `now_in` / `in_tz` / `local_wall` over the bundled IANA table | `crates/foundation/core` |
-| Composer package discovery | Package registry: root `packages.toml` index (`[[package]] { name, version, path }`), `keel pkg:list` / `keel pkg:add`, graph compile merges every indexed package's `module.toml` fail-closed (ABI-gated); `keel publish` / `keel config:publish` materialize package resources (vendor:publish-class) | `crates/application/registry`, `tools/keel-console` |
+| Composer package discovery | Package registry: root `packages.toml` index (`[[package]] { name, version, path }`), `kelson pkg:list` / `kelson pkg:add`, graph compile merges every indexed package's `module.toml` fail-closed (ABI-gated); `kelson publish` / `kelson config:publish` materialize package resources (vendor:publish-class) | `crates/application/registry`, `tools/kelson-console` |
 | Laravel Passport / OAuth2 server | OAuth2 module: authorization code + PKCE S256, refresh rotation, `oauth_clients` registry, RFC 7009 revocation — an optional module, PAT + session stay the default | `applications/oauth2`, `database/migrations/20260826000001_oauth2.sql` |
 
 ## Per-concept detail
 
-### Artisan -> keel CLI
-Same instinct: `keel make:module` for `make:model`-style scaffolding, `keel migrate` for
-`artisan migrate`, `keel queue:work` for `queue:work`. Difference: every command is validated
+### Artisan -> kelson CLI
+Same instinct: `kelson make:module` for `make:model`-style scaffolding, `kelson migrate` for
+`artisan migrate`, `kelson queue:work` for `queue:work`. Difference: every command is validated
 against the workspace graph and config (G05-G08) — scaffolds compile by construction. Migration:
 map artisan habits 1:1 via `12-CLI.md`; the platform adds diagnostics artisan never had
 (`inspect`, `replay`, `benchmark`, `security`).
@@ -55,7 +55,7 @@ map artisan habits 1:1 via `12-CLI.md`; the platform adds diagnostics artisan ne
 ### Eloquent -> data model runtime
 Difference: the model is not an active record with magic; persistence is a port implemented by the
 data layer, and every committed change is a **delta stone** (versioned before/after). You gain
-replay (`keel replay`), audit chains for free, and no silent N+1 (assert_queries! + the N+1
+replay (`kelson replay`), audit chains for free, and no silent N+1 (assert_queries! + the N+1
 detector). Migration: replace model calls with commands/queries through the engine; schema stays
 in timestamped SQL migrations.
 
@@ -91,21 +91,21 @@ Same ports, stricter contracts: storage guards (size/type), cache locks with del
 scheduler runs with worker ticks and list/run CLI. Migration: disk config moves to config TOML;
 cache calls move to the cache port; scheduled closures become registered schedules.
 
-### Str / helper functions -> keel-foundation helpers
+### Str / helper functions -> kelson-foundation helpers
 Same instinct: familiar names for casing, slugs, snippets, tokens and inflection — pure free
-functions in `keel-foundation`, no PHP runtime and no new dependencies. Difference: inflection
+functions in `kelson-foundation`, no PHP runtime and no new dependencies. Difference: inflection
 is a **documented subset**, not a full English inflector — regular rules (`s/x/z/ch/sh -> es`,
 `consonant+y -> ies`, default `+s`, with their reversals stopping at `ss`/`us`/`is` stems) plus
 curated tables: irregulars (`person/people`, `child/children`, `knife/knives`, `potato/potatoes`,
 `matrix/matrices`, `quiz/quizzes`, `bus/buses`...) and uncountables (`sheep`, `series`,
 `information` never inflect). The tables are the extension point for anything outside the
 subset. `excerpt` windows by **character counts** (not locale delimiters) and matches
-case-sensitively; `title` normalizes `_`/`-`/camel boundaries to single spaces because Keel
+case-sensitively; `title` normalizes `_`/`-`/camel boundaries to single spaces because Kelson
 treats identifiers as words (Laravel's `ucwords` keeps the underscore — documented divergence).
 Migration: drop the `Str::` prefix for free functions — `Str::plural('person')` ->
 `plural("person")`, `Str::slug($s)` -> `to_slug($s)`, `Str::uuid()` -> `uuid()`.
 
-### Number / Carbon -> keel-foundation number + date helpers
+### Number / Carbon -> kelson-foundation number + date helpers
 Same instinct: `Number::currency($v, 'USD', 'fr')` -> `format_currency(v, "USD", "fr")`,
 `Carbon::createFromFormat('Y-m-d', $s)` -> `parse_date_with(s, "Y-m-d")`,
 `Carbon::now('Asia/Kolkata')` -> `now_in("Asia/Kolkata")`. Difference: formatting is a
@@ -117,7 +117,7 @@ and per-code minor units (`JPY`/`KRW` = 0, default 2). Dates share **one grammar
 `parse_date_with`/`format_date_with` implement the closed `Y m d H i s` token set and the
 `date_format` validation rule delegates to it, so helper and rule cannot drift. Timezone
 conversions (`now_in`, `in_tz`, `local_wall`) read the bundled IANA offset table —
-relocated from `keel-scheduler` into `keel-foundation` this wave — with the same
+relocated from `kelson-scheduler` into `kelson-foundation` this wave — with the same
 fixed-offset caveat (no DST transitions) and `None` for unknown zones instead of ever
 converting in the wrong zone; the `datetime:<tz>` model cast feeds on them (UTC storage,
 zone-local reads) while bare `datetime` is unchanged. Migration: drop the class prefix;
@@ -127,17 +127,17 @@ formats are strings in both worlds, wall-clock parses land as UTC instants (conv
 ### Composer package discovery -> packages.toml registry
 Same instinct: a third-party package registers its routes/config without framework edits.
 Difference: discovery is **compile-time**, not runtime — the root `packages.toml` index lists
-local-path packages, `keel pkg:add <path>` validates the package's `module.toml` and appends it,
-`keel pkg:list` shows manifest + ABI compatibility, and graph compile merges the manifest through
-the same fail-closed gates as your own modules (an unusable entry refuses `keel check`/boot).
-Packages may ship `[config]` defaults that merge UNDER your config file at boot; `keel
+local-path packages, `kelson pkg:add <path>` validates the package's `module.toml` and appends it,
+`kelson pkg:list` shows manifest + ABI compatibility, and graph compile merges the manifest through
+the same fail-closed gates as your own modules (an unusable entry refuses `kelson check`/boot).
+Packages may ship `[config]` defaults that merge UNDER your config file at boot; `kelson
 config:publish <package>` materializes an editable copy at `config/packages/<name>.toml` that
 layers above the manifest defaults and still under your config file. Package resources map
-`vendor:publish` to `keel publish <package>`: migrations (name-prefixed after the sqlx integer
+`vendor:publish` to `kelson publish <package>`: migrations (name-prefixed after the sqlx integer
 version), config and assets materialize byte-compared-idempotent — differing files are reported
 as conflicts and skipped unless `--force` — while views register under the `<name>::` namespace
 at boot (no copy). Migration: replace `composer require` + provider auto-discovery with copying
-the package in, `keel pkg:add`, `keel publish`, and a workspace member for its crate; v1 is
+the package in, `kelson pkg:add`, `kelson publish`, and a workspace member for its crate; v1 is
 local-path only (git fetch is out — zero-dep rule).
 
 ### Passport / OAuth2 server -> applications/oauth2 module
@@ -149,7 +149,7 @@ auto-issues the code and 302s (consent-less first-party flow; every pre-issuance
 answers as an envelope error, never a redirect), `POST /oauth/token` takes the
 `authorization_code` (PKCE S256) and `refresh_token` grants over
 `application/x-www-form-urlencoded`, `POST /oauth/revoke` answers `{"revoked": bool}` per
-RFC 7009, and `oauth2.clients.manage` (console: `keel call oauth-clients`) runs the
+RFC 7009, and `oauth2.clients.manage` (console: `kelson call oauth-clients`) runs the
 argon2-hashed `oauth_clients` registry (secret shown once, redirect allowlist, scopes,
 `version` CAS). Migration: `Passport::routes()` + the `clients` table -> the manifest's routes
 + one migration (`20260826000001_oauth2.sql`); access tokens stay PATs and codes/refresh
@@ -160,7 +160,7 @@ tokens ride the single-use `TokenService` rows.
 1. **Inventory**: list artisan commands, jobs, events, gates, disks in the legacy app.
 2. **Map**: translate each into the vocabulary table; anything unmapped is a candidate platform
    contract (the framework grows by contracts, not by forks).
-3. **Scaffold**: `keel new` + `keel make:module` per bounded context; declare capabilities,
+3. **Scaffold**: `kelson new` + `kelson make:module` per bounded context; declare capabilities,
    routes, events in `module.toml`.
 4. **Port data**: rewrite schema as migrations; import data; verify with delta-based audits.
 5. **Port behavior**: commands/queries through the engine; tests with TestKit fakes and

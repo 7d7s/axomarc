@@ -8,7 +8,7 @@ use axum::{Json, Router};
 use serde_json::json;
 use time::{Duration, OffsetDateTime};
 
-use keel_testkit::{
+use kelson_testkit::{
     assert_delta, assert_event, sample_event, sample_job, AuditRecorder, CacheFake, CachePort,
     EventFactory, EventFake, Factory, FakeMail, FakeQueue, FakeStorage, HttpFake, HttpClientPort,
     HttpRequest, HttpResponse, InMemoryBackend, InMemoryOutbox, JobFactory, NotificationFake,
@@ -22,13 +22,13 @@ async fn ping() -> Json<serde_json::Value> {
 async fn echo_identity(req: Request) -> Json<serde_json::Value> {
     let actor = req
         .headers()
-        .get("x-keel-actor")
+        .get("x-kelson-actor")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("anonymous")
         .to_string();
     let tenant = req
         .headers()
-        .get("x-keel-tenant")
+        .get("x-kelson-tenant")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("none")
         .to_string();
@@ -241,9 +241,9 @@ async fn wave7_response_assertion_matrix_surface() {
 /// ModelStore, and the view probe type.
 #[test]
 fn wave7_test_infrastructure_surface() {
-    use keel_foundation::{Clock, TenantId};
-    use keel_models::InMemoryModelStore;
-    use keel_testkit::{
+    use kelson_foundation::{Clock, TenantId};
+    use kelson_models::InMemoryModelStore;
+    use kelson_testkit::{
         freeze_time, travel, ModelDef, ModelFactory, ModelStore, Record, Sequence, ViewRecorder,
     };
 
@@ -314,12 +314,12 @@ fn wave7_test_infrastructure_surface() {
 }
 
 /// Wave 8 (docs/19 "Helpers"): the Str/inflection helper surface is
-/// re-exported from `keel-foundation` — names and behavior callable from
+/// re-exported from `kelson-foundation` — names and behavior callable from
 /// outside the crate, the same external-surface proof the Wave 7 infra
 /// smoke gives its exports.
 #[test]
 fn wave8_str_helpers_surface() {
-    use keel_foundation::{excerpt, plural, random, singular, to_title_case, ulid, uuid, words};
+    use kelson_foundation::{excerpt, plural, random, singular, to_title_case, ulid, uuid, words};
 
     assert_eq!(to_title_case("hello_world"), "Hello World");
     assert_eq!(words("one two three", 2, "..."), "one two...");
@@ -335,10 +335,10 @@ fn wave8_str_helpers_surface() {
 }
 
 /// Wave 8 P2 (docs/19 "Helpers"): the Number/date helper surface is
-/// re-exported from `keel-foundation` and callable from outside the crate.
+/// re-exported from `kelson-foundation` and callable from outside the crate.
 #[test]
 fn wave8_number_and_date_helpers_surface() {
-    use keel_foundation::{
+    use kelson_foundation::{
         clamp, format_cents, format_currency, format_date_with, format_percent,
         format_precision, in_tz, now_in, parse_date_with, timezone_offset_secs, MoneyCents,
     };
@@ -360,15 +360,15 @@ fn wave8_number_and_date_helpers_surface() {
 }
 
 /// Wave 8 P3 (docs/19 "B-24 package registry"): the package-index surface
-/// is re-exported from `keel-registry` and callable from outside the crate
+/// is re-exported from `kelson-registry` and callable from outside the crate
 /// (load/append/save/entry resolution over the root `packages.toml`).
 #[test]
 fn wave8_package_index_surface() {
-    use keel_registry::{PackageEntry, PackageIndex, PACKAGES_FILE};
+    use kelson_registry::{PackageEntry, PackageIndex, PACKAGES_FILE};
 
     static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let root = std::env::temp_dir().join(format!(
-        "keel-testkit-pkg-{}-{}",
+        "kelson-testkit-pkg-{}-{}",
         std::process::id(),
         SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
     ));

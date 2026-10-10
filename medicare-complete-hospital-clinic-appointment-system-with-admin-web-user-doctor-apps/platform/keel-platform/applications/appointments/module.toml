@@ -1,4 +1,4 @@
-# module.toml — immutable contract shape (11-SPEC SS7). `keel graph` compiles it.
+# module.toml — immutable contract shape (11-SPEC SS7). `kelson graph` compiles it.
 [module]
 name = "appointments"
 api = 1
@@ -74,7 +74,7 @@ name = "appointment.cancelled"
 
 # Wave 1 FormRequest wiring: manifest validation enforced at the HTTP edge
 # before CommandBus dispatch (422 envelope with fields meta). Rule grammar:
-# keel_validation::Rule::from_token (GRAPH-VALIDATION-RULE gate).
+# kelson_validation::Rule::from_token (GRAPH-VALIDATION-RULE gate).
 [[validation]]
 operation = "book"
 field = "patient"

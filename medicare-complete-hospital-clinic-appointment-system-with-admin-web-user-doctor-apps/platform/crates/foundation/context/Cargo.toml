@@ -1,5 +1,5 @@
 [package]
-name = "keel-context"
+name = "kelson-context"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,10 +7,10 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel TCB: immutable ExecutionContext, snapshots, builder."
+description = "Kelson TCB: immutable ExecutionContext, snapshots, builder."
 
 [dependencies]
-keel-foundation = { workspace = true }
+kelson-foundation = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

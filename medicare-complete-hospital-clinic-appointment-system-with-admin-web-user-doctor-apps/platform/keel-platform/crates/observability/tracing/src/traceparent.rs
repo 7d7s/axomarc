@@ -1,8 +1,8 @@
-//! W3C Trace Context helpers (pure functions over keel-foundation typed ids):
+//! W3C Trace Context helpers (pure functions over kelson-foundation typed ids):
 //! parse/serialize `traceparent` so inbound requests continue an existing
 //! trace and outbound calls propagate ours.
 
-use keel_foundation::{SpanId, TraceId};
+use kelson_foundation::{SpanId, TraceId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Traceparent {

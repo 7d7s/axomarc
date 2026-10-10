@@ -3,7 +3,7 @@
 //! when pooled connections were polled from a foreign runtime).
 #![cfg(feature = "pg-tests")]
 
-use keel_postgres::{bridge, create_pool, PgPool};
+use kelson_postgres::{bridge, create_pool, PgPool};
 
 async fn pool() -> Option<PgPool> {
     let url = match std::env::var("DATABASE_URL") {

@@ -114,7 +114,7 @@ mod tests {
     use super::*;
     use crate::envelope::{ServiceIdentity, SCHEMA_LOG, SCHEMA_LOG_VERSION};
     use crate::event::{Fields, Level, LogPayload, TelemetryPayload};
-    use keel_foundation::TelemetryContext;
+    use kelson_foundation::TelemetryContext;
 
     struct DropDebug;
     impl Processor for DropDebug {

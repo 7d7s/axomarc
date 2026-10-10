@@ -1194,11 +1194,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-buffer"
+name = "kelson-buffer"
 version = "0.1.0"
 dependencies = [
- "keel-foundation",
- "keel-telemetry",
+ "kelson-foundation",
+ "kelson-telemetry",
  "serde",
  "serde_json",
  "sha2",
@@ -1207,31 +1207,31 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-caching"
+name = "kelson-caching"
 version = "0.1.0"
 dependencies = [
- "keel-foundation",
+ "kelson-foundation",
  "serde_json",
 ]
 
 [[package]]
-name = "keel-command"
+name = "kelson-command"
 version = "0.1.0"
 dependencies = [
- "keel-context",
- "keel-execution",
- "keel-foundation",
+ "kelson-context",
+ "kelson-execution",
+ "kelson-foundation",
  "serde",
  "serde_json",
  "time",
 ]
 
 [[package]]
-name = "keel-config"
+name = "kelson-config"
 version = "0.1.0"
 dependencies = [
- "keel-foundation",
- "keel-registry",
+ "kelson-foundation",
+ "kelson-registry",
  "rand 0.8.8",
  "serde",
  "serde_json",
@@ -1239,10 +1239,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-context"
+name = "kelson-context"
 version = "0.1.0"
 dependencies = [
- "keel-foundation",
+ "kelson-foundation",
  "serde",
  "serde_json",
  "time",
@@ -1250,21 +1250,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-contracts"
+name = "kelson-contracts"
 version = "0.1.0"
 dependencies = [
- "keel-context",
- "keel-foundation",
+ "kelson-context",
+ "kelson-foundation",
  "serde",
  "serde_json",
  "toml",
 ]
 
 [[package]]
-name = "keel-deployment"
+name = "kelson-deployment"
 version = "0.1.0"
 dependencies = [
- "keel-foundation",
+ "kelson-foundation",
  "serde",
  "serde_json",
  "time",
@@ -1272,11 +1272,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-event"
+name = "kelson-event"
 version = "0.1.0"
 dependencies = [
- "keel-foundation",
- "keel-registry",
+ "kelson-foundation",
+ "kelson-registry",
  "serde",
  "serde_json",
  "time",
@@ -1285,12 +1285,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-execution"
+name = "kelson-execution"
 version = "0.1.0"
 dependencies = [
- "keel-context",
- "keel-contracts",
- "keel-foundation",
+ "kelson-context",
+ "kelson-contracts",
+ "kelson-foundation",
  "serde",
  "serde_json",
  "time",
@@ -1298,12 +1298,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-export"
+name = "kelson-export"
 version = "0.1.0"
 dependencies = [
- "keel-buffer",
- "keel-foundation",
- "keel-telemetry",
+ "kelson-buffer",
+ "kelson-foundation",
+ "kelson-telemetry",
  "rand 0.8.8",
  "reqwest",
  "serde",
@@ -1313,11 +1313,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-feature-flags"
+name = "kelson-feature-flags"
 version = "0.1.0"
 dependencies = [
- "keel-context",
- "keel-foundation",
+ "kelson-context",
+ "kelson-foundation",
  "serde",
  "serde_json",
  "sha2",
@@ -1326,7 +1326,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-foundation"
+name = "kelson-foundation"
 version = "0.1.0"
 dependencies = [
  "rand 0.8.8",
@@ -1337,49 +1337,49 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-framework"
+name = "kelson-framework"
 version = "0.1.0"
 dependencies = [
- "keel-caching",
- "keel-config",
- "keel-context",
- "keel-deployment",
- "keel-event",
- "keel-execution",
- "keel-feature-flags",
- "keel-foundation",
- "keel-http",
- "keel-identity",
- "keel-integrity",
- "keel-jobs",
- "keel-lifecycle",
- "keel-mysql",
- "keel-observability",
- "keel-policy",
- "keel-postgres",
- "keel-realtime",
- "keel-registry",
- "keel-scheduling",
- "keel-search",
- "keel-session",
- "keel-storage",
- "keel-telemetry",
- "keel-tenancy",
- "keel-wasm",
+ "kelson-caching",
+ "kelson-config",
+ "kelson-context",
+ "kelson-deployment",
+ "kelson-event",
+ "kelson-execution",
+ "kelson-feature-flags",
+ "kelson-foundation",
+ "kelson-http",
+ "kelson-identity",
+ "kelson-integrity",
+ "kelson-jobs",
+ "kelson-lifecycle",
+ "kelson-mysql",
+ "kelson-observability",
+ "kelson-policy",
+ "kelson-postgres",
+ "kelson-realtime",
+ "kelson-registry",
+ "kelson-scheduling",
+ "kelson-search",
+ "kelson-session",
+ "kelson-storage",
+ "kelson-telemetry",
+ "kelson-tenancy",
+ "kelson-wasm",
 ]
 
 [[package]]
-name = "keel-http"
+name = "kelson-http"
 version = "0.1.0"
 dependencies = [
  "axum",
- "keel-command",
- "keel-context",
- "keel-foundation",
- "keel-registry",
- "keel-session",
- "keel-storage",
- "keel-tokens",
+ "kelson-command",
+ "kelson-context",
+ "kelson-foundation",
+ "kelson-registry",
+ "kelson-session",
+ "kelson-storage",
+ "kelson-tokens",
  "rand 0.8.8",
  "serde",
  "serde_json",
@@ -1390,11 +1390,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-identity"
+name = "kelson-identity"
 version = "0.1.0"
 dependencies = [
  "argon2",
- "keel-foundation",
+ "kelson-foundation",
  "rand 0.8.8",
  "serde",
  "time",
@@ -1402,10 +1402,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-integrity"
+name = "kelson-integrity"
 version = "0.1.0"
 dependencies = [
- "keel-foundation",
+ "kelson-foundation",
  "serde",
  "serde_json",
  "sha2",
@@ -1414,10 +1414,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-jobs"
+name = "kelson-jobs"
 version = "0.1.0"
 dependencies = [
- "keel-foundation",
+ "kelson-foundation",
  "serde",
  "serde_json",
  "time",
@@ -1425,18 +1425,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-lifecycle"
+name = "kelson-lifecycle"
 version = "0.1.0"
 dependencies = [
- "keel-foundation",
+ "kelson-foundation",
  "serde_json",
 ]
 
 [[package]]
-name = "keel-metrics"
+name = "kelson-metrics"
 version = "0.1.0"
 dependencies = [
- "keel-foundation",
+ "kelson-foundation",
  "moka",
  "serde",
  "serde_json",
@@ -1444,12 +1444,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-models"
+name = "kelson-models"
 version = "0.1.0"
 dependencies = [
- "keel-foundation",
- "keel-identity",
- "keel-query",
+ "kelson-foundation",
+ "kelson-identity",
+ "kelson-query",
  "serde",
  "serde_json",
  "time",
@@ -1457,22 +1457,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-mysql"
+name = "kelson-mysql"
 version = "0.1.0"
 dependencies = [
- "keel-context",
- "keel-event",
- "keel-execution",
- "keel-foundation",
- "keel-identity",
- "keel-integrity",
- "keel-jobs",
- "keel-models",
- "keel-notifications",
- "keel-query",
- "keel-session",
- "keel-tokens",
- "keel-transaction",
+ "kelson-context",
+ "kelson-event",
+ "kelson-execution",
+ "kelson-foundation",
+ "kelson-identity",
+ "kelson-integrity",
+ "kelson-jobs",
+ "kelson-models",
+ "kelson-notifications",
+ "kelson-query",
+ "kelson-session",
+ "kelson-tokens",
+ "kelson-transaction",
  "serde_json",
  "sqlx",
  "time",
@@ -1482,11 +1482,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-notifications"
+name = "kelson-notifications"
 version = "0.1.0"
 dependencies = [
- "keel-foundation",
- "keel-storage",
+ "kelson-foundation",
+ "kelson-storage",
  "serde",
  "serde_json",
  "sha2",
@@ -1495,17 +1495,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-observability"
+name = "kelson-observability"
 version = "0.1.0"
 dependencies = [
- "keel-buffer",
- "keel-export",
- "keel-foundation",
- "keel-lifecycle",
- "keel-metrics",
- "keel-pipeline",
- "keel-telemetry",
- "keel-tracing",
+ "kelson-buffer",
+ "kelson-export",
+ "kelson-foundation",
+ "kelson-lifecycle",
+ "kelson-metrics",
+ "kelson-pipeline",
+ "kelson-telemetry",
+ "kelson-tracing",
  "moka",
  "serde",
  "serde_json",
@@ -1517,11 +1517,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-pipeline"
+name = "kelson-pipeline"
 version = "0.1.0"
 dependencies = [
- "keel-foundation",
- "keel-telemetry",
+ "kelson-foundation",
+ "kelson-telemetry",
  "moka",
  "serde",
  "serde_json",
@@ -1530,12 +1530,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-policy"
+name = "kelson-policy"
 version = "0.1.0"
 dependencies = [
- "keel-context",
- "keel-contracts",
- "keel-foundation",
+ "kelson-context",
+ "kelson-contracts",
+ "kelson-foundation",
  "serde",
  "serde_json",
  "time",
@@ -1543,22 +1543,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-postgres"
+name = "kelson-postgres"
 version = "0.1.0"
 dependencies = [
- "keel-context",
- "keel-event",
- "keel-execution",
- "keel-foundation",
- "keel-identity",
- "keel-integrity",
- "keel-jobs",
- "keel-models",
- "keel-notifications",
- "keel-query",
- "keel-session",
- "keel-tokens",
- "keel-transaction",
+ "kelson-context",
+ "kelson-event",
+ "kelson-execution",
+ "kelson-foundation",
+ "kelson-identity",
+ "kelson-integrity",
+ "kelson-jobs",
+ "kelson-models",
+ "kelson-notifications",
+ "kelson-query",
+ "kelson-session",
+ "kelson-tokens",
+ "kelson-transaction",
  "serde_json",
  "sqlx",
  "time",
@@ -1568,10 +1568,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-query"
+name = "kelson-query"
 version = "0.1.0"
 dependencies = [
- "keel-foundation",
+ "kelson-foundation",
  "serde",
  "serde_json",
  "time",
@@ -1579,11 +1579,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-realtime"
+name = "kelson-realtime"
 version = "0.1.0"
 dependencies = [
  "axum",
- "keel-foundation",
+ "kelson-foundation",
  "serde",
  "serde_json",
  "time",
@@ -1592,11 +1592,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-registry"
+name = "kelson-registry"
 version = "0.1.0"
 dependencies = [
- "keel-foundation",
- "keel-validation",
+ "kelson-foundation",
+ "kelson-validation",
  "serde",
  "serde_json",
  "sha2",
@@ -1604,29 +1604,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-scheduling"
+name = "kelson-scheduling"
 version = "0.1.0"
 dependencies = [
- "keel-foundation",
+ "kelson-foundation",
  "serde",
  "serde_json",
  "time",
 ]
 
 [[package]]
-name = "keel-search"
+name = "kelson-search"
 version = "0.1.0"
 dependencies = [
- "keel-foundation",
+ "kelson-foundation",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "keel-session"
+name = "kelson-session"
 version = "0.1.0"
 dependencies = [
- "keel-foundation",
+ "kelson-foundation",
  "rand 0.8.8",
  "serde",
  "serde_json",
@@ -1636,18 +1636,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-storage"
+name = "kelson-storage"
 version = "0.1.0"
 dependencies = [
- "keel-foundation",
+ "kelson-foundation",
  "serde",
 ]
 
 [[package]]
-name = "keel-telemetry"
+name = "kelson-telemetry"
 version = "0.1.0"
 dependencies = [
- "keel-foundation",
+ "kelson-foundation",
  "serde",
  "serde_json",
  "sha2",
@@ -1656,16 +1656,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-tenancy"
+name = "kelson-tenancy"
 version = "0.1.0"
 dependencies = [
- "keel-caching",
- "keel-context",
- "keel-event",
- "keel-foundation",
- "keel-jobs",
- "keel-scheduling",
- "keel-storage",
+ "kelson-caching",
+ "kelson-context",
+ "kelson-event",
+ "kelson-foundation",
+ "kelson-jobs",
+ "kelson-scheduling",
+ "kelson-storage",
  "serde",
  "serde_json",
  "thiserror",
@@ -1674,12 +1674,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-tokens"
+name = "kelson-tokens"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
- "keel-foundation",
- "keel-identity",
+ "kelson-foundation",
+ "kelson-identity",
  "rand 0.8.8",
  "serde",
  "sha2",
@@ -1688,11 +1688,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-tracing"
+name = "kelson-tracing"
 version = "0.1.0"
 dependencies = [
- "keel-foundation",
- "keel-telemetry",
+ "kelson-foundation",
+ "kelson-telemetry",
  "rand 0.8.8",
  "serde",
  "serde_json",
@@ -1701,30 +1701,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "keel-transaction"
+name = "kelson-transaction"
 version = "0.1.0"
 dependencies = [
- "keel-foundation",
+ "kelson-foundation",
 ]
 
 [[package]]
-name = "keel-validation"
+name = "kelson-validation"
 version = "0.1.0"
 dependencies = [
- "keel-foundation",
+ "kelson-foundation",
  "serde_json",
  "time",
  "uuid",
 ]
 
 [[package]]
-name = "keel-wasm"
+name = "kelson-wasm"
 version = "0.1.0"
 dependencies = [
- "keel-context",
- "keel-execution",
- "keel-foundation",
- "keel-registry",
+ "kelson-context",
+ "kelson-execution",
+ "kelson-foundation",
+ "kelson-registry",
  "rand 0.8.8",
  "serde_json",
  "tracing",
@@ -1885,7 +1885,7 @@ name = "mod-patients"
 version = "0.1.0"
 dependencies = [
  "axum",
- "keel-framework",
+ "kelson-framework",
  "serde",
  "sqlx",
  "time",
@@ -1940,7 +1940,7 @@ name = "my-app-api"
 version = "0.1.0"
 dependencies = [
  "axum",
- "keel-framework",
+ "kelson-framework",
  "mod-patients",
  "tokio",
  "tracing",

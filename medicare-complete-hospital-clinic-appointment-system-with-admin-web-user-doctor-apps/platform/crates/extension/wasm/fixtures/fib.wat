@@ -14,7 +14,7 @@
   (data (i32.const 1216) "fib invoked")           ;; 11 bytes
   ;; digits scratch: 1400..1424 (itoa writes backwards from 1424)
 
-  (func $alloc (export "keel_alloc") (param $n i32) (result i32)
+  (func $alloc (export "kelson_alloc") (param $n i32) (result i32)
     (local $p i32)
     (local.set $p (global.get $heap))
     (global.set $heap
@@ -36,7 +36,7 @@
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $l))))
 
-  (func (export "keel_manifest") (result i64)
+  (func (export "kelson_manifest") (result i64)
     (local $p i32)
     (local.set $p (i32.const 1024))
     (block $done
@@ -108,7 +108,7 @@
         (i32.store8 (local.get $p) (i32.const 48))))
     (i32.sub (local.get $end) (local.get $p)))
 
-  (func (export "keel_call")
+  (func (export "kelson_call")
         (param $op i32) (param $op_len i32) (param $in i32) (param $in_len i32)
         (result i64)
     (local $n i32)

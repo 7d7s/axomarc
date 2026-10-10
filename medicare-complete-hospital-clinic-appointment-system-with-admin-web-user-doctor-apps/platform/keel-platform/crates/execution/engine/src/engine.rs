@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use keel_foundation::{codes, AppError, ConcurrencyStrategy, ErrorCategory, Retryability, Severity};
+use kelson_foundation::{codes, AppError, ConcurrencyStrategy, ErrorCategory, Retryability, Severity};
 use serde_json::Value;
 use time::OffsetDateTime;
 
@@ -13,7 +13,7 @@ use crate::idempotency::{GateOutcome, IdempotencyGate, IdempotencyKey, Idempoten
 use crate::plan::ExecutionPlan;
 use crate::ports::{AuthorizationPort, AuthzRequest};
 use crate::unit::{ExecutionBackend, RunOutcome};
-use keel_context::ExecutionContext;
+use kelson_context::ExecutionContext;
 
 /// A business operation. One handler = one operation = one stable contract.
 /// The same handler serves REST, CLI, jobs, webhooks, workflows, AI tools.
@@ -192,7 +192,7 @@ impl Engine {
         // Concurrency boundary (S1): Serialized ops take centralized exclusive
         // sequencing before any work; the lease is held until the execution
         // completes. Optimistic/Pessimistic strategies are enforced by the data
-        // layer (CAS / FOR UPDATE — see keel-transaction locks).
+        // layer (CAS / FOR UPDATE — see kelson-transaction locks).
         let _serialized_lease = if plan.concurrency.strategy == ConcurrencyStrategy::Serialized
             && plan.transaction.required
         {

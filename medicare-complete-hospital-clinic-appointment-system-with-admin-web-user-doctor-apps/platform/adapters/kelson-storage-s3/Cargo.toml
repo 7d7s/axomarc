@@ -1,0 +1,17 @@
+[package]
+name = "kelson-storage-s3"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Kelson adapter: S3-compatible storage (MinIO self-host, D-19). In-memory sandbox now."
+
+[dependencies]
+kelson-foundation = { workspace = true }
+kelson-storage = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

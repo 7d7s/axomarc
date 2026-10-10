@@ -1,4 +1,4 @@
-//! Application key generation (S2 item 18): `keel key:generate` support.
+//! Application key generation (S2 item 18): `kelson key:generate` support.
 //! The app key is 32 random bytes, rendered Laravel-style as base64:<64 chars>.
 //! Production asserts a non-placeholder key at boot (see assert_secrets).
 
@@ -68,7 +68,7 @@ mod tests {
 
     #[test]
     fn base64_roundtrip_sample() {
-        assert_eq!(base64_encode(b"keel"), "a2VlbA==");
+        assert_eq!(base64_encode(b"kelson"), "a2Vsc29u");
         assert_eq!(base64_encode(b""), "");
         assert_eq!(base64_encode(b"abc"), "YWJj");
         assert_eq!(base64_encode(b"ab"), "YWI=");

@@ -1,4 +1,4 @@
-name: keel-publish
+name: kelson-publish
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ on:
 
 # Publishing is serialized: never two publish runs at once.
 concurrency:
-  group: keel-publish
+  group: kelson-publish
   cancel-in-progress: false
 
 permissions:
@@ -44,9 +44,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             platform/target
-          key: keel-publish-${{ matrix.os }}-${{ hashFiles('platform/Cargo.lock') }}
+          key: kelson-publish-${{ matrix.os }}-${{ hashFiles('platform/Cargo.lock') }}
           restore-keys: |
-            keel-publish-${{ matrix.os }}-
+            kelson-publish-${{ matrix.os }}-
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
       - name: cargo clippy
@@ -94,9 +94,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             ${{ matrix.dir }}/target
-          key: keel-msrv-${{ matrix.ws }}-${{ hashFiles(format('{0}/Cargo.lock', matrix.dir)) }}
+          key: kelson-msrv-${{ matrix.ws }}-${{ hashFiles(format('{0}/Cargo.lock', matrix.dir)) }}
           restore-keys: |
-            keel-msrv-${{ matrix.ws }}-
+            kelson-msrv-${{ matrix.ws }}-
       - name: cargo check at MSRV
         run: cargo check --workspace --locked
         working-directory: ${{ matrix.dir }}
@@ -133,9 +133,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             platform/target
-          key: keel-publish-ubuntu-latest-${{ hashFiles('platform/Cargo.lock') }}
+          key: kelson-publish-ubuntu-latest-${{ hashFiles('platform/Cargo.lock') }}
           restore-keys: |
-            keel-publish-ubuntu-latest-
+            kelson-publish-ubuntu-latest-
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-semver-checks
@@ -173,8 +173,8 @@ jobs:
           CRATES: ${{ needs.publish.outputs.crates }}
         run: |
           DIR=$(mktemp -d)
-          cargo new "$DIR/keel-smoke" --lib
-          cd "$DIR/keel-smoke"
+          cargo new "$DIR/kelson-smoke" --lib
+          cd "$DIR/kelson-smoke"
           IFS=',' read -ra LIST <<< "$CRATES"
           for c in "${LIST[@]}"; do
             cargo add "$c@$VER"
@@ -203,10 +203,10 @@ jobs:
         env:
           VER: ${{ needs.publish.outputs.version }}
         run: |
-          TAG="keel/platform-v$VER"
+          TAG="kelson/platform-v$VER"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "Keel platform release v$VER"
+          git tag -a "$TAG" -m "Kelson platform release v$VER"
           git push origin "$TAG"
       - uses: taiki-e/install-action@v2
         with:
@@ -215,7 +215,7 @@ jobs:
         env:
           VER: ${{ needs.publish.outputs.version }}
         run: |
-          TAG="keel/platform-v$VER"
+          TAG="kelson/platform-v$VER"
           PREFIX=$(git rev-parse --show-prefix)
           git cliff --config cliff.toml --include-path "${PREFIX}**" --tag "$TAG" --output CHANGELOG.md
           if [ -n "$(git status --porcelain CHANGELOG.md)" ]; then

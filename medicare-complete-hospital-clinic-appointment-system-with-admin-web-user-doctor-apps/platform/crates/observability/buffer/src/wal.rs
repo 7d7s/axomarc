@@ -286,7 +286,7 @@ mod tests {
 
     fn tmp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "keel-buffer-test-{}-{}",
+            "kelson-buffer-test-{}-{}",
             name,
             std::process::id()
         ));

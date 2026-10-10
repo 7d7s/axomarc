@@ -1,5 +1,5 @@
 [package]
-name = "keel-feature-flags"
+name = "kelson-feature-flags"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,11 +7,11 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel enterprise control plane: feature flags with rollouts, overrides and per-execution snapshots."
+description = "Kelson enterprise control plane: feature flags with rollouts, overrides and per-execution snapshots."
 
 [dependencies]
-keel-foundation = { workspace = true }
-keel-context = { workspace = true }
+kelson-foundation = { workspace = true }
+kelson-context = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

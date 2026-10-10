@@ -1,8 +1,8 @@
-# keel-ai-agents
+# kelson-ai-agents
 
-Keel agent runtime (item 33, L48): agent -> tool -> execution. Agents run under the caller's principal; capability/scope/policy apply unchanged.
+Kelson agent runtime (item 33, L48): agent -> tool -> execution. Agents run under the caller's principal; capability/scope/policy apply unchanged.
 
-Part of the [Keel](../../../README.md) platform - a typed, plane-separated, delta-first application framework for Rust. See [PUBLISHING.md](../../../PUBLISHING.md) for the release process and the [workspace README](../../../README.md) for architecture.
+Part of the [Kelson](../../../README.md) platform - a typed, plane-separated, delta-first application framework for Rust. See [PUBLISHING.md](../../../PUBLISHING.md) for the release process and the [workspace README](../../../README.md) for architecture.
 
 ## License
 

@@ -1,7 +1,7 @@
 //! Typed SELECT builder (blueprint L14, S3 item 42).
 //!
 //! Builds parameterized SQL plus ordered bind values WITHOUT executing:
-//! execution is owned by the data class (keel-postgres / stores). Safety
+//! execution is owned by the data class (kelson-postgres / stores). Safety
 //! posture: values NEVER interpolate into the SQL text — they travel only as
 //! `$N` bind parameters; every identifier is validated at construction
 //! ([`Ident`] rejects anything outside the SQL-identifier charset).
@@ -12,7 +12,7 @@
 //! sequence as the outer query — placeholders are numbered continuously by
 //! SQL text order. Builder methods defer all validation to [`Select::build`].
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 use serde::{Deserialize, Serialize};
 
 /// Validated SQL identifier (table/column, optionally qualified
@@ -1002,7 +1002,7 @@ impl Select {
     }
 
     /// TENANT-plane scoping helper (L11 tie-in): append `column = $tenant`.
-    pub fn tenant_scope(self, column: Ident, tenant: keel_foundation::TenantId) -> Self {
+    pub fn tenant_scope(self, column: Ident, tenant: kelson_foundation::TenantId) -> Self {
         self.where_eq(column, Value::Uuid(*tenant.as_uuid()))
     }
 
@@ -1280,7 +1280,7 @@ mod tests {
 
     #[test]
     fn tenant_scope_binds_uuid() {
-        let tenant = keel_foundation::TenantId::new();
+        let tenant = kelson_foundation::TenantId::new();
         let q = Select::from_table(id("records"))
             .tenant_scope(id("tenant_id"), tenant)
             .build()

@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 use serde::{Deserialize, Serialize};
 
 use crate::ports::HealthCheck;
@@ -32,11 +32,11 @@ pub const PROMOTION_STAGES: [&str; 4] = ["post-deploy", "post-migrate", "post-tr
 /// What is being promoted: the release's identity plus the five-dimension
 /// target it moves the system TO (§7.2's `ReleaseArtifact` argument).
 ///
-/// Serde so `keel promote` can read it from the promotion plan file
+/// Serde so `kelson promote` can read it from the promotion plan file
 /// (`storage/framework/promotion.json`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleaseArtifact {
-    /// Release identity — the `version` from the `keel build` manifest, so a
+    /// Release identity — the `version` from the `kelson build` manifest, so a
     /// failure report names exactly what was attempted.
     pub release: String,
     /// Where each dimension should land.
@@ -257,7 +257,7 @@ impl PromotionPipeline {
 mod tests {
     use super::*;
     use crate::fakes::{healthy_probes, Harness, Outcome};
-    use keel_foundation::codes;
+    use kelson_foundation::codes;
     use std::collections::BTreeMap;
 
     /// A release that moves every dimension forward from the harness's live

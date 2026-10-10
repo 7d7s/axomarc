@@ -1,4 +1,4 @@
-//! # keel-tokens
+//! # kelson-tokens
 //! Hashed single-use TTL tokens (S2 item 21, L24): API tokens, password reset,
 //! email/phone verification. Plaintext is revealed exactly once at issue time;
 //! only its sha256 hash is ever persisted. sha2 is a D-62-justified addition
@@ -15,7 +15,7 @@ pub use seal::{AesGcmSealer, ALG_AES256_GCM, KEY_LEN, NONCE_LEN};
 
 use std::sync::{Arc, Mutex};
 
-use keel_foundation::{AppError, Clock, PrincipalId};
+use kelson_foundation::{AppError, Clock, PrincipalId};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -165,7 +165,7 @@ pub struct IssuedToken {
 }
 
 /// Storage port. Implementations: InMemoryTokenStore (here), PgTokenStore
-/// (keel-postgres) on the auth_tokens table.
+/// (kelson-postgres) on the auth_tokens table.
 pub trait TokenStore: Send + Sync {
     fn insert(&self, token: AuthToken) -> Result<(), AppError>;
     fn find_by_hash(
@@ -191,7 +191,7 @@ impl TokenService {
     pub fn new(store: Arc<dyn TokenStore>) -> Self {
         Self {
             store,
-            clock: Arc::new(keel_foundation::SystemClock),
+            clock: Arc::new(kelson_foundation::SystemClock),
         }
     }
 
@@ -351,7 +351,7 @@ mod tests {
     #[test]
     fn token_expiry_reads_the_injected_clock() {
         let t0 = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
-        let clock = Arc::new(keel_foundation::FixedClock::new(t0));
+        let clock = Arc::new(kelson_foundation::FixedClock::new(t0));
         let svc = TokenService::new(Arc::new(InMemoryTokenStore::new())).with_clock(clock.clone());
         let principal = PrincipalId::new();
         let issued = svc
@@ -501,7 +501,7 @@ mod tests {
         let missing = svc
             .verify(TokenPurpose::Api, "not-a-real-token")
             .unwrap_err();
-        assert_eq!(missing.category, keel_foundation::ErrorCategory::Authorization);
+        assert_eq!(missing.category, kelson_foundation::ErrorCategory::Authorization);
     }
 
     #[test]

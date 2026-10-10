@@ -7,13 +7,13 @@ use std::sync::{Arc, Mutex};
 use axum::body::{to_bytes, Body, Bytes};
 use axum::http::{header, HeaderMap, Method, Request, StatusCode};
 use axum::Router;
-use keel_foundation::{AppError, Clock, FixedClock, PrincipalId, TenantId};
-use keel_http::{parse_session_cookie, CookieJar, SessionMiddleware, SESSION_COOKIE};
-use keel_jobs::{build_from_def, JobDef};
-use keel_models::{FieldFilter, ListOpts, ModelDef, ModelStore, Record};
-use keel_scheduling::{ScheduleItem, ScheduleRegistry, SchedulerRunner};
-use keel_session::Session;
-use keel_views::{ViewRender, ViewTap};
+use kelson_foundation::{AppError, Clock, FixedClock, PrincipalId, TenantId};
+use kelson_http::{parse_session_cookie, CookieJar, SessionMiddleware, SESSION_COOKIE};
+use kelson_jobs::{build_from_def, JobDef};
+use kelson_models::{FieldFilter, ListOpts, ModelDef, ModelStore, Record};
+use kelson_scheduling::{ScheduleItem, ScheduleRegistry, SchedulerRunner};
+use kelson_session::Session;
+use kelson_views::{ViewRender, ViewTap};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use time::OffsetDateTime;
@@ -21,9 +21,9 @@ use tower::ServiceExt;
 
 /// Actor header applied by TestApp::acting_as. Module test wiring maps it
 /// into whichever identity mechanism it uses (real sessions land in S3).
-pub const ACTOR_HEADER: &str = "x-keel-actor";
+pub const ACTOR_HEADER: &str = "x-kelson-actor";
 /// Tenant header applied by TestApp::tenant.
-pub const TENANT_HEADER: &str = "x-keel-tenant";
+pub const TENANT_HEADER: &str = "x-kelson-tenant";
 
 /// In-process HTTP harness around one axum router.
 pub struct TestApp {
@@ -87,7 +87,7 @@ impl TestApp {
 
     /// Wave 7 P2: resolve the session for every response through this
     /// middleware — hand over the SAME `SessionMiddleware` wired into the
-    /// router (`mw.clone().apply(router)`). Resolution: a `keel_session`
+    /// router (`mw.clone().apply(router)`). Resolution: a `kelson_session`
     /// Set-Cookie on the RESPONSE is authoritative (login issues, logout
     /// clears), otherwise the request's own cookie carries the session.
     pub fn with_session(mut self, mw: SessionMiddleware) -> Self {
@@ -507,7 +507,7 @@ impl TestResponse {
     /// `assertSee` parity: view output escapes, so the expectation escapes
     /// too. Pair with [`assert_html_contains`] for raw fragments.
     pub fn assert_see(self, text: &str) -> Self {
-        let expected = keel_views::html_escape(text);
+        let expected = kelson_views::html_escape(text);
         let body = self.body_text();
         assert!(
             body.contains(&expected),
@@ -678,7 +678,7 @@ fn load_session(mw: &SessionMiddleware, cookie: &str) -> Option<Session> {
     }
 }
 
-/// Resolve the response's session: a `keel_session` Set-Cookie on the
+/// Resolve the response's session: a `kelson_session` Set-Cookie on the
 /// RESPONSE is authoritative (login issues, logout clears); otherwise the
 /// request's own cookie carries an existing session forward.
 fn resolve_session(mw: &SessionMiddleware, request: &HeaderMap, response: &HeaderMap) -> Option<Session> {
@@ -786,9 +786,9 @@ mod tests {
     use super::*;
     use axum::extract::Extension;
     use axum::routing::{get, post};
-    use keel_http::ResolvedSession;
-    use keel_models::InMemoryModelStore;
-    use keel_session::{InMemorySessionStore, SessionManager, SessionPolicy};
+    use kelson_http::ResolvedSession;
+    use kelson_models::InMemoryModelStore;
+    use kelson_session::{InMemorySessionStore, SessionManager, SessionPolicy};
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -810,9 +810,9 @@ mod tests {
     static SEQ: AtomicUsize = AtomicUsize::new(0);
 
     /// Temp workspace holding one template (mirrors the views-engine tests).
-    fn view_engine() -> Arc<keel_views::ViewsEngine> {
+    fn view_engine() -> Arc<kelson_views::ViewsEngine> {
         let dir = std::env::temp_dir().join(format!(
-            "keel-testkit-views-{}-{}",
+            "kelson-testkit-views-{}-{}",
             std::process::id(),
             SEQ.fetch_add(1, Ordering::SeqCst)
         ));
@@ -823,7 +823,7 @@ mod tests {
             "<h1>{{ title }}</h1><p>{{ user.name }}</p>",
         )
         .unwrap();
-        Arc::new(keel_views::ViewsEngine::new(keel_views::ViewsConfig {
+        Arc::new(kelson_views::ViewsEngine::new(kelson_views::ViewsConfig {
             paths: vec![views],
             cache_dir: Some(dir.join("storage").join("framework").join("views")),
             env: "testing".into(),
@@ -1058,7 +1058,7 @@ mod tests {
         let app = harness().acting_as(principal.to_string());
         app.post("/login").send().await
             .assert_status(200)
-            .assert_cookie("keel_session", None)
+            .assert_cookie("kelson_session", None)
             .assert_session_has("cart")
             .assert_authenticated_as(principal);
     }
@@ -1265,7 +1265,7 @@ mod tests {
         ScheduleItem {
             name: name.into(),
             operation: operation.into(),
-            spec: keel_scheduling::ScheduleSpec::Interval { secs },
+            spec: kelson_scheduling::ScheduleSpec::Interval { secs },
             enabled: true,
             ..Default::default()
         }

@@ -1,5 +1,5 @@
 [package]
-name = "keel-scope"
+name = "kelson-scope"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,11 +7,11 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel security: scope graph + effective-scope computation."
+description = "Kelson security: scope graph + effective-scope computation."
 
 [dependencies]
-keel-foundation = { workspace = true }
-keel-context = { workspace = true }
+kelson-foundation = { workspace = true }
+kelson-context = { workspace = true }
 serde = { workspace = true }
 time = { workspace = true }
 uuid = { workspace = true }

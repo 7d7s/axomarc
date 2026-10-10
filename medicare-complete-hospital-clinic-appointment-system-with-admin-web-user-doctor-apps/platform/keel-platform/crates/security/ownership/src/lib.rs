@@ -1,12 +1,12 @@
-//! # keel-ownership
+//! # kelson-ownership
 //! Scope answers "where may I operate?"; ownership answers "who owns this resource?"
 //! (11-SPEC §3 §15). A finance user may reach BU-4 without controlling the invoice
 //! owned by LE-7.
 
 use std::collections::BTreeSet;
 
-use keel_context::{OwnershipRef, OwnershipSnapshot};
-use keel_foundation::TenantId;
+use kelson_context::{OwnershipRef, OwnershipSnapshot};
+use kelson_foundation::TenantId;
 use uuid::Uuid;
 
 /// Runtime registry of ownership facts for resources touched by an execution.
@@ -61,7 +61,7 @@ impl OwnershipGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keel_context::OwnershipRef;
+    use kelson_context::OwnershipRef;
 
     #[test]
     fn ownership_must_sit_inside_scope() {

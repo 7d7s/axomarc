@@ -1,5 +1,5 @@
 [package]
-name = "keel-query"
+name = "kelson-query"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,10 +7,10 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel framework: query side — pagination contract + projection/report markers."
+description = "Kelson framework: query side — pagination contract + projection/report markers."
 
 [dependencies]
-keel-foundation = { workspace = true }
+kelson-foundation = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 time = { workspace = true }

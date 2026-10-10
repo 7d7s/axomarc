@@ -18,7 +18,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use keel_foundation::{AppError, ExecutionId, PrincipalId, TenantId};
+use kelson_foundation::{AppError, ExecutionId, PrincipalId, TenantId};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn file_store_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("keel-traces-{}", uuid::Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("kelson-traces-{}", uuid::Uuid::now_v7()));
         let store = FileTraceStore::new(&dir);
         let t = trace("fs.op", &["SELECT 1", "SELECT 1", "SELECT 1"]);
         store.save(&t).unwrap();

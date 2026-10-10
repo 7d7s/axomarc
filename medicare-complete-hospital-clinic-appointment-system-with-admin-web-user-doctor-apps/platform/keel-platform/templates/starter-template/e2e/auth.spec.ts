@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 // B-28 smoke: the platform auth surface (register + login) against a running
-// `keel serve`. Unique email per run so repeats never collide with an
+// `kelson serve`. Unique email per run so repeats never collide with an
 // existing principal; cookies flow through the per-test API request context.
 
 const uniqueEmail = (tag: string) =>

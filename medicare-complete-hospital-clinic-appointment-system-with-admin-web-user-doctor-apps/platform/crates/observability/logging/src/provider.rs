@@ -5,8 +5,8 @@
 
 use std::sync::Arc;
 
-use keel_lifecycle::{BootError, Phase, Provider, ServiceRegistry};
-use keel_telemetry::{ServiceIdentity, TelemetryPlugin};
+use kelson_lifecycle::{BootError, Phase, Provider, ServiceRegistry};
+use kelson_telemetry::{ServiceIdentity, TelemetryPlugin};
 
 use crate::config::TelemetryConfig;
 use crate::runtime::ObservabilityRuntime;

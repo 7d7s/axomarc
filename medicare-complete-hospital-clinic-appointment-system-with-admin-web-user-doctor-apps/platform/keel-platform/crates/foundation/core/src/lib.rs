@@ -1,4 +1,4 @@
-//! # keel-foundation
+//! # kelson-foundation
 //! The trusted computing base. Dependency rule (11-FOUNDATION-MASTER-SPEC §9):
 //! core depends on core + a pinned minimal external set only. Nothing above.
 //!

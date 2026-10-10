@@ -1,5 +1,5 @@
 [package]
-name = "keel-contracts"
+name = "kelson-contracts"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,11 +7,11 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel TCB: public contract traits — Command, Query, Event, Job, Resource, authorization ports."
+description = "Kelson TCB: public contract traits — Command, Query, Event, Job, Resource, authorization ports."
 
 [dependencies]
-keel-foundation = { workspace = true }
-keel-context = { workspace = true }
+kelson-foundation = { workspace = true }
+kelson-context = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }

@@ -1,9 +1,9 @@
-//! # keel-caching
+//! # kelson-caching
 //! Six named caches, never one blob (11-SPEC §43): Identity · Authorization ·
 //! Configuration · ReferenceData · Query · Edge. Authorization keys must include
 //! principal + tenant + scope fingerprint + authorization/feature revisions.
 
-use keel_foundation::{AuthorizationRevision, FeatureRevision, PrincipalId, TenantId};
+use kelson_foundation::{AuthorizationRevision, FeatureRevision, PrincipalId, TenantId};
 
 /// Wave 4 Phase 6: value-level `CacheService` (remember/tags/locks) over the
 /// unchanged port — see the module docs.
@@ -33,7 +33,7 @@ impl CacheName {
     }
 }
 
-/// Sync byte-level port. Adapters (keel-cache-memory, later redis) implement it.
+/// Sync byte-level port. Adapters (kelson-cache-memory, later redis) implement it.
 /// S3 (L37) adds two atomic primitives used by cache locks: `put_if_absent`
 /// (set-if-not-exists) and `delete_if_equals` (compare-and-delete). Redis
 /// maps these to SET NX and Lua CAS; the in-memory adapter fakes atomicity
@@ -82,7 +82,7 @@ impl CacheLock {
 
     /// Try to acquire. Returns None when already held (never blocks).
     pub fn try_acquire(&self, name: &str, ttl_secs: u64) -> Option<LockToken> {
-        let token = keel_foundation::id::lock_token();
+        let token = kelson_foundation::id::lock_token();
         let ok =
             self.port
                 .put_if_absent(&lock_key(name), token.as_bytes().to_vec(), Some(ttl_secs));

@@ -5,7 +5,7 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use keel_telemetry::{Event, ExportError, ExportOk, Exporter, Level};
+use kelson_telemetry::{Event, ExportError, ExportOk, Exporter, Level};
 
 pub struct SyslogExporter {
     pub addr: String,
@@ -65,7 +65,7 @@ impl Exporter for SyslogExporter {
 
     fn export(&self, batch: &[Event]) -> Result<ExportOk, ExportError> {
         let mut guard = self.stream()?;
-        let host = "keel";
+        let host = "kelson";
 
         let result = {
             let stream = guard.as_mut().expect("connected above");

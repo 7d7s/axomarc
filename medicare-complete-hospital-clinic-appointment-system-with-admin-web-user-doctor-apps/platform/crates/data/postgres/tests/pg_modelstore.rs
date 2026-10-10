@@ -8,12 +8,12 @@
 
 #![cfg(feature = "pg-tests")]
 
-use keel_foundation::TenantId;
-use keel_models::{
+use kelson_foundation::TenantId;
+use kelson_models::{
     FieldDef, FieldFilter, FieldType, ListOpts, ModelDef, ModelRegistry, ModelRuntime, ModelStore,
     Record, RelationDef,
 };
-use keel_postgres::{create_pool, run_migrations, PgModelStore, PgPool};
+use kelson_postgres::{create_pool, run_migrations, PgModelStore, PgPool};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -225,7 +225,7 @@ async fn pg_partial_unique_index_blocks_double_booking() {
     );
     assert_eq!(
         dup.unwrap_err().category,
-        keel_foundation::ErrorCategory::Persistence
+        kelson_foundation::ErrorCategory::Persistence
     );
 
     // Cancel frees the slot: the predicate excludes cancelled rows.
@@ -360,7 +360,7 @@ async fn pg_modelstore_belongs_to_eager_load() {
 // index, conflict upsert through `ON DUPLICATE KEY UPDATE`, and BelongsTo
 // eager loading. Each test skips unless DATABASE_URL points at MySQL.
 
-async fn mysql_pool() -> Option<keel_mysql::MySqlPool> {
+async fn mysql_pool() -> Option<kelson_mysql::MySqlPool> {
     let url = match std::env::var("DATABASE_URL") {
         Ok(url) if !url.is_empty() => url,
         _ => {
@@ -372,9 +372,9 @@ async fn mysql_pool() -> Option<keel_mysql::MySqlPool> {
         eprintln!("mysql matrix: DATABASE_URL is not mysql://; skipping");
         return None;
     }
-    match keel_mysql::create_pool(&url, 4).await {
+    match kelson_mysql::create_pool(&url, 4).await {
         Ok(pool) => {
-            keel_mysql::run_migrations(&pool, std::path::Path::new("."))
+            kelson_mysql::run_migrations(&pool, std::path::Path::new("."))
                 .await
                 .expect("migrations apply");
             Some(pool)
@@ -386,7 +386,7 @@ async fn mysql_pool() -> Option<keel_mysql::MySqlPool> {
     }
 }
 
-async fn mysql_seed_tenant(pool: &keel_mysql::MySqlPool) -> TenantId {
+async fn mysql_seed_tenant(pool: &kelson_mysql::MySqlPool) -> TenantId {
     let tenant = TenantId::new();
     sqlx::query("INSERT INTO tenants (id, slug, name) VALUES (?, ?, ?)")
         .bind(tenant.as_uuid())
@@ -401,7 +401,7 @@ async fn mysql_seed_tenant(pool: &keel_mysql::MySqlPool) -> TenantId {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_modelstore_crud_roundtrip() {
     let Some(pool) = mysql_pool().await else { return };
-    let store = keel_mysql::MySqlModelStore::new(pool.clone());
+    let store = kelson_mysql::MySqlModelStore::new(pool.clone());
     let runtime = ModelRuntime::new(appointment_model());
     let tenant = mysql_seed_tenant(&pool).await;
 
@@ -464,7 +464,7 @@ async fn mysql_modelstore_crud_roundtrip() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_modelstore_tenant_isolation_end_to_end() {
     let Some(pool) = mysql_pool().await else { return };
-    let store = keel_mysql::MySqlModelStore::new(pool.clone());
+    let store = kelson_mysql::MySqlModelStore::new(pool.clone());
     let runtime = ModelRuntime::new(appointment_model());
     let tenant_a = mysql_seed_tenant(&pool).await;
     let tenant_b = mysql_seed_tenant(&pool).await;
@@ -516,7 +516,7 @@ async fn mysql_modelstore_tenant_isolation_end_to_end() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_generated_unique_index_blocks_double_booking() {
     let Some(pool) = mysql_pool().await else { return };
-    let store = keel_mysql::MySqlModelStore::new(pool.clone());
+    let store = kelson_mysql::MySqlModelStore::new(pool.clone());
     let runtime = ModelRuntime::new(appointment_model());
     let tenant = mysql_seed_tenant(&pool).await;
 
@@ -532,7 +532,7 @@ async fn mysql_generated_unique_index_blocks_double_booking() {
     );
     assert_eq!(
         dup.unwrap_err().category,
-        keel_foundation::ErrorCategory::Persistence
+        kelson_foundation::ErrorCategory::Persistence
     );
 
     // Cancel frees the slot: the predicate columns go NULL for that row.
@@ -569,7 +569,7 @@ async fn mysql_modelstore_upsert_merges_on_conflict() {
         .field(FieldDef::new("tenant_id", FieldType::Uuid).required())
         .field(FieldDef::new("name", FieldType::Text).required())
         .field(FieldDef::new("value", FieldType::Text).required());
-    let store = keel_mysql::MySqlModelStore::new(pool.clone());
+    let store = kelson_mysql::MySqlModelStore::new(pool.clone());
     let tenant = mysql_seed_tenant(&pool).await;
     let conflict = vec!["tenant_id".to_string(), "name".to_string()];
 
@@ -603,7 +603,7 @@ async fn mysql_modelstore_belongs_to_eager_load() {
     registry.register(principal_model()).unwrap();
     registry.register(credential_model()).unwrap();
 
-    let store = keel_mysql::MySqlModelStore::new(pool.clone());
+    let store = kelson_mysql::MySqlModelStore::new(pool.clone());
     let principal_id = Uuid::now_v7();
     let email = format!("rel-{}@it.test", Uuid::now_v7());
     sqlx::query("INSERT INTO principals (id, status, email) VALUES (?, 'active', ?)")

@@ -1,9 +1,9 @@
-//! # keel-telemetry
+//! # kelson-telemetry
 //! Sentinel (S5) telemetry event model: versioned envelopes, the seven event
 //! families (log/span/metric/audit/exception/lifecycle/security), typed UUIDv7
-//! ids (via keel-foundation), classification vocabulary, exception fingerprinting and
+//! ids (via kelson-foundation), classification vocabulary, exception fingerprinting and
 //! the plugin registration surface. This crate is the contract; the runtime in
-//! `keel-observability` wires it to pipelines, buffers and exporters.
+//! `kelson-observability` wires it to pipelines, buffers and exporters.
 
 pub mod classify;
 pub mod envelope;

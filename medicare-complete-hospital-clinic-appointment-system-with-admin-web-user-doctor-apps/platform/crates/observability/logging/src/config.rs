@@ -116,7 +116,7 @@ impl Default for WalConfig {
         Self {
             dir: default_wal_dir(),
             fsync: true,
-            max_segment_bytes: 0, // 0 = keel-buffer default
+            max_segment_bytes: 0, // 0 = kelson-buffer default
             enabled: true,
         }
     }
@@ -168,7 +168,7 @@ pub struct ExporterConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyRuleConfig {
     pub name: String,
-    /// Restricted boolean grammar (keel-pipeline §policy); no arbitrary code.
+    /// Restricted boolean grammar (kelson-pipeline §policy); no arbitrary code.
     pub when: String,
     pub actions: Vec<String>,
 }
@@ -279,7 +279,7 @@ impl TelemetryConfig {
         cfg
     }
 
-    /// Parse from a TOML string (used by `keel observe config` and tests).
+    /// Parse from a TOML string (used by `kelson observe config` and tests).
     pub fn from_toml(raw: &str) -> Result<Self, String> {
         let value: toml::Value = toml::from_str(raw).map_err(|e| e.to_string())?;
         let section = match value {

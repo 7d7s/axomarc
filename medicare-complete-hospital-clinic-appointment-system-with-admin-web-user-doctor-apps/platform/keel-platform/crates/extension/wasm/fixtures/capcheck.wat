@@ -18,7 +18,7 @@
   (data (i32.const 1224) "{\"allowed\":false}")    ;; 17 bytes (1224..1241)
   (data (i32.const 1256) "capcheck invoked")       ;; 16 bytes (1256..1272)
 
-  (func $alloc (export "keel_alloc") (param $n i32) (result i32)
+  (func $alloc (export "kelson_alloc") (param $n i32) (result i32)
     (local $p i32)
     (local.set $p (global.get $heap))
     (global.set $heap
@@ -40,7 +40,7 @@
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $l))))
 
-  (func (export "keel_manifest") (result i64)
+  (func (export "kelson_manifest") (result i64)
     (local $p i32)
     (local.set $p (i32.const 1024))
     (block $done
@@ -52,7 +52,7 @@
       (i64.shl (i64.extend_i32_u (i32.const 1024)) (i64.const 32))
       (i64.extend_i32_u (i32.sub (local.get $p) (i32.const 1024)))))
 
-  (func (export "keel_call")
+  (func (export "kelson_call")
         (param $op i32) (param $op_len i32) (param $in i32) (param $in_len i32)
         (result i64)
     (local $span i32)      ;; first content byte (quotes stripped)

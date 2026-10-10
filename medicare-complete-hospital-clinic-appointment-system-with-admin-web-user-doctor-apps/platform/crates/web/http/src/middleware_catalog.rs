@@ -3,7 +3,7 @@
 //!
 //! The pure catalog half (aliases, groups, throttle configs, chain
 //! resolution, `middleware.toml` loading, the `GRAPH-MW-UNKNOWN` gate) lives
-//! in `keel_registry::middleware_catalog` so the boot gates sit with the
+//! in `kelson_registry::middleware_catalog` so the boot gates sit with the
 //! other GRAPH-* gates. This module is the axum runtime that executes a
 //! resolved chain per route:
 //! - `auth` (session extension -> bearer PAT/JWT via [`EdgeAuthPort`],
@@ -34,9 +34,9 @@ use axum::extract::State;
 use axum::http::{header, HeaderMap, Request, Response};
 use axum::middleware::Next;
 use axum::response::IntoResponse;
-use keel_foundation::{codes, AppError, ErrorCategory, PrincipalId, Retryability, Severity, TenantId};
+use kelson_foundation::{codes, AppError, ErrorCategory, PrincipalId, Retryability, Severity, TenantId};
 
-pub use keel_registry::middleware_catalog::{
+pub use kelson_registry::middleware_catalog::{
     middleware_violations, parse_builtin_id, BuiltinMw, MiddlewareCatalog, MwViolation,
     ThrottleGroupConfig, GRAPH_MW_UNKNOWN,
 };
@@ -64,7 +64,7 @@ pub struct ResolvedPrincipal {
 }
 
 /// Transport-port for bearer resolution + B-23 verification checks. The API
-/// runtime implements this over TokenService/PrincipalStore/JWT; keel-http
+/// runtime implements this over TokenService/PrincipalStore/JWT; kelson-http
 /// stays decoupled from the concrete stores.
 pub trait EdgeAuthPort: Send + Sync {
     /// Resolve a bearer credential (hashed PAT first, opt-in JWT interop
@@ -244,7 +244,7 @@ mod tests {
     use axum::http::StatusCode;
     use axum::routing::get;
     use axum::Router;
-    use keel_session::{InMemorySessionStore, SessionManager, SessionPolicy};
+    use kelson_session::{InMemorySessionStore, SessionManager, SessionPolicy};
     use time::OffsetDateTime;
     use tower::ServiceExt;
 
@@ -447,7 +447,7 @@ mod tests {
     }
 
     /// A live session whose bag carries `confirmed_at` at the given instant.
-    fn session_stamped(at: OffsetDateTime) -> keel_session::Session {
+    fn session_stamped(at: OffsetDateTime) -> kelson_session::Session {
         let manager = SessionManager::new(
             InMemorySessionStore::shared(),
             SessionPolicy::default(),
@@ -529,8 +529,8 @@ mod tests {
     const SIGNED_SECRET: &[u8] = b"unit-signed-url-secret-0123456789";
 
     fn gate() -> Arc<crate::SignedGate> {
-        let tokens = Arc::new(keel_tokens::TokenService::new(Arc::new(
-            keel_tokens::InMemoryTokenStore::new(),
+        let tokens = Arc::new(kelson_tokens::TokenService::new(Arc::new(
+            kelson_tokens::InMemoryTokenStore::new(),
         )));
         Arc::new(crate::SignedGate::new(SIGNED_SECRET.to_vec(), tokens))
     }
@@ -562,7 +562,7 @@ mod tests {
         let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
         let envelope: serde_json::Value = serde_json::from_slice(&body).expect("error envelope");
         assert_eq!(envelope["ok"], false);
-        assert_eq!(envelope["error"]["code"], "KER_NOT_FOUND");
+        assert_eq!(envelope["error"]["code"], "KSN_NOT_FOUND");
     }
 
     #[tokio::test]

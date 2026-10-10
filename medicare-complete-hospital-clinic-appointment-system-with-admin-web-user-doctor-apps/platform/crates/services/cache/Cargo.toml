@@ -1,5 +1,5 @@
 [package]
-name = "keel-caching"
+name = "kelson-caching"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,10 +7,10 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel framework: named cache ports (identity/authorization/config/reference/query/edge)."
+description = "Kelson framework: named cache ports (identity/authorization/config/reference/query/edge)."
 
 [dependencies]
-keel-foundation = { workspace = true }
+kelson-foundation = { workspace = true }
 serde_json = { workspace = true }
 
 [package.metadata.docs.rs]

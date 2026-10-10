@@ -1,5 +1,5 @@
 [package]
-name = "keel-identity"
+name = "kelson-identity"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,10 +7,10 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel security: Principal / Actor / Membership / Credential / Session types + argon2 + OTP."
+description = "Kelson security: Principal / Actor / Membership / Credential / Session types + argon2 + OTP."
 
 [dependencies]
-keel-foundation = { workspace = true }
+kelson-foundation = { workspace = true }
 serde = { workspace = true }
 time = { workspace = true }
 uuid = { workspace = true }

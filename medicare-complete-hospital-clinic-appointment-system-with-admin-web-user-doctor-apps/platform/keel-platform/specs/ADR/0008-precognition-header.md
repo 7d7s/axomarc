@@ -57,7 +57,7 @@ Constraints:
   `current_password` verifier run — they are reads and cannot mutate state (documented:
   "side-effect-free" is about writes, not about avoiding SELECTs).
 - **Refusal**: `multipart/form-data` bodies are refused with a `422` envelope
-  (`KER_VALIDATION`, message "precognition does not accept multipart bodies"). Multipart
+  (`KSN_VALIDATION`, message "precognition does not accept multipart bodies"). Multipart
   intake stores upload parts during the intake stage — i.e. BEFORE validation — so
   accepting the body would break the zero-side-effect promise before the validator ever
   runs (fail-closed instead). JSON and form-urlencoded bodies are accepted normally.
@@ -66,7 +66,7 @@ Constraints:
 - **Always on**: no flag, no config, no feature gate — the mode cannot write, so there is
   nothing to protect against enabling by default.
 - **Locus**: one header read plus one early return in `graph_dispatch`
-  (`runtime/keel-api/src/graph_routes.rs`), immediately after the manifest-validation
+  (`runtime/kelson-api/src/graph_routes.rs`), immediately after the manifest-validation
   success branch and before the idempotency-header read. No engine, config, registry, or
   manifest surface moves.
 
@@ -75,7 +75,7 @@ before intake (`HeaderMap::get` supplies name case-insensitivity; the value is t
 and compared with `eq_ignore_ascii_case`), and the multipart refusal sits immediately
 after the `multipart/form-data` content-type probe — before `ingest_multipart` can store
 a part — as `AppError::validation` (the exact message above) through `dispatch_error`,
-so it renders the standard `KER_VALIDATION` 422 envelope. The early return issues a bare
+so it renders the standard `KSN_VALIDATION` 422 envelope. The early return issues a bare
 `StatusCode::NO_CONTENT` from `graph_dispatch`: the shared success-render tail
 (Cache-Control/ETag/Deprecation) belongs to dispatched responses and does not run for a
 probe, per the Outcome rule that everything below the return does not exist.

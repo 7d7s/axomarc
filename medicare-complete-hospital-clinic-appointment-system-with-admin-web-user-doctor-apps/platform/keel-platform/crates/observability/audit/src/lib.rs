@@ -1,10 +1,10 @@
-//! # keel-audit
+//! # kelson-audit
 //! Sentinel (S5) audit observability: audit event metadata, retention policy
 //! types and chain-verification report models. Hashing itself lives in the
-//! security layer (`keel-integrity`, D-74) so the data layer can write
+//! security layer (`kelson-integrity`, D-74) so the data layer can write
 //! hash-chained rows inside the engine transaction.
 
-use keel_foundation::{AuditId, TenantId};
+use kelson_foundation::{AuditId, TenantId};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 

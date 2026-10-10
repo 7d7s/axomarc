@@ -1,9 +1,9 @@
 # 05 — Database
 
-PostgreSQL is the reference data layer (`crates/data/postgres`, keel-postgres). It implements the
+PostgreSQL is the reference data layer (`crates/data/postgres`, kelson-postgres). It implements the
 execution and service ports; nothing in the kernel imports it directly.
 
-MySQL is the second first-class fabric (`crates/data/mysql`, keel-mysql, ADR 0010): the same
+MySQL is the second first-class fabric (`crates/data/mysql`, kelson-mysql, ADR 0010): the same
 store traits, selected at boot by `[database].driver`. The dialect divergences between the two
 are listed in the [MySQL driver (B-31)](#mysql-driver-b-31) section.
 
@@ -11,7 +11,7 @@ are listed in the [MySQL driver (B-31)](#mysql-driver-b-31) section.
 
 ```
 database/
-  migrations/         timestamped SQL files (keel make:migration) — PostgreSQL
+  migrations/         timestamped SQL files (kelson make:migration) — PostgreSQL
   migrations-mysql/   the same migrations adapted to MySQL (B-31, forward-only)
   roles.sql      role separation: owner != runtime (least privilege)
 config/dev.toml  [database] url, max_connections, run_migrations, driver
@@ -20,22 +20,22 @@ config/dev.toml  [database] url, max_connections, run_migrations, driver
 ## Migrations
 
 ```bash
-keel make:migration add_appointment_status   # timestamped SQL scaffold
-keel migrate                                 # apply pending (advisory-lock guarded)
-keel migrate:status                          # applied vs pending (incl. pair bookkeeping)
-keel migrate:fresh                           # drop + recreate (dev/test only)
-keel migrate:rollback [--step n]             # revert last n batches, reverse filename order
-keel migrate:reset                           # revert everything (dev/test only)
-keel migrate:refresh [--step n]              # rollback n batches, then re-apply (dev/test only)
-keel migrate:install                         # create the keel_migrations bookkeeping table only
-keel db:inspect                              # tables + row counts
-keel db:show                                 # driver, server version, database + inventory
-keel db:schema:dump                          # normalized DDL snapshot → database/schema.sql
+kelson make:migration add_appointment_status   # timestamped SQL scaffold
+kelson migrate                                 # apply pending (advisory-lock guarded)
+kelson migrate:status                          # applied vs pending (incl. pair bookkeeping)
+kelson migrate:fresh                           # drop + recreate (dev/test only)
+kelson migrate:rollback [--step n]             # revert last n batches, reverse filename order
+kelson migrate:reset                           # revert everything (dev/test only)
+kelson migrate:refresh [--step n]              # rollback n batches, then re-apply (dev/test only)
+kelson migrate:install                         # create the keel_migrations bookkeeping table only
+kelson db:inspect                              # tables + row counts
+kelson db:show                                 # driver, server version, database + inventory
+kelson db:schema:dump                          # normalized DDL snapshot → database/schema.sql
 ```
 
 Gate G08 checks migrations are ordered and present. `migrate:fresh` refuses production postures.
 
-**Advisory lock (Wave 5).** Every `keel migrate` run first takes `pg_advisory_lock(7259)` and
+**Advisory lock (Wave 5).** Every `kelson migrate` run first takes `pg_advisory_lock(7259)` and
 fails closed on timeout, so concurrent migrators serialize instead of interleaving DDL — asserted
 by the pg-gated `advisory_lock_serializes_runs_and_fails_closed_on_timeout`
 (`crates/data/postgres/tests/pg_pairs.rs`, skipped without `DATABASE_URL`).
@@ -44,7 +44,7 @@ by the pg-gated `advisory_lock_serializes_runs_and_fails_closed_on_timeout`
 pairs are revertible: `migrate:rollback` walks batches newest-first and applies the `.down.sql`
 in reverse filename order (default `--step 1`; batches group every file sharing a timestamp).
 The pairs table (`keel_migrations` bookkeeping rows) tracks applied pairs — every pair applied in one
-`keel migrate` run shares the next batch number — so status and rollback agree. Single-file forward-only migrations are **not** revertible — rollback skips them and the
+`kelson migrate` run shares the next batch number — so status and rollback agree. Single-file forward-only migrations are **not** revertible — rollback skips them and the
 command says so (documented divergence from Laravel, where all migrations must be reversible).
 `migrate:reset`/`migrate:refresh` carry the same destructive window as `migrate:fresh`
 (dev/test-only, refuse production). Directory conventions, fail-closed scan rules (missing
@@ -59,7 +59,7 @@ each pair landed in. Rollback therefore asks `pairs::rollback` for the number of
 *strictly above* the target, derived from `applied` rather than assuming batches are contiguous
 from 1 — two runs sharing a batch number count once. `db_version: None` skips the database
 dimension entirely, which is how a release with no schema change promotes without touching DDL
-(proven by `release_without_schema_change_skips_the_database` in `keel-deployment`). The
+(proven by `release_without_schema_change_skips_the_database` in `kelson-deployment`). The
 deployment-side semantics and the four-stage pipeline are in `14-DEPLOYMENT.md` §Promotion
 pipeline.
 
@@ -77,7 +77,7 @@ cutoff `queue:prune-batches` deletes on (open batches keep `finished_at NULL` an
 pruned). The membership jsonb is written once at dispatch (`ON CONFLICT` refreshes only `name`
 and `on_complete`): per-member state stays in `jobs_queue`, so `batch.status` counts live queue
 truth and concurrent member finishes or admin ops can never lose an update. `PgBatchLedger`
-implements the `BatchLedger` port for the worker's dispatch, keel-api's batch endpoints and the
+implements the `BatchLedger` port for the worker's dispatch, kelson-api's batch endpoints and the
 console batch commands; degraded boots answer through `MemoryBatchLedger` on the same trait
 (D-52).
 
@@ -86,7 +86,7 @@ console batch commands; degraded boots answer through `MemoryBatchLedger` on the
 jsonb, version bigint, created_at/updated_at timestamptz`) — a GLOBAL registry (no tenant
 column, hard deletes): token/revoke calls resolve a client by its globally unique `client_id`,
 the authorization endpoint resolves it from the session's tenant context through the same key.
-Secrets are argon2-hashed through `keel_identity` (`hash_password`/`verify_password`) and the
+Secrets are argon2-hashed through `kelson_identity` (`hash_password`/`verify_password`) and the
 plaintext is shown exactly once at creation; redirect allowlists and scopes ride jsonb (data,
 not string parsing) and updates bump `version` (CAS) through the model runtime. Codes and
 refresh tokens never touch this table — they ride the `TokenService` hashed single-use rows in
@@ -114,14 +114,14 @@ Every data port has an in-memory reference implementation (`InMemoryBackend`, `I
 postgres swaps in behind the same ports for production.
 ## Model store port (S8)
 
-Domain modules persist through a semantic CRUD contract, not raw SQL. `keel-models` defines the
+Domain modules persist through a semantic CRUD contract, not raw SQL. `kelson-models` defines the
 port and the portable model layer; backends swap behind it:
 
 - `ModelStore` — `insert / find / list / update / delete / upsert` over validated `Record`s.
   Records speak one canonical encoding: uuids and RFC 3339 timestamps as strings, numbers as JSON
   numbers, jsonb as nested JSON.
 - `InMemoryModelStore` — TestKit and degraded boot (D-52).
-- `PgModelStore` (keel-postgres) — production: typed writes through keel-query builders,
+- `PgModelStore` (kelson-postgres) — production: typed writes through kelson-query builders,
   `RETURNING *`, soft-delete veil via `deleted_at`, tenant scope on every path (a tenant-scoped
   model queried with no tenant matches nothing).
 
@@ -142,11 +142,11 @@ consume it at boot — a module cannot start without the port.
 - Accessors/mutators: computed fields on read / value transforms on write.
 - Model events: `creating/created/updating/updated/deleting/deleted` fire through observers.
 - Relation loading: `BelongsTo / HasMany / HasOne / ManyThrough` eager loads in at most 2 queries
-  per relation (the N+1 guard `keel inspect` understands).
+  per relation (the N+1 guard `kelson inspect` understands).
 
 ## Write builders (S8)
 
-`keel-query` gained typed write builders with the same discipline as `Select`:
+`kelson-query` gained typed write builders with the same discipline as `Select`:
 
 - `Insert` — columns + rows, `ON CONFLICT DO NOTHING / DO UPDATE` upsert, `RETURNING`, and a
   tenant guard: `.tenant_scope` requires every inserted row to bind the tenant uuid.
@@ -156,7 +156,7 @@ consume it at boot — a module cannot start without the port.
 
 ## PostgreSQL integration matrix
 
-`cargo test -p keel-postgres --features pg-tests` runs the live-DB matrix (skipped gracefully when
+`cargo test -p kelson-postgres --features pg-tests` runs the live-DB matrix (skipped gracefully when
 `DATABASE_URL` is unset): principal/credential/token/session/notification stores plus the model
 store suite —
 CRUD with RETURNING, tenant isolation end-to-end, upsert merge on conflict, soft-delete veil and
@@ -169,28 +169,28 @@ returns the surviving row unchanged (Laravel `updateOrCreate` semantics).
 
 ### Sync bridge runtime contract
 
-The durable store ports are sync; sqlx is async. `keel_postgres::bridge::block_on` runs each
+The durable store ports are sync; sqlx is async. `kelson_postgres::bridge::block_on` runs each
 pooled future on the runtime that owns the pool: `block_in_place` inside multi-threaded
-runtimes (axum host, keel-worker, keel-console), a single persistent bridge runtime otherwise.
+runtimes (axum host, kelson-worker, kelson-console), a single persistent bridge runtime otherwise.
 Pooled connections can only be driven by the runtime that created them, so:
 
 - runtime hosts must be multi-threaded (`#[tokio::main]` default);
 - integrations that create a pool under a single-threaded runtime and then call the sync
   ports will deadlock by construction -- pg tests therefore pin
   `#[tokio::test(flavor = "multi_thread")]`;
-- `adapters/keel-search-pgvector` carries a deliberate copy of the bridge (the frozen G07
+- `adapters/kelson-search-pgvector` carries a deliberate copy of the bridge (the frozen G07
   dependency matrix forbids adapters depending on Data crates).
 
 Local matrix runs (no docker): point `DATABASE_URL` at any reachable PostgreSQL 16+
 (e.g. the portable cluster under `C:/Users/Victo/pgportable`) and run
-`cargo test -p keel-postgres --features pg-tests` and
-`cargo test -p keel-search-pgvector --features pg-tests`. Vector/hybrid coverage additionally
+`cargo test -p kelson-postgres --features pg-tests` and
+`cargo test -p kelson-search-pgvector --features pg-tests`. Vector/hybrid coverage additionally
 needs the `vector` extension (CI image); all other slices run on stock Postgres.
 
 ## MySQL driver (B-31)
 
 `[database].driver = "mysql"` (default `postgres`, ADR 0010) selects the second fabric at boot:
-`keel-api`, `keel-worker`, and `keel-console` all build the MySQL pool, runner, seeders, and
+`kelson-api`, `kelson-worker`, and `kelson-console` all build the MySQL pool, runner, seeders, and
 stores from that key. The default path is byte-identical — with no `driver` key every probe,
 migration, and store call runs exactly as before. Degraded boot (D-52) is unchanged on both
 drivers: unreachable + not required lands on the in-memory stores.
@@ -198,12 +198,12 @@ drivers: unreachable + not required lands on the in-memory stores.
 **Migrations stay SQL-first.** `database/migrations-mysql/` carries the same nine filenames in
 the same order as `database/migrations/`, each adapted to MySQL 8 (sqlx bookkeeping stays in
 the shared `_sqlx_migrations` table per database; each driver embeds its own directory). The
-set is forward-only: `keel migrate` applies it under `GET_LOCK` (the `pg_advisory_lock(7259)`
+set is forward-only: `kelson migrate` applies it under `GET_LOCK` (the `pg_advisory_lock(7259)`
 twin), `migrate:fresh` drops every table with FK checks off instead of cascading a schema, and
 `migrate:status` lists the MySQL set.
 
 **Migrations are builder-generated artifacts (B-31 Phase D).** The authoring DX Laravel
-ships — `Schema::create(...)` over a `Blueprint` — has a keel twin in `keel_mysql::schema`,
+ships — `Schema::create(...)` over a `Blueprint` — has a kelson twin in `kelson_mysql::schema`,
 a fluent, byte-stable builder: `Migration::create_table` / `alter_table` / `create_index` /
 `comment` / `section` over `Table`/`Alter` column helpers (`t.uuid("id").primary_key()`,
 `t.varchar("slug", 128).not_null().unique()`, `.generated_stored(expr)` for the
@@ -219,12 +219,12 @@ backtick identifiers. The canonicalized set was then re-applied to MySQL 8.0.44 
 dropped database — 25 tables, nine fresh `_sqlx_migrations` checksums, `migrate:status` =
 9 applied / 0 pending — so the builder round-trip inherits Phase A's execution proof
 transitively (builder ≡ files ≡ bytes known to execute). `KEEL_SCHEMA_REGENERATE=1 cargo
-test -p keel-mysql --test schema_roundtrip` rewrites the canonical files from the programs;
+test -p kelson-mysql --test schema_roundtrip` rewrites the canonical files from the programs;
 `platform/` and `keel-platform/` carry byte-identical copies of the builder, the gate, and
 all nine files.
 
-**Revertible pairs work on both drivers (B-31 Phase C).** `keel_mysql::pairs` is
-`keel_postgres::pairs` — the same `<ts>_<name>.up.sql` / `.down.sql` shipment in
+**Revertible pairs work on both drivers (B-31 Phase C).** `kelson_mysql::pairs` is
+`kelson_postgres::pairs` — the same `<ts>_<name>.up.sql` / `.down.sql` shipment in
 `database/migrations-pairs`, the same `keel_migrations` bookkeeping table
 (`migration VARCHAR(255)` PRIMARY KEY, `batch INT NOT NULL`,
 `applied_at DATETIME(6) DEFAULT CURRENT_TIMESTAMP(6)` — InnoDB cannot key a TEXT column and
@@ -240,7 +240,7 @@ runs a MySQL `up`/`down` outside any transaction too. Pair SQL travels over the 
 nine forward files already take: probed against 8.0.44, `COM_STMT_PREPARE` accepts exactly
 one statement (two `CREATE TABLE`s -> ERROR 1064 near the second) and refuses transaction
 control (ERROR 1295). A broken shipment — missing `.down.sql`, orphan `.down.sql`, bad base
-name — still refuses `keel migrate` before the first statement. Evidence (pg-tests suite,
+name — still refuses `kelson migrate` before the first statement. Evidence (pg-tests suite,
 live MySQL): `mysql_pair_migrations_apply_rollback_and_reset_with_batches`,
 `mysql_pair_apply_fails_stopped_and_reports_what_already_ran`,
 `mysql_run_migrations_refuses_broken_shipments_then_applies_and_rolls_back`,
@@ -252,11 +252,11 @@ live MySQL): `mysql_pair_migrations_apply_rollback_and_reset_with_batches`,
 |---|---|
 | `migrate`, `migrate:fresh`, `migrate:status`, `migrate:rollback`, `migrate:reset`, `migrate:refresh`, `migrate:install`, `seed`, `db:show`, `db:inspect`, `db:schema:dump` (B-31 Phase E), the `queue:*`/`schedule:*` commands | — (nothing refuses since B-31 Phase E; `db:schema:dump` was the last original refusal) |
 
-(`keel promote` / `keel rollback` - Phase 4, console of the `keel-platform`
+(`kelson promote` / `kelson rollback` - Phase 4, console of the `keel-platform`
 workspace only - run on this driver too as of B-31 Phase F: `wire_promotion`
 builds the five-dimension wiring against the driver-selected `DbPool`, and the
 events/migration/probe ports (`EventAdapter`, `MigrationAdapter`, the health
-probes) dispatch to `keel_mysql::pairs`/`MySqlOutboxStore` per driver, the same
+probes) dispatch to `kelson_mysql::pairs`/`MySqlOutboxStore` per driver, the same
 enum every other console command selects on. Phase E had kept them behind their
 own `pg_only_on_mysql("promote/rollback")` gate (`PgPool`-typed wiring); Phase F
 lifted it, deleting the helper from the `keel-platform` console - promotion was
@@ -313,19 +313,19 @@ dump matches.
   key `TEXT`).
 
 **Evidence.** The live-MySQL matrix rides the same `pg-tests`-gated suites as Postgres:
-`cargo test -p keel-postgres --features pg-tests` with `DATABASE_URL=mysql://...` runs the
+`cargo test -p kelson-postgres --features pg-tests` with `DATABASE_URL=mysql://...` runs the
 MySQL slice (scheme-based skip — each test only runs against its own driver). `docker compose
-up -d mysql` starts the `mysql:8.4` service (user/pass/db `keel`/`keel_dev_only`/`keel`). No
+up -d mysql` starts the `mysql:8.4` service (user/pass/db `kelson`/`keel_dev_only`/`kelson`). No
 CI workflow runs live fabric tests — the posture is manual, as it is for Postgres.
 
 ## pgvector search adapter (S10, B-14)
 
-`adapters/keel-search-pgvector` implements the frozen `SearchEngine`
-contract (keel-search) on PostgreSQL + pgvector — **no new dependency**:
+`adapters/kelson-search-pgvector` implements the frozen `SearchEngine`
+contract (kelson-search) on PostgreSQL + pgvector — **no new dependency**:
 embeddings travel in pgvector text form (`[0.1,0.2,...]`) cast with
 `::vector`, so plain sqlx suffices.
 
-Layout: one table per index (`keel_search_<name>`, sanitized to
+Layout: one table per index (`kelson_search_<name>`, sanitized to
 `[a-z][a-z0-9_]{0,39}`), columns `id TEXT PK, tenant_id UUID, body TEXT,
 fields JSONB, embedding vector(N)`. Every query is tenant-scoped.
 
@@ -345,12 +345,12 @@ gracefully when the pgvector extension is unavailable.
 
 ## Redis queue store (S10, B-13)
 
-`keel-worker` selects its `JobStore` by availability: `REDIS_URL` set and
+`kelson-worker` selects its `JobStore` by availability: `REDIS_URL` set and
 reachable → `RedisJobStore`; else PostgreSQL; else in-memory (D-52). The
 Redis store keeps one JSON item per job plus four zsets (pending/running/
 done/dead); members encode priority (`{MAX-priority:020}:{id}`) so zset
 ordering yields priority DESC within one score. Claim is a single Lua
 round-trip (`ZRANGEBYSCORE` + `ZREM` + `ZADD running`) — exactly one worker
 wins a job (SKIP-LOCKED equivalent on a shared Redis). Retries use
-`keel_jobs::backoff_delay`; `requeue` revives dead jobs; single-instance
+`kelson_jobs::backoff_delay`; `requeue` revives dead jobs; single-instance
 Redis only (cluster key-slot rules out of scope).

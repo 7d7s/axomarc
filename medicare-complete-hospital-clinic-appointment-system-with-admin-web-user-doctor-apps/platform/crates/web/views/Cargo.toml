@@ -1,5 +1,5 @@
 [package]
-name = "keel-views"
+name = "kelson-views"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
-description = "Keel framework: zero-dep interpreted-AST views engine (Wave 2) - Blade-familiar directives over a JSON context, deliberately superseding arbitrary PHP eval."
+description = "Kelson framework: zero-dep interpreted-AST views engine (Wave 2) - Blade-familiar directives over a JSON context, deliberately superseding arbitrary PHP eval."
 
 [dependencies]
 serde = { workspace = true }

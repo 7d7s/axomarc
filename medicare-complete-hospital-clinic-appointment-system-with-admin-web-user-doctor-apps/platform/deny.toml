@@ -1,4 +1,4 @@
-# cargo-deny configuration - supply-chain gate for the Keel platform.
+# cargo-deny configuration - supply-chain gate for the Kelson platform.
 #
 # Run locally:   just deny
 # Run in CI:     .github/workflows/keel-publish.yml (job: deny)
@@ -37,12 +37,12 @@ version = 2
 # - MPL-2.0: tolerated exception for `webpki-roots` (Mozilla CA bundle,
 #   used by the rustls stack). MPL-2.0 is file-level copyleft; the crate is
 #   used unmodified as a data dependency, so no source obligations propagate
-#   into Keel code. Any further MPL dependency needs governance approval.
+#   into Kelson code. Any further MPL dependency needs governance approval.
 # - Apache-2.0 WITH LLVM-exception: the wasmtime family's license tag
 #   (Wave 9 B-30, D-62 amendment in DEPENDENCY-POLICY.md). Apache-2.0 with
 #   an extra patent/exception grant on the LLVM clause; it is strictly more
 #   permissive than plain Apache-2.0 (already allowed), so no copyleft
-#   obligation reaches Keel code.
+#   obligation reaches Kelson code.
 allow = [
   "MIT",
   "Apache-2.0",
@@ -67,7 +67,7 @@ confidence-threshold = 0.93
 multiple-versions = "warn"
 wildcards = "deny"
 highlight = "all"
-# `keel-mod-*` and friends are declared in [workspace.dependencies] as path-only
+# `kelson-mod-*` and friends are declared in [workspace.dependencies] as path-only
 # entries with no version, which cargo-deny reads as `*`. They are internal
 # workspace crates rather than published deps, so version-less PATH wildcards
 # are allowed here; wildcard versions on registry crates remain denied.

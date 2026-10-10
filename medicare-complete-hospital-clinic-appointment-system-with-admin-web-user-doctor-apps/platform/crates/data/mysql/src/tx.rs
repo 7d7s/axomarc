@@ -2,8 +2,8 @@
 //! GET_LOCK (Serialized plans) -> handler -> guards -> DeltaStone + Audit +
 //! Outbox writes -> COMMIT -> RELEASE_LOCK (one transaction, D-53).
 //!
-//! MySQL port notes (divergences from `keel_postgres::tx`):
-//! - No RLS / no `SET LOCAL keel.tenant_id` / no `set_config` (rule 11): the
+//! MySQL port notes (divergences from `kelson_postgres::tx`):
+//! - No RLS / no `SET LOCAL kelson.tenant_id` / no `set_config` (rule 11): the
 //!   pg tenant GUC statement is dropped. Tenant isolation rests on the
 //!   explicit `tenant_id` binds of the delta_stones / outbox / audit_records
 //!   INSERTs and the explicit `tenant_id = ?` (or `tenant_id IS NULL`)
@@ -67,15 +67,15 @@
 //!   `canonical_audit_row`, `audit_hash`, `GENESIS_HASH`), so both drivers
 //!   produce the same chain for the same logical rows.
 
-use keel_context::ExecutionContext;
-use keel_foundation::{AppError, ConcurrencyStrategy, DeltaId, StreamRef};
-use keel_execution::concurrency::expand_key;
-use keel_execution::plan::ExecutionPlan;
-use keel_execution::unit::{
+use kelson_context::ExecutionContext;
+use kelson_foundation::{AppError, ConcurrencyStrategy, DeltaId, StreamRef};
+use kelson_execution::concurrency::expand_key;
+use kelson_execution::plan::ExecutionPlan;
+use kelson_execution::unit::{
     guard, AuditRecord, BoxFuture, CommitReceipt, ExecutionBackend, ExecutionUnit, HandlerFn,
     MutationRecord, OutboxMessage, RunOutcome,
 };
-use keel_transaction::{advisory_lock_key, IsolationLevel, TxOptions};
+use kelson_transaction::{advisory_lock_key, IsolationLevel, TxOptions};
 use sqlx::mysql::MySqlPool;
 use sqlx::Executor;
 use time::OffsetDateTime;
@@ -136,10 +136,10 @@ async fn release_advisory_lock(
 
 struct MySqlUnit<'c> {
     tx: sqlx::Transaction<'c, sqlx::MySql>,
-    tenant_id: Option<keel_foundation::TenantId>,
-    execution_id: keel_foundation::ExecutionId,
-    principal_id: Option<keel_foundation::PrincipalId>,
-    correlation_id: keel_foundation::CorrelationId,
+    tenant_id: Option<kelson_foundation::TenantId>,
+    execution_id: kelson_foundation::ExecutionId,
+    principal_id: Option<kelson_foundation::PrincipalId>,
+    correlation_id: kelson_foundation::CorrelationId,
     command: String,
     default_stream: Option<StreamRef>,
     scope_paths: Vec<String>,
@@ -149,7 +149,7 @@ struct MySqlUnit<'c> {
 }
 
 impl ExecutionUnit for MySqlUnit<'_> {
-    fn tenant_id(&self) -> Option<keel_foundation::TenantId> {
+    fn tenant_id(&self) -> Option<kelson_foundation::TenantId> {
         self.tenant_id
     }
     fn record_mutation(&mut self, mutation: MutationRecord) {
@@ -253,7 +253,7 @@ async fn run_body(
         sqlx::Transaction::begin(&mut *conn, None)
             .await
             .map_err(|e| AppError::persistence(format!("begin: {e}")))?;
-                keel_execution::QueryTap::record("mysql:tx.begin", "BEGIN", t_begin.elapsed());
+                kelson_execution::QueryTap::record("mysql:tx.begin", "BEGIN", t_begin.elapsed());
 
                 // RLS anchor: pg sets a session GUC for the whole transaction
                 // scope; MySQL has no RLS (rule 11), so there is no statement
@@ -282,7 +282,7 @@ async fn run_body(
                         &plan.operation,
                     );
                     let name =
-                        format!("keel.serialized:{}", advisory_lock_key(&partition, &key));
+                        format!("kelson.serialized:{}", advisory_lock_key(&partition, &key));
                     let acquired: Option<i64> = sqlx::query_scalar("SELECT GET_LOCK(?, -1)")
                         .bind(&name)
                         .fetch_one(&mut *tx)
@@ -384,7 +384,7 @@ async fn run_body(
                     .execute(&mut *unit.tx)
                     .await
                     .map_err(|e| AppError::persistence(format!("delta stone: {e}")))?;
-                    keel_execution::QueryTap::record(
+                    kelson_execution::QueryTap::record(
                         "mysql:delta.write",
                         "INSERT delta_stones",
                         t_delta.elapsed(),
@@ -409,7 +409,7 @@ async fn run_body(
                     let tenant_str = unit.tenant_id.map(|t| t.to_string());
                     let principal_str = unit.principal_id.map(|p| p.to_string());
                     let day = at.date().to_string();
-                    let chain_id = keel_integrity::chain_id_for(tenant_str.as_deref(), &day);
+                    let chain_id = kelson_integrity::chain_id_for(tenant_str.as_deref(), &day);
 
                     let prev_hash: [u8; 32] = match chain_prev.get(&chain_id) {
                         Some(h) => *h,
@@ -447,7 +447,7 @@ async fn run_body(
                             };
                             fetched
                                 .and_then(|b| b.try_into().ok())
-                                .unwrap_or(keel_integrity::GENESIS_HASH)
+                                .unwrap_or(kelson_integrity::GENESIS_HASH)
                         }
                     };
 
@@ -457,7 +457,7 @@ async fn run_body(
                     let at_iso = at
                         .format(&time::format_description::well_known::Rfc3339)
                         .map_err(|e| AppError::persistence(format!("audit chain time: {e}")))?;
-                    let canonical = keel_integrity::canonical_audit_row(
+                    let canonical = kelson_integrity::canonical_audit_row(
                         tenant_str.as_deref(),
                         principal_str.as_deref(),
                         &a.action,
@@ -466,7 +466,7 @@ async fn run_body(
                         &merged_detail,
                         &at_iso,
                     );
-                    let chain_hash = keel_integrity::audit_hash(&prev_hash, &canonical);
+                    let chain_hash = kelson_integrity::audit_hash(&prev_hash, &canonical);
 
                     sqlx::query(
                         r"INSERT INTO audit_records
@@ -490,7 +490,7 @@ async fn run_body(
                     .await
                     .map_err(|e| AppError::persistence(format!("audit: {e}")))?;
                     chain_prev.insert(chain_id, chain_hash);
-                    keel_execution::QueryTap::record(
+                    kelson_execution::QueryTap::record(
                         "mysql:audit.write",
                         "INSERT audit_records",
                         t_audit.elapsed(),
@@ -511,7 +511,7 @@ async fn run_body(
                     .execute(&mut *unit.tx)
                     .await
                     .map_err(|e| AppError::persistence(format!("outbox: {e}")))?;
-                    keel_execution::QueryTap::record(
+                    kelson_execution::QueryTap::record(
                         "mysql:outbox.write",
                         "INSERT outbox",
                         t_outbox.elapsed(),
@@ -523,7 +523,7 @@ async fn run_body(
                     .commit()
                     .await
                     .map_err(|e| AppError::persistence(format!("commit: {e}")))?;
-                keel_execution::QueryTap::record("mysql:tx.commit", "COMMIT", t_commit.elapsed());
+                kelson_execution::QueryTap::record("mysql:tx.commit", "COMMIT", t_commit.elapsed());
 
                 Ok(RunOutcome {
                     result,

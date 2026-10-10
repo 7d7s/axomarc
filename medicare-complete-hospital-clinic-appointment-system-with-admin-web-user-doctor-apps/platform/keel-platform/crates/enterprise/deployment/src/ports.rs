@@ -3,33 +3,33 @@
 //! WHY PORTS AND NOT CONCRETE TYPES (§7.1 sketches `Arc<ConfigRuntime>`
 //! etc. — this is a deliberate, matrix-forced deviation):
 //!
-//! `keel-deployment` is **Enterprise** class (`crates/enterprise/...`), and
-//! the layer matrix (STAGE-0-SPEC §3, `keel-analyzer::allowed_deps`) lets
+//! `kelson-deployment` is **Enterprise** class (`crates/enterprise/...`), and
+//! the layer matrix (STAGE-0-SPEC §3, `kelson-analyzer::allowed_deps`) lets
 //! Enterprise reach Foundation / Security / Execution / Application / Web /
 //! Services / Async / Observability / Enterprise — but **not `Data`** and
 //! **not `Extension`**:
 //!
-//! * dimension 2 (migration rollback) lives in `keel-postgres::pairs` → Data ✗
-//! * dimension 3's WASM binaries are hosted by `keel-wasm` → Extension ✗
+//! * dimension 2 (migration rollback) lives in `kelson-postgres::pairs` → Data ✗
+//! * dimension 3's WASM binaries are hosted by `kelson-wasm` → Extension ✗
 //!
 //! Two of the five are unreachable as concrete types, so ALL FIVE are ports:
 //! uniform instead of "3 concrete + 2 ports", unit-testable in-crate against
 //! fakes with no PG/WASM, and wired by a composition root that *can* see
-//! everything — `keel-console` (Tools) and `kernel-api` (Runtime) both
+//! everything — `kelson-console` (Tools) and `kernel-api` (Runtime) both
 //! legitimately reach Data and Extension.
 //!
 //! This also matches §8, which lists `RollbackExecutor` as this component's
-//! own port: keel-deployment *offers* the rollback capability, and consumes
+//! own port: kelson-deployment *offers* the rollback capability, and consumes
 //! these collaborators to reach each dimension.
 
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 
 /// Boxed future used across the ports (no external async-trait dependency —
-/// the same posture `keel-event`'s `BoxFuture` takes).
+/// the same posture `kelson-event`'s `BoxFuture` takes).
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Dimension 1 — configuration (§7.1 step 1): atomic snapshot swap.
@@ -57,7 +57,7 @@ pub trait ConfigPort: Send + Sync {
 
 /// Dimension 2 — pair migrations (§7.1 step 2).
 ///
-/// The watermark is the applied-**batch** count: `keel-postgres::pairs`
+/// The watermark is the applied-**batch** count: `kelson-postgres::pairs`
 /// reverts whole batches (`rollback(applied, steps)`), so a "database
 /// version" in this codebase is naturally "how many batches are applied".
 /// `rollback_to(t)` reverts every batch above `t`.

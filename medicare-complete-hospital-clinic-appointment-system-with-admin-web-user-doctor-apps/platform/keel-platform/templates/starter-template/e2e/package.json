@@ -2,7 +2,7 @@
   "name": "__PROJECT_NAME__-e2e",
   "version": "0.1.0",
   "private": true,
-  "description": "B-28 Playwright smoke kit for __PROJECT_NAME__ (auth register/login + notes create/list against `keel serve`). Own package.json and external tooling: this folder never joins the Rust workspace or the dependency budget.",
+  "description": "B-28 Playwright smoke kit for __PROJECT_NAME__ (auth register/login + notes create/list against `kelson serve`). Own package.json and external tooling: this folder never joins the Rust workspace or the dependency budget.",
   "scripts": {
     "test": "playwright test",
     "test:headed": "playwright test --headed"

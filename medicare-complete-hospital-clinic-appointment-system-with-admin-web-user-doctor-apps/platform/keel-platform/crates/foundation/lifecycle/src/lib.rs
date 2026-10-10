@@ -1,4 +1,4 @@
-//! # keel-lifecycle
+//! # kelson-lifecycle
 //! `ApplicationHost` + `Provider` lifecycle (G03/G04). Providers declare
 //! `dependencies()`; the host registers, topo-sorts (cycle = boot refusal, S1),
 //! boots in dependency order, then freezes the registry. Missing/duplicate
@@ -8,7 +8,7 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use keel_foundation::{AppError, ErrorCategory, Retryability, Severity};
+use kelson_foundation::{AppError, ErrorCategory, Retryability, Severity};
 
 /// Boot phases, strictly ordered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -102,7 +102,7 @@ impl std::error::Error for BootError {}
 impl From<BootError> for AppError {
     fn from(e: BootError) -> Self {
         AppError::new(
-            keel_foundation::codes::BOOT,
+            kelson_foundation::codes::BOOT,
             ErrorCategory::Internal,
             Severity::Critical,
             Retryability::NotRetryable,
@@ -209,13 +209,13 @@ pub trait Provider: Send + Sync {
     fn boot<'a>(
         &'a self,
         _registry: &'a ServiceRegistry,
-    ) -> keel_execution_style_future::BoxFuture<'a, Result<(), BootError>> {
+    ) -> kelson_execution_style_future::BoxFuture<'a, Result<(), BootError>> {
         Box::pin(async move { Ok(()) })
     }
 }
 
-/// Local alias so the trait does not depend on keel-execution (CORE independence).
-mod keel_execution_style_future {
+/// Local alias so the trait does not depend on kelson-execution (CORE independence).
+mod kelson_execution_style_future {
     pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 }
 
@@ -277,7 +277,7 @@ pub struct ApplicationHost {
     /// Wave 7 P3 (docs/19 L340): the injectable clock on the host. Default =
     /// wall clock; tests inject a `FixedClock` so scheduler `next_run` and
     /// every host-captured instant read the SAME frozen time.
-    clock: Arc<dyn keel_foundation::Clock>,
+    clock: Arc<dyn kelson_foundation::Clock>,
 }
 
 impl ApplicationHost {
@@ -286,19 +286,19 @@ impl ApplicationHost {
             providers: Vec::new(),
             registry: ServiceRegistry::new(),
             booted: false,
-            clock: Arc::new(keel_foundation::SystemClock),
+            clock: Arc::new(kelson_foundation::SystemClock),
         }
     }
 
     /// Wave 7 P3: inject the time source (tests freeze it, then `travel`).
-    pub fn with_clock(mut self, clock: Arc<dyn keel_foundation::Clock>) -> Self {
+    pub fn with_clock(mut self, clock: Arc<dyn kelson_foundation::Clock>) -> Self {
         self.clock = clock;
         self
     }
 
     /// The host's injected clock — spawn sites read `clock.now()` instead of
     /// `OffsetDateTime::now_utc()`.
-    pub fn clock(&self) -> &Arc<dyn keel_foundation::Clock> {
+    pub fn clock(&self) -> &Arc<dyn kelson_foundation::Clock> {
         &self.clock
     }
 
@@ -400,7 +400,7 @@ mod tests {
         assert!(seen.unix_timestamp() > 0, "default host clock reads wall time");
 
         let frozen = ApplicationHost::new()
-            .with_clock(Arc::new(keel_foundation::FixedClock::new(seen)));
+            .with_clock(Arc::new(kelson_foundation::FixedClock::new(seen)));
         assert_eq!(
             frozen.clock().now(),
             seen,

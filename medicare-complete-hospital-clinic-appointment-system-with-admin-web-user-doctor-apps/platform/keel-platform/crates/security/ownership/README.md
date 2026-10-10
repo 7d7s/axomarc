@@ -1,8 +1,8 @@
-# keel-ownership
+# kelson-ownership
 
-Keel security: ownership graph — who owns the resource (separate from scope).
+Kelson security: ownership graph — who owns the resource (separate from scope).
 
-Part of the [Keel](../../../README.md) platform - a typed, plane-separated, delta-first application framework for Rust. See [PUBLISHING.md](../../../PUBLISHING.md) for the release process and the [workspace README](../../../README.md) for architecture.
+Part of the [Kelson](../../../README.md) platform - a typed, plane-separated, delta-first application framework for Rust. See [PUBLISHING.md](../../../PUBLISHING.md) for the release process and the [workspace README](../../../README.md) for architecture.
 
 ## License
 

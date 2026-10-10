@@ -1,4 +1,4 @@
-//! # keel-event
+//! # kelson-event
 //! Events are business facts, declared explicitly (11-SPEC §39/§42/§40). No global
 //! listener magic: every listener declares event, handler, delivery mode, retry,
 //! idempotency and ordering. Publication only happens post-commit via the outbox
@@ -8,7 +8,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -61,7 +61,7 @@ pub struct OutboxEvent {
     pub id: Uuid,
     pub event: String,
     pub topic: String,
-    pub tenant_id: Option<keel_foundation::TenantId>,
+    pub tenant_id: Option<kelson_foundation::TenantId>,
     pub payload: serde_json::Value,
     pub published: bool,
     #[serde(with = "time::serde::iso8601")]
@@ -141,7 +141,7 @@ impl ListenerRegistry {
 
 // ------------------------------------------------------------------- outbox
 
-/// Outbox access port. Implemented by keel-postgres (outbox table) and by
+/// Outbox access port. Implemented by kelson-postgres (outbox table) and by
 /// InMemoryOutbox for degraded boot/tests.
 pub trait OutboxStore: Send + Sync {
     /// Unpublished rows, oldest first, up to batch.

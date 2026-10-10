@@ -1,4 +1,4 @@
-# Keel Platform — Corrected Target Architecture
+# Kelson Platform — Corrected Target Architecture
 **Post-Verification Architecture Decision Record**  
 *Based on Phase 0 Evidence Verification Audit (all P0/P1 findings confirmed by executable evidence)*
 
@@ -27,30 +27,30 @@ keel-platform/          ← Framework crates (75+ crates, versioned independentl
 ├── Cargo.toml          ← workspace: kernel, config, execution, tenancy, jobs, events, wasm, ...
 ├── crates/
 │   ├── kernel/         ← keel-kernel (lifecycle, registry, graph)
-│   ├── framework/      ← keel-framework (application-facing umbrella; re-exports only)
-│   ├── config/         ← keel-config (layered config + hot reload)
-│   ├── execution/      ← keel-execution (plan, engine, idempotency)
-│   ├── tenancy/        ← keel-tenancy (TenantScope, RLS enforcement)
-│   ├── jobs/           ← keel-jobs (DurableJob v2 with schema version)
-│   ├── events/         ← keel-events (OutboxEvent v2 with idempotency key)
-│   ├── wasm/           ← keel-wasm (read + write capability ABI)
-│   ├── cache/          ← keel-cache (tenant-scoped CachePort)
-│   ├── scheduler/      ← keel-scheduler (tenant-aware + distributed lock)
-│   ├── storage/        ← keel-storage (tenant-prefixed StoragePort)
-│   ├── search/         ← keel-search (tenant-enforced SearchEngine)
-│   ├── realtime/       ← keel-realtime (tenant-scoped channels)
-│   └── deployment/     ← keel-deployment (RollbackExecutor + promotion)
+│   ├── framework/      ← kelson-framework (application-facing umbrella; re-exports only)
+│   ├── config/         ← kelson-config (layered config + hot reload)
+│   ├── execution/      ← kelson-execution (plan, engine, idempotency)
+│   ├── tenancy/        ← kelson-tenancy (TenantScope, RLS enforcement)
+│   ├── jobs/           ← kelson-jobs (DurableJob v2 with schema version)
+│   ├── events/         ← kelson-events (OutboxEvent v2 with idempotency key)
+│   ├── wasm/           ← kelson-wasm (read + write capability ABI)
+│   ├── cache/          ← kelson-cache (tenant-scoped CachePort)
+│   ├── scheduler/      ← kelson-scheduler (tenant-aware + distributed lock)
+│   ├── storage/        ← kelson-storage (tenant-prefixed StoragePort)
+│   ├── search/         ← kelson-search (tenant-enforced SearchEngine)
+│   ├── realtime/       ← kelson-realtime (tenant-scoped channels)
+│   └── deployment/     ← kelson-deployment (RollbackExecutor + promotion)
 ├── runtime/
-│   ├── keel-api/       ← keel-api (HTTP server, route registry, middleware)
-│   └── keel-worker/    ← keel-worker (job runner, scheduler, outbox pump)
+│   ├── kelson-api/       ← kelson-api (HTTP server, route registry, middleware)
+│   └── kelson-worker/    ← kelson-worker (job runner, scheduler, outbox pump)
 ├── applications/       ← optional opt-in modules (appointments, oauth2)
-└── tools/keel-cli/     ← keel binary (build, promote, rollback, config:reload)
+└── tools/kelson-cli/     ← kelson binary (build, promote, rollback, config:reload)
 
 # Phase O (2026-10-10): the former `keel-kernel/` workspace was MERGED into
-# `keel-platform/`. `kernel-api` -> `runtime/keel-api`, `kernel-worker` ->
-# `runtime/keel-worker`, the `keel-kernel-facade` -> `crates/framework`
-# (`keel-framework`), and `applications/`, `lang/` moved across whole. There is
-# no longer a third workspace: `your-app` consumes the `keel-framework`
+# `keel-platform/`. `kernel-api` -> `runtime/kelson-api`, `kernel-worker` ->
+# `runtime/kelson-worker`, the `keel-kernel-facade` -> `crates/framework`
+# (`kelson-framework`), and `applications/`, `lang/` moved across whole. There is
+# no longer a third workspace: `your-app` consumes the `kelson-framework`
 # umbrella directly.
 
 your-app/               ← Application workspace (YOUR code, YOUR release cadence)
@@ -73,21 +73,21 @@ your-app/               ← Application workspace (YOUR code, YOUR release caden
 [workspace.lints.rust]
 workspace = true
 
-# runtime/keel-api/Cargo.toml (host binary — consumes the umbrella)
+# runtime/kelson-api/Cargo.toml (host binary — consumes the umbrella)
 dependencies = [
-    "keel-framework",   # re-exported facade (lifecycle, registry, graph, config, ...)
-    "keel-config",      # FrozenConfig + ConfigReloader
-    "keel-execution",   # ExecutionEngine
-    "keel-tenancy",     # TenantScope, RLS
-    # NO direct dep on keel-jobs, keel-events, keel-wasm, etc.
+    "kelson-framework",   # re-exported facade (lifecycle, registry, graph, config, ...)
+    "kelson-config",      # FrozenConfig + ConfigReloader
+    "kelson-execution",   # ExecutionEngine
+    "kelson-tenancy",     # TenantScope, RLS
+    # NO direct dep on kelson-jobs, kelson-events, kelson-wasm, etc.
 ]
 
 # your-app/Cargo.toml
 dependencies = [
-    "keel-framework",   # re-exported facade (since Phase O; was `keel-kernel`)
-    "keel-jobs",        # job definitions
-    "keel-events",      # event definitions
-    "keel-wasm",        # plugin definitions
+    "kelson-framework",   # re-exported facade (since Phase O; was `keel-kernel`)
+    "kelson-jobs",        # job definitions
+    "kelson-events",      # event definitions
+    "kelson-wasm",        # plugin definitions
     # NO direct dep on keel-platform internal crates
 ]
 ```
@@ -97,7 +97,7 @@ dependencies = [
 | Workspace | Release Trigger | Versioning | Deploy Artifact |
 |---|---|---|---|
 | `keel-platform` | Framework feature/fix | SemVer minor/patch | Crates.io + GitHub Releases |
-| `keel-platform/runtime` (`keel-api`, `keel-worker`) | Host binary change | SemVer major/minor | `keel-api`, `keel-worker` binaries |
+| `keel-platform/runtime` (`kelson-api`, `kelson-worker`) | Host binary change | SemVer major/minor | `kelson-api`, `kelson-worker` binaries |
 | `your-app` | Business feature/fix | SemVer patch/minor | Container images + WASM plugins |
 
 **Critical**: `your-app` **never** rebuilds `keel-platform`. Module changes → WASM plugin rebuild (seconds) or hot-reload (milliseconds).
@@ -111,7 +111,7 @@ dependencies = [
 Every framework port **requires** `TenantId` at the call site. No ambient context, no thread-locals.
 
 ```rust
-// keel-cache: TENANT-SCOPED (replaces current CachePort)
+// kelson-cache: TENANT-SCOPED (replaces current CachePort)
 #[async_trait]
 pub trait CachePort: Send + Sync {
     async fn get(&self, tenant: TenantId, key: &str) -> Result<Option<Bytes>, AppError>;
@@ -121,7 +121,7 @@ pub trait CachePort: Send + Sync {
     async fn invalidate_tags(&self, tenant: TenantId, tags: &[&str]) -> Result<usize, AppError>;
 }
 
-// keel-jobs: TENANT-SCOPED claim
+// kelson-jobs: TENANT-SCOPED claim
 #[async_trait]
 pub trait JobStore: Send + Sync {
     async fn enqueue(&self, tenant: TenantId, job: DurableJob) -> Result<Uuid, AppError>;
@@ -129,21 +129,21 @@ pub trait JobStore: Send + Sync {
     // ... complete, fail, list ALL require tenant
 }
 
-// keel-events: TENANT-SCOPED dispatch
+// kelson-events: TENANT-SCOPED dispatch
 #[async_trait]
 pub trait ListenerRegistry: Send + Sync {
     fn for_event(&self, tenant: TenantId, event: &str) -> Vec<Arc<dyn ListenerHandler>>;
     fn for_event_global(&self, event: &str) -> Vec<Arc<dyn ListenerHandler>>; // platform events only
 }
 
-// keel-scheduler: TENANT-SCOPED due scan
+// kelson-scheduler: TENANT-SCOPED due scan
 #[async_trait]
 pub trait ScheduleRegistry: Send + Sync {
     fn due(&self, tenant: TenantId, now: OffsetDateTime) -> Vec<ScheduleSpec>;
     fn register(&self, tenant: TenantId, spec: ScheduleSpec) -> Result<(), AppError>;
 }
 
-// keel-storage: TENANT-PREFIXED keys (enforced at port)
+// kelson-storage: TENANT-PREFIXED keys (enforced at port)
 #[async_trait]
 pub trait StoragePort: Send + Sync {
     async fn put(&self, tenant: TenantId, bucket: &str, key: &str, bytes: Bytes) -> Result<(), AppError>;
@@ -156,7 +156,7 @@ pub trait StoragePort: Send + Sync {
 ### 3.2 Compile-Time Enforcement
 
 ```rust
-// keel-tenancy: TenantContext is a ZST passed by value — zero cost, compile-time checked
+// kelson-tenancy: TenantContext is a ZST passed by value — zero cost, compile-time checked
 pub struct TenantContext {
     tenant_id: TenantId,
     _phantom: PhantomData<fn() -> TenantId>, // prevents construction without TenantId
@@ -201,7 +201,7 @@ async fn handle_request(ctx: TenantContext, cache: Arc<dyn CachePort>) -> Result
 ### 4.1 Config v2: Versioned Snapshots + Atomic Swap
 
 ```rust
-// keel-config v2: replaces FrozenConfig
+// kelson-config v2: replaces FrozenConfig
 pub struct ConfigRuntime {
     current: Arc<ConfigSnapshot>,
     watcher: ConfigWatcher,
@@ -237,14 +237,14 @@ impl ConfigRuntime {
 // Hot-reload triggers (configurable):
 // - SIGHUP
 // - File mtime change (config/*.toml, config/tenants/*.toml)
-// - etcd/consul watch (keel-config-etcd crate)
-// - Manual: `keel config:reload` CLI
+// - etcd/consul watch (kelson-config-etcd crate)
+// - Manual: `kelson config:reload` CLI
 ```
 
 ### 4.2 Route Cache Hot Reload
 
 ```rust
-// keel-http: RouteManifest versioned by config hash
+// kelson-http: RouteManifest versioned by config hash
 pub struct RouteManifest {
     version: u64,
     config_hash: ConfigHash,
@@ -269,7 +269,7 @@ async fn on_config_reload(new_config: &ConfigSnapshot) {
 ### 4.3 Feature Flag Hot Reload
 
 ```rust
-// keel-feature-flags: FeatureSnapshot derived from ConfigSnapshot
+// kelson-feature-flags: FeatureSnapshot derived from ConfigSnapshot
 pub struct FeatureSnapshot {
     version: u64,
     flags: BTreeMap<FlagKey, FlagState>,
@@ -283,7 +283,7 @@ impl FeatureSnapshot {
 }
 
 // Reload: new ConfigSnapshot → new FeatureSnapshot → atomic swap
-// Request-scoped: FeatureSnapshot resolved ONCE per request (keel-context)
+// Request-scoped: FeatureSnapshot resolved ONCE per request (kelson-context)
 ```
 
 ---
@@ -293,7 +293,7 @@ impl FeatureSnapshot {
 ### 5.1 Job Payload Versioning (KEEL-005, KEEL-V09)
 
 ```rust
-// keel-jobs v2: DurableJob with schema version + migrator
+// kelson-jobs v2: DurableJob with schema version + migrator
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DurableJob {
     pub id: Uuid,
@@ -338,7 +338,7 @@ impl JobRegistry {
 ### 5.2 Event Idempotency Keys (KEEL-006, KEEL-V10)
 
 ```rust
-// keel-events v2: OutboxEvent with idempotency key
+// kelson-events v2: OutboxEvent with idempotency key
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutboxEvent {
     pub id: Uuid,
@@ -390,7 +390,7 @@ impl OutboxPump {
 ### 5.3 WASM Write Capability ABI (KEEL-007)
 
 ```rust
-// keel-wasm v2: Capability profiles include write
+// kelson-wasm v2: Capability profiles include write
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ExecutionProfile {
     ReadOnly,      // projections, queries
@@ -453,13 +453,13 @@ impl ConfigRuntime {
 ```sql
 -- BEFORE (vulnerable):
 CREATE POLICY tenant_isolation ON memberships
-    USING (tenant_id = keel_current_tenant() OR keel_current_tenant() IS NULL);
+    USING (tenant_id = kelson_current_tenant() OR kelson_current_tenant() IS NULL);
 
 -- AFTER (strict):
 CREATE POLICY tenant_isolation ON memberships
-    USING (tenant_id = keel_current_tenant());
--- keel_current_tenant() MUST return non-NULL for tenant-plane roles
--- keel_platform role: BYPASSES RLS via NO POLICY (separate mechanism)
+    USING (tenant_id = kelson_current_tenant());
+-- kelson_current_tenant() MUST return non-NULL for tenant-plane roles
+-- kelson_platform role: BYPASSES RLS via NO POLICY (separate mechanism)
 ```
 
 ### 6.2 Role Separation (Enforced by Migration)
@@ -467,33 +467,33 @@ CREATE POLICY tenant_isolation ON memberships
 ```sql
 -- platform/database/roles.sql (CORRECTED)
 -- 1. Migration owner (DDL only)
-CREATE ROLE keel_owner NOLOGIN;
+CREATE ROLE kelson_owner NOLOGIN;
 
 -- 2. Platform runtime (break-glass, NO RLS policies applied)
-CREATE ROLE keel_platform LOGIN;
-GRANT USAGE ON SCHEMA public TO keel_platform;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO keel_platform;
+CREATE ROLE kelson_platform LOGIN;
+GRANT USAGE ON SCHEMA public TO kelson_platform;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO kelson_platform;
 -- NO RLS policies on tables for this role — uses separate connection pool
 
 -- 3. Tenant runtime (RLS ENFORCED)
-CREATE ROLE keel_tenant LOGIN;
-GRANT USAGE ON SCHEMA public TO keel_tenant;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO keel_tenant;
+CREATE ROLE kelson_tenant LOGIN;
+GRANT USAGE ON SCHEMA public TO kelson_tenant;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO kelson_tenant;
 -- RLS policies APPLY to this role
 
 -- 4. Reporting (read-only, RLS enforced)
-CREATE ROLE keel_reporting LOGIN;
-GRANT USAGE ON SCHEMA public TO keel_reporting;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO keel_reporting;
+CREATE ROLE kelson_reporting LOGIN;
+GRANT USAGE ON SCHEMA public TO kelson_reporting;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO kelson_reporting;
 ```
 
 ### 6.3 Connection Pool Guards (Eliminates SEC-002)
 
 ```rust
-// keel-postgres: TenantGuardedPool
+// kelson-postgres: TenantGuardedPool
 pub struct TenantGuardedPool {
-    tenant_pool: PgPool,      // connects as keel_tenant
-    platform_pool: PgPool,    // connects as keel_platform (break-glass only)
+    tenant_pool: PgPool,      // connects as kelson_tenant
+    platform_pool: PgPool,    // connects as kelson_platform (break-glass only)
 }
 
 impl TenantGuardedPool {
@@ -504,7 +504,7 @@ impl TenantGuardedPool {
         f: impl FnOnce(&mut PgTransaction) -> Result<T, AppError> + Send,
     ) -> Result<T, AppError> {
         let mut conn = self.tenant_pool.acquire().await?;
-        sqlx::query("SELECT set_config('keel.tenant_id', $1, false)") // NOT LOCAL — session-scoped
+        sqlx::query("SELECT set_config('kelson.tenant_id', $1, false)") // NOT LOCAL — session-scoped
             .bind(tenant_id.to_string())
             .execute(&mut *conn)
             .await?;
@@ -513,7 +513,7 @@ impl TenantGuardedPool {
         let result = f(&mut *tx).await;
         
         // VERIFY GUC still set on commit/rollback
-        let guc: Option<String> = sqlx::query_scalar("SHOW keel.tenant_id")
+        let guc: Option<String> = sqlx::query_scalar("SHOW kelson.tenant_id")
             .fetch_one(&mut *tx).await?;
         assert_eq!(guc, Some(tenant_id.to_string()), "GUC leaked across transaction!");
         
@@ -542,7 +542,7 @@ impl Drop for TenantGuardedConnection {
 ### 6.4 Compile-Time Role Separation
 
 ```rust
-// keel-tenancy: Executor types encode role at compile time
+// kelson-tenancy: Executor types encode role at compile time
 pub struct TenantExecutor<'a> { pool: &'a TenantGuardedPool, tenant: TenantId }
 pub struct PlatformExecutor<'a> { pool: &'a TenantGuardedPool }
 
@@ -568,7 +568,7 @@ pub async fn provision_tenant(platform: PlatformExecutor, spec: TenantSpec) -> R
 ### 7.1 RollbackExecutor Component
 
 ```rust
-// keel-deployment: RollbackExecutor
+// kelson-deployment: RollbackExecutor
 pub struct RollbackExecutor {
     config_runtime: Arc<ConfigRuntime>,
     migration_runner: Arc<MigrationRunner>,
@@ -611,7 +611,7 @@ impl RollbackExecutor {
 ### 7.2 Promotion Flow with Rollback Points
 
 ```rust
-// keel-deployment: Promotion with automatic rollback on failure
+// kelson-deployment: Promotion with automatic rollback on failure
 pub struct PromotionPipeline {
     executor: RollbackExecutor,
     health_checks: Vec<HealthCheck>,
@@ -655,16 +655,16 @@ impl PromotionPipeline {
 
 | Component | Port | Tenant-Scoped? | Versioned? | Hot-Reload? |
 |---|---|---|---|---|
-| `keel-config` | `ConfigReloader` | N/A | ✅ (snapshot version) | ✅ SIGHUP/file/etcd |
-| `keel-cache` | `CachePort` | ✅ REQUIRED | ✅ (key schema) | ✅ (invalidate tags) |
-| `keel-jobs` | `JobStore` | ✅ REQUIRED | ✅ (JobPayload + Migrator) | ✅ (registry hot-swap) |
-| `keel-events` | `ListenerRegistry` | ✅ REQUIRED | ✅ (IdempotencyKey) | ✅ (registry hot-swap) |
-| `keel-scheduler` | `ScheduleRegistry` | ✅ REQUIRED | ✅ (ScheduleSpec version) | ✅ (registry hot-swap) |
-| `keel-storage` | `StoragePort` | ✅ REQUIRED (prefix) | ✅ (object schema) | N/A |
-| `keel-search` | `SearchEngine` | ✅ REQUIRED | ✅ (index mapping version) | ✅ (reindex trigger) |
-| `keel-realtime` | `BroadcastHub` | ✅ REQUIRED (channel) | ✅ (event schema) | N/A |
-| `keel-wasm` | `WasmPlugin` | ✅ (tenant in ExecutionContext) | ✅ (ABI version) | ✅ (plugin hot-swap) |
-| `keel-deployment` | `RollbackExecutor` | N/A | ✅ (promotion version) | N/A |
+| `kelson-config` | `ConfigReloader` | N/A | ✅ (snapshot version) | ✅ SIGHUP/file/etcd |
+| `kelson-cache` | `CachePort` | ✅ REQUIRED | ✅ (key schema) | ✅ (invalidate tags) |
+| `kelson-jobs` | `JobStore` | ✅ REQUIRED | ✅ (JobPayload + Migrator) | ✅ (registry hot-swap) |
+| `kelson-events` | `ListenerRegistry` | ✅ REQUIRED | ✅ (IdempotencyKey) | ✅ (registry hot-swap) |
+| `kelson-scheduler` | `ScheduleRegistry` | ✅ REQUIRED | ✅ (ScheduleSpec version) | ✅ (registry hot-swap) |
+| `kelson-storage` | `StoragePort` | ✅ REQUIRED (prefix) | ✅ (object schema) | N/A |
+| `kelson-search` | `SearchEngine` | ✅ REQUIRED | ✅ (index mapping version) | ✅ (reindex trigger) |
+| `kelson-realtime` | `BroadcastHub` | ✅ REQUIRED (channel) | ✅ (event schema) | N/A |
+| `kelson-wasm` | `WasmPlugin` | ✅ (tenant in ExecutionContext) | ✅ (ABI version) | ✅ (plugin hot-swap) |
+| `kelson-deployment` | `RollbackExecutor` | N/A | ✅ (promotion version) | N/A |
 
 ---
 
@@ -687,13 +687,13 @@ impl PromotionPipeline {
     (4 license rejects, 1 wildcard violation, 21 advisories).
   - *Fixed, preserving the file's existing governance comments:* added `0BSD` and
     `CDLA-Permissive-2.0` to `[licenses].allow`, and `allow-wildcard-paths = true` to `[bans]`
-    (the `keel-mod-*` entries are path-only workspace deps, which cargo-deny reads as `*`).
+    (the `kelson-mod-*` entries are path-only workspace deps, which cargo-deny reads as `*`).
     **Proven:** `cargo deny check` from `platform/` → `bans ok, licenses ok, sources ok`; from
     `keel-platform/` → exit 0 on the same three checks.
   - *Scope note — why the rules are not literally in cargo-deny:* cargo-deny has no per-workspace
     `[architecture]` section and evaluates a single lock graph per invocation, so crate boundaries
     cannot be expressed there. They are enforced by `cargo xtask dep-rules` — the same engine as
-    `keel check`, already wired into CI (`docs/03-ARCHITECTURE.md`, gates G01-G17). Ticked on that
+    `kelson check`, already wired into CI (`docs/03-ARCHITECTURE.md`, gates G01-G17). Ticked on that
     basis: the outcome the box asks for (architecture rules gating the workspace split, enforced by
     tooling in CI) exists and is proven — the tool named in the box is simply not where those rules
     live.
@@ -726,16 +726,16 @@ impl PromotionPipeline {
   - **Proven:** `cargo deny check` → **exit 0**, `advisories ok, bans ok, licenses ok, sources ok`
     from **both** `platform/` and `keel-platform/` (each workspace's own `Cargo.lock` carries
     wasmtime 36.0.17).
-- [x] Implement `ConfigRuntime` + `ConfigWatcher` in `keel-config` (new crate)
+- [x] Implement `ConfigRuntime` + `ConfigWatcher` in `kelson-config` (new crate)
   - **proved.** `ConfigRuntime` at `crates/application/configuration/src/runtime.rs:134`, exported
-    from `lib.rs:20`; `keel-config` **59 passed / 0 failed**, including the Phase 5 reload hammer
+    from `lib.rs:20`; `kelson-config` **59 passed / 0 failed**, including the Phase 5 reload hammer
     and `config_reload_swaps_routes_and_flags_under_50ms`.
   - *Naming note:* no type is named `ConfigWatcher` — the §4.1 file-mtime trigger ships as
     `FileConfigSource` (mtime stamp, `runtime.rs:89`) plus `ConfigRuntime::poll()` (`runtime.rs:257`).
 - [x] Implement tenant-scoped port traits in each crate (parallel, behind feature flags)
   - **proved — the feature-flag gap is closed, and the flag is real rather than decorative.**
-    Only two crates *define* tenant-scoped ports — `keel-caching` and `keel-storage` (the note's
-    `cache/src/lib.rs:63` / `storage/src/lib.rs:171`; `keel-tenancy` merely consumes them), so
+    Only two crates *define* tenant-scoped ports — `kelson-caching` and `kelson-storage` (the note's
+    `cache/src/lib.rs:63` / `storage/src/lib.rs:171`; `kelson-tenancy` merely consumes them), so
     those are the two gated. Each `Cargo.toml` now declares
     `[features] default = ["tenant-ports"]` + `tenant-ports = []`, and the entire tenant layer is
     wrapped in `#[cfg(feature = "tenant-ports")]` — the trait, its `…Shard` adapter (struct +
@@ -743,17 +743,17 @@ impl PromotionPipeline {
     (4 in cache, 5 in storage). Storage's `TenantId` import is gated too, since nothing outside
     the tenant section uses it (cache's is left alone: `TenantId` is still used by the authz key
     fingerprint at `cache/src/lib.rs:190`).
-  - **`keel-tenancy` requests the feature explicitly, not by inheritance:**
-    `keel-caching = { workspace = true, features = ["tenant-ports"] }` (and storage likewise).
+  - **`kelson-tenancy` requests the feature explicitly, not by inheritance:**
+    `kelson-caching = { workspace = true, features = ["tenant-ports"] }` (and storage likewise).
     The scoped extensions *are* the tenant ports, so relying on someone else's `default = [...]`
     would let a `--no-default-features` rebuild silently delete §3.2. Verified by feature graph:
-    `cargo tree -p keel-tenancy -e features` → `keel-caching feature "tenant-ports"` +
-    `keel-storage feature "tenant-ports"`, and `cargo check -p keel-tenancy --no-default-features`
+    `cargo tree -p kelson-tenancy -e features` → `kelson-caching feature "tenant-ports"` +
+    `kelson-storage feature "tenant-ports"`, and `cargo check -p kelson-tenancy --no-default-features`
     exits 0.
   - **Why it is not an inert flag — the OFF state is executable, not asserted.**
-    `cargo check -p keel-caching|keel-storage --no-default-features --tests` → exit 0 with
+    `cargo check -p kelson-caching|kelson-storage --no-default-features --tests` → exit 0 with
     **zero errors and zero warnings**. `cargo test --no-default-features` runs **17 → 13** tests
-    for `keel-caching` and **11 → 6** for `keel-storage`: exactly the 9 gated tenant tests
+    for `kelson-caching` and **11 → 6** for `kelson-storage`: exactly the 9 gated tenant tests
     disappear while every non-tenant test (locks, authz key, writer/session, registry,
     `validate_dir_prefix`, `default_get_capped`) survives. The intermediate state is
     self-evidencing too — before the test-level `cfg`s were added, the OFF build failed with
@@ -764,24 +764,24 @@ impl PromotionPipeline {
     `cargo run -p xtask -- dep-rules` exit 0. The note's other observation is untouched: the
     `#![cfg(feature = "pg-tests")]` gating on the five live-database integration tests was and
     remains unrelated to port traits.
-- [x] Add `JobMigrator` trait + `IdempotencyKey` to `keel-jobs`/`keel-events`
-  - **proved.** `pub trait JobMigrator` at `crates/async/jobs/src/lib.rs:375` (= `keel-jobs`) with a
+- [x] Add `JobMigrator` trait + `IdempotencyKey` to `kelson-jobs`/`kelson-events`
+  - **proved.** `pub trait JobMigrator` at `crates/async/jobs/src/lib.rs:375` (= `kelson-jobs`) with a
     migrator registry (`:203`), `register_migrator` (`:321`) and two impls (`LocaleMigrator:2999`,
     `ZeroMigrator:3121`); `pub struct IdempotencyKey` at `crates/async/events/src/lib.rs:75`
-    (= `keel-event`) with a `config_hash`-derived constructor and a struct-field consumer (`:125`).
-    Executable: `keel-jobs` **35 passed**, `keel-event` **13 passed**, 0 failed — both crates named
+    (= `kelson-event`) with a `config_hash`-derived constructor and a struct-field consumer (`:125`).
+    Executable: `kelson-jobs` **35 passed**, `kelson-event` **13 passed**, 0 failed — both crates named
     by the box.
-- [x] Fix RLS policies: remove `OR NULL`, add `keel_tenant` role enforcement
+- [x] Fix RLS policies: remove `OR NULL`, add `kelson_tenant` role enforcement
   - **proved — `OR NULL`.** `git diff` on `medicare-kernel/migrations/0001_kernel.sql` shows
     `tenant_id IS NULL OR tenant_id = current_setting(…)` removed from the `roles` and
     `feature_flags` policies, the `USING (true)` on `memberships` replaced with real tenant
     scoping, and `GRANT ALL ON ALL TABLES … TO medicare_platform` (an RLS bypass) replaced by
     `ALTER DEFAULT PRIVILEGES`. No `tenant_id IS NULL OR` / `USING (true)` remains in
     `keel-platform/database`.
-  - **proved — `keel_tenant`.** The role is created by `keel-platform/database/roles.sql`
-    (`CREATE ROLE keel_tenant`, the tenant plane) and enforced by `TenantGuardedPool` in
-    `crates/data/postgres/src/lib.rs`: `tenant_pool` connects as `keel_tenant` (RLS enforced),
-    `platform_pool` as `keel_platform` (break-glass, no RLS).
+  - **proved — `kelson_tenant`.** The role is created by `keel-platform/database/roles.sql`
+    (`CREATE ROLE kelson_tenant`, the tenant plane) and enforced by `TenantGuardedPool` in
+    `crates/data/postgres/src/lib.rs`: `tenant_pool` connects as `kelson_tenant` (RLS enforced),
+    `platform_pool` as `kelson_platform` (break-glass, no RLS).
   - *Note:* the live RLS probes are `DATABASE_URL`-gated and skip in this environment, so this is
     exact code-path proof rather than a live round trip.
 
@@ -792,11 +792,11 @@ impl PromotionPipeline {
     Consumed downstream by `your-app` via `keel-kernel-facade`.
   - **Superseded by Phase O (2026-10-10) — topology change, not a revert.** The three-tree
     split proved here was subsequently merged into a **two-tree** topology so the framework
-    ships as one publishable unit: `kernel-api` → `keel-platform/runtime/keel-api`,
-    `kernel-worker` → `keel-platform/runtime/keel-worker`, `keel-kernel-facade` →
-    `keel-platform/crates/framework` (renamed `keel-framework`), and `applications/` +
+    ships as one publishable unit: `kernel-api` → `keel-platform/runtime/kelson-api`,
+    `kernel-worker` → `keel-platform/runtime/kelson-worker`, `keel-kernel-facade` →
+    `keel-platform/crates/framework` (renamed `kelson-framework`), and `applications/` +
     `lang/` moved across whole. `platform/keel-kernel/` was deleted (52 tracked files).
-    `your-app` now depends on `keel-framework`. Post-merge evidence: `keel-platform`
+    `your-app` now depends on `kelson-framework`. Post-merge evidence: `keel-platform`
     **158 suites / 1493 passed / 0 failed** (2 known load-sensitive 50 ms wall-clock
     flakes, both green 3/3 in isolation), root `xtask`
     `platform_tree_is_env_lint_clean` **ok**, `your-app` **3 / 0**, and
@@ -824,7 +824,7 @@ impl PromotionPipeline {
     uploaded by accident.
   - *Blocker B — "independent versioning" is a release-model change, not a config
     tweak.* `keel-platform` holds **64 crates** and **62** internal
-    `keel-* = { version = "0.1.0", path = ... }` entries under
+    `kelson-* = { version = "0.1.0", path = ... }` entries under
     `[workspace.dependencies]`, all moved together by one lockstep
     `cargo xtask bump <X.Y.Z>` that rewrites `[workspace.package].version` plus
     every internal dep literal in a single pass (`xtask/src/main.rs:558`). Going
@@ -834,7 +834,7 @@ impl PromotionPipeline {
 - [ ] Update `medicare-kernel` → `your-app` workspace structure
   - **open — scoping report only; nothing moved (awaiting approval of the map).**
     `your-app` is a greenfield skeleton — 2 crates (`apps/api` = `my-app-api`,
-    `modules/patients` = `mod-patients`, the latter carrying the keel `module.toml`
+    `modules/patients` = `mod-patients`, the latter carrying the kelson `module.toml`
     manifest) — while `medicare-kernel` is a full independent workspace with **21 members**
     over **42 `.rs` files** (21 in `modules/`, 17 in `kernel/`, 3 in `apps/`, 1 in `xtask/`),
     and `your-app/Cargo.toml` does not reference it at all.
@@ -867,7 +867,7 @@ impl PromotionPipeline {
        whose paths do not exist there — a behavior change, not a relocation.
     8. **Architectural rewrite, not translation:** medicare-kernel is plain axum/sqlx and has
        **0 `module.toml`**; your-app's pattern has one. Landing 11 modules means authoring 11
-       keel manifests and rewiring onto the `keel-*` deps your-app already declares — the bulk of
+       kelson manifests and rewiring onto the `kelson-*` deps your-app already declares — the bulk of
        the work is framework adaptation, not file movement.
 - [x] CI: separate pipelines for platform / kernel / app
   - **proved.** `.github/workflows/keel.yml` now declares **four jobs, one per Cargo
@@ -891,7 +891,7 @@ impl PromotionPipeline {
     `cargo run -p xtask -- dep-rules` → exit 0 (`dep-rules: clean`), `cargo deny check` →
     exit 0, `keel-publish.yml` `msrv` job → a 4-leg matrix at each workspace's verified floor (1.88 for `platform`, 1.89 for the other three). Both workflow files parse as valid YAML, and
     the `keel.yml` steps that carry over from the old job were checked to reference packages that
-    actually exist (`keel-observability`, `keel-api`, `xtask`) and tests that actually exist
+    actually exist (`kelson-observability`, `kelson-api`, `xtask`) and tests that actually exist
     (`g18`, `telemetry_incident`).
   - *Pre-existing blocker cleared to get here:* `dep-rules` and
     `env_lint_tests::platform_tree_is_env_lint_clean` both failed **before** this work — not from
@@ -919,14 +919,14 @@ impl PromotionPipeline {
 ### Phase 4: RolloutExecutor + Rollback (Week 7)
 - [x] Implement `RollbackExecutor` with all 5 rollback dimensions
 - [x] Promotion pipeline with automatic rollback on health check failure
-- [x] `keel promote` / `keel rollback` CLI commands
+- [x] `kelson promote` / `kelson rollback` CLI commands
 
 ### Phase 5: Hardening (Week 8)
 - [x] Chaos testing: config reload under load, rollback mid-promotion
 - [x] Tenant isolation penetration test (cache/queue/events/scheduler/storage)
 - [ ] Performance baseline: hot-reload latency < 50ms, rollback < 30s
   - hot-reload **proved**: `config_reload_swaps_routes_and_flags_under_50ms` asserts <50ms across a
-    real file edit + reload, and the `config-reload` phase of `keel benchmark` reports ≈2.0 ms
+    real file edit + reload, and the `config-reload` phase of `kelson benchmark` reports ≈2.0 ms
     median over 300 iterations. A 4-writer/4-reader chaos hammer additionally proved the swap never
     tears or regresses a revision — it found a real commit-order race (subscribers notified
     `[.. 7, 6 ..]`, i.e. stale routes installed), fixed by serializing commit.
@@ -942,18 +942,18 @@ impl PromotionPipeline {
        Only `crates/data/postgres/src/pairs.rs:264 rollback()` exists; MySQL has no
        migration-rollback path at all (`mysql`'s sole `rollback` is the transaction method in
        `txport.rs:108`).~~ **Revised:** Phase C replaced the refusal with
-       `keel_mysql::pairs`, a full port of `keel_postgres::pairs::rollback()` — same
+       `kelson_mysql::pairs`, a full port of `kelson_postgres::pairs::rollback()` — same
        `database/migrations-pairs` shipment, same `keel_migrations` bookkeeping, same Laravel
        batches — executed without a transaction because MySQL DDL auto-commits, with the live
        round trip `mysql_pair_migrations_apply_rollback_and_reset_with_batches` (plus the
-       `keel migrate:rollback --step 1` operator transcript) proving apply → rollback → reset
+       `kelson migrate:rollback --step 1` operator transcript) proving apply → rollback → reset
        against MySQL 8.0.44. **But this box's figure does not travel that path.** It runs
-       `keel promote` / `keel rollback` → `RollbackExecutor`, whose composition root still
+       `kelson promote` / `kelson rollback` → `RollbackExecutor`, whose composition root still
        refuses a MySQL pool: `wire_promotion`
-       (`keel-platform/tools/keel-console/src/main.rs:2313`) returns
+       (`keel-platform/tools/kelson-console/src/main.rs:2313`) returns
        `pg_only_on_mysql("promote/rollback")` unless `db` is `DbPool::Postgres`, because the
        ports it wires — `promotion::EventAdapter`, `promotion::MigrationAdapter` (which
-       drives `keel_postgres::pairs`) and the health probes — are `PgPool`-typed. Phase C
+       drives `kelson_postgres::pairs`) and the health probes — are `PgPool`-typed. Phase C
        deliberately left promotion scope alone, so **the conclusion of this leg stands for
        this measurement (PostgreSQL is required) while its original *reason* — MySQL "has no
        migration-rollback path at all" — does not.** The struck-through text is kept as the
@@ -965,7 +965,7 @@ impl PromotionPipeline {
        `platform/keel-kernel/config/.env`). The repo's own example expects
        `postgres://medicare:medicare@127.0.0.1:5432/medicare` from a compose file that cannot be
        started. *Note: MySQL 8.0 **is** installed and listening on 3306 and, since Phase C,
-       reverts pairs through `keel migrate:rollback` — but `keel promote`/`keel rollback`
+       reverts pairs through `kelson migrate:rollback` — but `kelson promote`/`kelson rollback`
        still refuse it (leg 1), so it cannot stand in for this figure either.*
     3. **Even with a database there is nothing to unwind.** Both rollback-capable directories —
        `platform/database/migrations-pairs` and `platform/keel-platform/database/migrations-pairs` —
@@ -989,9 +989,9 @@ impl PromotionPipeline {
 |---|---|---|
 | Monolithic workspace | `cargo build --workspace` in `your-app` without `keel-platform` source | Builds in < 30s (WASM only) |
 | Tenant isolation | `cargo test tenant_isolation -- --nocapture` | Zero cross-tenant reads/writes in cache/queue/events/scheduler/storage |
-| Boot-time freeze | `keel config:reload` + verify route/flag change in < 50ms | No restart required; in-flight requests unaffected |
+| Boot-time freeze | `kelson config:reload` + verify route/flag change in < 50ms | No restart required; in-flight requests unaffected |
 | No versioning | Deploy v2 job schema with v1 jobs in-flight | Zero deserialization errors; auto-migration verified |
-| RLS escape hatch | Connect as `keel_platform`, query tenant table without GUC | `ERROR: permission denied` (RLS enforced) or empty result |
+| RLS escape hatch | Connect as `kelson_platform`, query tenant table without GUC | `ERROR: permission denied` (RLS enforced) or empty result |
 | Pooled connection leak | Acquire tenant conn, set GUC, release, re-acquire, check GUC | GUC reset to NULL on release |
 
 ---
@@ -1000,7 +1000,7 @@ impl PromotionPipeline {
 
 | Rejected Approach | Reason |
 |---|---|
-| `libkeel_kernel.so` + native `.so` plugins | ABI instability, allocator conflicts, no isolation — WASM is the plugin boundary |
+| `libkelson_kernel.so` + native `.so` plugins | ABI instability, allocator conflicts, no isolation — WASM is the plugin boundary |
 | Single workspace with feature flags | Doesn't solve independent deploy; compile-time coupling remains |
 | Runtime tenant context via thread-locals | Not `Send`/`Sync` safe; loses compile-time enforcement |
 | SQL-level rollback for foundation tables | Too risky; foundation migrations remain forward-only with manual rollback runbook |

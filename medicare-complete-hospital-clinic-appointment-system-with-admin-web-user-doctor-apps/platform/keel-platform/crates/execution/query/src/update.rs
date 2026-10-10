@@ -3,7 +3,7 @@
 //! `$N` binds only, and an UNFILTERED-UPDATE guard — building without a WHERE
 //! clause fails unless explicitly allowed.
 
-use keel_foundation::{AppError, TenantId};
+use kelson_foundation::{AppError, TenantId};
 
 use crate::select::{Clause, Condition, Ident, Junction, Operator, Value};
 use crate::{ClauseContext, CompiledWrite};

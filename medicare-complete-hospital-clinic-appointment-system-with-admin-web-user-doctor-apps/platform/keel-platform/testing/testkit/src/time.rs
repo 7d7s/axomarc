@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use keel_foundation::FixedClock;
+use kelson_foundation::FixedClock;
 use time::{Duration, OffsetDateTime};
 
 /// Freeze time at the given instant; hand the shared clock to the code
@@ -30,7 +30,7 @@ pub fn travel(clock: &FixedClock, seconds: i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keel_foundation::Clock;
+    use kelson_foundation::Clock;
 
     #[test]
     fn freeze_travel_advance() {

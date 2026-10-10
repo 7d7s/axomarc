@@ -4,8 +4,8 @@
 
 use std::sync::Arc;
 
-use keel_context::ExecutionContext;
-use keel_foundation::{codes, AppError, OperationId, TenantId};
+use kelson_context::ExecutionContext;
+use kelson_foundation::{codes, AppError, OperationId, TenantId};
 use serde_json::Value;
 
 use crate::plan::ExecutionPlan;
@@ -100,9 +100,9 @@ impl IdempotencyGate {
             IdempotencyCheck::Replay(result) => Ok(GateOutcome::Replay(result)),
             IdempotencyCheck::HashConflict => Err(AppError::new(
                 codes::IDEMPOTENCY_CONFLICT,
-                keel_foundation::ErrorCategory::Conflict,
-                keel_foundation::Severity::Medium,
-                keel_foundation::Retryability::NotRetryable,
+                kelson_foundation::ErrorCategory::Conflict,
+                kelson_foundation::Severity::Medium,
+                kelson_foundation::Retryability::NotRetryable,
                 "idempotency key reused with a different payload",
             )),
         }
@@ -189,13 +189,13 @@ impl IdempotencyPort for InMemoryIdempotency {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keel_foundation::{ExecutionProfileKind, PrincipalId, SecurityPlane};
+    use kelson_foundation::{ExecutionProfileKind, PrincipalId, SecurityPlane};
     use time::OffsetDateTime;
 
     fn ctx() -> Arc<ExecutionContext> {
         ExecutionContext::builder(ExecutionProfileKind::System, OffsetDateTime::now_utc())
             .plane(SecurityPlane::Platform)
-            .principal(keel_context::PrincipalContext {
+            .principal(kelson_context::PrincipalContext {
                 id: PrincipalId::new(),
                 display: None,
             })

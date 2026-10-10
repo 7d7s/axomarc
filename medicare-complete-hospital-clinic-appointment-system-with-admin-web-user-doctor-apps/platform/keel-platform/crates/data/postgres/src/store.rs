@@ -1,9 +1,9 @@
 //! Execution-level idempotency on PostgreSQL (D-51):
 //! (tenant, operation, key) + payload hash → stored result.
 
-use keel_foundation::{AppError, OperationId, TenantId};
-use keel_execution::ports::{IdempotencyCheck, IdempotencyKey, IdempotencyPort};
-use keel_execution::BoxFuture;
+use kelson_foundation::{AppError, OperationId, TenantId};
+use kelson_execution::ports::{IdempotencyCheck, IdempotencyKey, IdempotencyPort};
+use kelson_execution::BoxFuture;
 use serde_json::Value;
 use sqlx::postgres::PgPool;
 use uuid::Uuid;

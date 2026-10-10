@@ -1,7 +1,7 @@
 -- MySQL 8 dialect twin of database/migrations/20260826000001_oauth2.sql.
 -- uuid: BINARY(16) (sqlx MySQL Uuid codec is binary)
 -- OAuth2 module (B-21, Wave 8 P5): the client registry.
--- Secrets are argon2 hashed by the module (keel-identity password helpers);
+-- Secrets are argon2 hashed by the module (kelson-identity password helpers);
 -- the plaintext is shown exactly once at creation. The redirect allowlist
 -- and scopes ride jsonb so membership checks are data, not string parsing.
 -- Global registry (no tenant column): the token/revoke endpoints are

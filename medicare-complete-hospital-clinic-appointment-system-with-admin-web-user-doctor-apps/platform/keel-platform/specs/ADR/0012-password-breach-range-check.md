@@ -26,7 +26,7 @@ Constraints:
    request-path latency and availability, offline and air-gapped
    deployments, and a new data flow (a derived password prefix) all
    become part of sign-in and registration.
-2. Budget posture is NOT the gate: `keel-http-client` / reqwest are
+2. Budget posture is NOT the gate: `kelson-http-client` / reqwest are
    already direct externals, so an adapter costs zero new crates. This
    item is decision-gated on privacy + posture, not budget — which is
    why docs/18 §26.2 lists only RS256.

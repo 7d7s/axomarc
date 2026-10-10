@@ -1,6 +1,6 @@
 -- MySQL 8 dialect twin of database/migrations/20260820000002_services.sql.
 -- uuid: BINARY(16) (sqlx MySQL Uuid codec is binary)
--- Keel services DDL (S2 item 19): durable jobs, diagnostics chain, auth tokens.
+-- Kelson services DDL (S2 item 19): durable jobs, diagnostics chain, auth tokens.
 -- The outbox table already exists in 20260819000001_foundation.sql (the outbox
 -- writer landed with the engine); the pump (item 24) reads it. Same conventions:
 -- application-generated UUID v7 ids, runtime role never owns tables (roles.sql).

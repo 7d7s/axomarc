@@ -1,4 +1,4 @@
-//! # keel-observability
+//! # kelson-observability
 //! Sentinel (S5) telemetry runtime: the application-owned observability
 //! pipeline. Every execution still gets a diagnostic chain (11-SPEC §30/§48:
 //! Request → Execution → Authorization → Command/Query → Transaction → SQL →
@@ -43,17 +43,17 @@ pub use runtime::{
     TelemetryControlState,
 };
 
-// Event-model re-exports (keel-telemetry) so apps need only one dependency.
-pub use keel_foundation::TelemetryContext;
-pub use keel_telemetry::{
+// Event-model re-exports (kelson-telemetry) so apps need only one dependency.
+pub use kelson_foundation::TelemetryContext;
+pub use kelson_telemetry::{
     Durability, Event, EventEnvelope, Fields, Level, LogPayload, ServiceIdentity, SpanKind,
     SpanPayload, SpanStatus, TelemetryCategory, TelemetryPayload,
 };
 // W3C trace-context helpers (S5 context propagation) so edge hosts need
-// only keel-observability.
-pub use keel_tracing::traceparent::{make_traceparent, parse_traceparent, Traceparent};
+// only kelson-observability.
+pub use kelson_tracing::traceparent::{make_traceparent, parse_traceparent, Traceparent};
 
-use keel_foundation::{ExecutionId, RequestId, TenantId, TraceId};
+use kelson_foundation::{ExecutionId, RequestId, TenantId, TraceId};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -74,8 +74,8 @@ pub enum ChainStage {
 }
 
 /// One record in the diagnostic chain. Append-only; persisted by the postgres
-/// adapter (G16) and inspectable through `keel inspect execution <id>` /
-/// `keel observe request <id>`. With the S5 runtime active, published records
+/// adapter (G16) and inspectable through `kelson inspect execution <id>` /
+/// `kelson observe request <id>`. With the S5 runtime active, published records
 /// also flow through the telemetry bus (`ChainSink`), preserving the chain
 /// structure (not flattened).
 #[derive(Debug, Clone, Serialize, Deserialize)]

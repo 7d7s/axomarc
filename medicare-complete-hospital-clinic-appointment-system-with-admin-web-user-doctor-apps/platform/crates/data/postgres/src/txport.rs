@@ -1,10 +1,10 @@
 //! `TransactionPort` over `PgPool` (S1 split): plain transactions through the
-//! keel-transaction contracts — no execution-unit semantics here. The execution
+//! kelson-transaction contracts — no execution-unit semantics here. The execution
 //! backend (tx.rs) keeps its unit contract; the outbox pump / job store /
 //! maintenance flows use this port directly.
 
-use keel_foundation::AppError;
-use keel_transaction::{BoxFuture, IsolationLevel, TransactionPort, TxHandle, TxOptions};
+use kelson_foundation::AppError;
+use kelson_transaction::{BoxFuture, IsolationLevel, TransactionPort, TxHandle, TxOptions};
 use sqlx::postgres::PgPool;
 
 pub struct PostgresTransactions {

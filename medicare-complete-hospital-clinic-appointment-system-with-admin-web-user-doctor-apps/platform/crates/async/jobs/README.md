@@ -1,8 +1,8 @@
-# keel-jobs
+# kelson-jobs
 
-Keel framework: durable executions (jobs are executions, not queue items).
+Kelson framework: durable executions (jobs are executions, not queue items).
 
-Part of the [Keel](../../../README.md) platform - a typed, plane-separated, delta-first application framework for Rust. See [PUBLISHING.md](../../../PUBLISHING.md) for the release process and the [workspace README](../../../README.md) for architecture.
+Part of the [Kelson](../../../README.md) platform - a typed, plane-separated, delta-first application framework for Rust. See [PUBLISHING.md](../../../PUBLISHING.md) for the release process and the [workspace README](../../../README.md) for architecture.
 
 ## License
 

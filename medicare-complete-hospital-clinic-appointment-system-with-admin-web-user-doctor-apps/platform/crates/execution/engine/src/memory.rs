@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use keel_foundation::{AppError, CorrelationId, DeltaId, DeltaStone, ExecutionId, PrincipalId, TenantId};
+use kelson_foundation::{AppError, CorrelationId, DeltaId, DeltaStone, ExecutionId, PrincipalId, TenantId};
 use time::OffsetDateTime;
 
 use crate::plan::ExecutionPlan;
@@ -12,7 +12,7 @@ use crate::unit::{
     guard, AuditRecord, BoxFuture, CommitReceipt, ExecutionBackend, ExecutionUnit, HandlerFn,
     MutationRecord, OutboxMessage, RunOutcome,
 };
-use keel_context::ExecutionContext;
+use kelson_context::ExecutionContext;
 
 struct MemoryUnit {
     tenant_id: Option<TenantId>,
@@ -20,7 +20,7 @@ struct MemoryUnit {
     principal_id: Option<PrincipalId>,
     correlation_id: CorrelationId,
     command: String,
-    default_stream: Option<keel_foundation::StreamRef>,
+    default_stream: Option<kelson_foundation::StreamRef>,
     scope_paths: Vec<String>,
     mutations: Vec<MutationRecord>,
     audits: Vec<AuditRecord>,
@@ -133,7 +133,7 @@ impl ExecutionBackend for InMemoryBackend {
                     .clone()
                     .or_else(|| unit.default_stream.clone())
                     .unwrap_or_else(|| {
-                        keel_foundation::StreamRef::data(
+                        kelson_foundation::StreamRef::data(
                             unit.tenant_id
                                 .map(|t| t.to_string())
                                 .unwrap_or_else(|| "platform".into()),

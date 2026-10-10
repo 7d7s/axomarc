@@ -6,8 +6,8 @@
 //! under the cache dir as JSON, pinned by the template's content hash (the
 //! mtime is recorded alongside for operations). Any drift between the
 //! stored source hash and the file on disk invalidates the entry and the
-//! template reparses. keel view:cache precompiles everything up front;
-//! keel view:clear drops every compiled entry (fail-closed: a corrupt
+//! template reparses. kelson view:cache precompiles everything up front;
+//! kelson view:clear drops every compiled entry (fail-closed: a corrupt
 //! cache entry reparses from source, never boots stale).
 
 use std::collections::{BTreeMap, HashMap};
@@ -438,7 +438,7 @@ impl ViewsEngine {
     // -------------------------------------------------------- cache admin
 
     /// Precompile every discoverable template into the compiled cache
-    /// (keel view:cache). Returns the number of templates compiled.
+    /// (kelson view:cache). Returns the number of templates compiled.
     pub fn precompile_all(&self) -> Result<usize, ViewError> {
         let mut names = Vec::new();
         for root in &self.config.paths {
@@ -454,7 +454,7 @@ impl ViewsEngine {
         Ok(count)
     }
 
-    /// Drop every compiled cache entry (keel view:clear). Returns the
+    /// Drop every compiled cache entry (kelson view:clear). Returns the
     /// number of entries removed.
     pub fn clear_cache(&self) -> Result<usize, ViewError> {
         self.memo.lock().unwrap().clear();
@@ -479,7 +479,7 @@ impl ViewsEngine {
     }
 
     /// Drop **one** compiled cache entry (Wave 4 Phase 5,
-    /// `keel cache:forget views:<name>`): the in-process memo plus the disk
+    /// `kelson cache:forget views:<name>`): the in-process memo plus the disk
     /// artifact. Returns true when anything was removed.
     pub fn forget_cache(&self, name: &str) -> Result<bool, ViewError> {
         let removed_memo = self.memo.lock().unwrap().remove(name).is_some();
@@ -555,7 +555,7 @@ mod tests {
     /// (paths relative to resources/views).
     fn engine_with(files: &[(&str, &str)]) -> (PathBuf, ViewsEngine) {
         let dir = std::env::temp_dir().join(format!(
-            "keel-views-{}-{}",
+            "kelson-views-{}-{}",
             std::process::id(),
             SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         ));

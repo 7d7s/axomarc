@@ -1,8 +1,8 @@
 -- MySQL 8 dialect twin of database/migrations/20260822000001_http_sessions.sql.
 -- uuid: BINARY(16) (sqlx MySQL Uuid codec is binary)
--- HTTP session persistence (S7 C6/B-03): durable store for keel-session.
--- Separate from the legacy `sessions` table (keel-identity session rows):
--- keel-session ids are 64-hex strings with a JSON data bag.
+-- HTTP session persistence (S7 C6/B-03): durable store for kelson-session.
+-- Separate from the legacy `sessions` table (kelson-identity session rows):
+-- kelson-session ids are 64-hex strings with a JSON data bag.
 CREATE TABLE IF NOT EXISTS http_sessions (
     id            VARCHAR(64) PRIMARY KEY,
     principal_id  BINARY(16) NOT NULL,

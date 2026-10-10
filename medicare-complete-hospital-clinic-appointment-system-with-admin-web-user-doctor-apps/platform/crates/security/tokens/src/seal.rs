@@ -7,7 +7,7 @@
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
-use keel_foundation::{codes, AppError, Envelope, ErrorCategory, Retryability, Sealer, Secret, Severity};
+use kelson_foundation::{codes, AppError, Envelope, ErrorCategory, Retryability, Sealer, Secret, Severity};
 use rand::RngCore;
 
 /// Algorithm identifier recorded in [`Envelope::alg`].

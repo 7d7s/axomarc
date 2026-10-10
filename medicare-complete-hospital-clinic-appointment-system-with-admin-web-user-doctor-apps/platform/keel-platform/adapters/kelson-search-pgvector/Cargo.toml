@@ -1,0 +1,24 @@
+[package]
+name = "kelson-search-pgvector"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Kelson adapter: PostgreSQL + pgvector SearchEngine (keyword, facets, vector, hybrid)."
+
+[dependencies]
+kelson-foundation = { workspace = true }
+kelson-search = { workspace = true }
+sqlx = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[features]
+# Integration tests that require a live PostgreSQL (DATABASE_URL); skipped otherwise.
+pg-tests = []
+
+[package.metadata.docs.rs]
+all-features = true

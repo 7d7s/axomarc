@@ -1,10 +1,10 @@
 //! Factory primitives (L20): explicit, composable fixtures. Defaults always
 //! build; every override is visible at the call site.
 
-use keel_foundation::{AppError, CorrelationId, ExecutionId, TenantId};
-use keel_event::OutboxEvent;
-use keel_jobs::{DurableJob, JobStatus};
-use keel_models::{ModelDef, ModelStore, Record};
+use kelson_foundation::{AppError, CorrelationId, ExecutionId, TenantId};
+use kelson_event::OutboxEvent;
+use kelson_jobs::{DurableJob, JobStatus};
+use kelson_models::{ModelDef, ModelStore, Record};
 use serde_json::{json, Value};
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
@@ -233,7 +233,7 @@ impl Factory for EventFactory {
     fn build(self) -> OutboxEvent {
         // Append-time parity: the fixture computes the §5.2 key from the
         // same inputs the real append paths use.
-        let idempotency_key = keel_event::idempotency_key(&self.event, None, &self.payload);
+        let idempotency_key = kelson_event::idempotency_key(&self.event, None, &self.payload);
         OutboxEvent {
             id: Uuid::now_v7(),
             event: self.event,
@@ -258,7 +258,7 @@ pub fn sample_event(name: &str) -> OutboxEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keel_models::{InMemoryModelStore, ListOpts};
+    use kelson_models::{InMemoryModelStore, ListOpts};
 
     struct Patient {
         id: Uuid,

@@ -1,15 +1,15 @@
 //! Durable HTTP sessions on MySQL 8 (S7 C6/B-03, B-31 second driver):
-//! http_sessions table. Implements the keel-session `SessionStore` port so
+//! http_sessions table. Implements the kelson-session `SessionStore` port so
 //! browser sessions survive restarts and scale across instances.
 //!
-//! Dialect notes vs the Postgres twin (`keel_postgres::sessionstore`):
+//! Dialect notes vs the Postgres twin (`kelson_postgres::sessionstore`):
 //! `$n` placeholders become `?`, the `ON CONFLICT ... EXCLUDED` upsert
 //! becomes `ON DUPLICATE KEY UPDATE` with the MySQL 8.0.19+ row alias, and
 //! `DELETE ... WHERE` counts matched rows identically (sqlx requests
 //! CLIENT_FOUND_ROWS).
 
-use keel_foundation::{AppError, PrincipalId, TenantId};
-use keel_session::{Session, SessionId, SessionPolicy, SessionStore};
+use kelson_foundation::{AppError, PrincipalId, TenantId};
+use kelson_session::{Session, SessionId, SessionPolicy, SessionStore};
 use sqlx::mysql::MySqlPool;
 use time::OffsetDateTime;
 use uuid::Uuid;

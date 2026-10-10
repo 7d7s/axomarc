@@ -1,6 +1,6 @@
 [package]
-name = "keel-ai"
-description = "Keel AI client contract (item 33, L47, D-67): AiClient port + deterministic stub provider. Live providers plug in behind the port."
+name = "kelson-ai"
+description = "Kelson AI client contract (item 33, L47, D-67): AiClient port + deterministic stub provider. Live providers plug in behind the port."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,7 @@ readme.workspace = true
 keywords.workspace = true
 
 [dependencies]
-keel-foundation = { workspace = true }
+kelson-foundation = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

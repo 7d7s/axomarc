@@ -1,6 +1,6 @@
-# Keel public API registry (blueprint item 49, L70/L72, G14).
+# Kelson public API registry (blueprint item 49, L70/L72, G14).
 #
-# Every public framework API owns a stable API-ID. `keel upgrade` reports
+# Every public framework API owns a stable API-ID. `kelson upgrade` reports
 # deprecated entries with their replacements; CI diffs this file to detect
 # breaking changes (cargo-semver-checks enforces the Rust surface, this file
 # carries the governance metadata around it).
@@ -9,138 +9,138 @@
 
 [[api]]
 id = "EXEC-API-0001"
-api = "keel_execution::Engine::execute"
+api = "kelson_execution::Engine::execute"
 stability = "stable"
 introduced = "0.1"
 
 [[api]]
 id = "EXEC-API-0002"
-api = "keel_execution::plan_compiler::PlanCompiler::compile_checked"
+api = "kelson_execution::plan_compiler::PlanCompiler::compile_checked"
 stability = "stable"
 introduced = "0.1"
 
 [[api]]
 id = "EXEC-API-0003"
-api = "keel_execution::trace::{QueryTap, ExecutionTrace, TraceStore}"
+api = "kelson_execution::trace::{QueryTap, ExecutionTrace, TraceStore}"
 stability = "beta"
 introduced = "0.1"
 
 [[api]]
 id = "EXEC-API-0004"
-api = "keel_execution::unit::ExecutionUnit"
+api = "kelson_execution::unit::ExecutionUnit"
 stability = "stable"
 introduced = "0.1"
 
 [[api]]
 id = "AUTH-API-0001"
-api = "keel_execution::ports::AuthorizationPort"
+api = "kelson_execution::ports::AuthorizationPort"
 stability = "stable"
 introduced = "0.1"
 
 [[api]]
 id = "AUTH-API-0002"
-api = "keel_policy::{PolicyEngine, AccessSnapshot, PolicyAuthz}"
+api = "kelson_policy::{PolicyEngine, AccessSnapshot, PolicyAuthz}"
 stability = "stable"
 introduced = "0.1"
 
 [[api]]
 id = "HTTP-API-0001"
-api = "keel_http front doors (HTTP/CLI/JOB/SCHEDULE/EVENT/WEBHOOK/WORKFLOW/BATCH/IMPORT/EXPORT/AI/MCP/INTERNAL/REPLAY)"
+api = "kelson_http front doors (HTTP/CLI/JOB/SCHEDULE/EVENT/WEBHOOK/WORKFLOW/BATCH/IMPORT/EXPORT/AI/MCP/INTERNAL/REPLAY)"
 stability = "stable"
 introduced = "0.1"
 
 [[api]]
 id = "JOB-API-0001"
-api = "keel_contracts::Job + keel_jobs runtime"
+api = "kelson_contracts::Job + kelson_jobs runtime"
 stability = "stable"
 introduced = "0.1"
 
 [[api]]
 id = "EVENT-API-0001"
-api = "keel_contracts::DomainEvent + outbox (post-commit only, D-53)"
+api = "kelson_contracts::DomainEvent + outbox (post-commit only, D-53)"
 stability = "stable"
 introduced = "0.1"
 
 [[api]]
 id = "DATA-API-0001"
-api = "keel_postgres::{PgPool, delta/audit/outbox writers}"
+api = "kelson_postgres::{PgPool, delta/audit/outbox writers}"
 stability = "stable"
 introduced = "0.1"
 
 [[api]]
 id = "CFG-API-0001"
-api = "keel_config::PlatformConfig (frozen at boot)"
+api = "kelson_config::PlatformConfig (frozen at boot)"
 stability = "stable"
 introduced = "0.1"
 
 [[api]]
 id = "FLAG-API-0001"
-api = "keel_feature_flags::{FlagRegistry, FileFlagStore}"
+api = "kelson_feature_flags::{FlagRegistry, FileFlagStore}"
 stability = "stable"
 introduced = "0.1"
 
 [[api]]
 id = "MOD-API-0001"
-api = "keel_registry::{ModuleManifest, PlatformGraph}"
+api = "kelson_registry::{ModuleManifest, PlatformGraph}"
 stability = "stable"
 introduced = "0.1"
 
 [[api]]
 id = "DEPLOY-API-0001"
-api = "keel_deployment::{ReleaseManifest, build gates}"
+api = "kelson_deployment::{ReleaseManifest, build gates}"
 stability = "stable"
 introduced = "0.1"
 
 [[api]]
 id = "TEST-API-0001"
-api = "keel_testkit::{TestApp, assert_delta, assert_event, assert_queries}"
+api = "kelson_testkit::{TestApp, assert_delta, assert_event, assert_queries}"
 stability = "beta"
 introduced = "0.1"
 
 [[api]]
 id = "SEARCH-API-0001"
-api = "keel_search::{SearchEngine, Searchable, SearchQuery, SearchResult}"
+api = "kelson_search::{SearchEngine, Searchable, SearchQuery, SearchResult}"
 stability = "beta"
 introduced = "0.1"
 
 [[api]]
 id = "SEARCH-API-0002"
-api = "keel_search::{VectorQuery, HybridQuery, Facet}"
+api = "kelson_search::{VectorQuery, HybridQuery, Facet}"
 stability = "beta"
 introduced = "0.1"
 
 [[api]]
 id = "AI-API-0001"
-api = "keel_ai::{AiClient, CompletionRequest, AiMessage}"
+api = "kelson_ai::{AiClient, CompletionRequest, AiMessage}"
 stability = "experimental"
 introduced = "0.1"
 
 [[api]]
 id = "AI-API-0002"
-api = "keel_ai_tools::{ToolSpec, ToolRegistry}"
+api = "kelson_ai_tools::{ToolSpec, ToolRegistry}"
 stability = "experimental"
 introduced = "0.1"
 
 [[api]]
 id = "AGENT-API-0001"
-api = "keel_ai_agents::{AgentRuntime, HandlerResolver}"
+api = "kelson_ai_agents::{AgentRuntime, HandlerResolver}"
 stability = "experimental"
 introduced = "0.1"
 
 [[api]]
 id = "MCP-API-0001"
-api = "keel_ai_mcp::{generate_manifest, tools_from_graph}"
+api = "kelson_ai_mcp::{generate_manifest, tools_from_graph}"
 stability = "experimental"
 introduced = "0.1"
 
 [[api]]
 id = "CODEGEN-API-0001"
-api = "keel_codegen::{ModuleSpec, write_module, module_files}"
+api = "kelson_codegen::{ModuleSpec, write_module, module_files}"
 stability = "beta"
 introduced = "0.1"
 
 [[api]]
 id = "CODEGEN-API-0002"
-api = "keel_codegen::openapi::emit_openapi"
+api = "kelson_codegen::openapi::emit_openapi"
 stability = "beta"
 introduced = "0.1"

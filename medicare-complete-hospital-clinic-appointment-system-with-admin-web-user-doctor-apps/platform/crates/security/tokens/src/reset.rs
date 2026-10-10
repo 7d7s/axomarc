@@ -1,11 +1,11 @@
 //! Password reset flows (S2 item 21, L23 completion): request -> deliver token
 //! (transport's job) -> consume once -> set new password hash. Password
-//! strength policy lives here; hashing stays in keel-identity (argon2id).
+//! strength policy lives here; hashing stays in kelson-identity (argon2id).
 
 use std::sync::Arc;
 
-use keel_foundation::{AppError, PrincipalId};
-use keel_identity::{verify_password, Secret};
+use kelson_foundation::{AppError, PrincipalId};
+use kelson_identity::{verify_password, Secret};
 use time::Duration;
 
 use crate::{IssuedToken, TokenPurpose, TokenService};
@@ -73,7 +73,7 @@ impl PasswordReset {
     ) -> Result<PrincipalId, AppError> {
         let token = self.tokens.consume(TokenPurpose::Reset, plaintext)?;
         validate_password_strength(new_password)?;
-        let hash = keel_identity::hash_password(new_password)?;
+        let hash = kelson_identity::hash_password(new_password)?;
         self.passwords
             .set_password_hash(token.principal_id, &hash)?;
         Ok(token.principal_id)
@@ -99,7 +99,7 @@ impl PasswordReset {
                 "new password must differ from the current one",
             ));
         }
-        let hash = keel_identity::hash_password(new_password)?;
+        let hash = kelson_identity::hash_password(new_password)?;
         self.passwords.set_password_hash(principal, &hash)
     }
 }
@@ -131,7 +131,7 @@ mod tests {
     fn flow() -> (PasswordReset, PrincipalId) {
         let passwords = Arc::new(FakePasswords::default());
         let principal = PrincipalId::new();
-        let hash = keel_identity::hash_password(&Secret::new("old-password-99")).unwrap();
+        let hash = kelson_identity::hash_password(&Secret::new("old-password-99")).unwrap();
         passwords.hashes.lock().unwrap().insert(principal, hash);
         let tokens = TokenService::new(Arc::new(crate::InMemoryTokenStore::new()));
         (PasswordReset::new(tokens, passwords), principal)

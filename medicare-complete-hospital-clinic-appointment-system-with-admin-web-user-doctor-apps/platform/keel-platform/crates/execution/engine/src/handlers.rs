@@ -50,8 +50,8 @@ mod tests {
     use super::*;
     use crate::unit::ExecutionUnit;
     use crate::{BoxFuture, ExecutionPlan};
-    use keel_context::ExecutionContext;
-    use keel_foundation::{AppError, ExecutionProfileKind, OperationId};
+    use kelson_context::ExecutionContext;
+    use kelson_foundation::{AppError, ExecutionProfileKind, OperationId};
 
     struct Stub;
 

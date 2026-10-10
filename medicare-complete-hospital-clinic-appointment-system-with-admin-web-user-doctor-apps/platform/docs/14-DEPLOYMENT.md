@@ -3,16 +3,16 @@
 ## Binaries
 
 ```
-runtime/keel-api      HTTP entrypoint (healthz/readyz, router, middleware)
-runtime/keel-worker   queue worker (claims jobs, executes, dead-letters)
+runtime/kelson-api      HTTP entrypoint (healthz/readyz, router, middleware)
+runtime/kelson-worker   queue worker (claims jobs, executes, dead-letters)
 ```
 
-Migration runs are a posture, not a binary: `keel migrate` drives the same code path.
+Migration runs are a posture, not a binary: `kelson migrate` drives the same code path.
 
 ## Build
 
-`keel build [--profile dev|release]` wraps cargo with the documented matrix and writes the release
-manifest (`RELEASE.md`): binary versions, config posture, migration head, checksums. `keel release`
+`kelson build [--profile dev|release]` wraps cargo with the documented matrix and writes the release
+manifest (`RELEASE.md`): binary versions, config posture, migration head, checksums. `kelson release`
 prints it. The manifest is the deployable contract — if it is not in the manifest, it is not in the
 release.
 
@@ -21,7 +21,7 @@ release.
 Layered: `defaults <- package [config] <- config/packages/<name>.toml (published) <- config/<env>.toml <- .env <- environment variables`.
 The package layers (Wave 8, B-24/B-25) are the `[config]` table of every package indexed by the
 root `packages.toml` plus its published, operator-editable copy at `config/packages/<name>.toml`
-(`keel config:publish`) — together they fill keys the config file omits, never override it, and
+(`kelson config:publish`) — together they fill keys the config file omits, never override it, and
 are each schema-checked on their own before merging (an error in the published copy names the
 file). Parsed, validated
 (secrets asserted — production refuses silent defaults), normalized, then **frozen at boot** as an
@@ -29,22 +29,22 @@ immutable `Arc<PlatformConfig>`. Environments: development, test, staging, produ
 migration, worker postures).
 
 ```bash
-keel config:dump    # effective config with secrets redacted
-keel key:generate   # rotate the application key in config
+kelson config:dump    # effective config with secrets redacted
+kelson key:generate   # rotate the application key in config
 ```
 
 ## Local dev
 
-`docker-compose.yml` provides postgres (keel/keel_dev_only) and minio for S3-shaped storage.
-`config/dev.toml` points at it. `keel doctor` verifies the whole local environment.
+`docker-compose.yml` provides postgres (kelson/keel_dev_only) and minio for S3-shaped storage.
+`config/dev.toml` points at it. `kelson doctor` verifies the whole local environment.
 
 ## Probes and graceful shutdown
 
 - `GET /healthz` = liveness (200 even when degraded, envelope carries `degraded` + reason).
 - `GET /readyz` = readiness (200 when capable, 503 + `BOOT` envelope when degraded). Wire the two
   distinctly so orchestrators restart only on liveness loss and drain traffic on readiness loss.
-- Both runtimes cooperate with `SIGINT`/`Ctrl-C`: keel-api stops accepting and drains in-flight
-  requests (axum graceful shutdown); keel-worker finishes the in-flight job, runs one final outbox
+- Both runtimes cooperate with `SIGINT`/`Ctrl-C`: kelson-api stops accepting and drains in-flight
+  requests (axum graceful shutdown); kelson-worker finishes the in-flight job, runs one final outbox
   drain, then exits. Shutdown is bounded by the longest in-flight unit of work — there is no
   forced-kill path.
 - Set `KEEL_SESSION_SECRET` to a stable, per-environment secret: sessions survive restarts and are
@@ -56,15 +56,15 @@ Full probe/shutdown semantics and the deployment-cache rationale live in `13-OPE
 
 - Feature flags ladder (`09-ENTERPRISE.md`) gates new behavior per tenant/percentage.
 - Migrations are forward-only SQL; G08 enforces ordering. `migrate:fresh` is dev/test only.
-- Releases carry the API surface delta (`keel upgrade`, G14 semver gate) so breaking changes are
+- Releases carry the API surface delta (`kelson upgrade`, G14 semver gate) so breaking changes are
   visible before they ship.
-- Maintenance mode (`keel down --retry 60`) drains cleanly with a Retry-After for clients.
+- Maintenance mode (`kelson down --retry 60`) drains cleanly with a Retry-After for clients.
 
 ## Promotion pipeline (Phase 4, §7)
 
-`keel promote` drives a release through four stages and auto-rolls-back on a failed health gate
-(KEEL-004). The dimension ports live in `keel-deployment` (Enterprise class, which may reach
-neither `Data` nor `Extension`); `keel-console` is the Tools-class composition root that supplies
+`kelson promote` drives a release through four stages and auto-rolls-back on a failed health gate
+(KEEL-004). The dimension ports live in `kelson-deployment` (Enterprise class, which may reach
+neither `Data` nor `Extension`); `kelson-console` is the Tools-class composition root that supplies
 the concrete adapters.
 
 | Stage | Gate | Mutates |
@@ -104,12 +104,12 @@ as unhealthy: a health check that cannot answer is not evidence of health.
 
 **Known limits (Phase 5 recorded, not fixed).**
 
-- The config dimension of `keel rollback` is **process-local**: it swaps the running revision and
+- The config dimension of `kelson rollback` is **process-local**: it swaps the running revision and
   the subscribers' route/flag views, and never rewrites the source file. Another process reading
   the file sees the old value — see `13-OPERATIONS.md` §Config reload and rollback.
 - `storage/framework/module-pins.json` has no runtime host reader yet; the pin state is written
   and reported by the CLI but not yet consulted at boot.
 - The CLI's `JobRegistry` is empty (it does not link application handlers, same posture as
-  `keel call`), so `supported_versions` falls back to the queue's in-flight maximum.
+  `kelson call`), so `supported_versions` falls back to the queue's in-flight maximum.
 - No live-DB integration test covers promotion or rollback (same posture as `migrate:rollback`);
   the measurement procedure is in `13-OPERATIONS.md` §Performance baseline.

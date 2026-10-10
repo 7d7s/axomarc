@@ -1,8 +1,8 @@
-//! # keel-storage
+//! # kelson-storage
 //! Storage port (11-SPEC §45). The domain never touches S3/MinIO directly;
 //! adapters implement this port.
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -66,7 +66,7 @@ pub trait StoragePort: Send + Sync {
     /// Over the cap is [`AppError::cap_limit`] (`CAP_LIMIT_EXCEEDED`) — never a
     /// silent truncation. The default buffers the object and then checks the
     /// size; adapters that can stop reading early override it to bound memory
-    /// by `max_bytes` (see `keel-storage-local`, which reads at most
+    /// by `max_bytes` (see `kelson-storage-local`, which reads at most
     /// `max_bytes + 1` bytes).
     fn get_capped(&self, obj: &ObjectRef, max_bytes: u64) -> Result<Vec<u8>, AppError> {
         let bytes = self.get(obj)?;
@@ -82,8 +82,8 @@ pub trait StoragePort: Send + Sync {
     /// Wave 6 P2 (directory ops): every object under a prefix, sorted by
     /// `bucket/key` where `bucket/key` starts with the prefix at a `/`
     /// boundary. The default is `NOT_IMPLEMENTED` — adapters that can walk
-    /// their backing store override it (`keel-storage-local`,
-    /// `keel-storage-s3`).
+    /// their backing store override it (`kelson-storage-local`,
+    /// `kelson-storage-s3`).
     fn list(&self, _prefix: &str) -> Result<Vec<ObjectRef>, AppError> {
         Err(AppError::not_implemented("list"))
     }
@@ -104,7 +104,7 @@ pub trait StoragePort: Send + Sync {
     /// Wave 6 P10 (HTTP client sink): open a chunked write session for a
     /// large object. The default buffers every chunk and performs one
     /// `put` on [`ObjectWriter::finish`] — adapters that own a real sink
-    /// (see `keel-storage-local`) override it to write incrementally, so
+    /// (see `kelson-storage-local`) override it to write incrementally, so
     /// a multi-hundred-megabyte download never has to live in memory at
     /// once. A session that is dropped without `finish` commits nothing.
     fn writer<'a>(
@@ -179,7 +179,7 @@ pub struct DiskEntry {
 
 /// Wave 6 P2: named disk registry — resolves a configured disk name to its
 /// [`StoragePort`] and owns the visibility policy for URL issuance. The
-/// runtime builders (keel-api, keel-worker) fill it from `[storage]`; the
+/// runtime builders (kelson-api, kelson-worker) fill it from `[storage]`; the
 /// registry itself stays adapter-agnostic per the layer matrix.
 pub struct DiskRegistry {
     disks: BTreeMap<String, DiskEntry>,
@@ -316,7 +316,7 @@ mod tests {
         // Exactly at the cap passes; one byte under it fails with the cap code.
         assert_eq!(port.get_capped(&obj, 64).unwrap().len(), 64);
         let err = port.get_capped(&obj, 63).unwrap_err();
-        assert_eq!(err.code, keel_foundation::codes::CAP_LIMIT);
+        assert_eq!(err.code, kelson_foundation::codes::CAP_LIMIT);
     }
 
     /// Wave 6 P2: adapters that cannot walk a backing store report
@@ -326,15 +326,15 @@ mod tests {
     fn directory_ops_default_to_not_implemented() {
         let port = Blob(vec![]);
         let err = port.list("uploads/").unwrap_err();
-        assert_eq!(err.code, keel_foundation::codes::NOT_IMPLEMENTED);
+        assert_eq!(err.code, kelson_foundation::codes::NOT_IMPLEMENTED);
         assert!(err.public_message.contains("list"), "{}", err.public_message);
         assert_eq!(
             port.make_dir("uploads/").unwrap_err().code,
-            keel_foundation::codes::NOT_IMPLEMENTED
+            kelson_foundation::codes::NOT_IMPLEMENTED
         );
         assert_eq!(
             port.delete_dir("uploads/").unwrap_err().code,
-            keel_foundation::codes::NOT_IMPLEMENTED
+            kelson_foundation::codes::NOT_IMPLEMENTED
         );
     }
 
@@ -465,7 +465,7 @@ mod tests {
                 },
             )
             .unwrap_err();
-        assert_eq!(dup.code, keel_foundation::codes::CONFLICT);
+        assert_eq!(dup.code, kelson_foundation::codes::CONFLICT);
 
         let mut empty_name = DiskRegistry::new("");
         let err = empty_name

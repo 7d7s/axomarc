@@ -1,5 +1,5 @@
 //! Seeders (item 20, L19): named, idempotent data-population routines driven
-//! by `keel seed` (tools/cli). Modules register their own seeders; the
+//! by `kelson seed` (tools/cli). Modules register their own seeders; the
 //! framework ships a dev-tenant seeder as proof of the contract. Convention:
 //! seeders are re-runnable (guarded inserts / ON CONFLICT DO NOTHING).
 
@@ -7,7 +7,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use keel_foundation::AppError;
+use kelson_foundation::AppError;
 use sqlx::PgPool;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -25,7 +25,7 @@ pub trait Seeder: Send + Sync {
     fn run<'a>(&'a self, pool: &'a PgPool) -> BoxFuture<'a, Result<SeedReport, AppError>>;
 }
 
-/// Ordered registry; `keel seed` runs seeders in registration order and
+/// Ordered registry; `kelson seed` runs seeders in registration order and
 /// stops at the first error (seed runs are not transactional by design —
 /// each seeder owns its own idempotency).
 #[derive(Default)]

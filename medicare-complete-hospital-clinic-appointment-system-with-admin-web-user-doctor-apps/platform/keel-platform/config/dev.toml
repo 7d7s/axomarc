@@ -1,6 +1,6 @@
-# Keel dev configuration (keel-config loads: defaults <- this file <- env)
+# Kelson dev configuration (kelson-config loads: defaults <- this file <- env)
 [app]
-name = "keel"
+name = "kelson"
 env = "dev"
 listen = "127.0.0.1:8180"
 # Wave 2 debug gate: errors carry redacted internal context in dev only.

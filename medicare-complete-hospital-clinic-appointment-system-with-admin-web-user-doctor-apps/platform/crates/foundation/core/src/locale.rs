@@ -70,7 +70,7 @@ impl Default for Locale {
 }
 
 /// Execution deadline (absolute). The engine aborts work past the deadline
-/// (`KER_DEADLINE`), never silently.
+/// (`KSN_DEADLINE`), never silently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Deadline {
     #[serde(with = "time::serde::iso8601")]

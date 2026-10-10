@@ -3,7 +3,7 @@
 //! response. mark_consumed is atomic (UPDATE ... WHERE consumed_at IS NULL),
 //! so concurrent redemptions of a single-use token cannot both win.
 //!
-//! MySQL port notes (vs the Postgres twin `keel_postgres::tokenstore`):
+//! MySQL port notes (vs the Postgres twin `kelson_postgres::tokenstore`):
 //! - `$1, $2` become `?` in bind order: `UPDATE ... SET consumed_at = $2
 //!   WHERE id = $1` binds `at` first, then `id`; no index is ever
 //!   formatted into SQL.
@@ -22,11 +22,11 @@
 //! - Case sensitivity: `token_hash` is `VARCHAR(64)` under
 //!   `utf8mb4_0900_ai_ci`, so `find_by_hash` equality (and its UNIQUE
 //!   index) is case/accent-insensitive where pg's `text` equality is
-//!   case-sensitive. keel-tokens emits lowercase hex, so lookups behave
+//!   case-sensitive. kelson-tokens emits lowercase hex, so lookups behave
 //!   identically in practice; the SQL is unchanged per the port brief.
 
-use keel_foundation::{AppError, PrincipalId};
-use keel_tokens::{AuthToken, TokenPurpose, TokenStore};
+use kelson_foundation::{AppError, PrincipalId};
+use kelson_tokens::{AuthToken, TokenPurpose, TokenStore};
 use sqlx::mysql::MySqlPool;
 
 use crate::bridge::block_on;

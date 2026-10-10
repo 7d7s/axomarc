@@ -15,7 +15,7 @@ services:
   mysql:
     # Wave 9 B-31: second first-class driver. Point DATABASE_URL at
     # mysql://keel:keel_dev_only@localhost:3306/keel to run the live-MySQL
-    # store matrix (`cargo test -p keel-postgres --features pg-tests`).
+    # store matrix (`cargo test -p kelson-postgres --features pg-tests`).
     image: mysql:8.4
     environment:
       MYSQL_USER: keel
