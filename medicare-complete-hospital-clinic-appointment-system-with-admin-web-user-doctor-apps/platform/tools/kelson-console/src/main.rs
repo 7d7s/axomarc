@@ -177,9 +177,9 @@ enum Cmd {
         with_starter: bool,
     },
     Dev,
-    /// Run the local app loop: kelson-api (+ optional worker) in one command (S7 B-08).
+    /// Run the local app loop: kelson-demo (+ optional worker) in one command (S7 B-08).
     Serve {
-        /// Also start kelson-worker alongside kelson-api.
+        /// Also start kelson-worker alongside kelson-demo.
         #[arg(long)]
         worker: bool,
     },
@@ -187,7 +187,7 @@ enum Cmd {
     /// booted engine that dispatches under the principal you log in as.
     Shell,
     /// Prune aged/trashed rows for every registered prunable model (Wave 3
-    /// Phase 6): boots kelson-api in `--prune` maintenance mode and prints
+    /// Phase 6): boots kelson-demo in `--prune` maintenance mode and prints
     /// per-model purge counts (no server, no REPL).
     #[command(name = "model:prune")]
     ModelPrune {
@@ -215,7 +215,7 @@ enum Cmd {
     },
     /// Wave 5: execute a routes/console.toml command through the CommandBus
     /// under the operator principal (capability-checked; runs inside
-    /// kelson-api — the dep-rules matrix keeps tools from linking runtime
+    /// kelson-demo — the dep-rules matrix keeps tools from linking runtime
     /// crates, same posture as `kelson shell`/`kelson model:prune`).
     #[command(name = "call")]
     Call {
@@ -499,7 +499,7 @@ enum Cmd {
 /// and the built binary share a name for both.
 #[derive(Subcommand)]
 enum ProfileTarget {
-    /// Record kelson-api (the HTTP edge) under samply.
+    /// Record kelson-demo (the HTTP edge) under samply.
     Api,
     /// Record kelson-worker (queue consumer) under samply.
     Worker,
@@ -509,7 +509,7 @@ impl ProfileTarget {
     /// Workspace package (and built binary name under target/debug).
     fn name(&self) -> &'static str {
         match self {
-            ProfileTarget::Api => "kelson-api",
+            ProfileTarget::Api => "kelson-demo",
             ProfileTarget::Worker => "kelson-worker",
         }
     }
@@ -897,7 +897,7 @@ fn about_report(root: &Path, db_version: Option<&str>) -> anyhow::Result<String>
     }
 
     // Driver selection mirrors the runtime: REDIS_URL present + reachable
-    // picks redis for the cache port (kelson-api run) and the job store
+    // picks redis for the cache port (kelson-demo run) and the job store
     // (kelson-worker, which falls back to the database queue, then memory).
     let has_db = cfg
         .database
@@ -1055,7 +1055,7 @@ fn check() -> anyhow::Result<ExitCode> {
     // catalog must resolve every route's chain (GRAPH-MW-UNKNOWN;
     // collect-all, fail-closed). The companion GRAPH-BINDING-RESOLVER gate
     // needs the live route.bindings registry (modules register resolvers
-    // during boot), so it runs at kelson-api boot, not here.
+    // during boot), so it runs at kelson-demo boot, not here.
     let mut failures = violations.len();
     match discover_manifests(&root) {
         Ok(manifests) => match kelson_registry::PlatformGraph::compile(manifests) {
@@ -2817,7 +2817,7 @@ fn optimize_clear_at(root: &Path) -> anyhow::Result<ExitCode> {
 }
 
 /// Build the views engine from the loaded `[views]` section — the CLI twin
-/// of the boot conversion in `kelson-api`. The dependency matrix forbids
+/// of the boot conversion in `kelson-demo`. The dependency matrix forbids
 /// `application -> web`, so each consumer maps the plain-data section
 /// itself (same rules: relative paths resolve against the workspace root,
 /// empty paths fall back to resources/views).
@@ -3948,7 +3948,7 @@ fn make_kind(kind: &str, name: &str, module: Option<String>) -> anyhow::Result<E
 
 /// `kelson storage:link` paths: <root>/public/storage -> <root>/storage/local
 /// (the local disk root the platform StorageProvider serves — see the
-/// `StorageProvider` in kelson-api's host).
+/// `StorageProvider` in kelson-demo's host).
 fn storage_link_paths(root: &Path) -> (PathBuf, PathBuf) {
     (
         root.join("public").join("storage"),
@@ -4144,7 +4144,7 @@ fn build(profile_raw: &str) -> anyhow::Result<ExitCode> {
     let status = std::process::Command::new("cargo")
         .arg("build")
         .args(profile.cargo_flag())
-        .args(["-p", "kelson-api", "-p", "kelson-worker"])
+        .args(["-p", "kelson-demo", "-p", "kelson-worker"])
         .current_dir(&root)
         .status()?;
     if !status.success() {
@@ -5550,14 +5550,14 @@ fn profile_guidance(target: &ProfileTarget) -> String {
 // ------------------------------------------------------------------ serve
 
 /// kelson serve (S7 B-08): one-command local loop. Spawns `cargo run -p
-/// kelson-api` (and optionally kelson-worker) with the workspace config and
+/// kelson-demo` (and optionally kelson-worker) with the workspace config and
 /// streams their output. Ctrl+C reaches the children through the console;
 /// if the API exits first we tear the worker down with it.
 fn serve(worker: bool) -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
     let config = config_path(&root);
     println!(
-        "kelson serve: kelson-api{} (config: {})",
+        "kelson serve: kelson-demo{} (config: {})",
         if worker { " + kelson-worker" } else { "" },
         config.display()
     );
@@ -5565,11 +5565,11 @@ fn serve(worker: bool) -> anyhow::Result<ExitCode> {
         .arg("run")
         .arg("--quiet")
         .arg("-p")
-        .arg("kelson-api")
+        .arg("kelson-demo")
         .current_dir(&root)
         .env("KEEL_CONFIG", &config)
         .spawn()
-        .map_err(|e| anyhow::anyhow!("cannot spawn kelson-api: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("cannot spawn kelson-demo: {e}"))?;
     let mut worker_child = if worker {
         Some(
             std::process::Command::new("cargo")
@@ -5594,7 +5594,7 @@ fn serve(worker: bool) -> anyhow::Result<ExitCode> {
     if code == 0 {
         Ok(ExitCode::SUCCESS)
     } else {
-        eprintln!("kelson-api exited with status {code}");
+        eprintln!("kelson-demo exited with status {code}");
         Ok(ExitCode::from(code.clamp(0, 255) as u8))
     }
 }
@@ -5605,7 +5605,7 @@ fn serve(worker: bool) -> anyhow::Result<ExitCode> {
 
 /// `routes/console.toml` commands (the CLI-invokable surface, docs/19). An
 /// absent file means no commands — `kelson call` then fails with the
-/// declaration hint. kelson-api re-resolves against the compiled graph whose
+/// declaration hint. kelson-demo re-resolves against the compiled graph whose
 /// GRAPH-ROUTEFILE-OP gate refuses unknown operations at boot.
 fn console_route_commands(
     root: &Path,
@@ -5620,7 +5620,7 @@ fn console_route_commands(
     Ok(manifest.commands)
 }
 
-/// Fast pre-flight name lookup — fails before the kelson-api boot, listing
+/// Fast pre-flight name lookup — fails before the kelson-demo boot, listing
 /// what routes/console.toml actually declares.
 fn resolve_console_route<'a>(
     commands: &'a [kelson_registry::ConsoleCommandSpec],
@@ -5640,7 +5640,7 @@ fn resolve_console_route<'a>(
     })
 }
 
-/// Early payload validation (bad JSON fails before the kelson-api boot).
+/// Early payload validation (bad JSON fails before the kelson-demo boot).
 fn parse_call_input(input: Option<&str>) -> anyhow::Result<serde_json::Value> {
     match input {
         None | Some("") => Ok(serde_json::json!({})),
@@ -5651,13 +5651,13 @@ fn parse_call_input(input: Option<&str>) -> anyhow::Result<serde_json::Value> {
 }
 
 /// The default operator exists in dev/test only (docs/19); staging and
-/// production must pass --principal (kelson-api re-checks authoritatively).
+/// production must pass --principal (kelson-demo re-checks authoritatively).
 fn default_operator_allowed(env: &Environment) -> bool {
     matches!(env, Environment::Dev | Environment::Test)
 }
 
 /// Wave 5: `kelson call <name> [json]` — pre-flight the route, payload and
-/// env gate, then spawn `kelson-api --call` (same posture as `kelson shell`:
+/// env gate, then spawn `kelson-demo --call` (same posture as `kelson shell`:
 /// Tools-class console, stdio inherited so the JSON result streams straight
 /// through) and propagate the exit code so capability denial is scriptable.
 fn call_command(
@@ -5685,7 +5685,7 @@ fn call_command(
         .arg("run")
         .arg("--quiet")
         .arg("-p")
-        .arg("kelson-api")
+        .arg("kelson-demo")
         .arg("--")
         .arg("--call")
         .arg(name);
@@ -5704,19 +5704,19 @@ fn call_command(
         .current_dir(&root)
         .env("KEEL_CONFIG", &config)
         .status()
-        .map_err(|e| anyhow::anyhow!("cannot spawn kelson-api --call: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("cannot spawn kelson-demo --call: {e}"))?;
     let code = status.code().unwrap_or(1);
     Ok(if code == 0 {
         ExitCode::SUCCESS
     } else {
-        // kelson-api already printed the failure to stderr — just propagate.
+        // kelson-demo already printed the failure to stderr — just propagate.
         ExitCode::from(code.clamp(0, 255) as u8)
     })
 }
 
 /// B-29: interactive platform console. kelson-console is a Tools-class crate and
 /// the dep-rules matrix keeps tools from linking runtime crates, so the REPL
-/// itself runs inside kelson-api behind `--shell`; this spawns it exactly like
+/// itself runs inside kelson-demo behind `--shell`; this spawns it exactly like
 /// `serve` (same config, stdio inherited so the prompt is interactive).
 fn shell_console() -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
@@ -5729,13 +5729,13 @@ fn shell_console() -> anyhow::Result<ExitCode> {
         .arg("run")
         .arg("--quiet")
         .arg("-p")
-        .arg("kelson-api")
+        .arg("kelson-demo")
         .arg("--")
         .arg("--shell")
         .current_dir(&root)
         .env("KEEL_CONFIG", &config)
         .status()
-        .map_err(|e| anyhow::anyhow!("cannot spawn kelson-api --shell: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("cannot spawn kelson-demo --shell: {e}"))?;
     let code = status.code().unwrap_or(1);
     if code == 0 {
         Ok(ExitCode::SUCCESS)
@@ -5749,7 +5749,7 @@ fn shell_console() -> anyhow::Result<ExitCode> {
 
 /// Wave 3 Phase 6: `kelson model:prune`. kelson-console is Tools-class and
 /// dep-rules keeps it from linking runtime crates, so the sweep runs inside
-/// kelson-api behind `--prune` (same spawn pattern as `kelson shell`): boots the
+/// kelson-demo behind `--prune` (same spawn pattern as `kelson shell`): boots the
 /// graph, purges `chunk` rows per store pass across every registered
 /// prunable model, prints per-model counts and exits — no server, no REPL.
 fn model_prune(chunk: u32, tenant: Option<String>) -> anyhow::Result<ExitCode> {
@@ -5764,7 +5764,7 @@ fn model_prune(chunk: u32, tenant: Option<String>) -> anyhow::Result<ExitCode> {
         .arg("run")
         .arg("--quiet")
         .arg("-p")
-        .arg("kelson-api")
+        .arg("kelson-demo")
         .arg("--")
         .arg("--prune")
         .arg("--chunk")
@@ -5776,7 +5776,7 @@ fn model_prune(chunk: u32, tenant: Option<String>) -> anyhow::Result<ExitCode> {
         .current_dir(&root)
         .env("KEEL_CONFIG", &config)
         .status()
-        .map_err(|e| anyhow::anyhow!("cannot spawn kelson-api --prune: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("cannot spawn kelson-demo --prune: {e}"))?;
     let code = status.code().unwrap_or(1);
     if code == 0 {
         Ok(ExitCode::SUCCESS)
@@ -5912,7 +5912,7 @@ mod tests {
 
     /// Wave 1 route-cache cycle: route:cache writes the pinned artifact
     /// (resolved chains + manifest hash), route:clear removes it. The boot
-    /// side (hash-mismatch-refuse) is proven by the kelson-api
+    /// side (hash-mismatch-refuse) is proven by the kelson-demo
     /// route_cache_pin test; this covers the CLI half of the cycle.
     #[test]
     fn route_cache_cycle_writes_and_clears_the_artifact() {
@@ -6940,7 +6940,7 @@ middleware = ["ghost"]
     }
 
     /// Wave 5 Phase 7: route/payload pre-flight and the dev/test-only
-    /// default-operator gate (docs/19) — all pure, no kelson-api spawn.
+    /// default-operator gate (docs/19) — all pure, no kelson-demo spawn.
     #[test]
     fn call_pre_flight_resolves_routes_payloads_and_env_gate() {
         let raw = "[[command]]\nname = \"book\"\noperation = \"appointments.book\"\n\n[[command]]\nname = \"list\"\noperation = \"appointments.list\"\n";
@@ -7543,7 +7543,7 @@ deprecated = true
         let Cmd::Profile { target: api } = cli.cmd else {
             panic!("profile api parses");
         };
-        assert_eq!(api.name(), "kelson-api");
+        assert_eq!(api.name(), "kelson-demo");
         let cli = Cli::try_parse_from(["kelson", "profile", "worker"]).expect("worker parses");
         let Cmd::Profile { target: worker } = cli.cmd else {
             panic!("profile worker parses");
@@ -7552,12 +7552,12 @@ deprecated = true
 
         // samply command line: `samply record <root>/target/debug/<bin>`.
         let root = std::path::Path::new(".");
-        let binary = root.join("target").join("debug").join("kelson-api");
+        let binary = root.join("target").join("debug").join("kelson-demo");
         let (program, args) = profile_invocation(&binary);
         assert_eq!(program, "samply");
         assert_eq!(args.len(), 2, "{args:?}");
         assert_eq!(args[0], "record");
-        assert!(args[1].ends_with("kelson-api"), "{args:?}");
+        assert!(args[1].ends_with("kelson-demo"), "{args:?}");
         assert!(args[1].contains("target"), "{args:?}");
 
         // Missing samply: guidance carries install + docs pointer, and the
@@ -7566,7 +7566,7 @@ deprecated = true
         assert!(guidance.contains("samply not found"), "{guidance}");
         assert!(guidance.contains("cargo install samply"), "{guidance}");
         assert!(guidance.contains("docs/13-OPERATIONS.md"), "{guidance}");
-        assert!(guidance.contains("kelson-api"), "{guidance}");
+        assert!(guidance.contains("kelson-demo"), "{guidance}");
         let dir =
             std::env::temp_dir().join(format!("kelson-console-profile-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

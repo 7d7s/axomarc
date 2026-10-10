@@ -7,7 +7,7 @@ present = "يجب أن يكون {attribute} موجودًا"
 email = "يجب أن يكون بريدًا إلكترونيًا صالحًا"
 string = "يجب أن يكون نصًا"
 integer = "يجب أن يكون رقمًا صحيحًا"
-boolean = "يجب أن يكون قيمة منطقية"
+boolean = "يجب أن تكون قيمة منطقية"
 
 [appointments]
 count = "zero=لا مواعيد | one=موعد واحد | two=موعدان | few={count} مواعيد | many={count} موعدًا | other={count} موعد"

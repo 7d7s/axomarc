@@ -135,8 +135,12 @@ const SANCTIONED_ENV_PATHS: &[&str] = &[
     "crates/application/configuration/src/lib.rs",
     "crates/application/configuration/src/dotenv.rs",
     "crates/observability/logging/src/config.rs",
-    "runtime/kelson-api/src/lib.rs",
-    "runtime/kelson-api/src/shell.rs",
+    // The HTTP edge host was renamed `kelson-api` -> `kelson-demo` (Phase P)
+    // together with its directory; these two sanctioned paths must track the
+    // real file names or the tree scan reports every boot-time env read in
+    // them as a violation.
+    "runtime/kelson-demo/src/lib.rs",
+    "runtime/kelson-demo/src/shell.rs",
     "runtime/kelson-worker/src/main.rs",
     "tools/kelson-console/src/main.rs",
 ];

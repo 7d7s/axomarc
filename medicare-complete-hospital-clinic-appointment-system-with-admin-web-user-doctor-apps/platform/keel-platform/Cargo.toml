@@ -63,11 +63,11 @@ members = [
   "adapters/kelson-webhooks",
   "adapters/kelson-search-pgvector",
   # Host binaries + the reference application modules (merged from keel-kernel)
-  "runtime/kelson-api",
+  "runtime/kelson-demo",
   "runtime/kelson-worker",
   "applications/appointments",
   "applications/oauth2",
-  # Umbrella crate: the one dependency an application takes
+      # Umbrella crate: the one dependency an application takes
   "crates/framework",
   "tools/kelson-console",
   "tools/kelson-analyzer",

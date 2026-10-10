@@ -136,8 +136,8 @@ const SANCTIONED_ENV_PATHS: &[&str] = &[
     "crates/application/configuration/src/lib.rs",
     "crates/application/configuration/src/dotenv.rs",
     "crates/observability/logging/src/config.rs",
-    "runtime/kelson-api/src/lib.rs",
-    "runtime/kelson-api/src/shell.rs",
+    "runtime/kelson-demo/src/lib.rs",
+    "runtime/kelson-demo/src/shell.rs",
     "runtime/kelson-worker/src/main.rs",
     "tools/kelson-console/src/main.rs",
     // --- keel-platform (added by the three-workspace split) ---
@@ -153,14 +153,14 @@ const SANCTIONED_ENV_PATHS: &[&str] = &[
     "keel-platform/crates/observability/logging/src/config.rs",
     "keel-platform/tools/kelson-console/src/main.rs",
     // --- keel-platform runtime (merged from the former keel-kernel tree) ---
-    // Binary/boot paths, the same class as the sanctioned `runtime/kelson-api` +
+    // Binary/boot paths, the same class as the sanctioned `runtime/kelson-demo` +
     // `runtime/kelson-worker` above: config path, logging overrides and
     // operational gates read once during boot. These three carried the
     // sanctioned role while they lived in `keel-kernel/kernel-api` +
     // `keel-kernel/kernel-worker`; the merge into `keel-platform` moved the
     // files, not the capability.
-    "keel-platform/runtime/kelson-api/src/lib.rs",
-    "keel-platform/runtime/kelson-api/src/shell.rs",
+    "keel-platform/runtime/kelson-demo/src/lib.rs",
+    "keel-platform/runtime/kelson-demo/src/shell.rs",
     "keel-platform/runtime/kelson-worker/src/main.rs",
     // --- your-app ---
     // Application binary entrypoint — same boot concern as `runtime/kelson-worker`.

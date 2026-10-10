@@ -1401,58 +1401,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kelson-api"
-version = "0.1.0"
-dependencies = [
- "axum",
- "kelson-cache-memory",
- "kelson-cache-redis",
- "kelson-caching",
- "kelson-command",
- "kelson-config",
- "kelson-context",
- "kelson-execution",
- "kelson-feature-flags",
- "kelson-foundation",
- "kelson-http",
- "kelson-identity",
- "kelson-jobs",
- "kelson-lifecycle",
- "kelson-metrics",
- "kelson-mod-appointments",
- "kelson-mod-oauth2",
- "kelson-models",
- "kelson-mysql",
- "kelson-notifications",
- "kelson-observability",
- "kelson-policy",
- "kelson-postgres",
- "kelson-query",
- "kelson-realtime",
- "kelson-registry",
- "kelson-scheduling",
- "kelson-scope",
- "kelson-session",
- "kelson-storage",
- "kelson-storage-local",
- "kelson-storage-s3",
- "kelson-tenancy",
- "kelson-tokens",
- "kelson-validation",
- "kelson-views",
- "kelson-wasm",
- "serde",
- "serde_json",
- "time",
- "tokio",
- "tokio-stream",
- "tower",
- "tower-http 0.7.1",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "kelson-arch-validation"
 version = "0.1.0"
 dependencies = [
@@ -1606,6 +1554,58 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+]
+
+[[package]]
+name = "kelson-demo"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "kelson-cache-memory",
+ "kelson-cache-redis",
+ "kelson-caching",
+ "kelson-command",
+ "kelson-config",
+ "kelson-context",
+ "kelson-execution",
+ "kelson-feature-flags",
+ "kelson-foundation",
+ "kelson-http",
+ "kelson-identity",
+ "kelson-jobs",
+ "kelson-lifecycle",
+ "kelson-metrics",
+ "kelson-mod-appointments",
+ "kelson-mod-oauth2",
+ "kelson-models",
+ "kelson-mysql",
+ "kelson-notifications",
+ "kelson-observability",
+ "kelson-policy",
+ "kelson-postgres",
+ "kelson-query",
+ "kelson-realtime",
+ "kelson-registry",
+ "kelson-scheduling",
+ "kelson-scope",
+ "kelson-session",
+ "kelson-storage",
+ "kelson-storage-local",
+ "kelson-storage-s3",
+ "kelson-tenancy",
+ "kelson-tokens",
+ "kelson-validation",
+ "kelson-views",
+ "kelson-wasm",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
+ "tokio-stream",
+ "tower",
+ "tower-http 0.7.1",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

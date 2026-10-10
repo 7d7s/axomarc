@@ -62,8 +62,10 @@ members = [
   "adapters/kelson-search-pgvector",
   "adapters/kelson-session-redis",
   "adapters/kelson-session-postgres",
-  "runtime/kelson-api",
+  "runtime/kelson-demo",
   "runtime/kelson-worker",
+  "applications/appointments",
+  "applications/oauth2",
   "tools/kelson-console",
   "tools/kelson-analyzer",
   "tools/kelson-codegen",
@@ -72,9 +74,7 @@ members = [
   "testing/testkit",
   "examples/minimal",
 "examples/reference",
-  "applications/appointments",
-  "applications/oauth2",
-]
+    ]
 
 [workspace.package]
 version = "0.1.0"
