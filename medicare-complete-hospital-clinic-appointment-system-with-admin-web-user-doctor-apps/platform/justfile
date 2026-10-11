@@ -5,7 +5,7 @@ default: dev
 # one-command dev environment
 dev:
     docker compose up -d
-    cargo run -p kelson-api
+    cargo run -p kelson-demo
 
 check:
     cargo check --workspace
@@ -25,7 +25,7 @@ db-down:
     docker compose down
 
 migrate:
-    cargo run -p kelson-api -- --migrate-only
+    cargo run -p kelson-demo -- --migrate-only
 
 # --- release engineering (see PUBLISHING.md) ---
 
