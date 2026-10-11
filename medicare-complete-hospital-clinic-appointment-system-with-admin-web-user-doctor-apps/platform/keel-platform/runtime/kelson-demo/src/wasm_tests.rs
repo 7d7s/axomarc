@@ -224,6 +224,61 @@ fn wasm_loader_gates_discovery_and_the_guest_abi() {
     assert!(err.contains("drifts from its sidecar"), "{err}");
 }
 
+/// The plugin boundary is WASM-only, enforced by construction: kelson ships no
+/// native-loading primitive anywhere in the dependency graph (no libloading,
+/// no dlopen, no `.so`/`.dll`/`.dylib` handling), and discovery hands raw bytes
+/// to wasmtime, which validates the binary format before anything else runs.
+///
+/// That guarantee is structural rather than a filter, so it is easy to break
+/// silently later - a future "just also load native plugins" change would look
+/// harmless. This pins it: an ELF/PE/Mach-O image offered as a plugin is
+/// refused at boot with its load stage named, never opened as a library.
+#[test]
+fn wasm_only_boundary_refuses_native_images() {
+    // Container magics for the three native plugin formats, each padded so the
+    // bytes reach wasmtime's validator instead of failing as an empty file.
+    let elf = {
+        let mut v = b"\x7fELF\x02\x01\x01\x00".to_vec(); // Linux `.so`
+        v.extend_from_slice(b"kelson-native-plugin-payload");
+        v
+    };
+    let pe = {
+        let mut v = b"MZ\x90\x00".to_vec(); // Windows `.dll`
+        v.extend_from_slice(&[0u8; 12]);
+        v.extend_from_slice(b"PE\0\0kelson-native-plugin-payload");
+        v
+    };
+    let macho = {
+        let mut v = b"\xcf\xfa\xed\xfe".to_vec(); // macOS `.dylib`
+        v.extend_from_slice(b"kelson-native-plugin-payload");
+        v
+    };
+
+    for (tag, bytes) in [("elf", &elf), ("pe", &pe), ("macho", &macho)] {
+        let root = temp_root(&format!("native-{tag}"));
+        let binary = root.join(format!("plugin-{tag}.wasm"));
+        std::fs::write(&binary, bytes).expect("image writes");
+
+        // A valid sidecar keeps the refusal attributable to the BYTES: the
+        // manifest is well-formed, so failure cannot be explained by it.
+        let mut entry = fixture_entry("echo");
+        entry.path = binary.display().to_string();
+        write_index(&root, vec![entry]);
+
+        // `expect_err` would need the success type to be Debug; match instead.
+        let err = match crate::load_wasm_plugins(&root) {
+            Err(e) => e,
+            Ok(_) => panic!(
+                "{tag}: a native image was accepted - the WASM-only plugin boundary is broken"
+            ),
+        };
+        assert!(err.contains("wasm plugin echo"), "{tag}: {err}");
+        // The refusal happens at compile/validate, before linking or the ABI
+        // gate - the image is never treated as a candidate library.
+        assert!(err.contains("compile"), "{tag}: {err}");
+    }
+}
+
 /// Loaded plugins dispatch through the CommandBus exactly like
 /// first-party handlers: JSON in, JSON out, guest computation intact.
 #[tokio::test]
