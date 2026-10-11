@@ -281,7 +281,7 @@ impl MiddlewareCatalog {
     }
 
     /// Boot gate helper: validate one route's middleware entries (used by
-    /// kelson-api boot and `kelson check` before any route is registered). The
+    /// kelson-demo boot and `kelson check` before any route is registered). The
     /// route's method/path only shape the violation message.
     pub fn validate_route(
         &self,

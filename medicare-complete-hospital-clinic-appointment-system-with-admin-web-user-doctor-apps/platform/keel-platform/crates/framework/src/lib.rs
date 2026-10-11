@@ -1,6 +1,6 @@
 //! kelson-framework: the framework umbrella crate.
 //!
-//! Re-exports the published framework surface that host binaries (`kelson-api`,
+//! Re-exports the published framework surface that host binaries (`kelson-demo`,
 //! `kelson-worker`) and application modules depend on. This is the one
 //! dependency an application takes:
 //!

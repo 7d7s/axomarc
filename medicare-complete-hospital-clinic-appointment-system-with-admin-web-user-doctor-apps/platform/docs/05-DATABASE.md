@@ -77,7 +77,7 @@ cutoff `queue:prune-batches` deletes on (open batches keep `finished_at NULL` an
 pruned). The membership jsonb is written once at dispatch (`ON CONFLICT` refreshes only `name`
 and `on_complete`): per-member state stays in `jobs_queue`, so `batch.status` counts live queue
 truth and concurrent member finishes or admin ops can never lose an update. `PgBatchLedger`
-implements the `BatchLedger` port for the worker's dispatch, kelson-api's batch endpoints and the
+implements the `BatchLedger` port for the worker's dispatch, kelson-demo's batch endpoints and the
 console batch commands; degraded boots answer through `MemoryBatchLedger` on the same trait
 (D-52).
 
@@ -190,7 +190,7 @@ needs the `vector` extension (CI image); all other slices run on stock Postgres.
 ## MySQL driver (B-31)
 
 `[database].driver = "mysql"` (default `postgres`, ADR 0010) selects the second fabric at boot:
-`kelson-api`, `kelson-worker`, and `kelson-console` all build the MySQL pool, runner, seeders, and
+`kelson-demo`, `kelson-worker`, and `kelson-console` all build the MySQL pool, runner, seeders, and
 stores from that key. The default path is byte-identical — with no `driver` key every probe,
 migration, and store call runs exactly as before. Degraded boot (D-52) is unchanged on both
 drivers: unreachable + not required lands on the in-memory stores.

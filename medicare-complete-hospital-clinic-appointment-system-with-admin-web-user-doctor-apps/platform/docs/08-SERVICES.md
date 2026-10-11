@@ -27,7 +27,7 @@ docker-compose). Guards enforce size/type policies.
 
 Wave 6 P2 adds the disk registry. `[storage]` carries `default` (default disk name, `local`) and
 `[storage.disks.<name>] { driver = "local"|"s3", root|bucket, visibility = "public"|"private",
-url }`. Runtime builders (kelson-api's `StorageProvider`, kelson-worker's `mail_job` — each runtime
+url }`. Runtime builders (kelson-demo's `StorageProvider`, kelson-worker's `mail_job` — each runtime
 owns the conversion because the layer matrix keeps adapter constructors out of config and
 service crates) turn the section into a `DiskRegistry` at boot: a driver typo or level-3 key typo
 is caught by the typed parse / `CONFIG_SCHEMA_MAPS` walk, while a `local` disk without `root`, an
@@ -59,7 +59,7 @@ never finished commits nothing, so an aborted download can never publish a trunc
 Mail gains the Wave 6 `Mailable` path (P1): subject, from/reply-to, to/cc/bcc, text + html
 bodies, custom RFC822 headers, and attachments that carry only an `ObjectRef` — never bytes.
 `resolve_attachments` streams them through `StoragePort::get_capped` under the upload cap
-(8 MiB, pinned to `UploadLimits` by a kelson-api test; over-cap is `CAP_LIMIT_EXCEEDED`, never a
+(8 MiB, pinned to `UploadLimits` by a kelson-demo test; over-cap is `CAP_LIMIT_EXCEEDED`, never a
 truncation, and `LocalDisk` stops reading at `max_bytes + 1`). The `[mail]` section declares
 the failover chain: `mail.default` is a comma-separated mailer list (`log` is built in and
 needs no declaration), `[mail.mailers.<name>]` sets `transport = "log"|"smtp"` +
@@ -89,7 +89,7 @@ nudge-not-payload: `signal` + optional `delta_cursor` only, never free-form data
 database channel through the new `NotificationStore` port (in-memory reference + a pg
 implementation behind the same degradation posture, shared as ONE instance between the hub and the
 HTTP routes). The inbox edges (`GET /api/v1/notifications`, `POST /api/v1/notifications/read`)
-live in `kelson-api/src/notification_routes.rs`; the mark is gated by the `notifications.mark_read`
+live in `kelson-demo/src/notification_routes.rs`; the mark is gated by the `notifications.mark_read`
 framework capability chained into the login-time grant set.
 
 Notifications P6 completes the v2 surface — on-demand notifiables, queued delivery, producer
@@ -105,7 +105,7 @@ dispatch (request-time locale, filled target, view HTML) and handed to
 whose `DeliveryPayload` is adjacently tagged Mail/Sms/Push/Database. The drain refuses an unknown
 envelope version loudly (retry → dead-letter, never a guess), and `queue_via` with no port fails
 closed (`not_implemented`). Both halves are runtime-owned (the layer matrix keeps Async off
-Services): kelson-api enqueues pool-gated (`PgJobStore` + the registered `notification.send` def
+Services): kelson-demo enqueues pool-gated (`PgJobStore` + the registered `notification.send` def
 wired onto the hub through `PlatformProvider.notification_queue`; no pool = no port =
 fail-closed), kelson-worker drains (`notification_job` builds the hub over the boot catalog, the
 pg/in-memory database store and a `ChainMail` adapter over the P1 `MailChain` — the chain does
@@ -173,7 +173,7 @@ gained a `PresenceHub` roster (idempotent join/leave per member id; `presence.jo
 takes the host's authorizer and joins a `presence-*` roster before handing over the SSE
 stream (a drop-guarded stream leaves on disconnect; the WS session leaves when its loop ends),
 while the raw `realtime_router(hub)` stays as the un-authorized transport primitive for the
-crate's own tests. The host side lives in `kelson-api`'s `broadcast_routes.rs`: `POST
+crate's own tests. The host side lives in `kelson-demo`'s `broadcast_routes.rs`: `POST
 /api/v1/broadcast/auth` mints the short-TTL channel-bound token after the resolved capability
 gate, `GET /api/v1/broadcast/members` reads the roster under the same gate, and
 `ChannelTokenAuthorizer` refuses anything but a valid token bound to the requested channel —

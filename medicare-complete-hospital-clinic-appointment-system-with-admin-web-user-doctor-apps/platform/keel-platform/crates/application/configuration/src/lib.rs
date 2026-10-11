@@ -354,7 +354,7 @@ impl Default for LimitsConfig {
 /// and the environment name consumed by the views engine.
 ///
 /// Deliberately plain data: kelson-config sits in the application layer and the
-/// dependency matrix forbids `application -> web`, so `kelson-api` converts this
+/// dependency matrix forbids `application -> web`, so `kelson-demo` converts this
 /// into `kelson_views::ViewsConfig` at boot (relative paths resolve against the
 /// workspace root).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -398,7 +398,7 @@ pub struct HttpSection {
 }
 
 /// Security posture section (Wave 7 P4, `[security]`): web-plane response
-/// hardening. Plain data like [`HttpSection`] — kelson-api resolves it into
+/// hardening. Plain data like [`HttpSection`] — kelson-demo resolves it into
 /// `kelson_http::SecurityHeaders` at boot; the api plane never reads it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SecuritySection {
@@ -513,7 +513,7 @@ pub struct CsrfSection {
 }
 
 /// Identity section (Wave 7 P5, `[identity]`): argon2id work factors for
-/// password verifiers. Plain data like [`SecuritySection`] — kelson-api
+/// password verifiers. Plain data like [`SecuritySection`] — kelson-demo
 /// resolves it into `kelson_identity::PasswordParams` at boot; a successful
 /// login compares the stored verifier's embedded factors against these and
 /// rehashes on drift (rehash-on-login, docs/19).
@@ -1107,7 +1107,7 @@ impl PlatformConfig {
 }
 
 /// Frozen post-load configuration: `Arc`-shared with getters only. Boot
-/// (kelson-api `run()`, kelson-worker) consumes this type; pre-boot tooling
+/// (kelson-demo `run()`, kelson-worker) consumes this type; pre-boot tooling
 /// (`kelson config:*`) works on the owned [`PlatformConfig`] and freezes it
 /// only to publish the effective config.
 #[derive(Debug, Clone)]

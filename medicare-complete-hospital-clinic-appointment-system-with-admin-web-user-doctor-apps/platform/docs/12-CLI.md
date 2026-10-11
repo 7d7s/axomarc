@@ -91,7 +91,7 @@ console command refuses this driver anymore.
 | `kelson schedule:work [--every n]` (default 60s) | schedule daemon: tick loop over the registry, persists tick state (last-fired + recorded failures, Wave 6 P4), fires due items (Wave 5) |
 | `kelson schedule:test` | dry-run the schedule registry: prints registered vs due-now (pure — nothing fires, nothing is written; disabled entries would show registered but never due) (Wave 5) |
 | `kelson storage:link [--force]` | create the public/storage → storage/local symlink (refuses to overwrite without `--force`; `--force` replaces a link or file — a real directory at the path is never deleted automatically) (Wave 5) |
-| `kelson call <name> [json] [--principal <uuid>] [--tenant <uuid>]` | dispatch one module operation through the CLI console route: pre-flights against `routes/console.toml` (resolve by name, list on miss), enforces the dev/test-only default operator (explicit `--principal` is the production path — B-33), resolves the tenant (explicit `--tenant` UUID, else the dev/test fallback tenant — absent outside dev/test, so it must be passed), then spawns `kelson-api --call` which runs the CommandBus with the same policy engine as HTTP (Wave 5; the HTTP edge-stage validation/middleware layer is not re-run — routes are pre-validated at boot) |
+| `kelson call <name> [json] [--principal <uuid>] [--tenant <uuid>]` | dispatch one module operation through the CLI console route: pre-flights against `routes/console.toml` (resolve by name, list on miss), enforces the dev/test-only default operator (explicit `--principal` is the production path — B-33), resolves the tenant (explicit `--tenant` UUID, else the dev/test fallback tenant — absent outside dev/test, so it must be passed), then spawns `kelson-demo --call` which runs the CommandBus with the same policy engine as HTTP (Wave 5; the HTTP edge-stage validation/middleware layer is not re-run — routes are pre-validated at boot) |
 | `kelson key:generate` | new application key into config |
 | `kelson config:dump` | effective config, secrets redacted |
 | `kelson config:cache` / `kelson config:clear` | pin the frozen effective config to `storage/framework/config.json` + content hash / drop it; boot hash-check refuses drift (Wave 4) |
@@ -100,7 +100,7 @@ console command refuses this driver anymore.
 | `kelson config:reload` | Phase 3 §4.1 pre-flight for hot-reload: schema-gate the current config file, print its content hash and the drift state against the pinned `config.json`, with timing; exits non-zero when the config is invalid. A running server's poller picks a valid edit up within its interval and swaps the route/flag views **without a restart** (< 50 ms budget). Runbook: `13-OPERATIONS.md` §Config reload and rollback |
 | `kelson promote [--plan <path>] [--dry-run]` | Phase 4 §7.2: run the four-stage pipeline — deploy (module pins) → migrate (pair batches) → activate (config) → canary — checkpointing to `storage/framework/promotion.checkpoint.json` **first** and restoring every dimension automatically if any health gate fails (KEEL-004). Default plan `storage/framework/promotion.json`. `--dry-run` prints the plan and the stages that would run, changing nothing. Runbook: `13-OPERATIONS.md` §Promotion failure |
 | `kelson rollback [--checkpoint <path>] [--dry-run]` | Phase 4 §7.1: restore all five dimensions (config, migrations, modules, jobs, events) to a checkpoint. The read-only job and event compatibility guards run **before** any mutation, so an incompatible target fails closed with nothing half-applied; the three mutating dimensions then run config → migrations → modules. Default `storage/framework/promotion.checkpoint.json`. `--dry-run` prints the checkpoint without restoring |
-| `kelson serve [--worker]` | one-command local loop: spawns kelson-api (and kelson-worker), streams logs (S7) |
+| `kelson serve [--worker]` | one-command local loop: spawns kelson-demo (and kelson-worker), streams logs (S7) |
 | `kelson shell` | interactive platform console (v1.1 B-29): REPL over the booted engine — login/whoami/ops/routes/caps/models/run under your principal (Wave 4 adds `caps` + `models`) |
 | `kelson cache:clear` | clear the app cache |
 | `kelson cache:forget <key>` | remove one cache key (Wave 4) |
@@ -163,11 +163,11 @@ implemented as of Wave 5 (see Diagnostics and quality).
 Note (S7): sessions are opt-in — enable with `kelson flag:set app.sessions 100` before serving browser logins.
 
 Note (v1.1 B-29): `kelson shell` boots the exact production engine (same config, pool, flag
-snapshot and graph gate as `kelson-api`) and gives you a typed REPL: `login <email> <password>
+snapshot and graph gate as `kelson-demo`) and gives you a typed REPL: `login <email> <password>
 [tenant]`, `whoami`, `ops`, `routes`, `run <module.operation> [json]`, `help`, `exit`.
 Every `run` goes through the CommandBus under the logged-in principal with the same policy
 engine enforcing capability denial as the HTTP edge — there is no authorization bypass
 (denial enforced and writes-nothing is covered by tests). Login verifies argon2 credentials
 exactly like `POST /auth/login`. Prod refuses the shell unless `KEEL_SHELL_ALLOW=1`. The
-REPL itself runs inside `kelson-api --shell` (dep-rules keep tools from linking runtime
+REPL itself runs inside `kelson-demo --shell` (dep-rules keep tools from linking runtime
 crates); `kelson shell` spawns it with inherited stdio so the prompt stays interactive.

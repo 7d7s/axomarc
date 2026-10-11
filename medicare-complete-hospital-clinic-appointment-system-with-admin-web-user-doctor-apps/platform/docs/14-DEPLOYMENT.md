@@ -3,7 +3,7 @@
 ## Binaries
 
 ```
-runtime/kelson-api      HTTP entrypoint (healthz/readyz, router, middleware)
+runtime/kelson-demo      HTTP entrypoint (healthz/readyz, router, middleware)
 runtime/kelson-worker   queue worker (claims jobs, executes, dead-letters)
 ```
 
@@ -43,7 +43,7 @@ kelson key:generate   # rotate the application key in config
 - `GET /healthz` = liveness (200 even when degraded, envelope carries `degraded` + reason).
 - `GET /readyz` = readiness (200 when capable, 503 + `BOOT` envelope when degraded). Wire the two
   distinctly so orchestrators restart only on liveness loss and drain traffic on readiness loss.
-- Both runtimes cooperate with `SIGINT`/`Ctrl-C`: kelson-api stops accepting and drains in-flight
+- Both runtimes cooperate with `SIGINT`/`Ctrl-C`: kelson-demo stops accepting and drains in-flight
   requests (axum graceful shutdown); kelson-worker finishes the in-flight job, runs one final outbox
   drain, then exits. Shutdown is bounded by the longest in-flight unit of work — there is no
   forced-kill path.

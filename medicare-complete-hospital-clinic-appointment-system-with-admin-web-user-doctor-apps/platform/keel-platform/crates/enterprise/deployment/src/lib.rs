@@ -18,7 +18,7 @@ use kelson_foundation::AppError;
 use serde::{Deserialize, Serialize};
 
 /// Workspace-relative runtime binaries produced by `kelson build`.
-pub const RELEASE_BINARIES: &[&str] = &["kelson-api", "kelson-worker", "kelson"];
+pub const RELEASE_BINARIES: &[&str] = &["kelson-demo", "kelson-worker", "kelson"];
 
 /// Build profile selection (§12: dev/test/release postures).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

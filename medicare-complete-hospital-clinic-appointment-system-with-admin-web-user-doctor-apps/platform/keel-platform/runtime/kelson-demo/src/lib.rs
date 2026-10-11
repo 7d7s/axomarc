@@ -1,4 +1,4 @@
-//! kelson-api: HTTP edge host (11-SPEC SS20, S7 edge wiring). Binary entry is
+//! kelson-demo: HTTP edge host (11-SPEC SS20, S7 edge wiring). Binary entry is
 //! `main.rs`; this lib exposes the routing modules and boot function so the
 //! integration suite can drive the exact production wiring.
 
@@ -67,10 +67,10 @@ pub fn load_wasm_plugins(
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cfg_path = std::env::var("KEEL_CONFIG").unwrap_or_else(|_| "config/dev.toml".into());
-    // B-29: interactive console mode (`kelson shell` spawns `kelson-api --shell`).
+    // B-29: interactive console mode (`kelson shell` spawns `kelson-demo --shell`).
     let shell_mode = std::env::args().any(|arg| arg == "--shell");
     // Wave 3 Phase 6: maintenance sweep (`kelson model:prune` spawns
-    // `kelson-api --prune [--chunk N] [--tenant T]`) — boots the graph, runs
+    // `kelson-demo --prune [--chunk N] [--tenant T]`) — boots the graph, runs
     // the registry sweep, prints per-model counts and exits.
     let args: Vec<String> = std::env::args().collect();
     let prune_mode = args.iter().any(|arg| arg == "--prune");
@@ -87,7 +87,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|v| uuid::Uuid::parse_str(&v).ok())
         .map(TenantId::from_uuid);
     // Wave 5 Phase 7: one-shot console-route dispatch (`kelson call <name> [json]`
-    // spawns `kelson-api --call <name> [--input <json>] [--principal <uuid>]
+    // spawns `kelson-demo --call <name> [--input <json>] [--principal <uuid>]
     // [--tenant <uuid>]`) — boots the graph, dispatches through the CommandBus
     // under the operator principal, prints the JSON result and exits.
     let call_mode = args.iter().any(|arg| arg == "--call");
@@ -169,7 +169,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     telemetry_config.rebase(&root);
     let telemetry_runtime = kelson_observability::ObservabilityRuntime::new(
         telemetry_config,
-        kelson_observability::ServiceIdentity::new("kelson-api", env.as_str()),
+        kelson_observability::ServiceIdentity::new("kelson-demo", env.as_str()),
         &[],
     )
     .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
@@ -537,7 +537,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
     *health.services.lock().unwrap() = host.registry().service_names();
-    tracing::info!(services = ?host.registry().service_names(), "kelson-api booted");
+    tracing::info!(services = ?host.registry().service_names(), "kelson-demo booted");
 
     // Platform graph compile is a BOOT GATE (parity with `kelson check`): a
     // broken manifest never produces a serving edge (S7 C1). It runs AFTER
@@ -1624,7 +1624,7 @@ pub fn build_app_state(
                     tcfg.paths.health_dir = storage_root.join("telemetry/exporters");
                     tcfg
                 },
-                kelson_observability::ServiceIdentity::new("kelson-api-test", "test"),
+                kelson_observability::ServiceIdentity::new("kelson-demo-test", "test"),
                 &[],
             )
             .expect("telemetry runtime constructs"),

@@ -17,7 +17,7 @@ crates/
   ai/            client, tools, agents, mcp
 adapters/        kelson-cache-memory, kelson-mail-smtp, kelson-sms-msg91, kelson-push-fcm,
                  kelson-storage-s3, kelson-storage-local
-runtime/         kelson-api, kelson-worker
+runtime/         kelson-demo, kelson-worker
 applications/    generated/domain apps (platform NEVER imports these)
 ```
 

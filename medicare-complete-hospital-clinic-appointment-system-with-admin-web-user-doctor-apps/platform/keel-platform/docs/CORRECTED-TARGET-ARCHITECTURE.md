@@ -41,13 +41,13 @@ keel-platform/          ← Framework crates (75+ crates, versioned independentl
 │   ├── realtime/       ← kelson-realtime (tenant-scoped channels)
 │   └── deployment/     ← kelson-deployment (RollbackExecutor + promotion)
 ├── runtime/
-│   ├── kelson-api/       ← kelson-api (HTTP server, route registry, middleware)
+│   ├── kelson-demo/       ← kelson-demo (HTTP server, route registry, middleware)
 │   └── kelson-worker/    ← kelson-worker (job runner, scheduler, outbox pump)
 ├── applications/       ← optional opt-in modules (appointments, oauth2)
 └── tools/kelson-cli/     ← kelson binary (build, promote, rollback, config:reload)
 
 # Phase O (2026-10-10): the former `keel-kernel/` workspace was MERGED into
-# `keel-platform/`. `kernel-api` -> `runtime/kelson-api`, `kernel-worker` ->
+# `keel-platform/`. `kernel-api` -> `runtime/kelson-demo`, `kernel-worker` ->
 # `runtime/kelson-worker`, the `keel-kernel-facade` -> `crates/framework`
 # (`kelson-framework`), and `applications/`, `lang/` moved across whole. There is
 # no longer a third workspace: `your-app` consumes the `kelson-framework`
@@ -73,7 +73,7 @@ your-app/               ← Application workspace (YOUR code, YOUR release caden
 [workspace.lints.rust]
 workspace = true
 
-# runtime/kelson-api/Cargo.toml (host binary — consumes the umbrella)
+# runtime/kelson-demo/Cargo.toml (host binary — consumes the umbrella)
 dependencies = [
     "kelson-framework",   # re-exported facade (lifecycle, registry, graph, config, ...)
     "kelson-config",      # FrozenConfig + ConfigReloader
@@ -97,7 +97,7 @@ dependencies = [
 | Workspace | Release Trigger | Versioning | Deploy Artifact |
 |---|---|---|---|
 | `keel-platform` | Framework feature/fix | SemVer minor/patch | Crates.io + GitHub Releases |
-| `keel-platform/runtime` (`kelson-api`, `kelson-worker`) | Host binary change | SemVer major/minor | `kelson-api`, `kelson-worker` binaries |
+| `keel-platform/runtime` (`kelson-demo`, `kelson-worker`) | Host binary change | SemVer major/minor | `kelson-demo`, `kelson-worker` binaries |
 | `your-app` | Business feature/fix | SemVer patch/minor | Container images + WASM plugins |
 
 **Critical**: `your-app` **never** rebuilds `keel-platform`. Module changes → WASM plugin rebuild (seconds) or hot-reload (milliseconds).
@@ -792,7 +792,7 @@ impl PromotionPipeline {
     Consumed downstream by `your-app` via `keel-kernel-facade`.
   - **Superseded by Phase O (2026-10-10) — topology change, not a revert.** The three-tree
     split proved here was subsequently merged into a **two-tree** topology so the framework
-    ships as one publishable unit: `kernel-api` → `keel-platform/runtime/kelson-api`,
+    ships as one publishable unit: `kernel-api` → `keel-platform/runtime/kelson-demo`,
     `kernel-worker` → `keel-platform/runtime/kelson-worker`, `keel-kernel-facade` →
     `keel-platform/crates/framework` (renamed `kelson-framework`), and `applications/` +
     `lang/` moved across whole. `platform/keel-kernel/` was deleted (52 tracked files).
@@ -891,7 +891,7 @@ impl PromotionPipeline {
     `cargo run -p xtask -- dep-rules` → exit 0 (`dep-rules: clean`), `cargo deny check` →
     exit 0, `keel-publish.yml` `msrv` job → a 4-leg matrix at each workspace's verified floor (1.88 for `platform`, 1.89 for the other three). Both workflow files parse as valid YAML, and
     the `keel.yml` steps that carry over from the old job were checked to reference packages that
-    actually exist (`kelson-observability`, `kelson-api`, `xtask`) and tests that actually exist
+    actually exist (`kelson-observability`, `kelson-demo`, `xtask`) and tests that actually exist
     (`g18`, `telemetry_incident`).
   - *Pre-existing blocker cleared to get here:* `dep-rules` and
     `env_lint_tests::platform_tree_is_env_lint_clean` both failed **before** this work — not from

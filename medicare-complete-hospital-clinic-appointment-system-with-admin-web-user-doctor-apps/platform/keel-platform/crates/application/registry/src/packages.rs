@@ -122,7 +122,7 @@ impl PackageIndex {
 
     /// Every indexed manifest, in index order — packages first, then WASM
     /// plugin sidecars — fail-closed (discovery feeds this straight into
-    /// graph compile; both discovery copies — kelson-api and kelson-console —
+    /// graph compile; both discovery copies — kelson-demo and kelson-console —
     /// call it, so WASM plugins reach `kelson graph`/`kelson check`/boot with
     /// zero per-caller wiring).
     pub fn manifests(&self, root: &Path) -> Result<Vec<ModuleManifest>, String> {

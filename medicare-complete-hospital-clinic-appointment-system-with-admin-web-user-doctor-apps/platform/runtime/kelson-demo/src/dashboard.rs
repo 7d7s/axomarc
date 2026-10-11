@@ -1,4 +1,4 @@
-//! Horizon-lite dashboard (S10 B-20): a single static page served by kelson-api
+//! Horizon-lite dashboard (S10 B-20): a single static page served by kelson-demo
 //! over the JSON meta surface (/healthz, /readyz, /meta/*, /metrics). No JS
 //! framework, no build step, no extra dependency — mirrors the SPA starter
 //! posture from S9. Read-only by design.
@@ -479,7 +479,7 @@ mod tests {
 
     #[test]
     fn ops_view_renders_all_four_sections_with_seeded_data() {
-        let dir = std::env::temp_dir().join(format!("kelson-api-ops-a-{}", uuid::Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("kelson-demo-ops-a-{}", uuid::Uuid::now_v7()));
         let (mut state, _graph, _store) = crate::build_app_state(&dir, true, true);
 
         // Harness boots without queue/traces handles (D-52) — seed them.
@@ -547,7 +547,7 @@ mod tests {
 
     #[test]
     fn ops_sections_degrade_inline_without_handles() {
-        let dir = std::env::temp_dir().join(format!("kelson-api-ops-b-{}", uuid::Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("kelson-demo-ops-b-{}", uuid::Uuid::now_v7()));
         let (state, _graph, _store) = crate::build_app_state(&dir, true, true);
         // Harness defaults: queue, traces and schedule are all None (D-52).
 
@@ -584,7 +584,7 @@ mod tests {
 
     #[test]
     fn ops_sections_whitelist_payload_and_input_out() {
-        let dir = std::env::temp_dir().join(format!("kelson-api-ops-c-{}", uuid::Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("kelson-demo-ops-c-{}", uuid::Uuid::now_v7()));
         let (mut state, _graph, _store) = crate::build_app_state(&dir, true, true);
 
         let queue = kelson_jobs::InMemoryJobStore::new();

@@ -11,7 +11,7 @@ on:
 # (CORRECTED-TARGET-ARCHITECTURE section 9, P1-4).
 #
 # Phase O (2026-10-10) merged the former `keel-kernel` workspace INTO
-# `keel-platform` (`kernel-api` -> `runtime/kelson-api`, `kernel-worker` ->
+# `keel-platform` (`kernel-api` -> `runtime/kelson-demo`, `kernel-worker` ->
 # `runtime/kelson-worker`, facade -> `crates/framework`), so its dedicated job and
 # its `keel-publish.yml` MSRV leg were removed with it: `platform/keel-kernel`
 # no longer exists and a job pointing at it could never pass.
@@ -68,7 +68,7 @@ jobs:
       - name: G18 telemetry resilience (failure injection + tenant isolation)
         run: |
           cargo test -p kelson-observability --locked g18
-          cargo test -p kelson-api --test http_integration --locked telemetry_incident
+          cargo test -p kelson-demo --test http_integration --locked telemetry_incident
       - name: architecture analyzer (xtask dep-rules)
         run: cargo run -p xtask -- dep-rules
       - name: publishability dry-run (main only)

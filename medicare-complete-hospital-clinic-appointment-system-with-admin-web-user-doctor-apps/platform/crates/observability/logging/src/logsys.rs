@@ -22,7 +22,7 @@ pub enum LogFormat {
 /// Process logging posture. Built by the host from config; defaults are safe.
 #[derive(Debug, Clone)]
 pub struct LogConfig {
-    /// `EnvFilter` directive string, e.g. `info`, `kelson_api=debug,info`.
+    /// `EnvFilter` directive string, e.g. `info`, `kelson_demo=debug,info`.
     pub level: String,
     pub format: LogFormat,
     /// Optional file mirror (append; parent dir must exist).

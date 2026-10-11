@@ -58,10 +58,10 @@ crate depends on gated crate`) failed on 10 edges. Fixed per crate intent: the
 seven Sentinel/integrity crates whose READMEs say *internal-only until a
 release wave* had their gate lifted (`kelson-metrics`, `kelson-telemetry`,
 `kelson-tracing`, `kelson-pipeline`, `kelson-buffer`, `kelson-export`,
-`kelson-integrity`), and `kelson-api` gained `publish = false` — it is the demo
+`kelson-integrity`), and `kelson-demo` gained `publish = false` — it is the demo
 API host that hard-wires `kelson-mod-appointments` (application code, staying
 gated) and is not a library artifact. Result: 69 members, 62 publishable, 7
-gated (`kelson-audit`, `kelson-api`, `kelson-mod-appointments`, `kelson-arch-validation`,
+gated (`kelson-audit`, `kelson-demo`, `kelson-mod-appointments`, `kelson-arch-validation`,
 `kelson-example-minimal`, `kelson-example-reference`, `xtask`). Wave 9 B-31 moved
 the counts 68/61/7 -> 69/62/7 by adding the publishable `kelson-mysql` fabric
 crate (ADR 0010 records the crate decision).

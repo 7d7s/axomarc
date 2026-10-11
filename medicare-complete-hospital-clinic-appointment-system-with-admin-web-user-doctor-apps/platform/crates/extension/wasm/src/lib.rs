@@ -2,7 +2,7 @@
 //!
 //! Executes plugin binaries (docs/19 Wave 9) inside a fuel-metered
 //! [`wasmtime`] store with a fail-closed import surface (see [`mod imports`]).
-//! The runtime is discovery-agnostic: the kelson-api boot path reads the root
+//! The runtime is discovery-agnostic: the kelson-demo boot path reads the root
 //! `packages.toml` `[[wasm]]` sidecar entries, and this crate validates,
 //! instantiates and dispatches them.
 //!

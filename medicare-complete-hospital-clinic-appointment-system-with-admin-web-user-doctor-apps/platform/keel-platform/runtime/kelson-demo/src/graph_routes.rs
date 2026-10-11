@@ -2208,7 +2208,7 @@ operation = "index"
     fn manifest_dir(tag: &str) -> std::path::PathBuf {
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "kelson-api-routecache-{tag}-{}-{}",
+            "kelson-demo-routecache-{tag}-{}-{}",
             std::process::id(),
             SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         ));

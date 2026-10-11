@@ -26,7 +26,7 @@ uuid = { workspace = true }
 
 [lib]
 # Wave 8 P5 (B-21): every oauth2 test lives in an EXISTING suite (the
-# kelson-api http_integration suite drives the whole code flow over the real
+# kelson-demo http_integration suite drives the whole code flow over the real
 # edge), so this crate opts out of its own test target — `cargo test
 # --workspace` keeps its suite count unchanged.
 test = false

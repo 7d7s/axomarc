@@ -1,6 +1,6 @@
 //! Wave 5 Phase 7: `kelson call <name> [json]` — one-shot dispatch of a
 //! `routes/console.toml` command through the CommandBus under the operator
-//! principal (docs/19). kelson-console (Tools-class) spawns `kelson-api --call
+//! principal (docs/19). kelson-console (Tools-class) spawns `kelson-demo --call
 //! ...` exactly like `--shell`/`--prune`: the dep-rules matrix keeps tools
 //! from linking runtime crates, so the dispatch lives here — same production
 //! boot, same graph gates (a console.toml entry referencing an unknown
@@ -20,7 +20,7 @@ use kelson_registry::{ConsoleCommandSpec, ModuleManifest, PlatformGraph};
 
 use crate::routes::AppState;
 
-/// Everything `kelson-api --call` receives from the CLI spawn. Raw strings are
+/// Everything `kelson-demo --call` receives from the CLI spawn. Raw strings are
 /// parsed here (never silently dropped) so a typo fails closed.
 pub struct CallRequest<'a> {
     pub state: &'a AppState,
@@ -178,7 +178,7 @@ mod tests {
     /// empty principal store.
     fn app() -> AppState {
         let dir = std::env::temp_dir().join(format!(
-            "kelson-api-call-test-{}-{}",
+            "kelson-demo-call-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

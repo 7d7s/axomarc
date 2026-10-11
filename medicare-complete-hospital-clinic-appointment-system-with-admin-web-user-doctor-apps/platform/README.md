@@ -35,7 +35,7 @@ clippy, tests, the architecture analyzer, cargo-deny, MSRV and semver checks.
 - `crates/services/` — cache, storage, notifications
 - `crates/observability/` — Sentinel telemetry runtime (logging, telemetry, tracing, metrics, audit, pipeline, buffer, export)
 - `adapters/` — cache-memory, sms(msg91), mail(smtp), storage(s3), push(fcm)
-- `runtime/` — `kelson-api` and `kelson-worker` hosts
+- `runtime/` — `kelson-demo` and `kelson-worker` hosts
 - `applications/` — generated apps (empty until first `kelson new`)
 - `tools/` — `kelson` CLI, analyzer, codegen · `xtask/` — workspace tasks
 - `tests/architecture/` — CI-enforced architecture gates
@@ -46,7 +46,7 @@ clippy, tests, the architecture analyzer, cargo-deny, MSRV and semver checks.
 ```bash
 just db-up       # postgres + minio via docker compose
 just check       # cargo check + test + architecture dep-rules
-just dev         # db-up + kelson-api host
+just dev         # db-up + kelson-demo host
 cargo run -p kelson-console -- doctor     # kelson doctor
 cargo run -p kelson-example-minimal   # golden path
 ```

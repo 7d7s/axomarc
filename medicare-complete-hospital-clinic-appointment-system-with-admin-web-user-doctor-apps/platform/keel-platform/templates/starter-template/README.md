@@ -23,7 +23,7 @@ shell you can serve from any static host pointed at the same origin.
 ## Run it
 
 ```bash
-kelson serve                 # boots kelson-api (+ --worker if needed)
+kelson serve                 # boots kelson-demo (+ --worker if needed)
 kelson sdk:openapi out.json  # generate the OpenAPI client contract
 kelson route:list            # named routes: notes.create / notes.list
 ```

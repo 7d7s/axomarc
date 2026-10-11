@@ -24,7 +24,7 @@ belongs" and then discover "this is safer and more powerful."
 | Cache | Cache port + locks | `crates/services/cache` + adapters |
 | Redis cache driver | `RedisCache` (cache port adapter) | `adapters/kelson-cache-redis` |
 | Redis queue driver | `RedisJobStore` (job store adapter, Lua claim = SKIP-LOCKED) | `adapters/kelson-cache-redis` |
-| Horizon | Operations dashboard (`/_dashboard`) | `runtime/kelson-api` |
+| Horizon | Operations dashboard (`/_dashboard`) | `runtime/kelson-demo` |
 | Pulse / metrics | Prometheus text `/metrics` + `MetricsRegistry` | `crates/observability/metrics` |
 | Scout | Search port + pgvector engine | `adapters/kelson-search-pgvector` |
 | Scheduler | Scheduler (runner + worker tick) | `crates/async/scheduler` |
@@ -34,7 +34,7 @@ belongs" and then discover "this is safer and more powerful."
 | `session()->flash()` | `flash_put` / `flash_take` | `crates/web/http` + sessions |
 | Blade | Not cloned — SPA-first (OpenAPI + your SPA toolchain); SSR revisited v2.0 | `kelson sdk:openapi`, starter template |
 | Breeze / Jetstream | Starter template: `kelson new --with-starter` | `templates/starter-template` |
-| Tinker | `kelson shell` (B-29): typed REPL over the booted engine; dispatches through the engine under your principal, capability denial enforced | `runtime/kelson-api --shell`, spawned by `tools/kelson-console` |
+| Tinker | `kelson shell` (B-29): typed REPL over the booted engine; dispatches through the engine under your principal, capability denial enforced | `runtime/kelson-demo --shell`, spawned by `tools/kelson-console` |
 | `Str::slug/snake/camel/studly/title/words/excerpt/random` | String helpers: `to_slug`, `to_snake_case`, `to_camel_case`, `to_studly_case`, `to_title_case`, `words`, `excerpt`, `random` (CSPRNG alphanumeric) | `crates/foundation/core` |
 | `Str::uuid` / `Str::ulid` | `uuid()` (random v4) / `ulid()` (26-char Crockford base32) generators | `crates/foundation/core` |
 | `Str::plural` / `Str::singular` | `plural` / `singular` — documented English inflection subset | `crates/foundation/core` |

@@ -95,7 +95,7 @@ cd platform && cargo check --workspace && cargo test --workspace --locked
 | Question | Answer |
 |---|---|
 | Where is the framework? | `platform/` (70-crate workspace, `Cargo.toml`) |
-| Where is the runnable API? | `platform/runtime/kelson-api` → `/healthz`, `/readyz`, `/api/v1/demo/echo` |
+| Where is the runnable API? | `platform/runtime/kelson-demo` → `/healthz`, `/readyz`, `/api/v1/demo/echo` |
 | Where are domain modules? | `platform/applications/` (currently only `appointments`) |
 | Where are the rules? | `platform/justfile`, `platform/README.md`, `docs/rust/11-FOUNDATION-MASTER-SPEC.md` |
 | What is frozen/archived? | `medicare-kernel/` (superseded, D-46) |

@@ -2,7 +2,7 @@
 name = "kelson-wasm"
 # Wave 9 B-30 (docs/19): internal-only — never published to crates.io, so
 # the publish set stays at 61. kelson-console (Tools) does not link this crate;
-# only the runtime (kelson-api) hosts plugins.
+# only the runtime (kelson-demo) hosts plugins.
 publish = false
 description = "WASM plugin runtime: fuel-metered wasmtime sandbox, kelson_manifest()/kelson_call() guest ABI, fail-closed import surface."
 version.workspace = true
@@ -25,7 +25,7 @@ rand = { workspace = true }
 wasmtime = { workspace = true }
 
 [lib]
-# Wave 9 B-30: every kelson-wasm test lives in an EXISTING suite (the kelson-api
+# Wave 9 B-30: every kelson-wasm test lives in an EXISTING suite (the kelson-demo
 # `wasm_tests` facet module plus registry suites drive this runtime over the
 # real edge), so the crate opts out of its own lib test target and doctests —
 # the suite count stays 150 (oauth2 precedent).

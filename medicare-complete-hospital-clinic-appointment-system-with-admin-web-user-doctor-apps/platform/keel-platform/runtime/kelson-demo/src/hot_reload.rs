@@ -244,7 +244,7 @@ mod tests {
     use tower::ServiceExt;
 
     fn fixture() -> (AppState, Arc<kelson_registry::PlatformGraph>, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("kelson-api-hot-{}", uuid::Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("kelson-demo-hot-{}", uuid::Uuid::now_v7()));
         let (state, graph, _store) = crate::build_app_state(&dir, true, true);
         (state, Arc::new(graph), dir)
     }

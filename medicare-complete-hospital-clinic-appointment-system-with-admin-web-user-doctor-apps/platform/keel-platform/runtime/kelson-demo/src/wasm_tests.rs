@@ -22,7 +22,7 @@ use kelson_registry::{PackageIndex, WasmModuleEntry};
 use serde_json::{json, Value};
 
 /// The checked-in plugin fixtures live with the runtime crate that hosts
-/// them (Design C: kelson-api tests read them by path, nothing embeds wasm).
+/// them (Design C: kelson-demo tests read them by path, nothing embeds wasm).
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(concat!(
         env!("CARGO_MANIFEST_DIR"),

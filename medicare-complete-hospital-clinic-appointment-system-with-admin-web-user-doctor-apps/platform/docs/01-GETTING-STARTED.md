@@ -29,7 +29,7 @@ applications/ domain applications on the tenant plane (e.g. appointments)
 crates/       platform crates by layer (foundation/execution/application/web/security/
               data/async/services/observability/enterprise/ai)
 adapters/     port implementations wired only by runtime binaries
-runtime/      kelson-api, kelson-worker binaries
+runtime/      kelson-demo, kelson-worker binaries
 tools/        kelson CLI, analyzer, codegen, xtask
 testing/      testkit (TestApp, fakes, time control)
 examples/     minimal (golden path), reference (appointments end-to-end)
@@ -62,7 +62,7 @@ operation, tests) and registers the workspace member. `kelson new` scaffolds a w
 ## Run the HTTP edge
 
 ```bash
-cargo run -p kelson-console -- serve            # kelson-api with workspace config (--worker adds the queue worker)
+cargo run -p kelson-console -- serve            # kelson-demo with workspace config (--worker adds the queue worker)
 curl http://127.0.0.1:8180/healthz        # liveness envelope
 curl -X POST http://127.0.0.1:8180/auth/register \
      -H 'content-type: application/json' \

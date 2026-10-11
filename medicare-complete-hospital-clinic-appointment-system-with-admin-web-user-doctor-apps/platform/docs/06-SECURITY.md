@@ -57,7 +57,7 @@ severity, retryability, meta. Public messages are safe for the wire; internals s
 
 ## HTTP authentication flows (S7)
 
-- Register/login/logout/me and password reset are served on the platform plane by `kelson-api`.
+- Register/login/logout/me and password reset are served on the platform plane by `kelson-demo`.
   Passwords are hashed with argon2 (`kelson-identity`) under the `[identity]` work factors
   (`memory`/`time`/`parallelism`, argon2 baseline defaults); a successful login re-hashes the
   password when the stored verifier's embedded factors drift from that config (rehash-on-login —
@@ -134,4 +134,4 @@ single-use codes, refresh rotation, RFC 7009 revocation (200 `{"revoked": bool}`
 unknown tokens), an argon2-hashed `oauth_clients` registry (redirect allowlist, scopes, secret
 shown once) and capability-gated client management — hashed PAT + HMAC sessions remain the
 platform's auth, and the module's web-plane POSTs ride the same CSRF double-submit guard as
-everything else (asserted by the `oauth_*` matrix in `runtime/kelson-api/tests/http_integration.rs`).
+everything else (asserted by the `oauth_*` matrix in `runtime/kelson-demo/tests/http_integration.rs`).

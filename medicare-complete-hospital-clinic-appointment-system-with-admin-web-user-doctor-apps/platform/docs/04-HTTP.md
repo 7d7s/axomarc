@@ -111,7 +111,7 @@ Modules cannot define custom middleware in v1 — the catalog is framework-owned
 
 **Boot gates.** Unknown route middleware entries and malformed `middleware.toml` files
 refuse boot fail-closed: `GRAPH-MW-UNKNOWN` collects every violation (enforced by both
-`kelson check` and `kelson-api` boot). Resolved chains are serialized into the route-cache
+`kelson check` and `kelson-demo` boot). Resolved chains are serialized into the route-cache
 artifact (below).
 
 ## Realtime
@@ -121,7 +121,7 @@ see `08-SERVICES.md`.
 
 ## Graph → HTTP dispatch (S7, extended Wave 1)
 
-At boot, `kelson-api` compiles the PlatformGraph from every `applications/*/module.toml`
+At boot, `kelson-demo` compiles the PlatformGraph from every `applications/*/module.toml`
 (boot gate: a manifest error refuses boot, parity with `kelson check`) and registers one axum route
 per `RouteSpec` (`{param}` manifest syntax is axum 0.8 capture syntax), attaching each route's
 resolved middleware chain as a per-route layer. The dispatcher then:
@@ -172,7 +172,7 @@ bindings = [{ param = "id", model = "Appointment" }]
 
 Modules register a resolver per model name into the `route.bindings` registry service at boot
 (appointments registers `"Appointment"`); a manifest binding whose model has no registered
-resolver fails the `GRAPH-BINDING-RESOLVER` boot gate (fail-closed, at kelson-api boot — the
+resolver fails the `GRAPH-BINDING-RESOLVER` boot gate (fail-closed, at kelson-demo boot — the
 registry only exists once providers have run). At the edge the resolver runs tenant-scoped:
 `Ok(Some(record))` injects `_bindings.<param>` (the full record) into the operation input;
 malformed UUID, miss, and cross-tenant lookups all answer 404 envelopes (no existence leaking).
@@ -363,7 +363,7 @@ with no new dependency.
 604800 = 7 days) caps every TTL a `SignedGate` link may carry: `sign_once`
 refuses to mint above the configured bound, and boot refuses the whole
 config when that bound sits above the hard ceiling of 2 592 000 seconds
-(30 days, `kelson_api::SIGNED_URL_TTL_CEILING_SECS`) — the spec's
+(30 days, `kelson_demo::SIGNED_URL_TTL_CEILING_SECS`) — the spec's
 over-bound → boot-refusing config error, so a misconfiguration can never
 mint links that outlive a key-rotation window.
 
@@ -387,7 +387,7 @@ are deliberately deferred to v2.0.
 
 ## Metrics endpoint (S10, B-17)
 
-`kelson-api` records process metrics unconditionally via `kelson-metrics`
+`kelson-demo` records process metrics unconditionally via `kelson-metrics`
 (registry with a hard 4096-series cardinality cap per kind) and exposes them
 at `GET /metrics` in Prometheus text format 0.0.4 — but only when the
 `app.metrics` feature flag is enabled; otherwise the route answers a 404

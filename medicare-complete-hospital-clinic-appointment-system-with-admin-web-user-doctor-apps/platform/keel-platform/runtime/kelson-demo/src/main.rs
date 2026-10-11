@@ -1,4 +1,4 @@
-//! kelson-api binary entrypoint: config -> tracing -> db probe -> host boot ->
+//! kelson-demo binary entrypoint: config -> tracing -> db probe -> host boot ->
 //! graph compile -> edge wiring -> serve (see lib.rs::run).
 
 #[tokio::main]

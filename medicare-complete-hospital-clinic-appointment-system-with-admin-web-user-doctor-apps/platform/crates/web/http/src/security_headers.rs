@@ -1,12 +1,12 @@
 //! Wave 7 P4 (docs/19 "Security-headers middleware"): response hardening
-//! for the **web plane**. `kelson-api` attaches this as the outermost
+//! for the **web plane**. `kelson-demo` attaches this as the outermost
 //! per-route layer on web-plane graph routes only, so gate rejections,
 //! chain short-circuits and error views all carry the posture while the
 //! api plane stays byte-identical.
 //!
 //! The posture itself is plain data resolved from `[security.headers]` at
 //! boot (the adapter class may not depend on application config, so the
-//! conversion happens in kelson-api like `ViewsSection` → `ViewsConfig`).
+//! conversion happens in kelson-demo like `ViewsSection` → `ViewsConfig`).
 
 use axum::body::Body;
 use axum::extract::State;
@@ -20,7 +20,7 @@ use axum::response::Response;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SecurityHeaders {
     /// Master switch — `apply` is a no-op while this is false (and
-    /// kelson-api does not even attach the layer).
+    /// kelson-demo does not even attach the layer).
     pub enabled: bool,
     /// HSTS `max-age` in seconds; `0` omits `Strict-Transport-Security`.
     pub hsts_max_age_secs: u64,

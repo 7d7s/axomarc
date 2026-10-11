@@ -179,7 +179,7 @@ pub struct DiskEntry {
 
 /// Wave 6 P2: named disk registry — resolves a configured disk name to its
 /// [`StoragePort`] and owns the visibility policy for URL issuance. The
-/// runtime builders (kelson-api, kelson-worker) fill it from `[storage]`; the
+/// runtime builders (kelson-demo, kelson-worker) fill it from `[storage]`; the
 /// registry itself stays adapter-agnostic per the layer matrix.
 pub struct DiskRegistry {
     disks: BTreeMap<String, DiskEntry>,

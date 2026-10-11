@@ -19,7 +19,7 @@ Quick lookup tables for the platform surface.
 | ai | kelson-ai, kelson-ai-tools, kelson-ai-agents, kelson-ai-mcp |
 | adapters | kelson-cache-memory, kelson-mail-smtp, kelson-sms-msg91, kelson-push-fcm, kelson-storage-s3 |
 | testing | kelson-testkit |
-| runtime | kelson-api, kelson-worker |
+| runtime | kelson-demo, kelson-worker |
 | tools | kelson-console, kelson, kelson-analyzer, kelson-codegen, xtask |
 
 Package names keep the `kelson-*` prefix (D-63); directory names may differ from package names

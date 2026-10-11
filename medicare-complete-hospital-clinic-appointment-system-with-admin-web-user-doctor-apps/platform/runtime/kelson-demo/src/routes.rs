@@ -1,4 +1,4 @@
-//! HTTP edge for kelson-api (11-SPEC SS20 + S7 edge wiring): health/readiness,
+//! HTTP edge for kelson-demo (11-SPEC SS20 + S7 edge wiring): health/readiness,
 //! meta endpoints and the dev demo route. Graph-driven module routes live in
 //! `graph_routes.rs`; auth flows in `auth_routes.rs`; uploads in
 //! `upload_routes.rs`. Everything returns the public Envelope shape.
@@ -535,7 +535,7 @@ async fn readyz(State(s): State<AppState>) -> (axum::http::StatusCode, Json<serd
 
 async fn boot_meta(State(s): State<AppState>) -> Json<Envelope<BootBody>> {
     Json(Envelope::ok(BootBody {
-        name: "kelson-api",
+        name: "kelson-demo",
         version: env!("CARGO_PKG_VERSION"),
         services: s.health.services.lock().unwrap().clone(),
     }))

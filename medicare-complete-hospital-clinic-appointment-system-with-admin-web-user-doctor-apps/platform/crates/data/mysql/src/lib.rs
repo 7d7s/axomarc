@@ -56,7 +56,7 @@ use uuid::Uuid;
 
 /// The boot-time driver switch (B-31): boot constructs exactly one variant
 /// from `[database].driver` + the probe, then hands it to the store
-/// constructors in kelson-api / kelson-worker / kelson-console. The Postgres
+/// constructors in kelson-demo / kelson-worker / kelson-console. The Postgres
 /// variant carries `sqlx::PgPool` — the same type `kelson_postgres::PgPool`
 /// aliases — which is what keeps the two publishable fabrics independent.
 #[derive(Clone, Debug)]

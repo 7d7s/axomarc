@@ -4,10 +4,10 @@ Runbooks for the day-two surface.
 
 ## Health
 
-`runtime/kelson-api` exposes `healthz`/`readyz`. Degraded boot is supported by design: the platform
+`runtime/kelson-demo` exposes `healthz`/`readyz`. Degraded boot is supported by design: the platform
 comes up on in-memory ports when postgres is absent, with readiness reflecting the degraded state.
 
-Probe semantics (tested in `runtime/kelson-api/tests/http_integration.rs`):
+Probe semantics (tested in `runtime/kelson-demo/tests/http_integration.rs`):
 
 - `GET /healthz` is the **liveness** probe. It answers 200 with an `ok:true` envelope even when
   degraded, so orchestrators do not restart-loop an instance that is knowingly serving reduced
@@ -138,15 +138,15 @@ when you do not ask for it.
 
 ```bash
 cargo install samply
-kelson profile api        # cargo build -p kelson-api, then samply record target/debug/kelson-api
+kelson profile api        # cargo build -p kelson-demo, then samply record target/debug/kelson-demo
 kelson profile worker     # the same for kelson-worker
 ```
 
 Each subcommand builds its package first so the recording captures a fresh binary;
 stopping the recording opens the flamegraph in the browser. If samply is not on PATH the
 wrapper fails closed with the install line and this workflow — it never silently skips.
-Manual equivalent without the wrapper: `cargo build -p kelson-api` then
-`samply record target/debug/kelson-api` from the workspace root (set `KEEL_CONFIG` when
+Manual equivalent without the wrapper: `cargo build -p kelson-demo` then
+`samply record target/debug/kelson-demo` from the workspace root (set `KEEL_CONFIG` when
 recording against a non-default config). Flamegraphs are a local diagnostic; production
 metrics stay on `/metrics` (D-68 scope).
 
@@ -166,7 +166,7 @@ config keys that moved, pending migrations, and dependency deltas — before you
 
 Both runtimes treat `SIGINT`/`Ctrl-C` (`tokio::signal::ctrl_c`) as the shutdown trigger:
 
-- **kelson-api** serves through `axum::serve(...).with_graceful_shutdown(...)`: the listener stops
+- **kelson-demo** serves through `axum::serve(...).with_graceful_shutdown(...)`: the listener stops
   accepting new connections, in-flight requests run to completion, then the process exits. The
   shutdown signal is logged (`shutdown signal received`) before draining begins.
 - **kelson-worker** flips an atomic stop flag. The claim loop checks the flag **between** jobs, so an

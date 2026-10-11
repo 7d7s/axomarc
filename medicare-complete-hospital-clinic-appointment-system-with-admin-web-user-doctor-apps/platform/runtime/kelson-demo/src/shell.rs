@@ -3,7 +3,7 @@
 //! caller's principal. Zero new dependencies — plain stdin/stdout.
 //!
 //! Posture:
-//! - The shell boots through the exact production path (`kelson-api --shell`,
+//! - The shell boots through the exact production path (`kelson-demo --shell`,
 //!   spawned by `kelson shell`; the dep-rules matrix keeps tools from linking
 //!   runtime crates, so the REPL lives here). Same pool, host, graph gate and
 //!   flag snapshot as the HTTP edge.

@@ -7,7 +7,7 @@
 //!
 //! Layer rule (STAGE-0-SPEC §3): the Testing class may depend on platform
 //! layers but never on runtime binaries — TestApp takes a router built from
-//! primitives; nothing here imports kelson-api or kelson-worker.
+//! primitives; nothing here imports kelson-demo or kelson-worker.
 
 mod app;
 mod factories;

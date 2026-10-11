@@ -19,7 +19,7 @@ struct App {
 }
 
 fn app() -> App {
-    let dir = std::env::temp_dir().join(format!("kelson-api-it-{}", uuid::Uuid::now_v7()));
+    let dir = std::env::temp_dir().join(format!("kelson-demo-it-{}", uuid::Uuid::now_v7()));
     let (state, graph, store) = kelson_demo::build_app_state(&dir, true, true);
     let router = kelson_demo::routes::router(state.clone())
         .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph))
@@ -753,7 +753,7 @@ async fn malformed_json_body_is_422_envelope() {
 /// same compile fail-closed — the boot path never registers it.
 #[tokio::test]
 async fn package_routes_serve_over_http_and_abi_mismatch_refuses_boot() {
-    let dir = std::env::temp_dir().join(format!("kelson-api-pkg-{}", uuid::Uuid::now_v7()));
+    let dir = std::env::temp_dir().join(format!("kelson-demo-pkg-{}", uuid::Uuid::now_v7()));
     std::fs::create_dir_all(dir.join("packages").join("billing")).unwrap();
 
     // Manifest-only package: it declares its own capability + route (the
@@ -1653,7 +1653,7 @@ async fn verified_email_gate_blocks_module_operations_until_confirmed() {
     let router = kelson_demo::routes::router(state.clone())
         .merge(kelson_demo::graph_routes::graph_router(state.clone(), &{
             let (_, graph, _) = kelson_demo::build_app_state(
-                &std::env::temp_dir().join(format!("kelson-api-it-{}", uuid::Uuid::now_v7())),
+                &std::env::temp_dir().join(format!("kelson-demo-it-{}", uuid::Uuid::now_v7())),
                 true,
                 true,
             );
@@ -1758,7 +1758,7 @@ fn jwt_for(principal: &str, tenant: Option<&str>, ttl_secs: i64, secret: &[u8]) 
 
 /// Same wiring as `app()` but with the opt-in HS256 JWT verifier attached.
 fn app_with_jwt(secret: &[u8]) -> App {
-    let dir = std::env::temp_dir().join(format!("kelson-api-it-{}", uuid::Uuid::now_v7()));
+    let dir = std::env::temp_dir().join(format!("kelson-demo-it-{}", uuid::Uuid::now_v7()));
     let (mut state, graph, store) = kelson_demo::build_app_state(&dir, true, true);
     state.jwt = Some(std::sync::Arc::new(kelson_http::JwtHs256::new(
         secret.to_vec(),
@@ -1961,7 +1961,7 @@ async fn pat_bearer_still_authenticates_with_jwt_enabled() {
 /// file-backed and the status snapshot is in-memory, so no worker threads
 /// are spawned per test case.
 fn app_with_telemetry() -> App {
-    let dir = std::env::temp_dir().join(format!("kelson-api-it-{}", uuid::Uuid::now_v7()));
+    let dir = std::env::temp_dir().join(format!("kelson-demo-it-{}", uuid::Uuid::now_v7()));
     let (state, graph, store) = kelson_demo::build_app_state(&dir, true, true);
     let router = kelson_demo::routes::router(state.clone())
         .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph))
@@ -2821,7 +2821,7 @@ async fn deprecated_route_emits_header_and_meta() {
 /// (exhaustion beats authentication).
 #[tokio::test]
 async fn throttle_group_exhaustion_is_429() {
-    let dir = std::env::temp_dir().join(format!("kelson-api-it-{}", uuid::Uuid::now_v7()));
+    let dir = std::env::temp_dir().join(format!("kelson-demo-it-{}", uuid::Uuid::now_v7()));
     let (mut state, graph, _store) = kelson_demo::build_app_state(&dir, false, true);
     state.middleware_catalog.set_throttle(
         "api",
@@ -3333,7 +3333,7 @@ async fn notifications_read_marks_rows_and_gates_the_capability() {
 /// `build_app_state` so the edge's `Accept-Language` negotiation runs
 /// against a real catalog (mirrors the views suite's fixture pattern).
 fn app_with_lang() -> App {
-    let dir = std::env::temp_dir().join(format!("kelson-api-p6-{}", uuid::Uuid::now_v7()));
+    let dir = std::env::temp_dir().join(format!("kelson-demo-p6-{}", uuid::Uuid::now_v7()));
     let lang = dir.join("lang");
     std::fs::create_dir_all(&lang).expect("lang fixture dir");
     std::fs::write(
@@ -3448,7 +3448,7 @@ async fn sse_connect(app: &App, uri: &str) -> axum::http::Response<Body> {
 /// ghost-gated presence. The authorized transports mount with the very
 /// `ChannelTokenAuthorizer` serve() wires.
 fn app_with_channels() -> App {
-    let dir = std::env::temp_dir().join(format!("kelson-api-p7-{}", uuid::Uuid::now_v7()));
+    let dir = std::env::temp_dir().join(format!("kelson-demo-p7-{}", uuid::Uuid::now_v7()));
     let (mut state, graph, store) = kelson_demo::build_app_state(&dir, true, true);
     let granted = state
         .granted_capabilities
@@ -3790,7 +3790,7 @@ fn batch_app() -> (
     Arc<kelson_jobs::InMemoryJobStore>,
     Arc<kelson_jobs::MemoryBatchLedger>,
 ) {
-    let dir = std::env::temp_dir().join(format!("kelson-api-p9-{}", uuid::Uuid::now_v7()));
+    let dir = std::env::temp_dir().join(format!("kelson-demo-p9-{}", uuid::Uuid::now_v7()));
     let (mut state, graph, store) = kelson_demo::build_app_state(&dir, true, true);
     let jobs = Arc::new(kelson_jobs::InMemoryJobStore::new());
     let ledger = Arc::new(kelson_jobs::MemoryBatchLedger::new());

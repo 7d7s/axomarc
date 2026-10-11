@@ -136,7 +136,7 @@ mod tests {
         let env = EventEnvelope::new(
             SCHEMA_LOG,
             SCHEMA_LOG_VERSION,
-            ServiceIdentity::new("kelson-api", "dev"),
+            ServiceIdentity::new("kelson-demo", "dev"),
             TelemetryContext::root(),
             serde_json::json!({ "message": "hello" }),
         );

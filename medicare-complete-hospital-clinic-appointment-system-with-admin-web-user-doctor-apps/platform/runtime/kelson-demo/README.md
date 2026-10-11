@@ -1,4 +1,4 @@
-# kelson-api
+# kelson-demo
 
 Kelson API host: boots the ApplicationHost, serves health/readiness and the first routes
 

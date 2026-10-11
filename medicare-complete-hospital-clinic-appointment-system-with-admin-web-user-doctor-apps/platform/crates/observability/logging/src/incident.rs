@@ -1,7 +1,7 @@
 //! Incident control plane (Sentinel S5 §16, D-76): a file under
 //! `storage/framework/telemetry/control/` is the single source of truth for
 //! incident mode. `kelson observe incident start|stop` writes/removes the file;
-//! the kelson-api admin endpoint writes the same file; every host polls it
+//! the kelson-demo admin endpoint writes the same file; every host polls it
 //! (2 s) and applies it to `TelemetryControlState`.
 
 use std::collections::BTreeMap;

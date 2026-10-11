@@ -88,7 +88,7 @@ Tests (jobs): `unique_admission_holds_locked_claims_until_release`,
 `stacks_compose_builtins_then_module_layers`, `registry_refuses_impossible_admission_configs`;
 (worker): `dispatch_holds_a_rate_limited_job_without_failing_it`,
 `dispatch_skips_a_locked_unique_job`, `dispatch_runs_module_middleware_around_the_handler`,
-`dispatch_kills_an_over_budget_job`; (kelson-api):
+`dispatch_kills_an_over_budget_job`; (kelson-demo):
 `metrics_expose_queue_depth_age_and_throughput`. The codegen `job-middleware` kind now emits
 `impl JobMiddleware` with the real before/after shape (needle pinned by
 `wave5_templates_reference_real_platform_surface`).

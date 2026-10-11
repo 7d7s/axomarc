@@ -1,4 +1,4 @@
-﻿//! Boot topology for kelson-api (11-SPEC §10/G03/G04).
+﻿//! Boot topology for kelson-demo (11-SPEC §10/G03/G04).
 //! Providers boot in phase order: Foundation -> Kernel -> Platform -> Modules.
 //! DB probing happens BEFORE host boot (init must stay I/O-free); the probe
 //! result selects the postgres or in-memory backend (degraded boot, D-52).

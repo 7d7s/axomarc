@@ -251,7 +251,7 @@ mod tests {
     fn internal_targets_are_skipped() {
         assert!(is_internal("kelson_observability::runtime"));
         assert!(is_internal("kelson_export"));
-        assert!(!is_internal("kelson_api::routes"));
+        assert!(!is_internal("kelson_demo::routes"));
         assert!(!is_internal("my_app"));
     }
 }

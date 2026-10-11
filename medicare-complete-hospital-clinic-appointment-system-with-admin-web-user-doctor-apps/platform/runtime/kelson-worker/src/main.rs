@@ -1,5 +1,5 @@
 //! kelson-worker: durable job runner host (11-SPEC §29/§41, item 23). Boots the
-//! same lifecycle host as kelson-api, then runs a claim loop: claims due jobs,
+//! same lifecycle host as kelson-demo, then runs a claim loop: claims due jobs,
 //! dispatches them to registered handlers, records completion or failure
 //! (retry budget and backoff live in the store), and drains the outbox via a
 //! concurrent pump. Degraded boot (D-52): without postgres the worker runs on
@@ -275,7 +275,7 @@ fn mail_chain(section: &kelson_config::MailSection) -> Result<kelson_mail_smtp::
 }
 
 /// Wave 6 P2: build the named-disk registry from `[storage]` — a mirror of
-/// kelson-api's builder (each runtime owns this mapping because the layer
+/// kelson-demo's builder (each runtime owns this mapping because the layer
 /// matrix keeps adapter constructors out of the config and service crates).
 /// No declared disks yields one synthetic `local` disk at `fallback_root`;
 /// a `local` disk without `root`, an `s3` disk without `bucket`, or a
@@ -623,7 +623,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .start()
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
-    // Database probe (same semantics as kelson-api; degraded boot D-52).
+    // Database probe (same semantics as kelson-demo; degraded boot D-52).
     // Wave 9 B-31: `[database].driver` selects the probe + runner; `postgres`
     // (the default) keeps the existing path byte-identical.
     let pool: Option<kelson_mysql::DbPool> = match cfg.database() {
@@ -699,7 +699,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // S3 enterprise runtime: batches, chains, scheduler tick (L33/L34/L35).
     // Wave 6 P9 (B-32): batch membership mirrors to the durable ledger —
     // postgres when a pool exists, memory on the degraded boot (D-52) — so
-    // kelson-api's batch operations and the console batch commands resolve
+    // kelson-demo's batch operations and the console batch commands resolve
     // batches this worker dispatches, and a restart never loses a fan-out.
     let batch_ledger: Arc<dyn kelson_jobs::BatchLedger> = match &pool {
         Some(kelson_mysql::DbPool::Postgres(pool)) => {
@@ -718,7 +718,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // bad `[storage]` section refuses boot right here).
     let (mail_def, mail_handler) = mail_job(&cfg, &root.join("storage").join("local"))?;
     // Wave 6 P6: the queued-notification def + drain handler — the
-    // database-channel store mirrors kelson-api's inbox (postgres when
+    // database-channel store mirrors kelson-demo's inbox (postgres when
     // reachable, in-memory otherwise, D-52), so a `Database` envelope
     // drained here lands in the same table the HTTP feed reads.
     let notification_store: Arc<dyn kelson_notifications::NotificationStore> = match &pool {
@@ -1196,7 +1196,7 @@ mod tests {
     }
 
     /// Wave 6 P6: the drain round trip — a serialized v1 envelope (exactly
-    /// what kelson-api's enqueue port builds) deserializes and delivers
+    /// what kelson-demo's enqueue port builds) deserializes and delivers
     /// through the worker hub: the `Database` payload lands as a row in
     /// the very store the caller injected (the HTTP feed's twin in
     /// production), addressed to the envelope's principal under the

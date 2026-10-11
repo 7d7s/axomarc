@@ -92,7 +92,7 @@ pub type Fields = serde_json::Map<String, serde_json::Value>;
 pub struct LogPayload {
     pub level: Level,
     pub message: String,
-    /// Emitting module/target (e.g. `kelson_api::routes`).
+    /// Emitting module/target (e.g. `kelson_demo::routes`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     #[serde(default, skip_serializing_if = "Fields::is_empty")]

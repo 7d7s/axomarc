@@ -8,7 +8,7 @@ Promote named artifacts, never "whatever is in target/".
 
 | Binary       | Posture                       | Profile        | Notes                                  |
 |--------------|-------------------------------|----------------|----------------------------------------|
-| kelson-api     | HTTP runtime (axum)           | dev / release  | serves /meta/boot, /healthz, routes    |
+| kelson-demo     | HTTP runtime (axum)           | dev / release  | serves /meta/boot, /healthz, routes    |
 | kelson-worker  | durable job runner            | dev / release  | claim loop + outbox pump + scheduler   |
 | kelson         | platform CLI                  | dev / release  | doctor/check/migrate/queue/build/...   |
 

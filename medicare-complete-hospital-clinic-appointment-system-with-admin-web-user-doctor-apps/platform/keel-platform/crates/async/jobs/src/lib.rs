@@ -1015,7 +1015,7 @@ impl BatchRuntime {
 
     /// Wave 6 P9 (B-32): run against an explicit [`BatchLedger`] — the
     /// worker wires the pool-gated postgres ledger so another process
-    /// (kelson-api, kelson-console) sees the batches this one dispatches.
+    /// (kelson-demo, kelson-console) sees the batches this one dispatches.
     pub fn with_ledger(store: Arc<dyn JobStore>, ledger: Arc<dyn BatchLedger>) -> Self {
         Self {
             store,

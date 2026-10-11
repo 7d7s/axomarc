@@ -61,7 +61,7 @@ pub struct ResolvedMailAttachment {
 }
 
 /// Default attachment cap for mail: mirrors
-/// `UploadLimits::default().max_file_bytes` (8 MiB). A kelson-api test pins the
+/// `UploadLimits::default().max_file_bytes` (8 MiB). A kelson-demo test pins the
 /// two together so an attachment the upload edge accepts is always sendable.
 pub const DEFAULT_MAX_ATTACHMENT_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -321,7 +321,7 @@ impl QueuedNotificationDelivery {
 }
 
 /// Wave 6 P6: job name of the queued delivery — a def's `queue_via`
-/// returns it, kelson-api registers the buildable def (enqueue side), and
+/// returns it, kelson-demo registers the buildable def (enqueue side), and
 /// kelson-worker registers the matching drain handler. One name, both
 /// halves: a typo fails `registry.build` loudly at dispatch.
 pub const NOTIFICATION_SEND_JOB: &str = "notification.send";
@@ -465,7 +465,7 @@ impl NotificationStore for InMemoryNotificationStore {
 
 /// Wave 6 P5: HTML body seam (19-PARITY "HTML mail bodies rendered via
 /// Wave 2 views"). The service layer cannot depend on the web layer, so the
-/// views engine reaches the hub through this port — kelson-api adapts
+/// views engine reaches the hub through this port — kelson-demo adapts
 /// `ViewsEngine` onto it.
 pub trait NotificationViewRenderer: Send + Sync {
     fn render(&self, template: &str, context: serde_json::Value) -> Result<String, AppError>;
@@ -554,7 +554,7 @@ impl NotifyHub {
         self
     }
 
-    /// Wave 6 P5: attach the notification HTML view renderer (kelson-api
+    /// Wave 6 P5: attach the notification HTML view renderer (kelson-demo
     /// adapts the Wave 2 views engine onto the port).
     pub fn with_view_renderer(
         mut self,
