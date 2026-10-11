@@ -285,8 +285,24 @@ impl Provider for DemoModuleProvider {
     /// into the registry too late to join the bus. The lifecycle host now
     /// inits in dependency order; declaring the edges makes that edge
     /// real and cycle-checked.)
+    ///
+    /// The edges MUST mirror what is actually registered: `module.wasm` always
+    /// is, but the appointments/oauth2 providers exist only under
+    /// `--features demo`. Phase P gated those registrations without gating
+    /// this list, so every non-demo boot died on
+    /// `UnknownDependency { provider: "module.demo", depends_on:
+    /// "module.appointments" }` — which took `kelson serve`, `call`, `shell`
+    /// and `model:prune` down with it, since none of them passed the feature.
     fn dependencies(&self) -> Vec<&'static str> {
-        vec!["module.appointments", "module.oauth2", "module.wasm"]
+        // `cfg!` rather than `#[cfg]`: the Vec is built at runtime either way,
+        // and this keeps the statement compiled — and warning-free — in both
+        // configurations instead of needing an `allow(unused_mut)` on the
+        // non-demo build.
+        let mut deps = vec!["module.wasm"];
+        if cfg!(feature = "demo") {
+            deps.extend(["module.appointments", "module.oauth2"]);
+        }
+        deps
     }
     fn init(&self, r: &mut ServiceRegistry) -> Result<(), BootError> {
         let engine = r.get::<kelson_execution::Engine>()?;
@@ -715,5 +731,39 @@ mod error_render_tests {
             .detail(&kelson_foundation::AppError::not_found("x"))
             .expect("renderer registered");
         assert_eq!(detail["code"], serde_json::json!("KSN_NOT_FOUND"));
+    }
+}
+
+#[cfg(test)]
+mod demo_module_dependency_tests {
+    use super::*;
+
+    /// Phase P gated the appointments/oauth2 *registrations* behind
+    /// `--features demo` but left `DemoModuleProvider::dependencies()` naming
+    /// them unconditionally. The declared edges must mirror what is actually
+    /// registered, or the lifecycle host refuses to boot — which is exactly
+    /// what happened: every non-demo boot died on
+    /// `UnknownDependency { provider: "module.demo", depends_on:
+    /// "module.appointments" }`, taking `kelson serve`, `call`, `shell` and
+    /// `model:prune` with it.
+    #[test]
+    fn demo_module_dependencies_mirror_the_registered_providers() {
+        let deps = DemoModuleProvider {
+            dev_snapshot: false,
+        }
+        .dependencies();
+        assert!(
+            deps.contains(&"module.wasm"),
+            "the wasm provider is registered unconditionally, so the edge stays"
+        );
+
+        let demo_edges = deps
+            .iter()
+            .any(|d| matches!(*d, "module.appointments" | "module.oauth2"));
+        assert_eq!(
+            demo_edges,
+            cfg!(feature = "demo"),
+            "the demo module edges exist exactly when those providers are registered"
+        );
     }
 }

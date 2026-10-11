@@ -5788,6 +5788,19 @@ fn profile_guidance(target: &ProfileTarget) -> String {
 
 // ------------------------------------------------------------------ serve
 
+/// Cargo arguments for spawning the local `kelson-demo` harness.
+///
+/// Phase P made the demo modules opt-in (`--features demo`, default off) so
+/// the harness could be published without dragging unpublished crates into the
+/// dependency graph. That is right for a *release* build and wrong for every
+/// local command: `serve`, `call`, `shell` and `model:prune` exist to exercise
+/// an application, and without the feature the harness not only registered no
+/// modules — it refused to boot at all. Every dev invocation therefore enables
+/// the feature; callers append `--` before any binary arguments.
+fn demo_run_args() -> Vec<&'static str> {
+    vec!["run", "--quiet", "-p", "kelson-demo", "--features", "demo"]
+}
+
 /// kelson serve (S7 B-08): one-command local loop. Spawns `cargo run -p
 /// kelson-demo` (and optionally kelson-worker) with the workspace config and
 /// streams their output. Ctrl+C reaches the children through the console;
@@ -5801,10 +5814,7 @@ fn serve(worker: bool) -> anyhow::Result<ExitCode> {
         config.display()
     );
     let mut api = std::process::Command::new("cargo")
-        .arg("run")
-        .arg("--quiet")
-        .arg("-p")
-        .arg("kelson-demo")
+        .args(demo_run_args())
         .current_dir(&root)
         .env("KEEL_CONFIG", &config)
         .spawn()
@@ -5921,10 +5931,7 @@ fn call_command(
     let config = config_path(&root);
     let mut command = std::process::Command::new("cargo");
     command
-        .arg("run")
-        .arg("--quiet")
-        .arg("-p")
-        .arg("kelson-demo")
+        .args(demo_run_args())
         .arg("--")
         .arg("--call")
         .arg(name);
@@ -5965,10 +5972,7 @@ fn shell_console() -> anyhow::Result<ExitCode> {
         config.display()
     );
     let status = std::process::Command::new("cargo")
-        .arg("run")
-        .arg("--quiet")
-        .arg("-p")
-        .arg("kelson-demo")
+        .args(demo_run_args())
         .arg("--")
         .arg("--shell")
         .current_dir(&root)
@@ -6000,10 +6004,7 @@ fn model_prune(chunk: u32, tenant: Option<String>) -> anyhow::Result<ExitCode> {
     );
     let mut command = std::process::Command::new("cargo");
     command
-        .arg("run")
-        .arg("--quiet")
-        .arg("-p")
-        .arg("kelson-demo")
+        .args(demo_run_args())
         .arg("--")
         .arg("--prune")
         .arg("--chunk")
@@ -7787,6 +7788,29 @@ deprecated = true
         );
         assert!(!text.contains("db-password"), "secrets never rendered");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Phase R: every local command that boots the `kelson-demo` harness must
+    /// pass `--features demo`. Phase P made the demo modules opt-in so the
+    /// harness could be published, but left `module.demo` declaring
+    /// dependencies on providers that no longer exist in a non-demo build — so
+    /// without the feature the boot died on `UnknownDependency` and took
+    /// `serve`/`call`/`shell`/`model:prune` down with it. This pins the flag.
+    #[test]
+    fn demo_run_args_enable_the_demo_feature() {
+        let args = demo_run_args();
+        assert_eq!(&args[..4], ["run", "--quiet", "-p", "kelson-demo"]);
+        let feat = args
+            .iter()
+            .position(|a| *a == "--features")
+            .expect("--features present");
+        assert_eq!(args.get(feat + 1), Some(&"demo"));
+        // The feature must be a *cargo* arg, so it has to precede any `--`
+        // that hands the rest to the binary.
+        assert!(
+            args.iter().position(|a| *a == "--").is_none_or(|dd| dd > feat),
+            "the demo feature is passed to cargo, not to kelson-demo"
+        );
     }
 
     /// Wave 4 Phase 9 (B-27): `kelson profile` parses per target, the samply
