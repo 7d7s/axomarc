@@ -1,5 +1,6 @@
 # module.toml — immutable contract shape (11-SPEC SS7). `kelson graph` compiles it.
-# Starter (S9): one COMMAND + one READ over the framework ModelStore port.
+# Starter (S9): full CRUD — one COMMAND for each write and one READ per read —
+# over the framework ModelStore port.
 [module]
 name = "__PROJECT_NAME__"
 version = "0.1.0"
@@ -11,6 +12,9 @@ description = "__PROJECT_DESCRIPTION__"
 [capabilities]
 create = { profile = "COMMAND" }
 list = { profile = "READ" }
+read = { profile = "READ" }
+update = { profile = "COMMAND" }
+delete = { profile = "COMMAND" }
 
 [dependencies]
 contracts = []
@@ -29,5 +33,32 @@ operation = "list"
 capability = "list"
 name = "notes.list"
 
+[[routes]]
+method = "GET"
+path = "/api/v1/__PROJECT_NAME__/notes/{id}"
+operation = "read"
+capability = "read"
+name = "notes.read"
+
+[[routes]]
+method = "PUT"
+path = "/api/v1/__PROJECT_NAME__/notes/{id}"
+operation = "update"
+capability = "update"
+name = "notes.update"
+
+[[routes]]
+method = "DELETE"
+path = "/api/v1/__PROJECT_NAME__/notes/{id}"
+operation = "delete"
+capability = "delete"
+name = "notes.delete"
+
 [[events]]
 name = "note.created"
+
+[[events]]
+name = "note.updated"
+
+[[events]]
+name = "note.deleted"

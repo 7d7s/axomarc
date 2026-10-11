@@ -176,6 +176,16 @@ enum Cmd {
         /// Use the SPA-first starter template: auth-wired module + web shell (S9).
         #[arg(long)]
         with_starter: bool,
+        /// Create a SELF-CONTAINED project outside any cargo workspace: it gets
+        /// its own `[workspace]` table and concrete dependency specs, so it
+        /// builds on a machine that has never seen this checkout (Phase Q).
+        /// Dependencies point at a local checkout via `--deps-root`.
+        #[arg(long, requires = "with_starter")]
+        standalone: bool,
+        /// Checkout that a standalone project's kelson dependencies point at.
+        /// Defaults to the workspace root above the current directory.
+        #[arg(long, requires = "standalone")]
+        deps_root: Option<String>,
     },
     Dev,
     /// Run the local app loop: kelson-demo (+ optional worker) in one command (S7 B-08).
@@ -767,7 +777,16 @@ fn main() -> ExitCode {
             plane,
             description,
             with_starter,
-        } => new_project_cmd(name, &plane, &description, with_starter),
+            standalone,
+            deps_root,
+        } => new_project_cmd(
+            name,
+            &plane,
+            &description,
+            with_starter,
+            standalone,
+            deps_root.as_deref(),
+        ),
         Cmd::Make { kind, name, module } => make_kind(&kind, &name, module),
         Cmd::Build { profile } => build(&profile),
         Cmd::Serve { worker } => serve(worker),
@@ -4075,12 +4094,28 @@ fn walk_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     Ok(())
 }
 
-/// kelson new: materialize templates/project-template into applications/<name>.
+/// Where a generated project lands, and how its manifest expresses its
+/// dependencies.
+enum ProjectLayout<'a> {
+    /// Existing behaviour: `applications/<name>` inside the workspace, joined
+    /// to it as a member, manifest inheriting via `{ workspace = true }`.
+    Workspace,
+    /// Phase Q: `./<name>` beside the cwd, self-contained - its own
+    /// `[workspace]` table plus concrete dependency specs pointing at
+    /// `checkout`, so the crate builds without this workspace.
+    Standalone { checkout: &'a Path },
+}
+
+/// kelson new: materialize templates/project-template into applications/<name>,
+/// or - with --standalone - a self-contained project beside the current
+/// directory that needs no enclosing workspace (Phase Q).
 fn new_project(
     name: &str,
     plane: &str,
     description: &str,
     with_starter: bool,
+    standalone: bool,
+    deps_root: Option<&str>,
 ) -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
     let description = if description.is_empty() {
@@ -4104,9 +4139,45 @@ fn new_project(
     if !template_root.exists() {
         anyhow::bail!("{template_rel} is missing under {}", root.display());
     }
-    let target_root = root.join("applications").join(name);
+
+    // A standalone project still needs a checkout to point its dependencies at
+    // (crates are not on crates.io until the publish phase lands); --deps-root
+    // selects it, otherwise the workspace we are running inside is used.
+    let standalone_checkout;
+    let target_root = if standalone {
+        standalone_checkout = match deps_root {
+            Some(raw) => {
+                let p = PathBuf::from(raw);
+                let p = p.canonicalize().map_err(|e| {
+                    anyhow::anyhow!(
+                        "--deps-root {} is not a readable directory: {e}",
+                        p.display()
+                    )
+                })?;
+                if !p.join("Cargo.toml").exists() {
+                    anyhow::bail!(
+                        "--deps-root {} has no Cargo.toml; point it at a kelson checkout",
+                        p.display()
+                    );
+                }
+                p
+            }
+            None => root.clone(),
+        };
+        std::env::current_dir()?.join(name)
+    } else {
+        standalone_checkout = PathBuf::new();
+        root.join("applications").join(name)
+    };
+    let layout = if standalone {
+        ProjectLayout::Standalone {
+            checkout: &standalone_checkout,
+        }
+    } else {
+        ProjectLayout::Workspace
+    };
     if target_root.exists() {
-        anyhow::bail!("applications/{name} already exists");
+        anyhow::bail!("{} already exists", target_root.display());
     }
 
     let crate_name = format!("kelson-{name}");
@@ -4117,10 +4188,17 @@ fn new_project(
     for file in &files {
         let rel = file.strip_prefix(&template_root)?;
         let raw = std::fs::read_to_string(file)?;
-        let content = raw
+        let mut content = raw
             .replace("__PROJECT_NAME__", name)
             .replace("__PROJECT_CRATE__", &crate_name)
             .replace("__PROJECT_DESCRIPTION__", &description);
+        // Only the manifest changes shape; every other template file stays
+        // byte-for-byte identical between the two layouts.
+        if rel == std::path::Path::new("Cargo.toml") {
+            if let ProjectLayout::Standalone { checkout } = &layout {
+                content = standalone_manifest(&content, checkout)?;
+            }
+        }
         let target = target_root.join(rel);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
@@ -4129,12 +4207,26 @@ fn new_project(
         written.push(target);
     }
     for path in &written {
-        let rel = path.strip_prefix(&root).unwrap_or(path);
+        let base = match &layout {
+            ProjectLayout::Workspace => &root,
+            ProjectLayout::Standalone { .. } => &target_root,
+        };
+        let rel = path.strip_prefix(base).unwrap_or(path);
         println!("  + {}", rel.display());
     }
-    kelson_codegen::add_workspace_member(&root, &format!("applications/{name}"))
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    println!("  + workspace member applications/{name}");
+    match &layout {
+        ProjectLayout::Workspace => {
+            kelson_codegen::add_workspace_member(&root, &format!("applications/{name}"))
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            println!("  + workspace member applications/{name}");
+        }
+        ProjectLayout::Standalone { checkout } => {
+            println!(
+                "  + standalone project: own [workspace], kelson deps from {}",
+                checkout.display()
+            );
+        }
+    }
     println!("project {name} created. Verify: cargo check -p {crate_name}");
     if with_starter {
         println!("starter extras:");
@@ -4145,6 +4237,144 @@ fn new_project(
         println!("  - run the loop with: kelson serve");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Package fields the templates inherit from `[workspace.package]`. A
+/// standalone crate has no workspace to inherit from, so they are spelled out
+/// with the platform's own values.
+const STANDALONE_PACKAGE: &[(&str, &str)] = &[
+    ("version.workspace = true", "version = \"0.1.0\""),
+    ("edition.workspace = true", "edition = \"2021\""),
+    ("rust-version.workspace = true", "rust-version = \"1.89\""),
+    (
+        "license.workspace = true",
+        "license = \"MIT OR Apache-2.0\"",
+    ),
+    (
+        "repository.workspace = true",
+        "repository = \"https://github.com/7d7s/axomarc\"",
+    ),
+    ("readme.workspace = true", "readme = \"README.md\""),
+    (
+        "keywords.workspace = true",
+        "keywords = [\"kelson\", \"framework\"]",
+    ),
+];
+
+/// Workspace-relative directories of the kelson crates the templates use, so a
+/// standalone manifest can point at them with `path = ...`.
+const STANDALONE_KELSON_DEPS: &[(&str, &str)] = &[
+    ("kelson-context", "crates/foundation/context"),
+    ("kelson-execution", "crates/execution/engine"),
+    ("kelson-foundation", "crates/foundation/core"),
+    ("kelson-lifecycle", "crates/foundation/lifecycle"),
+    ("kelson-models", "crates/data/models"),
+    ("kelson-policy", "crates/security/policies"),
+    ("kelson-registry", "crates/application/registry"),
+];
+
+/// Third-party dependencies, verbatim from `[workspace.dependencies]`, so a
+/// standalone crate builds against the versions the platform itself uses.
+const STANDALONE_THIRD_PARTY: &[(&str, &str)] = &[
+    ("serde", "serde = { version = \"1\", features = [\"derive\"] }"),
+    ("serde_json", "serde_json = \"1\""),
+    (
+        "time",
+        "time = { version = \"0.3\", features = [\"serde\", \"formatting\", \"parsing\", \"macros\"] }",
+    ),
+    (
+        "tokio",
+        "tokio = { version = \"1\", features = [\"macros\", \"rt-multi-thread\", \"signal\", \"time\"] }",
+    ),
+    (
+        "uuid",
+        "uuid = { version = \"1\", features = [\"v4\", \"v5\", \"v7\", \"serde\"] }",
+    ),
+];
+
+/// TOML-safe path: forward slashes work on every platform and avoid the
+/// escaped-backslash mangling a Windows path would otherwise need.
+fn toml_path(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
+/// The concrete manifest line for one dependency name, or `None` when nothing
+/// in the tables above knows how to make it standalone.
+fn standalone_dep(name: &str, checkout: &Path) -> Option<String> {
+    if let Some((_, dir)) = STANDALONE_KELSON_DEPS.iter().find(|(n, _)| *n == name) {
+        return Some(format!(
+            "{name} = {{ version = \"0.1.0\", path = \"{}\" }}",
+            toml_path(&checkout.join(dir))
+        ));
+    }
+    STANDALONE_THIRD_PARTY
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, spec)| (*spec).to_string())
+}
+
+/// Rewrite a workspace-relative manifest into a self-contained one (Phase Q).
+///
+/// Every `{ workspace = true }` must be resolvable: package fields are spelled
+/// out, kelson crates get a `version`/`path` pair aimed at `checkout`,
+/// third-party crates get their pinned spec. Anything unresolvable is a hard
+/// error rather than a manifest that only fails later on a stranger's machine.
+/// A `[workspace]` table is inserted so cargo does not adopt the project into
+/// whatever workspace encloses it. The result is checked, not assumed.
+fn standalone_manifest(raw: &str, checkout: &Path) -> anyhow::Result<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut anchored = false;
+
+    for line in raw.split('\n') {
+        let t = line.trim();
+
+        if let Some((_, concrete)) = STANDALONE_PACKAGE.iter().find(|(from, _)| *from == t) {
+            out.push((*concrete).to_string());
+            continue;
+        }
+
+        if t.contains("workspace = true") {
+            let name = t.split('=').next().unwrap_or_default().trim();
+            let replacement = standalone_dep(name, checkout).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "cannot make dependency {name:?} standalone: it is declared \
+                     `{{ workspace = true }}` but has no known concrete spec. Add it to \
+                     STANDALONE_KELSON_DEPS or STANDALONE_THIRD_PARTY in \
+                     tools/kelson-console/src/main.rs."
+                )
+            })?;
+            out.push(replacement);
+            continue;
+        }
+
+        // Anchor the standalone marker on the first top-level section after
+        // [package], which is always [dependencies].
+        if !anchored && t == "[dependencies]" {
+            out.push("[workspace]".to_string());
+            out.push(String::new());
+            anchored = true;
+        }
+        out.push(line.to_string());
+    }
+
+    if !anchored {
+        anyhow::bail!("template manifest has no [dependencies] section to anchor [workspace] on");
+    }
+    let joined = out.join("\n");
+    if joined.contains("workspace = true") {
+        anyhow::bail!("standalone manifest still contains `workspace = true`");
+    }
+    let tables = joined
+        .split('\n')
+        .filter(|l| l.trim() == "[workspace]")
+        .count();
+    if tables != 1 {
+        anyhow::bail!("standalone manifest has {tables} [workspace] tables, expected exactly 1");
+    }
+    if !joined.contains("path = ") {
+        anyhow::bail!("standalone manifest has no path dependency; deps did not resolve");
+    }
+    Ok(joined)
 }
 
 /// kelson make <kind> <name> [--module <m>]: scaffold one file (item 30).
@@ -4580,9 +4810,18 @@ fn new_project_cmd(
     plane: &str,
     description: &str,
     with_starter: bool,
+    standalone: bool,
+    deps_root: Option<&str>,
 ) -> anyhow::Result<ExitCode> {
     let name = resolve_name_or_prompt("project", name)?;
-    new_project(&name, plane, description, with_starter)
+    new_project(
+        &name,
+        plane,
+        description,
+        with_starter,
+        standalone,
+        deps_root,
+    )
 }
 
 // ------------------------------------------------------------------ inspect
@@ -6178,8 +6417,9 @@ mod tests {
         let manifest =
             kelson_registry::ModuleManifest::from_toml(&manifest_raw).expect("manifest parses");
         let graph = kelson_registry::PlatformGraph::compile(vec![manifest]).expect("graph compiles");
-        assert_eq!(graph.operations.len(), 2, "create + list");
-        assert_eq!(graph.modules[0].routes.len(), 2);
+        // Full CRUD (Phase Q): create + list + read + update + delete.
+        assert_eq!(graph.operations.len(), 5, "create + list + read + update + delete");
+        assert_eq!(graph.modules[0].routes.len(), 5);
 
         let list_url = graph
             .resolve_url(name, "notes.list", &std::collections::BTreeMap::new())
@@ -6189,6 +6429,22 @@ mod tests {
             .route_named(name, "notes.create")
             .expect("named create route exists");
         assert_eq!(create.method, "POST");
+        // The three by-id verbs share the /notes/{id} address.
+        for (route, method) in [
+            ("notes.read", "GET"),
+            ("notes.update", "PUT"),
+            ("notes.delete", "DELETE"),
+        ] {
+            let r = graph
+                .route_named(name, route)
+                .unwrap_or_else(|| panic!("named {route} route exists"));
+            assert_eq!(r.method, method, "{route} verb");
+            assert!(
+                r.path.ends_with("/notes/{id}"),
+                "{route} addresses the by-id path, got {}",
+                r.path
+            );
+        }
 
         // Compile-contract markers: the module uses the S8 persistence port.
         assert!(
