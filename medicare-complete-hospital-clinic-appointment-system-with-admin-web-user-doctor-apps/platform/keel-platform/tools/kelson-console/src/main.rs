@@ -844,10 +844,23 @@ fn line(ok: bool, label: &str, detail: &str) -> bool {
     ok
 }
 
+/// Advisory checks report a missing *optional* dev convenience without failing
+/// the run. `docker compose` is documented as optional (`01-GETTING-STARTED`
+/// Prerequisites), and a workspace may legitimately carry no pinned toolchain -
+/// ADR 0014 §5 leaves the MSRV floor to the convergence port. Folding both into
+/// `all_ok` made `doctor` unable to exit 0 on a fresh clone, contradicting the
+/// documented "doctor and check must be clean" gate. A required check that
+/// cannot pass is not a gate, it is noise.
+fn advisory(ok: bool, label: &str, detail: &str) -> bool {
+    println!("  {} {label}: {detail}", if ok { "[ok]" } else { "[--]" });
+    ok
+}
+
 fn doctor() -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
     println!("kelson doctor — workspace {}", root.display());
     let mut all_ok = true;
+    let mut advisory_notes: Vec<&str> = Vec::new();
 
     let rustc = tool_version("rustc", "--version");
     all_ok &= line(rustc != "NOT FOUND", "rustc", &rustc);
@@ -855,11 +868,13 @@ fn doctor() -> anyhow::Result<ExitCode> {
     all_ok &= line(cargo != "NOT FOUND", "cargo", &cargo);
 
     let toolchain = root.join("rust-toolchain.toml");
-    all_ok &= line(
+    if !advisory(
         toolchain.exists(),
         "rust-toolchain.toml",
         &toolchain.display().to_string(),
-    );
+    ) {
+        advisory_notes.push("no pinned toolchain");
+    }
 
     let cfg = root.join("config/dev.toml");
     let cfg_ok = cfg.exists()
@@ -870,11 +885,14 @@ fn doctor() -> anyhow::Result<ExitCode> {
     all_ok &= line(cfg_ok, "config/dev.toml", "present + parses");
 
     let compose = root.join("docker-compose.yml");
-    all_ok &= line(
+    if !advisory(
         compose.exists(),
         "docker-compose.yml",
         "postgres + minio for local dev",
-    );
+    ) {
+        advisory_notes
+            .push("no docker-compose.yml (`docker compose up -d` for postgres-backed dev)");
+    }
 
     let migrations = root.join("database/migrations");
     let count = std::fs::read_dir(&migrations)
@@ -903,6 +921,10 @@ fn doctor() -> anyhow::Result<ExitCode> {
         &format!("{}", members.len()),
     );
 
+    if !advisory_notes.is_empty() {
+        println!();
+        println!("  advisory (not failing): {}", advisory_notes.join("; "));
+    }
     if !all_ok {
         return Ok(ExitCode::FAILURE);
     }
