@@ -4416,6 +4416,13 @@ fn build(profile_raw: &str) -> anyhow::Result<ExitCode> {
         git_dirty,
         built_at: time::OffsetDateTime::now_utc(),
         rustc: rustc_version(),
+        // Phase S: record the schema this release ships, so `kelson upgrade`
+        // can diff it against `keel_migrations` and tell an operator which
+        // framework migrations they still owe. Failing here is deliberate — a
+        // release built without its migration set would later report a false
+        // all-clear.
+        migrations: kelson_deployment::shipped_migrations(&root)
+            .map_err(|e| anyhow::anyhow!("{e}"))?,
     };
     let path =
         kelson_deployment::write_manifest(&root, &manifest).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -5383,6 +5390,51 @@ fn upgrade_report() -> anyhow::Result<ExitCode> {
         }
         Some(m) => println!("[!!] framework version {current} but release manifest is {} — rebuild with `kelson build`", m.version),
         None => println!("[!!] no release manifest — run `kelson build` (current version {current})"),
+    }
+
+    // Phase S: the migration set the release recorded at build time, versus
+    // what the tree ships now. The live applied-vs-pending diff needs a
+    // database and stays with `kelson migrate:status`; what can be answered
+    // offline is whether the release you are running still matches the schema
+    // it claimed to ship.
+    if let Some(m) = &manifest {
+        if !m.migrations.is_empty() {
+            println!(
+                "[ok] release manifest records {} shipped migration(s)",
+                m.migrations.len()
+            );
+            let current_set =
+                kelson_deployment::shipped_migrations(&root).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let drift = kelson_deployment::migration_drift(&m.migrations, &current_set);
+            if drift.is_empty() {
+                println!(
+                    "[ok] {} matches the release manifest exactly",
+                    kelson_deployment::PAIRS_DIR
+                );
+            }
+            for name in drift.added {
+                println!(
+                    "[??] migration {name} is in the tree but was not in the release manifest — added after `kelson build`?"
+                );
+            }
+            for name in drift.removed {
+                println!(
+                    "[!!] migration {name} was in the release manifest but is gone from the tree"
+                );
+            }
+            for name in drift.changed {
+                println!(
+                    "[!!] migration {name} changed since the release was built. `keel_migrations` \n     records only its name, so `kelson migrate` will NOT reapply it — the \n     database still holds the bytes that were originally applied."
+                );
+            }
+            println!(
+                "     applied-vs-pending against the database: run `kelson migrate:status`"
+            );
+        } else {
+            println!(
+                "[??] release manifest records no migrations (built before the migration \n     manifest was tracked) — rebuild with `kelson build`"
+            );
+        }
     }
 
     // Public API registry (blueprint 49): stability + deprecations.

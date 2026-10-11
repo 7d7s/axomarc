@@ -1615,6 +1615,7 @@ dependencies = [
  "kelson-foundation",
  "serde",
  "serde_json",
+ "sha2",
  "time",
  "tokio",
  "uuid",
