@@ -154,9 +154,14 @@ Lockstep via xtask:
 just bump 0.2.0
 ```
 
-This updates `[workspace.package].version` and all 49 internal dependency
+This updates `[workspace.package].version` and all 65 internal dependency
 version literals in the root `Cargo.toml`, and validates the replacement
-counts before writing. After bumping: update `CHANGELOG.md` (or regenerate
+counts before writing. The count is derived at run time by `bump` itself -
+a `[workspace.dependencies]` entry that carries both `version = "..."` and
+`, path =` - so 65 is a reported figure, not a value the tool depends on.
+It was reconciled against both manifests on 2026-10-12: 65 in keel-platform
+and 65 in platform (the previous figure of 49 predated several waves and was
+never re-derived). After bumping: update `CHANGELOG.md` (or regenerate
 with `just changelog kelson/platform-vX.Y.Z` at tag time), then `just
 publish-dry`.
 
