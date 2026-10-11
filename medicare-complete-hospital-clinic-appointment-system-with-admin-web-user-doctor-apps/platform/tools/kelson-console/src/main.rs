@@ -3861,6 +3861,82 @@ fn walk_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Where `kelson new` gets its template files from.
+///
+/// A checkout is preferred whenever its templates are actually present, so a
+/// contributor editing one sees the edit on the next run instead of a stale
+/// copy baked into the binary. The compiled-in copy is the fallback, and it is
+/// the reason this console can be published at all: a binary installed from
+/// crates.io has no checkout beside it, and reading templates off disk would
+/// leave it generating nothing.
+enum TemplateSource {
+    /// `<workspace>/templates/...`, read at generation time.
+    Disk(PathBuf),
+    /// Compiled in by the `kelson-templates` crate.
+    Embedded(&'static [kelson_templates::TemplateFile]),
+}
+
+impl TemplateSource {
+    /// Every file of the template as (project-relative path, body), sorted by
+    /// path. Both arms sort, so the two sources produce the same project in
+    /// the same order.
+    fn files(&self) -> anyhow::Result<Vec<(String, String)>> {
+        let mut out: Vec<(String, String)> = match self {
+            TemplateSource::Disk(dir) => {
+                let mut paths = Vec::new();
+                walk_files(dir, &mut paths)?;
+                paths.sort();
+                let mut files = Vec::with_capacity(paths.len());
+                for path in paths {
+                    let rel = path.strip_prefix(dir)?.to_string_lossy().replace('\\', "/");
+                    files.push((rel, std::fs::read_to_string(&path)?));
+                }
+                files
+            }
+            TemplateSource::Embedded(entries) => entries
+                .iter()
+                .map(|(rel, body)| ((*rel).to_string(), (*body).to_string()))
+                .collect(),
+        };
+        out.sort();
+        // A checkout's line endings belong to whoever last edited it, and the
+        // compiled-in copy's belong to whoever built the binary - autocrlf
+        // decides, and it differs between machines. Normalising here means the
+        // same template produces the same bytes wherever it came from, and
+        // that a Windows checkout and a Linux one generate identical projects.
+        for (_, body) in &mut out {
+            if body.contains('\r') {
+                *body = body.replace("\r\n", "\n");
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Pick the source for one template.
+///
+/// Disk wins only when the directory is really there; everything else - an
+/// installed console, a checkout stripped of its templates - falls back to the
+/// copy compiled into the binary.
+fn template_source(workspace: Option<&Path>, with_starter: bool) -> TemplateSource {
+    let rel = if with_starter {
+        "templates/starter-template"
+    } else {
+        "templates/project-template"
+    };
+    if let Some(root) = workspace {
+        let dir = root.join(rel);
+        if dir.is_dir() {
+            return TemplateSource::Disk(dir);
+        }
+    }
+    TemplateSource::Embedded(if with_starter {
+        kelson_templates::STARTER_TEMPLATE
+    } else {
+        kelson_templates::PROJECT_TEMPLATE
+    })
+}
+
 /// Where a generated project lands, and how its manifest expresses its
 /// dependencies.
 enum ProjectLayout<'a> {
@@ -3884,7 +3960,6 @@ fn new_project(
     standalone: bool,
     deps_root: Option<&str>,
 ) -> anyhow::Result<ExitCode> {
-    let root = workspace_root()?;
     let description = if description.is_empty() {
         format!("Project {name}")
     } else {
@@ -3897,21 +3972,28 @@ fn new_project(
     };
     spec.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let template_rel = if with_starter {
-        "templates/starter-template"
-    } else {
-        "templates/project-template"
-    };
-    let template_root = root.join(template_rel);
-    if !template_root.exists() {
-        anyhow::bail!("{template_rel} is missing under {}", root.display());
+    // The in-workspace layout joins the workspace it is generated into, so one
+    // is required there. `--standalone` is the layout that does not need one -
+    // that is most of its point - so an installed console run in a directory
+    // with nothing above it still produces a project.
+    let workspace = workspace_root().ok();
+    if !standalone && workspace.is_none() {
+        anyhow::bail!(
+            "no workspace Cargo.toml found above {}. `kelson new` without --standalone \
+             adds a module to a kelson workspace, so it has to run inside one; pass \
+             --standalone to generate a self-contained project here instead.",
+            std::env::current_dir()?.display()
+        );
     }
 
-    // A standalone project still needs a checkout to point its dependencies at
-    // (crates are not on crates.io until the publish phase lands); --deps-root
-    // selects it, otherwise the workspace we are running inside is used.
+    // A standalone project still needs somewhere to take its kelson
+    // dependencies from (they are not on crates.io until the publish phase
+    // lands); --deps-root selects a checkout, otherwise the enclosing
+    // workspace is used.
     let standalone_checkout;
-    let target_root = if standalone {
+    let target_root;
+    let layout;
+    if standalone {
         standalone_checkout = match deps_root {
             Some(raw) => {
                 let p = PathBuf::from(raw);
@@ -3929,44 +4011,61 @@ fn new_project(
                 }
                 p
             }
-            None => root.clone(),
+            None => match &workspace {
+                Some(root) => root.clone(),
+                // Refusing rather than emitting version-only specs is
+                // deliberate: those crates are not published yet, so the
+                // manifest would parse and then fail to build on the very
+                // machine it was meant to help.
+                None => anyhow::bail!(
+                    "--standalone needs somewhere to take the kelson dependencies from: \
+                     pass --deps-root <path to a kelson checkout>. They are not on \
+                     crates.io yet, so a manifest pointing at neither would not build."
+                ),
+            },
         };
-        std::env::current_dir()?.join(name)
-    } else {
-        standalone_checkout = PathBuf::new();
-        root.join("applications").join(name)
-    };
-    let layout = if standalone {
-        ProjectLayout::Standalone {
+        target_root = std::env::current_dir()?.join(name);
+        layout = ProjectLayout::Standalone {
             checkout: &standalone_checkout,
-        }
+        };
     } else {
-        ProjectLayout::Workspace
-    };
+        // The check above guarantees this. `standalone_checkout` is left
+        // uninitialised on this path: only the standalone layout borrows it.
+        let root = workspace
+            .as_ref()
+            .expect("the in-workspace layout requires a workspace (checked above)");
+        target_root = root.join("applications").join(name);
+        layout = ProjectLayout::Workspace;
+    }
     if target_root.exists() {
         anyhow::bail!("{} already exists", target_root.display());
     }
 
+    // Where each relative path in the "created" listing is anchored.
+    let list_base: &Path = if standalone {
+        &target_root
+    } else {
+        workspace
+            .as_ref()
+            .expect("the in-workspace layout requires a workspace (checked above)")
+    };
+
+    let source = template_source(workspace.as_deref(), with_starter);
     let crate_name = format!("kelson-{name}");
-    let mut files = Vec::new();
-    walk_files(&template_root, &mut files)?;
-    files.sort();
     let mut written = Vec::new();
-    for file in &files {
-        let rel = file.strip_prefix(&template_root)?;
-        let raw = std::fs::read_to_string(file)?;
+    for (rel, raw) in source.files()? {
         let mut content = raw
             .replace("__PROJECT_NAME__", name)
             .replace("__PROJECT_CRATE__", &crate_name)
             .replace("__PROJECT_DESCRIPTION__", &description);
         // Only the manifest changes shape; every other template file stays
         // byte-for-byte identical between the two layouts.
-        if rel == std::path::Path::new("Cargo.toml") {
+        if rel == "Cargo.toml" {
             if let ProjectLayout::Standalone { checkout } = &layout {
                 content = standalone_manifest(&content, checkout)?;
             }
         }
-        let target = target_root.join(rel);
+        let target = target_root.join(&rel);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -3974,17 +4073,18 @@ fn new_project(
         written.push(target);
     }
     for path in &written {
-        let base = match &layout {
-            ProjectLayout::Workspace => &root,
-            ProjectLayout::Standalone { .. } => &target_root,
-        };
-        let rel = path.strip_prefix(base).unwrap_or(path);
+        let rel = path.strip_prefix(list_base).unwrap_or(path);
         println!("  + {}", rel.display());
     }
     match &layout {
         ProjectLayout::Workspace => {
-            kelson_codegen::add_workspace_member(&root, &format!("applications/{name}"))
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            kelson_codegen::add_workspace_member(
+                workspace
+                    .as_ref()
+                    .expect("the in-workspace layout requires a workspace (checked above)"),
+                &format!("applications/{name}"),
+            )
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
             println!("  + workspace member applications/{name}");
         }
         ProjectLayout::Standalone { checkout } => {
@@ -4061,8 +4161,24 @@ const STANDALONE_THIRD_PARTY: &[(&str, &str)] = &[
 
 /// TOML-safe path: forward slashes work on every platform and avoid the
 /// escaped-backslash mangling a Windows path would otherwise need.
+///
+/// The Windows verbatim prefix is stripped first. `Path::canonicalize` hands
+/// back `\\?\C:\...`, and a manifest carrying that does not parse at all:
+/// once the backslashes are swapped it reads `//?/C:/...`, which cargo treats
+/// as a URL rather than a path. Left unstripped, every `--deps-root` run on
+/// Windows produced a project that would not build. The UNC form
+/// `\\?\UNC\server\share` keeps its leading double slash, because that is what
+/// a share looks like once the prefix is gone.
 fn toml_path(p: &Path) -> String {
-    p.to_string_lossy().replace('\\', "/")
+    let raw = p.to_string_lossy();
+    let unverbatimited = if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        raw.to_string()
+    };
+    unverbatimited.replace('\\', "/")
 }
 
 /// The concrete manifest line for one dependency name, or `None` when nothing
@@ -6217,6 +6333,105 @@ mod tests {
                 "unsubstituted marker in {rel}"
             );
         }
+    }
+
+    /// The compiled-in templates must be exactly the ones on disk, or a
+    /// stranger holding an installed `kelson` would generate a different
+    /// project from a contributor holding a checkout of the same version and
+    /// commit. This is the invariant the whole embedding change rests on, so
+    /// it is checked rather than assumed.
+    #[test]
+    fn the_embedded_templates_match_the_ones_on_disk() {
+        let root = workspace_root().expect("workspace root resolves");
+        for with_starter in [false, true] {
+            let disk = template_source(Some(&root), with_starter)
+                .files()
+                .expect("disk template reads");
+            let embedded = template_source(None, with_starter)
+                .files()
+                .expect("embedded template reads");
+            assert!(
+                !disk.is_empty(),
+                "{} template would generate nothing",
+                if with_starter { "starter" } else { "project" }
+            );
+            assert_eq!(
+                disk, embedded,
+                "{} template differs between disk and the compiled-in copy",
+                if with_starter { "starter" } else { "project" }
+            );
+        }
+    }
+
+    /// A checkout must win over the compiled-in copy, so editing a template
+    /// takes effect on the next `kelson new` without a rebuild.
+    #[test]
+    fn a_checkout_is_preferred_over_the_embedded_copy() {
+        let root = workspace_root().expect("workspace root resolves");
+        for with_starter in [false, true] {
+            assert!(
+                matches!(
+                    template_source(Some(&root), with_starter),
+                    TemplateSource::Disk(_)
+                ),
+                "a checkout's templates must be read from disk"
+            );
+        }
+    }
+
+    /// With no workspace above the cwd there is nothing to read from, which is
+    /// the normal case for an installed console. It must fall back rather than
+    /// fail - falling back is the entire reason the templates are embedded.
+    #[test]
+    fn no_workspace_falls_back_to_the_embedded_templates() {
+        for with_starter in [false, true] {
+            assert!(matches!(
+                template_source(None, with_starter),
+                TemplateSource::Embedded(_)
+            ));
+        }
+    }
+
+    /// autocrlf decides the line endings of the work-tree files, and on a
+    /// Windows build of the binaries too. Normalising is what keeps two builds
+    /// of one commit generating byte-identical projects, so no body may carry
+    /// a carriage return by the time it reaches the disk.
+    #[test]
+    fn generated_template_bodies_carry_no_carriage_returns() {
+        let root = workspace_root().expect("workspace root resolves");
+        for source in [
+            template_source(Some(&root), false),
+            template_source(Some(&root), true),
+            template_source(None, false),
+            template_source(None, true),
+        ] {
+            for (rel, body) in source.files().expect("template reads") {
+                assert!(!body.contains('\r'), "{rel} still carries a carriage return");
+            }
+        }
+    }
+
+    /// `Path::canonicalize` on Windows returns a verbatim path, and a manifest
+    /// carrying it does not parse at all: with the slashes swapped cargo reads
+    /// `//?/C:/...` as a URL and refuses the file. This is the `--deps-root`
+    /// route, which is the only way to generate a standalone project until the
+    /// kelson crates are on crates.io, so the prefix must never reach the
+    /// manifest.
+    #[test]
+    fn toml_paths_never_carry_the_windows_verbatim_prefix() {
+        assert_eq!(toml_path(Path::new(r"C:\src\kelson")), "C:/src/kelson");
+        assert_eq!(
+            toml_path(Path::new(r"\\?\C:\src\kelson")),
+            "C:/src/kelson",
+            "the verbatim prefix must be stripped, not slash-swapped"
+        );
+        assert_eq!(
+            toml_path(Path::new(r"\\?\UNC\fileserver\kelson")),
+            "//fileserver/kelson",
+            "a verbatim UNC path keeps the leading double slash once stripped"
+        );
+        assert_eq!(toml_path(Path::new(r"\\server\share\x")), "//server/share/x");
+        assert_eq!(toml_path(Path::new("/posix/src/kelson")), "/posix/src/kelson");
     }
 
     /// Wave 1 route-cache cycle: route:cache writes the pinned artifact

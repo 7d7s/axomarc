@@ -69,6 +69,8 @@ members = [
   "tools/kelson-console",
   "tools/kelson-analyzer",
   "tools/kelson-codegen",
+  # Template files compiled into the console (see templates/README.md)
+  "templates",
   "xtask",
   "tests/architecture",
   "testing/testkit",
@@ -152,6 +154,7 @@ kelson-testkit = { version = "0.1.0", path = "testing/testkit" }
 # --- internal (TOOLS) ---
 kelson-analyzer = { version = "0.1.0", path = "tools/kelson-analyzer" }
 kelson-codegen = { version = "0.1.0", path = "tools/kelson-codegen" }
+kelson-templates = { version = "0.1.0", path = "templates" }
 # --- adapters (only runtime wires these) ---
 kelson-cache-memory = { version = "0.1.0", path = "adapters/kelson-cache-memory" }
 kelson-cache-redis = { version = "0.1.0", path = "adapters/kelson-cache-redis" }

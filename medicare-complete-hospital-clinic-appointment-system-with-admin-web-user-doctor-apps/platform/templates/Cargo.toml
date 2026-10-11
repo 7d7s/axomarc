@@ -1,0 +1,13 @@
+[package]
+name = "kelson-templates"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Kelson project templates: the files `kelson new` materializes, embedded so an installed console generates projects with no checkout on disk."
+
+[package.metadata.docs.rs]
+all-features = true

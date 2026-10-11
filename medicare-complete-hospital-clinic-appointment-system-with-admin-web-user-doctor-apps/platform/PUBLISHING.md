@@ -66,6 +66,24 @@ gated (`kelson-audit`, `kelson-demo`, `kelson-mod-appointments`, `kelson-arch-va
 the counts 68/61/7 -> 69/62/7 by adding the publishable `kelson-mysql` fabric
 crate (ADR 0010 records the crate decision).
 
+Distribution program, template embedding (2026-10-11): `kelson-templates` is a
+new publishable member. It embeds the `kelson new` template files into the
+console, because cargo packages a crate's own directory and nothing above it:
+an `include_str!("../../templates/...")` living in `tools/kelson-console`
+compiles inside a checkout and then fails to compile for anyone who downloads
+the crate. `kelson-console` depends on it by version, so `kelson-templates` has
+to be published before `kelson-console` (it has no dependencies of its own, so
+it sits at the front of the order in any case).
+
+Counts derived from the manifests on 2026-10-11 (`members = [...]` entries, with
+`publish = false` counted as gated): keel-platform 75 members / 66 publishable /
+9 gated; platform 74 / 65 / 9. These supersede the 69/62/7 figure above, which
+records the Wave 2 triage and is left as written. The one-member difference
+between the trees is `crates/framework`, the umbrella crate, which exists only
+in keel-platform; that divergence is pre-existing and unrelated to this change.
+Neither figure was reconciled here - the counts are reported as derived, not
+asserted to be correct.
+
 Dry-run bootstrap semantics: `cargo publish --dry-run` resolves every
 dependency against the crates.io index, so before the first real publish the
 58 crates that depend on unpublished workspace crates cannot be packaged yet

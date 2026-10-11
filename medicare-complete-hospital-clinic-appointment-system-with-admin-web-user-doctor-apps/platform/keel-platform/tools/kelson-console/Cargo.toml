@@ -17,6 +17,7 @@ path = "src/main.rs"
 kelson-foundation = { workspace = true }
 kelson-analyzer = { workspace = true }
 kelson-codegen = { workspace = true }
+kelson-templates = { workspace = true }
 kelson-registry = { workspace = true }
 kelson-ai-tools = { workspace = true }
 kelson-ai-mcp = { workspace = true }

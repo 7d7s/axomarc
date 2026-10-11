@@ -1511,6 +1511,7 @@ dependencies = [
  "kelson-postgres",
  "kelson-registry",
  "kelson-scheduling",
+ "kelson-templates",
  "kelson-views",
  "serde",
  "serde_json",
@@ -2176,6 +2177,10 @@ dependencies = [
  "time",
  "uuid",
 ]
+
+[[package]]
+name = "kelson-templates"
+version = "0.1.0"
 
 [[package]]
 name = "kelson-tenancy"

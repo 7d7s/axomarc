@@ -37,7 +37,7 @@ fn every_member_belongs_to_a_topology_class() {
     for m in &members {
         assert!(
             kelson_analyzer::Class::from_member_path(m).is_some(),
-            "member {m} is outside the topology (foundation/execution/application/web/security/data/async/services/observability/enterprise/testing/ai/framework/extension + adapters/runtime/tools/tests/examples/applications)"
+            "member {m} is outside the topology (foundation/execution/application/web/security/data/async/services/observability/enterprise/testing/ai/framework/extension/templates + adapters/runtime/tools/tests/examples/applications)"
         );
     }
 }

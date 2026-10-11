@@ -37,6 +37,15 @@ pub enum Class {
     /// hosted by the runtime (docs/19 Wave 9 B-30). Added by the Wave 9
     /// program — STAGE-0-SPEC §2 predates the class.
     Extension,
+    /// `templates/`: the project files `kelson new` materializes, compiled into
+    /// the console so an installed binary can generate a project with no
+    /// checkout on disk. Added by the distribution program — STAGE-0-SPEC §2
+    /// records the directory, and stays FROZEN, in line with the Framework and
+    /// Extension precedent.
+    ///
+    /// Data, not code: the crate has no dependencies at all, so its allow-list
+    /// is empty. If that ever changes, this gate is where it should be noticed.
+    Templates,
 }
 
 impl Class {
@@ -62,6 +71,7 @@ impl Class {
             Class::Applications => "applications",
             Class::Framework => "framework",
             Class::Extension => "extension",
+            Class::Templates => "templates",
         }
     }
 
@@ -95,6 +105,7 @@ impl Class {
             "tests" => Some(Class::Tests),
             "examples" => Some(Class::Examples),
             "applications" => Some(Class::Applications),
+            "templates" => Some(Class::Templates),
             _ => None,
         }
     }
@@ -194,6 +205,12 @@ impl Class {
                 Enterprise,
                 Ai,
                 Tools,
+                // Scaffolding is what tools do: `kelson new` materialises the
+                // template data into a project. Nothing else in the workspace
+                // may reach it - a library or runtime depending on template
+                // files would be a sign something has been put in the wrong
+                // place.
+                Templates,
             ],
             Tests => &[Foundation, Application, Tools, Tests],
             Examples => &[
@@ -249,6 +266,11 @@ impl Class {
             // through Foundation errors. It must NOT reach Web/Security/Data
             // services: the sandbox has no host-side I/O surface by design.
             Extension => &[Foundation, Execution, Application, Extension],
+            // Data, not code: the crate embeds template files and depends on
+            // nothing at all. An empty allow-list is deliberate - a crate that
+            // only ships files has no business importing the platform, and any
+            // dependency added to it should show up here as a violation.
+            Templates => &[],
         }
     }
 }
