@@ -1164,3 +1164,63 @@ fn a_hand_authored_component_fixture_round_trips_without_guest_side_wit_bindgen(
         "the hand-authored guest computed the expected value"
     );
 }
+
+/// ADR 0019 section 5's world is now a *compiled* artifact rather than a code
+/// block inside a decision record: `kelson_wasm::component` runs
+/// `wasmtime::component::bindgen!` over `wit/kelson-plugin.wit`, so if the
+/// package stops parsing or the `plugin` world stops resolving, the
+/// feature-on build fails instead of the defect surfacing later. What this
+/// case pins is the design point that would be easiest to lose in a refactor:
+/// a denial is a `false` the guest sees, never a trap the host has to survive.
+#[cfg(feature = "component-model")]
+#[test]
+fn the_v2_wit_world_compiles_and_a_denying_host_returns_false_instead_of_trapping() {
+    // `bindgen!` mirrors the WIT package path rather than flattening it, so
+    // the host interface lands at `kelson::plugin::host` and the export at
+    // `exports::kelson::plugin::dispatch` — the same nesting a WIT
+    // `use kelson:plugin/{host}` would address.
+    use kelson_wasm::component::exports::kelson::plugin::dispatch::CallError;
+    use kelson_wasm::component::kelson::plugin::host::Host;
+
+    // Naming the world type is what makes "`plugin` resolved" a compiled and
+    // executed fact rather than a comment: `bindgen!` emits a `Plugin` struct
+    // per world, and it only exists if the package resolved end to end.
+    let world = core::any::type_name::<kelson_wasm::component::Plugin>();
+    assert!(
+        world.ends_with("Plugin"),
+        "the WIT world should resolve to a `Plugin` type, got {world}"
+    );
+
+    /// A host that denies everything — what a plugin whose sidecar declares no
+    /// capabilities meets at runtime, and the shape the fail-closed rule
+    /// requires.
+    struct DenyingHost;
+
+    impl Host for DenyingHost {
+        fn log(&mut self, _message: String) {}
+
+        fn capability_check(&mut self, _action: String, _path: String) -> bool {
+            false
+        }
+
+        fn capability_write(&mut self, _action: String, _delta: String) -> bool {
+            false
+        }
+
+        fn capability_audit(&mut self, _action: String, _record: String) -> bool {
+            false
+        }
+    }
+
+    let mut host = DenyingHost;
+    // The refusals are values, not panics: a hostile guest cannot turn a
+    // denial into an unwinding path through the host.
+    assert!(!host.capability_check("appointments.read".into(), "patients/1".into()));
+    assert!(!host.capability_write("appointments.write".into(), "{}".into()));
+    assert!(!host.capability_audit("appointments.read".into(), "{}".into()));
+
+    // The two failures v1 reported through bare return codes are now distinct
+    // values the guest can name.
+    assert!(matches!(CallError::Failed, CallError::Failed));
+    assert!(!matches!(CallError::Failed, CallError::OutOfFuel));
+}

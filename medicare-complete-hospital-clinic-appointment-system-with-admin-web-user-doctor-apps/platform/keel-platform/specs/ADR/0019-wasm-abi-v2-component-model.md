@@ -246,6 +246,39 @@ Design points, each mirroring v1 rather than reinventing it:
   still normalized-compared against the reviewed sidecar, and a mismatch is
   still a boot refusal.
 
+> **Amended on landing - the block above did not parse, and the fix is recorded
+> here rather than absorbed into a silent rewrite.** The world now lives at
+> `keel-platform` `crates/extension/wasm/wit/kelson-plugin.wit` (66 lines) and is
+> compiled by `keel-platform` `crates/extension/wasm/src/lib.rs:1316` through
+> `wasmtime::component::bindgen!`, off by default behind `component-model`.
+> Compiling it falsified two premises of the text above, neither visible by
+> reading it:
+>
+> 1. **`enum call-error` cannot sit at package top level.** `wit-parser` as
+>    shipped with wasmtime 36 accepts only `world`, `interface` and `use` as a
+>    top-level item, so the bare `enum` fails with *"expected `world`,
+>    `interface` or `use`, found keyword `enum`"*. It now lives inside
+>    `interface dispatch`, the only thing that returns it, which loses
+>    nothing.
+> 2. **`record` is a WIT keyword** - it introduces `record { ... }` types - so
+>    `capability-audit: func(action: string, record: string)` fails with
+>    *"expected an identifier or string, found keyword `record`"*. The
+>    parameter is spelled `%record`, WIT's designed escape, precisely so the
+>    name stays identical to v1's `host.capability_audit(action, record)`
+>    (`keel-platform` `crates/extension/wasm/src/imports.rs:416`) instead of being renamed and
+>    the mirror quietly broken.
+>
+> No design point in this section changed as a result: the four names, the
+> refusal-as-return-value discipline, the fail-closed scope rule and both
+> bounds are as written. What *is* now proven is narrower than it may read -
+> the world parses, the `plugin` world resolves and the bindings generate, and
+> `keel-platform` `runtime/kelson-demo/src/wasm_tests.rs:1177` implements the
+> generated `Host` trait with a denying backend and asserts the three
+> capability calls return `false` rather than trapping. **No production code
+> calls any of it.** The v2 dispatch path and the in-place upgrade proof are
+> still open, which is why claim 11 stays `PARTIAL` rather than moving to
+> `EXISTS`.
+
 ### 6. `prepare → commit → drain` is additive to v1, not a v2 feature
 
 ADR 0016 §3 already sanctions the staged lifecycle as an *extension of v1*, and
@@ -334,8 +367,11 @@ with the cap unchanged at 25/25. Nothing else in the policy moves.
   `platform/keel-platform/runtime/kelson-demo/src/wasm_tests.rs:1123`
   hand-writes the component text, loads it through `Component::new` (which
   accepts WAT per `wasmtime-36.0.17/src/runtime/component/component.rs:156-164`),
-  instantiates it and calls the lifted export. No `.wit` file, no guest code
-  generator, and `platform/DEPENDENCY-POLICY.md:53` never engages, because there
+  instantiates it and calls the lifted export. The fixture uses **no `.wit`
+  file and no guest code generator**; that describes the *fixture*, not the
+  repository, because the WIT world below is now a real file, so a bare "no
+  `.wit` file" would have gone false and was narrowed rather than left to
+  drift. `platform/DEPENDENCY-POLICY.md:53` never engages either, because there
   is no new *direct* external — the count stays 25/25. **One correction the same
   experiment forced:** enabling the feature *does* put
   `wasmtime-internal-wit-bindgen` and `wit-parser` into
@@ -355,6 +391,21 @@ with the cap unchanged at 25/25. Nothing else in the policy moves.
   unchanged at clippy exit 0 and **1392 passed / 0 failed**, which is the
   "no regressions, not a frozen number" reading this bullet asked for:
   1392 → 1393, the one difference being the new fixture case.
+- **Resolved — the WIT world is a compiled artifact, not a code block.**
+  (Amendment by record; §5 above specified the world and nothing checked it.)
+  The world ships at `keel-platform` `crates/extension/wasm/wit/kelson-plugin.wit`
+  and is compiled by `keel-platform` `crates/extension/wasm/src/lib.rs:1316`
+  through `wasmtime::component::bindgen!`, so package-parsing and the `plugin`
+  world resolving are build-time facts that fail the feature-on build rather
+  than defects discovered later. Compiling it falsified two premises of the
+  text as first written, both recorded in §5 rather than absorbed: a top-level
+  `enum` is not a legal package item, and `record` is a WIT keyword (now
+  `%record`, which preserves the v1 parameter name). What is *not* claimed is
+  any production caller — `keel-platform` `runtime/kelson-demo/src/wasm_tests.rs:1177`
+  is the only consumer, the generated `Host` trait has no implementation
+  outside that case, and the v2 dispatch path plus the in-place upgrade proof
+  remain open. That is why claim 11 stays `PARTIAL` rather than moving to
+  `EXISTS`.
 - Guest write/delta profiles beyond what `host.capability_write` already
   records; per-module publisher identity and signed artifacts (TUF-class
   supply chain); `module build/test/publish` as first-class CLI verbs;

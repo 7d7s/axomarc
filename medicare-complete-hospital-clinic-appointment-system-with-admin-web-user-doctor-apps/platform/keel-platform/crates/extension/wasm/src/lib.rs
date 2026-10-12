@@ -1294,3 +1294,28 @@ impl std::fmt::Debug for WasmHandlerBundle {
         f.debug_tuple("WasmHandlerBundle").field(&self.0.len()).finish()
     }
 }
+
+/// ABI v2 — the WIT world that mirrors the four host imports and the two guest
+/// exports (ADR 0019 section 5). Declared at the end of this module on purpose:
+/// every citation into this file points above this line, and moving the
+/// existing items would invalidate them for no gain.
+///
+/// Compiled **only** when the `component-model` cargo feature is on, which is
+/// what turns "the world is valid" from a claim into a compile-time fact:
+/// `wasmtime::component::bindgen!` parses `wit/kelson-plugin.wit`, resolves the
+/// `plugin` world out of the `kelson:plugin` package, and fails the build if
+/// either stops holding. A default build never reads that file, so nothing here
+/// changes the surface this crate ships.
+///
+/// What is generated: the `host` interface as a `Host` trait the runtime will
+/// implement, the `dispatch` interface as a `Guest` trait a component exports,
+/// and `call_error::CallError` carrying the two refusals the v1 ABI reported
+/// through return codes. Wiring them into a live v2 dispatch path is the
+/// in-place upgrade proof, which is sequenced separately in ADR 0019.
+#[cfg(feature = "component-model")]
+pub mod component {
+    wasmtime::component::bindgen!({
+        world: "plugin",
+        path: "wit",
+    });
+}

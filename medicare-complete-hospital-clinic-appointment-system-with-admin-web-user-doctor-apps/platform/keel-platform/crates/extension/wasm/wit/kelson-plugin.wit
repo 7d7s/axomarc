@@ -1,0 +1,66 @@
+// ADR 0019 section 5: the ABI v2 WIT world. Every name, refusal rule and
+// bound here mirrors guest ABI v1 rather than reinventing it, so the
+// transition window can carry both without an operator relearning the model.
+//
+// This is the *only* definition of the v2 interface. The four host imports
+// (`crates/extension/wasm/src/imports.rs`) and the guest exports validated at
+// load (`crates/extension/wasm/src/lib.rs`) are the v1 shape this replaces
+// behind the `component-model` feature; nothing in the default build reads
+// this file.
+//
+// `kelson_wasm::component` compiles it with `wasmtime::component::bindgen!`
+// when the feature is on, which is what makes "the world is valid" a
+// compile-time fact rather than a claim.
+//
+// Two departures from the block as ADR 0019 section 5 first wrote it, both
+// forced by the parser and both recorded rather than quietly absorbed:
+//
+//  1. `call-error` is declared *inside* `interface dispatch`, not at package
+//     top level. wit-parser accepts only `world`, `interface` and `use` as a
+//     top-level item, so a bare `enum` there does not parse. Keeping it with
+//     the one function that returns it loses nothing.
+//  2. The audit parameter is spelled `%record`, not `record`. `record` is a
+//     WIT keyword (it introduces `record { ... }` types). The `%` escape keeps
+//     the name identical to v1's `host.capability_audit(action, record)`
+//     (`crates/extension/wasm/src/imports.rs:416`) instead of renaming it and
+//     quietly breaking the mirror this file exists to provide.
+package kelson:plugin@0.2.0;
+
+interface host {
+  /// Structured line, tagged with the plugin label by the host.
+  log: func(message: string);
+
+  /// `action` must be in the sidecar-verified capability set; a non-empty
+  /// `path` must sit inside the execution's resolved scope chain. Returns
+  /// false when no scope resolved â€” fail-closed, never a trap.
+  capability-check: func(action: string, path: string) -> bool;
+
+  /// Records a mutation delta for the handler to commit through the
+  /// execution unit. Returns false â€” never a trap â€” when the profile is
+  /// read-only, the action is undeclared, the delta is not a JSON object,
+  /// or the per-call buffer is full.
+  capability-write: func(action: string, delta: string) -> bool;
+
+  /// Append-only audit record. Every profile may record; same refusals.
+  capability-audit: func(action: string, %record: string) -> bool;
+}
+
+interface dispatch {
+  enum call-error {
+    /// The guest could not complete the operation.
+    failed,
+    /// The instruction budget ran out (KSN_WASM_FUEL, HTTP 503).
+    out-of-fuel,
+  }
+
+  /// The guest manifest, JSON-shaped like `module.toml`.
+  manifest: func() -> string;
+
+  /// Dispatch one operation; UTF-8 JSON in, UTF-8 JSON out.
+  call: func(op: string, input: string) -> result<string, call-error>;
+}
+
+world plugin {
+  import host;
+  export dispatch;
+}

@@ -122,13 +122,13 @@ Two facts worth recording while the `publish = false` gate is still in place:
 
 ### Wave A (code landed; not yet published) - staged plugin lifecycle and the opt-in `component-model` flag
 
-A part 1 was a record only (ADR 0019); parts 2 and 3 are code. Every file they
+A part 1 was a record only (ADR 0019); parts 2, 3 and 4 are code. Every file they
 touch belongs to `kelson-wasm` and `kelson-demo`, both `publish = false`, so
 **no published crate's API or semver position moves.**
 
 | Crate | Publishable | Wave A change | Semver |
 |---|---|---|---|
-| `kelson-wasm` | **no** (`publish = false`) | new public `PluginState` (`Prepared` / `Ready` / `Draining` / `Drained`), a new `WasmError::Lifecycle` variant, new `WasmHost::prepare`, new `WasmPlugin::{state, commit, drain}`; `WasmPlugin::call` now refuses a generation that is not `Ready`. A part 3 adds a `[features]` table with `default = []` and `component-model = ["wasmtime/component-model"]` — **no default feature, so no default-build surface** | never published in this shape |
+| `kelson-wasm` | **no** (`publish = false`) | new public `PluginState` (`Prepared` / `Ready` / `Draining` / `Drained`), a new `WasmError::Lifecycle` variant, new `WasmHost::prepare`, new `WasmPlugin::{state, commit, drain}`; `WasmPlugin::call` now refuses a generation that is not `Ready`. A part 3 adds a `[features]` table with `default = []` and `component-model = ["wasmtime/component-model"]` - **no default feature, so no default-build surface**. A part 4 adds a `#[cfg(feature = "component-model")] pub mod component` that compiles `wit/kelson-plugin.wit` with `wasmtime::component::bindgen!`, which is new public API **only** where the feature is on | never published in this shape |
 | `kelson-demo` | **no** (`publish = false`) | `load_wasm_plugins` prepares, builds the handlers, then commits — identical boot behaviour, with the host's registration decision made an explicit separate act. A part 3 forwards the opt-in as its own `component-model` feature and adds a `wasmtime` dev-dependency for the fixture test | never published in this shape |
 
 A part 3 also amended `platform/DEPENDENCY-POLICY.md:46` in the same commit, as
@@ -139,7 +139,19 @@ the crates it drags in (`wasmtime-internal-component-macro`,
 `wasmtime-internal-wit-bindgen` and `wit-parser`) are all *consequences of
 `wasmtime`*, not dependencies of ours.
 
-Three things to carry forward:
+Four things to carry forward:
+
+* **A part 4 adds a file that a published `kelson-wasm` would have to ship.**
+  `bindgen!` resolves its `path: "wit"` against the crate's own `Cargo.toml`
+  directory at compile time, so `crates/extension/wasm/wit/kelson-plugin.wit`
+  is a build input of the crate, not a document sitting beside it. It ships
+  today only because the manifest declares neither `include` nor `exclude`,
+  and cargo's default is to package every file in the crate directory that is
+  not gitignored. **Adding an `include = [...]` whitelist to this manifest
+  without listing `wit/` would compile in a checkout and then fail to compile
+  for every downstream consumer**, in exactly the way `kelson-templates` was
+  created to avoid. Nothing to do while the gate holds; it is recorded so the
+  failure mode is named before it is walked into.
 
 * **The opt-in flag is the sandbox posture made togglable, and toggling it is
   its own public commitment.** `component-model` is off in every default build
