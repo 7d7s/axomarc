@@ -247,6 +247,10 @@ enum Cmd {
     /// Show migration status (applied vs pending).
     #[command(name = "migrate:status")]
     MigrateStatus,
+    /// Show what `migrate` WOULD apply, and check the pending set against the
+    /// expand-and-contract rule. Read-only: applies nothing, drops nothing.
+    #[command(name = "migrate:plan")]
+    MigratePlan,
     /// Drop and recreate the schema, then migrate (dev/test only).
     #[command(name = "migrate:fresh")]
     MigrateFresh,
@@ -726,6 +730,7 @@ fn main() -> ExitCode {
         Cmd::SdkOpenapi { output } => sdk_openapi(output),
         Cmd::Migrate => rt(migrate()),
         Cmd::MigrateStatus => rt(migrate_status()),
+        Cmd::MigratePlan => rt(migrate_plan()),
         Cmd::MigrateFresh => rt(migrate_fresh()),
         Cmd::MigrateRollback { step } => rt(migrate_rollback(step)),
         Cmd::MigrateReset => rt(migrate_reset()),
@@ -2163,10 +2168,10 @@ async fn migrate() -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-async fn migrate_status() -> anyhow::Result<ExitCode> {
-    let root = workspace_root()?;
-    let pool = db_pool(&root).await?;
-    let applied: Vec<i64> = match &pool {
+/// Forward-only migrations already applied (the shared `_sqlx_migrations`
+/// bookkeeping table — both drivers write it and both read it the same way).
+async fn applied_versions(pool: &DbPool) -> Vec<i64> {
+    match pool {
         DbPool::Postgres(p) => {
             sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success ORDER BY version")
                 .fetch_all(p)
@@ -2178,7 +2183,58 @@ async fn migrate_status() -> anyhow::Result<ExitCode> {
                 .await
         }
     }
-    .unwrap_or_default();
+    .unwrap_or_default()
+}
+
+/// Pair migrations already applied (the shared `keel_migrations` table).
+async fn applied_pair_names(pool: &DbPool) -> Vec<String> {
+    match pool {
+        DbPool::Postgres(p) => {
+            sqlx::query_scalar("SELECT migration FROM keel_migrations ORDER BY migration")
+                .fetch_all(p)
+                .await
+        }
+        DbPool::MySql(p) => {
+            sqlx::query_scalar("SELECT migration FROM keel_migrations ORDER BY migration")
+                .fetch_all(p)
+                .await
+        }
+    }
+    .unwrap_or_default()
+}
+
+/// Pair migrations present in the tree for the connected driver, as
+/// `(name, up_sql)`. The two crates define their own `PairMigration`, so this
+/// collapses them to a driver-agnostic shape; a scan failure is fatal, because
+/// silently returning zero pairs would render every pair as "nothing to do".
+fn scanned_pair_sql(root: &Path, pool: &DbPool) -> anyhow::Result<Vec<(String, String)>> {
+    let pairs: Vec<(String, String)> = match pool {
+        DbPool::Postgres(_) => kelson_postgres::pairs::scan_pairs(root)
+            .map_err(db_err)?
+            .into_iter()
+            .map(|p| (p.migration, p.up_sql))
+            .collect(),
+        DbPool::MySql(_) => kelson_mysql::pairs::scan_pairs(root)
+            .map_err(db_err)?
+            .into_iter()
+            .map(|p| (p.migration, p.up_sql))
+            .collect(),
+    };
+    Ok(pairs)
+}
+
+/// Pair migration names present in the tree for the connected driver.
+fn scanned_pair_names(root: &Path, pool: &DbPool) -> anyhow::Result<Vec<String>> {
+    Ok(scanned_pair_sql(root, pool)?
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect())
+}
+
+async fn migrate_status() -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    let pool = db_pool(&root).await?;
+    let applied = applied_versions(&pool).await;
     // B-31: each driver lists its OWN embedded set (database/migrations vs
     // database/migrations-mysql); the applied bookkeeping table is shared.
     let migrator = match &pool {
@@ -2203,32 +2259,8 @@ async fn migrate_status() -> anyhow::Result<ExitCode> {
     // every pair is pending). B-31 Phase C: both drivers share one pairs
     // directory and one bookkeeping table, so the listing is driver-agnostic
     // — only the connection (and which crate scans) changes.
-    let pair_applied: Vec<String> = match &pool {
-        DbPool::Postgres(p) => {
-            sqlx::query_scalar("SELECT migration FROM keel_migrations ORDER BY migration")
-                .fetch_all(p)
-                .await
-                .unwrap_or_default()
-        }
-        DbPool::MySql(p) => {
-            sqlx::query_scalar("SELECT migration FROM keel_migrations ORDER BY migration")
-                .fetch_all(p)
-                .await
-                .unwrap_or_default()
-        }
-    };
-    let scanned: Vec<String> = match &pool {
-        DbPool::Postgres(_) => kelson_postgres::pairs::scan_pairs(&root)
-            .map_err(db_err)?
-            .into_iter()
-            .map(|p| p.migration)
-            .collect(),
-        DbPool::MySql(_) => kelson_mysql::pairs::scan_pairs(&root)
-            .map_err(db_err)?
-            .into_iter()
-            .map(|p| p.migration)
-            .collect(),
-    };
+    let pair_applied = applied_pair_names(&pool).await;
+    let scanned = scanned_pair_names(&root, &pool)?;
     for pair in scanned {
         let is_applied = pair_applied.contains(&pair);
         if !is_applied {
@@ -2242,6 +2274,200 @@ async fn migrate_status() -> anyhow::Result<ExitCode> {
     }
     println!("{pending} pending migration(s).");
     Ok(ExitCode::SUCCESS)
+}
+
+// ----------------------------------------------------- migrate:plan (Wave M3)
+//
+// The expand-and-contract rule lives in `docs/rust/10-STRUCTURE-AND-GUIDELINES.md`
+// (Process Guidelines):
+//
+//   "add nullable/with-default -> backfill -> switch reads -> drop old in
+//    NEXT release; CREATE INDEX CONCURRENTLY; no table rewrite locks during
+//    business hours."
+//
+// Until this command it was prose only — nothing inspected a migration before
+// running it (verification-doc finding 22: "Documented practice, no
+// tooling"). This is the tooling half: report what `kelson migrate` WOULD
+// apply, and check that pending set against the rule. It is read-only by
+// construction — it issues the same two SELECTs `migrate:status` does and runs
+// no DDL of any kind.
+
+/// One expand-and-contract finding. Advisory findings are printed but do not
+/// fail the command; fatal ones do.
+#[derive(Debug)]
+struct PlanFinding {
+    code: &'static str,
+    advisory: bool,
+    message: String,
+}
+
+/// Collapse runs of whitespace so multi-line DDL still matches a substring
+/// search. The console has no `regex` dependency and a span scan needs none.
+fn ws_norm(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Does this (upper-cased, whitespace-normalised) SQL build an index?
+fn has_index_ddl(upper: &str) -> bool {
+    upper.contains("CREATE INDEX") || upper.contains("CREATE UNIQUE INDEX")
+}
+
+/// Scan one migration's SQL against the documented expand-and-contract rule.
+///
+/// `postgres` gates the check that only means something on PostgreSQL: MySQL
+/// has no `CREATE INDEX CONCURRENTLY`, so reporting its absence there would be
+/// a defect in this command rather than in the migration.
+fn plan_scan(sql: &str, postgres: bool) -> Vec<PlanFinding> {
+    let mut out = Vec::new();
+    let upper = ws_norm(&sql.to_uppercase());
+
+    // EAC-001 — expand and contract shipped in one release. The rule drops the
+    // old column in the NEXT release, so a file that both adds and drops is
+    // doing both halves at once and breaks readers still on the old schema. A
+    // drop-only migration is fine: that IS the next release.
+    if upper.contains("ADD COLUMN")
+        && (upper.contains("DROP COLUMN") || upper.contains("DROP TABLE"))
+    {
+        out.push(PlanFinding {
+            code: "EAC-001",
+            advisory: false,
+            message: "adds a column and drops one in the same migration; the old column is dropped in the NEXT release".into(),
+        });
+    }
+
+    // EAC-002 — `CREATE INDEX CONCURRENTLY` cannot run inside a transaction,
+    // and sqlx wraps each migration in one unless the file starts with
+    // `-- no-transaction` (sqlx-core src/migrate/source.rs:127). Without that
+    // header the migration errors at apply time, so this is not advisory.
+    if upper.contains("CONCURRENTLY") && !sql.starts_with("-- no-transaction") {
+        out.push(PlanFinding {
+            code: "EAC-002",
+            advisory: false,
+            message: "uses CONCURRENTLY without a `-- no-transaction` first line; Postgres refuses it inside the transaction sqlx wraps each migration in".into(),
+        });
+    }
+
+    // EAC-003 — advisory on purpose. Every migration already in the tree builds
+    // its indexes without CONCURRENTLY (measured: 9 of 9 on each driver), so a
+    // fatal verdict here would condemn applied history instead of new work and
+    // fail CI for a change nobody is making.
+    if postgres && !upper.contains("CONCURRENTLY") && has_index_ddl(&upper) {
+        out.push(PlanFinding {
+            code: "EAC-003",
+            advisory: true,
+            message: "CREATE INDEX without CONCURRENTLY holds a table lock while it builds; the rule asks for CONCURRENTLY (which needs `-- no-transaction`)".into(),
+        });
+    }
+
+    // EAC-004 — the rule's first clause, "add nullable/with-default". A column
+    // added NOT NULL with no DEFAULT forces a table rewrite to fill it, which
+    // is the very lock the same rule forbids during business hours. The
+    // column definition is read only up to the next CHECK/CONSTRAINT, so an
+    // inline `CHECK (x IS NOT NULL)` naming another column cannot be mistaken
+    // for a missing default.
+    for stmt in upper.split(';') {
+        if !stmt.contains("ADD COLUMN") {
+            continue;
+        }
+        for clause in stmt.split("ADD COLUMN").skip(1) {
+            let end = clause
+                .find("CHECK ")
+                .or_else(|| clause.find("CONSTRAINT "))
+                .unwrap_or(clause.len());
+            let decl = &clause[..end];
+            if decl.contains("NOT NULL") && !decl.contains("DEFAULT") {
+                out.push(PlanFinding {
+                    code: "EAC-004",
+                    advisory: false,
+                    message: "adds a NOT NULL column with no DEFAULT; the rule asks for nullable or with-default, and filling it rewrites the table".into(),
+                });
+                break;
+            }
+        }
+    }
+
+    out
+}
+
+async fn migrate_plan() -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    let pool = db_pool(&root).await?;
+    let postgres = matches!(pool, DbPool::Postgres(_));
+    let applied = applied_versions(&pool).await;
+    // Same embedded sets `migrate:status` reads (B-31: each driver lists its
+    // OWN directory), so this plan cannot disagree with what `migrate` would do.
+    let migrator = match &pool {
+        DbPool::Postgres(_) => migrator(),
+        DbPool::MySql(_) => mysql_migrator(),
+    };
+
+    println!("kelson migrate:plan — read-only; applies nothing and drops nothing");
+    println!(
+        "  driver: {}   source: {}",
+        if postgres { "postgres" } else { "mysql" },
+        if postgres { "database/migrations" } else { "database/migrations-mysql" }
+    );
+
+    // (label, pending SQL) in apply order.
+    let mut pending: Vec<(String, String)> = Vec::new();
+    for migration in migrator.iter() {
+        if !applied.contains(&migration.version) {
+            pending.push((
+                format!("v{}  {}", migration.version, migration.description),
+                migration.sql.to_string(),
+            ));
+        }
+    }
+    let pair_applied = applied_pair_names(&pool).await;
+    for (name, up_sql) in scanned_pair_sql(&root, &pool)? {
+        if !pair_applied.contains(&name) {
+            pending.push((format!("{name}  (pair)"), up_sql));
+        }
+    }
+
+    if pending.is_empty() {
+        println!("  [ok] nothing pending — the database is up to date");
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    println!("  plan ({} to apply, in order):", pending.len());
+    for (label, _) in &pending {
+        println!("    + apply {label}");
+    }
+
+    // Expand-and-contract, over exactly the set above. Applied migrations are
+    // deliberately NOT scanned: they are history, and a verdict you cannot act
+    // on is noise rather than a gate.
+    println!("  expand/contract (docs/rust/10-STRUCTURE-AND-GUIDELINES.md):");
+    let mut fatal = 0usize;
+    let mut advisory = 0usize;
+    for (label, sql) in &pending {
+        for f in plan_scan(sql, postgres) {
+            if f.advisory {
+                advisory += 1;
+                println!("    [??] {} {}: {}", f.code, label, f.message);
+            } else {
+                fatal += 1;
+                println!("    [!!] {} {}: {}", f.code, label, f.message);
+            }
+        }
+    }
+    if fatal == 0 && advisory == 0 {
+        println!("    [ok] no expand-and-contract violations in the pending set");
+    } else {
+        println!(
+            "  {} fatal, {} advisory finding(s) over {} pending migration(s)",
+            fatal,
+            advisory,
+            pending.len()
+        );
+    }
+
+    if fatal == 0 {
+        Ok(ExitCode::SUCCESS)
+    } else {
+        Ok(ExitCode::FAILURE)
+    }
 }
 
 async fn migrate_fresh() -> anyhow::Result<ExitCode> {
@@ -7001,6 +7227,118 @@ middleware = ["ghost"]
                 Cmd::MigrateInstall
             ),
             "migrate:install maps to MigrateInstall"
+        );
+        assert!(
+            matches!(
+                Cli::try_parse_from(["kelson", "migrate:plan"])
+                    .expect("plan parses")
+                    .cmd,
+                Cmd::MigratePlan
+            ),
+            "migrate:plan maps to MigratePlan"
+        );
+    }
+
+    /// Wave M3: the expand-and-contract scan reports exactly what the rule in
+    /// `docs/rust/10-STRUCTURE-AND-GUIDELINES.md` forbids — and stays quiet on
+    /// the forms it permits. The last case is the one that would otherwise be
+    /// a false positive: an inline `CHECK (x IS NOT NULL)` naming another
+    /// column is not a missing default.
+    #[test]
+    fn plan_scan_enforces_the_documented_expand_contract_rule() {
+        // The permitted forms are silent.
+        assert!(
+            plan_scan("ALTER TABLE t ADD COLUMN a int;", true).is_empty(),
+            "nullable is the documented form"
+        );
+        assert!(
+            plan_scan("ALTER TABLE t ADD COLUMN a int NOT NULL DEFAULT 0;", true).is_empty(),
+            "with-default is the documented form"
+        );
+
+        // EAC-001 — expand and contract in one file is fatal.
+        let f = plan_scan(
+            "ALTER TABLE t ADD COLUMN a int; ALTER TABLE t DROP COLUMN b;",
+            true,
+        );
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert_eq!(f[0].code, "EAC-001");
+        assert!(!f[0].advisory, "both halves in one release is fatal");
+        // A drop-only migration is the contract release and is allowed.
+        assert!(
+            plan_scan("ALTER TABLE t DROP COLUMN b;", true).is_empty(),
+            "a contract-only release is the rule working as written"
+        );
+
+        // EAC-002 — CONCURRENTLY outside the sqlx no-transaction header.
+        let f = plan_scan("CREATE INDEX CONCURRENTLY i ON t (a);", true);
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert_eq!(f[0].code, "EAC-002");
+        assert!(!f[0].advisory, "it errors at apply time, so it is fatal");
+        assert!(
+            plan_scan("-- no-transaction\nCREATE INDEX CONCURRENTLY i ON t (a);", true)
+                .is_empty(),
+            "sqlx keys on that exact first line"
+        );
+
+        // EAC-003 — advisory, and PostgreSQL only.
+        let f = plan_scan("CREATE INDEX i ON t (a);", true);
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert_eq!(f[0].code, "EAC-003");
+        assert!(
+            f[0].advisory,
+            "every shipped migration builds its indexes this way, so it cannot be fatal"
+        );
+        assert!(
+            plan_scan("CREATE INDEX i ON t (a);", false).is_empty(),
+            "MySQL has no CONCURRENTLY, so the advice would be wrong there"
+        );
+
+        // EAC-004 — NOT NULL with no DEFAULT, and the false positive it invites.
+        let f = plan_scan("ALTER TABLE t ADD COLUMN a int NOT NULL;", true);
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert_eq!(f[0].code, "EAC-004");
+        assert!(
+            plan_scan("ALTER TABLE t ADD COLUMN a int, CHECK (b IS NOT NULL);", true).is_empty(),
+            "an inline CHECK naming another column is not the column's declaration"
+        );
+    }
+
+    /// Wave M3: `migrate:plan` promises to apply nothing, and that promise is
+    /// the whole reason it is safe to run against a live database. Pinning it
+    /// by inspection would let a later edit quietly add a migration runner; the
+    /// banned names are the concrete call sites that mutate, not bare SQL words
+    /// (the command's own output text says "drops nothing").
+    #[test]
+    fn migrate_plan_reaches_for_no_mutation_path() {
+        let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let src = std::fs::read_to_string(manifest.join("src").join("main.rs"))
+            .expect("read own source");
+        let start = src
+            .find("async fn migrate_plan()")
+            .expect("migrate_plan is present");
+        let rest = &src[start..];
+        let body = match rest.find("\nasync fn ") {
+            Some(i) => &rest[..i],
+            None => rest,
+        };
+        for banned in [
+            "run_migrations",
+            "apply_pending",
+            "migrate_fresh(",
+            "migrate_rollback(",
+            ".execute(",
+            ".execute_batch(",
+        ] {
+            assert!(
+                !body.contains(banned),
+                "migrate:plan must stay read-only, but its body mentions {banned:?}"
+            );
+        }
+        // It may only reach the read helpers it shares with migrate:status.
+        assert!(
+            body.contains("applied_versions") && body.contains("applied_pair_names"),
+            "plan and status must read through the same queries"
         );
     }
 

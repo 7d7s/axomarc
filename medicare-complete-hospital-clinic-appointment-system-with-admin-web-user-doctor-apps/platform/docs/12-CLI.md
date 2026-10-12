@@ -44,6 +44,7 @@ against the same workspace/config the runtime uses.
 | `kelson migrate:rollback [--step n]` | revert the last `n` batches (default 1) in reverse filename order — pair migrations only; forward-only single-file migrations are not revertible (documented divergence) (Wave 5) |
 | `kelson migrate:reset` / `migrate:refresh [--step n]` | revert everything / rollback `n` batches then re-apply pending (both dev/test-only: the destructive window refuses production) (Wave 5) |
 | `kelson migrate:install` | create the `keel_migrations` bookkeeping table without running any files (Wave 5) |
+| `kelson migrate:plan` | read-only preview of what `migrate` WOULD apply (forward-only set + pairs, in order) and whether the pending set satisfies the expand-and-contract rule in `docs/rust/10-STRUCTURE-AND-GUIDELINES.md`. Fatal (exit 1): `EAC-001` add and drop in one release, `EAC-002` `CONCURRENTLY` without the `-- no-transaction` first line sqlx keys on, `EAC-004` a `NOT NULL` column with no `DEFAULT`. Advisory: `EAC-003` plain `CREATE INDEX` — PostgreSQL only, because MySQL has no `CONCURRENTLY`, and because every shipped migration builds its indexes that way. Applies nothing and drops nothing; a test bans each mutation call site in the command body (Wave M3) |
 | `kelson seed [--only a,b]` | idempotent seeders |
 | `kelson db:inspect` | tables + row counts |
 | `kelson db:show` | driver, server version, database + the `db:inspect` table/row inventory (Wave 5) |
@@ -52,7 +53,8 @@ against the same workspace/config the runtime uses.
 
 **MySQL driver (B-31).** With `[database].driver = "mysql"` the whole Database table keeps
 working — `migrate` applies the forward-only `database/migrations-mysql/` set, `migrate:fresh`
-drops every table (FK checks off) and rebuilds, `migrate:status` lists the MySQL set, `seed`/
+drops every table (FK checks off) and rebuilds, `migrate:status` / `migrate:plan` list the
+MySQL set, `seed`/
 `db:show`/`db:inspect` run against information_schema, and (B-31 Phase C) the pair family
 `migrate:rollback` / `migrate:reset` / `migrate:refresh` / `migrate:install` reads the same
 `database/migrations-pairs` shipment and `keel_migrations` bookkeeping as Postgres — applied

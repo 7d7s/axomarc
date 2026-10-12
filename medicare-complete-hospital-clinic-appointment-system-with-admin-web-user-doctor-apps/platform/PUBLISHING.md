@@ -94,7 +94,7 @@ attempted.
 
 ### Wave M (in progress) - module-contract gaps
 
-M1 and M2 are landed; M3 and M4 have not started. Most of the wave's work is
+M1, M2 and M3 are landed; M4 has not started. Most of the wave's work is
 confined to `kelson-wasm` and `kelson-demo`, both `publish = false`, so none of
 the sandbox work reaches crates.io until that gate is deliberately removed.
 
@@ -102,7 +102,7 @@ the sandbox work reaches crates.io until that gate is deliberately removed.
 |---|---|---|---|
 | `kelson-registry` | yes | `ModuleManifest` gains `pub budget: ModuleBudget`; new public `ModuleBudget` with `validate_against` / `effective_memory_bytes` / `effective_fuel`; the module-pin rule (`module_pins`, `verify_pins_against_index`, `verify_pinned_boot`) moved here from the console | **MINOR** - additive, and `#[serde(default)]` keeps every existing manifest parsing byte-identically |
 | `kelson-foundation` | yes | two append-only codes: `WASM_SATURATED` (`KSN_WASM_SATURATED`), `WASM_DEADLINE` (`KSN_WASM_DEADLINE`) | **MINOR** - additive constants |
-| `kelson-console` | yes | `kelson check` / `kelson graph` / `post_deploy_probe` now read module pins through the registry rule instead of their own copy (M1) | **MINOR** - behaviour change on an unpinned-but-malformed pin file is unchanged; a *missing* pin file went from "unreadable" error to "no pins declared" |
+| `kelson-console` | yes | `kelson check` / `kelson graph` / `post_deploy_probe` now read module pins through the registry rule instead of their own copy (M1); new read-only `kelson migrate:plan` subcommand that previews the next `migrate` and checks the pending set against the expand-and-contract rule (M3) | **MINOR** - the new subcommand is additive; M1's behaviour change stands: a *missing* pin file went from "unreadable" error to "no pins declared" |
 | `kelson-deployment` | yes | (pending M4 - artifact digest) | - |
 | `kelson-wasm` | **no** (`publish = false`) | `[budget]` tighten-only enforcement, epoch-based wall-clock deadline, concurrency cap, two new `WasmError` variants | never published in this shape |
 | `kelson-demo` | **no** (`publish = false`) | 503 render pins for both new codes, plus the facet suite | never published in this shape |

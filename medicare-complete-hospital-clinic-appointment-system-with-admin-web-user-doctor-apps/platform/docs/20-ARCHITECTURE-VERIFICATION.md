@@ -162,9 +162,9 @@ fail-closes). See section 6.
 | V | CHANGELOG entry | DONE |
 | M1 | Module pins gate the loader | DONE |
 | M2 | Manifest `[budget]`, concurrency cap, wall-clock deadline | DONE |
-| M3 | `kelson migrate:plan` | TODO |
+| M3 | `kelson migrate:plan` | DONE |
 | M4 | Content-addressed release artifacts | TODO |
-| M | CHANGELOG + PUBLISHING entries (M1–M2 in; M3–M4 to follow) | TODO |
+| M | CHANGELOG + PUBLISHING entries (M1-M3 in; M4 to follow) | PARTIAL |
 | A | ABI v2 ADR and design | TODO |
 
 ### 5.1 Behaviour changes shipped by a wave
@@ -247,7 +247,7 @@ Recorded, not scheduled. Each carries the finding that produced it.
 | Cedar as the policy language | 10 | Homegrown `kelson-policy` ships and is tested. Evaluate only with a concrete migration path. |
 | File-watcher dev reload | 7 | Polling is documented and adequate; SIGHUP is a named plug point. |
 | `handler_version` on job rows | 21 | Payload `schema_version` already fail-closes on a newer schema. |
-| Expand-and-contract migration tooling | 22 | Documented practice, no tooling. |
+| Expand-and-contract migration tooling | 22 | **Closed by Wave M3** — `kelson migrate:plan` checks the rule that was prose, over the pending set only (applied migrations are history, and a verdict you cannot act on is noise rather than a gate). Two deliberate limits stand beside the closure: `EAC-003` is advisory and PostgreSQL-only, because every shipped migration builds its indexes without `CONCURRENTLY` (measured 9 of 9 per driver) so a fatal verdict would condemn applied history, and MySQL has no `CONCURRENTLY` to be missing; and the rule's third clause — no table-rewrite locks during business hours — remains **unchecked**, because a static scan of SQL cannot see a deployment window. |
 | Route-set hot reload (not just chains) | 3 | Needs the graph to become swappable rather than boot-frozen. |
 
 ## 7. Ledger conventions
