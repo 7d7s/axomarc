@@ -25,7 +25,9 @@ pub use config_cache::{
     config_cache_check, config_cache_path, config_hash, ConfigCacheArtifact, CONFIG_CACHE_ABI,
     CONFIG_CACHE_CODE,
 };
-pub use packages::{PackageEntry, PackageIndex, WasmModuleEntry, PACKAGES_FILE};
+pub use packages::{
+    ModulePinMap, PackageEntry, PackageIndex, WasmModuleEntry, MODULE_PINS_PATH, PACKAGES_FILE,
+};
 pub use route_plan::{
     manifests_hash, resolve_route_plans, route_cache_path, RouteCacheArtifact, RoutePlan,
 };

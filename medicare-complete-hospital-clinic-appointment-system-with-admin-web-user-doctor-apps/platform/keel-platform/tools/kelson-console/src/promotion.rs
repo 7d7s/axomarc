@@ -43,7 +43,14 @@ pub const PLAN_PATH: &str = "storage/framework/promotion.json";
 /// `create_checkpoint`) that a later `kelson rollback` restores.
 pub const CHECKPOINT_PATH: &str = "storage/framework/promotion.checkpoint.json";
 /// §7.1 step 3: WASM module version pins.
-pub const MODULE_PINS_PATH: &str = "storage/framework/module-pins.json";
+///
+/// The path and the meaning of the file are owned by `kelson-registry`, which
+/// enforces the pins at boot (`PackageIndex::verify_pins_against_index`). This
+/// re-export keeps the console's existing `promotion::MODULE_PINS_PATH` path
+/// working while making the registry the single definition — the boot gate and
+/// this promote-time probe now share one reader and one rule, so they cannot
+/// drift into disagreeing about what "pinned" means.
+pub use kelson_registry::MODULE_PINS_PATH;
 
 /// Outbox rows the idempotency-stability probe scans. Bounded: this is a
 /// verification pass, not a migration.
@@ -592,31 +599,26 @@ impl HealthCheck for Probe {
 }
 
 /// Stage 1 probe: every pinned module is installed at the pinned version.
+///
+/// This calls the same registry function boot now calls
+/// (`PackageIndex::verify_pinned_boot`), so the promote-time gate and the
+/// boot gate are one rule rather than two copies of it. Behaviour change,
+/// deliberate: a MISSING pin file is no longer an error here. The old
+/// implementation called an absent file fatal while `ModulePinAdapter::read`
+/// seeded from the index for the same absent file — two adapters disagreeing
+/// about one artifact. An absent file now means "no pins declared", which is
+/// what makes pinning opt-in; a pin file that exists but is malformed still
+/// refuses.
 pub fn post_deploy_probe(root: PathBuf) -> Probe {
     Probe::new("post-deploy", move || {
         let root = root.clone();
         Box::pin(async move {
-            let pins_raw = std::fs::read_to_string(root.join(MODULE_PINS_PATH))
-                .map_err(|e| format!("pin file unreadable: {e}"))?;
-            let pins: BTreeMap<String, String> = serde_json::from_str(&pins_raw)
-                .map_err(|e| format!("pin file invalid: {e}"))?;
             let index = PackageIndex::load(&root).map_err(|e| format!("package index: {e}"))?;
-            let known: BTreeMap<String, String> = index
-                .wasm
-                .iter()
-                .map(|w| (w.name.clone(), w.version.clone()))
-                .collect();
-            for (name, version) in &pins {
-                match known.get(name) {
-                    None => return Err(format!("pinned module `{name}` is not installed")),
-                    Some(installed) if installed != version => {
-                        return Err(format!(
-                            "module `{name}` is pinned to {version} but {installed} is installed"
-                        ));
-                    }
-                    _ => {}
-                }
-            }
+            // The console has no logging framework and the caller reports the
+            // outcome, so only a mismatch needs to produce text here.
+            index
+                .verify_pinned_boot(&root)
+                .map_err(|e| format!("module pins: {e}"))?;
             Ok(true)
         })
     })

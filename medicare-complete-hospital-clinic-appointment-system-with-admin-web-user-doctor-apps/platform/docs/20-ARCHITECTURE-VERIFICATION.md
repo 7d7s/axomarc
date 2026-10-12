@@ -89,7 +89,7 @@ weaker form than claimed. `ABSENT` = not in the codebase.
 | 17 | A release manifest binding kernel, modules and schema by digest | PARTIAL | `ReleaseManifest` records version, profile, artifacts, git identity, rustc and the shipped migration set — `crates/enterprise/deployment/src/lib.rs:68-92`. Migrations carry `sha256` `:96-106` so post-build drift is detectable. `Artifact` is `{name, version, profile}` with **no hash** — `:59-64`. Module pins are version strings, not digests. |
 | 18 | Signed artifacts, publisher identity, TUF | ABSENT | `kelson-integrity` covers audit rows only: sha256 prev-hash chaining per `(tenant, day)` and HMAC-SHA256 segment heads — `crates/security/integrity/src/lib.rs:1-12`, `crates/security/integrity/src/chain.rs:34-40`, `crates/security/integrity/src/hmac.rs:12-34`. No asymmetric signatures, no publisher identity, no SBOM. |
 | 19 | A staged, multi-node promotion pipeline | PARTIAL (local only) | `PROMOTION_STAGES = ["post-deploy", "post-migrate", "post-traffic", "canary"]` — `crates/enterprise/deployment/src/promote.rs:30`; fail-closed probe wiring `:80-98`; `PromotionState { Built, Staged, Deployed, RolledBack }` — `crates/enterprise/deployment/src/lib.rs:112`. The `canary` stage runs a health probe and nothing else (`crates/enterprise/deployment/src/promote.rs:190`) — no traffic shifting. Rollback is process-local: "Revisions are minted per process, so a `kelson` invocation boots its own runtime at revision 1" — `tools/kelson-console/src/promotion.rs:9-14`. No fleet orchestration exists. |
-| 19b | Module version pins control what executes | ABSENT | `ModulePinAdapter` writes `storage/framework/module-pins.json` — `tools/kelson-console/src/promotion.rs:347-410`. Nothing in the WASM loader reads it. Root-tree ADR 0017 `:38-41` states it plainly: "module pins have no runtime host reader (written, never consumed)". |
+| 19b | Module version pins control what executes | ABSENT → **closed by Wave M1** | `ModulePinAdapter` writes `storage/framework/module-pins.json` — `tools/kelson-console/src/promotion.rs:347-410`. Before M1 nothing in the WASM loader read it, and root-tree ADR 0017 `:38-41` stated it plainly: "module pins have no runtime host reader (written, never consumed)". Wave M1 made `kelson-registry` the canonical reader — `module_pins()` and `verify_pins_against_index()` — called from `load_wasm_plugins` before any guest is instantiated, from `kelson check`, from `kelson graph`, and from the `post_deploy` probe (which previously duplicated the rule). A pin that disagrees with the installed index now refuses boot. See §5.1 for the behaviour change this introduced. |
 
 ### Persistence and durable work
 
@@ -117,7 +117,7 @@ Three findings are the proposal predicting a gap and the code confirming it:
 1. **RLS fails open without the GUC** (`database/migrations/20260819000001_foundation.sql:185-200`)
    — exactly the class of hole §32 warns about.
 2. **Module pins are written and never read** (`tools/kelson-console/src/promotion.rs:347-410`) —
-   a rollback that restores a version field nothing consults.
+   a rollback that restores a version field nothing consults. **Closed by Wave M1** (§5.1).
 3. **The route set is boot-frozen** (`runtime/kelson-demo/src/lib.rs:873`) — "change a
    route without rebuilding" is true for middleware chains and false for the
    route inventory.
@@ -158,14 +158,29 @@ fail-closes). See section 6.
 | Wave | Item | State |
 |---|---|---|
 | V | `20-ARCHITECTURE-VERIFICATION.md` (this file) | DONE |
-| V | `docs/15-EXTENSION.md` lifecycle paragraph corrected | TODO |
-| V | CHANGELOG entry | TODO |
-| M1 | Module pins gate the loader | TODO |
+| V | `docs/15-EXTENSION.md` lifecycle paragraph corrected | DONE |
+| V | CHANGELOG entry | DONE |
+| M1 | Module pins gate the loader | DONE |
 | M2 | Manifest `[resources]`, concurrency cap, wall-clock deadline | TODO |
 | M3 | `kelson migrate:plan` | TODO |
 | M4 | Content-addressed release artifacts | TODO |
 | M | CHANGELOG + PUBLISHING entries | TODO |
 | A | ABI v2 ADR and design | TODO |
+
+### 5.1 Behaviour changes shipped by a wave
+
+Recorded here rather than only in the changelog, because a behaviour change is
+the thing a future reader most needs to find next to the verdict it came from.
+
+**M1 — a missing pin file is no longer fatal to `kelson promote`.** The old
+`post_deploy_probe` (`tools/kelson-console/src/promotion.rs:595-630`) called an
+absent `module-pins.json` an error ("pin file unreadable"), while
+`ModulePinAdapter::read()` in the same module seeded its pins *from the index*
+for that same absent file. Two adapters, one artifact, two meanings. The probe
+now calls the registry rule, where absent means "no pins declared" and yields
+`Ok(0)` — which is also what makes the boot gate safe to add: pinning stays
+opt-in, and a workspace that has never run `kelson promote` boots exactly as
+before. A pin file that exists but is malformed still refuses, on both paths.
 
 ## 6. Backlog
 

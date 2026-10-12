@@ -14,6 +14,7 @@
 //! used as-is. `kelson pkg:add` maintains the file, `kelson pkg:list` reports
 //! each entry's manifest + [`MODULE_ABI`](crate::MODULE_ABI) compatibility.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,22 @@ use crate::ModuleManifest;
 
 /// Root index file name.
 pub const PACKAGES_FILE: &str = "packages.toml";
+
+/// Where the WASM module version pins live (`storage/framework/module-pins.json`,
+/// §7.1 step 3). A flat JSON object mapping module name -> pinned version.
+///
+/// This constant is canonical here, in the registry, because the rule that
+/// consumes it is a boot rule: `PackageIndex::verify_pins_against_index`
+/// refuses to load plugins whose installed version disagrees with the pin.
+/// The console's promote/rollback tooling imports it rather than restating
+/// the path, so there is one string to change and one place that defines
+/// what the file means.
+pub const MODULE_PINS_PATH: &str = "storage/framework/module-pins.json";
+
+/// The pin file's decoded shape: module name -> pinned version. Named so
+/// call sites read as intent (`pins: ModulePinMap`) rather than as an
+/// incidental `BTreeMap`.
+pub type ModulePinMap = BTreeMap<String, String>;
 
 /// One indexed package: directory (relative to the workspace root unless
 /// absolute) containing the package's `module.toml`.
@@ -224,6 +241,80 @@ impl PackageIndex {
             .iter()
             .map(|entry| self.wasm_manifest(root, entry))
             .collect()
+    }
+
+    /// The WASM module version pins (§7.1 step 3), as name -> pinned version.
+    ///
+    /// An absent pin file is NOT an error and yields an empty map: pinning is
+    /// opt-in, and a workspace that has never run `kelson promote` boots
+    /// exactly as it did before pins existed. A pin file that exists but is
+    /// unreadable or is not a JSON object of string -> string IS an error —
+    /// an operator who wrote pins and mistyped one must not have them
+    /// silently ignored (fail-closed, not fail-open).
+    ///
+    /// The format is the one `ModulePinAdapter` writes: a flat JSON object.
+    pub fn module_pins(root: &Path) -> Result<ModulePinMap, String> {
+        let path = root.join(MODULE_PINS_PATH);
+        if !path.exists() {
+            return Ok(BTreeMap::new());
+        }
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|e| format!("module pins {}: {e}", path.display()))?;
+        serde_json::from_str(&raw)
+            .map_err(|e| format!("module pins {}: invalid JSON: {e}", path.display()))
+    }
+
+    /// Enforce the pins against what is installed — fail-closed.
+    ///
+    /// Every pinned module must be installed, and the installed version must
+    /// equal the pinned version. This is the check that makes a pin mean
+    /// something: without it the pin file is write-only, and a rollback
+    /// restores a version field that nothing consults.
+    ///
+    /// Rules:
+    /// * absent pin file -> nothing to enforce, `Ok` (see [`Self::module_pins`]);
+    /// * a pinned module that is not indexed as a WASM plugin -> refuse;
+    /// * a pinned module whose installed version differs -> refuse.
+    ///
+    /// Pins name WASM plugins specifically. A name that is installed as a
+    /// `[[package]]` entry but not a `[[wasm]]` entry is refused, because the
+    /// pin file is written from the WASM index and a pin naming anything else
+    /// is a misconfiguration that would otherwise never be noticed.
+    ///
+    /// Returns the number of pins verified, so a caller can report
+    /// "N pins verified" rather than a bare success.
+    pub fn verify_pins_against_index(&self, pins: &ModulePinMap) -> Result<usize, String> {
+        let installed: BTreeMap<&str, &str> = self
+            .wasm
+            .iter()
+            .map(|w| (w.name.as_str(), w.version.as_str()))
+            .collect();
+        for (name, version) in pins {
+            match installed.get(name.as_str()) {
+                None => {
+                    return Err(format!(
+                        "module pin `{name}` -> {version}: no WASM plugin named `{name}` is installed \
+                         (index lists {})",
+                        installed.len()
+                    ))
+                }
+                Some(&got) if got != version => {
+                    return Err(format!(
+                        "module pin `{name}` -> {version}: installed version is {got} \
+                         (the pin and the installed bytes disagree)"
+                    ))
+                }
+                Some(_) => {}
+            }
+        }
+        Ok(pins.len())
+    }
+
+    /// Read the pins and enforce them in one step — the call boot and the
+    /// console make. `Ok(0)` means no pins are declared.
+    pub fn verify_pinned_boot(&self, root: &Path) -> Result<usize, String> {
+        let pins = Self::module_pins(root)?;
+        self.verify_pins_against_index(&pins)
     }
 
     /// True when the name is already indexed (`kelson pkg:add` duplicate
@@ -516,5 +607,112 @@ mod tests {
         let reloaded = PackageIndex::load(&root).unwrap();
         assert_eq!(reloaded, index);
         assert!(reloaded.manifests(&root).is_ok());
+    }
+
+    // ------------------------------------------------------ Wave M1: pins
+
+    fn write_pins(root: &Path, json: &str) {
+        let dir = root.join("storage").join("framework");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("module-pins.json"), json).unwrap();
+    }
+
+    #[test]
+    fn absent_pin_file_yields_no_pins_rather_than_refusing_boot() {
+        let root = temp_root("pins-absent");
+        let mut index = PackageIndex::default();
+        index
+            .wasm
+            .push(write_plugin(&root, "echo", "1.0.0", "echo", "READ"));
+        // No pin file at all: pinning is opt-in, so this is Ok(0) and NOT an
+        // error. Every workspace that has never run `kelson promote` keeps
+        // booting exactly as before.
+        assert_eq!(PackageIndex::module_pins(&root).unwrap().len(), 0);
+        assert_eq!(index.verify_pinned_boot(&root).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_pin_matching_the_index_verifies() {
+        let root = temp_root("pins-match");
+        let mut index = PackageIndex::default();
+        index
+            .wasm
+            .push(write_plugin(&root, "echo", "1.0.0", "echo", "READ"));
+        write_pins(&root, r#"{"echo": "1.0.0"}"#);
+        assert_eq!(index.verify_pinned_boot(&root).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_pin_naming_a_different_installed_version_refuses() {
+        let root = temp_root("pins-drift");
+        let mut index = PackageIndex::default();
+        index
+            .wasm
+            .push(write_plugin(&root, "echo", "0.4.0", "echo", "READ"));
+        // The exact defect this gate exists for: the pin says 0.3.1, the
+        // installed bytes are 0.4.0, and before Wave M1 nothing read the pin
+        // so 0.4.0 simply ran.
+        write_pins(&root, r#"{"echo": "0.3.1"}"#);
+        let err = index.verify_pinned_boot(&root).unwrap_err();
+        assert!(err.contains("0.3.1"), "{err}");
+        assert!(err.contains("0.4.0"), "{err}");
+    }
+
+    #[test]
+    fn a_pin_naming_an_uninstalled_module_refuses() {
+        let root = temp_root("pins-unknown");
+        let mut index = PackageIndex::default();
+        index
+            .wasm
+            .push(write_plugin(&root, "echo", "1.0.0", "echo", "READ"));
+        write_pins(&root, r#"{"ghost": "9.9.9"}"#);
+        let err = index.verify_pinned_boot(&root).unwrap_err();
+        assert!(err.contains("ghost"), "{err}");
+    }
+
+    #[test]
+    fn a_malformed_pin_file_refuses_rather_than_being_ignored() {
+        let root = temp_root("pins-malformed");
+        let mut index = PackageIndex::default();
+        index
+            .wasm
+            .push(write_plugin(&root, "echo", "1.0.0", "echo", "READ"));
+        // Fail-closed: an operator who wrote pins and mistyped one must not
+        // have them silently skipped.
+        write_pins(&root, "{not json");
+        let err = index.verify_pinned_boot(&root).unwrap_err();
+        assert!(err.contains("module pins"), "{err}");
+    }
+
+    #[test]
+    fn a_pin_naming_a_package_entry_instead_of_a_plugin_refuses() {
+        let root = temp_root("pins-package");
+        let mut index = PackageIndex::default();
+        index.append(PackageEntry {
+            name: "billing".into(),
+            version: "0.2.0".into(),
+            path: "packages/billing".into(),
+        });
+        // Installed as a [[package]], never as a [[wasm]]: pins are written
+        // from the WASM index, so a pin naming anything else is a
+        // misconfiguration that would otherwise go unnoticed forever.
+        write_pins(&root, r#"{"billing": "0.2.0"}"#);
+        let err = index.verify_pinned_boot(&root).unwrap_err();
+        assert!(err.contains("billing"), "{err}");
+        assert!(err.contains("WASM plugin"), "{err}");
+    }
+
+    #[test]
+    fn pins_verify_count_is_reported_so_a_caller_can_say_how_many() {
+        let root = temp_root("pins-count");
+        let mut index = PackageIndex::default();
+        index
+            .wasm
+            .push(write_plugin(&root, "echo", "1.0.0", "echo", "READ"));
+        index
+            .wasm
+            .push(write_plugin(&root, "fib", "2.0.0", "fib", "READ"));
+        write_pins(&root, r#"{"echo": "1.0.0", "fib": "2.0.0"}"#);
+        assert_eq!(index.verify_pinned_boot(&root).unwrap(), 2);
     }
 }

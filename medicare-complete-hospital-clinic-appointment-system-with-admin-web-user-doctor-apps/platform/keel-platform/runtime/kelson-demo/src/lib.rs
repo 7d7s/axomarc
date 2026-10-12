@@ -42,6 +42,19 @@ pub fn load_wasm_plugins(
     if index.wasm.is_empty() {
         return Ok(None);
     }
+    // Wave M1: the module pins are enforced BEFORE a single guest is
+    // instantiated. Without this the pin file was write-only — `kelson
+    // promote` wrote it and `kelson rollback` restored it, but nothing that
+    // actually executed read it, so a pin naming 0.3.1 while 0.4.0 sat
+    // installed was silently ignored and the unpinned bytes ran. Refusing
+    // here (fail-closed, same shape as the other discovery gates) is what
+    // makes a pin mean something.
+    let pinned = index.verify_pinned_boot(root).map_err(|e| {
+        format!("module pins: {e} — refusing to boot rather than running unpinned WASM modules")
+    })?;
+    if pinned > 0 {
+        tracing::info!(pins = pinned, "module pins verified against the package index");
+    }
     let host = kelson_wasm::WasmHost::new().map_err(|e| e.to_string())?;
     let mut handlers: Vec<Arc<dyn kelson_execution::OperationHandler>> = Vec::new();
     for entry in &index.wasm {

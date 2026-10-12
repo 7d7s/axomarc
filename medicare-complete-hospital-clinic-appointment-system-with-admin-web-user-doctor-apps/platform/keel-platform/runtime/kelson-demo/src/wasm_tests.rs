@@ -601,3 +601,85 @@ async fn wasm_fuel_exhaustion_serves_the_pinned_503_envelope() {
     assert_eq!(body["error"]["code"], "KSN_WASM_FUEL");
     assert_eq!(body["error"]["retryable"], true);
 }
+
+// ---------------------------------------------------- Wave M1: module pins
+
+/// Write a pin file into a temp root, in the shape `ModulePinAdapter` writes.
+fn write_pins(root: &Path, json: &str) {
+    let dir = root.join("storage").join("framework");
+    std::fs::create_dir_all(&dir).expect("pins dir");
+    std::fs::write(dir.join("module-pins.json"), json).expect("pins write");
+}
+
+#[test]
+fn pin_mismatch_refuses_boot_before_any_plugin_loads() {
+    // The exact defect Wave M1 closes: pins were written by `kelson promote`
+    // and restored by `kelson rollback`, but nothing that executed read them.
+    // A pin naming 0.3.1 while 0.4.0 sat installed was silently ignored and
+    // the unpinned bytes ran.
+    //
+    // The `echo` fixture loads cleanly on its own, so the ONLY reason boot
+    // fails here is the pin. The refusal must also name the pin, not a
+    // plugin — that is what proves the check ran BEFORE instantiation rather
+    // than after.
+    let root = temp_root("pins-drift");
+    write_index(&root, vec![fixture_entry("echo")]);
+    write_pins(&root, r#"{"echo": "0.3.1"}"#);
+
+    let err =
+        crate::load_wasm_plugins(&root).expect_err("a drifted pin refuses boot rather than running");
+    assert!(err.contains("module pins"), "names the gate: {err}");
+    assert!(err.contains("0.3.1"), "names the pinned version: {err}");
+    assert!(err.contains("v1"), "names the installed version: {err}");
+    assert!(
+        !err.contains("wasm plugin"),
+        "refused by the pin gate, not by a plugin load: {err}"
+    );
+    assert!(
+        err.contains("refusing to boot"),
+        "says what it is doing and why: {err}"
+    );
+}
+
+#[test]
+fn a_pin_matching_the_index_still_boots_and_loads_the_plugin() {
+    // The gate must not become an obstacle: a workspace that pins what it has
+    // installed boots exactly as an unpinned one does, and the caller is told
+    // how many pins were checked.
+    let root = temp_root("pins-match");
+    write_index(&root, vec![fixture_entry("echo")]);
+    // The fixture sidecars omit `version`, so both sides default to "v1".
+    write_pins(&root, r#"{"echo": "v1"}"#);
+
+    let bundle = crate::load_wasm_plugins(&root)
+        .expect("a matching pin boots")
+        .expect("bundle present");
+    assert_eq!(bundle.0.len(), 1, "the plugin still loads");
+}
+
+#[test]
+fn an_absent_pin_file_is_not_an_error_so_unpinned_workspaces_keep_booting() {
+    // Pinning is opt-in. If a missing pin file refused boot, every workspace
+    // that had never run `kelson promote` — including this fixture tree —
+    // would break on upgrade.
+    let root = temp_root("pins-absent");
+    write_index(&root, vec![fixture_entry("echo")]);
+
+    let bundle = crate::load_wasm_plugins(&root)
+        .expect("an absent pin file is not an error")
+        .expect("bundle present");
+    assert_eq!(bundle.0.len(), 1);
+}
+
+#[test]
+fn a_malformed_pin_file_refuses_boot_rather_than_being_ignored() {
+    // Fail-closed on the file itself: an operator who wrote pins and mistyped
+    // one must not have every pin silently skipped.
+    let root = temp_root("pins-malformed");
+    write_index(&root, vec![fixture_entry("echo")]);
+    write_pins(&root, "{not json");
+
+    let err = crate::load_wasm_plugins(&root).expect_err("a malformed pin file refuses boot");
+    assert!(err.contains("module pins"), "{err}");
+    assert!(err.contains("invalid JSON"), "{err}");
+}

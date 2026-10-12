@@ -1170,6 +1170,24 @@ fn check() -> anyhow::Result<ExitCode> {
         }
     }
 
+    // Wave M1: the module pins are part of what `kelson check` reviews. A
+    // workspace whose pins disagree with the installed index would refuse to
+    // boot, so CI should be able to see it here rather than at deploy time.
+    match kelson_registry::PackageIndex::load(&root) {
+        Ok(index) => match index.verify_pinned_boot(&root) {
+            Ok(0) => {}
+            Ok(n) => println!("  [ok] {n} module pin(s) verified against the index"),
+            Err(e) => {
+                println!("  [!!] MODULE-PIN-MISMATCH: {e}");
+                failures += 1;
+            }
+        },
+        Err(e) => {
+            println!("  [!!] GRAPH-MANIFEST: package index: {e}");
+            failures += 1;
+        }
+    }
+
     if failures == 0 {
         Ok(ExitCode::SUCCESS)
     } else {
@@ -1322,6 +1340,23 @@ fn graph_report() -> anyhow::Result<ExitCode> {
     }
     if graph.modules.is_empty() {
         println!("  (no modules registered yet — foundation stage)");
+    }
+    // Wave M1: report the pin state beside the graph. An unpinned workspace
+    // says so explicitly rather than printing nothing, so "no pins" and "pins
+    // not checked" are distinguishable.
+    match kelson_registry::PackageIndex::load(&root) {
+        Ok(index) => match index.verify_pinned_boot(&root) {
+            Ok(0) => println!("  pins  (none declared — WASM modules run at their indexed version)"),
+            Ok(n) => println!("  pins  {n} verified against the index"),
+            Err(e) => {
+                println!("  [!!] MODULE-PIN-MISMATCH: {e}");
+                return Ok(ExitCode::FAILURE);
+            }
+        },
+        Err(e) => {
+            println!("  [!!] GRAPH-MANIFEST: package index: {e}");
+            return Ok(ExitCode::FAILURE);
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
