@@ -23,10 +23,17 @@ shell you can serve from any static host pointed at the same origin.
 ## Run it
 
 ```bash
+kelson pkg:add .             # register this module in packages.toml (step 1)
+kelson graph                 # 1 module, 5 operations, 3 events
+kelson route:list            # named routes: notes.create / notes.list / ...
+kelson sdk:openapi --output out.json
 kelson serve                 # boots kelson-demo (+ --worker if needed)
-kelson sdk:openapi out.json  # generate the OpenAPI client contract
-kelson route:list            # named routes: notes.create / notes.list
 ```
+
+`pkg:add` is the step that makes the module visible: `graph`, `route:list`,
+`check`, `boot` and `sdk:openapi` all merge the `packages.toml` index, so
+before it runs the platform reports zero modules and the OpenAPI document
+comes back with no paths.
 
 ## Persist notes to PostgreSQL
 
@@ -43,6 +50,6 @@ notes durable:
 
 ## Layout
 
-- `module.toml` — contract: 2 capabilities, 2 named routes, 1 event.
+- `module.toml` - contract: 5 capabilities, 5 named routes, 3 events.
 - `src/lib.rs` — handlers over `ModelStore` + `ModuleProvider`.
 - `web/` — SPA shell (auth + notes CRUD against the module routes).
