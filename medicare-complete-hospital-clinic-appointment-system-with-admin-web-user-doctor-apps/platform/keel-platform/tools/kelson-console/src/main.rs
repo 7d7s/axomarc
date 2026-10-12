@@ -499,7 +499,11 @@ enum Cmd {
     /// Security checks: secrets hygiene, dependency policy, trace locality (L74).
     Security,
     /// Show the current release manifest (written by `kelson build`).
-    Release,
+    Release {
+        /// Re-hash every listed artifact and compare it with the recorded digest.
+        #[arg(long)]
+        verify: bool,
+    },
     /// List registered platform flags and their rollout state.
     #[command(name = "flag:list")]
     FlagList,
@@ -797,7 +801,7 @@ fn main() -> ExitCode {
         Cmd::Serve { worker } => serve(worker),
         Cmd::Shell => shell_console(),
         Cmd::ModelPrune { chunk, tenant } => model_prune(chunk, tenant),
-        Cmd::Release => release_manifest(),
+        Cmd::Release { verify } => release_manifest(verify),
         Cmd::FlagList => flag_list(),
         Cmd::FlagSet {
             name,
@@ -5033,17 +5037,27 @@ fn build(profile_raw: &str) -> anyhow::Result<ExitCode> {
     }
     let (git_commit, git_dirty) = kelson_deployment::git_identity(&root);
     let workspace_version = "0.1.0".to_string();
+    // Wave M4: content-address each binary as it is recorded. This fails the
+    // build rather than recording a placeholder, for the reason `migrations`
+    // below already fails — a manifest missing a digest cannot be verified
+    // later, and silently reporting that later would be a false all-clear.
+    let mut artifacts = Vec::with_capacity(kelson_deployment::RELEASE_BINARIES.len());
+    for name in kelson_deployment::RELEASE_BINARIES {
+        let path = kelson_deployment::artifact_path(&root, name, profile);
+        let digest =
+            kelson_deployment::artifact_digest(&path).map_err(|e| anyhow::anyhow!("{e}"))?;
+        println!("  digest {name}  {digest}");
+        artifacts.push(kelson_deployment::Artifact {
+            name: (*name).to_string(),
+            version: workspace_version.clone(),
+            profile,
+            sha256: Some(digest),
+        });
+    }
     let manifest = kelson_deployment::ReleaseManifest {
         version: workspace_version.clone(),
         profile,
-        artifacts: kelson_deployment::RELEASE_BINARIES
-            .iter()
-            .map(|name| kelson_deployment::Artifact {
-                name: (*name).to_string(),
-                version: workspace_version.clone(),
-                profile,
-            })
-            .collect(),
+        artifacts,
         git_commit,
         git_dirty,
         built_at: time::OffsetDateTime::now_utc(),
@@ -5071,19 +5085,83 @@ fn build(profile_raw: &str) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn release_manifest() -> anyhow::Result<ExitCode> {
+fn release_manifest(verify: bool) -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
-    match kelson_deployment::read_manifest(&root).map_err(|e| anyhow::anyhow!("{e}"))? {
-        Some(manifest) => {
-            let raw = serde_json::to_string_pretty(&manifest)?;
-            println!("{raw}");
-            Ok(ExitCode::SUCCESS)
+    let Some(manifest) = kelson_deployment::read_manifest(&root)
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+    else {
+        if verify {
+            // "Nothing to check" is not "everything checked out", and a CI
+            // job that reads exit codes only sees the difference in one of
+            // these two branches.
+            println!("[!!] no release manifest found - run `kelson build` first");
+            return Ok(ExitCode::FAILURE);
         }
-        None => {
-            println!("no release manifest found (run `kelson build` first).");
-            Ok(ExitCode::SUCCESS)
+        println!("no release manifest found (run `kelson build` first).");
+        return Ok(ExitCode::SUCCESS);
+    };
+
+    if verify {
+        return release_verify(&root, &manifest);
+    }
+
+    let raw = serde_json::to_string_pretty(&manifest)?;
+    println!("{raw}");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Re-hash every artifact against the digest the build recorded. Read-only:
+/// nothing is written, no binary is run, and the manifest is untouched.
+fn release_verify(
+    root: &std::path::Path,
+    manifest: &kelson_deployment::ReleaseManifest,
+) -> anyhow::Result<ExitCode> {
+    println!("kelson release --verify - read-only; re-hashes artifacts, writes nothing");
+    let verdicts = kelson_deployment::verify_artifacts(root, manifest);
+    let mut failed = 0usize;
+    for v in &verdicts {
+        match v {
+            kelson_deployment::ArtifactVerdict::Match { name } => {
+                println!("  [ok] {name} - digest matches");
+            }
+            kelson_deployment::ArtifactVerdict::Mismatch {
+                name,
+                expected,
+                actual,
+            } => {
+                failed += 1;
+                println!("  [!!] {name} - digest MISMATCH (recorded {expected}, on disk {actual})");
+            }
+            kelson_deployment::ArtifactVerdict::Missing { name, path } => {
+                failed += 1;
+                println!(
+                    "  [!!] {name} - not found at {} (rebuild with `kelson build`)",
+                    path.display()
+                );
+            }
+            kelson_deployment::ArtifactVerdict::Undigested { name } => {
+                // Cannot tell, and reported as failure: the manifest predates
+                // digests, so passing here would assert an integrity nobody
+                // ever checked.
+                failed += 1;
+                println!("  [!!] {name} - manifest records no digest (cannot tell) - run `kelson build`");
+            }
         }
     }
+    if failed == 0 {
+        println!(
+            "  {} artifact(s) verified against {}",
+            verdicts.len(),
+            kelson_deployment::manifest_path(root).display()
+        );
+    } else {
+        println!("{failed} of {} artifact(s) did not verify", verdicts.len());
+    }
+    Ok(if failed == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }
 
 // ------------------------------------------------------------------- flags
@@ -7340,6 +7418,24 @@ middleware = ["ghost"]
             body.contains("applied_versions") && body.contains("applied_pair_names"),
             "plan and status must read through the same queries"
         );
+    }
+
+    /// Wave M4: `--verify` is an opt-in flag on the existing command, not a new
+    /// subcommand, so plain `kelson release` keeps printing exactly what it
+    /// printed before and no script's argument list changes meaning.
+    #[test]
+    fn release_verify_is_an_opt_in_flag() {
+        match Cli::try_parse_from(["kelson", "release"]).expect("release parses").cmd {
+            Cmd::Release { verify } => assert!(!verify, "verify is opt-in"),
+            _ => panic!("release maps to Release"),
+        }
+        match Cli::try_parse_from(["kelson", "release", "--verify"])
+            .expect("--verify parses")
+            .cmd
+        {
+            Cmd::Release { verify } => assert!(verify, "--verify sets the flag"),
+            _ => panic!("--verify still maps to Release"),
+        }
     }
 
     /// §7 (Phase 4): the promotion commands parse under their documented

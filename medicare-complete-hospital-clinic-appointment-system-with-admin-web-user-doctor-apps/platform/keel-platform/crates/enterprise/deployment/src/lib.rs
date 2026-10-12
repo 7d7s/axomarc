@@ -37,6 +37,15 @@ impl BuildProfile {
         }
     }
 
+    /// Cargo's target subdirectory for this profile — where `kelson build`
+    /// puts the binaries this crate describes.
+    pub fn target_dir(self) -> &'static str {
+        match self {
+            BuildProfile::Dev => "debug",
+            BuildProfile::Release => "release",
+        }
+    }
+
     pub fn parse(raw: &str) -> Result<Self, AppError> {
         match raw {
             "dev" | "debug" => Ok(BuildProfile::Dev),
@@ -56,11 +65,24 @@ impl BuildProfile {
 }
 
 /// One built artifact.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Artifact {
     pub name: String,
     pub version: String,
     pub profile: BuildProfile,
+    /// SHA-256 (hex) of the binary as `kelson build` found it on disk (Wave M4).
+    ///
+    /// This is what makes a release *content-addressed* rather than merely
+    /// named: "kelson-demo 0.1.0" is a claim anybody can make, and an operator
+    /// promoting a binary off a mirror needs the bytes to match what was built.
+    ///
+    /// `None` only for manifests written before digests existed. `kelson
+    /// release --verify` reports that as *cannot tell* and fails — it never
+    /// skips the artifact, because skipping would report a clean bill of health
+    /// for something that was never checked. Hence the same default Phase S
+    /// gave `ReleaseManifest::migrations`: an old `release.json` still reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 /// Release manifest (storage/framework/release.json). Written by `kelson build`,
@@ -171,6 +193,102 @@ pub fn read_manifest(root: &Path) -> Result<Option<ReleaseManifest>, AppError> {
     }
 }
 
+/// Hex SHA-256 of `bytes`.
+///
+/// The single place a digest is formatted, so a pair-migration digest and a
+/// binary digest can never disagree on encoding or case. Both are compared
+/// against hashes recorded elsewhere (in `keel_migrations`, or by an operator),
+/// where a formatting difference reads as tampering.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    sha2::Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Where `kelson build` puts `name` under `profile`.
+pub fn artifact_path(root: &Path, name: &str, profile: BuildProfile) -> PathBuf {
+    let mut file = name.to_string();
+    if cfg!(windows) {
+        file.push_str(".exe");
+    }
+    root.join("target")
+        .join(profile.target_dir())
+        .join(file)
+}
+
+/// Digest of a built binary, or an error naming what could not be read.
+///
+/// Deliberately an error rather than a placeholder: a manifest that records a
+/// digest never taken is worse than one that records none, because it would
+/// verify successfully against bytes nobody hashed.
+pub fn artifact_digest(path: &Path) -> Result<String, AppError> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| AppError::internal(format!("artifact {}: cannot hash: {e}", path.display())))?;
+    Ok(sha256_hex(&bytes))
+}
+
+/// One artifact's verification outcome (Wave M4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArtifactVerdict {
+    /// The binary hashes to exactly what the manifest recorded.
+    Match { name: String },
+    /// The binary exists but does not hash to the recorded digest — the case
+    /// this whole feature exists to catch.
+    Mismatch { name: String, expected: String, actual: String },
+    /// The binary the manifest names is not where this profile builds it.
+    Missing { name: String, path: PathBuf },
+    /// The manifest records no digest, so there is nothing to compare against.
+    /// A *cannot tell*, never a pass.
+    Undigested { name: String },
+}
+
+impl ArtifactVerdict {
+    /// True only when this artifact was checked and the bytes agree.
+    pub fn ok(&self) -> bool {
+        matches!(self, ArtifactVerdict::Match { .. })
+    }
+}
+
+/// Re-hash every artifact the manifest claims, against what is on disk.
+///
+/// Read-only: no file is written, no binary is executed, and the manifest is
+/// left untouched. Artifacts are never skipped — an [`ArtifactVerdict::Undigested`]
+/// entry is produced instead, because silence here is indistinguishable from a
+/// pass to whoever reads the exit code.
+pub fn verify_artifacts(root: &Path, manifest: &ReleaseManifest) -> Vec<ArtifactVerdict> {
+    manifest
+        .artifacts
+        .iter()
+        .map(|a| {
+            let Some(expected) = a.sha256.clone() else {
+                return ArtifactVerdict::Undigested { name: a.name.clone() };
+            };
+            let path = artifact_path(root, &a.name, a.profile);
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    let actual = sha256_hex(&bytes);
+                    if actual == expected {
+                        ArtifactVerdict::Match { name: a.name.clone() }
+                    } else {
+                        ArtifactVerdict::Mismatch {
+                            name: a.name.clone(),
+                            expected,
+                            actual,
+                        }
+                    }
+                }
+                // A missing binary and a wrong binary are different remedies
+                // (rebuild vs investigate), so they are different verdicts.
+                Err(_) => ArtifactVerdict::Missing {
+                    name: a.name.clone(),
+                    path,
+                },
+            }
+        })
+        .collect()
+}
+
 /// Pair-migration directory, relative to the workspace root.
 ///
 /// Mirrors `kelson_mysql::PAIRS_DIR` / `kelson_postgres::PAIRS_DIR`: those
@@ -253,10 +371,9 @@ pub fn shipped_migrations(root: &Path) -> Result<Vec<ShippedMigration>, AppError
         let sql = std::fs::read_to_string(&up).map_err(|e| {
             AppError::internal(format!("shipped migration {base}: cannot read .up.sql: {e}"))
         })?;
-        let digest = sha2::Sha256::digest(sql.as_bytes());
         out.push(ShippedMigration {
             name: base.to_string(),
-            sha256: digest.iter().map(|b| format!("{b:02x}")).collect(),
+            sha256: sha256_hex(sql.as_bytes()),
         });
     }
     for base in &down_bases {
@@ -358,6 +475,10 @@ mod tests {
                     name: (*name).to_string(),
                     version: "0.1.0".into(),
                     profile: BuildProfile::Release,
+                    sha256: Some(
+                        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                            .into(),
+                    ),
                 })
                 .collect(),
             git_commit: Some("abc123".into()),
@@ -417,6 +538,190 @@ mod tests {
         let root = std::env::temp_dir().join(format!("kelson-deploy-none-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&root).unwrap();
         assert!(read_manifest(&root).unwrap().is_none());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The digest format is pinned against the published SHA-256 of the empty
+    /// string, so a future edit to `sha256_hex` cannot silently change the
+    /// encoding every recorded hash is compared under.
+    #[test]
+    fn sha256_hex_matches_the_published_empty_string_digest() {
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"kelson"),
+            "59979eeff2a1c8d9b5008047fc3e344feca5e4624f153330b7b929dc0bb38e2c"
+        );
+    }
+
+    /// `artifact_digest` must hash the file it is pointed at — a helper that
+    /// hashed something else would still produce a well-formed 64-char hex
+    /// string, so the bytes are asserted, not the shape.
+    #[test]
+    fn artifact_digest_hashes_the_file_it_is_given() {
+        let root = std::env::temp_dir().join(format!("kelson-digest-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("blob.bin");
+        std::fs::write(&file, b"kelson").unwrap();
+        assert_eq!(
+            artifact_digest(&file).unwrap(),
+            "59979eeff2a1c8d9b5008047fc3e344feca5e4624f153330b7b929dc0bb38e2c"
+        );
+        // An unreadable path is an error, never a placeholder digest.
+        assert!(artifact_digest(&root.join("absent.bin")).is_err());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn artifact_path_follows_profile_and_platform() {
+        let root = Path::new("/ws");
+        assert_eq!(
+            artifact_path(root, "kelson", BuildProfile::Release),
+            Path::new("/ws/target/release").join(format!(
+                "kelson{}",
+                if cfg!(windows) { ".exe" } else { "" }
+            ))
+        );
+        assert_eq!(
+            artifact_path(root, "kelson", BuildProfile::Dev),
+            Path::new("/ws/target/debug").join(format!(
+                "kelson{}",
+                if cfg!(windows) { ".exe" } else { "" }
+            ))
+        );
+    }
+
+    /// Backward-compat pin: a manifest written before Wave M4 carries no
+    /// digest, and must keep reading as `None`. Without the default, upgrading
+    /// Kelson would make `kelson release` fail to parse every existing
+    /// `release.json` until somebody rebuilt — turning a new feature into an
+    /// outage for deployments that did nothing wrong.
+    #[test]
+    fn a_manifest_built_before_digests_still_reads() {
+        let root = std::env::temp_dir().join(format!("kelson-legacy-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut pre_m4 = sample_manifest();
+        for artifact in &mut pre_m4.artifacts {
+            artifact.sha256 = None;
+        }
+        // Written through the production writer, which creates the directory
+        // and serialises the manifest — and because `sha256` is
+        // `skip_serializing_if`, this really does put a pre-digest manifest on
+        // disk rather than one carrying `"sha256": null`. Asserted rather than
+        // assumed: a fixture that quietly round-tripped through the new field
+        // would not be testing backward compatibility at all.
+        write_manifest(&root, &pre_m4).unwrap();
+        let on_disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(manifest_path(&root)).unwrap()).unwrap();
+        for artifact in on_disk["artifacts"].as_array().unwrap() {
+            assert!(
+                artifact.get("sha256").is_none(),
+                "fixture must be a pre-digest manifest, got {artifact}"
+            );
+        }
+
+        let read = read_manifest(&root).unwrap().unwrap();
+        assert_eq!(read.artifacts.len(), RELEASE_BINARIES.len());
+        for (got, want) in read.artifacts.iter().zip(pre_m4.artifacts.iter()) {
+            assert_eq!(got.sha256, None, "pre-digest manifest still reads");
+            assert_eq!(got.name, want.name);
+            assert_eq!(got.profile, want.profile);
+        }
+        // ...and the round trip keeps a digest that IS present.
+        let written = write_manifest(&root, &sample_manifest()).unwrap();
+        assert!(written.exists());
+        let back = read_manifest(&root).unwrap().unwrap();
+        assert_eq!(
+            back.artifacts[0].sha256,
+            Some(
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                    .to_string()
+            )
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The whole point of Wave M4: a binary swapped after the build is caught,
+    /// and the three ways verification can fail are distinguished rather than
+    /// collapsed into one "not ok" — each has a different remedy.
+    #[test]
+    fn verify_artifacts_catches_a_swapped_binary_and_never_skips_one() {
+        let root = std::env::temp_dir().join(format!("kelson-verify-{}", uuid::Uuid::now_v7()));
+        let profile = BuildProfile::Dev;
+        let path = artifact_path(&root, "kelson-demo", profile);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"the bytes build one").unwrap();
+
+        let mut manifest = sample_manifest();
+        manifest.artifacts = vec![Artifact {
+            name: "kelson-demo".into(),
+            version: "0.1.0".into(),
+            profile,
+            sha256: Some(sha256_hex(b"the bytes build one")),
+        }];
+
+        assert_eq!(
+            verify_artifacts(&root, &manifest),
+            vec![ArtifactVerdict::Match {
+                name: "kelson-demo".into()
+            }]
+        );
+
+        // Same name, different bytes: the case promotion must refuse.
+        std::fs::write(&path, b"the bytes build two").unwrap();
+        assert_eq!(
+            verify_artifacts(&root, &manifest),
+            vec![ArtifactVerdict::Mismatch {
+                name: "kelson-demo".into(),
+                expected: sha256_hex(b"the bytes build one"),
+                actual: sha256_hex(b"the bytes build two"),
+            }]
+        );
+
+        // No digest recorded: reported as cannot-tell, not dropped from the list.
+        let mut undigested = manifest.clone();
+        undigested.artifacts[0].sha256 = None;
+        assert_eq!(
+            verify_artifacts(&root, &undigested),
+            vec![ArtifactVerdict::Undigested {
+                name: "kelson-demo".into()
+            }]
+        );
+
+        // Missing binary reads as Missing, not Mismatch — a rebuild and an
+        // investigation are different responses.
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            verify_artifacts(&root, &manifest),
+            vec![ArtifactVerdict::Missing {
+                name: "kelson-demo".into(),
+                path,
+            }]
+        );
+
+        // Only a genuine match counts as ok.
+        assert!(ArtifactVerdict::Match {
+            name: "x".into()
+        }
+        .ok());
+        for bad in [
+            ArtifactVerdict::Mismatch {
+                name: "x".into(),
+                expected: "a".into(),
+                actual: "b".into(),
+            },
+            ArtifactVerdict::Missing {
+                name: "x".into(),
+                path: PathBuf::from("x"),
+            },
+            ArtifactVerdict::Undigested {
+                name: "x".into(),
+            },
+        ] {
+            assert!(!bad.ok(), "{bad:?} must not count as verified");
+        }
         std::fs::remove_dir_all(&root).ok();
     }
 

@@ -94,7 +94,7 @@ attempted.
 
 ### Wave M (in progress) - module-contract gaps
 
-M1, M2 and M3 are landed; M4 has not started. Most of the wave's work is
+M1-M4 are landed. Most of the wave's work is
 confined to `kelson-wasm` and `kelson-demo`, both `publish = false`, so none of
 the sandbox work reaches crates.io until that gate is deliberately removed.
 
@@ -102,8 +102,8 @@ the sandbox work reaches crates.io until that gate is deliberately removed.
 |---|---|---|---|
 | `kelson-registry` | yes | `ModuleManifest` gains `pub budget: ModuleBudget`; new public `ModuleBudget` with `validate_against` / `effective_memory_bytes` / `effective_fuel`; the module-pin rule (`module_pins`, `verify_pins_against_index`, `verify_pinned_boot`) moved here from the console | **MINOR** - additive, and `#[serde(default)]` keeps every existing manifest parsing byte-identically |
 | `kelson-foundation` | yes | two append-only codes: `WASM_SATURATED` (`KSN_WASM_SATURATED`), `WASM_DEADLINE` (`KSN_WASM_DEADLINE`) | **MINOR** - additive constants |
-| `kelson-console` | yes | `kelson check` / `kelson graph` / `post_deploy_probe` now read module pins through the registry rule instead of their own copy (M1); new read-only `kelson migrate:plan` subcommand that previews the next `migrate` and checks the pending set against the expand-and-contract rule (M3) | **MINOR** - the new subcommand is additive; M1's behaviour change stands: a *missing* pin file went from "unreadable" error to "no pins declared" |
-| `kelson-deployment` | yes | (pending M4 - artifact digest) | - |
+| `kelson-console` | yes | `kelson check` / `kelson graph` / `post_deploy_probe` now read module pins through the registry rule instead of their own copy (M1); new read-only `kelson migrate:plan` subcommand that previews the next `migrate` and checks the pending set against the expand-and-contract rule (M3); `kelson build` records a SHA-256 per artifact, and `kelson release --verify` re-hashes them (M4) | **MINOR** - the new subcommand and flag are additive. Two behaviour changes stand: M1's, where a *missing* pin file went from "unreadable" error to "no pins declared"; and M4's, where `kelson build` now **fails** rather than silently recording an artifact it could not hash |
+| `kelson-deployment` | yes | `Artifact` gains `pub sha256: Option<String>` (M4); new public `sha256_hex`, `artifact_digest`, `artifact_path`, `verify_artifacts` + `ArtifactVerdict`, and `BuildProfile::target_dir`; pair-migration digests now go through the shared `sha256_hex` | **MINOR** - additive, and the same `#[serde(default)]` Phase S gave `migrations` keeps every pre-digest `release.json` parsing with the field as `None` |
 | `kelson-wasm` | **no** (`publish = false`) | `[budget]` tighten-only enforcement, epoch-based wall-clock deadline, concurrency cap, two new `WasmError` variants | never published in this shape |
 | `kelson-demo` | **no** (`publish = false`) | 503 render pins for both new codes, plus the facet suite | never published in this shape |
 

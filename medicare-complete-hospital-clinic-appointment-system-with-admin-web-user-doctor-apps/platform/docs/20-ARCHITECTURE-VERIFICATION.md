@@ -86,9 +86,9 @@ weaker form than claimed. `ABSENT` = not in the codebase.
 
 | # | Claim | Verdict | Evidence |
 |---|---|---|---|
-| 17 | A release manifest binding kernel, modules and schema by digest | PARTIAL | `ReleaseManifest` records version, profile, artifacts, git identity, rustc and the shipped migration set — `crates/enterprise/deployment/src/lib.rs:68-92`. Migrations carry `sha256` `:96-106` so post-build drift is detectable. `Artifact` is `{name, version, profile}` with **no hash** — `:59-64`. Module pins are version strings, not digests. |
+| 17 | A release manifest binding kernel, modules and schema by digest | PARTIAL | `ReleaseManifest` records version, profile, artifacts, git identity, rustc and the shipped migration set - `keel-platform crates/enterprise/deployment/src/lib.rs:88-114`. Migrations carry `sha256` - `keel-platform crates/enterprise/deployment/src/lib.rs:116-128` - so post-build drift is detectable. **Wave M4** gave `Artifact` a `sha256: Option<String>` - `keel-platform crates/enterprise/deployment/src/lib.rs:67-86` - which `kelson build` fills from the bytes on disk, so the binaries a release names are now content-addressed too. Two things keep this PARTIAL: module pins are still version strings rather than digests, and the root copy is pre-M4 - `platform/crates/enterprise/deployment/src/lib.rs:58-64` still reads `Artifact` as `{name, version, profile}` with no hash. |
 | 18 | Signed artifacts, publisher identity, TUF | ABSENT | `kelson-integrity` covers audit rows only: sha256 prev-hash chaining per `(tenant, day)` and HMAC-SHA256 segment heads — `crates/security/integrity/src/lib.rs:1-12`, `crates/security/integrity/src/chain.rs:34-40`, `crates/security/integrity/src/hmac.rs:12-34`. No asymmetric signatures, no publisher identity, no SBOM. |
-| 19 | A staged, multi-node promotion pipeline | PARTIAL (local only) | `PROMOTION_STAGES = ["post-deploy", "post-migrate", "post-traffic", "canary"]` — `crates/enterprise/deployment/src/promote.rs:30`; fail-closed probe wiring `:80-98`; `PromotionState { Built, Staged, Deployed, RolledBack }` — `crates/enterprise/deployment/src/lib.rs:112`. The `canary` stage runs a health probe and nothing else (`crates/enterprise/deployment/src/promote.rs:190`) — no traffic shifting. Rollback is process-local: "Revisions are minted per process, so a `kelson` invocation boots its own runtime at revision 1" — `tools/kelson-console/src/promotion.rs:9-14`. No fleet orchestration exists. |
+| 19 | A staged, multi-node promotion pipeline | PARTIAL (local only) | `PROMOTION_STAGES = ["post-deploy", "post-migrate", "post-traffic", "canary"]` — `crates/enterprise/deployment/src/promote.rs:30`; fail-closed probe wiring `:80-98`; `PromotionState { Built, Staged, Deployed, RolledBack }` - `keel-platform crates/enterprise/deployment/src/lib.rs:134`. The `canary` stage runs a health probe and nothing else (`crates/enterprise/deployment/src/promote.rs:190`) — no traffic shifting. Rollback is process-local: "Revisions are minted per process, so a `kelson` invocation boots its own runtime at revision 1" — `tools/kelson-console/src/promotion.rs:9-14`. No fleet orchestration exists. |
 | 19b | Module version pins control what executes | ABSENT → **closed by Wave M1** | `ModulePinAdapter` writes `storage/framework/module-pins.json` — `platform/` `tools/kelson-console/src/promotion.rs:347-410`. Before M1 nothing in the WASM loader read it, and root-tree ADR 0017 `:38-41` stated it plainly: "module pins have no runtime host reader (written, never consumed)". Wave M1 made `kelson-registry` the canonical reader — `keel-platform` `crates/application/registry/src/packages.rs:256-265` (`module_pins`) and `:286-311` (`verify_pins_against_index`), composed by `:315-318` (`verify_pinned_boot`) — called from `load_wasm_plugins` before any guest is instantiated, from `kelson check`, from `kelson graph`, and from the `post_deploy` probe (which previously duplicated the rule). A pin that disagrees with the installed index now refuses boot. See §5.1 for the behaviour change this introduced. |
 
 ### Persistence and durable work
@@ -163,8 +163,8 @@ fail-closes). See section 6.
 | M1 | Module pins gate the loader | DONE |
 | M2 | Manifest `[budget]`, concurrency cap, wall-clock deadline | DONE |
 | M3 | `kelson migrate:plan` | DONE |
-| M4 | Content-addressed release artifacts | TODO |
-| M | CHANGELOG + PUBLISHING entries (M1-M3 in; M4 to follow) | PARTIAL |
+| M4 | Content-addressed release artifacts | DONE |
+| M | CHANGELOG + PUBLISHING entries (M1-M4) | DONE |
 | A | ABI v2 ADR and design | TODO |
 
 ### 5.1 Behaviour changes shipped by a wave
@@ -243,7 +243,7 @@ Recorded, not scheduled. Each carries the finding that produced it.
 | Wire `AUTH_STALE_REVISION` into a real surface, or document that the deny decision is the enforcement | 10 | The error code exists and is reachable only from a test helper. |
 | Change-impact engine (`change:plan` / `change:validate` / `change:apply`) | — | The proposal's headline differentiator. Derives most of its value from generations (finding 4) landing first. |
 | Distributed rollout with readiness and canary | 19 | Root-tree ADR 0017 defers it to Phase 3. |
-| Artifact signing, publisher identity, TUF | 18 | Keep the trust model small for first-party deployments; design verifiable artifacts now, evolve distribution later. |
+| Artifact signing, publisher identity, TUF | 18 | **The verifiable-artifact half is closed by Wave M4** — `kelson build` records each binary's SHA-256 and `kelson release --verify` re-hashes, refusing a mismatch, a missing binary, or an artifact whose digest was never taken. That is *integrity*, not *authenticity*: a manifest is plain JSON, so anyone who can rewrite it can forge matching bytes. Signing, publisher identity and TUF remain deliberately open. |
 | Cedar as the policy language | 10 | Homegrown `kelson-policy` ships and is tested. Evaluate only with a concrete migration path. |
 | File-watcher dev reload | 7 | Polling is documented and adequate; SIGHUP is a named plug point. |
 | `handler_version` on job rows | 21 | Payload `schema_version` already fail-closes on a newer schema. |

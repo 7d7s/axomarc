@@ -118,8 +118,8 @@ console command refuses this driver anymore.
 | `kelson inspect execution\|delta\|authorization\|n-plus-one [id] [--limit] [--threshold]` | inspect recorded executions |
 | `kelson replay <id> [--dry-run]` | replay a recorded execution (Original vs Replay) |
 | `kelson benchmark [--save-baseline] [--budget pct] [--iterations n]` | G15 benchmark gate |
-| `kelson build [--profile dev\|release]` | build + release manifest |
-| `kelson release` | show the release manifest |
+| `kelson build [--profile dev\|release]` | build + release manifest, content-addressing every binary it records (SHA-256 of the bytes on disk). Fails rather than recording a digest it never took — a manifest missing a digest cannot be verified later (Wave M4) |
+| `kelson release [--verify]` | show the release manifest / re-hash each listed artifact against the recorded digest and exit 1 on any mismatch, missing binary, or manifest entry predating digests ("cannot tell" is reported as failure, never skipped). Read-only; no binary is executed (Wave M4) |
 | `kelson about` | Laravel-style environment report: framework/app version, env, debug, DB driver + server version (best-effort `SELECT version()`), cache/queue/session drivers, flag snapshot, graph module/route/operation counts, dep-budget state (Wave 4) |
 | `kelson env` | environment summary: the config file the layering resolved, redacted key facts, config-cache pin state (Wave 4) |
 | `kelson profile <api\|worker>` | B-27 profiling wrapper: builds the package, then `samply record target/debug/<bin>` when samply is installed; a missing samply fails closed with `cargo install samply` + the docs/13 workflow (Wave 4) |
