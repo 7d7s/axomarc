@@ -15,3 +15,9 @@ Index of ADRs (one file each: NNNN-title.md). The decision log in
 | 0011-rs256-jwt.md | RS256 JWT interop verifier (budget-gated) | Wave 9 gate (advanced backlog) |
 | 0012-password-breach-range-check.md | Password breach check (k-anonymity range API) | Wave 9 gate (advanced backlog) |
 | 0013-recursive-cte-relations.md | Recursive/CTE relations in the query builder | Wave 9 gate (advanced backlog) |
+| 0019-wasm-abi-v2-component-model.md | Wasm ABI v2: Component Model behind an opt-in feature, ABI v1 retained (amends root ADR 0016 §2/§3) | Wave A of the distribution plan |
+
+Numbers 0014-0018 are reserved: they exist in the root tree's
+`platform/specs/ADR/` record (owned by the 0.2a port, cited not edited), and
+ADR 0014 makes that tree canonical at 0.2c — so numbering here continues at
+0019 to avoid a collision when the trees converge.
