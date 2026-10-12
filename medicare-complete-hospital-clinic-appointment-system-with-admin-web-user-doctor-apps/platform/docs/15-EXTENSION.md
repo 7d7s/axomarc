@@ -25,6 +25,20 @@ anything runs. Modules never reach into each other — contracts only.
 The module lifecycle states: `DISCOVERED -> VALIDATED -> REGISTERED -> INITIALIZED -> READY ->
 DEGRADED -> DISABLED`.
 
+That sentence names an aspiration, not a shipped enum: no `ModuleState` type exists in the
+codebase. Three of the seven states do have a representation, and the other four do not:
+
+| State | Representation today |
+|---|---|
+| `DISCOVERED` / `VALIDATED` | the `module.toml` files on disk, plus the graph compiler's manifest and ABI gates (`GRAPH-MANIFEST-ABI`) |
+| `REGISTERED` | the `ModuleProvider` registered against the registry carriers at boot |
+| `INITIALIZED` / `READY` | provider boot has run in dependency order and the provider graph is live |
+| `DEGRADED` / `DISABLED` | **not represented in v1** — no code path marks a loaded module degraded or disables one in place |
+
+Do not design against the last two rows as if they shipped. `DEGRADED` and `DISABLED` are backlog
+(see 20-ARCHITECTURE-VERIFICATION §6), and the staged `prepare -> commit -> drain` lifecycle that
+would give them meaning is deferred with the module-ABI work.
+
 ## Module ABI
 
 Every manifest declares which version of the module contract it targets:

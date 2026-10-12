@@ -23,3 +23,5 @@ Normative specs live in `specs/` (platform) and `docs/rust/` (repo root).
 | [16-MIGRATION-FROM-LARAVEL](16-MIGRATION-FROM-LARAVEL.md) | vocabulary map + per-concept strategy |
 | [17-REFERENCE](17-REFERENCE.md) | crate map, profiles, codes, decisions, glossary |
 | [18-GAP-ANALYSIS-LARAVEL](18-GAP-ANALYSIS-LARAVEL.md) | Laravel 13 forensic parity audit + v1.0 gate reconciliation |
+| [19-PARITY-PROGRAM](19-PARITY-PROGRAM.md) | the complete Laravel-competitor program: waves, gates, v2.0 rules |
+| [20-ARCHITECTURE-VERIFICATION](20-ARCHITECTURE-VERIFICATION.md) | essay-vs-code audit (22 claims, cited), the waves it schedules, the backlog |
