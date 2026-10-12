@@ -1,0 +1,28 @@
+# Wave M2 fixture: a sidecar that declares both remaining sandbox budgets.
+#
+# Pairs with spin.wat, whose kelson_manifest() declares name "spin" and the
+# spin capability and nothing else — so those here must match exactly, or the
+# drift check would refuse the load before the budget was ever read. [budget]
+# is the only section the guest does not echo back.
+#
+# spin.wat's kelson_call() is an unconditional infinite loop, so the two
+# budgets are the only things that can stop it, and this file hands it both:
+#
+#   * execution_timeout_ms — the wall-clock bound. Used by the deadline test
+#     against a host with a near-unbounded fuel cap, so fuel cannot win the
+#     race and the interrupt is unambiguously the epoch deadline.
+#   * max_concurrency = 1 — the in-flight cap. Used by the saturation test,
+#     which holds that single slot from a spawned call and asserts a second
+#     one is refused before a guest is instantiated. The deadline is what
+#     releases the slot again, which is why this file declares both: with
+#     neither, the holder would never finish and the test would hang.
+
+[module]
+name = "spin"
+
+[capabilities.spin]
+profile = "READ"
+
+[budget]
+execution_timeout_ms = 250
+max_concurrency = 1

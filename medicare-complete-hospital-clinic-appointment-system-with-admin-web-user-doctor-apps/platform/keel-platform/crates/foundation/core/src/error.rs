@@ -74,6 +74,25 @@ pub mod codes {
     /// it to HTTP 503 at boot (`ErrorRenderRegistry::set_status`) because it
     /// behaves like a timeout, not a client-side rate limit.
     pub const WASM_FUEL: &str = "KSN_WASM_FUEL";
+    /// Wave M2: a WASM plugin's declared `budget.max_concurrency` is
+    /// already saturated — every in-flight slot is occupied, so this call
+    /// is refused BEFORE a guest is instantiated rather than queueing
+    /// behind the others. ResourceExhausted/Retryable; the runtime pins it
+    /// to HTTP 503 at boot alongside `WASM_FUEL`, for the same reason: it
+    /// behaves like a timeout, not like a client-side rate limit. The
+    /// append-only rule applies — this code is never reused for anything
+    /// else.
+    pub const WASM_SATURATED: &str = "KSN_WASM_SATURATED";
+    /// Wave M2: a WASM plugin's declared `budget.execution_timeout_ms`
+    /// expired — the guest was still executing when its wall-clock slice ran
+    /// out, and wasmtime interrupted it at a loop back-edge. Distinct from
+    /// [`DEADLINE`], which is an *execution context's* deadline (the engine's
+    /// `ctx.deadline`, a worker job's) and renders from its site's category:
+    /// this one is a sandbox budget like [`WASM_FUEL`], so it is pinned to
+    /// HTTP 503 at boot beside it rather than sharing a code that two other
+    /// subsystems already serve at 500 and 409. ResourceExhausted/Retryable.
+    /// Append-only: never reused for anything else.
+    pub const WASM_DEADLINE: &str = "KSN_WASM_DEADLINE";
 }
 
 /// The one error type. `meta` must stay PHI-free (safe metadata only).

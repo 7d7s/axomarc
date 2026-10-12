@@ -438,6 +438,19 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         kelson_foundation::codes::WASM_FUEL,
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
     );
+    // Wave M2: saturation and wall-clock expiry are the same kind of
+    // failure — a sandbox budget of our own plugin ran out — so they take
+    // the same status. Without these pins both would serve 429, telling the
+    // client it was rate limited when the plugin's slot or clock was the
+    // thing that ran out.
+    error_renders.set_status(
+        kelson_foundation::codes::WASM_SATURATED,
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+    );
+    error_renders.set_status(
+        kelson_foundation::codes::WASM_DEADLINE,
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+    );
     host.add_provider(Box::new(host::ErrorRenderProvider {
         registry: error_renders.clone(),
     }));
@@ -1561,6 +1574,17 @@ pub fn build_app_state(
     // so `error_envelope` serves the production status for KSN_WASM_FUEL.
     error_renders.set_status(
         kelson_foundation::codes::WASM_FUEL,
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+    );
+    // Wave M2: the harness pins the production 503 for the two new sandbox
+    // budgets too, so `error_envelope` serves the same status production
+    // does for KSN_WASM_SATURATED and KSN_WASM_DEADLINE.
+    error_renders.set_status(
+        kelson_foundation::codes::WASM_SATURATED,
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+    );
+    error_renders.set_status(
+        kelson_foundation::codes::WASM_DEADLINE,
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
     );
 

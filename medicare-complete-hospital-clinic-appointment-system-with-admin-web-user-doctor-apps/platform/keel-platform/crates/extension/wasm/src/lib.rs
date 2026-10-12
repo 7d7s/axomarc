@@ -46,7 +46,7 @@ use kelson_execution::{BoxFuture, ExecutionPlan, ExecutionUnit, OperationHandler
 use kelson_foundation::{
     codes, AppError, ErrorCategory, OperationId, Retryability, Severity,
 };
-use kelson_registry::ModuleManifest;
+use kelson_registry::{ModuleBudget, ModuleManifest};
 use serde_json::Value;
 use wasmtime::{
     Config, Engine, Instance, InstancePre, Linker, Module, Store, StoreLimits, StoreLimitsBuilder,
@@ -54,6 +54,35 @@ use wasmtime::{
 };
 
 mod imports;
+
+/// A manifest `[budget]` resolved against a host's ceilings, ready to apply
+/// to one store.
+///
+/// Resolution happens once, at load, not per call: the numbers are fixed for
+/// the plugin's lifetime, so re-deriving them on every dispatch would only add
+/// a way for them to drift apart. Holding all three together also means a
+/// store's fuel, memory cap and deadline are set from one value, so they
+/// cannot end up describing different sandboxes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallBudget {
+    /// Effective per-call instruction budget.
+    pub fuel: u64,
+    /// Effective per-instance linear memory cap, in bytes.
+    pub memory_bytes: usize,
+    /// Epoch ticks before the call is interrupted. [`NO_DEADLINE_TICKS`] when
+    /// the manifest declares no `execution_timeout_ms`.
+    pub deadline_ticks: u64,
+    /// Maximum simultaneous in-flight calls, or `None` for unlimited.
+    pub max_concurrency: Option<u32>,
+}
+
+impl CallBudget {
+    /// Whether this call carries a real wall-clock bound (and therefore needs
+    /// the host's epoch ticker running).
+    pub fn has_deadline(&self) -> bool {
+        self.deadline_ticks != NO_DEADLINE_TICKS
+    }
+}
 
 /// Default per-call instruction budget (fuel). One shared, documented number:
 /// enough for substantial business logic, small enough that a runaway loop
@@ -139,6 +168,15 @@ pub enum WasmError {
     Drift { plugin: String, sidecar: String },
     /// The instruction budget ran out mid-call (mapped to `KSN_WASM_FUEL`).
     Fuel,
+    /// The wall-clock deadline (wasmtime epoch interruption) fired mid-call
+    /// (mapped to `KSN_WASM_DEADLINE`). Distinct from [`Fuel`]: fuel bounds
+    /// work, this bounds elapsed time, and a guest that blocks in a host call
+    /// burns no fuel while still eating a worker.
+    Deadline,
+    /// The plugin's declared `budget.max_concurrency` is fully occupied, so
+    /// the call was refused BEFORE a guest was instantiated (mapped to
+    /// `KSN_WASM_SATURATED`).
+    Saturated { limit: u32 },
     /// A runtime failure inside one `kelson_call`.
     Call(String),
 }
@@ -153,6 +191,11 @@ impl std::fmt::Display for WasmError {
                 "wasm plugin manifest drifts from its sidecar: guest declares {plugin}, sidecar declares {sidecar}"
             ),
             WasmError::Fuel => write!(f, "wasm plugin exceeded its instruction budget"),
+            WasmError::Deadline => write!(f, "wasm plugin exceeded its wall-clock deadline"),
+            WasmError::Saturated { limit } => write!(
+                f,
+                "wasm plugin concurrency limit of {limit} in-flight calls is saturated"
+            ),
             WasmError::Call(m) => write!(f, "wasm plugin call failed: {m}"),
         }
     }
@@ -166,13 +209,35 @@ fn unpack(packed: i64) -> (u32, u32) {
     ((bits >> 32) as u32, bits as u32)
 }
 
-/// Classify a failed guest call: fuel exhaustion is its own category (it
-/// becomes a pinned 503), everything else is an ordinary call failure.
+/// Classify a failed guest call: fuel exhaustion and deadline expiry are each
+/// their own category (both become pinned 503s), everything else is an
+/// ordinary call failure.
+///
+/// [`Trap::Interrupt`] is the deadline, not a user interrupt: it is what
+/// wasmtime returns when the store's epoch deadline has passed and no
+/// [`Store::epoch_deadline_callback`] was installed (`store.rs` maps the
+/// default `None` behavior to exactly this trap). [`Trap::OutOfFuel`] is its
+/// twin — the same guest loop, stopped by a different meter.
 fn call_error(op: &str, e: wasmtime::Error) -> WasmError {
     match e.downcast_ref::<Trap>() {
         Some(Trap::OutOfFuel) => WasmError::Fuel,
+        Some(Trap::Interrupt) => WasmError::Deadline,
         Some(trap) => WasmError::Call(format!("{op}: trap {trap}")),
         None => WasmError::Call(format!("{op}: {e}")),
+    }
+}
+
+/// Releases a concurrency slot taken by [`WasmPlugin::call`] when it drops.
+///
+/// The slot is acquired before the guest is instantiated and released on
+/// every exit — success, trap, or the early `?` returns that follow — because
+/// a slot leaked by a failing call would count against the cap forever and
+/// could take the plugin out of service one failed request at a time.
+struct InFlightSlot<'a>(&'a std::sync::atomic::AtomicU32);
+
+impl Drop for InFlightSlot<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     }
 }
 
@@ -203,6 +268,88 @@ fn read_result(
     Ok(buf)
 }
 
+/// A background thread advancing the wasmtime epoch, which is what makes a
+/// wall-clock deadline possible at all: the guest is never preempted from
+/// outside, it checks the epoch at its own loop back-edges, so a deadline can
+/// only interrupt a guest that is actually executing.
+///
+/// One ticker serves every plugin loaded through its [`WasmHost`], and is
+/// created on demand — only when some plugin declares `execution_timeout_ms`.
+/// A workspace whose plugins are all fuel-bounded never starts a thread.
+///
+/// ## Why this counts a clock instead of sleep calls
+///
+/// The epoch must advance once per millisecond for `execution_timeout_ms` to
+/// mean milliseconds. Counting "one tick per `sleep(1ms)`" does NOT do that:
+/// `sleep` sets a *lower* bound, and on Windows the default timer resolution
+/// makes a 1ms sleep land near 15.6ms — so a declared 50ms deadline would
+/// fire around 780ms, fifteen times late, and by a factor that varies per
+/// machine. Instead the loop reads a monotonic clock and catches the epoch up
+/// by however many milliseconds have *actually* elapsed, so time accrues at
+/// the right rate on every platform. The sleep only bounds how often the
+/// clock is consulted, which means a deadline can still fire up to one sleep
+/// interval (plus OS timer slop) after it was asked for — it can run late,
+/// never early, and never by a multiple of the requested budget.
+///
+/// Stopped by [`Drop`]: the flag is set and the thread joined, so a host that
+/// goes out of scope leaves no spinning thread behind. That join costs up to
+/// one sleep interval, which is why hosts that never declare a deadline do
+/// not pay for a ticker at all.
+struct EpochTicker {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl EpochTicker {
+    fn start(engine: Engine) -> Result<Self, WasmError> {
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let handle = std::thread::Builder::new()
+            .name("wasm-epoch-ticker".into())
+            .spawn(move || {
+                let started = std::time::Instant::now();
+                let mut advanced_ms: u128 = 0;
+                while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    let elapsed_ms = started.elapsed().as_millis();
+                    // Catch up by real elapsed time, not by iteration count:
+                    // after a long sleep we owe several ticks, not one.
+                    while advanced_ms < elapsed_ms {
+                        engine.increment_epoch();
+                        advanced_ms += 1;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            })
+            .map_err(|e| WasmError::Load(format!("epoch ticker thread: {e}")))?;
+        Ok(Self {
+            stop,
+            handle: Some(handle),
+        })
+    }
+}
+
+/// Deadline ticks for a call that declares no `execution_timeout_ms`.
+///
+/// [`wasmtime::Store::set_epoch_deadline`] **must** be called on every store
+/// once `Config::epoch_interruption(true)` is set: the store's deadline starts
+/// at `0`, which wasmtime documents as having "always elapsed", so a store left
+/// at the default traps the guest the instant it runs. Plugins without a
+/// wall-clock budget therefore get a deadline so far out it can never be
+/// reached — `u64::MAX` is deliberately not used, because the deadline is
+/// computed as `current_epoch + ticks` and would overflow it.
+pub const NO_DEADLINE_TICKS: u64 = u64::MAX / 2;
+
+impl Drop for EpochTicker {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            // A ticker parked in `sleep` wakes within one tick, so the join
+            // bounds this at ~1ms rather than leaking a thread per host.
+            let _ = handle.join();
+        }
+    }
+}
+
 /// The wasmtime side of the runtime: one engine + linker (the import
 /// surface) shared by every plugin loaded through it.
 pub struct WasmHost {
@@ -210,6 +357,12 @@ pub struct WasmHost {
     linker: Linker<CallState>,
     fuel: u64,
     memory_bytes: usize,
+    /// Created on demand, not eagerly: a workspace whose plugins are all
+    /// fuel-bounded never starts a thread. A plugin that declares
+    /// `execution_timeout_ms` takes the first [`Arc`] out of this cell and
+    /// keeps it, so the ticker outlives the host — `load_wasm_plugins` drops
+    /// its host before the handlers are ever dispatched.
+    ticker: std::sync::Mutex<Option<Arc<EpochTicker>>>,
 }
 
 impl WasmHost {
@@ -228,6 +381,21 @@ impl WasmHost {
     pub fn with_limits(fuel: u64, memory_bytes: usize) -> Result<Self, WasmError> {
         let mut config = Config::new();
         config.consume_fuel(true);
+        // Wave M2: epoch-based interruption, so a `[budget] execution_timeout_ms`
+        // can bound WALL-CLOCK time. Fuel bounds work done; this bounds time
+        // spent, which matters because the two are not interchangeable: fuel
+        // does not advance while a guest sits in a host call, and how much
+        // fuel equals "one millisecond" varies with the work being done.
+        //
+        // Enabled for every host, even one whose plugins declare no deadline,
+        // because the engine's config is fixed at construction and a plugin
+        // may only declare its budget later. The cost is borne only by stores
+        // that opt in: a plugin with no `execution_timeout_ms` is given
+        // [`NO_DEADLINE_TICKS`], a deadline so distant it cannot be reached.
+        // Both APIs are available on this feature set — they are gated on
+        // `target_has_atomic = "64"`, not on a cargo feature — which every
+        // target this workspace builds for satisfies.
+        config.epoch_interruption(true);
         let engine = Engine::new(&config).map_err(|e| WasmError::Load(format!("engine: {e}")))?;
         let mut linker: Linker<CallState> = Linker::new(&engine);
         imports::define(&mut linker)?;
@@ -236,9 +404,59 @@ impl WasmHost {
             linker,
             fuel,
             memory_bytes,
+            ticker: std::sync::Mutex::new(None),
         })
     }
 
+    /// The host's epoch ticker, starting it on first use.
+    ///
+    /// Returns `None` only if the thread could not be spawned, so the caller
+    /// can refuse the load rather than silently serving an unenforceable
+    /// deadline — a budget that cannot be enforced is worse than none, since
+    /// it invites an operator to believe a wall-clock bound exists.
+    fn ticker(&self) -> Option<Arc<EpochTicker>> {
+        let mut slot = self.ticker.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.is_none() {
+            match EpochTicker::start(self.engine.clone()) {
+                Ok(t) => *slot = Some(Arc::new(t)),
+                Err(_) => return None,
+            }
+        }
+        slot.as_ref().map(Arc::clone)
+    }
+
+    /// Resolve a manifest `[budget]` against this host's ceilings.
+    ///
+    /// Returns every violation at once so an operator fixes their sidecar in
+    /// one pass, and computes the effective numbers only when the budget is
+    /// legal. Tighten-only is enforced here rather than at each call site: a
+    /// budget that could raise a host ceiling would let a third-party module
+    /// widen the sandbox it was reviewed under, which is the whole reason the
+    /// field is a floor-and-not-a-negotiation.
+    fn resolve_budget(&self, budget: &ModuleBudget) -> Result<CallBudget, WasmError> {
+        budget
+            .validate_against(self.memory_bytes, self.fuel)
+            .map_err(|violations| {
+                WasmError::Manifest(format!("budget is not tighten-only: {}", violations.join("; ")))
+            })?;
+        Ok(CallBudget {
+            fuel: budget.effective_fuel(self.fuel),
+            memory_bytes: budget.effective_memory_bytes(self.memory_bytes),
+            deadline_ticks: budget
+                .execution_timeout_ms
+                .map_or(NO_DEADLINE_TICKS, |ms| ms.max(1)),
+            max_concurrency: budget.max_concurrency,
+        })
+    }
+
+    /// Build a store for one call or one manifest scan.
+    ///
+    /// `budget` supplies fuel, memory and the epoch deadline together, so the
+    /// three can never disagree about which sandbox a guest runs in. The
+    /// deadline is set on every store, not only on deadline-declaring ones:
+    /// with `epoch_interruption(true)` wasmtime's default deadline is `0`,
+    /// which it documents as having "always elapsed", so a store that skipped
+    /// this call would trap its guest before it ran a single instruction.
     fn new_store(
         &self,
         label: &str,
@@ -246,9 +464,10 @@ impl WasmHost {
         scope_paths: Vec<String>,
         has_scope: bool,
         profile: WasmCapabilityProfile,
+        budget: &CallBudget,
     ) -> Result<Store<CallState>, WasmError> {
         let limits = StoreLimitsBuilder::new()
-            .memory_size(self.memory_bytes)
+            .memory_size(budget.memory_bytes)
             .build();
         let mut store = Store::new(
             &self.engine,
@@ -265,8 +484,9 @@ impl WasmHost {
         );
         store.limiter(|state| &mut state.limits);
         store
-            .set_fuel(self.fuel)
+            .set_fuel(budget.fuel)
             .map_err(|e| WasmError::Call(format!("set fuel: {e}")))?;
+        store.set_epoch_deadline(budget.deadline_ticks);
         Ok(store)
     }
 
@@ -275,6 +495,28 @@ impl WasmHost {
     /// (fail-closed): a plugin never reaches dispatch in a half-trusted
     /// state.
     pub fn load(&self, bytes: &[u8], sidecar: &ModuleManifest) -> Result<WasmPlugin, WasmError> {
+        // Wave M2: resolve the manifest `[budget]` FIRST, before a byte is
+        // compiled or instantiated. A budget that asks for more than the host
+        // allows is a refusal with no guest involvement at all, so an
+        // over-declared module is rejected by reading its sidecar rather than
+        // by running it and observing the result.
+        let budget = self.resolve_budget(&sidecar.budget)?;
+        // A wall-clock budget is unenforceable without a ticker to advance the
+        // epoch. Refuse rather than load a plugin whose declared deadline
+        // would silently never fire — a bound that is documented but inert is
+        // worse than no bound, because operators will size their fleet to it.
+        let ticker = if budget.has_deadline() {
+            Some(self.ticker().ok_or_else(|| {
+                WasmError::Load(
+                    "budget.execution_timeout_ms is declared but the epoch ticker thread \
+                     could not be started, so the deadline could not be enforced"
+                        .to_string(),
+                )
+            })?)
+        } else {
+            None
+        };
+
         let module = Module::new(&self.engine, bytes)
             .map_err(|e| WasmError::Load(format!("compile: {e}")))?;
         // Link-time import validation: anything the shim does not define
@@ -284,14 +526,24 @@ impl WasmHost {
             .instantiate_pre(&module)
             .map_err(|e| WasmError::Load(format!("link: {e}")))?;
 
-        // Instantiate once and read the guest's self-declared manifest.
+        // Instantiate once and read the guest's self-declared manifest. This
+        // scan runs under the plugin's own budget, not the host ceiling: a
+        // guest whose kelson_manifest() loops forever is bounded here too,
+        // otherwise the boot path would be the one place a module could run
+        // unbounded.
         let json = {
             let none_declared = Arc::new(BTreeSet::new());
             // The manifest scan runs under the most restrictive profile:
             // a guest that calls the write imports from kelson_manifest()
             // records into buffers `load` never reads.
-            let mut store =
-                self.new_store(sidecar.name(), none_declared, Vec::new(), false, WasmCapabilityProfile::ReadOnly)?;
+            let mut store = self.new_store(
+                sidecar.name(),
+                none_declared,
+                Vec::new(),
+                false,
+                WasmCapabilityProfile::ReadOnly,
+                &budget,
+            )?;
             let instance = pre
                 .instantiate(&mut store)
                 .map_err(|e| WasmError::Load(format!("instantiate: {e}")))?;
@@ -313,16 +565,25 @@ impl WasmHost {
                 &instance,
                 packed,
                 "kelson_manifest",
-                self.memory_bytes,
+                budget.memory_bytes,
             )?;
             String::from_utf8(raw)
                 .map_err(|e| WasmError::Manifest(format!("kelson_manifest is not UTF-8: {e}")))?
         };
 
         let parsed = ModuleManifest::from_json(&json).map_err(|v| WasmError::Manifest(v.message))?;
-        let plugin_ser = serde_json::to_string(&parsed)
+        // `[budget]` is HOST policy, never guest state: a guest has no way to
+        // declare it and no reason to. Comparing it here would refuse every
+        // budgeted plugin as "drift", so both documents are normalized with
+        // the budget cleared before the comparison. Everything else —
+        // name, version, capabilities, ABI — still compares byte for byte.
+        let mut plugin_cmp = parsed.clone();
+        plugin_cmp.budget = kelson_registry::ModuleBudget::default();
+        let mut sidecar_cmp = sidecar.clone();
+        sidecar_cmp.budget = kelson_registry::ModuleBudget::default();
+        let plugin_ser = serde_json::to_string(&plugin_cmp)
             .map_err(|e| WasmError::Manifest(format!("manifest re-encode failed: {e}")))?;
-        let sidecar_ser = serde_json::to_string(sidecar)
+        let sidecar_ser = serde_json::to_string(&sidecar_cmp)
             .map_err(|e| WasmError::Manifest(format!("sidecar re-encode failed: {e}")))?;
         if plugin_ser != sidecar_ser {
             return Err(WasmError::Drift {
@@ -340,21 +601,34 @@ impl WasmHost {
             manifest: parsed,
             declared,
             label,
-            fuel: self.fuel,
-            memory_bytes: self.memory_bytes,
+            budget,
+            // Held only when a deadline is enforced: a fuel-bounded plugin
+            // keeps no thread alive, so the common case pays nothing for the
+            // machinery.
+            ticker,
+            in_flight: std::sync::atomic::AtomicU32::new(0),
         })
     }
 }
 
-/// A loaded, drift-checked plugin: instantiate-per-call, fuel-metered.
+/// A loaded, drift-checked plugin: instantiate-per-call, budget-metered.
 pub struct WasmPlugin {
     engine: Engine,
     pre: InstancePre<CallState>,
     manifest: ModuleManifest,
     declared: Arc<BTreeSet<String>>,
     label: String,
-    fuel: u64,
-    memory_bytes: usize,
+    /// The manifest's `[budget]` resolved against the host. Fixed for the
+    /// plugin's lifetime, so every call runs in the same sandbox.
+    budget: CallBudget,
+    /// Keeps the epoch ticker alive while this plugin can still run a guest.
+    /// The host that created the plugin is dropped at the end of
+    /// `load_wasm_plugins`, long before the handlers are dispatched, so a
+    /// plugin that did not hold its own reference would see its deadline
+    /// silently stop firing.
+    ticker: Option<Arc<EpochTicker>>,
+    /// Concurrent calls in flight, against [`CallBudget::max_concurrency`].
+    in_flight: std::sync::atomic::AtomicU32,
 }
 
 /// One guest invocation's full result: the JSON body PLUS the side
@@ -378,7 +652,40 @@ impl WasmPlugin {
         &self.manifest
     }
 
-    /// Invoke one operation: fresh instance, bounded fuel, JSON in/out.
+    /// The sandbox this plugin runs in, resolved from the manifest `[budget]`
+    /// against the host at load and fixed for the plugin's lifetime.
+    pub fn budget(&self) -> CallBudget {
+        self.budget
+    }
+
+    /// Whether this plugin's `execution_timeout_ms` is actually enforceable —
+    /// that is, whether the epoch ticker the deadline depends on exists and is
+    /// held by this plugin.
+    ///
+    /// Exposed rather than assumed, because the two halves are set in
+    /// different places (the budget is read from the sidecar, the ticker is
+    /// started from the host) and a mismatch would mean a deadline that is
+    /// declared, documented, and silently inert. Callers that surface this
+    /// should treat `false` next to [`CallBudget::has_deadline`] returning
+    /// `true` as a fault, not a configuration.
+    pub fn deadline_enforced(&self) -> bool {
+        debug_assert_eq!(
+            self.ticker.is_some(),
+            self.budget.has_deadline(),
+            "a declared execution_timeout_ms must be paired with a live epoch ticker"
+        );
+        self.ticker.is_some()
+    }
+
+    /// Calls currently executing inside this plugin (driven by
+    /// [`Self::budget`]'s `max_concurrency`, but counted whether or not a cap
+    /// is declared, so it stays meaningful as a gauge).
+    pub fn in_flight(&self) -> u32 {
+        self.in_flight.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Invoke one operation: fresh instance, budgeted fuel/memory/deadline,
+    /// JSON in/out.
     /// `scope` feeds `host.capability_check`'s path verdict; `profile`
     /// gates the write imports for this call.
     pub fn call(
@@ -388,16 +695,39 @@ impl WasmPlugin {
         scope: Option<&ScopeSnapshot>,
         profile: WasmCapabilityProfile,
     ) -> Result<CallOutput, WasmError> {
+        // Wave M2: take a concurrency slot BEFORE instantiating. Refusing here
+        // means a saturated plugin does no work at all — no store, no compile,
+        // no guest — so the cap sheds load instead of queueing it. The counter
+        // is incremented on every call, capped or not, so [`Self::in_flight`]
+        // reports the truth for an uncapped plugin too; only the *refusal* is
+        // conditional on the cap. The guard releases on every exit, including
+        // the early `?` returns below, so a failed call cannot leak its slot
+        // and wedge the plugin shut.
+        let _slot = {
+            let prev = self
+                .in_flight
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            match self.budget.max_concurrency {
+                Some(limit) if prev >= limit => {
+                    self.in_flight.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                    return Err(WasmError::Saturated { limit });
+                }
+                _ => Some(InFlightSlot(&self.in_flight)),
+            }
+        };
+
         let (scope_paths, has_scope) = match scope {
             Some(s) => (s.nodes.iter().map(|n| n.path.clone()).collect(), true),
             None => (Vec::new(), false),
         };
+        let budget = self.budget;
+        let limits = StoreLimitsBuilder::new()
+            .memory_size(budget.memory_bytes)
+            .build();
         let mut store = Store::new(
             &self.engine,
             CallState {
-                limits: StoreLimitsBuilder::new()
-                    .memory_size(self.memory_bytes)
-                    .build(),
+                limits,
                 label: self.label.clone(),
                 declared: self.declared.clone(),
                 scope_paths,
@@ -409,8 +739,9 @@ impl WasmPlugin {
         );
         store.limiter(|state| &mut state.limits);
         store
-            .set_fuel(self.fuel)
+            .set_fuel(budget.fuel)
             .map_err(|e| WasmError::Call(format!("set fuel: {e}")))?;
+        store.set_epoch_deadline(budget.deadline_ticks);
 
         let instance = self
             .pre
@@ -434,10 +765,10 @@ impl WasmPlugin {
             .len()
             .checked_add(input.len())
             .ok_or_else(|| WasmError::Call("input length overflow".to_string()))?;
-        if total > self.memory_bytes {
+        if total > budget.memory_bytes {
             return Err(WasmError::Call(format!(
                 "input of {total} bytes exceeds the plugin memory cap {}",
-                self.memory_bytes
+                budget.memory_bytes
             )));
         }
         let base = alloc
@@ -467,7 +798,7 @@ impl WasmPlugin {
                 ),
             )
             .map_err(|e| call_error("kelson_call", e))?;
-        let raw = read_result(&mut store, &instance, packed, "kelson_call", self.memory_bytes)?;
+        let raw = read_result(&mut store, &instance, packed, "kelson_call", budget.memory_bytes)?;
         let body =
             String::from_utf8(raw).map_err(|e| WasmError::Call(format!("output is not UTF-8: {e}")))?;
         // Drain the side effects the guest recorded. A guest failure above
@@ -678,8 +1009,18 @@ fn decode_audit(
     })
 }
 
-/// Fuel exhaustion is a resource error pinned to 503 at boot (it behaves
-/// like a timeout, not a client rate limit); everything else is internal.
+/// Fuel exhaustion, saturation and deadline expiry are all sandbox budgets,
+/// and all three are pinned to 503 at boot — each behaves like a timeout, not
+/// a client rate limit (429 would blame the caller for our plugin being slow
+/// or small). Everything else is internal.
+///
+/// The deadline deliberately does *not* reuse `KSN_DEADLINE`: that code
+/// already renders from two other sites' own categories (the execution
+/// engine's `Internal`/500 and a worker job's `Workflow`/409), and
+/// [`kelson_http::ErrorRenderRegistry::set_status`] is a global per-code
+/// override — pinning it here would have silently re-skinned both. A plugin's
+/// wall-clock budget is a *sandbox* budget, the same family as
+/// [`WASM_FUEL`], so it takes the sibling code `KSN_WASM_DEADLINE`.
 fn to_app_error(err: WasmError) -> AppError {
     match err {
         WasmError::Fuel => AppError::new(
@@ -688,6 +1029,20 @@ fn to_app_error(err: WasmError) -> AppError {
             Severity::Medium,
             Retryability::Retryable,
             "wasm plugin exceeded its instruction budget",
+        ),
+        WasmError::Saturated { limit } => AppError::new(
+            codes::WASM_SATURATED,
+            ErrorCategory::ResourceExhausted,
+            Severity::Medium,
+            Retryability::Retryable,
+            format!("wasm plugin concurrency limit of {limit} in-flight calls is saturated"),
+        ),
+        WasmError::Deadline => AppError::new(
+            codes::WASM_DEADLINE,
+            ErrorCategory::ResourceExhausted,
+            Severity::Medium,
+            Retryability::Retryable,
+            "wasm plugin exceeded its wall-clock deadline",
         ),
         other => AppError::internal(format!("wasm plugin failed: {other}")),
     }

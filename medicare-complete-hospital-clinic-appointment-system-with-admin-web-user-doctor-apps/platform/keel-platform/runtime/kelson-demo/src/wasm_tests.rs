@@ -683,3 +683,202 @@ fn a_malformed_pin_file_refuses_boot_rather_than_being_ignored() {
     assert!(err.contains("module pins"), "{err}");
     assert!(err.contains("invalid JSON"), "{err}");
 }
+
+// ------------------------------------------------------ Wave M2: [budget]
+
+/// An index entry pairing an existing guest `.wat` with a DIFFERENT sidecar.
+///
+/// The M2 fixtures vary only `[budget]`, which a guest cannot declare, so the
+/// checked-in `.wat` binaries are reused as-is. The drift check still has to
+/// pass: it compares the guest's self-declared manifest against the sidecar's
+/// name and capabilities, so those stay exactly what the guest says and only
+/// the budget section differs between this sidecar and the plain one.
+fn fixture_entry_with(wat: &str, sidecar: &str) -> WasmModuleEntry {
+    let dir = fixtures_dir();
+    WasmModuleEntry {
+        name: wat.to_string(),
+        version: "v1".to_string(),
+        path: dir.join(format!("{wat}.wat")).display().to_string(),
+        manifest: dir.join(format!("{sidecar}.module.toml")).display().to_string(),
+    }
+}
+
+#[test]
+fn a_budget_asking_for_more_sandbox_than_the_host_refuses_boot() {
+    // Tighten-only is the whole safety property of `[budget]`: a third-party
+    // module must not be able to widen the sandbox an operator configured.
+    // The refusal happens in `load`, so it is a boot refusal rather than a
+    // surprising per-call failure.
+    let root = temp_root("budget-raise");
+    write_index(&root, vec![fixture_entry_with("echo", "budget")]);
+
+    let err = crate::load_wasm_plugins(&root)
+        .expect_err("an over-declared budget refuses the plugin");
+    // BOTH violations in one message. A check that stopped at the first would
+    // send an operator back to their editor once per attempt, and the second
+    // violation would still be waiting to fail their next run.
+    assert!(err.contains("max_memory_mb"), "names the memory field: {err}");
+    assert!(err.contains("max_fuel"), "names the fuel field: {err}");
+    assert!(err.contains("only LOWER"), "states the rule it broke: {err}");
+    // And it names the offending plugin, so the operator knows which sidecar
+    // to open.
+    assert!(err.contains("echo"), "names the plugin: {err}");
+}
+
+#[tokio::test]
+async fn a_wall_clock_deadline_interrupts_a_spinning_guest_and_pins_503() {
+    // `spin.wat`'s kelson_call loops forever. Against a host whose fuel cap
+    // is effectively unbounded, fuel can no longer be what stops it — so the
+    // interrupt is unambiguously the epoch deadline, not instruction
+    // metering wearing a different hat.
+    let root = temp_root("budget-deadline");
+    write_index(&root, vec![fixture_entry_with("spin", "spin_timeout")]);
+
+    let host =
+        kelson_wasm::WasmHost::with_limits(1_000_000_000_000, kelson_wasm::DEFAULT_MEMORY_BYTES)
+            .expect("host builds");
+    let index = PackageIndex::load(&root).expect("index loads");
+    let entry = &index.wasm[0];
+    let sidecar = index.wasm_manifest(&root, entry).expect("sidecar verifies");
+    let bytes = std::fs::read(PackageIndex::resolve_path(&root, &entry.path))
+        .expect("binary reads");
+    let plugin = Arc::new(host.load(&bytes, &sidecar).expect("spin loads"));
+
+    // The deadline is enforced, not merely parsed: the epoch ticker it depends
+    // on exists and is held by this plugin. Checking this matters because a
+    // deadline with no ticker behind it would never fire, and an operator
+    // sizing their fleet to a bound that is documented but inert would be
+    // sized to nothing at all.
+    assert!(
+        plugin.budget().has_deadline(),
+        "the budget resolved a wall-clock deadline"
+    );
+    assert!(plugin.deadline_enforced(), "the epoch ticker is live");
+
+    let handlers = kelson_wasm::handlers(Arc::clone(&plugin)).expect("handlers build");
+    let mut bus = kelson_command::CommandBus::new(engine(Arc::new(AllowAll)));
+    for handler in handlers {
+        bus.register(handler).expect("registers");
+    }
+
+    let started = std::time::Instant::now();
+    let err = bus
+        .dispatch(ctx(), &op("spin.spin"), json!({}), None)
+        .await
+        .expect_err("the deadline interrupts the guest");
+    let elapsed = started.elapsed();
+
+    assert_eq!(err.code, codes::WASM_DEADLINE, "the deadline, not fuel");
+    // Not EARLY: the budget declares 250ms and the epoch counts real elapsed
+    // milliseconds, so an interrupt sooner than that would mean the clock was
+    // never consulted. Slack is allowed on the far side only — a deadline may
+    // run late (it is bounded by one sleep interval and OS timer slop), never
+    // early, and never as a multiple of what was asked for.
+    assert!(
+        elapsed >= std::time::Duration::from_millis(200),
+        "interrupted before its 250ms budget elapsed: {elapsed:?}"
+    );
+
+    // Production renderer parity: the harness pin (mirroring the boot pin)
+    // serves it at 503, not the ResourceExhausted default of 429 — this is
+    // our plugin's clock running out, not the caller sending too fast.
+    let dir = temp_root("deadline-render");
+    let (state, _, _) = crate::build_app_state(&dir, false, true);
+    let (status, envelope) = state.error_envelope(&err);
+    assert_eq!(status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    let body = serde_json::to_value(envelope).expect("envelope serializes");
+    assert_eq!(body["error"]["code"], "KSN_WASM_DEADLINE");
+    assert_eq!(body["error"]["retryable"], true);
+}
+
+#[tokio::test]
+async fn a_saturated_plugin_refuses_a_call_before_a_guest_is_instantiated() {
+    let root = temp_root("budget-saturated");
+    write_index(&root, vec![fixture_entry_with("spin", "spin_timeout")]);
+
+    let host =
+        kelson_wasm::WasmHost::with_limits(1_000_000_000_000, kelson_wasm::DEFAULT_MEMORY_BYTES)
+            .expect("host builds");
+    let index = PackageIndex::load(&root).expect("index loads");
+    let entry = &index.wasm[0];
+    let sidecar = index.wasm_manifest(&root, entry).expect("sidecar verifies");
+    let bytes = std::fs::read(PackageIndex::resolve_path(&root, &entry.path))
+        .expect("binary reads");
+    let plugin = Arc::new(host.load(&bytes, &sidecar).expect("spin loads"));
+    assert_eq!(
+        plugin.budget().max_concurrency,
+        Some(1),
+        "the concurrency cap resolved"
+    );
+
+    let handlers = kelson_wasm::handlers(Arc::clone(&plugin)).expect("handlers build");
+    let mut bus = kelson_command::CommandBus::new(engine(Arc::new(AllowAll)));
+    for handler in handlers {
+        bus.register(handler).expect("registers");
+    }
+
+    // Occupy the plugin's single slot with a call that spins until its 250ms
+    // deadline releases it. Driven directly rather than through a second bus
+    // because it is the same `WasmPlugin::call` the dispatch edge makes, and a
+    // plain thread keeps it running while this thread drives its own — on the
+    // current-thread runtime a spawned task would block this one instead.
+    let holder = Arc::clone(&plugin);
+    let holder_thread = std::thread::spawn(move || {
+        holder.call(
+            "spin.spin",
+            "{}",
+            None,
+            kelson_wasm::WasmCapabilityProfile::ReadOnly,
+        )
+    });
+
+    // Wait for the slot to be genuinely occupied instead of guessing a delay.
+    // A fixed sleep would be a race with the scheduler: too short and the test
+    // would pass without ever testing the cap, too long and it would slow
+    // every run for nothing.
+    let wait_until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while plugin.in_flight() == 0 {
+        assert!(
+            std::time::Instant::now() < wait_until,
+            "the holding call never took its slot — spin_timeout.module.toml's \
+             execution_timeout_ms may be shorter than scheduler jitter"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+
+    let started = std::time::Instant::now();
+    let err = bus
+        .dispatch(ctx(), &op("spin.spin"), json!({}), None)
+        .await
+        .expect_err("the only slot is occupied");
+    let refused_in = started.elapsed();
+
+    assert_eq!(err.code, codes::WASM_SATURATED);
+    assert!(
+        plugin.in_flight() == 1,
+        "the refused call did not consume a slot of its own"
+    );
+    // Refusal, not queueing, and without running a guest: had a second
+    // instance been created it would have spun to its own deadline, so the
+    // error would be KSN_WASM_DEADLINE and this would have taken ~250ms.
+    assert!(
+        refused_in < std::time::Duration::from_millis(100),
+        "the refusal ran a guest rather than refusing before instantiation: {refused_in:?}"
+    );
+
+    // The slot is released when the holder ends, so the cap sheds load
+    // instead of latching the plugin shut forever.
+    let held = holder_thread.join().expect("holder thread finishes");
+    assert_eq!(
+        held.expect_err("the holder is stopped by its deadline").to_string(),
+        "wasm plugin exceeded its wall-clock deadline"
+    );
+    assert_eq!(plugin.in_flight(), 0, "the slot was returned");
+
+    let dir = temp_root("saturated-render");
+    let (state, _, _) = crate::build_app_state(&dir, false, true);
+    let (status, envelope) = state.error_envelope(&err);
+    assert_eq!(status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    let body = serde_json::to_value(envelope).expect("envelope serializes");
+    assert_eq!(body["error"]["code"], "KSN_WASM_SATURATED");
+}

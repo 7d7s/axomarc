@@ -130,6 +130,44 @@ roadmap step as an opt-in runtime — `crates/extension/wasm` (`kelson-wasm`, wo
   `clock_time_get`, `random_get`, `sched_yield`, `fd_close`; empty args/environ) plus
   `host.log` and `host.capability_check` — there is no `sock_*`, so any module that imports
   networking fails at link time (fail-closed).
+- **Per-plugin budgets (Wave M2, `[budget]`).** A sidecar may *tighten*, never widen, the
+  host's ceilings:
+
+  ```toml
+  [budget]
+  max_memory_mb = 8           # <= host cap (16 MiB)
+  max_fuel = 2_000_000        # <= host cap (10M)
+  max_concurrency = 4         # in-flight calls; beyond -> KSN_WASM_SATURATED
+  execution_timeout_ms = 500  # wall-clock ms;   beyond -> KSN_WASM_DEADLINE
+  ```
+
+  Every field is checked at **load**, before the binary is compiled: a manifest that asks for
+  more than the host allows is a boot refusal naming *all* violations at once, never a silent
+  raise. That direction is the whole safety property — a third-party module cannot widen the
+  sandbox an operator configured, and a check that stopped at the first violation would send
+  an operator back to their editor once per attempt.
+  - `max_concurrency` is checked before a guest is **instantiated**, so a saturated plugin
+    sheds load instead of queueing it. Both new codes are pinned to HTTP 503 beside
+    `KSN_WASM_FUEL`: the ResourceExhausted default of 429 would tell the caller it was rate
+    limited when it was our plugin's slot that ran out.
+  - `execution_timeout_ms` is enforced by wasmtime epoch interruption, driven by a background
+    ticker that counts **real elapsed milliseconds rather than sleep iterations**. A
+    `sleep(1ms)` can overshoot to ~15.6ms on Windows, and counting sleeps would make a
+    declared 50ms budget mean ~780ms — late by a factor that varies per machine. Counting a
+    monotonic clock means a deadline can run late (bounded by one sleep interval plus OS timer
+    slop) but never early, and never by a multiple of what was asked for.
+  - Fuel and a deadline are *not* interchangeable: fuel bounds work done, a deadline bounds
+    time spent, and a guest blocked in a host call burns no fuel while still occupying a
+    worker. `KSN_WASM_DEADLINE` is deliberately distinct from the platform's `KSN_DEADLINE`
+    (an execution *context*'s deadline), which two other subsystems already serve at 500 and
+    409 — `ErrorRenderRegistry::set_status` is a global per-code override, so sharing the code
+    would have silently re-skinned both.
+  - `[budget]` is host policy, never guest state: a guest's `kelson_manifest()` has no way to
+    declare it, so it is cleared from both documents before the drift comparison. Everything
+    else — name, version, capabilities, ABI — still compares byte for byte.
+  - The ticker is started on demand, only when a plugin actually declares a deadline, and is
+    held by the plugin rather than by the host (the host is dropped at the end of
+    `load_wasm_plugins`). A workspace whose plugins are all fuel-bounded starts no thread.
 - **No self-elevation.** `host.capability_check` answers only from the sidecar-declared set,
   and a path-bearing request additionally needs an attached scope whose node path matches.
   Operation registration goes through `WasmHandler: OperationHandler`, so authorization,

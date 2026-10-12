@@ -27,8 +27,7 @@ pub use config_cache::{
 };
 pub use packages::{
     ModulePinMap, PackageEntry, PackageIndex, WasmModuleEntry, MODULE_PINS_PATH, PACKAGES_FILE,
-};
-pub use route_plan::{
+};pub use route_plan::{
     manifests_hash, resolve_route_plans, route_cache_path, RouteCacheArtifact, RoutePlan,
 };
 
@@ -649,6 +648,110 @@ pub struct ModuleManifest {
     /// [`MODULE_ABI`].
     #[serde(default)]
     pub config: Option<toml::Value>,
+    /// Per-plugin execution budgets (Wave M2). Additive — absent section
+    /// keeps [`MODULE_ABI`] and every plugin keeps the host defaults.
+    ///
+    /// Deliberately named `[budget]`, not `[resources]`: the manifest
+    /// format already uses "resources" for Laravel-style route resources
+    /// (`expand_resources`, `[resources]` route specs), and one word
+    /// meaning two things in one file is how misconfiguration gets written.
+    #[serde(default)]
+    pub budget: ModuleBudget,
+}
+
+/// `[budget]` manifest section (Wave M2): a plugin's execution ceilings.
+///
+/// **Tighten-only.** Every field may only LOWER a host limit, never raise
+/// it. A manifest that asks for more than the host allows is a load
+/// refusal, not a negotiation — see [`ModuleBudget::validate_against`].
+/// That direction is the whole point: a third-party plugin cannot ship a
+/// manifest that widens the sandbox an operator configured, so the host's
+/// numbers are the ceiling and the manifest is free to be stricter.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModuleBudget {
+    /// Per-call linear-memory ceiling in MiB. Must be `<=` the host's
+    /// memory cap. Absent = the host default (16 MiB).
+    #[serde(default)]
+    pub max_memory_mb: Option<u64>,
+    /// Per-call instruction budget (fuel). Must be `<=` the host's fuel
+    /// cap. Absent = the host default (10M).
+    #[serde(default)]
+    pub max_fuel: Option<u64>,
+    /// Maximum simultaneous in-flight calls into this plugin. Exceeding it
+    /// refuses the call with `KSN_WASM_SATURATED` before a guest is
+    /// instantiated. Absent = unlimited (the host default).
+    #[serde(default)]
+    pub max_concurrency: Option<u32>,
+    /// Wall-clock deadline per call, in milliseconds, enforced by wasmtime
+    /// epoch interruption. Absent = no wall-clock deadline (fuel remains
+    /// the bound). Zero is rejected: a zero-millisecond deadline would
+    /// refuse every call, which is never what an operator meant.
+    #[serde(default)]
+    pub execution_timeout_ms: Option<u64>,
+}
+
+impl ModuleBudget {
+    /// Enforce tighten-only against the host's ceilings. Called at load, so
+    /// an over-declared budget is a boot refusal rather than a silent raise.
+    ///
+    /// `host_memory_bytes` and `host_fuel` are the host's configured caps.
+    /// Returns every violation at once, so an operator fixes their manifest
+    /// in one pass rather than one field per run.
+    pub fn validate_against(
+        &self,
+        host_memory_bytes: usize,
+        host_fuel: u64,
+    ) -> Result<(), Vec<String>> {
+        let mut out = Vec::new();
+        if let Some(mb) = self.max_memory_mb {
+            let requested = mb.saturating_mul(1024 * 1024);
+            if requested > host_memory_bytes as u64 {
+                out.push(format!(
+                    "budget.max_memory_mb = {mb} ({requested} bytes) exceeds the host cap \
+                     {host_memory_bytes} bytes — a budget may only LOWER a host limit"
+                ));
+            }
+        }
+        if let Some(fuel) = self.max_fuel {
+            if fuel > host_fuel {
+                out.push(format!(
+                    "budget.max_fuel = {fuel} exceeds the host cap {host_fuel} — \
+                     a budget may only LOWER a host limit"
+                ));
+            }
+        }
+        if let Some(0) = self.execution_timeout_ms {
+            out.push(
+                "budget.execution_timeout_ms = 0 would refuse every call — \
+                 omit the field for no deadline"
+                    .to_string(),
+            );
+        }
+        if out.is_empty() {
+            Ok(())
+        } else {
+            Err(out)
+        }
+    }
+
+    /// The effective memory cap in bytes: the budget's if set, else the
+    /// host's. Callers must have run [`Self::validate_against`] first, so
+    /// the budget can only ever be the tighter number.
+    pub fn effective_memory_bytes(&self, host_memory_bytes: usize) -> usize {
+        match self.max_memory_mb {
+            Some(mb) => (mb.saturating_mul(1024 * 1024)).min(host_memory_bytes as u64) as usize,
+            None => host_memory_bytes,
+        }
+    }
+
+    /// The effective fuel: the budget's if set, else the host's.
+    pub fn effective_fuel(&self, host_fuel: u64) -> u64 {
+        match self.max_fuel {
+            Some(fuel) => fuel.min(host_fuel),
+            None => host_fuel,
+        }
+    }
 }
 
 /// `[url]` manifest section (Wave 2): default parameter values for URL
@@ -771,6 +874,11 @@ impl RouteFileManifest {
             // Root route files ship no boot config defaults; only indexed
             // packages feed `[config]` into the boot merge (Wave 8 B-24).
             config: None,
+            // A root route file is not a WASM binary, so it has no sandbox to
+            // tighten: the budget is the empty one, which resolves to exactly
+            // the host ceilings. Declaring anything here would imply a wall
+            // clock or concurrency bound that nothing enforces.
+            budget: ModuleBudget::default(),
         }
     }
 }

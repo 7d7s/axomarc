@@ -1,0 +1,22 @@
+# Wave M2 fixture: a sidecar that asks for MORE sandbox than its host allows.
+#
+# Pairs with echo.wat — the filename and the [module] name differ on purpose.
+# The drift check compares the guest's self-declared manifest against this
+# file's name and capabilities, so those must be exactly echo's; only
+# [budget] is added here, and [budget] is cleared from both documents before
+# they are compared, because it is host policy that a guest cannot declare.
+#
+# Both values exceed what WasmHost::new() builds with (16 MiB and 10_000_000
+# fuel), so loading must refuse and must name BOTH violations in one message —
+# a tighten-only check that reported one field per run would send an operator
+# back to their editor once per attempt.
+
+[module]
+name = "echo"
+
+[capabilities.echo]
+profile = "READ"
+
+[budget]
+max_memory_mb = 64
+max_fuel = 20000000

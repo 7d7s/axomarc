@@ -92,6 +92,34 @@ dependency against the crates.io index, so before the first real publish the
 runs in dependency order, resolving each crate before its dependents are
 attempted.
 
+### Wave M (in progress) - module-contract gaps
+
+M1 and M2 are landed; M3 and M4 have not started. Most of the wave's work is
+confined to `kelson-wasm` and `kelson-demo`, both `publish = false`, so none of
+the sandbox work reaches crates.io until that gate is deliberately removed.
+
+| Crate | Publishable | Wave M change | Semver |
+|---|---|---|---|
+| `kelson-registry` | yes | `ModuleManifest` gains `pub budget: ModuleBudget`; new public `ModuleBudget` with `validate_against` / `effective_memory_bytes` / `effective_fuel`; the module-pin rule (`module_pins`, `verify_pins_against_index`, `verify_pinned_boot`) moved here from the console | **MINOR** - additive, and `#[serde(default)]` keeps every existing manifest parsing byte-identically |
+| `kelson-foundation` | yes | two append-only codes: `WASM_SATURATED` (`KSN_WASM_SATURATED`), `WASM_DEADLINE` (`KSN_WASM_DEADLINE`) | **MINOR** - additive constants |
+| `kelson-console` | yes | `kelson check` / `kelson graph` / `post_deploy_probe` now read module pins through the registry rule instead of their own copy (M1) | **MINOR** - behaviour change on an unpinned-but-malformed pin file is unchanged; a *missing* pin file went from "unreadable" error to "no pins declared" |
+| `kelson-deployment` | yes | (pending M4 - artifact digest) | - |
+| `kelson-wasm` | **no** (`publish = false`) | `[budget]` tighten-only enforcement, epoch-based wall-clock deadline, concurrency cap, two new `WasmError` variants | never published in this shape |
+| `kelson-demo` | **no** (`publish = false`) | 503 render pins for both new codes, plus the facet suite | never published in this shape |
+
+Two facts worth recording while the wave is open:
+
+* **`ModuleBudget` is public API from the moment it lands**, because it hangs
+  off the public `ModuleManifest`. It carries `#[serde(deny_unknown_fields)]`,
+  so adding a field to the Rust struct breaks any caller constructing one
+  literally - keep new `[budget]` fields additive on the TOML side and re-check
+  this gate before widening the struct.
+* **The sandbox posture is currently a promise to nobody.** `kelson-wasm` is
+  gated, so `docs/15-EXTENSION.md`'s tighten-only rule, the 503 pins and the
+  WASM-only plugin boundary are enforced only inside this workspace. Removing
+  that gate turns all three into a commitment to every consumer, which is why
+  the gate is called out here rather than treated as a packaging detail.
+
 ## Prerequisites (human release manager)
 
 1. crates.io account with **two-factor authentication enabled** (mandatory

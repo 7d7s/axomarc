@@ -45,9 +45,9 @@ weaker form than claimed. `ABSENT` = not in the codebase.
 
 | # | Claim | Verdict | Evidence |
 |---|---|---|---|
-| 1 | A capability registry maps stable string handler IDs to implementations | EXISTS | `CommandBus { handlers: HashMap<OperationId, Arc<dyn OperationHandler>> }` — `crates/execution/command/src/lib.rs:17-19`; duplicate registration refused `:30-38`; unknown ID → not-found `:50-62`. Stable IDs compile in: `OP_BOOK = "appointments.book"` — `applications/appointments/src/lib.rs:27-30`. Populated at boot from compiled-in handlers — `runtime/kelson-demo/src/lib.rs:1376-1399`, `runtime/kelson-demo/src/host.rs:307-354`. Not runtime-populated. |
-| 2 | Routes are declared as data and validated against the registry | EXISTS (boot-time) | `[[routes]] method/path/operation/capability` — `applications/appointments/module.toml:23-28`; parsed from disk without recompiling — `runtime/kelson-demo/src/graph_routes.rs:88-108`; unknown operation → `GRAPH-ROUTEFILE-OP` — `crates/application/registry/src/lib.rs:945-965`; becomes axum routes at boot — `runtime/kelson-demo/src/graph_routes.rs:344-358`. |
-| 3 | A route can change without rebuilding the application | PARTIAL | What hot-swaps is the *resolved chain*, not the route set: `BundleCell = Arc<RwLock<Arc<Router>>>` — `runtime/kelson-demo/src/hot_reload.rs:45-48`; reload refuses a stale artifact and keeps the current bundle — `:136-152`. The `PlatformGraph` itself is a boot-time `Arc` — `runtime/kelson-demo/src/lib.rs:873`. Adding or removing a route still needs a restart. |
+| 1 | A capability registry maps stable string handler IDs to implementations | EXISTS | `CommandBus { handlers: HashMap<OperationId, Arc<dyn OperationHandler>> }` — `crates/execution/command/src/lib.rs:17-19`; duplicate registration refused `:30-38`; unknown ID → not-found `:50-62`. Stable IDs compile in: `OP_BOOK = "appointments.book"` — `applications/appointments/src/lib.rs:27-30`. Populated at boot from compiled-in handlers — `platform/` `runtime/kelson-demo/src/lib.rs:1376-1399`, `runtime/kelson-demo/src/host.rs:307-354`. Not runtime-populated. |
+| 2 | Routes are declared as data and validated against the registry | EXISTS (boot-time) | `[[routes]] method/path/operation/capability` — `applications/appointments/module.toml:23-28`; parsed from disk without recompiling — `runtime/kelson-demo/src/graph_routes.rs:88-108`; unknown operation → `GRAPH-ROUTEFILE-OP` — `platform/` `crates/application/registry/src/lib.rs:945-965`; becomes axum routes at boot — `runtime/kelson-demo/src/graph_routes.rs:344-358`. |
+| 3 | A route can change without rebuilding the application | PARTIAL | What hot-swaps is the *resolved chain*, not the route set: `BundleCell = Arc<RwLock<Arc<Router>>>` — `runtime/kelson-demo/src/hot_reload.rs:45-48`; reload refuses a stale artifact and keeps the current bundle — `:136-152`. The `PlatformGraph` itself is a boot-time `Arc` — `platform/` `runtime/kelson-demo/src/lib.rs:873`. Adding or removing a route still needs a restart. |
 
 ### Snapshots and generations
 
@@ -61,7 +61,7 @@ weaker form than claimed. `ABSENT` = not in the codebase.
 | # | Claim | Verdict | Evidence |
 |---|---|---|---|
 | 6 | Feature flags with a revision, swappable at runtime | EXISTS | Deterministic pure `evaluate` — `crates/enterprise/feature-flags/src/lib.rs:180-212`; boot-time catalog, unknown flags cannot be evaluated — `:218-247`; revision bumped per mutation — `:312` (memory) `:416` (file); ambient set hot-swapped by `FlagsReloader` — `runtime/kelson-demo/src/hot_reload.rs:177-235`. Boot-structural flags stay boot-frozen on purpose (`:18-21`). Not one unified snapshot. |
-| 7 | A file watcher drives dev reload | PARTIAL | mtime **polling**, not a watcher: "no watcher dependency ships in this crate" — `crates/application/configuration/src/runtime.rs:10-14`; 500 ms poll loop — `runtime/kelson-demo/src/lib.rs:977-987`. SIGHUP and etcd/consul are named as plug points only. |
+| 7 | A file watcher drives dev reload | PARTIAL | mtime **polling**, not a watcher: "no watcher dependency ships in this crate" — `crates/application/configuration/src/runtime.rs:10-14`; 500 ms poll loop — `platform/` `runtime/kelson-demo/src/lib.rs:977-987`. SIGHUP and etcd/consul are named as plug points only. |
 
 ### Security pipeline
 
@@ -75,11 +75,11 @@ weaker form than claimed. `ABSENT` = not in the codebase.
 
 | # | Claim | Verdict | Evidence |
 |---|---|---|---|
-| 11 | WebAssembly Component Model with WIT interfaces | ABSENT by explicit decision | `wasmtime = { version = "36", default-features = false, features = ["cranelift", "runtime", "wat", "std"] }` — `platform/Cargo.toml:219` and its twin `platform/keel-platform/Cargo.toml:202`; the governance comment at `platform/Cargo.toml:201-218` records the security bump and states "no component-model". Zero `.wit` files, no `wasmtime-wasi`, no `wasmtime::component`. Guest ABI v1 is hand-rolled: `memory`, `kelson_manifest`, `kelson_alloc`, `kelson_call` — `crates/extension/wasm/src/lib.rs:298-306`. |
+| 11 | WebAssembly Component Model with WIT interfaces | ABSENT by explicit decision | `wasmtime = { version = "36", default-features = false, features = ["cranelift", "runtime", "wat", "std"] }` — `platform/Cargo.toml:219` and its twin `platform/keel-platform/Cargo.toml:202`; the governance comment at `platform/Cargo.toml:201-218` records the security bump and states "no component-model". Zero `.wit` files, no `wasmtime-wasi`, no `wasmtime::component`. Guest ABI v1 is hand-rolled and documented at `crates/extension/wasm/src/lib.rs:9-26`; every export is validated at load (`:552-558`) and a missing or mistyped one refuses the boot. |
 | 12 | Native `.so`/`.dll` plugin loading must be avoided | EXISTS and is enforced | No `libloading`, no `dlopen`, no native image handling anywhere in the dependency graph. The refusal is test-pinned: `wasm_only_boundary_refuses_native_images` — `keel-platform` `runtime/kelson-demo/src/wasm_tests.rs:236-280` — feeds ELF, PE and Mach-O images and asserts each is refused at compile, never treated as a library. |
-| 13 | A module manifest declaring identity, version, compatibility, capabilities | EXISTS; resources ABSENT | `ModuleManifest` — `crates/application/registry/src/lib.rs:604-650`; `MODULE_ABI: u32 = 1` `:37`; mismatch → `GRAPH-MANIFEST-ABI` `:817-828`. Capability profiles — `crates/extension/wasm/src/lib.rs:100-127`. No `[resources]` section exists in any manifest; ADR 0016 (root tree, untracked) records it as backlog at `:72-74`. |
-| 14 | Sandboxed execution with resource budgets | PARTIAL | Fuel (10M) — `crates/extension/wasm/src/lib.rs:61`, consumed `:230`, per-store `:268`, exhaustion → `KSN_WASM_FUEL` `:686`. Memory cap (16 MiB) — `:64`, `StoreLimitsBuilder` `:250-252`, `:398-400`. Guest-string copy bound 1 MiB — `crates/extension/wasm/src/imports.rs:40`. **Absent:** epoch interruption, wall-clock deadline, concurrency cap, per-module configurable limits. |
-| 15 | Capability-limited host API | EXISTS; tenant scoping PARTIAL | Every call checks the sidecar-declared set — `crates/extension/wasm/src/imports.rs:344` — under a reviewed sidecar the guest cannot exceed (`crates/extension/wasm/src/lib.rs:71-72`, drift refusal `:327-332`); path checks fail closed without a scope `:350-358`; write imports gated by profile `:395-397`; undefined imports (e.g. `sock_*`) fail at link time — `crates/extension/wasm/src/imports.rs:7-10`. But `CallState` carries no tenant ID (`crates/extension/wasm/src/lib.rs:67-90`): tenant isolation on this path rests on the engine's pre-dispatch authorization, not on the host functions themselves. |
+| 13 | A module manifest declaring identity, version, compatibility, capabilities | EXISTS; the resources half closed by Wave M2 | `ModuleManifest` — `platform/` `crates/application/registry/src/lib.rs:604-650`; `MODULE_ABI: u32 = 1` `:37`; mismatch → `GRAPH-MANIFEST-ABI` `:817-828`. Capability profiles — `keel-platform` `crates/extension/wasm/src/lib.rs:130`. Per-plugin execution budgets now exist as `[budget]` — `keel-platform` `crates/application/registry/src/lib.rs:659` (field), `:672-692` (section) — deliberately **not** named `[resources]`: that word already means Laravel-style route resources in this same format, and one word meaning two things in one file is how misconfiguration gets written. |
+| 14 | Sandboxed execution with resource budgets | EXISTS — the PARTIAL above was closed by Wave M2 | Host ceilings: fuel `DEFAULT_FUEL = 10M` — `keel-platform` `crates/extension/wasm/src/lib.rs:90`, memory `DEFAULT_MEMORY_BYTES = 16 MiB` `:93`, guest-string copy bound 1 MiB — `keel-platform` `crates/extension/wasm/src/imports.rs:40`, enforced `:60` and `:258`. Per-plugin `[budget]` — `keel-platform` `crates/application/registry/src/lib.rs:672-692`, reachable from `ModuleManifest` `:659` — may only **tighten** those ceilings: `validate_against` `:701-736` collects every violation at once and runs at the top of `WasmHost::load` (`keel-platform` `crates/extension/wasm/src/lib.rs:497`, `resolve_budget` `:436-450`) *before the binary is compiled or instantiated*. Effective values travel together as `CallBudget` `:67-77`, so fuel `:487`, memory `:469-470` and the epoch deadline `:489` cannot describe different sandboxes (the same three are set again in `call()` `:724-744`). Concurrency: `InFlightSlot` `keel-platform` `crates/extension/wasm/src/lib.rs:236-242` is taken at `:706-717`, before `pre.instantiate` at `:748`, and the over-cap path returns `WasmError::Saturated` `:176-179`. Wall clock: `EpochTicker` `keel-platform` `crates/extension/wasm/src/lib.rs:298-329` advances `Engine::increment_epoch` at `:317` from a **monotonic clock** (`:313-319`) rather than per sleep call (`:320`), and `NO_DEADLINE_TICKS` `:331-340` gives no-deadline plugins a deadline far enough out that wasmtime's default of `0` — which it documents as having "always elapsed" — cannot trap them. Codes `KSN_WASM_FUEL` `keel-platform` `crates/foundation/core/src/error.rs:76`, `KSN_WASM_SATURATED` `:85`, `KSN_WASM_DEADLINE` `:95`, each pinned to HTTP 503 at both boot sites — `keel-platform` `runtime/kelson-demo/src/lib.rs:438-451` (production) and `:1576-1587` (harness). |
+| 15 | Capability-limited host API | EXISTS; tenant scoping PARTIAL | Every call checks the sidecar-declared set — `keel-platform` `crates/extension/wasm/src/imports.rs:344` — under a reviewed sidecar the guest cannot exceed (`keel-platform` `crates/extension/wasm/src/lib.rs:580-593`, the drift refusal; note both documents have `budget` cleared before the comparison, since it is host policy a guest cannot declare). Path checks fail closed without a scope — `keel-platform` `crates/extension/wasm/src/imports.rs:350-358`; write imports gated by profile `:395-398`; undefined imports (e.g. `sock_*`) fail at link time — `crates/extension/wasm/src/imports.rs:8`. But `CallState` carries no tenant ID (`keel-platform` `crates/extension/wasm/src/lib.rs:96-119`): tenant isolation on this path rests on the engine's pre-dispatch authorization, not on the host functions themselves. |
 | 16 | A staged module lifecycle (prepare/activate/drain) | ABSENT | No `ModuleState` enum exists. `docs/15-EXTENSION.md:25-26` describes `DISCOVERED -> VALIDATED -> REGISTERED -> INITIALIZED -> READY -> DEGRADED -> DISABLED`; only the first three have a real representation. ADR 0016 `:68-77` defers `prepare → commit → drain` to a later phase. |
 
 ### Releases and artifacts
@@ -89,7 +89,7 @@ weaker form than claimed. `ABSENT` = not in the codebase.
 | 17 | A release manifest binding kernel, modules and schema by digest | PARTIAL | `ReleaseManifest` records version, profile, artifacts, git identity, rustc and the shipped migration set — `crates/enterprise/deployment/src/lib.rs:68-92`. Migrations carry `sha256` `:96-106` so post-build drift is detectable. `Artifact` is `{name, version, profile}` with **no hash** — `:59-64`. Module pins are version strings, not digests. |
 | 18 | Signed artifacts, publisher identity, TUF | ABSENT | `kelson-integrity` covers audit rows only: sha256 prev-hash chaining per `(tenant, day)` and HMAC-SHA256 segment heads — `crates/security/integrity/src/lib.rs:1-12`, `crates/security/integrity/src/chain.rs:34-40`, `crates/security/integrity/src/hmac.rs:12-34`. No asymmetric signatures, no publisher identity, no SBOM. |
 | 19 | A staged, multi-node promotion pipeline | PARTIAL (local only) | `PROMOTION_STAGES = ["post-deploy", "post-migrate", "post-traffic", "canary"]` — `crates/enterprise/deployment/src/promote.rs:30`; fail-closed probe wiring `:80-98`; `PromotionState { Built, Staged, Deployed, RolledBack }` — `crates/enterprise/deployment/src/lib.rs:112`. The `canary` stage runs a health probe and nothing else (`crates/enterprise/deployment/src/promote.rs:190`) — no traffic shifting. Rollback is process-local: "Revisions are minted per process, so a `kelson` invocation boots its own runtime at revision 1" — `tools/kelson-console/src/promotion.rs:9-14`. No fleet orchestration exists. |
-| 19b | Module version pins control what executes | ABSENT → **closed by Wave M1** | `ModulePinAdapter` writes `storage/framework/module-pins.json` — `tools/kelson-console/src/promotion.rs:347-410`. Before M1 nothing in the WASM loader read it, and root-tree ADR 0017 `:38-41` stated it plainly: "module pins have no runtime host reader (written, never consumed)". Wave M1 made `kelson-registry` the canonical reader — `module_pins()` and `verify_pins_against_index()` — called from `load_wasm_plugins` before any guest is instantiated, from `kelson check`, from `kelson graph`, and from the `post_deploy` probe (which previously duplicated the rule). A pin that disagrees with the installed index now refuses boot. See §5.1 for the behaviour change this introduced. |
+| 19b | Module version pins control what executes | ABSENT → **closed by Wave M1** | `ModulePinAdapter` writes `storage/framework/module-pins.json` — `platform/` `tools/kelson-console/src/promotion.rs:347-410`. Before M1 nothing in the WASM loader read it, and root-tree ADR 0017 `:38-41` stated it plainly: "module pins have no runtime host reader (written, never consumed)". Wave M1 made `kelson-registry` the canonical reader — `keel-platform` `crates/application/registry/src/packages.rs:256-265` (`module_pins`) and `:286-311` (`verify_pins_against_index`), composed by `:315-318` (`verify_pinned_boot`) — called from `load_wasm_plugins` before any guest is instantiated, from `kelson check`, from `kelson graph`, and from the `post_deploy` probe (which previously duplicated the rule). A pin that disagrees with the installed index now refuses boot. See §5.1 for the behaviour change this introduced. |
 
 ### Persistence and durable work
 
@@ -130,7 +130,7 @@ priority list.
 | Wave | Scope | Why |
 |---|---|---|
 | **V** | Publish this record; correct the two places `docs/15-EXTENSION.md` overstates. | The lifecycle paragraph claims states that do not exist. Documentation that outruns the code is the defect this whole exercise exists to catch. |
-| **M** | Module-contract gaps: make module pins real, add manifest `[resources]` with tightening-only budgets, add a concurrency cap and a wall-clock deadline, ship `migrate:plan`, content-address release artifacts. | Every item is testable with no database, no root-tree writes and no new dependency. Together they close findings 13, 14, 17, 19b and 22. |
+| **M** | Module-contract gaps: make module pins real, add manifest `[budget]` with tightening-only limits, add a concurrency cap and a wall-clock deadline, ship `migrate:plan`, content-address release artifacts. | Every item is testable with no database, no root-tree writes and no new dependency. Together they close findings 13, 14, 17, 19b and 22. |
 | **A** | Design ABI v2 on the WebAssembly Component Model: an ADR, a feature-flagged enablement, a WIT package layout mirroring the existing host imports, the `prepare → commit → drain` lifecycle, and an in-place upgrade proof. | Chosen over keeping core modules. Sequenced after M because `[resources]` shapes the WIT world contract. |
 
 Explicitly out of scope: Cedar, TUF, distributed rollout, a workflow engine, a
@@ -161,10 +161,10 @@ fail-closes). See section 6.
 | V | `docs/15-EXTENSION.md` lifecycle paragraph corrected | DONE |
 | V | CHANGELOG entry | DONE |
 | M1 | Module pins gate the loader | DONE |
-| M2 | Manifest `[resources]`, concurrency cap, wall-clock deadline | TODO |
+| M2 | Manifest `[budget]`, concurrency cap, wall-clock deadline | DONE |
 | M3 | `kelson migrate:plan` | TODO |
 | M4 | Content-addressed release artifacts | TODO |
-| M | CHANGELOG + PUBLISHING entries | TODO |
+| M | CHANGELOG + PUBLISHING entries (M1–M2 in; M3–M4 to follow) | TODO |
 | A | ABI v2 ADR and design | TODO |
 
 ### 5.1 Behaviour changes shipped by a wave
@@ -173,14 +173,64 @@ Recorded here rather than only in the changelog, because a behaviour change is
 the thing a future reader most needs to find next to the verdict it came from.
 
 **M1 — a missing pin file is no longer fatal to `kelson promote`.** The old
-`post_deploy_probe` (`tools/kelson-console/src/promotion.rs:595-630`) called an
-absent `module-pins.json` an error ("pin file unreadable"), while
+`post_deploy_probe` (`platform/` `tools/kelson-console/src/promotion.rs:595-623`,
+the `pin file unreadable` refusal at `:600`) called an
+absent `module-pins.json` an error, while
 `ModulePinAdapter::read()` in the same module seeded its pins *from the index*
 for that same absent file. Two adapters, one artifact, two meanings. The probe
-now calls the registry rule, where absent means "no pins declared" and yields
+now calls the registry rule (`keel-platform`
+`tools/kelson-console/src/promotion.rs:612-625`), where absent means "no pins declared" and yields
 `Ok(0)` — which is also what makes the boot gate safe to add: pinning stays
 opt-in, and a workspace that has never run `kelson promote` boots exactly as
 before. A pin file that exists but is malformed still refuses, on both paths.
+
+**M2 — enabling epoch interruption makes a deadline mandatory on every store.**
+`Config::epoch_interruption(true)` is set on the engine for *every* host at
+`keel-platform` `crates/extension/wasm/src/lib.rs:398`, not
+only for plugins that declare a deadline, because the engine's configuration is
+fixed at construction and a plugin may declare its budget later. The
+consequence is the part a future reader must not rediscover the hard way: a
+store's epoch deadline starts at `0`, which wasmtime documents as having "always
+elapsed", so a store that is never given one traps its guest before it executes
+a single instruction. Every plugin that declares no `execution_timeout_ms` is
+therefore given `NO_DEADLINE_TICKS` at `:331-340` (`u64::MAX / 2`, not `u64::MAX`, since the
+deadline is computed as `current_epoch + ticks` and the larger value would
+overflow it) and it is applied to every store at `:489` and `:744`. All 14
+pre-existing WASM tests still pass, which is the evidence
+that this was handled rather than assumed.
+
+**M2 — a wall-clock deadline is a coarse bound, and may run late.** The epoch
+advances once per tick, so ticks must correspond to milliseconds. Counting one
+tick per `sleep(1ms)` does not do that: `sleep` is a lower bound, and on
+Windows the default timer resolution lands a 1ms sleep near 15.6ms, which would
+have made a declared 50ms deadline fire around 780ms — late by a factor that
+varies per machine. The ticker reads a monotonic clock at `keel-platform`
+`crates/extension/wasm/src/lib.rs:313` and catches the epoch up
+at `:316-319` by the milliseconds actually elapsed. What remains, stated
+plainly: the
+interrupt can be up to one sleep interval plus OS timer slop *later* than
+asked for, but never earlier and never by a multiple. It bounds a runaway, it
+does not implement a precise timeout.
+
+**M2 — `KSN_DEADLINE` was deliberately not reused for the plugin deadline.**
+`ErrorRenderRegistry::set_status` is a global per-code override, and
+`KSN_DEADLINE` already renders from two other sites' own categories: the
+execution engine's `Internal`/500 (`crates/execution/engine/src/engine.rs:166-174`)
+and a worker job's `Workflow`/409 (`runtime/kelson-worker/src/main.rs:240-247`).
+Pinning it to 503 for the plugin case would have silently re-skinned both of
+those — and both are marked `Retryability::Retryable` while rendering as a 500
+and a 409, which is a pre-existing inconsistency, not one this wave should
+quietly change. A plugin's wall-clock budget is a sandbox budget in the same
+family as `KSN_WASM_FUEL`, so it takes the sibling code `KSN_WASM_DEADLINE`.
+
+**M2 — the in-flight counter counts uncapped calls too.** `WasmPlugin::in_flight`
+is incremented on every call at `keel-platform`
+`crates/extension/wasm/src/lib.rs:706-717` and released by the
+`InFlightSlot` guard at `:236-242` on every exit path
+(declared or not), so it is a usable gauge for an uncapped plugin as well; only
+the *refusal* is conditional on `max_concurrency`. An early `?` return that
+skipped the release would leak a slot permanently and take the plugin out of
+service one failed request at a time.
 
 ## 6. Backlog
 
