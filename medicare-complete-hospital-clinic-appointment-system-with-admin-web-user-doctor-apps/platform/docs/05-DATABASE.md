@@ -35,6 +35,17 @@ kelson db:schema:dump                          # normalized DDL snapshot → dat
 
 Gate G08 checks migrations are ordered and present. `migrate:fresh` refuses production postures.
 
+**Editing an applied migration.** Every applied migration is recorded with a SHA-384 checksum of
+its file bytes, and `kelson migrate` refuses to run one whose contents have changed since -
+`migration NNN was previously applied but has been modified`. That refusal is the point: an edited
+applied migration means the live schema no longer matches the files, so continuing would silently
+diverge the database from the code. The consequence for local development is that editing a
+migration someone has already applied will not simply work on the next `migrate`. The remedy is
+`migrate:fresh` (dev/test only), which drops and re-applies from scratch. CI never reaches this
+state because every run starts from an empty database. The checksum is over the file bytes, so
+anything that rewrites migration text invalidates it - including a rename sweep across migration
+files, and a checkout that materialises them with different line endings.
+
 **Advisory lock (Wave 5).** Every `kelson migrate` run first takes `pg_advisory_lock(7259)` and
 fails closed on timeout, so concurrent migrators serialize instead of interleaving DDL — asserted
 by the pg-gated `advisory_lock_serializes_runs_and_fails_closed_on_timeout`
