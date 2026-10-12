@@ -92,7 +92,7 @@ dependency against the crates.io index, so before the first real publish the
 runs in dependency order, resolving each crate before its dependents are
 attempted.
 
-### Wave M (in progress) - module-contract gaps
+### Wave M (code landed; not yet published) - module-contract gaps
 
 M1-M4 are landed. Most of the wave's work is
 confined to `kelson-wasm` and `kelson-demo`, both `publish = false`, so none of
@@ -107,7 +107,7 @@ the sandbox work reaches crates.io until that gate is deliberately removed.
 | `kelson-wasm` | **no** (`publish = false`) | `[budget]` tighten-only enforcement, epoch-based wall-clock deadline, concurrency cap, two new `WasmError` variants | never published in this shape |
 | `kelson-demo` | **no** (`publish = false`) | 503 render pins for both new codes, plus the facet suite | never published in this shape |
 
-Two facts worth recording while the wave is open:
+Two facts worth recording while the `publish = false` gate is still in place:
 
 * **`ModuleBudget` is public API from the moment it lands**, because it hangs
   off the public `ModuleManifest`. It carries `#[serde(deny_unknown_fields)]`,
