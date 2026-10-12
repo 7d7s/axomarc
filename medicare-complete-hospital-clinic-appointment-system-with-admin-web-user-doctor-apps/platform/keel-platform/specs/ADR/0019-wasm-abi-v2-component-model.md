@@ -311,8 +311,11 @@ with the cap unchanged at 25/25. Nothing else in the policy moves.
   25-cap — a hard `ANALYZER-BUDGET` failure, not a rounding error. Resolved
   before any feature flag merges.
 - **Unproven: that enabling the feature compiles clean** under the mandated
-  `clippy --workspace --all-targets -- -D warnings` gate and leaves the 1388
-  test baseline intact.
+  `clippy --workspace --all-targets -- -D warnings` gate and leaves the test
+  baseline intact. The baseline was 1388 when this record was written and is
+  1392 since Wave A part 2 added four lifecycle tests; what the claim requires
+  is *no regressions*, not a frozen number, so compare against whatever the
+  suite reads at the time rather than against this line.
 - Guest write/delta profiles beyond what `host.capability_write` already
   records; per-module publisher identity and signed artifacts (TUF-class
   supply chain); `module build/test/publish` as first-class CLI verbs;

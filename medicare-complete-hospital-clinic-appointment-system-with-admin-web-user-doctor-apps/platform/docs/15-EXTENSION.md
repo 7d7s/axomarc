@@ -26,7 +26,7 @@ The module lifecycle states: `DISCOVERED -> VALIDATED -> REGISTERED -> INITIALIZ
 DEGRADED -> DISABLED`.
 
 That sentence names an aspiration, not a shipped enum: no `ModuleState` type exists in the
-codebase. Three of the seven states do have a representation, and the other four do not:
+codebase. Five of the seven states do have a representation, and the other two do not:
 
 | State | Representation today |
 |---|---|
@@ -36,8 +36,15 @@ codebase. Three of the seven states do have a representation, and the other four
 | `DEGRADED` / `DISABLED` | **not represented in v1** — no code path marks a loaded module degraded or disables one in place |
 
 Do not design against the last two rows as if they shipped. `DEGRADED` and `DISABLED` are backlog
-(see 20-ARCHITECTURE-VERIFICATION §6), and the staged `prepare -> commit -> drain` lifecycle that
-would give them meaning is deferred with the module-ABI work.
+(see 20-ARCHITECTURE-VERIFICATION §6).
+
+The staged `prepare -> commit -> drain` lifecycle that would give them meaning is only partly
+landed. It now exists for WASM plugin **generations** — `kelson_wasm::PluginState` runs
+`Prepared -> Ready -> Draining -> Drained`, and `kelson_wasm::WasmPlugin::call` serves nothing but a
+`Ready` generation (ADR 0019 §6). That is deliberately one generation of one plugin at a time: it is
+**not** the module-wide state machine in the table above, no code path marks a loaded module
+degraded, and nothing here reuses those names for a different concept. Do not read
+`PluginState::Drained` as `DISABLED`.
 
 ## Module ABI
 

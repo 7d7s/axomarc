@@ -120,6 +120,30 @@ Two facts worth recording while the `publish = false` gate is still in place:
   that gate turns all three into a commitment to every consumer, which is why
   the gate is called out here rather than treated as a packaging detail.
 
+### Wave A (code landed; not yet published) - staged plugin lifecycle
+
+A part 1 was a record only (ADR 0019); A part 2 is code. Every file it touches
+belongs to `kelson-wasm` and `kelson-demo`, both `publish = false`, so **no
+published crate's API or semver position moves.**
+
+| Crate | Publishable | Wave A change | Semver |
+|---|---|---|---|
+| `kelson-wasm` | **no** (`publish = false`) | new public `PluginState` (`Prepared` / `Ready` / `Draining` / `Drained`), a new `WasmError::Lifecycle` variant, new `WasmHost::prepare`, new `WasmPlugin::{state, commit, drain}`; `WasmPlugin::call` now refuses a generation that is not `Ready` | never published in this shape |
+| `kelson-demo` | **no** (`publish = false`) | `load_wasm_plugins` prepares, builds the handlers, then commits — identical boot behaviour, with the host's registration decision made an explicit separate act | never published in this shape |
+
+Two things to carry forward:
+
+* **The lifecycle is part of the sandbox posture, not something separate.**
+  `WasmPlugin::call` refusing an uncommitted generation is enforced only inside
+  this workspace while the gate holds, exactly like the tighten-only rule, the
+  503 pins and the WASM-only boundary above. Removing `publish = false` makes
+  the staged lifecycle a fourth public commitment.
+* **The drain-refusal HTTP mapping is still intentionally absent.** A call
+  refused while draining deserves 503, but no code can produce that state until
+  a generation-swap path exists. Adding a `KSN_*` code today would make the
+  append-only code list describe behaviour nothing emits; it is sequenced with
+  the swap path instead.
+
 ## Prerequisites (human release manager)
 
 1. crates.io account with **two-factor authentication enabled** (mandatory

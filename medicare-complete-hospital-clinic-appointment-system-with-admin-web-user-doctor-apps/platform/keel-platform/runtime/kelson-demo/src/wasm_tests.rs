@@ -882,3 +882,226 @@ async fn a_saturated_plugin_refuses_a_call_before_a_guest_is_instantiated() {
     let body = serde_json::to_value(envelope).expect("envelope serializes");
     assert_eq!(body["error"]["code"], "KSN_WASM_SATURATED");
 }
+
+/// ADR 0019 §6 — **prepare** stops short of registration. The guest compiles,
+/// links, passes the ABI gate and drift check, and is still refused every call
+/// until the HOST commits; building the dispatchers does not commit it either,
+/// so the staging window is real rather than nominal.
+#[test]
+fn prepared_generation_refuses_dispatch_until_the_host_commits() {
+    let root = temp_root("lifecycle-prepare");
+    write_index(&root, vec![fixture_entry("mutate")]);
+    let index = PackageIndex::load(&root).expect("index loads");
+    let entry = &index.wasm[0];
+    let sidecar = index.wasm_manifest(&root, entry).expect("sidecar verifies");
+    let bytes = std::fs::read(PackageIndex::resolve_path(&root, &entry.path)).expect("reads");
+    let host = kelson_wasm::WasmHost::new().expect("host builds");
+
+    let plugin = Arc::new(host.prepare(&bytes, &sidecar).expect("mutate prepares"));
+    assert_eq!(plugin.state(), kelson_wasm::PluginState::Prepared);
+
+    // Fully validated and still dispatching nothing — refused before a store,
+    // an instance or a guest exists, so a prepare that failed this late would
+    // never have disturbed whatever was already serving.
+    let refused = plugin
+        .call(
+            "write_all",
+            "\"write_all\"",
+            None,
+            kelson_wasm::WasmCapabilityProfile::ReadWrite,
+        )
+        .expect_err("a prepared generation dispatches nothing");
+    assert!(
+        matches!(refused, kelson_wasm::WasmError::Lifecycle(_)),
+        "expected a lifecycle refusal, got {refused:?}"
+    );
+    assert!(refused.to_string().contains("prepared"), "{refused}");
+
+    // The demo boot path builds the handlers first and commits afterwards, so
+    // handler construction must not be what promotes the generation.
+    let _handlers = kelson_wasm::handlers(Arc::clone(&plugin)).expect("handlers build");
+    assert_eq!(
+        plugin.state(),
+        kelson_wasm::PluginState::Prepared,
+        "building handlers committed the generation"
+    );
+
+    plugin.commit().expect("the host commits");
+    assert_eq!(plugin.state(), kelson_wasm::PluginState::Ready);
+    // Committing the same generation twice describes one host decision, not
+    // two — the thing that must never be idempotent is the move *out* of a
+    // retire, which `drain_is_a_one_way_retire` pins below.
+    plugin.commit().expect("commit is idempotent");
+
+    let out = plugin
+        .call(
+            "write_all",
+            "\"write_all\"",
+            None,
+            kelson_wasm::WasmCapabilityProfile::ReadWrite,
+        )
+        .expect("a committed generation dispatches");
+    assert_eq!(out.deltas.len(), 1, "the guest ran and recorded its delta");
+}
+
+/// ADR 0019 §6 — **drain** is a one-way retire: it stops accepting calls,
+/// a second caller joins the same wait, and nothing can put the generation
+/// back in service afterwards.
+#[test]
+fn drain_is_a_one_way_retire_that_refuses_calls_and_cannot_be_undone() {
+    let root = temp_root("lifecycle-drain");
+    write_index(&root, vec![fixture_entry("mutate")]);
+    let index = PackageIndex::load(&root).expect("index loads");
+    let entry = &index.wasm[0];
+    let sidecar = index.wasm_manifest(&root, entry).expect("sidecar verifies");
+    let bytes = std::fs::read(PackageIndex::resolve_path(&root, &entry.path)).expect("reads");
+    let host = kelson_wasm::WasmHost::new().expect("host builds");
+
+    let plugin = Arc::new(host.prepare(&bytes, &sidecar).expect("mutate prepares"));
+    plugin.commit().expect("the host commits");
+    assert_eq!(plugin.state(), kelson_wasm::PluginState::Ready);
+
+    // Nothing in flight, so an idle generation retires immediately.
+    plugin
+        .drain(std::time::Duration::from_millis(250))
+        .expect("an idle generation drains");
+    assert_eq!(plugin.state(), kelson_wasm::PluginState::Drained);
+
+    // Drained means drained: dispatch is refused on the same gate that held it
+    // before commit, so a generation only ever serves between those two points.
+    let refused = plugin
+        .call(
+            "write_all",
+            "\"write_all\"",
+            None,
+            kelson_wasm::WasmCapabilityProfile::ReadWrite,
+        )
+        .expect_err("a drained generation dispatches nothing");
+    assert!(
+        matches!(refused, kelson_wasm::WasmError::Lifecycle(_)),
+        "expected a lifecycle refusal, got {refused:?}"
+    );
+    assert!(refused.to_string().contains("drained"), "{refused}");
+
+    // The asymmetry that matters: commit is idempotent going *forward*, but
+    // never resurrects a retired generation. Without this a swap that drained
+    // the old one could accidentally re-arm it on a second commit call.
+    let err = plugin
+        .commit()
+        .expect_err("a drained generation cannot be recommitted");
+    assert!(err.to_string().contains("drained"), "{err}");
+
+    // Draining again is a joiner, not an error: idempotent all the way down.
+    plugin
+        .drain(std::time::Duration::from_millis(250))
+        .expect("drain is idempotent");
+    assert_eq!(plugin.state(), kelson_wasm::PluginState::Drained);
+}
+
+/// A generation the host never committed accepted no work, so a drain request
+/// for it means the caller has lost track of which generation it holds —
+/// refused rather than silently answered.
+#[test]
+fn draining_a_never_committed_generation_is_refused() {
+    let root = temp_root("lifecycle-drain-uncommitted");
+    write_index(&root, vec![fixture_entry("mutate")]);
+    let index = PackageIndex::load(&root).expect("index loads");
+    let entry = &index.wasm[0];
+    let sidecar = index.wasm_manifest(&root, entry).expect("sidecar verifies");
+    let bytes = std::fs::read(PackageIndex::resolve_path(&root, &entry.path)).expect("reads");
+    let host = kelson_wasm::WasmHost::new().expect("host builds");
+
+    let plugin = Arc::new(host.prepare(&bytes, &sidecar).expect("mutate prepares"));
+    assert_eq!(plugin.state(), kelson_wasm::PluginState::Prepared);
+
+    let err = plugin
+        .drain(std::time::Duration::from_millis(250))
+        .expect_err("there is nothing to retire");
+    assert!(err.to_string().contains("never committed"), "{err}");
+    // Refused without moving it: the caller still owns the same staged
+    // generation it started with, free to commit it or drop it.
+    assert_eq!(plugin.state(), kelson_wasm::PluginState::Prepared);
+}
+
+/// Drain has to prove it *waits*: a guest genuinely inside the guest must hold
+/// it, the deadline must report the calls it did not see finish instead of
+/// claiming a success it never observed, and the generation must stay retired
+/// across that failure.
+#[test]
+fn drain_waits_for_in_flight_calls_and_reports_the_wait_it_could_not_finish() {
+    let root = temp_root("lifecycle-drain-wait");
+    write_index(&root, vec![fixture_entry_with("spin", "spin_timeout")]);
+    // Unbounded fuel, so what stops the spinning guest is unambiguously its
+    // 250ms wall-clock budget rather than instruction metering.
+    let host =
+        kelson_wasm::WasmHost::with_limits(1_000_000_000_000, kelson_wasm::DEFAULT_MEMORY_BYTES)
+            .expect("host builds");
+    let index = PackageIndex::load(&root).expect("index loads");
+    let entry = &index.wasm[0];
+    let sidecar = index.wasm_manifest(&root, entry).expect("sidecar verifies");
+    let bytes = std::fs::read(PackageIndex::resolve_path(&root, &entry.path))
+        .expect("binary reads");
+
+    let plugin = Arc::new(host.prepare(&bytes, &sidecar).expect("spin prepares"));
+    plugin.commit().expect("the host commits");
+
+    // A plain thread, not a spawned task: on a current-thread runtime the task
+    // would block this one instead of running alongside it.
+    let holder = Arc::clone(&plugin);
+    let holder_thread = std::thread::spawn(move || {
+        holder.call(
+            "spin.spin",
+            "{}",
+            None,
+            kelson_wasm::WasmCapabilityProfile::ReadOnly,
+        )
+    });
+
+    // Wait for the slot to be genuinely occupied rather than guessing a delay.
+    let wait_until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while plugin.in_flight() == 0 {
+        assert!(
+            std::time::Instant::now() < wait_until,
+            "the holding call never took its slot"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(plugin.in_flight(), 1, "the guest is inside the generation");
+
+    // 20ms against a guest spinning for its whole 250ms budget: drain cannot
+    // finish, and must name the calls it is still waiting on rather than
+    // reporting a completion it never saw.
+    let err = plugin
+        .drain(std::time::Duration::from_millis(20))
+        .expect_err("a running guest holds the drain");
+    assert!(err.to_string().contains("still in flight"), "{err}");
+
+    // A timed-out drain does not reopen the generation. It has already stopped
+    // accepting calls, and putting it back in service mid-retire is precisely
+    // what drain exists to prevent — so the caller's move is to drain again,
+    // not to give up and route traffic back through it.
+    assert_eq!(plugin.state(), kelson_wasm::PluginState::Draining);
+    let refused = plugin
+        .call(
+            "spin.spin",
+            "{}",
+            None,
+            kelson_wasm::WasmCapabilityProfile::ReadOnly,
+        )
+        .expect_err("a draining generation dispatches nothing");
+    assert!(
+        matches!(refused, kelson_wasm::WasmError::Lifecycle(_)),
+        "expected a lifecycle refusal, got {refused:?}"
+    );
+
+    // Let the in-flight call retire on its own deadline, then a second drain
+    // observes the completion the first one could not.
+    let held = holder_thread.join().expect("holder finishes");
+    held.expect_err("the holder is stopped by its deadline");
+    assert_eq!(plugin.in_flight(), 0, "the in-flight work retired");
+
+    plugin
+        .drain(std::time::Duration::from_secs(5))
+        .expect("the second drain observes the completion");
+    assert_eq!(plugin.state(), kelson_wasm::PluginState::Drained);
+}

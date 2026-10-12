@@ -66,13 +66,25 @@ pub fn load_wasm_plugins(
         let binary = kelson_registry::PackageIndex::resolve_path(root, &entry.path);
         let bytes = std::fs::read(&binary)
             .map_err(|e| format!("wasm plugin {}: {}: {e}", entry.name, binary.display()))?;
+        // ADR 0019 §6 — prepare and commit are deliberately separate acts.
+        // `prepare` compiles, links, checks the ABI and drift-checks with NO
+        // dispatch registration, so a plugin failing any of those refuses here
+        // while whatever generation is already serving stays untouched. The
+        // host then commits, and only the host: the guest never registers
+        // itself, the same asymmetry as the sidecar-verified capability set.
+        // A failure between the two leaves the plugin `prepared`, which
+        // `WasmPlugin::call` refuses to dispatch.
         let plugin = Arc::new(
-            host.load(&bytes, &sidecar)
+            host.prepare(&bytes, &sidecar)
                 .map_err(|e| format!("wasm plugin {}: {e}", entry.name))?,
         );
         handlers.extend(
-            kelson_wasm::handlers(plugin).map_err(|e| format!("wasm plugin {}: {e}", entry.name))?,
+            kelson_wasm::handlers(Arc::clone(&plugin))
+                .map_err(|e| format!("wasm plugin {}: {e}", entry.name))?,
         );
+        plugin
+            .commit()
+            .map_err(|e| format!("wasm plugin {}: {e}", entry.name))?;
         tracing::info!(plugin = %entry.name, handlers = handlers.len(), "wasm plugin loaded");
     }
     Ok(Some(kelson_wasm::WasmHandlerBundle(handlers)))

@@ -155,6 +155,64 @@ impl WasmCapabilityProfile {
     }
 }
 
+/// A generation's position in the staged activation lifecycle
+/// `prepare → commit → drain` (ADR 0019 §6, sanctioned as an *extension of
+/// v1* by root ADR 0016 §3 — so it is deliberately **not** gated behind the
+/// `component-model` cargo feature).
+///
+/// The transitions are enforced by [`WasmPlugin::commit`] and
+/// [`WasmPlugin::drain`], and [`WasmPlugin::call`] serves only a
+/// [`Ready`](PluginState::Ready) generation. That last rule is what makes
+/// **prepare** mean something: a plugin compiled, linked and drift-checked but
+/// never committed cannot reach dispatch, so a prepare that fails partway
+/// leaves the generation that is already serving untouched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PluginState {
+    /// **prepare** — compiled, linked, ABI-checked and drift-checked, with
+    /// **no** dispatch registration. Refuses every call.
+    Prepared = 0,
+    /// **commit** — the *host* registered the dispatch; this generation serves
+    /// calls. The guest never registers itself, the same asymmetry as the
+    /// sidecar-verified capability set.
+    Ready = 1,
+    /// **drain** — refusing new calls while the ones already inside retire.
+    Draining = 2,
+    /// No in-flight work remains; safe to drop.
+    Drained = 3,
+}
+
+impl PluginState {
+    /// Decode the discriminant kept in [`WasmPlugin`]'s state cell.
+    ///
+    /// Anything not one of the three known values decodes to
+    /// [`Drained`](PluginState::Drained), the most conservative reading: an
+    /// unrecognised state must refuse dispatch, never grant it. The cell is
+    /// only ever written by [`WasmPlugin::commit`] and [`WasmPlugin::drain`],
+    /// so this arm is unreachable today — it exists so a future state stays
+    /// fail-closed rather than failing open.
+    fn from_u8(v: u8) -> Self {
+        match v {
+            0 => PluginState::Prepared,
+            1 => PluginState::Ready,
+            2 => PluginState::Draining,
+            _ => PluginState::Drained,
+        }
+    }
+}
+
+impl std::fmt::Display for PluginState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            PluginState::Prepared => "prepared",
+            PluginState::Ready => "ready",
+            PluginState::Draining => "draining",
+            PluginState::Drained => "drained",
+        };
+        f.write_str(s)
+    }
+}
+
 /// Everything that can go wrong loading or running a plugin.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WasmError {
@@ -179,6 +237,19 @@ pub enum WasmError {
     Saturated { limit: u32 },
     /// A runtime failure inside one `kelson_call`.
     Call(String),
+    /// A staged-lifecycle transition was refused because the plugin is not in
+    /// the state the operation requires: dispatching before **commit**,
+    /// committing a generation that is already draining, draining one that was
+    /// never committed, or a **drain** whose deadline passed with calls still
+    /// in flight.
+    ///
+    /// This falls through `to_app_error`'s wildcard and renders as an internal
+    /// error — the right verdict for the only case that can reach it today, a
+    /// caller dispatching a generation it never committed, which is a host
+    /// bug. The *draining* reading, which deserves HTTP 503, is unreachable
+    /// until a generation-swap path exists; its mapping is sequenced with that
+    /// path rather than added now, when no code could produce it.
+    Lifecycle(String),
 }
 
 impl std::fmt::Display for WasmError {
@@ -197,6 +268,7 @@ impl std::fmt::Display for WasmError {
                 "wasm plugin concurrency limit of {limit} in-flight calls is saturated"
             ),
             WasmError::Call(m) => write!(f, "wasm plugin call failed: {m}"),
+            WasmError::Lifecycle(m) => write!(f, "wasm plugin lifecycle refused: {m}"),
         }
     }
 }
@@ -490,11 +562,20 @@ impl WasmHost {
         Ok(store)
     }
 
-    /// Compile, link, validate the ABI and cross-check the guest manifest
-    /// against the reviewed sidecar. Every failure here is a boot refusal
-    /// (fail-closed): a plugin never reaches dispatch in a half-trusted
-    /// state.
-    pub fn load(&self, bytes: &[u8], sidecar: &ModuleManifest) -> Result<WasmPlugin, WasmError> {
+    /// **prepare** — compile, link, validate the ABI and cross-check the guest
+    /// manifest against the reviewed sidecar, then STOP (ADR 0019 §6).
+    ///
+    /// Nothing is registered and the returned plugin refuses every
+    /// [`WasmPlugin::call`], so this phase's failures leave the generation that
+    /// is already serving untouched. Every failure here is still a boot refusal
+    /// (fail-closed): a plugin never reaches dispatch in a half-trusted state.
+    ///
+    /// The host promotes the result with [`WasmPlugin::commit`].
+    pub fn prepare(
+        &self,
+        bytes: &[u8],
+        sidecar: &ModuleManifest,
+    ) -> Result<WasmPlugin, WasmError> {
         // Wave M2: resolve the manifest `[budget]` FIRST, before a byte is
         // compiled or instantiated. A budget that asks for more than the host
         // allows is a refusal with no guest involvement at all, so an
@@ -607,7 +688,26 @@ impl WasmHost {
             // machinery.
             ticker,
             in_flight: std::sync::atomic::AtomicU32::new(0),
+            // prepare's product: validated but uncommitted, so it cannot
+            // dispatch until the host says so.
+            state: std::sync::atomic::AtomicU8::new(PluginState::Prepared as u8),
         })
+    }
+
+    /// **prepare + commit** in one step — the simple path for a caller that is
+    /// about to dispatch this generation immediately.
+    ///
+    /// Equivalent to [`Self::prepare`] followed by [`WasmPlugin::commit`], and
+    /// both halves are literal: the plugin is fully validated *and* marked
+    /// [`PluginState::Ready`]. The staged boot path
+    /// (`kelson_demo::load_wasm_plugins`) uses the two calls separately so the
+    /// host's decision to register stays an explicit, separate act — that
+    /// separation is the whole point of ADR 0019 §6, and it is not lost here,
+    /// because this method registers nothing either.
+    pub fn load(&self, bytes: &[u8], sidecar: &ModuleManifest) -> Result<WasmPlugin, WasmError> {
+        let plugin = self.prepare(bytes, sidecar)?;
+        plugin.commit()?;
+        Ok(plugin)
     }
 }
 
@@ -629,6 +729,10 @@ pub struct WasmPlugin {
     ticker: Option<Arc<EpochTicker>>,
     /// Concurrent calls in flight, against [`CallBudget::max_concurrency`].
     in_flight: std::sync::atomic::AtomicU32,
+    /// Position in the `prepare → commit → drain` lifecycle (ADR 0019 §6),
+    /// encoded as a [`PluginState`] discriminant so it can be read with one
+    /// relaxed-free atomic load on the dispatch path.
+    state: std::sync::atomic::AtomicU8,
 }
 
 /// One guest invocation's full result: the JSON body PLUS the side
@@ -684,6 +788,109 @@ impl WasmPlugin {
         self.in_flight.load(std::sync::atomic::Ordering::Acquire)
     }
 
+    /// This generation's position in the `prepare → commit → drain` lifecycle.
+    pub fn state(&self) -> PluginState {
+        PluginState::from_u8(self.state.load(std::sync::atomic::Ordering::Acquire))
+    }
+
+    /// **commit** — the host registers this generation for dispatch
+    /// (ADR 0019 §6: the guest never registers itself).
+    ///
+    /// The only promotion is `prepared → ready`, and it is idempotent once
+    /// there: committing the same generation twice describes one host decision,
+    /// not two. What is refused is any move out of a retire — committing a
+    /// [`PluginState::Draining`] or [`PluginState::Drained`] generation fails,
+    /// so a swap can never resurrect the generation it just drained.
+    pub fn commit(&self) -> Result<(), WasmError> {
+        use std::sync::atomic::Ordering;
+        match self.state.compare_exchange(
+            PluginState::Prepared as u8,
+            PluginState::Ready as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            // Common path: this call is the commit.
+            Ok(_) => Ok(()),
+            // CAS lost. Either another committer just did the same thing
+            // (idempotent -> OK) or the generation has been retired (never OK).
+            Err(_) => match self.state() {
+                PluginState::Ready => Ok(()),
+                other => Err(WasmError::Lifecycle(format!(
+                    "cannot commit a plugin in state {other}"
+                ))),
+            },
+        }
+    }
+
+    /// **drain** — retire this generation: refuse new calls, then wait for the
+    /// ones already inside to finish (ADR 0019 §6).
+    ///
+    /// Returns once nothing is in flight, or with a [`WasmError::Lifecycle`]
+    /// if `timeout` expires first — naming how many calls were still running
+    /// rather than reporting success it did not observe. Draining a generation
+    /// that was never committed is refused: it accepted no work, so the request
+    /// means the caller has lost track of which generation it holds.
+    ///
+    /// Idempotent; a second caller joins the same wait.
+    pub fn drain(&self, timeout: std::time::Duration) -> Result<(), WasmError> {
+        use std::sync::atomic::Ordering;
+        loop {
+            let from = self.state.load(Ordering::Acquire);
+            if from == PluginState::Drained as u8 {
+                return Ok(());
+            }
+            if from == PluginState::Prepared as u8 {
+                return Err(WasmError::Lifecycle(
+                    "cannot drain a plugin that was never committed (state: prepared)"
+                        .to_string(),
+                ));
+            }
+            // Claim the retire. On failure re-read: `ready -> draining` is the
+            // real transition, `draining -> draining` is a second joiner, and
+            // `drained` is handled above.
+            let claimed = self.state.compare_exchange(
+                from,
+                PluginState::Draining as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            if claimed.is_ok() {
+                break;
+            }
+        }
+
+        // New dispatch is refused from here, BEFORE the count is read, so no
+        // call can begin after the moment observation starts. The other half is
+        // closed by `call` reading this state only *after* incrementing
+        // `in_flight`: either that call sees `draining` and leaves, or we see
+        // its count and wait for it. Neither can slip past both checks.
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let running = self.in_flight.load(Ordering::Acquire);
+            if running == 0 {
+                let _ = self.state.compare_exchange(
+                    PluginState::Draining as u8,
+                    PluginState::Drained as u8,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(WasmError::Lifecycle(format!(
+                    "drain timed out after {}ms with {running} call(s) still in flight",
+                    timeout.as_millis()
+                )));
+            }
+            // Poll rather than block: `in_flight` is a bare atomic with no
+            // wait queue, and the calls being waited on are bounded by fuel and
+            // the epoch deadline — so this spans one guest invocation, not an
+            // unbounded wait. 1ms is finer than any realistic call and far
+            // coarser than the instantiation cost that dominates it.
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
     /// Invoke one operation: fresh instance, budgeted fuel/memory/deadline,
     /// JSON in/out.
     /// `scope` feeds `host.capability_check`'s path verdict; `profile`
@@ -707,6 +914,22 @@ impl WasmPlugin {
             let prev = self
                 .in_flight
                 .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            // ADR 0019 §6 — only a committed generation dispatches. The read
+            // deliberately comes AFTER the increment: a call that read `ready`
+            // first and incremented second could land in a generation `drain`
+            // had already declared idle, and would run guest code against a
+            // retired plugin. Reading second makes the pair airtight — either
+            // this call sees the retire state and leaves (decrementing here),
+            // or `drain` sees this call's count and waits for it. Neither can
+            // slip past both checks.
+            let state = self.state();
+            if state != PluginState::Ready {
+                self.in_flight
+                    .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                return Err(WasmError::Lifecycle(format!(
+                    "plugin dispatch refused: generation is {state}; only a ready generation serves calls"
+                )));
+            }
             match self.budget.max_concurrency {
                 Some(limit) if prev >= limit => {
                     self.in_flight.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
