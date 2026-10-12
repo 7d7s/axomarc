@@ -75,7 +75,7 @@ weaker form than claimed. `ABSENT` = not in the codebase.
 
 | # | Claim | Verdict | Evidence |
 |---|---|---|---|
-| 11 | WebAssembly Component Model with WIT interfaces | ABSENT by explicit decision | `wasmtime = { version = "36", default-features = false, features = ["cranelift", "runtime", "wat", "std"] }` — `platform/Cargo.toml:219` and its twin `platform/keel-platform/Cargo.toml:202`; the governance comment at `platform/Cargo.toml:201-218` records the security bump and states "no component-model". Zero `.wit` files, no `wasmtime-wasi`, no `wasmtime::component`. Guest ABI v1 is hand-rolled and documented at `crates/extension/wasm/src/lib.rs:9-26`; every export is validated at load (`:552-558`) and a missing or mistyped one refuses the boot. Still true as written: `wasmtime-component-macro` and `wasmtime-component-util` are absent from `keel-platform/Cargo.lock`, which is the machine-checkable form of "off". The deferral is no longer open-ended: root-tree ADR 0016 §2's reconsideration trigger is now recorded as **fired by decision**, and the sanctioned path -- v1 and v2 coexisting through a transition window, `component-model` as an opt-in cargo feature that is off by default, zero new direct externals -- is `keel-platform` `specs/ADR/0019-wasm-abi-v2-component-model.md`. Nothing about this row changes until that feature lands. |
+| 11 | WebAssembly Component Model with WIT interfaces | PARTIAL — opt-in cargo feature present, off by default | `wasmtime = { version = "36", default-features = false, features = ["cranelift", "runtime", "wat", "std"] }` — `platform/Cargo.toml:219` and its twin `platform/keel-platform/Cargo.toml:202`; the governance comment at `platform/Cargo.toml:201-218` records the security bump and states "no component-model". Zero `.wit` files, no `wasmtime-wasi`, no `wasmtime::component`. Guest ABI v1 is hand-rolled and documented at `crates/extension/wasm/src/lib.rs:9-26`; every export is validated at load (`:552-558`) and a missing or mistyped one refuses the boot. Amended on landing: `wasmtime-component-macro` and `wasmtime-component-util` are **no longer absent** from `keel-platform/Cargo.lock` -- they arrive there through `wasmtime`'s own `component-model` feature, which is how cargo records a feature that no default build activates, so absence stopped being the machine-checkable form of "off". The check that replaced it is the counter: feature off, `cargo test --workspace --no-fail-fast` still reads **1392 passed / 0 failed**, and no `.wit` file, no `wasmtime-wasi` and no `wasmtime::component` appear on the default path. The deferral is no longer open-ended: root-tree ADR 0016 §2's reconsideration trigger is now recorded as **fired by decision**, and the sanctioned path -- v1 and v2 coexisting through a transition window, `component-model` as an opt-in cargo feature that is off by default, zero new direct externals -- is `keel-platform` `specs/ADR/0019-wasm-abi-v2-component-model.md`. The feature has now landed, still off by default: `keel-platform` `crates/extension/wasm/Cargo.toml:27-34` declares `[features]` with `default = []` and `component-model = ["wasmtime/component-model"]`, forwarded at `keel-platform` `runtime/kelson-demo/Cargo.toml:23` and driven in tests by the dev-dependency at `:85`. `DEPENDENCY-POLICY.md:46` was amended in this same commit, as ADR 0019 §8 required, and the external count stays **25/25** because a feature on an existing dependency adds no `[workspace.dependencies]` entry (`keel-platform` `tools/kelson-analyzer/src/lib.rs:432-447`). What remains of the deferral is the WIT world and the in-place upgrade proof, not the enablement. |
 | 12 | Native `.so`/`.dll` plugin loading must be avoided | EXISTS and is enforced | No `libloading`, no `dlopen`, no native image handling anywhere in the dependency graph. The refusal is test-pinned: `wasm_only_boundary_refuses_native_images` — `keel-platform` `runtime/kelson-demo/src/wasm_tests.rs:236-280` — feeds ELF, PE and Mach-O images and asserts each is refused at compile, never treated as a library. |
 | 13 | A module manifest declaring identity, version, compatibility, capabilities | EXISTS; the resources half closed by Wave M2 | `ModuleManifest` — `platform/` `crates/application/registry/src/lib.rs:604-650`; `MODULE_ABI: u32 = 1` `:37`; mismatch → `GRAPH-MANIFEST-ABI` `:817-828`. Capability profiles — `keel-platform` `crates/extension/wasm/src/lib.rs:130`. Per-plugin execution budgets now exist as `[budget]` — `keel-platform` `crates/application/registry/src/lib.rs:659` (field), `:672-692` (section) — deliberately **not** named `[resources]`: that word already means Laravel-style route resources in this same format, and one word meaning two things in one file is how misconfiguration gets written. |
 | 14 | Sandboxed execution with resource budgets | EXISTS — the PARTIAL above was closed by Wave M2 | Host ceilings: fuel `DEFAULT_FUEL = 10M` — `keel-platform` `crates/extension/wasm/src/lib.rs:90`, memory `DEFAULT_MEMORY_BYTES = 16 MiB` `:93`, guest-string copy bound 1 MiB — `keel-platform` `crates/extension/wasm/src/imports.rs:40`, enforced `:60` and `:258`. Per-plugin `[budget]` — `keel-platform` `crates/application/registry/src/lib.rs:672-692`, reachable from `ModuleManifest` `:659` — may only **tighten** those ceilings: `validate_against` `:701-736` collects every violation at once and runs at the top of `WasmHost::prepare` (`keel-platform` `crates/extension/wasm/src/lib.rs:584`, `resolve_budget` `:508-522`), which is the phase `WasmHost::load` `:707` is, *before the binary is compiled or instantiated*. Effective values travel together as `CallBudget` `:67-77`, so fuel `:559`, memory `:541-542` and the epoch deadline `:561` cannot describe different sandboxes (the same three are set again in `call()` `:947-967`). Concurrency: `InFlightSlot` `keel-platform` `crates/extension/wasm/src/lib.rs:308-314` is taken at `:913-940`, before `pre.instantiate` at `:971`, and the over-cap path returns `WasmError::Saturated` `:234-237`. Wall clock: `EpochTicker` `keel-platform` `crates/extension/wasm/src/lib.rs:370-401` advances `Engine::increment_epoch` at `:389` from a **monotonic clock** (`:385-391`) rather than per sleep call (`:392`), and `NO_DEADLINE_TICKS` `:403-412` gives no-deadline plugins a deadline far enough out that wasmtime's default of `0` — which it documents as having "always elapsed" — cannot trap them. Codes `KSN_WASM_FUEL` `keel-platform` `crates/foundation/core/src/error.rs:76`, `KSN_WASM_SATURATED` `:85`, `KSN_WASM_DEADLINE` `:95`, each pinned to HTTP 503 at both boot sites — `keel-platform` `runtime/kelson-demo/src/lib.rs:450-463` (production) and `:1588-1599` (harness). |
@@ -167,11 +167,11 @@ fail-closes). See section 6.
 | M4 | Content-addressed release artifacts | DONE |
 | M | CHANGELOG + PUBLISHING entries (M1-M4) | DONE |
 | A | ABI v2 ADR and design (`keel-platform/specs/ADR/0019`, index row, this record) | DONE |
-| A | Feature-flagged `component-model` enablement | TODO |
+| A | Feature-flagged `component-model` enablement | DONE |
 | A | WIT package layout mirroring the four host imports | TODO |
 | A | `prepare`/`commit`/`drain` staged lifecycle (additive to v1) | DONE |
 | A | In-place upgrade proof (v1 -> v1, v2 -> v2, v1 -> v2, one host) | TODO |
-| A | `DEPENDENCY-POLICY.md` row 46 amendment (authorized by ADR 0019 §8, applied on landing) | TODO |
+| A | `DEPENDENCY-POLICY.md` row 46 amendment (authorized by ADR 0019 §8, applied on landing) | DONE |
 
 ### 5.1 Behaviour changes shipped by a wave
 
@@ -261,6 +261,49 @@ draining, which deserves 503 but cannot occur until a generation-swap path
 exists; adding a code no code could produce would be policy describing
 something untrue.
 
+**A — the `component-model` feature landed, and the record it landed under was
+wrong in both directions.** The flag is where ADR 0019 §4 said it would be:
+`keel-platform` `crates/extension/wasm/Cargo.toml:27-34`, `default = []` with
+`component-model = ["wasmtime/component-model"]`, forwarded at `keel-platform`
+`runtime/kelson-demo/Cargo.toml:23`. The workspace dependency at
+`platform/keel-platform/Cargo.toml:202` is untouched, so a default build compiles no
+`wasmtime::component` at all — which is the property the gate actually checks
+now: feature off, `cargo test --workspace --no-fail-fast` still reads **1392
+passed / 0 failed**, and with the feature on it reads 1393, the one difference
+being the new case at `runtime/kelson-demo/src/wasm_tests.rs:1123`.
+
+Two corrections the experiment forced, both recorded rather than quietly fixed.
+The first was the blocker's own premise: "`wat-1.261.0`'s own sources contain
+no `component` references" was a literal-string grep, not a reading of the
+crate. `wat` 1.261 defaults `component-model = ["wast/component-model"]` on,
+`wast` 261 defaults it on too, and `wast-261.0.0/src/wat.rs:44-45` routes a
+top-level `(component ...)` to the encoder at
+`wast-261.0.0/src/component/binary.rs:13`. The authoring half therefore needed
+no dependency change whatsoever — the support was already compiled into every
+build we ship. The second is the one that changes what a future reader should
+expect: ADR 0019 §4 stated that "no `wit-bindgen` enters the workspace", and
+enabling the feature *does* put `wasmtime-internal-wit-bindgen` and
+`wit-parser` into `keel-platform/Cargo.lock`, transitively through
+`wasmtime-internal-component-macro`, which is wasmtime's own `bindgen!`
+macro. What stayed true is the part the cap depends on: those are
+*transitive*, no `[workspace.dependencies]` entry is added, and
+`keel-platform` `tools/kelson-analyzer/src/lib.rs:432-447` still counts
+**25/25**. So the ADR's conclusion held and its sentence did not; the sentence
+was amended by record.
+
+Two smaller things a future reader should not rediscover. Component-level
+types are not core types: the lifted export is declared `(result s32)`, not
+`(result i32)`, and the validator's own error lists the legal set
+(`bool`, `s8`, `u8`, …, `s32`, `u32`, …, `char`, `string`) — the core guest
+module keeps returning `i32` and the canonical ABI does the mapping. And a
+first attempt at this branch failed at *resolution*, not compilation, with
+`failed to select a version for the requirement winch-codegen = "=36.0.17"`:
+`wasmtime`'s `component-model` feature references `wasmtime-winch?/component-model`,
+which puts the optional `wasmtime-internal-winch` into the resolve graph, and
+the local sparse index was stale. It resolved cleanly once the index had
+refreshed, and `winch-codegen 36.0.17` is present on crates.io — so the
+symptom looks exactly like a broken wasmtime patch release and is not one.
+
 ## 6. Backlog
 
 Recorded, not scheduled. Each carries the finding that produced it.
@@ -280,7 +323,7 @@ Recorded, not scheduled. Each carries the finding that produced it.
 | Route-set hot reload (not just chains) | 3 | Needs the graph to become swappable rather than boot-frozen. |
 | Decide whether `MODULE_ABI`'s default should hard-fail instead of echo | 23 | `default_api()` returns `MODULE_ABI`, so an omitted `api` survives any bump. Wave A sidestepped it by versioning the guest ABI by artifact shape (ADR 0019 §3), but the same trap springs the moment the *manifest* contract is bumped. Making omission an error is expand-and-contract-safe only if every shipped manifest pins `api` first -- three do, two do not (finding 23 lists them). |
 | Root-tree ADR 0016 §3 still lists `[resources]` as Phase 2.2 backlog | 13 | **Superseded by ADR 0019 §7**: Wave M shipped the enforcement as `[budget]`, and `resources` already means Laravel-style route resources in the same file (`fn expand_resources`, `keel-platform` `crates/application/registry/src/lib.rs:513-519`). The file is untracked and owned by the 0.2a port, so it is cited, never edited -- reconcile at convergence (ADR 0014), not before. |
-| Prove a component fixture can be built without guest-side `wit-bindgen` | 11 | Host side is proven (`wasmtime::component::bindgen` at `wasmtime-36.0.17/src/runtime/component/mod.rs:472`, transitively behind the feature, so no new direct external). Guest side is not: `wat-1.261.0`'s own sources contain no `component` references. If `wast`'s component text format cannot yield a loadable fixture, the upgrade proof needs `wit-bindgen` as a dev-dependency, which `DEPENDENCY-POLICY.md:53` counts against the same 25-cap -- a hard `ANALYZER-BUDGET` failure (`tools/kelson-analyzer/src/lib.rs:442-450`), not a rounding error. Blocks any feature-flag merge. |
+| Prove a component fixture can be built without guest-side `wit-bindgen` | 11 | **Closed by the Wave A feature-flag landing (no `wit-bindgen` dev-dependency).** The old premise -- "`wat-1.261.0`'s own sources contain no `component` references" -- was a literal-string grep that missed where the support actually lives: `wat` 1.261 declares `component-model = ["wast/component-model"]` and turns it on by default, `wast` 261 defaults it on too (`default = ["wasm-module", "component-model"]`), and `wast-261.0.0/src/wat.rs:44-45` routes a top-level `(component ...)` to the 998-line encoder at `wast-261.0.0/src/component/binary.rs:13`. Proven by executing it, not by reading it: `keel-platform` `runtime/kelson-demo/src/wasm_tests.rs:1123` hand-writes the component text, loads it through `Component::new` (`wasmtime-36.0.17/src/runtime/component/component.rs:156-164`, which routes through `wat::parse_bytes`), instantiates it and calls the lifted export. So `DEPENDENCY-POLICY.md:53` never engages -- there is no new *direct* external, and `keel-platform` `tools/kelson-analyzer/src/lib.rs:432-447` still counts 25/25. **One correction the experiment forced:** enabling the feature *does* put `wasmtime-internal-wit-bindgen` and `wit-parser` into `keel-platform/Cargo.lock`, transitively through `wasmtime-internal-component-macro` (wasmtime's own `bindgen!` macro), which is why ADR 0019 §4's "no `wit-bindgen` enters the workspace" was amended by record instead of left standing. |
 | Module-level `DEGRADED` / `DISABLED` (no `ModuleState` enum) | 16 | `docs/15-EXTENSION.md:25-36` lists seven states and only `DISCOVERED` / `VALIDATED` / `REGISTERED` have a representation. **Landing the generation lifecycle did not close this:** `keel-platform` `crates/extension/wasm/src/lib.rs:171`'s `PluginState` retires one generation of one plugin and is not that state machine, so `PluginState::Drained` must not be read as `DISABLED` (`docs/15-EXTENSION.md:41-47`). Nothing yet marks a loaded module degraded or disables one in place. Recorded here because both `docs/15-EXTENSION.md:38-39` and claim 16 point at this row — a backlog reference with no row behind it is the same defect as a claim with no evidence. |
 | Generation swap path: the production caller for `drain`, and the HTTP mapping for a call refused mid-drain | 16 | `keel-platform` `crates/extension/wasm/src/lib.rs:835` ships and is proven by `keel-platform` `runtime/kelson-demo/src/wasm_tests.rs:1031`, but has **no production caller** — there is no swap or unload path, so nothing retires a generation in a running process. That same absence is why no `KSN_*` code and no HTTP pin were added: the draining case is unreachable in production, so `WasmError::Lifecycle` falls through `to_app_error`'s wildcard as an internal error, which is the right verdict for the one case that *is* reachable (dispatching a generation the host never committed). Landing a swap must do both halves — give `drain` a caller **and** decide whether a mid-drain refusal renders 503 — because adding the code now would make the append-only list describe behaviour nothing emits. |
 

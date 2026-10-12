@@ -24,6 +24,15 @@ tracing = { workspace = true }
 rand = { workspace = true }
 wasmtime = { workspace = true }
 
+[features]
+# ADR 0019 §4: the Component Model is an opt-in cargo feature, off by default,
+# so the workspace dependency at platform/keel-platform/Cargo.toml:202 keeps its
+# `default-features = false, features = ["cranelift", "runtime", "wat", "std"]`
+# and nothing changes for a default build. A feature on an existing dependency
+# adds no `[workspace.dependencies]` entry, so the external cap stays 25/25.
+default = []
+component-model = ["wasmtime/component-model"]
+
 [lib]
 # Wave 9 B-30: every kelson-wasm test lives in an EXISTING suite (the kelson-demo
 # `wasm_tests` facet module plus registry suites drive this runtime over the

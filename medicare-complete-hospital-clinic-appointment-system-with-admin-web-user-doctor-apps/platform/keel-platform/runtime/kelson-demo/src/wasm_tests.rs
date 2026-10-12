@@ -1105,3 +1105,62 @@ fn drain_waits_for_in_flight_calls_and_reports_the_wait_it_could_not_finish() {
         .expect("the second drain observes the completion");
     assert_eq!(plugin.state(), kelson_wasm::PluginState::Drained);
 }
+
+/// ADR 0019's first unproven claim: *"hand-authoring a component fixture
+/// without guest-side `wit-bindgen`"*. `wast` 261 ships `component-model` as a
+/// **default** feature (`wast-261.0.0/Cargo.toml`, `default = ["wasm-module",
+/// "component-model"]`), and `wat` 1.261 defaults the same feature on, so the
+/// text parser already routes a top-level `(component ...)` to the component
+/// encoder (`wast-261.0.0/src/wat.rs:44-45` -> `component/binary.rs:13`);
+/// wasmtime's own doctest takes that text directly
+/// (`wasmtime-36.0.17/src/runtime/component/component.rs:156-164`, which routes
+/// through `wat::parse_bytes`). What had never been tested is that the round
+/// trip yields something *loadable and callable*, so this fixture is written
+/// entirely by hand: no `wit` file, no `wit-bindgen`, no guest code generator
+/// anywhere in the workspace.
+#[cfg(feature = "component-model")]
+#[test]
+fn a_hand_authored_component_fixture_round_trips_without_guest_side_wit_bindgen() {
+    // Hand-written component text: a core guest module, a core instance built
+    // from it, a core function aliased out of that instance's exports, and that
+    // core function lifted back to a component-level export. Every line here is
+    // authored by hand rather than generated.
+    const COMPONENT: &str = r#"
+        (component
+          (core module $guest
+            (func (export "answer") (result i32) (i32.const 42))
+          )
+          (core instance $inst (instantiate $guest))
+          (core func $answer (alias core export $inst "answer"))
+          (func (export "answer") (result s32) (canon lift (core func $answer)))
+        )
+    "#;
+
+    let mut config = wasmtime::Config::new();
+    config.wasm_component_model(true);
+    let engine = wasmtime::Engine::new(&config).expect("engine with the component model");
+
+    // The claim under test: the hand-authored text parses, encodes to a
+    // component binary, validates and compiles without any generated guest code.
+    let component = wasmtime::component::Component::new(&engine, COMPONENT)
+        .expect("the hand-authored component text must load");
+
+    // Loaded is not enough — it has to be callable through the host side.
+    let mut store = wasmtime::Store::new(&engine, ());
+    let linker = wasmtime::component::Linker::new(&engine);
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .expect("the fixture instantiates with no imports to satisfy");
+    let func = instance
+        .get_func(&mut store, "answer")
+        .expect("the lifted function is exported");
+
+    let mut results = [wasmtime::component::Val::S32(0)];
+    func.call(&mut store, &[], &mut results)
+        .expect("the host can call the lifted core function");
+    assert_eq!(
+        results[0],
+        wasmtime::component::Val::S32(42),
+        "the hand-authored guest computed the expected value"
+    );
+}

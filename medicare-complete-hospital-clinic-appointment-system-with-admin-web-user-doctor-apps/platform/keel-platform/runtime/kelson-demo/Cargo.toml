@@ -17,6 +17,10 @@ path = "src/main.rs"
 
 [features]
 demo = ["kelson-mod-appointments", "kelson-mod-oauth2"]
+# ADR 0019 §4 opt-in, forwarded so the component fixture cases in the existing
+# `wasm_tests` suite can be compiled and run explicitly (`--features
+# component-model`). Off by default: no mandated gate passes `--all-features`.
+component-model = ["kelson-wasm/component-model"]
 
 [dependencies]
 kelson-foundation = { workspace = true }
@@ -74,3 +78,8 @@ all-features = true
 [dev-dependencies]
 kelson-policy = { workspace = true }
 kelson-foundation = { workspace = true }
+# ADR 0019: the component fixture cases drive `wasmtime::component` directly
+# over the existing `wasm_tests` suite. `wasmtime` is already an external in
+# `[workspace.dependencies]` (DEPENDENCY-POLICY row 46), so this adds no new
+# external and the analyzer cap is unchanged.
+wasmtime = { workspace = true }

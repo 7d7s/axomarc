@@ -157,11 +157,26 @@ the count stays 25/25. Host-side WIT binding comes from `wasmtime::component::bi
 already exported by wasmtime 36 (`wasmtime-36.0.17/src/runtime/component/mod.rs:472`)
 and reachable only with the feature, since the module is declared under
 `#[cfg(feature = "component-model")]` (`wasmtime-36.0.17/src/runtime.rs:61-62`)
-— so **no `wit-bindgen`
-enters the workspace**. `wasmtime-component-macro` and `wasmtime-component-util`
-are transitive consequences of the feature and are absent from
-`keel-platform/Cargo.lock` today, which is the machine-checkable proof that the
-feature is off at the time of writing.
+> **Amended by record when the feature landed.** The text this record was
+> written with read "— so **no `wit-bindgen` enters the workspace**. `wasmtime-component-macro`
+> and `wasmtime-component-util` are transitive consequences of the feature and
+> are absent from `keel-platform/Cargo.lock` today, which is the
+> machine-checkable proof that the feature is off at the time of writing."
+> That was true of the feature-off tree it described, and neither half survives
+> enabling the flag. What enabling it brings in: `wasmtime-internal-component-macro`
+> and `wasmtime-internal-component-util` (direct, wasmtime's own), and through
+> the former **`wasmtime-internal-wit-bindgen`** and **`wit-parser`**
+> (transitive — also wasmtime's own `bindgen!` machinery, *not* the `wit-bindgen`
+> crate anyone would add as a dev-dependency). So no *direct* external is added,
+> the `[workspace.dependencies]` count stays 25/25
+> (`platform/keel-platform/tools/kelson-analyzer/src/lib.rs:432-447`), and
+> `platform/DEPENDENCY-POLICY.md:53` still does not engage — the conclusion
+> this paragraph was reaching for holds. What does not hold is its
+> *machine-checkable form*: `Cargo.lock` cannot be the "off" signal any more,
+> because cargo records the packages behind a feature that no default build
+> activates. The check that replaced it is the counter — feature off, the suite
+> reads 1392 passed / 0 failed and compiles no `wasmtime::component`; feature
+> on, 1393.
 
 The feature is deliberately *not* enabled by `--all-features` gates in this
 record: it turns the sandbox posture into a public commitment, so enabling it is
@@ -301,21 +316,45 @@ with the cap unchanged at 25/25. Nothing else in the policy moves.
 
 ## Deliberate deferrals and unproven claims
 
-- **Unproven: hand-authoring a component fixture without guest-side
-  `wit-bindgen`.** The host side is proven (`bindgen!` at
-  `wasmtime-36.0.17/src/runtime/component/mod.rs:472`). The guest/fixture side
-  is not: `wat-1.261.0`'s own sources contain no `component` references, and
-  whether `wast`'s component text format yields a loadable fixture has not been
-  tested. If it cannot, the upgrade proof needs `wit-bindgen` as a
-  **dev-dependency**, which `platform/DEPENDENCY-POLICY.md:53` counts against the same
-  25-cap — a hard `ANALYZER-BUDGET` failure, not a rounding error. Resolved
-  before any feature flag merges.
-- **Unproven: that enabling the feature compiles clean** under the mandated
-  `clippy --workspace --all-targets -- -D warnings` gate and leaves the test
-  baseline intact. The baseline was 1388 when this record was written and is
-  1392 since Wave A part 2 added four lifecycle tests; what the claim requires
-  is *no regressions*, not a frozen number, so compare against whatever the
-  suite reads at the time rather than against this line.
+- **Resolved — hand-authoring a component fixture without guest-side
+  `wit-bindgen`.** (Recorded as *Unproven* here when this ADR was written; the
+  resolution below is an amendment by record, added when the feature flag
+  landed.) The host side was already proven (`bindgen!` at
+  `wasmtime-36.0.17/src/runtime/component/mod.rs:472`). The fixture side turned
+  out to be the easy half, and the sentence that said otherwise was wrong: "the
+  guest/fixture side is not [proven]: `wat-1.261.0`'s own sources contain no
+  `component` references" was a literal-string grep, not a reading of the crate.
+  `wat` 1.261 declares `component-model = ["wast/component-model"]` and turns it
+  on by default, `wast` 261 defaults it on too (`default = ["wasm-module",
+  "component-model"]`), and `wast-261.0.0/src/wat.rs:44-45` routes a top-level
+  `(component ...)` to the 998-line encoder at
+  `wast-261.0.0/src/component/binary.rs:13`. The authoring half therefore needed
+  no dependency change whatsoever — the support was already compiled into every
+  build we ship. Proven by running it, not by re-reading it:
+  `platform/keel-platform/runtime/kelson-demo/src/wasm_tests.rs:1123`
+  hand-writes the component text, loads it through `Component::new` (which
+  accepts WAT per `wasmtime-36.0.17/src/runtime/component/component.rs:156-164`),
+  instantiates it and calls the lifted export. No `.wit` file, no guest code
+  generator, and `platform/DEPENDENCY-POLICY.md:53` never engages, because there
+  is no new *direct* external — the count stays 25/25. **One correction the same
+  experiment forced:** enabling the feature *does* put
+  `wasmtime-internal-wit-bindgen` and `wit-parser` into
+  `keel-platform/Cargo.lock`, transitively through
+  `wasmtime-internal-component-macro`, which is wasmtime's own `bindgen!` macro.
+  That is a transitive consequence, not a workspace dependency, so the cap is
+  unaffected — but §4's "no `wit-bindgen` enters the workspace" no longer
+  describes it, and was amended below rather than left standing.
+- **Resolved — that enabling the feature compiles clean.** (Also an amendment
+  by record; the claim was written as "unproven".) It does. Feature **on**:
+  `clippy --workspace --all-targets -- -D warnings` exits 0 with zero warnings,
+  and `cargo test --workspace --no-fail-fast` reads 1393 passed, the single
+  failure being the known pre-existing `hot_reload` wall-clock flake
+  (`platform/keel-platform/runtime/kelson-demo/src/hot_reload.rs:493`, 57ms
+  against a 50ms budget, passing on re-run at 0.16ms) — unrelated to this
+  feature and not counted against it. Feature **off**: the mandated gate is
+  unchanged at clippy exit 0 and **1392 passed / 0 failed**, which is the
+  "no regressions, not a frozen number" reading this bullet asked for:
+  1392 → 1393, the one difference being the new fixture case.
 - Guest write/delta profiles beyond what `host.capability_write` already
   records; per-module publisher identity and signed artifacts (TUF-class
   supply chain); `module build/test/publish` as first-class CLI verbs;
