@@ -27,8 +27,14 @@ kelson pkg:add .             # register this module in packages.toml (step 1)
 kelson graph                 # 1 module, 5 operations, 3 events
 kelson route:list            # named routes: notes.create / notes.list / ...
 kelson sdk:openapi --output out.json
-kelson serve                 # boots kelson-demo (+ --worker if needed)
 ```
+
+`kelson serve` is deliberately not in that list. It boots the `kelson-demo`
+host, which is a member of a Kelson workspace: it works from inside a Kelson
+checkout, but this project is its own `[workspace]` and does not depend on
+`kelson-demo`, so `serve` here exits 101 with
+`` package(s) `kelson-demo` not found in workspace ``. The three commands
+above all work standalone.
 
 `pkg:add` is the step that makes the module visible: `graph`, `route:list`,
 `check`, `boot` and `sdk:openapi` all merge the `packages.toml` index, so
