@@ -7,23 +7,31 @@ Quick lookup tables for the platform surface.
 | Class | Crates |
 |---|---|
 | foundation | kelson-foundation, kelson-context, kelson-contracts, kelson-validation, kelson-lifecycle |
-| execution | kelson-execution (engine), kelson-command, kelson-query |
+| execution | kelson-execution (engine), kelson-command, kelson-query, kelson-transaction |
 | application | kelson-config, kelson-registry |
-| web | kelson-http |
+| framework | kelson-framework (umbrella re-export crate) |
+| web | kelson-http, kelson-views |
 | security | kelson-identity, kelson-policy, kelson-scope, kelson-ownership, kelson-elevation, kelson-session, kelson-tokens, kelson-integrity |
-| data | kelson-postgres |
-| async | kelson-event, kelson-jobs, kelson-workflows, kelson-scheduler |
-| services | kelson-cache, kelson-storage, kelson-notifications, kelson-realtime, kelson-http-client, kelson-search |
+| data | kelson-postgres, kelson-mysql, kelson-models |
+| async | kelson-event, kelson-jobs, kelson-workflow, kelson-scheduling |
+| services | kelson-caching, kelson-storage, kelson-notifications, kelson-realtime, kelson-http-client, kelson-search |
 | observability | kelson-observability (Sentinel runtime), kelson-telemetry, kelson-tracing, kelson-metrics, kelson-audit, kelson-pipeline, kelson-buffer, kelson-export |
 | enterprise | kelson-tenancy, kelson-feature-flags, kelson-deployment |
 | ai | kelson-ai, kelson-ai-tools, kelson-ai-agents, kelson-ai-mcp |
-| adapters | kelson-cache-memory, kelson-mail-smtp, kelson-sms-msg91, kelson-push-fcm, kelson-storage-s3 |
+| extension | kelson-wasm (WASM plugin host; publishes no binary) |
+| adapters | kelson-cache-memory, kelson-cache-redis, kelson-session-redis, kelson-session-postgres, kelson-storage-local, kelson-storage-s3, kelson-search-pgvector, kelson-mail-smtp, kelson-sms-msg91, kelson-push-fcm, kelson-webhooks |
 | testing | kelson-testkit |
+| tests | kelson-arch-validation |
 | runtime | kelson-demo, kelson-worker |
-| tools | kelson-console, kelson, kelson-analyzer, kelson-codegen, xtask |
+| templates | kelson-templates (embedded + on-disk project templates) |
+| examples | kelson-example-minimal, kelson-example-reference |
+| applications | kelson-mod-appointments, kelson-mod-oauth2 |
+| tools | kelson-console, kelson-analyzer, kelson-codegen, xtask |
 
-Package names keep the `kelson-*` prefix (D-63); directory names may differ from package names
-(`crates/execution/engine` = `kelson-execution`).
+Classes mirror `kelson-analyzer`'s `Class` taxonomy (classified by top-level directory). Package
+names keep the `kelson-*` prefix (D-63); directory names may differ from package names
+(`crates/execution/engine` = `kelson-execution`). The `kelson` command is the published binary of
+`kelson-console`, not a separate package.
 
 ## Error categories (frozen)
 
@@ -36,7 +44,7 @@ READ, COMMAND, FINANCIAL, INVENTORY, WORKFLOW, BATCH, REPORT, SYSTEM, REPLAY. A 
 to a full plan: authorization, transaction, concurrency, consistency, idempotency, retry, audit,
 delta, timeout.
 
-## Execution state machine
+## Execution state machine (frozen — STAGE-0-FOUNDATION-SPEC section 8)
 
 ```
 ACCEPTED -> PLANNED -> AUTHORIZED -> RUNNING -> COMMITTED -> DELIVERED
@@ -49,7 +57,7 @@ ACCEPTED -> PLANNED -> AUTHORIZED -> RUNNING -> COMMITTED -> DELIVERED
 - `DEP-CLASS`, `DEP-UNKNOWN-CRATE`, `DEP-UNKNOWN-MEMBER` — dependency matrix violations (G07).
 - `GRAPH-DUP-MODULE`, `GRAPH-DUP-OP`, `GRAPH-DUP-ROUTE`, `GRAPH-DUP-EVENT`, `GRAPH-ROUTE-OP`,
   `GRAPH-CYCLE`, `GRAPH-MANIFEST` — platform graph violations (G05/G06).
-- `KSN-*` — kernel error codes; module-prefixed codes for domain errors.
+- `KSN_*` — kernel error codes (`KSN_NOT_FOUND`, `KSN_CONFLICT`, …); module-prefixed codes for domain errors.
 
 ## API governance registry
 
