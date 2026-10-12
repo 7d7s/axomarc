@@ -396,15 +396,17 @@ envelope. Recording paths:
 - `record_metrics` middleware — mounted **outermost** (outside admission and
   every per-route layer, CSRF included), so rate-limit/maintenance and
   per-route CSRF rejections are counted alongside happy paths. Emits `kelson_http_requests_total{method,status_class}`
-  and `kelson_http_request_duration_seconds{method}` (fixed bucket histogram).
+  and `kelson_http_request_duration_ms` (fixed bucket histogram, name-keyed in milliseconds — histograms carry no
+  labels; the per-method breakdown stays on the labelled counter).
 - `/metrics` handler — refreshes `kelson_uptime_seconds`, `kelson_degraded`
   (0/1) and `kelson_routes_declared` gauges on every scrape, and (Wave 6
   P8) the queue census when a durable store is wired:
   `kelson_queue_depth{status}`, `kelson_queue_oldest_age_seconds`,
   `kelson_queue_finished{outcome}` — read at scrape time from the same
   store the worker drains; the series stays absent without one.
-- Dropped series (cardinality guard) surface as
-  `kelson_metrics_dropped_series`.
+- Cardinality guard: label sets past the registry's known-signature budget merge
+  into a single overflow bucket (`__overflow__="collapsed"`) so total series stay
+  bounded — no separate dropped-series counter is exported.
 
 Enable via `storage/framework/flags.json` (flag ladder, S3) — no restart
 state beyond the boot snapshot is consulted.
