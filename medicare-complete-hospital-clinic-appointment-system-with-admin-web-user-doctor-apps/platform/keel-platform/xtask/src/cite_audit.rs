@@ -350,6 +350,54 @@ fn code_tokens(window: &str) -> Vec<String> {
     out
 }
 
+/// The name a backticked Rust declaration claims, or `None` when `s` is not a
+/// declaration.
+///
+/// A document writes "`pub struct IdempotencyKey` at `...:75`". That
+/// declaration *is* the claim being made about the line, but it carries
+/// spaces, and a span containing a space has never been a token — so the
+/// sentence produced one token, `config_hash`, which belongs to the *next*
+/// claim in the same clause. The clause boundary cannot separate them,
+/// because the sentence is a single clause; the check was judging a claim
+/// about a different line and calling it a contradiction about this one.
+/// Unwrapping the declaration hands the check the subject it was asked
+/// about.
+///
+/// The name runs up to the first character that cannot occur in one, so
+/// `pub struct TenantId(pub uuid::Uuid)` yields `TenantId`, and
+/// `pub fn drain(&mut self)` yields `drain`.
+///
+/// Every prefix ends in a space, so `struct` alone is not a declaration, and
+/// `pub async fn` is deliberately not handled: it does not describe a claim
+/// the ledger documents make, and a prefix rule that is only partly
+/// enumerated is worse than one that declines.
+fn declaration_name(s: &str) -> Option<&str> {
+    const KINDS: &[&str] = &[
+        "pub struct ",
+        "pub fn ",
+        "pub trait ",
+        "pub enum ",
+        "pub type ",
+        "pub mod ",
+        "struct ",
+        "fn ",
+        "trait ",
+        "enum ",
+        "type ",
+        "mod ",
+    ];
+    let rest = KINDS.iter().find_map(|k| s.strip_prefix(k))?;
+    let name_end = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    let name = &rest[..name_end];
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
 /// The canonical form of a backticked span as a content claim, or `None` if
 /// it is not one. Lower-cased, with section brackets removed.
 ///
@@ -375,6 +423,7 @@ fn code_tokens(window: &str) -> Vec<String> {
 /// does name its subject.
 fn normalize_token(s: &str) -> Option<String> {
     let s = s.trim_matches(|c| c == '[' || c == ']');
+    let s = declaration_name(s).unwrap_or(s);
     if s.len() < 2 {
         return None;
     }
@@ -583,11 +632,23 @@ fn resolve(text: &str, platform_root: &Path, cite: &Cite) -> Result<Resolved, Un
     let norm = cite.file.replace('\\', "/");
 
     // (1) Already fully qualified in the path itself -> no guesswork.
-    if norm.starts_with("platform/") || norm.starts_with("keel-platform/") {
+    //
+    // `platform/...` names the whole tree and is joined below the repository
+    // root. `keel-platform/...` names the *canonical half* of it, and is joined
+    // below `platform/` — a leading `keel-platform/` cannot mean anything else,
+    // because there is no `keel-platform/` beside `platform/`. Reading it as a
+    // repository-level directory instead made every citation written that way
+    // resolve to a path that cannot exist, which is how a correct citation into
+    // `tools/kelson-console` came back as MISSING.
+    if norm.starts_with("platform/") {
         let repo = platform_root
             .parent()
             .ok_or_else(|| Unresolved("no repo root above platform/".into()))?;
         return probe(&repo.join(&norm), cite).map_err(|Unresolved(e)| Unresolved(format!("EXPLICIT {e}")));
+    }
+    if let Some(rest) = norm.strip_prefix("keel-platform/") {
+        let p = platform_root.join("keel-platform").join(rest);
+        return probe(&p, cite).map_err(|Unresolved(e)| Unresolved(format!("EXPLICIT {e}")));
     }
 
     // (2) A tree name in the prose just before it decides the tree.
@@ -841,6 +902,41 @@ mod tests {
         assert_eq!(normalize_token("crates/x/src/lib.rs:7"), None);
     }
 
+    /// A declaration is a claim about the line it sits on — and it is written
+    /// with spaces, which no token has ever had. `pub struct IdempotencyKey`
+    /// at `…:75` therefore produced *no* token, so the only thing the clause
+    /// offered the check was `config_hash`, which belongs to the next claim in
+    /// the same sentence; the check then called a line reading
+    /// `pub struct IdempotencyKey(pub String);` a contradiction.
+    #[test]
+    fn a_backticked_declaration_claims_its_own_name() {
+        assert_eq!(
+            normalize_token("pub struct IdempotencyKey"),
+            Some("idempotencykey".to_string())
+        );
+        // The name runs to the first character that cannot be part of one, so
+        // a declaration with its whole signature still yields just the name.
+        assert_eq!(
+            normalize_token("pub struct TenantId(pub uuid::Uuid)"),
+            Some("tenantid".to_string())
+        );
+        assert_eq!(normalize_token("pub fn drain(&mut self)"), Some("drain".to_string()));
+        // A macro's parameter is not the name the macro declares: `$` starts
+        // no identifier, so this claims nothing and the caller is expected to
+        // point at the instantiation instead.
+        assert_eq!(normalize_token("pub struct $name(pub uuid::Uuid)"), None);
+        // Every prefix ends in a space, so the bare word is not the prefix.
+        assert_eq!(normalize_token("struct"), Some("struct".to_string()));
+        // And the two tokens a real sentence offered are now both here, which
+        // is what lets the correct citation pass instead of failing on the
+        // one beside it.
+        let clause = "`pub struct IdempotencyKey` at `crates/async/events/src/lib.rs:75` \
+                       (= `kelson-event`) with a `config_hash`-derived constructor";
+        let toks = code_tokens(clause);
+        assert!(toks.contains(&"idempotencykey".to_string()), "{toks:?}");
+        assert!(toks.contains(&"config_hash".to_string()), "{toks:?}");
+    }
+
     /// The whole point of moving the gate into the tree: a bare path that
     /// resolves in only one tree is fine, and one that resolves differently
     /// in both must name its tree.
@@ -934,6 +1030,52 @@ mod tests {
             matches!(pinned(&far), Err(u) if u.0.contains("DIVERGES")),
             "the lookback must not reach past 90 characters"
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A citation written the way a reader writes one — `keel-platform/tools/…`
+    /// — must name the tree it says. It used to be joined *below the repository
+    /// root*, where no `keel-platform/` has ever existed, so a correct pointer
+    /// into the console's promotion wiring came back EXPLICIT MISSING. There is
+    /// nothing else for that prefix to mean: `platform/` beside it is the other
+    /// tree, not another `keel-platform/`.
+    #[test]
+    fn a_leading_tree_directory_names_that_tree() {
+        let root = temp_root("treedir");
+        std::fs::create_dir_all(root.join("platform/keel-platform/crates")).unwrap();
+        std::fs::create_dir_all(root.join("platform/crates")).unwrap();
+        std::fs::write(root.join("platform/crates/both.rs"), "fn root_tree() {}\n").unwrap();
+        std::fs::write(root.join("platform/keel-platform/crates/both.rs"), "fn canonical() {}\n")
+            .unwrap();
+        std::fs::write(root.join("platform/crates/whole.rs"), "fn root_only() {}\n").unwrap();
+        let platform_root = root.join("platform");
+
+        let pinned = |text: &str| {
+            let cites = extract_cites(text);
+            assert_eq!(cites.len(), 1, "fixture must hold exactly one citation");
+            resolve(text, &platform_root, &cites[0])
+        };
+
+        // The tree directory carries the answer by itself, with no prose
+        // lookback and no DIVERGES despite both trees holding `both.rs`.
+        match pinned("`keel-platform/crates/both.rs:1`") {
+            Ok(Resolved::Found { path, .. }) => assert!(
+                path.starts_with(root.join("platform/keel-platform")),
+                "expected the canonical tree, got {}",
+                path.display()
+            ),
+            other => panic!("expected the canonical tree, got {other:?}"),
+        }
+        // The whole-tree spelling is joined above `platform/`, unchanged.
+        match pinned("`platform/crates/whole.rs:1`") {
+            Ok(Resolved::Found { path, .. }) => assert!(
+                path.starts_with(root.join("platform").join("crates")),
+                "expected the root tree, got {}",
+                path.display()
+            ),
+            other => panic!("expected the root tree, got {other:?}"),
+        }
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1094,6 +1236,8 @@ mod tests {
             "platform/docs/20-ARCHITECTURE-VERIFICATION.md",
             "platform/CHANGELOG.md",
             "platform/PUBLISHING.md",
+            "platform/keel-platform/docs/CORRECTED-TARGET-ARCHITECTURE.md",
+            "platform/keel-platform/docs/PENTEST-TENANT-ISOLATION.md",
         ];
         let mut bad = Vec::new();
         for doc in docs {

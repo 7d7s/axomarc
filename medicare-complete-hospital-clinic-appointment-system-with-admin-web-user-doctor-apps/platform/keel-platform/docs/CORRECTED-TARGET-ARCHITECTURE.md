@@ -4,6 +4,20 @@
 
 ---
 
+> **Citation status (2026-10-13):** this document is a Phase-0 decision record whose
+> `file:line` citations were repaired against the current tree (Phase M/A) by
+> replacing stale fragments (`lib.rs`, line 20; `runtime.rs`, lines 89 and 257)
+> with full `crates/...` paths, qualifying divergent spans with `` `keel-platform` ``,
+> and updating moved symbols (`xtask/src/main.rs`, line 589 for `bump`,
+> `tools/kelson-console/src/main.rs`, line 2624 for `wire_promotion`). The citation
+> gate (`cargo xtask cite-audit`) now enforces that these citations remain
+> accurate; if code moves, the gate will flag the drift — update the citation
+> or date the claim, do not silently re-point it at different code. Two citations
+> the gate cannot see use forms it does not detect (a bare line reference at
+> `:200`, and `services/search` without an extension).
+
+---
+
 ## 1. Executive Summary
 
 The verification audit confirmed **5 root causes** driving 14 P0/P1 findings. This document defines the corrected target architecture that eliminates each root cause at its source, with explicit architectural decisions, component boundaries, and migration sequencing.
@@ -728,21 +742,21 @@ impl PromotionPipeline {
     wasmtime 36.0.17).
 - [x] Implement `ConfigRuntime` + `ConfigWatcher` in `kelson-config` (new crate)
   - **proved.** `ConfigRuntime` at `crates/application/configuration/src/runtime.rs:134`, exported
-    from `lib.rs:20`; `kelson-config` **59 passed / 0 failed**, including the Phase 5 reload hammer
+    from `crates/application/configuration/src/lib.rs:20`; `kelson-config` **59 passed / 0 failed**, including the Phase 5 reload hammer
     and `config_reload_swaps_routes_and_flags_under_50ms`.
   - *Naming note:* no type is named `ConfigWatcher` — the §4.1 file-mtime trigger ships as
-    `FileConfigSource` (mtime stamp, `runtime.rs:89`) plus `ConfigRuntime::poll()` (`runtime.rs:257`).
+    `FileConfigSource` (mtime stamp, `crates/application/configuration/src/runtime.rs:89`) plus `ConfigRuntime::poll()` (`crates/application/configuration/src/runtime.rs:257`).
 - [x] Implement tenant-scoped port traits in each crate (parallel, behind feature flags)
   - **proved — the feature-flag gap is closed, and the flag is real rather than decorative.**
     Only two crates *define* tenant-scoped ports — `kelson-caching` and `kelson-storage` (the note's
-    `cache/src/lib.rs:63` / `storage/src/lib.rs:171`; `kelson-tenancy` merely consumes them), so
+    `` `keel-platform` `crates/services/cache/src/lib.rs:63` `` / `` `keel-platform` `crates/services/storage/src/lib.rs:173-174` ``; `kelson-tenancy` merely consumes them), so
     those are the two gated. Each `Cargo.toml` now declares
     `[features] default = ["tenant-ports"]` + `tenant-ports = []`, and the entire tenant layer is
     wrapped in `#[cfg(feature = "tenant-ports")]` — the trait, its `…Shard` adapter (struct +
     inherent impl + trait impl), the `MapStore` test substrate, and the tenant tests
     (4 in cache, 5 in storage). Storage's `TenantId` import is gated too, since nothing outside
     the tenant section uses it (cache's is left alone: `TenantId` is still used by the authz key
-    fingerprint at `cache/src/lib.rs:190`).
+    fingerprint at `` `keel-platform` `crates/services/cache/src/lib.rs:194-199` ``).
   - **`kelson-tenancy` requests the feature explicitly, not by inheritance:**
     `kelson-caching = { workspace = true, features = ["tenant-ports"] }` (and storage likewise).
     The scoped extensions *are* the tenant ports, so relying on someone else's `default = [...]`
@@ -827,7 +841,7 @@ impl PromotionPipeline {
     `kelson-* = { version = "0.1.0", path = ... }` entries under
     `[workspace.dependencies]`, all moved together by one lockstep
     `cargo xtask bump <X.Y.Z>` that rewrites `[workspace.package].version` plus
-    every internal dep literal in a single pass (`xtask/src/main.rs:558`). Going
+    every internal dep literal in a single pass (`` `keel-platform` `xtask/src/main.rs:589` ``). Going
     per-crate means rewriting all 62 entries into individual constraints and
     replacing the lockstep bumper with per-crate release tooling — not attempted
     here while there is no registry to publish to.
@@ -935,13 +949,13 @@ impl PromotionPipeline {
     (2026-10-08/09) — its original reason no longer holds, its conclusion does; legs 2 and 3
     stand unchanged, and leg 3 remains the binding constraint.**
     1. ~~**It must be PostgreSQL; MySQL cannot stand in, by design.** The platform ships a
-       MySQL driver (`crates/data/mysql/`), but it is *forward-only*: `mysql/src/lib.rs:15`
+       MySQL driver (`crates/data/mysql/`), but it is *forward-only*: `crates/data/mysql/src/lib.rs:15`
        documents **"rollback-capable pairs are PostgreSQL-only"** and `:200` enforces it —
        `pair {base}: rollback-capable pairs are PostgreSQL-only (B-31)` — with
        `refuse_shipped_pairs()` failing the MySQL run closed rather than pretending.
        Only `crates/data/postgres/src/pairs.rs:264 rollback()` exists; MySQL has no
        migration-rollback path at all (`mysql`'s sole `rollback` is the transaction method in
-       `txport.rs:108`).~~ **Revised:** Phase C replaced the refusal with
+       `crates/data/mysql/src/txport.rs:108`).~~ **Revised:** Phase C replaced the refusal with
        `kelson_mysql::pairs`, a full port of `kelson_postgres::pairs::rollback()` — same
        `database/migrations-pairs` shipment, same `keel_migrations` bookkeeping, same Laravel
        batches — executed without a transaction because MySQL DDL auto-commits, with the live
@@ -950,7 +964,7 @@ impl PromotionPipeline {
        against MySQL 8.0.44. **But this box's figure does not travel that path.** It runs
        `kelson promote` / `kelson rollback` → `RollbackExecutor`, whose composition root still
        refuses a MySQL pool: `wire_promotion`
-       (`keel-platform/tools/kelson-console/src/main.rs:2313`) returns
+       (`` `keel-platform/tools/kelson-console/src/main.rs:2624` ``) returns
        `pg_only_on_mysql("promote/rollback")` unless `db` is `DbPool::Postgres`, because the
        ports it wires — `promotion::EventAdapter`, `promotion::MigrationAdapter` (which
        drives `kelson_postgres::pairs`) and the health probes — are `PgPool`-typed. Phase C
