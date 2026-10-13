@@ -45,6 +45,17 @@ bump VERSION:
 deny:
     cargo deny check
 
+# --- documentation gates (see docs/20-ARCHITECTURE-VERIFICATION.md §1) ---
+
+# the citation gate: every `file:line` in a ledger document must resolve in
+# the tree it names, and must say what its sentence says
+cite-audit:
+    cargo run --manifest-path keel-platform/Cargo.toml -p xtask -- cite-audit platform/docs/20-ARCHITECTURE-VERIFICATION.md platform/CHANGELOG.md platform/PUBLISHING.md
+
+# the same gate over any other document: `just cite-audit-doc platform/docs/13-OPERATIONS.md`
+cite-audit-doc +DOC:
+    cargo run --manifest-path keel-platform/Cargo.toml -p xtask -- cite-audit {{DOC}}
+
 # regenerate CHANGELOG.md at a release tag (`cargo install git-cliff`)
 # example: just changelog kelson/platform-v0.1.0
 changelog TAG:

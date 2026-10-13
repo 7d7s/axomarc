@@ -3,12 +3,17 @@
 //! - `cargo xtask dep-rules`  architecture analyzer gate (same engine as `kelson check` and CI)
 //!   plus the Wave 4 boot env-var lint — the one gate command enforces both
 //! - `cargo xtask lint`       the boot env-var lint on its own (docs/19 L209)
+//! - `cargo xtask cite-audit` the citation gate: every `file:line` in a ledger
+//!   document must resolve *and* say what the sentence citing it says
 //! - `cargo xtask semver`     cargo-semver-checks release gate (skips before the first release tag)
 //! - `cargo xtask publish`    publish all publishable crates to crates.io in dependency order
 //! - `cargo xtask bump X.Y.Z` bump the lockstep workspace version
 //!
 //! `dep-rules` and `semver` run in CI; `publish` and `bump` drive the release
-//! process documented in PUBLISHING.md.
+//! process documented in PUBLISHING.md. `cite-audit` is the gate behind the
+//! ledger documents' `file:line` citations — see `docs/20-ARCHITECTURE-VERIFICATION.md`.
+
+mod cite_audit;
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -22,6 +27,26 @@ fn main() -> ExitCode {
         "lint" => lint(),
         "semver" => semver(),
         "publish" => publish(&args[1..]),
+        "cite-audit" => match args.get(1) {
+            None => {
+                println!("usage: cargo xtask cite-audit <doc> [<doc>...]   (paths relative to the repo root)");
+                println!("example: cargo xtask cite-audit platform/docs/20-ARCHITECTURE-VERIFICATION.md");
+                ExitCode::FAILURE
+            }
+            Some(_) => {
+                // `cite-audit` is the one subcommand whose inputs are relative to
+                // the *repository* root rather than the workspace root, because its
+                // subjects are the ledger documents and they live in the tree above
+                // this one. `root_dir()` is `platform/keel-platform`, so the ladder
+                // in its own doc comment is walked here: one parent is the
+                // workspace, two is `<repo>/platform`, three is the repo root.
+                let repo = root_dir()
+                    .parent()
+                    .and_then(Path::parent)
+                    .expect("platform/keel-platform has two parents");
+                cite_audit::run(repo, &args[1..])
+            }
+        },
         "bump" => match args.get(1) {
             Some(v) => bump(v),
             None => {
@@ -30,13 +55,15 @@ fn main() -> ExitCode {
             }
         },
         _ => {
-            println!("usage: cargo xtask <dep-rules|lint|semver|publish|bump>");
+            println!("usage: cargo xtask <dep-rules|lint|semver|publish|bump|cite-audit>");
             ExitCode::SUCCESS
         }
     }
 }
 
-/// xtask lives at platform/xtask: one parent up is the workspace root.
+/// xtask lives at platform/keel-platform/xtask: one parent up is the
+/// workspace root (`platform/keel-platform`), two up is `<repo>/platform`
+/// (the root tree), three is the repo root. `cite-audit` walks that ladder.
 fn root_dir() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
 }
