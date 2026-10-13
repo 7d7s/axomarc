@@ -65,6 +65,131 @@ fn read_guest_str(
     Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
+// ---------------------------------------------------------------------------
+// The four host primitives, written ONCE.
+// ---------------------------------------------------------------------------
+//
+// Two front doors reach these methods:
+//
+// * **ABI v1** — `host.*` registrations below, whose closures first copy the
+//   arguments out of the guest's linear memory and then hand over `&str`.
+// * **ABI v2** — the generated `kelson:plugin::host::Host` trait at the bottom
+//   of this file, whose arguments the Component Model canonical ABI has
+//   already lifted into owned `String`s.
+//
+// Both call the same four methods, so the two generations cannot disagree
+// about what a capability verdict *means*. That is the mirror ADR 0019 §5
+// insisted on preserving (including the `%record` spelling, which exists so
+// v2's `record` parameter keeps v1's name rather than being renamed and the
+// mirror quietly broken). Drift between the generations is now structurally
+// impossible rather than merely tested-for.
+//
+// Every method **answers** and none ever traps: a denial, an unparseable
+// payload or a full buffer is `false`. A guest can therefore never turn a
+// refusal into a host crash, on either ABI.
+impl CallState {
+    /// `log(message)` — one structured line, tagged with the plugin label.
+    pub(crate) fn host_log(&self, message: &str) {
+        tracing::info!(target: "kelson::wasm", plugin = %self.label, message = %message);
+    }
+
+    /// `capability_check(action, path)` — allow?
+    ///
+    /// Verdict = `action` is in the sidecar-verified capability set (a plugin
+    /// can never elevate itself), AND a non-empty `path` must sit inside the
+    /// execution's resolved scope chain. No scope means deny — fail-closed,
+    /// never a trap.
+    pub(crate) fn host_capability_check(&self, action: &str, path: &str) -> bool {
+        if !self.declared.contains(action) {
+            return false;
+        }
+        if path.is_empty() {
+            return true;
+        }
+        if !self.has_scope {
+            return false;
+        }
+        self.scope_paths
+            .iter()
+            .any(|p| *p == path || p.starts_with(&format!("{path}|")))
+    }
+
+    /// `capability_write(action, delta)` — recorded?
+    ///
+    /// Refuses unless ALL hold: the executing capability runs a
+    /// ReadWrite/Admin profile (read-only guests can never write, even when
+    /// they import the function), `action` is in the sidecar-verified declared
+    /// set (no self-elevation), `delta` parses as a JSON object (the handler
+    /// validates the shape), and the per-call buffer is not full.
+    pub(crate) fn host_capability_write(&mut self, action: &str, delta: &str) -> bool {
+        if !self.profile.can_write() {
+            return false;
+        }
+        if !self.declared.contains(action) {
+            return false;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(delta) else {
+            return false;
+        };
+        if !value.is_object() {
+            return false;
+        }
+        if self.deltas.len() >= MAX_CALL_EFFECTS {
+            return false;
+        }
+        self.deltas.push(value);
+        true
+    }
+
+    /// `capability_audit(action, record)` — recorded?
+    ///
+    /// Audit is append-only, so EVERY profile may record (including
+    /// ReadOnly); `action` must still be declared and `record` must parse as
+    /// a JSON object. Same buffer bound as writes.
+    pub(crate) fn host_capability_audit(&mut self, action: &str, record: &str) -> bool {
+        if !self.declared.contains(action) {
+            return false;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(record) else {
+            return false;
+        };
+        if !value.is_object() {
+            return false;
+        }
+        if self.audits.len() >= MAX_CALL_EFFECTS {
+            return false;
+        }
+        self.audits.push(value);
+        true
+    }
+}
+
+/// The ABI v2 face of the same four primitives: the `Host` trait generated
+/// from `wit/kelson-plugin.wit` by `wasmtime::component::bindgen!`.
+///
+/// This is the *production* implementation — the one
+/// [`WasmHost::prepare`](crate::WasmHost::prepare) links a component against,
+/// so `component-model` is no longer a compiled-but-unreachable feature.
+/// Every method is a one-line delegation to [`CallState`] above.
+#[cfg(feature = "component-model")]
+impl crate::component::kelson::plugin::host::Host for CallState {
+    fn log(&mut self, message: String) {
+        self.host_log(&message);
+    }
+
+    fn capability_check(&mut self, action: String, path: String) -> bool {
+        self.host_capability_check(&action, &path)
+    }
+
+    fn capability_write(&mut self, action: String, delta: String) -> bool {
+        self.host_capability_write(&action, &delta)
+    }
+
+    fn capability_audit(&mut self, action: String, record: String) -> bool {
+        self.host_capability_audit(&action, &record)
+    }
+}
+
 /// Register every linked import on `linker`. Any registration failure is a
 /// host construction bug, surfaced as a load error (never a panic).
 pub(crate) fn define(linker: &mut Linker<CallState>) -> Result<(), WasmError> {
@@ -307,8 +432,7 @@ fn define_host(linker: &mut Linker<CallState>) -> Result<(), WasmError> {
             let Some(message) = read_guest_str(&memory, &mut caller, ptr, len) else {
                 return;
             };
-            let plugin = caller.data().label.clone();
-            tracing::info!(target: "kelson::wasm", plugin = %plugin, message = %message);
+            caller.data().host_log(&message);
         },
     )?;
 
@@ -341,21 +465,7 @@ fn define_host(linker: &mut Linker<CallState>) -> Result<(), WasmError> {
                 (action, path)
             };
             let state = caller.data();
-            if !state.declared.contains(&action) {
-                return 0;
-            }
-            if path.is_empty() {
-                return 1;
-            }
-            if !state.has_scope {
-                return 0;
-            }
-            i32::from(
-                state
-                    .scope_paths
-                    .iter()
-                    .any(|p| *p == path || p.starts_with(&format!("{path}|"))),
-            )
+            i32::from(state.host_capability_check(&action, &path))
         },
     )?;
 
@@ -391,25 +501,7 @@ fn define_host(linker: &mut Linker<CallState>) -> Result<(), WasmError> {
                 };
                 (action, delta)
             };
-            let state = caller.data();
-            if !state.profile.can_write() {
-                return 0;
-            }
-            if !state.declared.contains(&action) {
-                return 0;
-            }
-            let Ok(value) = serde_json::from_str::<serde_json::Value>(&delta) else {
-                return 0;
-            };
-            if !value.is_object() {
-                return 0;
-            }
-            let state = caller.data_mut();
-            if state.deltas.len() >= MAX_CALL_EFFECTS {
-                return 0;
-            }
-            state.deltas.push(value);
-            1
+            i32::from(caller.data_mut().host_capability_write(&action, &delta))
         },
     )?;
 
@@ -441,22 +533,7 @@ fn define_host(linker: &mut Linker<CallState>) -> Result<(), WasmError> {
                 };
                 (action, record)
             };
-            let state = caller.data();
-            if !state.declared.contains(&action) {
-                return 0;
-            }
-            let Ok(value) = serde_json::from_str::<serde_json::Value>(&record) else {
-                return 0;
-            };
-            if !value.is_object() {
-                return 0;
-            }
-            let state = caller.data_mut();
-            if state.audits.len() >= MAX_CALL_EFFECTS {
-                return 0;
-            }
-            state.audits.push(value);
-            1
+            i32::from(caller.data_mut().host_capability_audit(&action, &record))
         },
     )?;
     Ok(())

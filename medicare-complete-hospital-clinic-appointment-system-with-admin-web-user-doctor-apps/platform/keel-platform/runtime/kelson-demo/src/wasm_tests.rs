@@ -181,7 +181,7 @@ fn wasm_loader_gates_discovery_and_the_guest_abi() {
     let err = crate::load_wasm_plugins(&root).expect_err("missing binary refuses");
     assert!(err.contains("does not exist"), "{err}");
 
-    // A COMMAND-profiled capability: ACCEPTED under Phase 3 §5.3 — the
+    // A COMMAND-profiled capability: ACCEPTED under Phase 3 Ã‚Â§5.3 Ã¢â‚¬â€ the
     // op profile maps to the ReadWrite guest profile (the same rule `kelson
     // check`/the console apply at graph discovery). The guest can only
     // use what its sidecar declares; the write imports enforce the
@@ -209,7 +209,7 @@ fn wasm_loader_gates_discovery_and_the_guest_abi() {
 
     // Drift: the sidecar passes every discovery rule but disagrees with the
     // guest's own kelson_manifest() (inputs declared only on the reviewed
-    // side) — boot refused with both documents in the message.
+    // side) Ã¢â‚¬â€ boot refused with both documents in the message.
     let root = temp_root("drift");
     let sidecar = root.join("drift.toml");
     std::fs::write(
@@ -311,7 +311,7 @@ async fn wasm_operations_dispatch_through_the_bus() {
 }
 
 /// The engine's pre-dispatch authorization gate answers with the denied
-/// error — the guest never executes (the 403 facet is AppError::denied).
+/// error Ã¢â‚¬â€ the guest never executes (the 403 facet is AppError::denied).
 #[tokio::test]
 async fn wasm_dispatch_denies_before_the_guest_runs() {
     let root = temp_root("denied");
@@ -378,7 +378,7 @@ async fn guest_capability_checks_fail_closed_declared_and_scoped() {
         probe(&bus, scoped(), json!("probe|LOC5")).await,
         json!({"allowed": false})
     );
-    // An action the plugin never declared can never be allowed — a guest
+    // An action the plugin never declared can never be allowed Ã¢â‚¬â€ a guest
     // cannot elevate itself past the reviewed sidecar.
     assert_eq!(
         probe(&bus, scoped(), json!("admin.wipe")).await,
@@ -428,8 +428,8 @@ fn load_bundle(tag: &str, name: &str) -> (PathBuf, kelson_wasm::WasmHandlerBundl
     (root, bundle)
 }
 
-/// §5.3 profile mapping: the guest profile derives from the sidecar's op
-/// profile — Read/Report stay read-only, System is Admin, the
+/// Ã‚Â§5.3 profile mapping: the guest profile derives from the sidecar's op
+/// profile Ã¢â‚¬â€ Read/Report stay read-only, System is Admin, the
 /// Command-family writes. ReadOnly holds exactly when the engine judges
 /// the operation read-only, so a guest can never record a delta the
 /// engine would refuse to commit.
@@ -459,9 +459,9 @@ fn wasm_capability_profiles_map_from_op_profiles() {
     assert!(Profile::Admin.can_write());
 }
 
-/// §5.3 end to end: a COMMAND guest's `capability_write` records a delta
+/// Ã‚Â§5.3 end to end: a COMMAND guest's `capability_write` records a delta
 /// the handler commits through the execution unit (visible as a delta
-/// stone), and `capability_audit` is accepted — the verdicts echo in the
+/// stone), and `capability_audit` is accepted Ã¢â‚¬â€ the verdicts echo in the
 /// guest output.
 #[tokio::test]
 async fn wasm_write_imports_commit_deltas_through_the_unit() {
@@ -493,7 +493,7 @@ async fn wasm_write_imports_commit_deltas_through_the_unit() {
     assert_eq!(note.after["text"], json!("hi"));
 }
 
-/// Undeclared actions stay refused on the write imports too — a guest
+/// Undeclared actions stay refused on the write imports too Ã¢â‚¬â€ a guest
 /// cannot elevate itself past the reviewed sidecar, even for audit. The
 /// refused call emits no mutations, so the engine rejects the no-op
 /// command itself (`KSN_NO_EFFECT`): nothing is committed anywhere.
@@ -620,7 +620,7 @@ fn pin_mismatch_refuses_boot_before_any_plugin_loads() {
     //
     // The `echo` fixture loads cleanly on its own, so the ONLY reason boot
     // fails here is the pin. The refusal must also name the pin, not a
-    // plugin — that is what proves the check ran BEFORE instantiation rather
+    // plugin Ã¢â‚¬â€ that is what proves the check ran BEFORE instantiation rather
     // than after.
     let root = temp_root("pins-drift");
     write_index(&root, vec![fixture_entry("echo")]);
@@ -660,7 +660,7 @@ fn a_pin_matching_the_index_still_boots_and_loads_the_plugin() {
 #[test]
 fn an_absent_pin_file_is_not_an_error_so_unpinned_workspaces_keep_booting() {
     // Pinning is opt-in. If a missing pin file refused boot, every workspace
-    // that had never run `kelson promote` — including this fixture tree —
+    // that had never run `kelson promote` Ã¢â‚¬â€ including this fixture tree Ã¢â‚¬â€
     // would break on upgrade.
     let root = temp_root("pins-absent");
     write_index(&root, vec![fixture_entry("echo")]);
@@ -728,7 +728,7 @@ fn a_budget_asking_for_more_sandbox_than_the_host_refuses_boot() {
 #[tokio::test]
 async fn a_wall_clock_deadline_interrupts_a_spinning_guest_and_pins_503() {
     // `spin.wat`'s kelson_call loops forever. Against a host whose fuel cap
-    // is effectively unbounded, fuel can no longer be what stops it — so the
+    // is effectively unbounded, fuel can no longer be what stops it Ã¢â‚¬â€ so the
     // interrupt is unambiguously the epoch deadline, not instruction
     // metering wearing a different hat.
     let root = temp_root("budget-deadline");
@@ -771,7 +771,7 @@ async fn a_wall_clock_deadline_interrupts_a_spinning_guest_and_pins_503() {
     assert_eq!(err.code, codes::WASM_DEADLINE, "the deadline, not fuel");
     // Not EARLY: the budget declares 250ms and the epoch counts real elapsed
     // milliseconds, so an interrupt sooner than that would mean the clock was
-    // never consulted. Slack is allowed on the far side only — a deadline may
+    // never consulted. Slack is allowed on the far side only Ã¢â‚¬â€ a deadline may
     // run late (it is bounded by one sleep interval and OS timer slop), never
     // early, and never as a multiple of what was asked for.
     assert!(
@@ -780,7 +780,7 @@ async fn a_wall_clock_deadline_interrupts_a_spinning_guest_and_pins_503() {
     );
 
     // Production renderer parity: the harness pin (mirroring the boot pin)
-    // serves it at 503, not the ResourceExhausted default of 429 — this is
+    // serves it at 503, not the ResourceExhausted default of 429 Ã¢â‚¬â€ this is
     // our plugin's clock running out, not the caller sending too fast.
     let dir = temp_root("deadline-render");
     let (state, _, _) = crate::build_app_state(&dir, false, true);
@@ -820,7 +820,7 @@ async fn a_saturated_plugin_refuses_a_call_before_a_guest_is_instantiated() {
     // Occupy the plugin's single slot with a call that spins until its 250ms
     // deadline releases it. Driven directly rather than through a second bus
     // because it is the same `WasmPlugin::call` the dispatch edge makes, and a
-    // plain thread keeps it running while this thread drives its own — on the
+    // plain thread keeps it running while this thread drives its own Ã¢â‚¬â€ on the
     // current-thread runtime a spawned task would block this one instead.
     let holder = Arc::clone(&plugin);
     let holder_thread = std::thread::spawn(move || {
@@ -840,7 +840,7 @@ async fn a_saturated_plugin_refuses_a_call_before_a_guest_is_instantiated() {
     while plugin.in_flight() == 0 {
         assert!(
             std::time::Instant::now() < wait_until,
-            "the holding call never took its slot — spin_timeout.module.toml's \
+            "the holding call never took its slot Ã¢â‚¬â€ spin_timeout.module.toml's \
              execution_timeout_ms may be shorter than scheduler jitter"
         );
         std::thread::sleep(std::time::Duration::from_millis(1));
@@ -883,7 +883,7 @@ async fn a_saturated_plugin_refuses_a_call_before_a_guest_is_instantiated() {
     assert_eq!(body["error"]["code"], "KSN_WASM_SATURATED");
 }
 
-/// ADR 0019 §6 — **prepare** stops short of registration. The guest compiles,
+/// ADR 0019 Ã‚Â§6 Ã¢â‚¬â€ **prepare** stops short of registration. The guest compiles,
 /// links, passes the ABI gate and drift check, and is still refused every call
 /// until the HOST commits; building the dispatchers does not commit it either,
 /// so the staging window is real rather than nominal.
@@ -900,7 +900,7 @@ fn prepared_generation_refuses_dispatch_until_the_host_commits() {
     let plugin = Arc::new(host.prepare(&bytes, &sidecar).expect("mutate prepares"));
     assert_eq!(plugin.state(), kelson_wasm::PluginState::Prepared);
 
-    // Fully validated and still dispatching nothing — refused before a store,
+    // Fully validated and still dispatching nothing Ã¢â‚¬â€ refused before a store,
     // an instance or a guest exists, so a prepare that failed this late would
     // never have disturbed whatever was already serving.
     let refused = plugin
@@ -929,7 +929,7 @@ fn prepared_generation_refuses_dispatch_until_the_host_commits() {
     plugin.commit().expect("the host commits");
     assert_eq!(plugin.state(), kelson_wasm::PluginState::Ready);
     // Committing the same generation twice describes one host decision, not
-    // two — the thing that must never be idempotent is the move *out* of a
+    // two Ã¢â‚¬â€ the thing that must never be idempotent is the move *out* of a
     // retire, which `drain_is_a_one_way_retire` pins below.
     plugin.commit().expect("commit is idempotent");
 
@@ -944,7 +944,7 @@ fn prepared_generation_refuses_dispatch_until_the_host_commits() {
     assert_eq!(out.deltas.len(), 1, "the guest ran and recorded its delta");
 }
 
-/// ADR 0019 §6 — **drain** is a one-way retire: it stops accepting calls,
+/// ADR 0019 Ã‚Â§6 Ã¢â‚¬â€ **drain** is a one-way retire: it stops accepting calls,
 /// a second caller joins the same wait, and nothing can put the generation
 /// back in service afterwards.
 #[test]
@@ -999,7 +999,7 @@ fn drain_is_a_one_way_retire_that_refuses_calls_and_cannot_be_undone() {
 }
 
 /// A generation the host never committed accepted no work, so a drain request
-/// for it means the caller has lost track of which generation it holds —
+/// for it means the caller has lost track of which generation it holds Ã¢â‚¬â€
 /// refused rather than silently answered.
 #[test]
 fn draining_a_never_committed_generation_is_refused() {
@@ -1078,7 +1078,7 @@ fn drain_waits_for_in_flight_calls_and_reports_the_wait_it_could_not_finish() {
 
     // A timed-out drain does not reopen the generation. It has already stopped
     // accepting calls, and putting it back in service mid-retire is precisely
-    // what drain exists to prevent — so the caller's move is to drain again,
+    // what drain exists to prevent Ã¢â‚¬â€ so the caller's move is to drain again,
     // not to give up and route traffic back through it.
     assert_eq!(plugin.state(), kelson_wasm::PluginState::Draining);
     let refused = plugin
@@ -1145,7 +1145,7 @@ fn a_hand_authored_component_fixture_round_trips_without_guest_side_wit_bindgen(
     let component = wasmtime::component::Component::new(&engine, COMPONENT)
         .expect("the hand-authored component text must load");
 
-    // Loaded is not enough — it has to be callable through the host side.
+    // Loaded is not enough Ã¢â‚¬â€ it has to be callable through the host side.
     let mut store = wasmtime::Store::new(&engine, ());
     let linker = wasmtime::component::Linker::new(&engine);
     let instance = linker
@@ -1177,7 +1177,7 @@ fn a_hand_authored_component_fixture_round_trips_without_guest_side_wit_bindgen(
 fn the_v2_wit_world_compiles_and_a_denying_host_returns_false_instead_of_trapping() {
     // `bindgen!` mirrors the WIT package path rather than flattening it, so
     // the host interface lands at `kelson::plugin::host` and the export at
-    // `exports::kelson::plugin::dispatch` — the same nesting a WIT
+    // `exports::kelson::plugin::dispatch` Ã¢â‚¬â€ the same nesting a WIT
     // `use kelson:plugin/{host}` would address.
     use kelson_wasm::component::exports::kelson::plugin::dispatch::CallError;
     use kelson_wasm::component::kelson::plugin::host::Host;
@@ -1191,7 +1191,7 @@ fn the_v2_wit_world_compiles_and_a_denying_host_returns_false_instead_of_trappin
         "the WIT world should resolve to a `Plugin` type, got {world}"
     );
 
-    /// A host that denies everything — what a plugin whose sidecar declares no
+    /// A host that denies everything Ã¢â‚¬â€ what a plugin whose sidecar declares no
     /// capabilities meets at runtime, and the shape the fail-closed rule
     /// requires.
     struct DenyingHost;
@@ -1223,4 +1223,581 @@ fn the_v2_wit_world_compiles_and_a_denying_host_returns_false_instead_of_trappin
     // values the guest can name.
     assert!(matches!(CallError::Failed, CallError::Failed));
     assert!(!matches!(CallError::Failed, CallError::OutOfFuel));
+}
+
+/// The ABI v2 fixture's guest manifest: a minimal but *real* `module.toml`
+/// shape (only `module.name` is required; every other field has a serde
+/// default). Mirrored by [`V2_SIDECAR_TOML`], so `WasmHost::prepare`'s
+/// normalized comparison between the two passes — and fails loudly as
+/// [`kelson_wasm::WasmError::Drift`] if anyone edits one without the other.
+#[cfg(feature = "component-model")]
+const V2_MANIFEST_JSON: &str =
+    r#"{"module":{"name":"v2-fixture"},"capabilities":{"appointments.read":{"profile":"READ"}}}"#;
+
+/// The reviewed sidecar that [`V2_MANIFEST_JSON`] must serialize identically
+/// to, declared as TOML because that is how a sidecar actually ships.
+///
+/// `capabilities."appointments.read"` is not decoration: `prepare` copies the
+/// guest manifest's capability keys into the host's `declared` set, and the
+/// ABI v2 guest passes `appointments.read` to `capability_check`, so a name
+/// that did not appear here would be refused by the very check the test is
+/// there to exercise.
+///
+/// Not gated on `component-model`: the review-gate test below runs in a
+/// default build too, because detection reads the *artifact* and the refusal
+/// that keeps a default build from silently accepting a component has to be
+/// reachable there.
+const V2_SIDECAR_TOML: &str = r#"
+[module]
+name = "v2-fixture"
+
+[capabilities."appointments.read"]
+profile = "READ"
+"#;
+
+/// Build the ABI v2 guest fixture: a hand-authored canonical-ABI component
+/// importing `kelson:plugin/host@0.2.0` and exporting
+/// `kelson:plugin/dispatch@0.2.0`.
+///
+/// Two parts vary — `manifest_json`, which `dispatch.manifest()` returns and
+/// which [`kelson_wasm::WasmHost::prepare`] normalized-compares against the
+/// reviewed sidecar; and `body_json`, what an allowed `dispatch.call()`
+/// returns. Supplying a marker `body_json` is what lets a test tell *which*
+/// generation served a call rather than having to infer it.
+///
+/// Authored as WAT rather than checked in as a `.wat` fixture or a prebuilt
+/// blob: the guest and its expected memory layout stay reviewable side by
+/// side, and neither this file nor the boundary test needs a `wit-bindgen`
+/// dependency or a binary in git.
+///
+/// Memory map of the one shared linear memory — `$guest` imports
+/// `canonical_abi`'s memory rather than defining its own, so these segments
+/// land in the same bytes the canonical ABI allocates from:
+///
+/// | range     | contents                                          |
+/// |-----------|---------------------------------------------------|
+/// | 64..192   | `manifest_json`                                   |
+/// | 192..209  | the `appointments.read` action string             |
+/// | 224..288  | `body_json`                                       |
+/// | 512..     | `cabi_realloc`'s bump: host-lowered `op`/`input`   |
+/// | 4000/4016 | the `manifest` and `call` return areas            |
+#[cfg(feature = "component-model")]
+fn v2_component_wat(manifest_json: &str, body_json: &str) -> String {
+    /// WAT string escaping: backslashes first, then quotes. The reverse
+    /// order would escape the backslashes it had just inserted.
+    fn wat_string(s: &str) -> String {
+        s.replace('\\', "\\\\").replace('"', "\\\"")
+    }
+
+    const MANIFEST_CAP: usize = 128;
+    const BODY_CAP: usize = 64;
+
+    // Asserted rather than assumed: a manifest that outgrew its slot would
+    // silently overwrite the action string, and the capability check would
+    // then see garbage instead of the test failing.
+    assert!(
+        manifest_json.len() <= MANIFEST_CAP,
+        "guest manifest is {} bytes but only {MANIFEST_CAP} are reserved at offset 64",
+        manifest_json.len()
+    );
+    assert!(
+        body_json.len() <= BODY_CAP,
+        "call body is {} bytes but only {BODY_CAP} are reserved at offset 224",
+        body_json.len()
+    );
+
+    const TEMPLATE: &str = r#"
+        (component
+          (type $host-ty (instance
+            (type $log-ty (func (param "message" string)))
+            (type $check-ty (func (param "action" string) (param "path" string) (result bool)))
+            (type $write-ty (func (param "action" string) (param "delta" string) (result bool)))
+            (type $audit-ty (func (param "action" string) (param "record" string) (result bool)))
+            (export "log" (func (type $log-ty)))
+            (export "capability-check" (func (type $check-ty)))
+            (export "capability-write" (func (type $write-ty)))
+            (export "capability-audit" (func (type $audit-ty)))))
+          (import "kelson:plugin/host@0.2.0" (instance $h (type $host-ty)))
+
+          (alias export $h "log" (func $log))
+          (alias export $h "capability-check" (func $check))
+          (alias export $h "capability-write" (func $write))
+          (alias export $h "capability-audit" (func $audit))
+
+          ;; memory + realloc live in their own core module so the lowered host
+          ;; imports can be built before the guest is instantiated
+          (core module $canon
+            (memory (export "memory") 1)
+            (global $bump (mut i32) (i32.const 512))
+            (func (export "cabi_realloc") (param i32 i32 i32 i32) (result i32)
+              (local $p i32)
+              (local.set $p (global.get $bump))
+              (global.set $bump (i32.add (global.get $bump) (local.get 3)))
+              (local.get $p))
+            (func (export "cabi_free") (param i32 i32 i32)))
+
+          (core instance $canon-inst (instantiate $canon))
+          (alias core export $canon-inst "memory" (core memory $memory))
+          (alias core export $canon-inst "cabi_realloc" (core func $realloc))
+
+          (core func $log-low
+            (canon lower (func $log) (memory $memory) (realloc $realloc) string-encoding=utf8))
+          (core func $check-low
+            (canon lower (func $check) (memory $memory) (realloc $realloc) string-encoding=utf8))
+          (core func $write-low
+            (canon lower (func $write) (memory $memory) (realloc $realloc) string-encoding=utf8))
+          (core func $audit-low
+            (canon lower (func $audit) (memory $memory) (realloc $realloc) string-encoding=utf8))
+
+          (core module $guest
+            (import "canonical_abi" "memory" (memory 1))
+            (import "canonical_abi" "realloc" (func (param i32 i32 i32 i32) (result i32)))
+            (import "host" "log" (func $log (param i32 i32)))
+            (import "host" "capability-check" (func $check (param i32 i32 i32 i32) (result i32)))
+            (import "host" "capability-write" (func $write (param i32 i32 i32 i32) (result i32)))
+            (import "host" "capability-audit" (func $audit (param i32 i32 i32 i32) (result i32)))
+
+            ;; static strings: manifest at 64, the action at 192, the returned
+            ;; body at 224. Return areas sit far above the realloc bump.
+            (data (i32.const 64) "@MANIFEST@")
+            (data (i32.const 192) "appointments.read")
+            (data (i32.const 224) "@BODY@")
+
+            (func (export "manifest_impl") (result i32)
+              (i32.store (i32.const 4000) (i32.const 64))
+              (i32.store (i32.const 4004) (i32.const @MANIFEST_LEN@))
+              (i32.const 4000))
+
+            (func (export "call_impl")
+              (param $op i32) (param $opn i32) (param $in i32) (param $inn i32) (result i32)
+              (call $log (local.get $op) (local.get $opn))
+              ;; `result<string, call-error>` in the return area: the variant
+              ;; discriminant sits at byte 0, the payload at
+              ;; `align_to(1, align(payload))` = 4 (string is 4-aligned).
+              (if (i32.eqz (call $check
+                    (i32.const 192) (i32.const 17) (local.get $in) (local.get $inn)))
+                (then
+                  (i32.store8 (i32.const 4016) (i32.const 1))
+                  (i32.store8 offset=4 (i32.const 4016) (i32.const 0))
+                  (return (i32.const 4016))))
+              (i32.store8 (i32.const 4016) (i32.const 0))
+              (i32.store offset=4 (i32.const 4016) (i32.const 224))
+              (i32.store offset=8 (i32.const 4016) (i32.const @BODY_LEN@))
+              (i32.const 4016))
+
+            (func (export "post_return") (param i32)))
+
+          (core instance $guest-inst (instantiate $guest
+            (with "canonical_abi" (instance
+              (export "memory" (memory $memory))
+              (export "realloc" (func $realloc))))
+            (with "host" (instance
+              (export "log" (func $log-low))
+              (export "capability-check" (func $check-low))
+              (export "capability-write" (func $write-low))
+              (export "capability-audit" (func $audit-low))))))
+
+          (alias core export $guest-inst "manifest_impl" (core func $mi))
+          (alias core export $guest-inst "call_impl" (core func $ci))
+          (alias core export $guest-inst "post_return" (core func $post))
+
+          (type $e (enum "failed" "out-of-fuel"))
+          (type $r2 (result string (error $e)))
+          (type $manifest-ty (func (result string)))
+          (type $call-ty (func (param "op" string) (param "input" string) (result $r2)))
+
+          (func $manifest (type $manifest-ty)
+            (canon lift (core func $mi) (memory $memory) (realloc $realloc)
+              string-encoding=utf8 (post-return $post)))
+          (func $call (type $call-ty)
+            (canon lift (core func $ci) (memory $memory) (realloc $realloc)
+              string-encoding=utf8 (post-return $post)))
+
+          (instance $dispatch
+            (export "call-error" (type $e))
+            (export "manifest" (func $manifest))
+            (export "call" (func $call)))
+          (export "kelson:plugin/dispatch@0.2.0" (instance $dispatch)))
+    "#;
+
+    TEMPLATE
+        .replace("@MANIFEST@", &wat_string(manifest_json))
+        .replace("@MANIFEST_LEN@", &manifest_json.len().to_string())
+        .replace("@BODY@", &wat_string(body_json))
+        .replace("@BODY_LEN@", &body_json.len().to_string())
+}
+
+/// The ABI v2 guest, built here as a hand-authored canonical-ABI component and
+/// then **called** through the generated `kelson:plugin/dispatch` bindings.
+///
+/// This is the executable half of ADR 0019 §6's upgrade proof: before a v1 → v2
+/// swap can be claimed, the v2 side must demonstrably serve under the same
+/// `WasmHost`. It settles three things by round-trip rather than by reading the
+/// spec:
+///
+/// 1. **Detection & instantiation.** The artifact is a Component Model component
+///    exporting `kelson:plugin/dispatch@0.2.0` — the structural rule of ADR 0019
+///    §2 — and it loads through the same `Plugin` handle as a v1 core module.
+/// 2. **Both directions of the canonical ABI.**
+///    * guest → host: the lowered `log` / `capability-check` imports deliver
+///      `("appointments.read", "{\"id\":1}")` intact;
+///    * host → guest: `manifest` returns a plain `string`, and `call` returns
+///      `result<string, call-error>` whose payload sits at the variant's
+///      `payload_offset` (discriminant at byte 0, payload at 4).
+/// 3. **Refusal is a value, not a trap.** With the scope unresolvable the guest
+///    returns `Err(CallError::Failed)`; the call does not unwind, so a
+///    capability denial can never be mistaken for a crash.
+///
+/// The component is authored inline in WAT rather than shipped as a fixture: it
+/// keeps the boundary test free of a `wit-bindgen` dependency and of any
+/// prebuilt binary blob, so the guest and its expected layout are reviewable
+/// side by side in this file.
+#[cfg(feature = "component-model")]
+#[test]
+fn v2_world_guest_round_trip() {
+    use kelson_wasm::component::exports::kelson::plugin::dispatch::CallError;
+    use kelson_wasm::component::kelson::plugin::host::Host;
+    use kelson_wasm::component::Plugin;
+    use wasmtime::component::{HasSelf, Linker};
+    use wasmtime::{Engine, Store};
+
+    let world = v2_component_wat(V2_MANIFEST_JSON, "{\"echo\":true}");
+
+    let mut config = wasmtime::Config::new();
+    config.wasm_component_model(true);
+    let engine = Engine::new(&config).unwrap();
+    let component = match wasmtime::component::Component::new(&engine, &world) {
+        Ok(c) => c,
+        Err(e) => panic!("component failed to build: {e:?}"),
+    };
+
+    /// Stands in for the real `Rec` capability host: records everything the
+    /// guest managed to pass across the four `kelson:plugin/host` imports so
+    /// the test can assert on the *lowered* direction as well as the return.
+    #[derive(Default)]
+    struct Rec {
+        allow: bool,
+        logs: Vec<String>,
+        checks: Vec<(String, String)>,
+    }
+    impl Host for Rec {
+        fn log(&mut self, message: String) {
+            self.logs.push(message);
+        }
+        fn capability_check(&mut self, action: String, path: String) -> bool {
+            self.checks.push((action, path));
+            self.allow
+        }
+        fn capability_write(&mut self, _action: String, _delta: String) -> bool {
+            false
+        }
+        fn capability_audit(&mut self, _action: String, _record: String) -> bool {
+            false
+        }
+    }
+
+    let mut linker = Linker::new(&engine);
+    Plugin::add_to_linker::<Rec, HasSelf<Rec>>(&mut linker, |x| x)
+        .expect("add_to_linker");
+
+    let mut store = Store::new(&engine, Rec { allow: true, ..Rec::default() });
+    let plugin = Plugin::instantiate(&mut store, &component, &linker)
+        .expect("instantiate");
+
+    // (1) `manifest: func() -> string` — a plain string result round-trips.
+    let m = plugin.kelson_plugin_dispatch().call_manifest(&mut store).expect("manifest");
+    assert_eq!(m, V2_MANIFEST_JSON);
+
+    // (2) `call(op, input) -> result<string, call-error>` with the scope
+    //     resolving: the Ok payload must decode as the guest's echo, and the
+    //     two lowered strings must have reached the host intact.
+    let ok = plugin
+        .kelson_plugin_dispatch()
+        .call_call(&mut store, "read", "{\"id\":1}")
+        .expect("call(allow)");
+    match ok {
+        Ok(s) => assert_eq!(s, "{\"echo\":true}"),
+        Err(e) => panic!("expected Ok from an allowed call, got {e:?}"),
+    }
+    assert_eq!(store.data().logs, ["read".to_string()]);
+    assert_eq!(
+        store.data().checks,
+        [(
+            "appointments.read".to_string(),
+            "{\"id\":1}".to_string()
+        )]
+    );
+
+    // (3) Same call with the scope unresolvable: the guest returns Err rather
+    //     than trapping, so a refusal stays a refusal and not a crash.
+    store.data_mut().allow = false;
+    let denied = plugin
+        .kelson_plugin_dispatch()
+        .call_call(&mut store, "read", "{\"id\":1}")
+        .expect("call(deny)");
+    match denied {
+        Err(CallError::Failed) => {}
+        other => panic!("a denial should surface as CallError::Failed, got {other:?}"),
+    }
+    assert_eq!(store.data().logs.len(), 2, "each call logs exactly once");
+    assert_eq!(
+        store.data().checks.len(),
+        2,
+        "each call consults the capability exactly once"
+    );
+}
+
+/// The operation every frame of the upgrade proof probes with. The ABI v2
+/// fixture's guest forwards it to `host.log`, so a successful probe also
+/// exercises the production `Host for CallState` implementation.
+#[cfg(feature = "component-model")]
+const UPGRADE_PROBE_OP: &str = "appointments.read";
+
+/// Probe one generation with `input`.
+///
+/// `Ok(body)` means this generation ran a guest and returned its output.
+/// `Err` covers everything that counts as "does not answer right now": a
+/// lifecycle refusal (not committed, or already draining) and a capability
+/// denial, both of which the swap below must not mistake for service.
+#[cfg(feature = "component-model")]
+fn upgrade_probe(
+    g: &kelson_wasm::WasmPlugin,
+    input: &str,
+) -> Result<String, kelson_wasm::WasmError> {
+    g.call(
+        UPGRADE_PROBE_OP,
+        input,
+        None,
+        kelson_wasm::WasmCapabilityProfile::ReadOnly,
+    )
+    .map(|o| o.body)
+}
+
+/// The no-gap invariant ADR 0019 §6 asks of a generation swap: does at least
+/// one of `gens` answer *right now*?
+///
+/// It issues a real call rather than reading `state()`, so `Some(body)` means
+/// guest code actually ran and produced output. A generation that is merely
+/// staged, or already draining, refuses with `WasmError::Lifecycle` and
+/// contributes nothing — which is precisely the bookkeeping a swap can lose.
+#[cfg(feature = "component-model")]
+fn upgrade_serving(gens: &[&kelson_wasm::WasmPlugin]) -> Option<String> {
+    gens.iter().find_map(|g| upgrade_probe(g, "").ok())
+}
+
+/// ADR 0019 §6's three upgrade cases, all under **one** [`kelson_wasm::WasmHost`]:
+///
+/// 1. **v1 against v1** — the status-quo upgrade, run first so the new
+///    detection cannot be what broke it. `echo.module.toml` declares no `abi`
+///    key at all, and "absent means v1" has to stay enough.
+/// 2. **v1 against v2** — the cross-generation swap, checked frame by frame
+///    against [`upgrade_serving`]: there must be no window in which neither
+///    generation answers.
+/// 3. **v2 against v2** — the upgrade *after* that one, so the component
+///    generation is not a one-off that only ever replaces a module.
+///
+/// The three are sequenced inside one test rather than split across three
+/// because the claim is about one host: with a host per case, "they coexist"
+/// would be an inference from three separate runs rather than an observation.
+#[cfg(feature = "component-model")]
+#[test]
+fn three_upgrade_cases_under_one_host_leave_no_window_where_neither_serves() {
+    use kelson_registry::ModuleManifest;
+    use kelson_wasm::{GuestAbi, PluginState, WasmError, WasmHost};
+
+    let host = WasmHost::new().expect("host builds");
+
+    // ---- the two artifacts, one of each generation ----------------------
+    // v1 arrives exactly as production ships it: a checked-in `.wat` fixture
+    // and a sidecar TOML that declares no `abi` key.
+    let v1_bytes = std::fs::read(fixtures_dir().join("echo.wat")).expect("v1 fixture reads");
+    let v1_sidecar = ModuleManifest::from_toml(
+        &std::fs::read_to_string(fixtures_dir().join("echo.module.toml"))
+            .expect("v1 sidecar reads"),
+    )
+    .expect("v1 sidecar parses");
+    // v2 arrives as the hand-authored component, carrying a real `module.toml`
+    // shape so `prepare` runs its full normalized comparison rather than
+    // being waved past it.
+    let mut v2_sidecar = ModuleManifest::from_toml(V2_SIDECAR_TOML).expect("v2 sidecar parses");
+    let v2a_wat = v2_component_wat(V2_MANIFEST_JSON, "{\"gen\":2}");
+    let v2b_wat = v2_component_wat(V2_MANIFEST_JSON, "{\"gen\":2,\"slot\":\"b\"}");
+
+    // The review gate fires before a byte is compiled: `V2_SIDECAR_TOML`
+    // deliberately omits `abi`, so the first attempt at the v2 generation must
+    // be refused rather than silently promoted. Declaring the generation and
+    // loading the very same artifact immediately after is what makes the
+    // refusal a rule rather than an obstacle.
+    let undeclared = match host.prepare(v2a_wat.as_bytes(), &v2_sidecar) {
+        Ok(_) => panic!("an undeclared component must be refused"),
+        Err(e) => e,
+    };
+    assert!(
+        undeclared.to_string().contains("guest ABI mismatch"),
+        "{undeclared}"
+    );
+    v2_sidecar.abi = Some(2);
+
+    // ---- case 1: v1 against v1 ------------------------------------------
+    let v1a = host.prepare(&v1_bytes, &v1_sidecar).expect("v1 #1 prepares");
+    assert_eq!(v1a.abi(), GuestAbi::V1, "a core module is guest ABI v1");
+    assert_eq!(v1a.state(), PluginState::Prepared);
+    assert!(
+        upgrade_probe(&v1a, "").is_err(),
+        "a prepared generation dispatches nothing"
+    );
+    v1a.commit().expect("v1 #1 commits");
+
+    let v1b = host.prepare(&v1_bytes, &v1_sidecar).expect("v1 #2 prepares");
+    assert_eq!(v1b.abi(), GuestAbi::V1);
+    assert!(
+        upgrade_serving(&[&v1a, &v1b]).is_some(),
+        "case 1: the incumbent answers while its replacement is only staged"
+    );
+    assert!(
+        upgrade_probe(&v1b, "").is_err(),
+        "case 1: the staged replacement serves nothing yet"
+    );
+    v1b.commit().expect("v1 #2 commits");
+    assert!(
+        upgrade_serving(&[&v1a, &v1b]).is_some(),
+        "case 1: both generations answer"
+    );
+    v1a.drain(std::time::Duration::from_secs(5)).expect("v1 #1 drains");
+    let after1 = upgrade_serving(&[&v1a, &v1b]).expect("case 1: still serving");
+    assert_eq!(after1, upgrade_probe(&v1b, "").expect("v1 #2 answers"));
+    assert!(
+        upgrade_probe(&v1a, "").is_err(),
+        "case 1: the drained generation is retired"
+    );
+
+    // ---- case 2: v1 against v2 ------------------------------------------
+    // v1b is still Ready from case 1 — it never stopped serving while its
+    // successor was compiled, linked and checked, which is the whole point.
+    let v2a = host.prepare(v2a_wat.as_bytes(), &v2_sidecar).expect("v2 prepares");
+    assert_eq!(v2a.abi(), GuestAbi::V2, "a component is guest ABI v2");
+    assert!(
+        upgrade_serving(&[&v1b, &v2a]).is_some(),
+        "case 2: the v1 incumbent answers while its v2 replacement is only staged"
+    );
+    assert!(
+        upgrade_probe(&v2a, "").is_err(),
+        "case 2: a prepared component dispatches nothing"
+    );
+    v2a.commit().expect("v2 commits");
+
+    // Without two distinguishable bodies, "the component took over" below
+    // could not be told apart from the module still answering.
+    let v1_body = upgrade_probe(&v1b, "").expect("v1 serves");
+    let v2_body = upgrade_probe(&v2a, "").expect("v2 serves");
+    assert_ne!(
+        v1_body, v2_body,
+        "the generations must answer differently or the handover is unobservable"
+    );
+
+    // The v2 guest forwards `input` to `capability_check` as the path, and the
+    // real `CallState` rule denies a non-empty path to an unscoped execution.
+    // A test double that simply returned "allowed" would not fail here, so
+    // this is what pins the production `Host for CallState` into the link.
+    let unscoped = upgrade_probe(&v2a, "patients/1");
+    assert!(
+        matches!(unscoped, Err(WasmError::Call(_))),
+        "the real fail-closed scope rule must run for the v2 guest, got {unscoped:?}"
+    );
+    // ...while the v1 guest never consults it, and still answers.
+    assert!(
+        upgrade_probe(&v1b, "patients/1").is_ok(),
+        "case 2: the v1 guest is unaffected by a check it never makes"
+    );
+
+    v1b.drain(std::time::Duration::from_secs(5)).expect("v1 #2 drains");
+    let after2 = upgrade_serving(&[&v1b, &v2a])
+        .expect("case 2: no window in which neither generation serves");
+    assert_eq!(after2, v2_body, "case 2: the component took the handover");
+    assert!(
+        upgrade_probe(&v1b, "").is_err(),
+        "case 2: the v1 generation is retired"
+    );
+
+    // ---- case 3: v2 against v2 ------------------------------------------
+    let v2b = host.prepare(v2b_wat.as_bytes(), &v2_sidecar).expect("v2 #2 prepares");
+    assert_eq!(v2b.abi(), GuestAbi::V2);
+    assert!(
+        upgrade_serving(&[&v2a, &v2b]).is_some(),
+        "case 3: the incumbent component answers while its replacement is staged"
+    );
+    assert!(
+        upgrade_probe(&v2b, "").is_err(),
+        "case 3: the staged component serves nothing yet"
+    );
+    v2b.commit().expect("v2 #2 commits");
+    let v2b_body = upgrade_probe(&v2b, "").expect("v2 #2 serves");
+    assert_ne!(
+        v2_body, v2b_body,
+        "case 3: the two components must be distinguishable"
+    );
+    v2a.drain(std::time::Duration::from_secs(5)).expect("v2 #1 drains");
+    let after3 = upgrade_serving(&[&v2a, &v2b]).expect("case 3: still serving");
+    assert_eq!(after3, v2b_body, "case 3: the newer component took the handover");
+    assert!(
+        upgrade_probe(&v2a, "").is_err(),
+        "case 3: the retired component is out"
+    );
+}
+
+/// ADR 0019 §2's fail-closed review gate: the `[[wasm]]` sidecar's optional
+/// `abi` key must equal the artifact's actual shape, and absent means v1.
+///
+/// Deliberately feature-independent. Detection reads the *artifact*, so this
+/// refusal has to fire in a default build — that is the build which must never
+/// quietly accept a component it was never told to expect.
+#[test]
+fn a_component_is_refused_when_the_sidecar_never_declared_one() {
+    let host = kelson_wasm::WasmHost::new().expect("host builds");
+    let sidecar =
+        kelson_registry::ModuleManifest::from_toml(V2_SIDECAR_TOML).expect("sidecar parses");
+    assert_eq!(
+        sidecar.abi, None,
+        "the fixture sidecar deliberately omits `abi`, so absent must mean v1"
+    );
+
+    // The first token is the whole of detection here: nothing is compiled,
+    // linked or instantiated before the refusal.
+    // `expect_err` would need `WasmPlugin: Debug`, which the type deliberately
+    // does not carry; matching keeps the refusal observable without adding a
+    // trait impl purely for a test.
+    let err = match host.prepare(b"(component)", &sidecar) {
+        Ok(_) => panic!("a component with no declared generation must be refused"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(err, kelson_wasm::WasmError::Load(_)),
+        "expected a load refusal, got {err:?}"
+    );
+    let text = err.to_string();
+    assert!(text.contains("guest ABI mismatch"), "{text}");
+    assert!(text.contains("Component Model component"), "{text}");
+}
+
+/// ADR 0019 §4's off-by-default posture, on its refusal path: a host built
+/// without the `component-model` feature must *refuse* a declared component
+/// rather than downgrade it to a module or ignore it.
+///
+/// The sidecar here approves `abi = 2`, so the gate above passes and what is
+/// being observed is the feature-off build's own answer.
+#[cfg(not(feature = "component-model"))]
+#[test]
+fn a_declared_component_still_refuses_in_a_build_without_the_feature() {
+    let host = kelson_wasm::WasmHost::new().expect("host builds");
+    let mut sidecar =
+        kelson_registry::ModuleManifest::from_toml(V2_SIDECAR_TOML).expect("sidecar parses");
+    sidecar.abi = Some(2);
+
+    let err = match host.prepare(b"(component)", &sidecar) {
+        Ok(_) => panic!("a default build must refuse a component rather than downgrade it"),
+        Err(e) => e,
+    };
+    let text = err.to_string();
+    assert!(text.contains("component-model"), "{text}");
+    assert!(text.contains("refusing"), "{text}");
 }

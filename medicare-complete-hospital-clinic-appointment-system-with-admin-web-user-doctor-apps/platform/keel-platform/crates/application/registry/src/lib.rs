@@ -605,6 +605,25 @@ pub struct ValidationSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModuleManifest {
     pub module: ModuleHeader,
+    /// Guest ABI generation this artifact is reviewed against (ADR 0019 §2).
+    /// Additive: absent means ABI v1, so every shipped fixture and
+    /// `your-app/modules/patients` keeps working untouched.
+    ///
+    /// This is a REVIEW gate, never a detection source. ADR 0019 §2 is
+    /// explicit that "the artifact shape decides; nothing is inferred from a
+    /// manifest field that could drift" — so `WasmHost::prepare` measures the
+    /// binary's layer instead of reading this, and only uses the key to refuse
+    /// a component that was never declared (or a module declared as `2`).
+    /// It is cleared before the guest/sidecar drift comparison for the same
+    /// reason `budget` is: it is host-side review state a guest cannot
+    /// meaningfully declare, and a field that detection ignores must not be a
+    /// field that can fail the drift check.
+    ///
+    /// `Some(1)` = core module exporting `kelson_manifest`/`kelson_alloc`/
+    /// `kelson_call`; `Some(2)` = Component Model component exporting
+    /// `kelson:plugin/dispatch`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abi: Option<u8>,
     #[serde(default)]
     pub capabilities: BTreeMap<String, CapabilitySpec>,
     #[serde(default)]
@@ -859,6 +878,9 @@ impl RouteFileManifest {
                 description: format!("Root route file {}", self.source),
                 api: MODULE_ABI,
             },
+            // A root route file is not a guest artifact, so it declares no
+            // guest ABI: absent means v1 (ADR 0019 §2).
+            abi: None,
             capabilities: BTreeMap::new(),
             dependencies: ModuleDependencies::default(),
             routes: self.routes,

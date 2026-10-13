@@ -422,6 +422,176 @@ impl Drop for EpochTicker {
     }
 }
 
+/// Which guest ABI generation an artifact implements.
+///
+/// Decided by the artifact, never by anything it declares: ADR 0019 §2 is
+/// explicit that "the artifact shape decides; nothing is inferred from a
+/// manifest field that could drift". The two generations coexist through a
+/// transition window, and neither is ever recompiled, re-instantiated or
+/// reinterpreted as the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuestAbi {
+    /// ABI v1 — a core module exporting `kelson_manifest`, `kelson_alloc` and
+    /// `kelson_call`. The contract every module that ships today implements.
+    V1,
+    /// ABI v2 — a Component Model component exporting the
+    /// `kelson:plugin/dispatch` world (`wit/kelson-plugin.wit`).
+    V2,
+}
+
+impl GuestAbi {
+    /// How this generation is spelled in the `[[wasm]]` sidecar's optional
+    /// `abi` key. Absent means [`GuestAbi::V1`], so every shipped fixture
+    /// keeps working untouched (ADR 0019 §2).
+    pub fn as_declared(self) -> u8 {
+        match self {
+            GuestAbi::V1 => 1,
+            GuestAbi::V2 => 2,
+        }
+    }
+}
+
+/// Measure an artifact's ABI generation, or report that it is not a container
+/// this detector can classify.
+///
+/// **Classification only, never validation.** Both containers lead with the
+/// same four magic bytes and are told apart by a 4-byte layer/version word:
+/// `01 00 00 00` is a core module, `0d 00 01 00` a Component Model component.
+/// That word is part of the *container* header rather than the payload, so a
+/// guest cannot choose it and it cannot drift — which is what makes it a
+/// sounder signal than a manifest field (ADR 0019 §2: "the artifact shape
+/// decides; nothing is inferred from a manifest field that could drift").
+///
+/// Two encodings reach this, because `Module::new` and `Component::new` both
+/// take WAT text as well as binary — and every checked-in fixture is `.wat`.
+/// Binary input is read from its header; text input from its first token,
+/// which the text format makes the container itself.
+///
+/// `None` is a deliberate answer for anything it does not recognize (a native
+/// image, an empty file, a truncated header). Inventing a verdict about a
+/// malformed image would mean competing with wasmtime's validator, so the
+/// caller hands those to `Module::new` and takes its `compile:` refusal as
+/// the authoritative one. The *exports* are likewise the load path's business
+/// — v1 needs `kelson_manifest`/`kelson_alloc`/`kelson_call`, v2 needs
+/// `kelson:plugin/dispatch` — so this never has to guess what is inside.
+fn detect_abi(bytes: &[u8]) -> Option<GuestAbi> {
+    const MAGIC: [u8; 4] = [0x00, b'a', b's', b'm'];
+    /// `01 00 00 00` — the core WebAssembly module version.
+    const CORE_MODULE: u32 = 0x0000_0001;
+    /// `0d 00 01 00` — component layer `0x000d`, component version `0x0001`.
+    const COMPONENT: u32 = 0x0001_000d;
+
+    if bytes.starts_with(&MAGIC) {
+        if bytes.len() < 8 {
+            return None;
+        }
+        let layer = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+        return match layer {
+            CORE_MODULE => Some(GuestAbi::V1),
+            COMPONENT => Some(GuestAbi::V2),
+            // A container header we do not know: defer to the validator
+            // rather than claim to have a better opinion about it.
+            _ => None,
+        };
+    }
+    detect_wat_container(bytes)
+}
+
+/// Classify WAT **text** by its first token, which the text format makes the
+/// container: `(module ...)` or `(component ...)`.
+fn detect_wat_container(bytes: &[u8]) -> Option<GuestAbi> {
+    let mut i = wat_trivia_end(bytes);
+    if bytes.get(i)? != &b'(' {
+        return None;
+    }
+    i += 1;
+    while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+        i += 1;
+    }
+    let start = i;
+    while bytes
+        .get(i)
+        .is_some_and(|c| c.is_ascii_alphanumeric() || matches!(*c, b'_' | b'-' | b'.' | b'$'))
+    {
+        i += 1;
+    }
+    let token = bytes.get(start..i)?;
+    if token == &b"module"[..] {
+        Some(GuestAbi::V1)
+    } else if token == &b"component"[..] {
+        Some(GuestAbi::V2)
+    } else {
+        None
+    }
+}
+
+/// Advance past WAT leading trivia — whitespace, `;;` line comments and
+/// `(; ;)` block comments, which nest per the text format — and return where
+/// the first real token starts.
+///
+/// Every checked-in fixture opens with `;;` banner comments, so skipping them
+/// is not an edge case: without it every fixture would fail to classify.
+fn wat_trivia_end(bytes: &[u8]) -> usize {
+    let mut i = 0;
+    loop {
+        while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+            i += 1;
+        }
+        if bytes[i..].starts_with(b";;") {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i..].starts_with(b"(;") {
+            let mut depth = 1usize;
+            i += 2;
+            while i < bytes.len() && depth > 0 {
+                if bytes[i..].starts_with(b"(;") {
+                    depth += 1;
+                    i += 2;
+                } else if bytes[i..].starts_with(b";)") {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        return i;
+    }
+}
+
+/// Refuse an artifact whose container does not match what the reviewed
+/// sidecar declared (ADR 0019 §2's fail-closed review gate).
+///
+/// This runs before a byte is compiled. Absent `abi` means v1, so a component
+/// handed to a host that was never told to expect one is a refusal rather
+/// than a silent upgrade — the "no silent swap" half of the migration shape.
+fn check_declared_abi(sidecar: &ModuleManifest, actual: GuestAbi) -> Result<(), WasmError> {
+    let declared = sidecar.abi.unwrap_or(GuestAbi::V1.as_declared());
+    if declared == actual.as_declared() {
+        return Ok(());
+    }
+    // Name what the sidecar actually said. Reporting a bare "declares abi = 1"
+    // for a sidecar that declared nothing at all would send an operator looking
+    // for a key that was never there.
+    let stated = match sidecar.abi {
+        Some(v) => format!("declares abi = {v}"),
+        None => "has no `abi` key, so it declares abi = 1 (absent means v1)".to_string(),
+    };
+    Err(WasmError::Load(format!(
+        "guest ABI mismatch: the [[wasm]] sidecar {stated} but the artifact is a {} \
+         (guest ABI v{}); review must state the generation it ships",
+        match actual {
+            GuestAbi::V1 => "core module",
+            GuestAbi::V2 => "Component Model component",
+        },
+        actual.as_declared(),
+    )))
+}
+
 /// The wasmtime side of the runtime: one engine + linker (the import
 /// surface) shared by every plugin loaded through it.
 pub struct WasmHost {
@@ -529,8 +699,15 @@ impl WasmHost {
     /// with `epoch_interruption(true)` wasmtime's default deadline is `0`,
     /// which it documents as having "always elapsed", so a store that skipped
     /// this call would trap its guest before it ran a single instruction.
+    ///
+    /// It takes an `engine` rather than `&self` because its two callers do not
+    /// share a type: `prepare` runs on the host, while [`WasmPlugin::call`]
+    /// runs on the plugin that host produced. Being an associated function is
+    /// what lets the manifest scan and the dispatch path build the *same*
+    /// store from the *same* code — otherwise the two could drift into
+    /// applying different sandboxes to one plugin and nothing would report it.
     fn new_store(
-        &self,
+        engine: &Engine,
         label: &str,
         declared: Arc<BTreeSet<String>>,
         scope_paths: Vec<String>,
@@ -542,7 +719,7 @@ impl WasmHost {
             .memory_size(budget.memory_bytes)
             .build();
         let mut store = Store::new(
-            &self.engine,
+            engine,
             CallState {
                 limits,
                 label: label.to_string(),
@@ -598,26 +775,48 @@ impl WasmHost {
             None
         };
 
-        let module = Module::new(&self.engine, bytes)
-            .map_err(|e| WasmError::Load(format!("compile: {e}")))?;
-        // Link-time import validation: anything the shim does not define
-        // (e.g. a `sock_*` call) fails HERE, not at first dispatch.
-        let pre = self
-            .linker
-            .instantiate_pre(&module)
-            .map_err(|e| WasmError::Load(format!("link: {e}")))?;
+        // ADR 0019 §2: detection is structural, and the reviewed sidecar's
+        // optional `abi` key is a fail-closed gate ON TOP of it. Both run
+        // before a byte is compiled, so an artifact whose generation does not
+        // match its review is refused without ever being instantiated — the
+        // "no silent swap" half of the migration shape.
+        //
+        // `None` (an image this cannot classify) skips the gate rather than
+        // failing it: there is nothing to compare the declaration against
+        // yet. It still cannot slip past, because `None` routes to the v1
+        // path where `Module::new` refuses a malformed image outright.
+        let abi = detect_abi(bytes);
+        if let Some(abi) = abi {
+            check_declared_abi(sidecar, abi)?;
+        }
+
+        let guest = match abi.unwrap_or(GuestAbi::V1) {
+            GuestAbi::V1 => {
+                let module = Module::new(&self.engine, bytes)
+                    .map_err(|e| WasmError::Load(format!("compile: {e}")))?;
+                // Link-time import validation: anything the shim does not define
+                // (e.g. a `sock_*` call) fails HERE, not at first dispatch.
+                let pre = self
+                    .linker
+                    .instantiate_pre(&module)
+                    .map_err(|e| WasmError::Load(format!("link: {e}")))?;
+                Guest::V1(pre)
+            }
+            GuestAbi::V2 => self.prepare_v2(bytes)?,
+        };
 
         // Instantiate once and read the guest's self-declared manifest. This
         // scan runs under the plugin's own budget, not the host ceiling: a
-        // guest whose kelson_manifest() loops forever is bounded here too,
-        // otherwise the boot path would be the one place a module could run
+        // guest whose manifest export loops forever is bounded here too,
+        // otherwise the boot path would be the one place a guest could run
         // unbounded.
         let json = {
             let none_declared = Arc::new(BTreeSet::new());
             // The manifest scan runs under the most restrictive profile:
             // a guest that calls the write imports from kelson_manifest()
             // records into buffers `load` never reads.
-            let mut store = self.new_store(
+            let mut store = Self::new_store(
+                &self.engine,
                 sidecar.name(),
                 none_declared,
                 Vec::new(),
@@ -625,31 +824,53 @@ impl WasmHost {
                 WasmCapabilityProfile::ReadOnly,
                 &budget,
             )?;
-            let instance = pre
-                .instantiate(&mut store)
-                .map_err(|e| WasmError::Load(format!("instantiate: {e}")))?;
-            let manifest_fn = instance
-                .get_typed_func::<(), i64>(&mut store, "kelson_manifest")
-                .map_err(|e| WasmError::Load(format!("export kelson_manifest: {e}")))?;
-            instance
-                .get_typed_func::<i32, i32>(&mut store, "kelson_alloc")
-                .map_err(|e| WasmError::Load(format!("export kelson_alloc: {e}")))?;
-            instance
-                .get_typed_func::<(i32, i32, i32, i32), i64>(&mut store, "kelson_call")
-                .map_err(|e| WasmError::Load(format!("export kelson_call: {e}")))?;
+            match &guest {
+                Guest::V1(pre) => {
+                    // Instantiating resolves all three v1 exports, so a module
+                    // missing any of them refuses HERE rather than at first
+                    // dispatch.
+                    let instance = pre
+                        .instantiate(&mut store)
+                        .map_err(|e| WasmError::Load(format!("instantiate: {e}")))?;
+                    let manifest_fn = instance
+                        .get_typed_func::<(), i64>(&mut store, "kelson_manifest")
+                        .map_err(|e| WasmError::Load(format!("export kelson_manifest: {e}")))?;
+                    instance
+                        .get_typed_func::<i32, i32>(&mut store, "kelson_alloc")
+                        .map_err(|e| WasmError::Load(format!("export kelson_alloc: {e}")))?;
+                    instance
+                        .get_typed_func::<(i32, i32, i32, i32), i64>(&mut store, "kelson_call")
+                        .map_err(|e| WasmError::Load(format!("export kelson_call: {e}")))?;
 
-            let packed = manifest_fn
-                .call(&mut store, ())
-                .map_err(|e| call_error("kelson_manifest", e))?;
-            let raw = read_result(
-                &mut store,
-                &instance,
-                packed,
-                "kelson_manifest",
-                budget.memory_bytes,
-            )?;
-            String::from_utf8(raw)
-                .map_err(|e| WasmError::Manifest(format!("kelson_manifest is not UTF-8: {e}")))?
+                    let packed = manifest_fn
+                        .call(&mut store, ())
+                        .map_err(|e| call_error("kelson_manifest", e))?;
+                    let raw = read_result(
+                        &mut store,
+                        &instance,
+                        packed,
+                        "kelson_manifest",
+                        budget.memory_bytes,
+                    )?;
+                    String::from_utf8(raw)
+                        .map_err(|e| WasmError::Manifest(format!("kelson_manifest is not UTF-8: {e}")))?
+                }
+                // Symmetric with the arm above: `PluginPre::instantiate`
+                // type-checks the world's exports through `indices.load`, so a
+                // component missing `manifest` or `call` refuses at load. The
+                // world's `manifest()` is then the drift source, exactly as
+                // `kelson_manifest()` is for v1.
+                #[cfg(feature = "component-model")]
+                Guest::V2(pre) => {
+                    let plugin = pre
+                        .instantiate(&mut store)
+                        .map_err(|e| WasmError::Load(format!("instantiate component: {e}")))?;
+                    let dispatch = plugin.kelson_plugin_dispatch();
+                    dispatch
+                        .call_manifest(&mut store)
+                        .map_err(|e| WasmError::Manifest(format!("dispatch.manifest(): {e}")))?
+                }
+            }
         };
 
         let parsed = ModuleManifest::from_json(&json).map_err(|v| WasmError::Manifest(v.message))?;
@@ -660,8 +881,15 @@ impl WasmHost {
         // name, version, capabilities, ABI — still compares byte for byte.
         let mut plugin_cmp = parsed.clone();
         plugin_cmp.budget = kelson_registry::ModuleBudget::default();
+        // `abi` is cleared for exactly the reason `budget` is: detection
+        // measured the artifact above and never read this field, so a field
+        // detection ignores must not be a field that can fail the comparison.
+        // Declaring it in the guest manifest therefore neither helps nor
+        // hurts — the sidecar's copy is the review gate, checked separately.
+        plugin_cmp.abi = None;
         let mut sidecar_cmp = sidecar.clone();
         sidecar_cmp.budget = kelson_registry::ModuleBudget::default();
+        sidecar_cmp.abi = None;
         let plugin_ser = serde_json::to_string(&plugin_cmp)
             .map_err(|e| WasmError::Manifest(format!("manifest re-encode failed: {e}")))?;
         let sidecar_ser = serde_json::to_string(&sidecar_cmp)
@@ -678,7 +906,7 @@ impl WasmHost {
         let label = parsed.name().to_string();
         Ok(WasmPlugin {
             engine: self.engine.clone(),
-            pre,
+            guest,
             manifest: parsed,
             declared,
             label,
@@ -709,12 +937,82 @@ impl WasmHost {
         plugin.commit()?;
         Ok(plugin)
     }
+
+    /// Compile and link an ABI v2 component against the generated
+    /// `kelson:plugin/host` bindings.
+    ///
+    /// The component linker is built here rather than held by [`WasmHost`]
+    /// because it only exists for components: a host whose plugins are all v1
+    /// modules never constructs one, and the feature-off build gets a refusal
+    /// (below) instead of a linker over a module that does not exist.
+    #[cfg(feature = "component-model")]
+    fn prepare_v2(&self, bytes: &[u8]) -> Result<Guest, WasmError> {
+        use wasmtime::component::{Component, HasSelf, Linker};
+
+        let component = Component::new(&self.engine, bytes)
+            .map_err(|e| WasmError::Load(format!("compile component: {e}")))?;
+        let mut linker = Linker::new(&self.engine);
+        // `HasSelf` says the linker's store data IS the host implementation,
+        // so the four imports resolve straight onto `CallState` — the same
+        // methods the v1 `host.*` registrations call (see `imports.rs`). One
+        // host, two front doors, one set of verdicts.
+        crate::component::Plugin::add_to_linker::<CallState, HasSelf<CallState>>(
+            &mut linker,
+            |state| state,
+        )
+        .map_err(|e| WasmError::Load(format!("link kelson:plugin/host: {e}")))?;
+        let pre = linker
+            .instantiate_pre(&component)
+            .map_err(|e| WasmError::Load(format!("link component: {e}")))?;
+        // The structural half of ADR 0019 §2's v2 detection: this fails
+        // unless the component exports `kelson:plugin/dispatch`.
+        let pre = crate::component::PluginPre::new(pre).map_err(|e| {
+            WasmError::Load(format!(
+                "component does not export the kelson:plugin/dispatch world: {e}"
+            ))
+        })?;
+        Ok(Guest::V2(pre))
+    }
+
+    /// The feature-off twin of [`Self::prepare_v2`].
+    ///
+    /// A v2 artifact reaching a host built without `component-model` is
+    /// refused with a message naming the missing half, rather than being
+    /// recompiled as a module or quietly ignored. That is the fail-closed
+    /// posture behind ADR 0019 §4 keeping the feature off by default: an
+    /// artifact the host cannot serve is a boot refusal, never a downgrade.
+    #[cfg(not(feature = "component-model"))]
+    fn prepare_v2(&self, _bytes: &[u8]) -> Result<Guest, WasmError> {
+        Err(WasmError::Load(
+            "artifact is a Component Model component (guest ABI v2) but this host was \
+             built without the `component-model` cargo feature; refusing it rather than \
+             reinterpreting it as a v1 module"
+                .to_string(),
+        ))
+    }
+}
+
+/// One generation's compiled guest.
+///
+/// Exactly one of the two ABI generations is held, and the variant is decided
+/// by [`detect_abi`] from the artifact itself — a v1 module is never
+/// re-instantiated as v2 nor a v2 component run through the v1 path
+/// (ADR 0019 §2's "no silent swap").
+enum Guest {
+    /// ABI v1 core module, pre-linked against the `host` / WASI import
+    /// surface registered by [`imports::define`].
+    V1(InstancePre<CallState>),
+    /// ABI v2 Component Model component, pre-linked against the generated
+    /// `kelson:plugin/host` bindings and pre-checked for the
+    /// `kelson:plugin/dispatch` export.
+    #[cfg(feature = "component-model")]
+    V2(crate::component::PluginPre<CallState>),
 }
 
 /// A loaded, drift-checked plugin: instantiate-per-call, budget-metered.
 pub struct WasmPlugin {
     engine: Engine,
-    pre: InstancePre<CallState>,
+    guest: Guest,
     manifest: ModuleManifest,
     declared: Arc<BTreeSet<String>>,
     label: String,
@@ -754,6 +1052,18 @@ impl WasmPlugin {
     /// The guest manifest, exactly as validated against the sidecar.
     pub fn manifest(&self) -> &ModuleManifest {
         &self.manifest
+    }
+
+    /// Which ABI generation this plugin is — v1 core module or v2 component.
+    ///
+    /// Exposed so a caller (and the upgrade proof) can assert *which*
+    /// generation is serving without inferring it from behaviour.
+    pub fn abi(&self) -> GuestAbi {
+        match &self.guest {
+            Guest::V1(_) => GuestAbi::V1,
+            #[cfg(feature = "component-model")]
+            Guest::V2(_) => GuestAbi::V2,
+        }
     }
 
     /// The sandbox this plugin runs in, resolved from the manifest `[budget]`
@@ -944,86 +1254,28 @@ impl WasmPlugin {
             None => (Vec::new(), false),
         };
         let budget = self.budget;
-        let limits = StoreLimitsBuilder::new()
-            .memory_size(budget.memory_bytes)
-            .build();
-        let mut store = Store::new(
+        // The same constructor `prepare`'s manifest scan uses, so the two
+        // cannot end up applying different sandboxes to the same plugin.
+        let mut store = WasmHost::new_store(
             &self.engine,
-            CallState {
-                limits,
-                label: self.label.clone(),
-                declared: self.declared.clone(),
-                scope_paths,
-                has_scope,
-                profile,
-                deltas: Vec::new(),
-                audits: Vec::new(),
-            },
-        );
-        store.limiter(|state| &mut state.limits);
-        store
-            .set_fuel(budget.fuel)
-            .map_err(|e| WasmError::Call(format!("set fuel: {e}")))?;
-        store.set_epoch_deadline(budget.deadline_ticks);
+            &self.label,
+            self.declared.clone(),
+            scope_paths,
+            has_scope,
+            profile,
+            &budget,
+        )?;
 
-        let instance = self
-            .pre
-            .instantiate(&mut store)
-            .map_err(|e| WasmError::Call(format!("instantiate: {e}")))?;
-        let Some(memory) = instance.get_memory(&mut store, "memory") else {
-            return Err(WasmError::Call(
-                "module does not export memory".to_string(),
-            ));
+        let body = match &self.guest {
+            Guest::V1(pre) => dispatch_v1(&mut store, pre, operation, input_json, budget)?,
+            // A v2 component reaches the guest through the canonical ABI
+            // instead of through `kelson_alloc`: wasmtime lowers `op` and
+            // `input` into guest memory itself, bounded by the store's
+            // `StoreLimits`, so the same memory cap holds without the host
+            // performing the write.
+            #[cfg(feature = "component-model")]
+            Guest::V2(pre) => dispatch_v2(&mut store, pre, operation, input_json, budget)?,
         };
-        let alloc = instance
-            .get_typed_func::<i32, i32>(&mut store, "kelson_alloc")
-            .map_err(|e| WasmError::Call(format!("export kelson_alloc: {e}")))?;
-        let kelson_call = instance
-            .get_typed_func::<(i32, i32, i32, i32), i64>(&mut store, "kelson_call")
-            .map_err(|e| WasmError::Call(format!("export kelson_call: {e}")))?;
-
-        let op = operation.as_bytes();
-        let input = input_json.as_bytes();
-        let total = op
-            .len()
-            .checked_add(input.len())
-            .ok_or_else(|| WasmError::Call("input length overflow".to_string()))?;
-        if total > budget.memory_bytes {
-            return Err(WasmError::Call(format!(
-                "input of {total} bytes exceeds the plugin memory cap {}",
-                budget.memory_bytes
-            )));
-        }
-        let base = alloc
-            .call(&mut store, total as i32)
-            .map_err(|e| call_error("kelson_alloc", e))?;
-        if base <= 0 {
-            return Err(WasmError::Call(
-                "kelson_alloc returned null (out of memory)".to_string(),
-            ));
-        }
-        let base = base as usize;
-        memory
-            .write(&mut store, base, op)
-            .map_err(|e| WasmError::Call(format!("write operation: {e}")))?;
-        memory
-            .write(&mut store, base + op.len(), input)
-            .map_err(|e| WasmError::Call(format!("write input: {e}")))?;
-
-        let packed = kelson_call
-            .call(
-                &mut store,
-                (
-                    base as i32,
-                    op.len() as i32,
-                    (base + op.len()) as i32,
-                    input.len() as i32,
-                ),
-            )
-            .map_err(|e| call_error("kelson_call", e))?;
-        let raw = read_result(&mut store, &instance, packed, "kelson_call", budget.memory_bytes)?;
-        let body =
-            String::from_utf8(raw).map_err(|e| WasmError::Call(format!("output is not UTF-8: {e}")))?;
         // Drain the side effects the guest recorded. A guest failure above
         // already returned, so reaching here means the call succeeded and
         // the effects are the handler's to commit (or refuse, if malformed).
@@ -1035,6 +1287,132 @@ impl WasmPlugin {
             deltas,
             audits,
         })
+    }
+}
+
+/// Run one ABI **v1** call: resolve the three exports, copy `op` and `input`
+/// through `kelson_alloc`, dispatch, then read the packed result back out.
+///
+/// Split out of [`WasmPlugin::call`] so that function reads as
+/// slot -> store -> dispatch -> drain, and so the v2 generation's dispatch
+/// sits beside this one as a peer rather than a nested branch.
+fn dispatch_v1(
+    store: &mut Store<CallState>,
+    pre: &InstancePre<CallState>,
+    operation: &str,
+    input_json: &str,
+    budget: CallBudget,
+) -> Result<String, WasmError> {
+    let instance = pre
+        .instantiate(&mut *store)
+        .map_err(|e| WasmError::Call(format!("instantiate: {e}")))?;
+    let Some(memory) = instance.get_memory(&mut *store, "memory") else {
+        return Err(WasmError::Call("module does not export memory".to_string()));
+    };
+    let alloc = instance
+        .get_typed_func::<i32, i32>(&mut *store, "kelson_alloc")
+        .map_err(|e| WasmError::Call(format!("export kelson_alloc: {e}")))?;
+    let kelson_call = instance
+        .get_typed_func::<(i32, i32, i32, i32), i64>(&mut *store, "kelson_call")
+        .map_err(|e| WasmError::Call(format!("export kelson_call: {e}")))?;
+
+    let op = operation.as_bytes();
+    let input = input_json.as_bytes();
+    let total = op
+        .len()
+        .checked_add(input.len())
+        .ok_or_else(|| WasmError::Call("input length overflow".to_string()))?;
+    if total > budget.memory_bytes {
+        return Err(WasmError::Call(format!(
+            "input of {total} bytes exceeds the plugin memory cap {}",
+            budget.memory_bytes
+        )));
+    }
+    let base = alloc
+        .call(&mut *store, total as i32)
+        .map_err(|e| call_error("kelson_alloc", e))?;
+    if base <= 0 {
+        return Err(WasmError::Call(
+            "kelson_alloc returned null (out of memory)".to_string(),
+        ));
+    }
+    let base = base as usize;
+    memory
+        .write(&mut *store, base, op)
+        .map_err(|e| WasmError::Call(format!("write operation: {e}")))?;
+    memory
+        .write(&mut *store, base + op.len(), input)
+        .map_err(|e| WasmError::Call(format!("write input: {e}")))?;
+
+    let packed = kelson_call
+        .call(
+            &mut *store,
+            (
+                base as i32,
+                op.len() as i32,
+                (base + op.len()) as i32,
+                input.len() as i32,
+            ),
+        )
+        .map_err(|e| call_error("kelson_call", e))?;
+    let raw = read_result(&mut *store, &instance, packed, "kelson_call", budget.memory_bytes)?;
+    String::from_utf8(raw).map_err(|e| WasmError::Call(format!("output is not UTF-8: {e}")))
+}
+
+/// Run one ABI **v2** call: instantiate the component and dispatch through
+/// the generated `kelson:plugin/dispatch` bindings.
+///
+/// The guest's `op` and `input` strings are lowered into guest memory by the
+/// canonical ABI rather than copied by the host, so there is no `kelson_alloc`
+/// step; the memory cap still holds because it is applied as a `StoreLimit`.
+/// Everything else — the concurrency slot, the ready-state gate, the fuel and
+/// deadline, and the effects drain back in [`WasmPlugin::call`] — is shared
+/// with [`dispatch_v1`], which is what makes "one host, two generations"
+/// literally true rather than two hosts that happen to look alike.
+#[cfg(feature = "component-model")]
+fn dispatch_v2(
+    store: &mut Store<CallState>,
+    pre: &crate::component::PluginPre<CallState>,
+    operation: &str,
+    input_json: &str,
+    budget: CallBudget,
+) -> Result<String, WasmError> {
+    use crate::component::exports::kelson::plugin::dispatch::CallError;
+
+    // The same explicit input bound v1 applies before allocating: the one
+    // place a too-large request can be refused before any of it happens.
+    let total = operation
+        .len()
+        .checked_add(input_json.len())
+        .ok_or_else(|| WasmError::Call("input length overflow".to_string()))?;
+    if total > budget.memory_bytes {
+        return Err(WasmError::Call(format!(
+            "input of {total} bytes exceeds the plugin memory cap {}",
+            budget.memory_bytes
+        )));
+    }
+
+    let plugin = pre
+        .instantiate(&mut *store)
+        .map_err(|e| WasmError::Call(format!("instantiate component: {e}")))?;
+    let dispatch = plugin.kelson_plugin_dispatch();
+    // The typed binding takes `&str` for both `string` parameters, so no
+    // conversion sits between the host's values and the lift.
+    match dispatch.call_call(&mut *store, operation, input_json) {
+        // The guest completed and returned a body.
+        Ok(Ok(body)) => Ok(body),
+        // The guest REFUSED. ADR 0019 §5's refusal-as-return-value
+        // discipline: this is a value the guest chose to produce, not a
+        // trap, so it stays an ordinary call failure rather than a crash.
+        Ok(Err(CallError::Failed)) => Err(WasmError::Call(format!(
+            "dispatch.call: the guest reported that {operation} could not be completed"
+        ))),
+        // The guest self-reported budget exhaustion; the host answers with
+        // the same verdict a trap would have produced.
+        Ok(Err(CallError::OutOfFuel)) => Err(WasmError::Fuel),
+        // A real trap (host-enforced fuel, epoch deadline, guest panic)
+        // arrives on the outer result and is classified exactly as v1's is.
+        Err(e) => Err(call_error("dispatch.call", e)),
     }
 }
 

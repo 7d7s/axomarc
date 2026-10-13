@@ -122,14 +122,17 @@ Two facts worth recording while the `publish = false` gate is still in place:
 
 ### Wave A (code landed; not yet published) - staged plugin lifecycle and the opt-in `component-model` flag
 
-A part 1 was a record only (ADR 0019); parts 2, 3 and 4 are code. Every file they
+A part 1 was a record only (ADR 0019); parts 2, 3, 4 and 5 are code. Every file they
 touch belongs to `kelson-wasm` and `kelson-demo`, both `publish = false`, so
-**no published crate's API or semver position moves.**
+**no published crate's API or semver position moves.** Part 5 reaches one
+crate outside that pair — `kelson-registry` — and the row below says exactly
+what it adds there.
 
 | Crate | Publishable | Wave A change | Semver |
 |---|---|---|---|
-| `kelson-wasm` | **no** (`publish = false`) | new public `PluginState` (`Prepared` / `Ready` / `Draining` / `Drained`), a new `WasmError::Lifecycle` variant, new `WasmHost::prepare`, new `WasmPlugin::{state, commit, drain}`; `WasmPlugin::call` now refuses a generation that is not `Ready`. A part 3 adds a `[features]` table with `default = []` and `component-model = ["wasmtime/component-model"]` - **no default feature, so no default-build surface**. A part 4 adds a `#[cfg(feature = "component-model")] pub mod component` that compiles `wit/kelson-plugin.wit` with `wasmtime::component::bindgen!`, which is new public API **only** where the feature is on | never published in this shape |
-| `kelson-demo` | **no** (`publish = false`) | `load_wasm_plugins` prepares, builds the handlers, then commits — identical boot behaviour, with the host's registration decision made an explicit separate act. A part 3 forwards the opt-in as its own `component-model` feature and adds a `wasmtime` dev-dependency for the fixture test | never published in this shape |
+| `kelson-wasm` | **no** (`publish = false`) | new public `PluginState` (`Prepared` / `Ready` / `Draining` / `Drained`), a new `WasmError::Lifecycle` variant, new `WasmHost::prepare`, new `WasmPlugin::{state, commit, drain}`; `WasmPlugin::call` now refuses a generation that is not `Ready`. A part 3 adds a `[features]` table with `default = []` and `component-model = ["wasmtime/component-model"]` - **no default feature, so no default-build surface**. A part 4 adds a `#[cfg(feature = "component-model")] pub mod component` that compiles `wit/kelson-plugin.wit` with `wasmtime::component::bindgen!`, which is new public API **only** where the feature is on. A part 5 adds `GuestAbi`, `WasmPlugin::abi()`, and the `Guest` enum behind `WasmPlugin`, plus `WasmHost::prepare` gaining an artifact-shape classification step before it compiles anything | never published in this shape |
+| `kelson-demo` | **no** (`publish = false`) | `load_wasm_plugins` prepares, builds the handlers, then commits - identical boot behaviour, with the host's registration decision made an explicit separate act. A part 3 forwards the opt-in as its own `component-model` feature and adds a `wasmtime` dev-dependency for the fixture test. A part 5 adds the v2 guest fixture and the upgrade-proof tests; no boot-path behaviour changes | never published in this shape |
+| `kelson-registry` | yes | A part 5 adds `ModuleManifest.abi: Option<u8>` (`#[serde(default)]`, `skip_serializing_if = "Option::is_none"`) | **MINOR** - additive, and a sidecar with no `abi` key still parses and still serializes byte-identically. See the two notes below: this field is a *review gate*, and it is cleared before one comparison |
 
 A part 3 also amended `platform/DEPENDENCY-POLICY.md:46` in the same commit, as
 ADR 0019 §8 required on landing, and the external count stays **25/25**: a
@@ -164,7 +167,8 @@ Four things to carry forward:
   "the component crates are absent from `Cargo.lock`", and cargo now records
   those packages for a feature no default build activates, so absence stopped
   meaning anything. The check that replaced it is the counter — feature off, the
-  suite reads 1392 passed / 0 failed.
+  suite reads 1394 passed / 0 failed (1392 before A part 5 added the two
+  generation-refusal tests).
 * **The lifecycle is part of the sandbox posture, not something separate.**
   `WasmPlugin::call` refusing an uncommitted generation is enforced only inside
   this workspace while the gate holds, exactly like the tighten-only rule, the
@@ -174,7 +178,25 @@ Four things to carry forward:
   refused while draining deserves 503, but no code can produce that state until
   a generation-swap path exists. Adding a `KSN_*` code today would make the
   append-only code list describe behaviour nothing emits; it is sequenced with
-  the swap path instead.
+  the swap path instead. A part 5 moved this from *untested* to *tested and
+  unshipped* — the upgrade proof calls `drain`, production still does not —
+  and the reason the mapping is still absent is unchanged.
+* **`ModuleManifest.abi` is a review gate, not a discriminator, and it is
+  cleared before one comparison.** Detection reads the artifact's shape and
+  never this field, so the field cannot influence what the host thinks it is
+  loading; it only records what review *approved*, and a mismatch is a refusal
+  at load. Two consequences a future editor should not rediscover: it must
+  keep `#[serde(default)]` and `skip_serializing_if`, or every shipped
+  `release`/sidecar document changes shape; and it must keep being cleared
+  alongside `budget` before the guest/sidecar drift comparison, because a
+  field the guest manifest can omit and detection ignores must not be able to
+  fail a comparison it takes no part in. `budget` is the precedent for both.
+* **`WasmPlugin::abi()` is public API with a dispatch-path caller and no
+  application caller.** It is exercised by the upgrade proof and by the
+  dispatch split, and nothing in `load_wasm_plugins` reads it. That is the
+  honest shape of the surface today: real, tested, and one caller away from
+  being something an application depends on. It is recorded rather than
+  removed, because the swap path that needs it is itself backlog.
 
 ## Prerequisites (human release manager)
 
