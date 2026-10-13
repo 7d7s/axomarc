@@ -298,6 +298,7 @@ mod tests {
 [module]
 name = "alpha"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "index" = {{ profile = "READ" }}
@@ -558,6 +559,7 @@ middleware = ["ghost", "phantom"]
 [module]
 name = "alpha"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "index" = { profile = "READ" }

@@ -9,7 +9,7 @@
   (global $heap (mut i32) (i32.const 16384))
 
   (data (i32.const 1024)
-    "{\"module\":{\"name\":\"fib\"},\"capabilities\":{\"fib\":{\"profile\":\"READ\"}}}\00")
+    "{\"module\":{\"name\":\"fib\",\"version\":\"0.1.0\",\"api\":1},\"capabilities\":{\"fib\":{\"profile\":\"READ\"}}}\00")
   (data (i32.const 1200) "{\"fib\": ")            ;; 8 bytes
   (data (i32.const 1216) "fib invoked")           ;; 11 bytes
   ;; digits scratch: 1400..1424 (itoa writes backwards from 1424)

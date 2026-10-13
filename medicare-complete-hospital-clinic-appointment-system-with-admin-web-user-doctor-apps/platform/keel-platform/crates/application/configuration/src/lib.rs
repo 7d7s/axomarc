@@ -1282,7 +1282,7 @@ mod tests {
         std::fs::create_dir_all(&billing).unwrap();
         std::fs::write(
             billing.join("module.toml"),
-            "[module]\nname = \"billing\"\nversion = \"0.3.0\"\n\n\
+            "[module]\nname = \"billing\"\nversion = \"0.3.0\"\napi = 1\n\n\
              [config.app]\nname = \"from-package\"\n\n\
              [config.limits]\ndefault_monthly_operations = 7\n",
         )
@@ -1291,7 +1291,7 @@ mod tests {
         std::fs::create_dir_all(&tax).unwrap();
         std::fs::write(
             tax.join("module.toml"),
-            "[module]\nname = \"tax\"\nversion = \"0.1.0\"\n\n\
+            "[module]\nname = \"tax\"\nversion = \"0.1.0\"\napi = 1\n\n\
              [config.limits]\ndefault_monthly_operations = 99\n",
         )
         .unwrap();
@@ -1339,7 +1339,7 @@ mod tests {
         std::fs::create_dir_all(&pkg).unwrap();
         std::fs::write(
             pkg.join("module.toml"),
-            "[module]\nname = \"billing\"\nversion = \"0.3.0\"\n\n\
+            "[module]\nname = \"billing\"\nversion = \"0.3.0\"\napi = 1\n\n\
              [config.bogus_section]\nx = 1\n",
         )
         .unwrap();
@@ -1379,7 +1379,7 @@ mod tests {
         std::fs::create_dir_all(&tax).unwrap();
         std::fs::write(
             tax.join("module.toml"),
-            "[module]\nname = \"tax\"\nversion = \"0.1.0\"\n",
+            "[module]\nname = \"tax\"\nversion = \"0.1.0\"\napi = 1\n",
         )
         .unwrap();
         std::fs::write(
@@ -1392,7 +1392,7 @@ mod tests {
         std::fs::create_dir_all(&billing).unwrap();
         std::fs::write(
             billing.join("module.toml"),
-            "[module]\nname = \"billing\"\nversion = \"0.3.0\"\n\n\
+            "[module]\nname = \"billing\"\nversion = \"0.3.0\"\napi = 1\n\n\
              [config.limits]\ndefault_monthly_operations = 7\n",
         )
         .unwrap();
@@ -1448,7 +1448,7 @@ mod tests {
         std::fs::create_dir_all(&pkg).unwrap();
         std::fs::write(
             pkg.join("module.toml"),
-            "[module]\nname = \"billing\"\nversion = \"0.3.0\"\n",
+            "[module]\nname = \"billing\"\nversion = \"0.3.0\"\napi = 1\n",
         )
         .unwrap();
         std::fs::write(

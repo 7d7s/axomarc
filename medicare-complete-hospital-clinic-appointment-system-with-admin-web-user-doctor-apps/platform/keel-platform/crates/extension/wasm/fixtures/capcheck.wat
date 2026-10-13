@@ -13,7 +13,7 @@
   (global $heap (mut i32) (i32.const 16384))
 
   (data (i32.const 1024)
-    "{\"module\":{\"name\":\"capcheck\"},\"capabilities\":{\"probe\":{\"profile\":\"READ\"}}}\00")
+    "{\"module\":{\"name\":\"capcheck\",\"version\":\"0.1.0\",\"api\":1},\"capabilities\":{\"probe\":{\"profile\":\"READ\"}}}\00")
   (data (i32.const 1200) "{\"allowed\":true}")     ;; 16 bytes (1200..1216)
   (data (i32.const 1224) "{\"allowed\":false}")    ;; 17 bytes (1224..1241)
   (data (i32.const 1256) "capcheck invoked")       ;; 16 bytes (1256..1272)

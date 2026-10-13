@@ -13,10 +13,12 @@
 
 [module]
 name = "echo"
+version = "0.1.0"
+api = 1
 
 [capabilities.echo]
 profile = "READ"
 
 [budget]
-max_memory_mb = 64
+max_memory_mb = 100
 max_fuel = 20000000

@@ -550,10 +550,6 @@ fn default_plane() -> ModulePlane {
     ModulePlane::Tenant
 }
 
-fn default_api() -> u32 {
-    MODULE_ABI
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModulePlane {
@@ -794,8 +790,7 @@ pub struct ModuleHeader {
     pub plane: ModulePlane,
     #[serde(default)]
     pub description: String,
-    /// Module ABI this manifest targets (defaults to [MODULE_ABI]).
-    #[serde(default = "default_api")]
+    /// Module ABI this manifest targets (required).
     pub api: u32,
 }
 
@@ -1559,6 +1554,7 @@ mod tests {
 [module]
 name = "{name}"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "create" = {{ profile = "COMMAND" }}
@@ -1739,6 +1735,7 @@ name = "same"
 [module]
 name = "alpha"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "create" = { profile = "COMMAND" }
@@ -1798,6 +1795,7 @@ name = "things.index"
 [module]
 name = "alpha"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "create" = { profile = "COMMAND" }
@@ -1824,10 +1822,24 @@ name = "things.show"
     // ------------------------------------------------ S10 B-18: module ABI
 
     #[test]
-    fn manifest_defaults_to_current_module_abi() {
-        let m = manifest("abidefault", "");
+    fn manifest_with_explicit_api_compiles() {
+        let m = manifest("abiexplicit", "");
         assert_eq!(m.module.api, MODULE_ABI);
-        PlatformGraph::compile(vec![m]).expect("default ABI compiles");
+        PlatformGraph::compile(vec![m]).expect("explicit ABI compiles");
+    }
+
+    #[test]
+    fn manifest_without_api_fails_to_parse() {
+        let toml = r#"
+[module]
+name = "noapi"
+version = "0.1.0"
+
+[capabilities]
+"create" = { profile = "COMMAND" }
+"#;
+        let err = ModuleManifest::from_toml(toml).expect_err("missing api must fail");
+        assert!(err.message.contains("missing field `api`") || err.message.contains("api"));
     }
 
     #[test]
@@ -1860,6 +1872,7 @@ api = {}
 [module]
 name = "notes"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "index" = {{ profile = "READ" }}
@@ -1919,6 +1932,7 @@ resource = "notes"
 [module]
 name = "profile"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "show" = {{ profile = "READ" }}
@@ -1988,6 +2002,7 @@ resource = "profile"
 [module]
 name = "profile"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "show" = { profile = "READ" }
@@ -2009,6 +2024,7 @@ operation = "show"
 [module]
 name = "notes"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "index" = { profile = "READ" }
@@ -2031,6 +2047,7 @@ resource = "notes"
 [module]
 name = "notes"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "index" = { profile = "READ" }
@@ -2049,6 +2066,7 @@ method = "GET"
 [module]
 name = "notes"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "index" = { profile = "READ" }
@@ -2080,6 +2098,7 @@ path = "/notes"
 [module]
 name = "alpha"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "create" = { profile = "COMMAND" }
@@ -2101,6 +2120,7 @@ rules = ["required", "max:500"]
 [module]
 name = "alpha"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "create" = { profile = "COMMAND" }
@@ -2121,6 +2141,7 @@ rules = ["required"]
 [module]
 name = "alpha"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "create" = { profile = "COMMAND" }
@@ -2153,6 +2174,7 @@ rules = ["range:1"]
 [module]
 name = "alpha"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "create" = { profile = "COMMAND", inputs = ["patient", "tags"] }
@@ -2175,6 +2197,7 @@ rules = ["required"]
 [module]
 name = "alpha"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "create" = { profile = "COMMAND", inputs = ["patient"] }
@@ -2196,6 +2219,7 @@ rules = ["required"]
 [module]
 name = "alpha"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "create" = { profile = "COMMAND" }
@@ -2214,6 +2238,7 @@ rules = ["required"]
 [module]
 name = "alpha"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "create" = { profile = "COMMAND", inputs = ["patient"] }
@@ -2245,6 +2270,7 @@ rules = ["required"]
 [module]
 name = "alpha"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "create" = { profile = "COMMAND" }
@@ -2275,6 +2301,7 @@ custom = "unregistered_phase4_rule"
 [module]
 name = "alpha"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "create" = { profile = "COMMAND" }
@@ -2293,6 +2320,7 @@ attribute = "Patient name"
 [module]
 name = "alpha"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "create" = { profile = "COMMAND" }
@@ -2320,6 +2348,7 @@ messages = { requird = "typo never fires" }
 [module]
 name = "alpha"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "create" = { profile = "COMMAND" }
@@ -2344,6 +2373,7 @@ model = "Thing"
 [module]
 name = "alpha"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "create" = { profile = "COMMAND" }
@@ -2462,6 +2492,7 @@ cache = { policy = "no_store" }
 [module]
 name = "kinds"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "create" = {{ profile = "COMMAND" }}

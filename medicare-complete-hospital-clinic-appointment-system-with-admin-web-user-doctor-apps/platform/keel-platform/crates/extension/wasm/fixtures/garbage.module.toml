@@ -1,5 +1,7 @@
 [module]
 name = "garbage"
+version = "0.1.0"
+api = 1
 
 [capabilities.bogus]
 profile = "READ"

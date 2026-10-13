@@ -414,7 +414,7 @@ mod tests {
         // Drift: a manifest change invalidates the pinned hash.
         let app_dir = dir.join("applications").join("probe");
         std::fs::create_dir_all(&app_dir).unwrap();
-        std::fs::write(app_dir.join("module.toml"), "[module]\nname = \"probe\"\n").unwrap();
+        std::fs::write(app_dir.join("module.toml"), "[module]\nname = \"probe\"\nversion = \"0.1.0\"\napi = 1\n").unwrap();
 
         let reloader = RouteReloader::new(cell.clone(), state.clone(), graph.clone(), dir.clone());
         let cell_before = Arc::as_ptr(&*cell.read().unwrap());

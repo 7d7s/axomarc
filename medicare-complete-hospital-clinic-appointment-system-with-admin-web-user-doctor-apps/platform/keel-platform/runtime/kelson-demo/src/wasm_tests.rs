@@ -52,12 +52,12 @@ fn write_index(root: &Path, wasm: Vec<WasmModuleEntry>) {
 }
 
 /// An index entry pointing at a checked-in fixture (guest + sidecar). The
-/// fixture sidecars omit `version`, so both sides default to "v1".
+/// fixture sidecars have `version = "0.1.0"`, matching the index entry.
 fn fixture_entry(name: &str) -> WasmModuleEntry {
     let dir = fixtures_dir();
     WasmModuleEntry {
         name: name.to_string(),
-        version: "v1".to_string(),
+        version: "0.1.0".to_string(),
         path: dir.join(format!("{name}.wat")).display().to_string(),
         manifest: dir.join(format!("{name}.module.toml")).display().to_string(),
     }
@@ -214,7 +214,7 @@ fn wasm_loader_gates_discovery_and_the_guest_abi() {
     let sidecar = root.join("drift.toml");
     std::fs::write(
         &sidecar,
-        "[module]\nname = \"echo\"\n\n[capabilities.echo]\nprofile = \"READ\"\ninputs = [\"msg\"]\n",
+        "[module]\nname = \"echo\"\nversion = \"0.1.0\"\napi = 1\n\n[capabilities.echo]\nprofile = \"READ\"\ninputs = [\"msg\"]\n",
     )
     .expect("sidecar writes");
     let mut entry = fixture_entry("echo");
@@ -630,7 +630,7 @@ fn pin_mismatch_refuses_boot_before_any_plugin_loads() {
         crate::load_wasm_plugins(&root).expect_err("a drifted pin refuses boot rather than running");
     assert!(err.contains("module pins"), "names the gate: {err}");
     assert!(err.contains("0.3.1"), "names the pinned version: {err}");
-    assert!(err.contains("v1"), "names the installed version: {err}");
+    assert!(err.contains("0.1.0"), "names the installed version: {err}");
     assert!(
         !err.contains("wasm plugin"),
         "refused by the pin gate, not by a plugin load: {err}"
@@ -648,8 +648,8 @@ fn a_pin_matching_the_index_still_boots_and_loads_the_plugin() {
     // how many pins were checked.
     let root = temp_root("pins-match");
     write_index(&root, vec![fixture_entry("echo")]);
-    // The fixture sidecars omit `version`, so both sides default to "v1".
-    write_pins(&root, r#"{"echo": "v1"}"#);
+    // The fixture sidecars have `version = "0.1.0"`, matching the index entry.
+    write_pins(&root, r#"{"echo": "0.1.0"}"#);
 
     let bundle = crate::load_wasm_plugins(&root)
         .expect("a matching pin boots")
@@ -697,7 +697,7 @@ fn fixture_entry_with(wat: &str, sidecar: &str) -> WasmModuleEntry {
     let dir = fixtures_dir();
     WasmModuleEntry {
         name: wat.to_string(),
-        version: "v1".to_string(),
+        version: "0.1.0".to_string(),
         path: dir.join(format!("{wat}.wat")).display().to_string(),
         manifest: dir.join(format!("{sidecar}.module.toml")).display().to_string(),
     }
@@ -1250,6 +1250,8 @@ const V2_MANIFEST_JSON: &str =
 const V2_SIDECAR_TOML: &str = r#"
 [module]
 name = "v2-fixture"
+version = "0.1.0"
+api = 1
 
 [capabilities."appointments.read"]
 profile = "READ"

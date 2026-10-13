@@ -1,6 +1,7 @@
 # module.toml — immutable contract shape (11-SPEC §7). "kelson graph" compiles it.
 [module]
 name = "__PROJECT_NAME__"
+api = 1
 version = "0.1.0"
 maturity = "L0"
 plane = "tenant"

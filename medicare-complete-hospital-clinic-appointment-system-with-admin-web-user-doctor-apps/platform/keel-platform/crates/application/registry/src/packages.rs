@@ -372,7 +372,7 @@ mod tests {
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(
             dir.join("module.toml"),
-            format!("[module]\nname = \"{name}\"\nversion = \"0.2.0\"\n{extra}"),
+            format!("[module]\nname = \"{name}\"\nversion = \"0.2.0\"\napi = 1\n{extra}"),
         )
         .unwrap();
     }
@@ -491,7 +491,7 @@ mod tests {
         std::fs::write(
             dir.join("module.toml"),
             format!(
-                "[module]\nname = \"{name}\"\nversion = \"{version}\"\n\n\
+                "[module]\nname = \"{name}\"\nversion = \"{version}\"\napi = 1\n\n\
                  [capabilities.{capability}]\nprofile = \"{profile}\"\n"
             ),
         )
@@ -564,7 +564,7 @@ mod tests {
         std::fs::write(dir.join("idle.wasm"), b"\0asmfixture").unwrap();
         std::fs::write(
             dir.join("module.toml"),
-            "[module]\nname = \"idle\"\nversion = \"0.1.0\"\n",
+            "[module]\nname = \"idle\"\nversion = \"0.1.0\"\napi = 1\n",
         )
         .unwrap();
         index.wasm[0] = WasmModuleEntry {

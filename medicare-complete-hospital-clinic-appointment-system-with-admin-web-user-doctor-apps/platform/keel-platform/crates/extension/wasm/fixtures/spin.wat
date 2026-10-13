@@ -7,7 +7,7 @@
   (global $heap (mut i32) (i32.const 16384))
 
   (data (i32.const 1024)
-    "{\"module\":{\"name\":\"spin\"},\"capabilities\":{\"spin\":{\"profile\":\"READ\"}}}\00")
+    "{\"module\":{\"name\":\"spin\",\"version\":\"0.1.0\",\"api\":1},\"capabilities\":{\"spin\":{\"profile\":\"READ\"}}}\00")
 
   (func $alloc (export "kelson_alloc") (param $n i32) (result i32)
     (local $p i32)

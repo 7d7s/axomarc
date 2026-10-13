@@ -319,6 +319,7 @@ mod tests {
 [module]
 name = "appointments"
 version = "0.1.0"
+api = 1
 maturity = "L0"
 plane = "tenant"
 description = "Clinic appointments"
@@ -377,6 +378,7 @@ capability = "list"
 [module]
 name = "notes"
 version = "0.1.0"
+api = 1
 maturity = "L0"
 plane = "tenant"
 description = "Notes"
@@ -455,6 +457,7 @@ rules = ["one_of:personal,work"]
 [module]
 name = "ledger"
 version = "0.1.0"
+api = 1
 maturity = "L0"
 plane = "tenant"
 description = "Ledger"

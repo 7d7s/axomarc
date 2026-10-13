@@ -1,5 +1,7 @@
 [module]
 name = "mutate"
+version = "0.1.0"
+api = 1
 
 [capabilities.write_all]
 profile = "COMMAND"

@@ -13,7 +13,7 @@
 
   ;; Guest manifest — must serialize identically to echo.module.toml.
   (data (i32.const 1024)
-    "{\"module\":{\"name\":\"echo\"},\"capabilities\":{\"echo\":{\"profile\":\"READ\"}}}\00")
+    "{\"module\":{\"name\":\"echo\",\"version\":\"0.1.0\",\"api\":1},\"capabilities\":{\"echo\":{\"profile\":\"READ\"}}}\00")
   (data (i32.const 1200) "{\"echo\": ")         ;; 9 bytes
   (data (i32.const 1216) "echo invoked")        ;; 11 bytes
 

@@ -2195,6 +2195,7 @@ mod tests {
 [module]
 name = "alpha"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "index" = { profile = "READ" }
@@ -2273,7 +2274,7 @@ operation = "index"
         std::fs::create_dir_all(dir.join("packages").join("billing")).unwrap();
         std::fs::write(
             dir.join("packages").join("billing").join("module.toml"),
-            "[module]\nname = \"billing\"\nversion = \"0.1.0\"\n",
+            "[module]\nname = \"billing\"\nversion = \"0.1.0\"\napi = 1\n",
         )
         .unwrap();
         std::fs::write(

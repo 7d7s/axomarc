@@ -19,10 +19,12 @@
 
 [module]
 name = "spin"
+version = "0.1.0"
+api = 1
 
 [capabilities.spin]
 profile = "READ"
 
 [budget]
-execution_timeout_ms = 250
+execution_timeout_ms = 50
 max_concurrency = 1
