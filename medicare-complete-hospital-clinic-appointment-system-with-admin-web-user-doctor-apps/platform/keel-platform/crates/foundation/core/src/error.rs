@@ -102,6 +102,20 @@ pub mod codes {
     /// boot alongside them. ResourceExhausted/Retryable.
     /// Append-only: never reused for anything else.
     pub const WASM_LIFECYCLE: &str = "KSN_WASM_LIFECYCLE";
+
+    /// A manifest module's tracked provider is not in a serving state: the
+    /// lifecycle holds it `Disabled` (an operator action through the module
+    /// control surface, or a boot refusal) or it has not reached `Ready`
+    /// yet. Graph dispatch refuses the module's own routes with this code
+    /// before doing any work — the same *service availability* posture the
+    /// WASM lifecycle codes take: the module exists but cannot serve right
+    /// now. `Degraded` keeps serving, so this code is never emitted for a
+    /// degraded module. ResourceExhausted/Retryable; the graph router pins
+    /// it to HTTP 503 when it registers routes (the category default would
+    /// be 429, attributing our own module's offline state to the caller —
+    /// the same reasoning that pins the WASM availability codes at boot).
+    /// Append-only: never reused for anything else.
+    pub const MODULE_NOT_SERVING: &str = "KSN_MODULE_NOT_SERVING";
 }
 
 /// The one error type. `meta` must stay PHI-free (safe metadata only).

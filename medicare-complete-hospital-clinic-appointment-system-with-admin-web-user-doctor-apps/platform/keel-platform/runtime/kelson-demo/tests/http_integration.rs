@@ -2393,6 +2393,100 @@ async fn module_manage_unknown_module_404_and_bad_action_422() {
     );
 }
 
+#[tokio::test]
+async fn disabled_module_refuses_its_routes_while_the_sibling_keeps_serving() {
+    let dir = std::env::temp_dir().join(format!("kelson-demo-mgate-{}", uuid::Uuid::now_v7()));
+    std::fs::create_dir_all(dir.join("packages").join("billing")).unwrap();
+    std::fs::create_dir_all(dir.join("packages").join("payments")).unwrap();
+    // Two manifest-only packages, each declaring one PUBLIC route and no
+    // linked handler: the chain strips auth for a public route, so an
+    // anonymous request reaches dispatch itself and every answer pins the
+    // gate — the dispatch edge's own 401 (no handler registered, so its
+    // plan defaults to authentication required) while the module serves,
+    // 503 KSN_MODULE_NOT_SERVING once the lifecycle holds it out of
+    // service.
+    let manifest = |name: &str, path: &str| {
+        format!(
+            "[module]\nname = \"{name}\"\nversion = \"0.1.0\"\napi = 1\n\n\
+             [capabilities]\n\"probe\" = {{ profile = \"READ\" }}\n\n\
+             [[routes]]\nmethod = \"GET\"\npath = \"{path}\"\noperation = \"probe\"\npublic = true\n"
+        )
+    };
+    std::fs::write(
+        dir.join("packages").join("billing").join("module.toml"),
+        manifest("billing", "/api/v1/billing/invoice"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages").join("payments").join("module.toml"),
+        manifest("payments", "/api/v1/payments/status"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages.toml"),
+        "[[package]]\nname = \"billing\"\nversion = \"0.1.0\"\npath = \"packages/billing\"\n\n\
+         [[package]]\nname = \"payments\"\nversion = \"0.1.0\"\npath = \"packages/payments\"\n",
+    )
+    .unwrap();
+
+    let manifests = kelson_demo::graph_routes::discover_manifests(&dir).expect("discovers");
+    let graph = kelson_registry::PlatformGraph::compile(manifests).expect("graph compiles");
+    let (state, _, _) = kelson_demo::build_app_state(&dir, true, true);
+    let modules = state.modules.clone();
+    let router = kelson_demo::graph_routes::graph_router(state, &graph);
+    let probe = |uri: &str| {
+        Request::builder()
+            .method(Method::GET)
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    // Untracked (the harness boots without a host, so the registry starts
+    // empty): the route answers exactly as it did before the gate existed —
+    // the dispatch edge's own 401, never a module refusal.
+    let (status, _, _) = raw_text(router.clone(), probe("/api/v1/billing/invoice")).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "untracked dispatches");
+
+    // Track both modules through the boot path to Ready: both keep serving.
+    {
+        use kelson_lifecycle::ModuleState;
+        let mut modules = modules.write().unwrap();
+        for name in ["module.billing", "module.payments"] {
+            modules.discover(name);
+            modules.advance(name, ModuleState::Validated).unwrap();
+            modules.advance(name, ModuleState::Registered).unwrap();
+            modules.advance(name, ModuleState::Initialized).unwrap();
+            modules.advance(name, ModuleState::Ready).unwrap();
+        }
+    }
+    let (status, _, _) = raw_text(router.clone(), probe("/api/v1/billing/invoice")).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "Ready serves");
+
+    // Degraded still serves — availability over consistency, the same
+    // posture the readiness edge documents.
+    modules.write().unwrap().degrade("module.billing").unwrap();
+    let (status, _, _) = raw_text(router.clone(), probe("/api/v1/billing/invoice")).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "Degraded still serves");
+
+    // Disabled refuses the module's route: 503 with the module-availability
+    // code, rendered through the normal dispatch error path.
+    modules.write().unwrap().disable("module.billing").unwrap();
+    let (status, _, body) = raw_text(router.clone(), probe("/api/v1/billing/invoice")).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert!(
+        body.contains(kelson_foundation::codes::MODULE_NOT_SERVING),
+        "{body}"
+    );
+
+    // The sibling module is untouched: gating is per-module, not a global
+    // stop — the operator disabled billing and billing alone.
+    let (status, _, _) = raw_text(router, probe("/api/v1/payments/status")).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "the sibling still serves");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 // --------------------------------------------------------------- Wave 1 battery
 
 /// Wave 1 FormRequest wiring: manifest [[validation]] runs collect-all at the

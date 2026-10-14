@@ -571,6 +571,20 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
         let probe: MethodRouter = axum::routing::options(options_probe).with_state(allow_header);
         router = router.route(&path, probe);
     }
+    // Module-lifecycle availability (docs/15-EXTENSION, dispatch wiring):
+    // the refusal for a tracked module that is not serving is graph-router
+    // posture — these are the very routes the gate guards — so pin its
+    // status once here. The render registry is interior-mutable and shared
+    // with the boot ServiceRegistry, so the production boot and every
+    // harness build register the same pin, and a hot-reload rebuild
+    // re-pins idempotently. Without it the ResourceExhausted category
+    // would serve 429, telling the caller it was rate limited when our own
+    // module was the thing that went offline — the same reasoning that
+    // pins the WASM availability codes at both boot sites.
+    state.error_renders.set_status(
+        kelson_foundation::codes::MODULE_NOT_SERVING,
+        StatusCode::SERVICE_UNAVAILABLE,
+    );
     router
 }
 
@@ -1623,6 +1637,20 @@ fn apply_caching(
     response
 }
 
+/// The module-lifecycle registry key for one operation (docs/15-EXTENSION
+/// dispatch wiring). The registry is keyed by *provider* name
+/// (`module.appointments`) while an operation id names its module by
+/// *manifest* (`{module.name()}.{operation}`, built at registration), so the
+/// operation's first segment prefixed with `module.` is the key — the naming
+/// every manifest-shipping provider follows (`applications/appointments`,
+/// `applications/oauth2`). A dotless or dotted-module operation yields a key
+/// no provider registers, which the gate treats as untracked (dispatch
+/// proceeds, the safe failure mode).
+fn registry_key_for(operation: &OperationId) -> String {
+    let module = operation.as_str().split('.').next().unwrap_or_default();
+    format!("module.{module}")
+}
+
 /// Generic dispatcher for one graph route (Wave 1 slim edge). Identity,
 /// tenant resolution and the email-verified gate are handled by the route's
 /// middleware chain before this runs; dispatch consumes the installed
@@ -1671,6 +1699,37 @@ async fn graph_dispatch(
         .get("precognition")
         .and_then(|v| v.to_str().ok())
         .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"));
+    // Module-lifecycle admission (docs/15-EXTENSION dispatch wiring): a
+    // tracked module that is not serving refuses its own routes here —
+    // before body intake (an offline module stores no uploads and burns no
+    // validation) and before dispatch's own principal resolution. Note the
+    // ordering at large: the auth chain layers OUTSIDE dispatch, so an
+    // anonymous caller on a non-public route still meets the chain's 401
+    // first — its contract — while public routes and authenticated
+    // callers reach this refusal. Module availability itself is public
+    // posture anyway: `/readyz` publishes the same states. Degraded keeps
+    // serving: availability over consistency, the same posture the
+    // readiness edge documents. A module the registry does not know — any
+    // harness boot, or a provider that skips the `module.<name>` naming
+    // convention — dispatches exactly as before; the gate only ever fires
+    // for a module the lifecycle is actually tracking.
+    let registry_key = registry_key_for(&dispatch.operation);
+    let not_serving = state
+        .modules
+        .read()
+        .unwrap()
+        .state(&registry_key)
+        .is_some_and(|module_state| !module_state.is_serving());
+    if not_serving {
+        let err = kelson_foundation::AppError::new(
+            kelson_foundation::codes::MODULE_NOT_SERVING,
+            kelson_foundation::ErrorCategory::ResourceExhausted,
+            kelson_foundation::Severity::Low,
+            kelson_foundation::Retryability::Retryable,
+            format!("{registry_key} is not serving"),
+        );
+        return dispatch_error(&state, &dispatch, &headers, &path, &err);
+    }
     let method = req.method().clone();
     let body = match axum::body::to_bytes(req.into_body(), state.body_limit).await {
         Ok(bytes) => bytes,
@@ -2071,6 +2130,23 @@ mod tests {
         );
         assert_eq!(axum_path("/a/{x}/b/{y}"), "/a/{x}/b/{y}");
         assert_eq!(axum_path("/plain"), "/plain");
+    }
+
+    #[test]
+    fn registry_key_follows_provider_naming() {
+        // The operation id carries its manifest module as the first segment
+        // (`{module.name()}.{operation}`, built at registration); the
+        // lifecycle registry keys the provider `module.<name>`.
+        assert_eq!(
+            registry_key_for(&OperationId::from_static("appointments.book")),
+            "module.appointments"
+        );
+        // A dotless operation maps to a key no provider registers — the
+        // gate treats it as untracked and dispatch proceeds.
+        assert_eq!(
+            registry_key_for(&OperationId::from_static("solo")),
+            "module.solo"
+        );
     }
 
     #[test]
