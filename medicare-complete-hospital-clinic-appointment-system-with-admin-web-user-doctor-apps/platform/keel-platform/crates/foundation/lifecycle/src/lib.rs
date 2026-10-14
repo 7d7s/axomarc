@@ -25,6 +25,145 @@ pub enum Phase {
     Ready = 4,
 }
 
+/// Module lifecycle states (docs/15-EXTENSION §Modules).
+/// 
+/// The seven states represent the full lifecycle of a module from discovery
+/// to disablement. The first five (`Discovered` through `Ready`) are the
+/// normal boot progression; `Degraded` and `Disabled` are operational
+/// states that can be entered at runtime.
+/// 
+/// - `Discovered` — module.toml found on disk (graph compiler input)
+/// - `Validated` — manifest passes GRAPH gates (ABI, capability, etc.)
+/// - `Registered` — ModuleProvider registered in ServiceRegistry
+/// - `Initialized` — provider.init() ran, services registered
+/// - `Ready` — provider.boot() completed, module serving
+/// - `Degraded` — module serving but with reduced capability (e.g. a
+///   dependency unavailable, circuit breaker open)
+/// - `Disabled` — module explicitly disabled; all operations refused
+/// 
+/// Transitions: Discovered -> Validated -> Registered -> Initialized -> Ready
+/// From Ready: can transition to Degraded or Disabled.
+/// From Degraded: can transition back to Ready (recovery) or Disabled.
+/// From Disabled: terminal state (no recovery without restart).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ModuleState {
+    Discovered = 0,
+    Validated = 1,
+    Registered = 2,
+    Initialized = 3,
+    Ready = 4,
+    Degraded = 5,
+    Disabled = 6,
+}
+
+impl ModuleState {
+    /// Whether this state represents a module that is actively serving.
+    pub fn is_serving(self) -> bool {
+        matches!(self, Self::Ready | Self::Degraded)
+    }
+    
+    /// Whether this state allows transitioning to the given state.
+    pub fn can_transition_to(self, target: Self) -> bool {
+        use ModuleState::*;
+        match (self, target) {
+            // Normal boot progression
+            (Discovered, Validated) => true,
+            (Validated, Registered) => true,
+            (Registered, Initialized) => true,
+            (Initialized, Ready) => true,
+            // Operational transitions from Ready
+            (Ready, Degraded) => true,
+            (Ready, Disabled) => true,
+            // Recovery from Degraded
+            (Degraded, Ready) => true,
+            (Degraded, Disabled) => true,
+            // Disabled is terminal
+            _ => false,
+        }
+    }
+    
+    /// Transition to a new state, returning an error if the transition is invalid.
+    pub fn transition(&mut self, target: Self) -> Result<(), &'static str> {
+        if self.can_transition_to(target) {
+            *self = target;
+            Ok(())
+        } else {
+            Err("invalid module state transition")
+        }
+    }
+}
+
+impl serde::Serialize for ModuleState {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(match self {
+            ModuleState::Discovered => "Discovered",
+            ModuleState::Validated => "Validated",
+            ModuleState::Registered => "Registered",
+            ModuleState::Initialized => "Initialized",
+            ModuleState::Ready => "Ready",
+            ModuleState::Degraded => "Degraded",
+            ModuleState::Disabled => "Disabled",
+        })
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ModuleState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ModuleStateVisitor;
+        
+        impl<'de> serde::de::Visitor<'de> for ModuleStateVisitor {
+            type Value = ModuleState;
+            
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a module lifecycle state")
+            }
+            
+            fn visit_str<E>(self, value: &str) -> Result<ModuleState, E>
+            where
+                E: serde::de::Error,
+            {
+                match value {
+                    "Discovered" => Ok(ModuleState::Discovered),
+                    "Validated" => Ok(ModuleState::Validated),
+                    "Registered" => Ok(ModuleState::Registered),
+                    "Initialized" => Ok(ModuleState::Initialized),
+                    "Ready" => Ok(ModuleState::Ready),
+                    "Degraded" => Ok(ModuleState::Degraded),
+                    "Disabled" => Ok(ModuleState::Disabled),
+                    _ => Err(serde::de::Error::unknown_variant(value, &[
+                        "Discovered", "Validated", "Registered", "Initialized", 
+                        "Ready", "Degraded", "Disabled"
+                    ])),
+                }
+            }
+            
+            fn visit_u64<E>(self, value: u64) -> Result<ModuleState, E>
+            where
+                E: serde::de::Error,
+            {
+                match value {
+                    0 => Ok(ModuleState::Discovered),
+                    1 => Ok(ModuleState::Validated),
+                    2 => Ok(ModuleState::Registered),
+                    3 => Ok(ModuleState::Initialized),
+                    4 => Ok(ModuleState::Ready),
+                    5 => Ok(ModuleState::Degraded),
+                    6 => Ok(ModuleState::Disabled),
+                    _ => Err(serde::de::Error::invalid_value(serde::de::Unexpected::Unsigned(value), &"0-6")),
+                }
+            }
+        }
+        
+        deserializer.deserialize_any(ModuleStateVisitor)
+    }
+}
+
 /// Service lifetimes understood by the container (STAGE-0-SPEC §6).
 /// Recorded per registration for diagnostics and future scoped containers;
 /// constructor injection everywhere — no reflection magic.
@@ -478,8 +617,7 @@ mod tests {
         fn boot<'s>(
             &'s self,
             _: &'s ServiceRegistry,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), BootError>> + Send + 's>>
-        {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), BootError>> + Send + 's>> {
             Box::pin(async move {
                 BOOT_LOG.lock().unwrap().push("a".into());
                 Ok(())
@@ -505,8 +643,7 @@ mod tests {
         fn boot<'s>(
             &'s self,
             _: &'s ServiceRegistry,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), BootError>> + Send + 's>>
-        {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), BootError>> + Send + 's>> {
             Box::pin(async move {
                 BOOT_LOG.lock().unwrap().push("b".into());
                 Ok(())
@@ -590,5 +727,102 @@ mod tests {
             matches!(err, BootError::UnknownDependency { .. }),
             "got {err:?}"
         );
+    }
+
+    // --- ModuleState lifecycle ---
+
+    #[test]
+    fn module_state_normal_boot_progression() {
+        let mut s = ModuleState::Discovered;
+        assert!(s.transition(ModuleState::Validated).is_ok());
+        assert_eq!(s, ModuleState::Validated);
+        assert!(s.transition(ModuleState::Registered).is_ok());
+        assert_eq!(s, ModuleState::Registered);
+        assert!(s.transition(ModuleState::Initialized).is_ok());
+        assert_eq!(s, ModuleState::Initialized);
+        assert!(s.transition(ModuleState::Ready).is_ok());
+        assert_eq!(s, ModuleState::Ready);
+    }
+
+    #[test]
+    fn module_state_ready_can_go_degraded_or_disable() {
+        let mut s = ModuleState::Ready;
+        assert!(s.transition(ModuleState::Degraded).is_ok());
+        assert_eq!(s, ModuleState::Degraded);
+        
+        // Recovery from Degraded
+        assert!(s.transition(ModuleState::Ready).is_ok());
+        assert_eq!(s, ModuleState::Ready);
+        
+        // Then disable
+        assert!(s.transition(ModuleState::Disabled).is_ok());
+        assert_eq!(s, ModuleState::Disabled);
+    }
+
+    #[test]
+    fn module_state_degraded_can_recover_or_disable() {
+        let mut s = ModuleState::Degraded;
+        assert!(s.transition(ModuleState::Ready).is_ok());
+        assert_eq!(s, ModuleState::Ready);
+        
+        assert!(s.transition(ModuleState::Degraded).is_ok());
+        assert_eq!(s, ModuleState::Degraded);
+        
+        assert!(s.transition(ModuleState::Disabled).is_ok());
+        assert_eq!(s, ModuleState::Disabled);
+    }
+
+    #[test]
+    fn module_state_disabled_is_terminal() {
+        let mut s = ModuleState::Disabled;
+        assert!(s.transition(ModuleState::Ready).is_err());
+        assert!(s.transition(ModuleState::Degraded).is_err());
+        assert!(s.transition(ModuleState::Discovered).is_err());
+        assert_eq!(s, ModuleState::Disabled);
+    }
+
+    #[test]
+    fn module_state_invalid_transitions_rejected() {
+        let mut s = ModuleState::Discovered;
+        // Can't skip states
+        assert!(s.transition(ModuleState::Registered).is_err());
+        assert!(s.transition(ModuleState::Ready).is_err());
+        
+        s = ModuleState::Validated;
+        assert!(s.transition(ModuleState::Initialized).is_err());
+        assert!(s.transition(ModuleState::Disabled).is_err());
+        
+        s = ModuleState::Ready;
+        assert!(s.transition(ModuleState::Validated).is_err());
+    }
+
+    #[test]
+    fn module_state_is_serving() {
+        assert!(!ModuleState::Discovered.is_serving());
+        assert!(!ModuleState::Validated.is_serving());
+        assert!(!ModuleState::Registered.is_serving());
+        assert!(!ModuleState::Initialized.is_serving());
+        assert!(ModuleState::Ready.is_serving());
+        assert!(ModuleState::Degraded.is_serving());
+        assert!(!ModuleState::Disabled.is_serving());
+    }
+
+    #[test]
+    fn module_state_serde_roundtrip() {
+        use serde_json;
+        
+        for state in [
+            ModuleState::Discovered,
+            ModuleState::Validated,
+            ModuleState::Registered,
+            ModuleState::Initialized,
+            ModuleState::Ready,
+            ModuleState::Degraded,
+            ModuleState::Disabled,
+        ] {
+            let json = serde_json::to_string(&state).unwrap();
+            let deserialized: ModuleState = serde_json::from_str(&json).unwrap();
+            assert_eq!(state, deserialized);
+        }
     }
 }
