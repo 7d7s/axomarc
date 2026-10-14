@@ -1,4 +1,4 @@
-//! Module: appointments — Clinic appointments: book, cancel, list.
+//! Module: appointments ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â Clinic appointments: book, cancel, list.
 //! Scaffolded by `kelson make:module`, then expanded into the first real domain
 //! module. Contracts live in module.toml; code lives here. State sits behind
 //! the framework `ModelStore` port (S8): `InMemoryModelStore` in tests and
@@ -6,7 +6,7 @@
 //! semantic CRUD contract; PostgreSQL carries the real double-booking
 //! contention guard via the partial unique index on (tenant, patient, slot).
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use kelson_context::ExecutionContext;
 use kelson_foundation::{
@@ -16,7 +16,7 @@ use kelson_foundation::{
 use kelson_execution::{
     BoxFuture, ExecutionPlan, ExecutionUnit, MutationRecord, OperationHandler, OutboxMessage,
 };
-use kelson_lifecycle::{BootError, Phase, Provider, ServiceRegistry};
+use kelson_lifecycle::{BootError, ModuleState, Phase, Provider, ServiceRegistry};
 use kelson_models::{
     FieldDef, FieldFilter, FieldType, ModelDef, ModelRuntime, ModelStore, ModelStoreRef, Record,
 };
@@ -240,7 +240,7 @@ impl AppointmentStore {
     }
 
     /// Wave 3 Phase 6: trashed-aware binding find (`with_trashed` route
-    /// bindings) — surfaces soft-deleted appointments too.
+    /// bindings) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â surfaces soft-deleted appointments too.
     pub fn find_for_binding_trashed(
         &self,
         tenant: Option<TenantId>,
@@ -311,7 +311,7 @@ impl kelson_models::RouteBindingResolver for AppointmentBindingResolver {
     }
 }
 
-/// Wave 6 P6: `appointment.booked` — the producer notification the book
+/// Wave 6 P6: `appointment.booked` ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the producer notification the book
 /// handler dispatches on the Database channel (the caller's inbox row).
 /// Mail/SMS text resolves `notifications.appointment_booked` through the
 /// hub catalog with `{patient}`/`{slot}` interpolated from the payload
@@ -363,7 +363,7 @@ impl NotificationDef for AppointmentBooked {
     }
 }
 
-/// Wave 6 P6: `appointment.cancelled` — the cancel handler's producer
+/// Wave 6 P6: `appointment.cancelled` ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the cancel handler's producer
 /// notification (same posture as [`AppointmentBooked`], keyed
 /// `notifications.appointment_cancelled`).
 #[derive(Debug, Clone)]
@@ -412,7 +412,7 @@ impl NotificationDef for AppointmentCancelled {
 
 /// All operation handlers of this module (host builds a CommandBus from these).
 /// `notifier` is the Wave 6 P6 producer hub: `None` (hosts that never wired
-/// the platform notify hub) leaves the dispatch silent — the `Option`
+/// the platform notify hub) leaves the dispatch silent ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the `Option`
 /// degradation posture every optional service follows.
 pub fn handlers(
     store: Arc<AppointmentStore>,
@@ -430,7 +430,47 @@ pub fn handlers(
 
 /// Module provider: binds the domain store to the framework ModelStore port
 /// (registered by the Platform phase) and registers the handler bundle.
-pub struct ModuleProvider;
+/// Tracks the module's lifecycle state (Discovered -> Validated -> Registered
+/// -> Initialized -> Ready -> Degraded/Disabled).
+pub struct ModuleProvider {
+    state: Mutex<ModuleState>,
+}
+
+impl ModuleProvider {
+    pub fn new() -> Self {
+        Self { state: Mutex::new(ModuleState::Discovered) }
+    }
+
+    pub fn state(&self) -> ModuleState {
+        *self.state.lock().unwrap()
+    }
+
+    #[allow(dead_code)]
+    fn set_state(&self, state: ModuleState) {
+        *self.state.lock().unwrap() = state;
+    }
+
+    #[allow(dead_code)]
+    fn transition_to_validated(&self) {
+        *self.state.lock().unwrap() = ModuleState::Validated;
+    }
+
+    #[allow(dead_code)]
+    fn transition_to_registered(&self) {
+        *self.state.lock().unwrap() = ModuleState::Registered;
+    }
+
+    #[allow(dead_code)]
+    fn transition_to_ready(&self) {
+        *self.state.lock().unwrap() = ModuleState::Ready;
+    }
+}
+
+impl Default for ModuleProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Provider for ModuleProvider {
     fn name(&self) -> &str {
@@ -452,7 +492,7 @@ impl Provider for ModuleProvider {
                 .0
                 .register(Arc::new(AppointmentBindingResolver::new(store.clone())));
         }
-        // Wave 4 Phase 4: model.probes — register the Appointment row probe
+        // Wave 4 Phase 4: model.probes ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â register the Appointment row probe
         // for the `unique`/`exists` validation rules when the platform
         // provides the registry (same tolerance posture as route.bindings).
         if let Ok(probes) = registry.get::<kelson_models::ProbeRegistryRef>() {
@@ -583,7 +623,7 @@ impl OperationHandler for BookHandler {
             // Wave 6 P6 producer dispatch: the `appointment.booked` inbox
             // row lands through the notification store port at the end of
             // the handler, before the unit commits (the documented
-            // pre-commit posture — same database, same health). The
+            // pre-commit posture ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â same database, same health). The
             // request locale rides both the dispatch context and the row
             // payload.
             if let Some(hub) = notifier.as_ref() {
@@ -676,7 +716,7 @@ impl OperationHandler for CancelHandler {
         })();
         Box::pin(async move {
             let (value, patient, slot) = outcome?;
-            // Wave 6 P6 producer dispatch — same pre-commit, fail-closed
+            // Wave 6 P6 producer dispatch ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â same pre-commit, fail-closed
             // posture as the book handler, keyed `appointment.cancelled`.
             if let Some(hub) = notifier.as_ref() {
                 let locale = ctx.locale.lang.clone();
@@ -913,7 +953,7 @@ mod tests {
     }
 
     /// Wave 3 Phase 6: the binding resolver's trashed hook. The row is
-    /// soft-deleted behind the store's back — `resolve` (default bindings)
+    /// soft-deleted behind the store's back ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â `resolve` (default bindings)
     /// hides it, `resolve_trashed` (`with_trashed` bindings) surfaces it.
     #[test]
     fn trashed_binding_resolver_surfaces_soft_deleted_rows() {
@@ -1171,7 +1211,7 @@ mod tests {
     async fn provider_boots_and_registers_the_handler_bundle() {
         let mut host = kelson_lifecycle::ApplicationHost::new();
         host.add_provider(Box::new(TestModelStoreProvider));
-        host.add_provider(Box::new(ModuleProvider));
+        host.add_provider(Box::new(ModuleProvider::new()));
         host.boot().await.expect("module boots");
         let bundle = host
             .registry()
@@ -1188,7 +1228,7 @@ mod tests {
     #[tokio::test]
     async fn provider_fails_boot_without_a_model_store() {
         let mut host = kelson_lifecycle::ApplicationHost::new();
-        host.add_provider(Box::new(ModuleProvider));
+        host.add_provider(Box::new(ModuleProvider::new()));
         assert!(
             host.boot().await.is_err(),
             "module must refuse to boot without the ModelStore port"
@@ -1197,7 +1237,7 @@ mod tests {
 
     // ------------------------------------------------- Wave 6 P6: producer dispatch
 
-    /// Same shape as [`ctx`] with a pinned request locale — the P6 e2e
+    /// Same shape as [`ctx`] with a pinned request locale ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the P6 e2e
     /// asserts the producer carries it into the row payload.
     fn ctx_lang(principal: PrincipalId, tenant: TenantId, lang: &str) -> Arc<ExecutionContext> {
         ExecutionContext::builder(ExecutionProfileKind::Command, OffsetDateTime::now_utc())
@@ -1224,7 +1264,7 @@ mod tests {
     }
 
     /// Wave 6 P6: a successful booking dispatches the `appointment.booked`
-    /// inbox row through the hub — addressed to the caller's principal in
+    /// inbox row through the hub ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â addressed to the caller's principal in
     /// the caller's locale (the payload carries it), landing in the very
     /// store shape the HTTP feed reads.
     #[tokio::test]
@@ -1253,7 +1293,7 @@ mod tests {
     }
 
     /// Wave 6 P6: cancellation dispatches its own `appointment.cancelled`
-    /// row alongside the booking's — two events, two inbox rows.
+    /// row alongside the booking's ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â two events, two inbox rows.
     #[tokio::test]
     async fn cancel_dispatches_the_cancelled_inbox_row() {
         let (engine, store, principal, tenant) = fixture(&[OP_BOOK, OP_CANCEL]);
@@ -1291,7 +1331,7 @@ mod tests {
     }
 
     /// Wave 6 P6: a wired hub that cannot store the row fails the
-    /// operation (fail-closed) — the producer never drops its dispatch
+    /// operation (fail-closed) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the producer never drops its dispatch
     /// silently; a host with no hub at all stays on the degraded path
     /// the untouched booking tests already prove.
     #[tokio::test]

@@ -25,11 +25,13 @@
 
 use std::sync::Arc;
 
+use std::sync::Mutex;
+
 use kelson_context::ExecutionContext;
 use kelson_foundation::{AppError, ExecutionProfileKind, OperationId, PrincipalId, TenantId};
 use kelson_execution::{BoxFuture, ExecutionPlan, ExecutionUnit, MutationRecord, OperationHandler};
 use kelson_identity::{hash_password, verify_password, Secret};
-use kelson_lifecycle::{BootError, Phase, Provider, ServiceRegistry};
+use kelson_lifecycle::{BootError, ModuleState, Phase, Provider, ServiceRegistry};
 use kelson_models::{
     FieldDef, FieldFilter, FieldType, ModelDef, ModelRuntime, ModelStore, ModelStoreRef, Record,
 };
@@ -961,7 +963,42 @@ pub fn handlers(
 /// legacy slot.
 pub struct OauthHandlerBundle(pub Vec<Arc<dyn OperationHandler>>);
 
-pub struct ModuleProvider;
+/// Tracks the module's lifecycle state (Discovered -> Validated -> Registered
+/// -> Initialized -> Ready -> Degraded/Disabled).
+pub struct ModuleProvider {
+    state: Mutex<ModuleState>,
+}
+
+impl ModuleProvider {
+    pub fn new() -> Self {
+        Self { state: Mutex::new(ModuleState::Discovered) }
+    }
+
+    pub fn state(&self) -> ModuleState {
+        *self.state.lock().unwrap()
+    }
+
+    #[allow(dead_code)]
+    fn transition_to_validated(&self) {
+        *self.state.lock().unwrap() = ModuleState::Validated;
+    }
+
+    #[allow(dead_code)]
+    fn transition_to_registered(&self) {
+        *self.state.lock().unwrap() = ModuleState::Registered;
+    }
+
+    #[allow(dead_code)]
+    fn transition_to_ready(&self) {
+        *self.state.lock().unwrap() = ModuleState::Ready;
+    }
+}
+
+impl Default for ModuleProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Provider for ModuleProvider {
     fn name(&self) -> &str {
@@ -971,13 +1008,19 @@ impl Provider for ModuleProvider {
         Phase::Modules
     }
     fn init(&self, registry: &mut ServiceRegistry) -> Result<(), BootError> {
+        // Transition: Discovered -> Validated -> Registered
+        self.transition_to_validated();
         let backend = registry.get::<ModelStoreRef>()?;
         let tokens = registry.get::<TokenService>()?;
         let store = Arc::new(OauthClientStore::new(backend.0.clone()));
+        // Transition: Registered
+        self.transition_to_registered();
         registry.insert(
             "module.oauth2.handlers",
             Arc::new(OauthHandlerBundle(handlers(store, tokens))),
         )?;
+        // Transition: Initialized -> Ready
+        self.transition_to_ready();
         Ok(())
     }
 }
