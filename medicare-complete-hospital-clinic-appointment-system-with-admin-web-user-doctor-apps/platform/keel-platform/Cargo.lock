@@ -1851,6 +1851,7 @@ name = "kelson-lifecycle"
 version = "0.1.0"
 dependencies = [
  "kelson-foundation",
+ "serde",
  "serde_json",
  "tokio",
 ]

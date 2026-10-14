@@ -164,6 +164,117 @@ impl<'de> serde::Deserialize<'de> for ModuleState {
     }
 }
 
+/// Runtime module state tracking (docs/15-EXTENSION §Modules).
+/// Tracks each module through the lifecycle: Discovered → Validated →
+/// Registered → Initialized → Ready, then Degraded/Disabled at runtime.
+/// ApplicationHost calls into this during boot and register_module;
+/// operators or health checks can degrade/recover/disable at runtime.
+#[derive(Debug, Clone, Default)]
+pub struct ModuleRegistry {
+    states: std::collections::HashMap<String, ModuleState>,
+}
+
+impl ModuleRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Insert a module at Discovered. Overwrites any prior entry.
+    pub fn discover(&mut self, name: &str) {
+        self.states.insert(name.to_string(), ModuleState::Discovered);
+    }
+
+    /// Advance a module one step along the boot path.
+    /// Returns Ok on success, Err with a description on an invalid transition.
+    pub fn advance(&mut self, name: &str, to: ModuleState) -> Result<(), String> {
+        let from = self
+            .states
+            .get(name)
+            .copied()
+            .unwrap_or(ModuleState::Discovered);
+        if from.can_transition_to(to) {
+            self.states.insert(name.to_string(), to);
+            Ok(())
+        } else {
+            Err(format!(
+                "module {name}: invalid transition {from:?} -> {to:?}"
+            ))
+        }
+    }
+
+    /// Transition Ready → Degraded. Only valid from Ready.
+    pub fn degrade(&mut self, name: &str) -> Result<(), String> {
+        let from = self
+            .states
+            .get(name)
+            .copied()
+            .unwrap_or(ModuleState::Discovered);
+        match from {
+            ModuleState::Ready => {
+                self.states.insert(name.to_string(), ModuleState::Degraded);
+                Ok(())
+            }
+            _ => Err(format!(
+                "module {name}: cannot degrade from {from:?}"
+            )),
+        }
+    }
+
+    /// Transition Degraded → Ready (recovery). Only valid from Degraded.
+    pub fn recover(&mut self, name: &str) -> Result<(), String> {
+        let from = self
+            .states
+            .get(name)
+            .copied()
+            .unwrap_or(ModuleState::Discovered);
+        match from {
+            ModuleState::Degraded => {
+                self.states.insert(name.to_string(), ModuleState::Ready);
+                Ok(())
+            }
+            _ => Err(format!(
+                "module {name}: cannot recover from {from:?}"
+            )),
+        }
+    }
+
+    /// Transition to Disabled (terminal). Valid from Ready or Degraded.
+    pub fn disable(&mut self, name: &str) -> Result<(), String> {
+        let from = self
+            .states
+            .get(name)
+            .copied()
+            .unwrap_or(ModuleState::Discovered);
+        match from {
+            ModuleState::Ready | ModuleState::Degraded => {
+                self.states.insert(name.to_string(), ModuleState::Disabled);
+                Ok(())
+            }
+            _ => Err(format!(
+                "module {name}: cannot disable from {from:?}"
+            )),
+        }
+    }
+
+    /// Look up a module's current state.
+    pub fn state(&self, name: &str) -> Option<ModuleState> {
+        self.states.get(name).copied()
+    }
+
+    /// Whether a module is currently in a serving state (Ready or Degraded).
+    pub fn is_serving(&self, name: &str) -> bool {
+        matches!(
+            self.states.get(name),
+            Some(ModuleState::Ready) | Some(ModuleState::Degraded)
+        )
+    }
+
+    /// Snapshot of all tracked modules (name → state).
+    pub fn snapshot(&self) -> std::collections::HashMap<String, ModuleState> {
+        self.states.clone()
+    }
+}
+
 /// Service lifetimes understood by the container (STAGE-0-SPEC §6).
 /// Recorded per registration for diagnostics and future scoped containers;
 /// constructor injection everywhere — no reflection magic.
@@ -414,6 +525,7 @@ fn topo_order(providers: &[Box<dyn Provider>]) -> Result<Vec<usize>, BootError> 
 pub struct ApplicationHost {
     providers: Vec<Box<dyn Provider>>,
     registry: ServiceRegistry,
+    modules: ModuleRegistry,
     booted: bool,
     /// Wave 7 P3 (docs/19 L340): the injectable clock on the host. Default =
     /// wall clock; tests inject a `FixedClock` so scheduler `next_run` and
@@ -426,6 +538,7 @@ impl ApplicationHost {
         Self {
             providers: Vec::new(),
             registry: ServiceRegistry::new(),
+            modules: ModuleRegistry::new(),
             booted: false,
             clock: Arc::new(kelson_foundation::SystemClock),
         }
@@ -462,20 +575,28 @@ impl ApplicationHost {
             .sort_by_key(|p| (p.phase(), p.name().to_string()));
         let order = topo_order(&self.providers)?;
         for &i in &order {
+            let name = self.providers[i].name().to_string();
+            // Track the module through the boot path (docs/15-EXTENSION).
+            self.modules.discover(&name);
+            let _ = self.modules.advance(&name, ModuleState::Validated);
             self.providers[i]
                 .init(&mut self.registry)
                 .map_err(|e| BootError::ProviderFailed {
                     provider: self.providers[i].name().to_string(),
                     source: e.to_string(),
                 })?;
+            let _ = self.modules.advance(&name, ModuleState::Registered);
         }
         for &i in &order {
+            let name = self.providers[i].name().to_string();
+            let _ = self.modules.advance(&name, ModuleState::Initialized);
             self.providers[i].boot(&self.registry).await.map_err(|e| {
                 BootError::ProviderFailed {
                     provider: self.providers[i].name().to_string(),
                     source: e.to_string(),
                 }
             })?;
+            let _ = self.modules.advance(&name, ModuleState::Ready);
         }
         self.registry.freeze();
         self.booted = true;
@@ -483,7 +604,7 @@ impl ApplicationHost {
     }
 
     /// Dynamically register a module provider after boot (hot reload).
-    /// Initializes the provider, adds it to the provider list, and returns.
+    /// Initializes the provider, boots it, adds it to the provider list, and returns.
     /// Note: Full graph recompilation and route cache regeneration
     /// are handled by the RouteReloader when the route cache artifact
     /// is updated via `kelson route:cache`.
@@ -491,21 +612,41 @@ impl ApplicationHost {
         if !self.booted {
             return Err(BootError::NotBooted);
         }
-        
-        // Initialize the new provider
+
+        let name = provider.name().to_string();
+        // Track the module through the boot path (docs/15-EXTENSION).
+        self.modules.discover(&name);
+        let _ = self.modules.advance(&name, ModuleState::Validated);
         provider.init(&mut self.registry).map_err(|e| BootError::ProviderFailed {
-            provider: provider.name().to_string(),
+            provider: name.clone(),
             source: e.to_string(),
         })?;
-        
+        let _ = self.modules.advance(&name, ModuleState::Registered);
+        let _ = self.modules.advance(&name, ModuleState::Initialized);
+        provider.boot(&self.registry).await.map_err(|e| BootError::ProviderFailed {
+            provider: name.clone(),
+            source: e.to_string(),
+        })?;
+        let _ = self.modules.advance(&name, ModuleState::Ready);
+
         // Add to providers list
         self.providers.push(provider);
-        
+
         Ok(())
     }
 
     pub fn registry(&self) -> &ServiceRegistry {
         &self.registry
+    }
+
+    /// Access the runtime module state registry.
+    pub fn modules(&self) -> &ModuleRegistry {
+        &self.modules
+    }
+
+    /// Mutable access to the runtime module state registry (degrade/recover/disable).
+    pub fn modules_mut(&mut self) -> &mut ModuleRegistry {
+        &mut self.modules
     }
 
     pub fn is_booted(&self) -> bool {
@@ -848,5 +989,94 @@ mod tests {
             let deserialized: ModuleState = serde_json::from_str(&json).unwrap();
             assert_eq!(state, deserialized);
         }
+    }
+
+    #[test]
+    fn module_registry_discover_starts_discovered() {
+        let mut reg = ModuleRegistry::new();
+        reg.discover("orders");
+        assert_eq!(reg.state("orders"), Some(ModuleState::Discovered));
+        assert!(!reg.is_serving("orders"));
+    }
+
+    #[test]
+    fn module_registry_boot_path_reaches_ready() {
+        let mut reg = ModuleRegistry::new();
+        reg.discover("payments");
+        reg.advance("payments", ModuleState::Validated).unwrap();
+        reg.advance("payments", ModuleState::Registered).unwrap();
+        reg.advance("payments", ModuleState::Initialized).unwrap();
+        reg.advance("payments", ModuleState::Ready).unwrap();
+        assert_eq!(reg.state("payments"), Some(ModuleState::Ready));
+        assert!(reg.is_serving("payments"));
+    }
+
+    #[test]
+    fn module_registry_degrade_and_recover() {
+        let mut reg = ModuleRegistry::new();
+        reg.discover("notifications");
+        reg.advance("notifications", ModuleState::Validated).unwrap();
+        reg.advance("notifications", ModuleState::Registered).unwrap();
+        reg.advance("notifications", ModuleState::Initialized).unwrap();
+        reg.advance("notifications", ModuleState::Ready).unwrap();
+
+        reg.degrade("notifications").unwrap();
+        assert_eq!(reg.state("notifications"), Some(ModuleState::Degraded));
+        // Degraded still counts as serving (docs/15-EXTENSION).
+        assert!(reg.is_serving("notifications"));
+
+        reg.recover("notifications").unwrap();
+        assert_eq!(reg.state("notifications"), Some(ModuleState::Ready));
+    }
+
+    #[test]
+    fn module_registry_disable_is_terminal() {
+        let mut reg = ModuleRegistry::new();
+        reg.discover("legacy");
+        reg.advance("legacy", ModuleState::Validated).unwrap();
+        reg.advance("legacy", ModuleState::Registered).unwrap();
+        reg.advance("legacy", ModuleState::Initialized).unwrap();
+        reg.advance("legacy", ModuleState::Ready).unwrap();
+
+        reg.disable("legacy").unwrap();
+        assert_eq!(reg.state("legacy"), Some(ModuleState::Disabled));
+        assert!(!reg.is_serving("legacy"));
+
+        // Disabled is terminal: no recovery.
+        assert!(reg.recover("legacy").is_err());
+        assert!(reg.degrade("legacy").is_err());
+    }
+
+    #[test]
+    fn module_registry_rejects_invalid_transition() {
+        let mut reg = ModuleRegistry::new();
+        reg.discover("broken");
+        // Skips Validated → Registered: should fail.
+        assert!(reg.advance("broken", ModuleState::Registered).is_err());
+    }
+
+    #[test]
+    fn module_registry_snapshot_copies_all_states() {
+        let mut reg = ModuleRegistry::new();
+        reg.discover("a");
+        reg.discover("b");
+        reg.advance("a", ModuleState::Validated).unwrap();
+        let snap = reg.snapshot();
+        assert_eq!(snap.len(), 2);
+        assert_eq!(snap.get("a"), Some(&ModuleState::Validated));
+        assert_eq!(snap.get("b"), Some(&ModuleState::Discovered));
+    }
+
+    #[tokio::test]
+    async fn host_boot_tracks_module_states() {
+        let mut host = ApplicationHost::new();
+        host.add_provider(Box::new(P1));
+        host.add_provider(Box::new(P0));
+        host.boot().await.unwrap();
+
+        assert_eq!(host.modules().state("p0"), Some(ModuleState::Ready));
+        assert_eq!(host.modules().state("p1"), Some(ModuleState::Ready));
+        assert!(host.modules().is_serving("p0"));
+        assert!(host.modules().is_serving("p1"));
     }
 }
