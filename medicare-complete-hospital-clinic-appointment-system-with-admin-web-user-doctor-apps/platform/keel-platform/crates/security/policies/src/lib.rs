@@ -260,6 +260,15 @@ impl AuthorizationPort for PolicyAuthz {
 }
 
 /// Helper for tests/dev hydration.
+///
+/// The live enforcement of stale-revision is the deny decision returned by
+/// `PolicyEngine::decide` (code "policy.stale-revision"), which the execution
+/// engine surfaces as `AppError::denied` with the deny reason. The
+/// `AUTH_STALE_REVISION` error code (see `kelson_foundation::codes`) is an
+/// internal constant that is NOT surfaced as an AppError in production flows —
+/// the deny decision carries the same information in policy-level format.
+/// This helper exists solely for test hydration and should not be used in
+/// production code paths.
 pub fn stale_snapshot_error() -> AppError {
     AppError::new(
         codes::STALE_REVISION,
