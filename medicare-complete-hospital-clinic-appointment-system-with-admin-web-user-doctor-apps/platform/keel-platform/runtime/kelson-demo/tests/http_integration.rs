@@ -2136,6 +2136,262 @@ async fn telemetry_incident_operator_roundtrip_and_status() {
     assert_eq!(again.data()["outcome"], "started");
 }
 
+// ------------------------------------------- Row 16: module-lifecycle admin
+
+/// Router with the module-lifecycle admin surface merged (same session
+/// wiring as `app()`).
+fn app_with_modules() -> App {
+    let dir = std::env::temp_dir().join(format!("kelson-demo-it-{}", uuid::Uuid::now_v7()));
+    let (state, graph, store) = kelson_demo::build_app_state(&dir, true, true);
+    let router = kelson_demo::routes::router(state.clone())
+        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph))
+        .merge(kelson_demo::auth_routes::router(state.clone()))
+        .merge(kelson_demo::upload_routes::router(state.clone()))
+        .merge(kelson_demo::routes::module_routes::router(state.clone()));
+    let router = state
+        .sessions
+        .as_ref()
+        .expect("sessions enabled")
+        .as_ref()
+        .clone()
+        .apply(router);
+    App {
+        router,
+        state,
+        store,
+    }
+}
+
+/// Seed a tracked module straight to Ready (the harness boots without a
+/// host, so the registry starts empty — tests drive the runtime states).
+fn seed_ready_module(app: &App, name: &str) {
+    use kelson_lifecycle::ModuleState;
+    let mut modules = app.state.modules.write().unwrap();
+    modules.discover(name);
+    modules.advance(name, ModuleState::Validated).unwrap();
+    modules.advance(name, ModuleState::Registered).unwrap();
+    modules.advance(name, ModuleState::Initialized).unwrap();
+    modules.advance(name, ModuleState::Ready).unwrap();
+}
+
+/// Grant the module-control capability (registered principals only get
+/// module capabilities by default — same posture as the incident gate).
+fn grant_module_capability(
+    app: &App,
+    principal: kelson_foundation::PrincipalId,
+    tenant: kelson_foundation::TenantId,
+) {
+    app.state
+        .policy
+        .install_snapshot(kelson_policy::AccessSnapshot {
+            principal_id: principal,
+            tenant_id: tenant,
+            membership_active: true,
+            capabilities: [
+                kelson_demo::routes::module_routes::MODULE_MANAGE_CAPABILITY.to_string(),
+            ]
+                .into_iter()
+                .collect(),
+            scope_paths: ["/".to_string()].into_iter().collect(),
+            authorization_revision: app.state.policy.revision(),
+            feature_revision: kelson_foundation::FeatureRevision(1),
+            module_revision: kelson_foundation::ModuleRevision(1),
+            computed_at: time::OffsetDateTime::now_utc(),
+        });
+}
+
+#[tokio::test]
+async fn module_manage_requires_authentication() {
+    let app = app_with_modules();
+    let res = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/admin/modules",
+            serde_json::json!({"name": "config", "action": "degrade"}),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::UNAUTHORIZED, "{}", res.body);
+}
+
+#[tokio::test]
+async fn module_manage_requires_operator_capability() {
+    let app = app_with_modules();
+    seed_ready_module(&app, "config");
+    let email = format!("nomodule-{}@clinic.test", uuid::Uuid::now_v7());
+    let cookie = register(&app, &email)
+        .await
+        .session_cookie()
+        .expect("session cookie issued");
+    // Registered principals carry module capabilities only — module control
+    // stays operator-gated.
+    let res = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/admin/modules",
+            serde_json::json!({"name": "config", "action": "degrade"}),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::FORBIDDEN, "{}", res.body);
+    assert_eq!(res.error_code(), kelson_foundation::codes::DENIED);
+}
+
+#[tokio::test]
+async fn module_manage_roundtrip_degrade_recover_disable_and_readyz() {
+    let app = app_with_modules();
+    seed_ready_module(&app, "config");
+    let email = format!("moduleop-{}@clinic.test", uuid::Uuid::now_v7());
+    let reg = register(&app, &email).await;
+    let cookie = reg.session_cookie().expect("session cookie issued");
+    let principal = kelson_foundation::PrincipalId::from_uuid(
+        uuid::Uuid::parse_str(reg.data()["principal_id"].as_str().unwrap()).unwrap(),
+    );
+    let tenant = kelson_foundation::TenantId::from_uuid(
+        uuid::Uuid::parse_str(reg.data()["tenant_id"].as_str().unwrap()).unwrap(),
+    );
+    grant_module_capability(&app, principal, tenant);
+
+    // Degrade: Ready -> Degraded (still serving, so readiness holds).
+    let degrade = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/admin/modules",
+            serde_json::json!({"name": "config", "action": "degrade"}),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(degrade.status, StatusCode::OK, "{}", degrade.body);
+    assert_eq!(degrade.data()["state"], "Degraded");
+    let (status, _, _) = raw_text(
+        app.router.clone(),
+        Request::builder().uri("/readyz").body(Body::empty()).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "Degraded still counts as serving");
+
+    // Recover: Degraded -> Ready.
+    let recover = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/admin/modules",
+            serde_json::json!({"name": "config", "action": "recover"}),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(recover.status, StatusCode::OK, "{}", recover.body);
+    assert_eq!(recover.data()["state"], "Ready");
+
+    // Disable: Ready -> Disabled (terminal); readiness now fails.
+    let disable = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/admin/modules",
+            serde_json::json!({"name": "config", "action": "disable"}),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(disable.status, StatusCode::OK, "{}", disable.body);
+    assert_eq!(disable.data()["state"], "Disabled");
+    let (status, _, body) = raw_text(
+        app.router.clone(),
+        Request::builder().uri("/readyz").body(Body::empty()).unwrap(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Disabled fails readiness"
+    );
+    assert!(body.contains("config"), "{body}");
+
+    // Disabled is terminal: recover is a 409 CONFLICT.
+    let recover = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/admin/modules",
+            serde_json::json!({"name": "config", "action": "recover"}),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(recover.status, StatusCode::CONFLICT, "{}", recover.body);
+
+    // /meta/boot surfaces the disabled state.
+    let boot = send(
+        &app,
+        json_req(Method::GET, "/meta/boot", Value::Null, None, None),
+    )
+    .await;
+    assert_eq!(boot.status, StatusCode::OK, "{}", boot.body);
+    assert_eq!(boot.data()["modules"]["config"], "Disabled");
+}
+
+#[tokio::test]
+async fn module_manage_unknown_module_404_and_bad_action_422() {
+    let app = app_with_modules();
+    seed_ready_module(&app, "config");
+    let email = format!("moduleop2-{}@clinic.test", uuid::Uuid::now_v7());
+    let reg = register(&app, &email).await;
+    let cookie = reg.session_cookie().expect("session cookie issued");
+    let principal = kelson_foundation::PrincipalId::from_uuid(
+        uuid::Uuid::parse_str(reg.data()["principal_id"].as_str().unwrap()).unwrap(),
+    );
+    let tenant = kelson_foundation::TenantId::from_uuid(
+        uuid::Uuid::parse_str(reg.data()["tenant_id"].as_str().unwrap()).unwrap(),
+    );
+    grant_module_capability(&app, principal, tenant);
+
+    // Untracked module -> 404.
+    let unknown = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/admin/modules",
+            serde_json::json!({"name": "ghost", "action": "degrade"}),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{}", unknown.body);
+
+    // Unknown action -> 422 validation.
+    let bad = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/admin/modules",
+            serde_json::json!({"name": "config", "action": "explode"}),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        bad.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        bad.body
+    );
+}
 
 // --------------------------------------------------------------- Wave 1 battery
 

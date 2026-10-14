@@ -525,7 +525,11 @@ fn topo_order(providers: &[Box<dyn Provider>]) -> Result<Vec<usize>, BootError> 
 pub struct ApplicationHost {
     providers: Vec<Box<dyn Provider>>,
     registry: ServiceRegistry,
-    modules: ModuleRegistry,
+    /// Runtime module states (docs/15-EXTENSION). Shared (not owned outright)
+    /// so a runtime can hold the SAME registry the host populated: the health
+    /// edge reads it, admin surfaces and config pollers drive
+    /// degrade/recover/disable through it. Row 16 wiring.
+    modules: Arc<std::sync::RwLock<ModuleRegistry>>,
     booted: bool,
     /// Wave 7 P3 (docs/19 L340): the injectable clock on the host. Default =
     /// wall clock; tests inject a `FixedClock` so scheduler `next_run` and
@@ -538,7 +542,7 @@ impl ApplicationHost {
         Self {
             providers: Vec::new(),
             registry: ServiceRegistry::new(),
-            modules: ModuleRegistry::new(),
+            modules: Arc::new(std::sync::RwLock::new(ModuleRegistry::new())),
             booted: false,
             clock: Arc::new(kelson_foundation::SystemClock),
         }
@@ -577,26 +581,29 @@ impl ApplicationHost {
         for &i in &order {
             let name = self.providers[i].name().to_string();
             // Track the module through the boot path (docs/15-EXTENSION).
-            self.modules.discover(&name);
-            let _ = self.modules.advance(&name, ModuleState::Validated);
+            // discover seeds Discovered (infallible); the advance that
+            // follows is a boot-path invariant, so a violation fails closed
+            // as a BootError instead of being silently swallowed.
+            self.modules.write().unwrap().discover(&name);
+            self.advance_module(&name, ModuleState::Validated)?;
             self.providers[i]
                 .init(&mut self.registry)
                 .map_err(|e| BootError::ProviderFailed {
                     provider: self.providers[i].name().to_string(),
                     source: e.to_string(),
                 })?;
-            let _ = self.modules.advance(&name, ModuleState::Registered);
+            self.advance_module(&name, ModuleState::Registered)?;
         }
         for &i in &order {
             let name = self.providers[i].name().to_string();
-            let _ = self.modules.advance(&name, ModuleState::Initialized);
+            self.advance_module(&name, ModuleState::Initialized)?;
             self.providers[i].boot(&self.registry).await.map_err(|e| {
                 BootError::ProviderFailed {
                     provider: self.providers[i].name().to_string(),
                     source: e.to_string(),
                 }
             })?;
-            let _ = self.modules.advance(&name, ModuleState::Ready);
+            self.advance_module(&name, ModuleState::Ready)?;
         }
         self.registry.freeze();
         self.booted = true;
@@ -615,19 +622,19 @@ impl ApplicationHost {
 
         let name = provider.name().to_string();
         // Track the module through the boot path (docs/15-EXTENSION).
-        self.modules.discover(&name);
-        let _ = self.modules.advance(&name, ModuleState::Validated);
+        self.modules.write().unwrap().discover(&name);
+        self.advance_module(&name, ModuleState::Validated)?;
         provider.init(&mut self.registry).map_err(|e| BootError::ProviderFailed {
             provider: name.clone(),
             source: e.to_string(),
         })?;
-        let _ = self.modules.advance(&name, ModuleState::Registered);
-        let _ = self.modules.advance(&name, ModuleState::Initialized);
+        self.advance_module(&name, ModuleState::Registered)?;
+        self.advance_module(&name, ModuleState::Initialized)?;
         provider.boot(&self.registry).await.map_err(|e| BootError::ProviderFailed {
             provider: name.clone(),
             source: e.to_string(),
         })?;
-        let _ = self.modules.advance(&name, ModuleState::Ready);
+        self.advance_module(&name, ModuleState::Ready)?;
 
         // Add to providers list
         self.providers.push(provider);
@@ -639,14 +646,38 @@ impl ApplicationHost {
         &self.registry
     }
 
+    /// Advance one module's tracked state along the boot path. A failed
+    /// transition is an invariant violation (the caller drives the
+    /// documented Discovered → Validated → Registered → Initialized → Ready
+    /// path), so it fails closed as a provider-boot error instead of being
+    /// silently swallowed.
+    fn advance_module(&self, name: &str, to: ModuleState) -> Result<(), BootError> {
+        self.modules
+            .write()
+            .unwrap()
+            .advance(name, to)
+            .map_err(|source| BootError::ProviderFailed {
+                provider: name.to_string(),
+                source,
+            })
+    }
+
     /// Access the runtime module state registry.
-    pub fn modules(&self) -> &ModuleRegistry {
-        &self.modules
+    pub fn modules(&self) -> std::sync::RwLockReadGuard<'_, ModuleRegistry> {
+        self.modules.read().unwrap()
     }
 
     /// Mutable access to the runtime module state registry (degrade/recover/disable).
-    pub fn modules_mut(&mut self) -> &mut ModuleRegistry {
-        &mut self.modules
+    pub fn modules_mut(&self) -> std::sync::RwLockWriteGuard<'_, ModuleRegistry> {
+        self.modules.write().unwrap()
+    }
+
+    /// Share the module state registry with the rest of the runtime (health
+    /// checks, admin surfaces, config pollers): the handle aliases the very
+    /// registry boot populated, so a transition made here is visible through
+    /// it and vice versa.
+    pub fn modules_shared(&self) -> Arc<std::sync::RwLock<ModuleRegistry>> {
+        Arc::clone(&self.modules)
     }
 
     pub fn is_booted(&self) -> bool {
@@ -1078,5 +1109,25 @@ mod tests {
         assert_eq!(host.modules().state("p1"), Some(ModuleState::Ready));
         assert!(host.modules().is_serving("p0"));
         assert!(host.modules().is_serving("p1"));
+    }
+
+    #[tokio::test]
+    async fn host_shared_module_handle_sees_boot_states_and_runtime_transitions() {
+        let mut host = ApplicationHost::new();
+        host.add_provider(Box::new(P1));
+        host.add_provider(Box::new(P0));
+        let shared = host.modules_shared();
+        host.boot().await.unwrap();
+
+        // The shared handle aliases the very registry boot populated.
+        assert_eq!(shared.read().unwrap().state("p0"), Some(ModuleState::Ready));
+        assert_eq!(shared.read().unwrap().state("p1"), Some(ModuleState::Ready));
+
+        // A runtime transition through the shared handle is visible via the
+        // host accessor, and vice versa (one registry, not two copies).
+        shared.write().unwrap().degrade("p0").unwrap();
+        assert_eq!(host.modules().state("p0"), Some(ModuleState::Degraded));
+        host.modules_mut().recover("p0").unwrap();
+        assert_eq!(shared.read().unwrap().state("p0"), Some(ModuleState::Ready));
     }
 }

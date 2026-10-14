@@ -3,6 +3,11 @@
 //! `graph_routes.rs`; auth flows in `auth_routes.rs`; uploads in
 //! `upload_routes.rs`. Everything returns the public Envelope shape.
 
+/// Operator module-lifecycle surface: session- and capability-gated
+/// `POST /admin/modules` drives degrade/recover/disable on the shared
+/// module registry behind this file's `AppState` (docs/15-EXTENSION).
+pub mod module_routes;
+
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -21,6 +26,12 @@ use crate::host::{dev_context, SystemHealth};
 pub struct AppState {
     pub bus: Arc<CommandBus>,
     pub health: Arc<SystemHealth>,
+    /// Runtime module lifecycle states (docs/15-EXTENSION, Row 16 wiring).
+    /// The host shares the very registry it populated at boot; the health
+    /// edge (`/meta/boot`, `/readyz`), the config poller and the admin
+    /// surface (`/admin/modules`) all read and drive it through this cell.
+    /// Harness boots start empty (no host).
+    pub modules: Arc<std::sync::RwLock<kelson_lifecycle::ModuleRegistry>>,
     pub env: kelson_config::Environment,
     /// Feature flags enabled for the boot snapshot (S3 item 32 wiring).
     /// Phase 3 (target-arch §4.3): behind a shared cell so a config reload
@@ -368,6 +379,11 @@ pub struct BootBody {
     pub name: &'static str,
     pub version: &'static str,
     pub services: Vec<String>,
+    /// Runtime module lifecycle states (name → state), sorted for a stable
+    /// surface. Empty on a harness boot (no host); every boot-tracked
+    /// provider is Ready on a production host until an operator or the
+    /// config poller transitions it (Row 16 wiring).
+    pub modules: std::collections::BTreeMap<String, kelson_lifecycle::ModuleState>,
 }
 
 #[derive(Serialize)]
@@ -531,16 +547,42 @@ async fn readyz(State(s): State<AppState>) -> (axum::http::StatusCode, Json<serd
             kelson_foundation::Retryability::Retryable,
             format!("degraded: {}", s.health.reason.lock().unwrap().clone()),
         );
-        (
+        return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::to_value(Envelope::<serde_json::Value>::error(&err)).unwrap()),
-        )
-    } else {
-        (
-            axum::http::StatusCode::OK,
-            Json(serde_json::to_value(Envelope::ok(health_body(&s.health))).unwrap()),
-        )
+        );
     }
+    // Module-level readiness (Row 16 wiring): a tracked module that is not
+    // serving (Disabled, or mid-boot) fails readiness — Degraded still
+    // counts as serving (docs/15-EXTENSION), and an empty registry (a
+    // harness boot without a host) stays ready.
+    let mut not_serving: Vec<String> = s
+        .modules
+        .read()
+        .unwrap()
+        .snapshot()
+        .into_iter()
+        .filter(|(_, state)| !state.is_serving())
+        .map(|(name, _)| name)
+        .collect();
+    if !not_serving.is_empty() {
+        not_serving.sort();
+        let err = kelson_foundation::AppError::new(
+            kelson_foundation::codes::BOOT,
+            kelson_foundation::ErrorCategory::Internal,
+            kelson_foundation::Severity::Medium,
+            kelson_foundation::Retryability::Retryable,
+            format!("module not serving: {}", not_serving.join(", ")),
+        );
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::to_value(Envelope::<serde_json::Value>::error(&err)).unwrap()),
+        );
+    }
+    (
+        axum::http::StatusCode::OK,
+        Json(serde_json::to_value(Envelope::ok(health_body(&s.health))).unwrap()),
+    )
 }
 
 async fn boot_meta(State(s): State<AppState>) -> Json<Envelope<BootBody>> {
@@ -548,6 +590,13 @@ async fn boot_meta(State(s): State<AppState>) -> Json<Envelope<BootBody>> {
         name: "kelson-demo",
         version: env!("CARGO_PKG_VERSION"),
         services: s.health.services.lock().unwrap().clone(),
+        modules: s
+            .modules
+            .read()
+            .unwrap()
+            .snapshot()
+            .into_iter()
+            .collect(),
     }))
 }
 

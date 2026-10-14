@@ -562,11 +562,11 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Modules phase: domain module first (registers its handler bundle), then
     // the demo provider assembles the CommandBus from every registered bundle.
     #[cfg(feature = "demo")]
-    host.add_provider(Box::new(kelson_mod_appointments::ModuleProvider));
+    host.add_provider(Box::new(kelson_mod_appointments::ModuleProvider::new()));
     // Wave 8 P5 (B-21): the OAuth2 module registers its own handler bundle
     // (distinct newtype slot) BEFORE the bus assembly below.
     #[cfg(feature = "demo")]
-    host.add_provider(Box::new(kelson_mod_oauth2::ModuleProvider));
+    host.add_provider(Box::new(kelson_mod_oauth2::ModuleProvider::new()));
     // Wave 9 B-30: WASM plugins load BEFORE boot (fail-closed: compile,
     // link, ABI, capability and manifest-drift failures refuse the boot
     // outright). The provider then only publishes the bundle for the bus
@@ -782,7 +782,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = routes::AppState {
         bus,
-        health: health.clone(),
+        health: health.clone(), modules: host.modules_shared(),
         env,
         // Phase 3 (§4.3): shared cell — the FlagsReloader subscriber swaps
         // the ambient set in place; readers take a cheap read lock.
@@ -921,6 +921,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .merge(auth_routes::router(state.clone()))
         .merge(upload_routes::router(state.clone()))
         .merge(telemetry_routes::router(state.clone()))
+        .merge(routes::module_routes::router(state.clone()))
         .merge(notification_routes::router(state.clone()))
         .merge(broadcast_routes::router(state.clone()))
         .merge(batch_routes::router(state.clone()));
@@ -1019,14 +1020,32 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         PrincipalId::from_uuid(uuid::Uuid::parse_str(host::BOOT_ACTOR_UUID).expect("static uuid")),
         state.clone(),
     ));
+    // Row 16 wiring: the poller is the config module's runtime health check.
+    // It shares the same module registry as the host (via `state`), so a
+    // refused reload degrades `config` and a reload that lands recovers it.
+    let module_states = state.modules.clone();
     let poller = tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(500));
         loop {
             tick.tick().await;
-            if let Err(error) = config_rt.poll() {
-                tracing::warn!(%error, "config reload refused: keeping the current revision");
-            } else if route_reloader.artifact_changed() {
-                route_reloader.refresh();
+            match config_rt.poll() {
+                Err(error) => {
+                    tracing::warn!(%error, "config reload refused: keeping the current revision");
+                    note_config_poll(&module_states, ConfigPoll::Refused);
+                }
+                Ok(reloaded) => {
+                    note_config_poll(
+                        &module_states,
+                        if reloaded.is_some() {
+                            ConfigPoll::Reloaded
+                        } else {
+                            ConfigPoll::Unchanged
+                        },
+                    );
+                    if route_reloader.artifact_changed() {
+                        route_reloader.refresh();
+                    }
+                }
             }
         }
     });
@@ -1047,6 +1066,59 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     telemetry_runtime.shutdown(std::time::Duration::from_secs(5));
     serve?;
     Ok(())
+}
+
+/// Outcome of one config poll, for the module-lifecycle reaction (Row 16).
+/// `Refused` = the file changed but failed to load (the runtime keeps the
+/// last-good revision); `Reloaded` = a new revision landed; `Unchanged` =
+/// nothing to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigPoll {
+    Unchanged,
+    Reloaded,
+    Refused,
+}
+
+/// The config module's runtime health check (Row 16 wiring): a refused
+/// reload degrades `config` (it serves the last-good revision but cannot
+/// pick up new configuration — reduced function, docs/15-EXTENSION DEGRADED);
+/// a reload that lands recovers it. `Unchanged` is a no-op, a module that is
+/// not tracked (a harness boot without a host) is left alone, and repeated
+/// polls settle on the current state rather than erroring on an invalid
+/// transition.
+fn note_config_poll(
+    modules: &Arc<std::sync::RwLock<kelson_lifecycle::ModuleRegistry>>,
+    outcome: ConfigPoll,
+) {
+    const CONFIG_MODULE: &str = "config";
+    let mut modules = modules.write().unwrap();
+    match outcome {
+        ConfigPoll::Refused => {
+            if modules.state(CONFIG_MODULE) == Some(kelson_lifecycle::ModuleState::Ready) {
+                match modules.degrade(CONFIG_MODULE) {
+                    Ok(()) => {
+                        tracing::warn!(module = CONFIG_MODULE, "config module degraded: reload refused")
+                    }
+                    Err(error) => {
+                        tracing::debug!(%error, module = CONFIG_MODULE, "config module degrade skipped")
+                    }
+                }
+            }
+        }
+        ConfigPoll::Reloaded => {
+            if modules.state(CONFIG_MODULE) == Some(kelson_lifecycle::ModuleState::Degraded) {
+                match modules.recover(CONFIG_MODULE) {
+                    Ok(()) => {
+                        tracing::info!(module = CONFIG_MODULE, "config module recovered: reload landed")
+                    }
+                    Err(error) => {
+                        tracing::debug!(%error, module = CONFIG_MODULE, "config module recover skipped")
+                    }
+                }
+            }
+        }
+        ConfigPoll::Unchanged => {}
+    }
 }
 
 /// Wave 2 views engine config from the `[views]` section: relative template
@@ -1632,6 +1704,11 @@ pub fn build_app_state(
     let state = routes::AppState {
         bus: Arc::new(bus),
         health: host::SystemHealth::new(false, "ok"),
+        // Row 16 wiring: the harness boots without a host, so the module
+        // registry starts empty — `/readyz` stays ready and `/meta/boot`
+        // reports an empty map; tests seed states directly when they need
+        // one (e.g. the module-admin integration tests).
+        modules: Arc::new(std::sync::RwLock::new(kelson_lifecycle::ModuleRegistry::new())),
         env: Environment::Test,
         flags: Arc::new(std::sync::RwLock::new(Vec::new())),
         tokens,
@@ -2390,6 +2467,74 @@ mod wave7_signed_url_ttl_tests {
             err.public_message.contains("max_ttl_secs"),
             "{}",
             err.public_message
+        );
+    }
+}
+
+// ------------------------------------------- Row 16: config-poller lifecycle
+
+#[cfg(test)]
+mod config_poll_tests {
+    use super::{note_config_poll, ConfigPoll};
+    use kelson_lifecycle::{ModuleRegistry, ModuleState};
+    use std::sync::Arc;
+
+    /// A registry with one module tracked at Ready (what the host leaves
+    /// after a successful boot).
+    fn tracked_ready(name: &str) -> Arc<std::sync::RwLock<ModuleRegistry>> {
+        let mut registry = ModuleRegistry::new();
+        registry.discover(name);
+        registry.advance(name, ModuleState::Validated).unwrap();
+        registry.advance(name, ModuleState::Registered).unwrap();
+        registry.advance(name, ModuleState::Initialized).unwrap();
+        registry.advance(name, ModuleState::Ready).unwrap();
+        Arc::new(std::sync::RwLock::new(registry))
+    }
+
+    #[test]
+    fn refused_reload_degrades_config_and_a_landed_reload_recovers_it() {
+        let modules = tracked_ready("config");
+        note_config_poll(&modules, ConfigPoll::Refused);
+        assert_eq!(
+            modules.read().unwrap().state("config"),
+            Some(ModuleState::Degraded)
+        );
+        // A second refusal stays degraded (no invalid-transition error).
+        note_config_poll(&modules, ConfigPoll::Refused);
+        assert_eq!(
+            modules.read().unwrap().state("config"),
+            Some(ModuleState::Degraded)
+        );
+        // Unchanged is a no-op: the revision is still refused.
+        note_config_poll(&modules, ConfigPoll::Unchanged);
+        assert_eq!(
+            modules.read().unwrap().state("config"),
+            Some(ModuleState::Degraded)
+        );
+        // A reload that lands recovers the module.
+        note_config_poll(&modules, ConfigPoll::Reloaded);
+        assert_eq!(
+            modules.read().unwrap().state("config"),
+            Some(ModuleState::Ready)
+        );
+        // Reload while ready is a no-op (no invalid recover).
+        note_config_poll(&modules, ConfigPoll::Reloaded);
+        assert_eq!(
+            modules.read().unwrap().state("config"),
+            Some(ModuleState::Ready)
+        );
+    }
+
+    #[test]
+    fn untracked_modules_are_left_alone() {
+        let modules = tracked_ready("other");
+        // A refused reload with no `config` module: nothing to degrade, and
+        // the tracked module is untouched.
+        note_config_poll(&modules, ConfigPoll::Refused);
+        assert_eq!(modules.read().unwrap().state("config"), None);
+        assert_eq!(
+            modules.read().unwrap().state("other"),
+            Some(ModuleState::Ready)
         );
     }
 }
