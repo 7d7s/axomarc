@@ -1645,6 +1645,13 @@ fn to_app_error(err: WasmError) -> AppError {
             Retryability::Retryable,
             "wasm plugin exceeded its wall-clock deadline",
         ),
+        WasmError::Lifecycle(msg) => AppError::new(
+            codes::WASM_LIFECYCLE,
+            ErrorCategory::ResourceExhausted,
+            Severity::Medium,
+            Retryability::Retryable,
+            format!("wasm plugin lifecycle refused: {msg}"),
+        ),
         other => AppError::internal(format!("wasm plugin failed: {other}")),
     }
 }

@@ -463,6 +463,13 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         kelson_foundation::codes::WASM_DEADLINE,
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
     );
+    // Wave M2: lifecycle refusal (draining/drained plugin) is a service
+    // availability signal — the plugin exists but is retiring. Same 503 posture
+    // as fuel/deadline/saturation: a sandbox budget of our own plugin ran out.
+    error_renders.set_status(
+        kelson_foundation::codes::WASM_LIFECYCLE,
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+    );
     host.add_provider(Box::new(host::ErrorRenderProvider {
         registry: error_renders.clone(),
     }));
@@ -1597,6 +1604,13 @@ pub fn build_app_state(
     );
     error_renders.set_status(
         kelson_foundation::codes::WASM_DEADLINE,
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+    );
+    // Wave M2: lifecycle refusal (draining/drained plugin) is a service
+    // availability signal — the plugin exists but is retiring. Same 503 posture
+    // as fuel/deadline/saturation: a sandbox budget of our own plugin ran out.
+    error_renders.set_status(
+        kelson_foundation::codes::WASM_LIFECYCLE,
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
     );
 

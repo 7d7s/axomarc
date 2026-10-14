@@ -1,5 +1,5 @@
-//! Canonical error protocol (spec §31/§47). One error type across the platform;
-//! the domain never returns HTTP numbers — transport maps `AppError` at the edge.
+//! Canonical error protocol (spec Â§31/Â§47). One error type across the platform;
+//! the domain never returns HTTP numbers â€” transport maps `AppError` at the edge.
 
 use crate::id::CorrelationId;
 
@@ -33,7 +33,7 @@ pub enum Retryability {
     IdempotentOnly,
 }
 
-/// Stable machine-oriented codes. Public API — never renumber, only append.
+/// Stable machine-oriented codes. Public API â€” never renumber, only append.
 pub mod codes {
     pub const VALIDATION: &str = "KSN_VALIDATION";
     pub const UNAUTHENTICATED: &str = "AUTH_UNAUTHENTICATED";
@@ -60,7 +60,7 @@ pub mod codes {
     /// `load_relation`/`load_missing` (the `with()` eager path stays legal).
     pub const LAZY_LOAD_PREVENTED: &str = "LAZY_LOAD_PREVENTED";
     /// Wave 3 Phase 6 optimistic locking: a `version_column` compare-and-swap
-    /// matched zero rows — another writer modified the record between the
+    /// matched zero rows â€” another writer modified the record between the
     /// read and the write. Conflict category (HTTP 409 via
     /// `status_for_error`).
     pub const STALE_RECORD: &str = "STALE_RECORD";
@@ -75,16 +75,16 @@ pub mod codes {
     /// behaves like a timeout, not a client-side rate limit.
     pub const WASM_FUEL: &str = "KSN_WASM_FUEL";
     /// Wave M2: a WASM plugin's declared `budget.max_concurrency` is
-    /// already saturated — every in-flight slot is occupied, so this call
+    /// already saturated â€” every in-flight slot is occupied, so this call
     /// is refused BEFORE a guest is instantiated rather than queueing
     /// behind the others. ResourceExhausted/Retryable; the runtime pins it
     /// to HTTP 503 at boot alongside `WASM_FUEL`, for the same reason: it
     /// behaves like a timeout, not like a client-side rate limit. The
-    /// append-only rule applies — this code is never reused for anything
+    /// append-only rule applies â€” this code is never reused for anything
     /// else.
     pub const WASM_SATURATED: &str = "KSN_WASM_SATURATED";
     /// Wave M2: a WASM plugin's declared `budget.execution_timeout_ms`
-    /// expired — the guest was still executing when its wall-clock slice ran
+    /// expired â€” the guest was still executing when its wall-clock slice ran
     /// out, and wasmtime interrupted it at a loop back-edge. Distinct from
     /// [`DEADLINE`], which is an *execution context's* deadline (the engine's
     /// `ctx.deadline`, a worker job's) and renders from its site's category:
@@ -93,6 +93,15 @@ pub mod codes {
     /// subsystems already serve at 500 and 409. ResourceExhausted/Retryable.
     /// Append-only: never reused for anything else.
     pub const WASM_DEADLINE: &str = "KSN_WASM_DEADLINE";
+
+    /// Wave M2: a WASM plugin refused a call because its generation is
+    /// draining or drained (the `prepare -> commit -> drain` lifecycle).
+    /// This is a *service availability* signal, not a sandbox budget — but
+    /// it shares the same operational posture as `WASM_FUEL`/`WASM_DEADLINE`:
+    /// the plugin exists but cannot serve right now. Pinned to HTTP 503 at
+    /// boot alongside them. ResourceExhausted/Retryable.
+    /// Append-only: never reused for anything else.
+    pub const WASM_LIFECYCLE: &str = "KSN_WASM_LIFECYCLE";
 }
 
 /// The one error type. `meta` must stay PHI-free (safe metadata only).

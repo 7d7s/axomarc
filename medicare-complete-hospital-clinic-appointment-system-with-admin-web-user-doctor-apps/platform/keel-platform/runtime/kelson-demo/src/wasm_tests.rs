@@ -791,6 +791,53 @@ async fn a_wall_clock_deadline_interrupts_a_spinning_guest_and_pins_503() {
     assert_eq!(body["error"]["retryable"], true);
 }
 
+/// A draining/drained plugin refuses calls with KSN_WASM_LIFECYCLE at 503.
+/// This is the generation-swap path's mid-drain refusal: the plugin is
+/// retiring, so the service is temporarily unavailable.
+#[tokio::test]
+async fn wasm_lifecycle_refusal_serves_the_pinned_503_envelope() {
+    let root = temp_root("lifecycle");
+    write_index(&root, vec![fixture_entry("echo")]);
+
+    let host = kelson_wasm::WasmHost::new().expect("host builds");
+    let index = PackageIndex::load(&root).expect("index loads");
+    let entry = &index.wasm[0];
+    let sidecar = index.wasm_manifest(&root, entry).expect("sidecar verifies");
+    let bytes = std::fs::read(PackageIndex::resolve_path(&root, &entry.path))
+        .expect("binary reads");
+    let plugin = Arc::new(host.load(&bytes, &sidecar).expect("echo loads"));
+    let handlers = kelson_wasm::handlers(Arc::clone(&plugin)).expect("handlers build");
+    let mut bus = kelson_command::CommandBus::new(engine(Arc::new(AllowAll)));
+    for handler in handlers {
+        bus.register(handler).expect("registers");
+    }
+
+    // Commit the generation so it can be drained.
+    plugin.commit().expect("commit");
+
+    // Drain the generation — it's idle so this returns immediately.
+    plugin.drain(std::time::Duration::from_secs(5)).expect("drain");
+
+    // Now dispatch — the generation is drained, so the call is refused
+    // with KSN_WASM_LIFECYCLE at 503.
+    let err = bus
+        .dispatch(ctx(), &op("echo.echo"), json!({"msg": "hi"}), None)
+        .await
+        .expect_err("drained generation refuses calls");
+
+    assert_eq!(err.code, codes::WASM_LIFECYCLE, "lifecycle refusal code");
+
+    // Production renderer parity: the harness pin (mirroring the boot pin)
+    // serves it at 503 — a draining plugin is a service availability signal.
+    let dir = temp_root("lifecycle-render");
+    let (state, _, _) = crate::build_app_state(&dir, false, true);
+    let (status, envelope) = state.error_envelope(&err);
+    assert_eq!(status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    let body = serde_json::to_value(envelope).expect("envelope serializes");
+    assert_eq!(body["error"]["code"], "KSN_WASM_LIFECYCLE");
+    assert_eq!(body["error"]["retryable"], true);
+}
+
 #[tokio::test]
 async fn a_saturated_plugin_refuses_a_call_before_a_guest_is_instantiated() {
     let root = temp_root("budget-saturated");
