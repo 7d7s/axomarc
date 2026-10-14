@@ -200,6 +200,7 @@ pub enum BootError {
     },
     Frozen,
     NotFrozen,
+    NotBooted,
 }
 
 impl std::fmt::Display for BootError {
@@ -232,6 +233,7 @@ impl std::fmt::Display for BootError {
                 "boot: registry is frozen (post-Ready mutation attempted)"
             ),
             BootError::NotFrozen => write!(f, "boot: operation requires a frozen registry"),
+            BootError::NotBooted => write!(f, "boot: host not yet booted"),
         }
     }
 }
@@ -477,6 +479,28 @@ impl ApplicationHost {
         }
         self.registry.freeze();
         self.booted = true;
+        Ok(())
+    }
+
+    /// Dynamically register a module provider after boot (hot reload).
+    /// Initializes the provider, adds it to the provider list, and returns.
+    /// Note: Full graph recompilation and route cache regeneration
+    /// are handled by the RouteReloader when the route cache artifact
+    /// is updated via `kelson route:cache`.
+    pub async fn register_module(&mut self, provider: Box<dyn Provider>) -> Result<(), BootError> {
+        if !self.booted {
+            return Err(BootError::NotBooted);
+        }
+        
+        // Initialize the new provider
+        provider.init(&mut self.registry).map_err(|e| BootError::ProviderFailed {
+            provider: provider.name().to_string(),
+            source: e.to_string(),
+        })?;
+        
+        // Add to providers list
+        self.providers.push(provider);
+        
         Ok(())
     }
 
