@@ -6550,3 +6550,124 @@ async fn multipart_failure_rolls_back_the_parts_that_already_landed() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ---------------------------------------------------------------------------
+// Module activation (Row 21, Stage C)
+// ---------------------------------------------------------------------------
+// Appended past every citation into this file (the last is `:6496`), so the
+// cited windows above are left byte for byte where they were.
+
+/// Row 21: the activation edge is operator-gated, and every refusal it
+/// produces is a no-op on the surface the runtime-change proof reads —
+/// generation, content digest and process identity all stand where they were.
+///
+/// The success path is deliberately *not* asserted here. This suite hands its
+/// router no workspace index, so a success would need fixtures of its own, and
+/// more to the point an in-process activation is trivially "no restart" — the
+/// one claim this file structurally cannot demonstrate. That one is proven
+/// against a live process instead, with the harness checking the artifact and
+/// process identity across the swap.
+#[tokio::test]
+async fn activation_is_operator_gated_and_every_refusal_leaves_the_surface_alone() {
+    let app = app_with_modules();
+
+    // The three fields the proof reads, taken together so a refusal is held
+    // to the standard that *nothing* moved rather than that any one of them
+    // happened to be stable.
+    let surface = |app: &App| {
+        let body = app.state.runtime.body(
+            "kelson-demo",
+            env!("CARGO_PKG_VERSION"),
+            app.state.modules.read().unwrap().snapshot(),
+        );
+        (
+            body["generation"].clone(),
+            body["active_content_digest"].clone(),
+            body["process_instance_id"].clone(),
+        )
+    };
+    let before = surface(&app);
+
+    // Anonymous never reaches the gate.
+    let anon = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/admin/modules/activate",
+            serde_json::json!({"name": "marker", "expected_generation": 1}),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(anon.status, StatusCode::UNAUTHORIZED, "{}", anon.body);
+
+    // Authenticated but not an operator: refused on the capability, before
+    // the generation is compared or anything is read off disk.
+    let email = format!("activate-{}@clinic.test", uuid::Uuid::now_v7());
+    let reg = register(&app, &email).await;
+    let cookie = reg.session_cookie().expect("session cookie issued");
+    let denied = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/admin/modules/activate",
+            serde_json::json!({"name": "marker", "expected_generation": 1}),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN, "{}", denied.body);
+    assert_eq!(denied.error_code(), kelson_foundation::codes::DENIED);
+
+    let principal = kelson_foundation::PrincipalId::from_uuid(
+        uuid::Uuid::parse_str(reg.data()["principal_id"].as_str().unwrap()).unwrap(),
+    );
+    let tenant = kelson_foundation::TenantId::from_uuid(
+        uuid::Uuid::parse_str(reg.data()["tenant_id"].as_str().unwrap()).unwrap(),
+    );
+    grant_module_capability(&app, principal, tenant);
+
+    // Past the gate, a generation that is not the one serving is refused by
+    // the compare-and-swap — and the refusal comes before any lookup, so
+    // there is nothing a stale operator can even aim at.
+    let stale = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/admin/modules/activate",
+            serde_json::json!({"name": "marker", "expected_generation": 99}),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(stale.status, StatusCode::CONFLICT, "{}", stale.body);
+    assert_eq!(stale.error_code(), kelson_foundation::codes::CONFLICT);
+    assert_eq!(
+        surface(&app),
+        before,
+        "a refused activation rewrites nothing on the status surface"
+    );
+
+    // The generation that *is* serving gets past the reserve and then fails
+    // closed on discovery: this workspace's index declares no such module.
+    let missing = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/admin/modules/activate",
+            serde_json::json!({"name": "no-such-module", "expected_generation": 1}),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND, "{}", missing.body);
+    assert_eq!(
+        surface(&app),
+        before,
+        "a module that never staged leaves the surface exactly as it was"
+    );
+}
