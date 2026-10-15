@@ -742,7 +742,7 @@ impl PromotionPipeline {
     wasmtime 36.0.17).
 - [x] Implement `ConfigRuntime` + `ConfigWatcher` in `kelson-config` (new crate)
   - **proved.** `ConfigRuntime` at `crates/application/configuration/src/runtime.rs:134`, exported
-    from `crates/application/configuration/src/lib.rs:20`; `kelson-config` **59 passed / 0 failed**, including the Phase 5 reload hammer
+    from `crates/application/configuration/src/lib.rs:20`; `kelson-config` **61 passed / 0 failed**, including the Phase 5 reload hammer
     and `config_reload_swaps_routes_and_flags_under_50ms`.
   - *Naming note:* no type is named `ConfigWatcher` — the §4.1 file-mtime trigger ships as
     `FileConfigSource` (mtime stamp, `crates/application/configuration/src/runtime.rs:89`) plus `ConfigRuntime::poll()` (`crates/application/configuration/src/runtime.rs:257`).

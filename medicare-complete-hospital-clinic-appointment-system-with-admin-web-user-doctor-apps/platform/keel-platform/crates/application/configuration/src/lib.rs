@@ -629,6 +629,38 @@ fn default_mailer_timeout_ms() -> u64 {
     2000
 }
 
+/// Files section (`[files]`, Row 19): the upload edge's admission limits and
+/// the per-tenant disk quota. Defaults mirror `UploadLimits::default` — a
+/// config without the section is byte-for-byte the behavior kelson had
+/// before the section existed. Plain data like [`ViewsSection`]: the demo
+/// edge converts it into its `UploadPolicy` at boot.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct FilesSection {
+    /// Maximum number of multipart parts (files + fields combined).
+    pub max_parts: usize,
+    /// Maximum size of a non-file form field.
+    pub max_field_bytes: usize,
+    /// Maximum size of a single uploaded file.
+    pub max_file_bytes: usize,
+    /// Allowed content types for file parts; empty = allow all.
+    pub allowed_mime: Vec<String>,
+    /// Per-tenant stored-bytes ceiling across the upload disks; 0 = no quota.
+    pub quota_bytes: u64,
+}
+
+impl Default for FilesSection {
+    fn default() -> Self {
+        Self {
+            max_parts: 8,
+            max_field_bytes: 64 * 1024,
+            max_file_bytes: 8 * 1024 * 1024,
+            allowed_mime: Vec::new(),
+            quota_bytes: 0,
+        }
+    }
+}
+
 /// i18n section (Wave 6 P3, `[i18n]`): the configured default locale plus
 /// the message roots scanned at boot for `<locale>.toml` catalogs. Plain
 /// data like [`ViewsSection`] — [`load_messages`] turns it into a
@@ -785,6 +817,9 @@ pub struct PlatformConfig {
     /// Mail section (Wave 6 P1): named mailers + default failover chain.
     #[serde(default)]
     pub mail: MailSection,
+    /// Files section (Row 19): upload admission limits + per-tenant quota.
+    #[serde(default)]
+    pub files: FilesSection,
     /// i18n section (Wave 6 P3): default locale + message-file roots.
     #[serde(default)]
     pub i18n: I18nSection,
@@ -820,6 +855,16 @@ pub const CONFIG_SCHEMA: &[(&str, &[&str])] = &[
     (
         "database",
         &["driver", "url", "max_connections", "run_migrations", "required"],
+    ),
+    (
+        "files",
+        &[
+            "max_parts",
+            "max_field_bytes",
+            "max_file_bytes",
+            "allowed_mime",
+            "quota_bytes",
+        ],
     ),
     ("http", &["problem_json", "encrypt_cookies"]),
     ("i18n", &["default", "paths"]),
@@ -1157,6 +1202,10 @@ impl FrozenConfig {
 
     pub fn mail(&self) -> &MailSection {
         &self.0.mail
+    }
+
+    pub fn files(&self) -> &FilesSection {
+        &self.0.files
     }
 
     pub fn i18n(&self) -> &I18nSection {
@@ -2409,5 +2458,49 @@ mod wave7_csrf_config_tests {
         let typo = schema_violations("[security]\ncsrf_skip = true\n");
         assert_eq!(typo.len(), 1, "{typo:?}");
         assert_eq!(typo[0].key, "security.csrf_skip");
+    }
+
+    /// Row 19 (`[files]`): a partial section fills the rest from the
+    /// defaults — the crate upload posture — and the quota is off by
+    /// default (0 = unlimited).
+    #[test]
+    fn files_section_parses_partially_and_defaults_the_rest() {
+        let parsed: crate::FilesSection =
+            toml::from_str("quota_bytes = 4096\n").expect("partial [files] parses");
+        assert_eq!(parsed.quota_bytes, 4096);
+        assert_eq!(parsed.max_parts, 8);
+        assert_eq!(parsed.max_field_bytes, 64 * 1024);
+        assert_eq!(parsed.max_file_bytes, 8 * 1024 * 1024);
+        assert!(parsed.allowed_mime.is_empty());
+        let defaults: crate::FilesSection = toml::from_str("").expect("empty [files] parses");
+        assert_eq!(defaults, crate::FilesSection::default());
+        assert_eq!(defaults.quota_bytes, 0, "no quota by default");
+    }
+
+    /// Row 19: every `[files]` key is declared, so the schema gate keeps
+    /// accepting the section (and typo-reporting inside it).
+    #[test]
+    fn files_section_is_declared_in_the_config_schema() {
+        let (_, known) = CONFIG_SCHEMA
+            .iter()
+            .find(|(name, _)| *name == "files")
+            .expect("files section declared");
+        for key in [
+            "max_parts",
+            "max_field_bytes",
+            "max_file_bytes",
+            "allowed_mime",
+            "quota_bytes",
+        ] {
+            assert!(known.contains(&key), "{key} must be in CONFIG_SCHEMA");
+        }
+        assert_eq!(
+            schema_violations("[files]\nquota_byt = 4096\n")
+                .into_iter()
+                .map(|v| v.key)
+                .collect::<Vec<_>>(),
+            vec!["files.quota_byt".to_string()],
+            "a typo inside [files] still reports"
+        );
     }
 }

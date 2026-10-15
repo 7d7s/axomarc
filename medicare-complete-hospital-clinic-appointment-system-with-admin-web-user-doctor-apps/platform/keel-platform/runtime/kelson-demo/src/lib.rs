@@ -799,10 +799,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         confirm_timeout_secs: cfg.auth().confirm_timeout_secs,
         jwt,
         body_limit: 1024 * 1024,
-        storage,
-        disks,
+        storage, disks,
         notifications: notification_store,
         mail: crate::mail::port_from(cfg.mail()).map_err(|error| error.public_message)?,
+        uploads: crate::upload_routes::UploadPolicy::from_config(cfg.files()),
         channels: broadcast_routes::resolve_channels(&graph),
         presence: Arc::new(kelson_realtime::PresenceHub::new()),
         queue: queue_stats,
@@ -1728,14 +1728,14 @@ fn build_app_state_inner(
         storage,
         disks: Arc::new(disks), notifications: notification_store,
         mail: None,
+        uploads: Default::default(),
         channels: broadcast_routes::resolve_channels(&graph),
         presence: Arc::new(kelson_realtime::PresenceHub::new()),
         // No pool in the builder: no durable store — the /metrics queue
         // series stays absent (tests inject one to prove the census).
         // Wave 6 P9: same posture for the batch ledger — tests inject a
         // ledger + admin store to prove the batch operations.
-        queue: None,
-        batches: None,
+        queue: None, batches: None,
         // Wave 8 ADR 0009 (D-52 posture, like `queue`): no registry is
         // registered and no trace plane is attached in the harness — the
         // ops dashboard's sections degrade inline; tests inject handles.

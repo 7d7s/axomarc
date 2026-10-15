@@ -223,6 +223,8 @@ pub struct AppState {
     /// (built at boot by `crate::mail`); `None` = no transport — the
     /// auth token flows skip delivery and dev/test keep `dev_token`.
     pub mail: Option<Arc<dyn kelson_notifications::MailPort>>,
+    /// Row 19: `[files]` limits + per-tenant quota ledger (harness: defaults, no quota).
+    pub uploads: crate::upload_routes::UploadPolicy,
 }
 
 impl AppState {
@@ -298,9 +300,7 @@ impl AppState {
         instance: Option<&str>,
     ) -> axum::response::Response {
         let (status, envelope) = self.error_envelope(err);
-        let accept = headers
-            .get(axum::http::header::ACCEPT)
-            .and_then(|v| v.to_str().ok());
+        let accept = headers.get(axum::http::header::ACCEPT).and_then(|v| v.to_str().ok());
         if kelson_http::wants_problem(accept, self.problem_json) {
             let error = envelope
                 .error

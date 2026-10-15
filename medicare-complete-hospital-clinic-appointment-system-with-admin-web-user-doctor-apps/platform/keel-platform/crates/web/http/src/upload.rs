@@ -182,8 +182,10 @@ pub fn sanitize_filename(raw: &str) -> String {
 /// Wave 6 P2: `disk` is the resolved disk name (`storage.default` when the
 /// request names none) recorded on every stored object — the port itself
 /// is resolved by the caller through the disk registry.
+/// Row 19: any failure rolls back the parts that already stored — a
+/// refused request never leaves half a batch on disk.
 pub async fn ingest_multipart_mixed(
-    mut multipart: Multipart,
+    multipart: Multipart,
     limits: &UploadLimits,
     storage: &dyn StoragePort,
     disk: &str,
@@ -192,6 +194,45 @@ pub async fn ingest_multipart_mixed(
 ) -> Result<(Vec<(String, String)>, Vec<StoredUpload>), AppError> {
     let mut fields: Vec<(String, String)> = Vec::new();
     let mut stored: Vec<StoredUpload> = Vec::new();
+    if let Err(err) = ingest_parts(
+        multipart,
+        limits,
+        storage,
+        disk,
+        bucket,
+        key_prefix,
+        &mut fields,
+        &mut stored,
+    )
+    .await
+    {
+        // Row 19: a failed request rolls back the parts that already
+        // landed — the edge never leaves half a multipart batch on disk.
+        // Best-effort by design: each delete targets an object this very
+        // request wrote (the key carries a fresh uuid and nothing else
+        // references it), so a failed delete leaves only an unreferenced
+        // orphan, never a half-committed upload.
+        for file in &stored {
+            let _ = storage.delete(&file.object);
+        }
+        return Err(err);
+    }
+    Ok((fields, stored))
+}
+
+/// The multipart loop proper — [`ingest_multipart_mixed`] owns the
+/// rollback contract.
+#[allow(clippy::too_many_arguments)]
+async fn ingest_parts(
+    mut multipart: Multipart,
+    limits: &UploadLimits,
+    storage: &dyn StoragePort,
+    disk: &str,
+    bucket: &str,
+    key_prefix: &str,
+    fields: &mut Vec<(String, String)>,
+    stored: &mut Vec<StoredUpload>,
+) -> Result<(), AppError> {
     let mut parts = 0usize;
     while let Some(mut field) = multipart
         .next_field()
@@ -277,7 +318,7 @@ pub async fn ingest_multipart_mixed(
             }
         }
     }
-    Ok((fields, stored))
+    Ok(())
 }
 
 /// Parse + validate + store every file part. Returns the stored file list.

@@ -6357,3 +6357,196 @@ async fn password_reset_and_verification_requests_deliver_token_mail() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ---------------------------------------------------------- upload quota/rollback
+
+/// Multi-file multipart body for the Row 19 suites: every part is a file
+/// part (filename present) with the given size.
+fn multipart_files(uri: &str, cookie: &str, parts: &[(&str, usize)]) -> Request<Body> {
+    let boundary = "kelson-it-boundary";
+    let mut body = Vec::new();
+    for (name, size) in parts {
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\n")
+                .as_bytes(),
+        );
+        body.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
+        body.extend_from_slice(&vec![b'x'; *size]);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(
+            header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .header(header::COOKIE, cookie)
+        .body(Body::from(body))
+        .unwrap()
+}
+
+/// Row 19 (upload quota): the `[files]` quota is enforced per tenant with an
+/// exact ledger — an over-quota batch is refused AND rolled back (disk and
+/// ledger agree), a fitting upload still lands, and the pre-check rejects
+/// anything once the quota is full.
+#[tokio::test]
+async fn upload_quota_refuses_the_overage_and_keeps_the_ledger_exact() {
+    let dir = std::env::temp_dir().join(format!("kelson-demo-quota-{}", uuid::Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).expect("temp root");
+    let (mut state, graph, store) = kelson_demo::build_app_state(&dir, true, true);
+    state.uploads.quota_bytes = 4608;
+    let dev_tenant = state.default_tenant_id.expect("default tenant");
+    let router = kelson_demo::routes::router(state.clone())
+        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph))
+        .merge(kelson_demo::auth_routes::router(state.clone()))
+        .merge(kelson_demo::upload_routes::router(state.clone()))
+        .merge(kelson_demo::notification_routes::router(state.clone()))
+        .merge(kelson_demo::batch_routes::router(state.clone()));
+    let router = state
+        .sessions
+        .as_ref()
+        .expect("sessions enabled")
+        .as_ref()
+        .clone()
+        .apply(router);
+    let app = App {
+        router,
+        state,
+        store,
+    };
+
+    let email = format!("quota-{}@clinic.test", uuid::Uuid::now_v7());
+    let reg = register(&app, &email).await;
+    assert_eq!(reg.status, StatusCode::OK, "register: {}", reg.body);
+    let cookie = reg.session_cookie().expect("session cookie");
+    let two_k = vec![b'x'; 2048];
+
+    // Two 2 KiB files fit the 4608-byte quota.
+    let first = send(
+        &app,
+        multipart_files("/api/v1/uploads", &cookie, &[("a.txt", two_k.len())]),
+    )
+    .await;
+    assert_eq!(first.status, StatusCode::OK, "first: {}", first.body);
+    let second = send(
+        &app,
+        multipart_files("/api/v1/uploads", &cookie, &[("b.txt", two_k.len())]),
+    )
+    .await;
+    assert_eq!(second.status, StatusCode::OK, "second: {}", second.body);
+    assert_eq!(
+        app.state.uploads.used_bytes(dev_tenant),
+        4096,
+        "the ledger credits each ingest"
+    );
+
+    // The third (1 KiB) would break the quota: refused with the cap
+    // envelope AND rolled back — the disk still holds exactly the two
+    // committed files.
+    let third = send(
+        &app,
+        multipart_files("/api/v1/uploads", &cookie, &[("c.txt", 1024)]),
+    )
+    .await;
+    assert_eq!(
+        third.status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "over quota: {}",
+        third.body
+    );
+    let (_, entry) = app.state.disks.resolve(None).expect("default disk");
+    let objects = entry.port.list("uploads/").expect("listable");
+    assert_eq!(objects.len(), 2, "refused batch rolled back: {objects:?}");
+
+    // The next fitting upload still lands, filling the quota exactly.
+    let fourth = send(
+        &app,
+        multipart_files("/api/v1/uploads", &cookie, &[("d.txt", 512)]),
+    )
+    .await;
+    assert_eq!(fourth.status, StatusCode::OK, "fourth: {}", fourth.body);
+    assert_eq!(app.state.uploads.used_bytes(dev_tenant), 4608);
+
+    // Full quota: the pre-check refuses before any byte is read.
+    let fifth = send(
+        &app,
+        multipart_files("/api/v1/uploads", &cookie, &[("e.txt", 1)]),
+    )
+    .await;
+    assert_eq!(
+        fifth.status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "quota full: {}",
+        fifth.body
+    );
+    let (_, entry) = app.state.disks.resolve(None).expect("default disk");
+    let objects = entry.port.list("uploads/").expect("listable");
+    assert_eq!(objects.len(), 3, "the refusal stored nothing: {objects:?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Row 19 (rollback): a multipart batch that fails MID-INGEST leaves nothing
+/// on disk — the parts that already stored are deleted along with the
+/// refusal, so the edge never serves half a batch.
+#[tokio::test]
+async fn multipart_failure_rolls_back_the_parts_that_already_landed() {
+    let dir = std::env::temp_dir().join(format!("kelson-demo-rollback-{}", uuid::Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).expect("temp root");
+    let (mut state, graph, store) = kelson_demo::build_app_state(&dir, true, true);
+    // Small cap so the second part blows it without a big body.
+    state.uploads.limits.max_file_bytes = 64 * 1024;
+    let router = kelson_demo::routes::router(state.clone())
+        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph))
+        .merge(kelson_demo::auth_routes::router(state.clone()))
+        .merge(kelson_demo::upload_routes::router(state.clone()))
+        .merge(kelson_demo::notification_routes::router(state.clone()))
+        .merge(kelson_demo::batch_routes::router(state.clone()));
+    let router = state
+        .sessions
+        .as_ref()
+        .expect("sessions enabled")
+        .as_ref()
+        .clone()
+        .apply(router);
+    let app = App {
+        router,
+        state,
+        store,
+    };
+
+    let email = format!("rollback-{}@clinic.test", uuid::Uuid::now_v7());
+    let cookie = register(&app, &email)
+        .await
+        .session_cookie()
+        .expect("session cookie");
+
+    // Part one stores (1 KiB, within the cap); part two (128 KiB) blows the
+    // per-file cap — the request refuses, and part one is rolled back.
+    let res = send(
+        &app,
+        multipart_files(
+            "/api/v1/uploads",
+            &cookie,
+            &[("ok.txt", 1024), ("big.bin", 128 * 1024)],
+        ),
+    )
+    .await;
+    assert_eq!(
+        res.status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "oversize part: {}",
+        res.body
+    );
+    let (_, entry) = app.state.disks.resolve(None).expect("default disk");
+    let objects = entry.port.list("uploads/").expect("listable");
+    assert!(
+        objects.is_empty(),
+        "no half-batch on disk: {objects:?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
