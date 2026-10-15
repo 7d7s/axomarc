@@ -906,7 +906,8 @@ pub struct GraphViolation {
     /// GRAPH-CYCLE, GRAPH-ROUTE-OP, GRAPH-CAP-MISSING, GRAPH-MANIFEST, plus Wave 2:
     /// GRAPH-PLANE, GRAPH-GROUP-UNKNOWN, GRAPH-CONSTRAINT-PARAM, GRAPH-CONSTRAINT-KIND,
     /// GRAPH-FALLBACK-DUP, GRAPH-ROUTEFILE-OP, GRAPH-CHANNEL-CAP, plus Wave 4:
-    /// GRAPH-VERSION-SEMVER.
+    /// GRAPH-VERSION-SEMVER, plus the P0 dispatch gates GRAPH-ROUTE-METHOD and
+    /// GRAPH-ROUTE-OPID (an edge-skippable route refuses the compile).
     pub code: String,
     pub message: String,
 }
@@ -920,6 +921,16 @@ fn is_version_token(segment: &str) -> bool {
         .strip_prefix('v')
         .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
 }
+
+/// The wire methods a manifest `method` may declare — the canonical set the
+/// HTTP edge registers (`graph_routes::declared_methods` in kelson-demo
+/// uppercases the manifest token and matches this same list). Anything else
+/// is refused by GRAPH-ROUTE-METHOD at compile, so the edge's warn-and-skip
+/// registration path — a declared route silently becoming a runtime 404 —
+/// can never fire for a compiled graph.
+pub const ROUTE_METHODS: &[&str] = &[
+    "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "ANY",
+];
 
 /// Compiled, frozen platform graph. Runtime serves lookups against it; it never
 /// re-discovers what exists.
@@ -981,6 +992,38 @@ impl PlatformGraph {
             }
             let mut route_names: BTreeMap<String, (String, String, String)> = BTreeMap::new();
             for r in &m.routes {
+                // P0 dispatch gates: the HTTP edge registers a route only when
+                // its method and `{module}.{operation}` id parse (graph_router
+                // skips the rest with a warning). Refuse them here instead, so
+                // a route declared in a manifest can never silently degrade
+                // into a runtime 404 miss — the boot graph holds only routes
+                // that fully register (fail closed; `kelson graph`/`kelson
+                // check` report the same codes).
+                if !ROUTE_METHODS.contains(&r.method.to_ascii_uppercase().as_str()) {
+                    violations.push(GraphViolation {
+                        code: "GRAPH-ROUTE-METHOD".into(),
+                        message: format!(
+                            "module {}: route {} {} declares method {:?}, which the HTTP edge does not serve (allowed: {})",
+                            m.name(),
+                            r.method,
+                            r.path,
+                            r.method,
+                            ROUTE_METHODS.join("/")
+                        ),
+                    });
+                }
+                let operation_id = format!("{}.{}", m.name(), r.operation);
+                if kelson_foundation::OperationId::parse(&operation_id).is_err() {
+                    violations.push(GraphViolation {
+                        code: "GRAPH-ROUTE-OPID".into(),
+                        message: format!(
+                            "module {}: route {} {} maps to operation {operation_id:?}, which is not a `module.operation` id of lowercase segments — registration would skip it",
+                            m.name(),
+                            r.method,
+                            r.path
+                        ),
+                    });
+                }
                 let key = format!("{} {}", r.method.to_uppercase(), r.path);
                 if let Some(name) = &r.name {
                     let method = r.method.to_ascii_uppercase();
@@ -2864,5 +2907,47 @@ constraints = [{ param = "missing", kind = "number" }]
         assert!(v.iter().any(|x| x.code == "GRAPH-PLANE"), "{v:?}");
         assert!(v.iter().any(|x| x.code == "GRAPH-GROUP-UNKNOWN"), "{v:?}");
         assert!(v.iter().any(|x| x.code == "GRAPH-CONSTRAINT-PARAM"), "{v:?}");
+    }
+
+    #[test]
+    fn p0_route_shape_gates_refuse_edge_skippable_routes() {
+        // An unsupported method and an unparseable `{module}.{operation}` id
+        // are exactly the two routes the HTTP edge skips at registration
+        // (warn-only). The compile refuses both, collect-all, so a boot graph
+        // can never hold a route that would silently never register.
+        let routes = r#"
+[[routes]]
+method = "PURGE"
+path = "/api/v1/things"
+operation = "create"
+
+[[routes]]
+method = "GET"
+path = "/api/v1/other"
+operation = "DoThing"
+"#;
+        let v = PlatformGraph::compile(vec![manifest("alpha", routes)]).unwrap_err();
+        assert!(
+            v.iter().any(|x| x.code == "GRAPH-ROUTE-METHOD" && x.message.contains("PURGE")),
+            "{v:?}"
+        );
+        assert!(
+            v.iter()
+                .any(|x| x.code == "GRAPH-ROUTE-OPID" && x.message.contains("alpha.DoThing")),
+            "{v:?}"
+        );
+    }
+
+    #[test]
+    fn p0_route_shape_gate_accepts_every_registered_verb() {
+        // The edge uppercases the manifest token before matching, so a
+        // lowercase declaration registers — and must compile.
+        let routes = r#"
+[[routes]]
+method = "get"
+path = "/api/v1/things"
+operation = "create"
+"#;
+        PlatformGraph::compile(vec![manifest("alpha", routes)]).expect("registered verbs compile");
     }
 }

@@ -758,7 +758,7 @@ async fn package_routes_serve_over_http_and_abi_mismatch_refuses_boot() {
 
     // Manifest-only package: it declares its own capability + route (the
     // package v1 contract; linked crates register the operation handler).
-    let manifest_v1 = "[module]\nname = \"billing\"\nversion = \"0.1.0\"\n\n\
+    let manifest_v1 = "[module]\nname = \"billing\"\nversion = \"0.1.0\"\napi = 1\n\n\
         [capabilities]\n\"invoice\" = { profile = \"READ\" }\n\n\
         [[routes]]\nmethod = \"GET\"\npath = \"/api/v1/billing/invoice\"\noperation = \"invoice\"\n";
     std::fs::write(
@@ -808,7 +808,7 @@ async fn package_routes_serve_over_http_and_abi_mismatch_refuses_boot() {
     // compile (fail-closed), naming the package in the violation.
     std::fs::write(
         dir.join("packages").join("billing").join("module.toml"),
-        manifest_v1.replace("version = \"0.1.0\"", "version = \"0.1.0\"\napi = 2"),
+        manifest_v1.replace("api = 1", "api = 2"),
     )
     .unwrap();
     let manifests = kelson_demo::graph_routes::discover_manifests(&dir).expect("still discovers");
@@ -5917,4 +5917,68 @@ async fn precognition_is_not_a_csrf_403_bypass() {
     .await;
     assert_eq!(probe.status, StatusCode::FORBIDDEN, "{}", probe.body);
     assert_eq!(probe.error_code(), kelson_foundation::codes::DENIED);
+}
+
+// ------------------------------------------------- P0 graph route coverage
+
+/// P0 (18-GAP-ANALYSIS routes): every route the real manifests declare
+/// reaches the HTTP router. An OPTIONS probe on the declared path answers
+/// 204 (auto probe), 405 (path registered, method not offered) or the route
+/// chain's refusal — only a route that never registered falls through to the
+/// router's 404 miss. The second loop closes the other half of the claim:
+/// every operation the graph declares sits on the CommandBus, so dispatch
+/// lands on a handler rather than a runtime not-found.
+#[tokio::test]
+async fn every_manifest_route_reaches_the_http_router() {
+    let dir = std::env::temp_dir().join(format!("kelson-demo-coverage-{}", uuid::Uuid::now_v7()));
+    let (state, graph, _store) = kelson_demo::build_app_state(&dir, true, true);
+    let router = kelson_demo::graph_routes::graph_router(state.clone(), &graph);
+
+    let mut declared = 0usize;
+    for module in &graph.modules {
+        for spec in &module.routes {
+            // `{param}` segments take a dummy value so the pattern matches;
+            // the probe never executes the operation handler itself.
+            let path = spec
+                .path
+                .split('/')
+                .map(|seg| {
+                    if seg.starts_with('{') && seg.ends_with('}') {
+                        "probe"
+                    } else {
+                        seg
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("/");
+            let probe = Request::builder()
+                .method(Method::OPTIONS)
+                .uri(&path)
+                .body(Body::empty())
+                .expect("probe builds");
+            let response = router.clone().oneshot(probe).await.expect("probe serves");
+            assert_ne!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "declared route never reached the HTTP router: {} {} {} ({})",
+                module.name(),
+                spec.method,
+                spec.path,
+                spec.operation
+            );
+            declared += 1;
+        }
+    }
+    // The harness compiles the real appointments + oauth2 manifests (9 routes).
+    assert!(declared >= 8, "manifest routes probed: {declared}");
+
+    for operation in graph.operations.keys() {
+        let id = kelson_foundation::OperationId::parse(operation.clone())
+            .expect("graph operation id parses");
+        assert!(
+            state.bus.handler(&id).is_some(),
+            "graph operation {operation} has no CommandBus handler — dispatch would miss at runtime"
+        );
+    }
+    std::fs::remove_dir_all(&dir).ok();
 }

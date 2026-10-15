@@ -7124,6 +7124,7 @@ mod tests {
 [module]
 name = "alpha"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "index" = { profile = "READ" }
@@ -7155,6 +7156,7 @@ operation = "index"
 [module]
 name = "alpha"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "index" = { profile = "READ" }
@@ -7191,6 +7193,7 @@ middleware = ["ghost"]
 [module]
 name = "alpha"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "index" = { profile = "READ" }
@@ -7233,6 +7236,7 @@ operation = "index"
 [module]
 name = "alpha"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "index" = { profile = "READ" }
@@ -7927,7 +7931,7 @@ middleware = ["ghost"]
         std::fs::create_dir_all(&pkg).unwrap();
         std::fs::write(
             pkg.join("module.toml"),
-            "[module]\nname = \"billing\"\nversion = \"0.3.0\"\n",
+            "[module]\nname = \"billing\"\nversion = \"0.3.0\"\napi = 1\n",
         )
         .unwrap();
         pkg_add_at(&root, "vendor/billing").expect("adds");
@@ -7947,7 +7951,7 @@ middleware = ["ghost"]
         std::fs::create_dir_all(&twin).unwrap();
         std::fs::write(
             twin.join("module.toml"),
-            "[module]\nname = \"billing\"\nversion = \"0.3.1\"\n",
+            "[module]\nname = \"billing\"\nversion = \"0.3.1\"\napi = 1\n",
         )
         .unwrap();
         let err = pkg_add_at(&root, "vendor/twin").expect_err("duplicate name");
@@ -7987,7 +7991,7 @@ middleware = ["ghost"]
         std::fs::create_dir_all(pkg.join("views")).unwrap();
         std::fs::write(
             pkg.join("module.toml"),
-            "[module]\nname = \"billing\"\nversion = \"0.3.0\"\n\n\
+            "[module]\nname = \"billing\"\nversion = \"0.3.0\"\napi = 1\n\n\
              [config.limits]\ndefault_monthly_operations = 11\n",
         )
         .unwrap();
@@ -8185,7 +8189,7 @@ middleware = ["ghost"]
         std::fs::create_dir_all(&tax).unwrap();
         std::fs::write(
             tax.join("module.toml"),
-            "[module]\nname = \"tax\"\nversion = \"0.1.0\"\n",
+            "[module]\nname = \"tax\"\nversion = \"0.1.0\"\napi = 1\n",
         )
         .unwrap();
         pkg_add_at(&root, "packages/tax").expect("indexes");
@@ -8838,6 +8842,7 @@ cache_dir = "storage/framework/views"
 [module]
 name = "alpha"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "index" = { profile = "READ" }
@@ -8960,6 +8965,7 @@ url = "postgres://user:db-password@localhost:5432/keel"
             r#"[module]
 name = "alpha"
 version = "0.1.0"
+api = 1
 
 [capabilities]
 "index" = { profile = "READ" }

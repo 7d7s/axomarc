@@ -2833,4 +2833,24 @@ operation = "index"
         assert!(header_of(&response, header::CACHE_CONTROL).is_none());
         assert!(header_of(&response, header::ETAG).is_some());
     }
+
+    /// GRAPH-ROUTE-METHOD compiles against `kelson_registry::ROUTE_METHODS`;
+    /// the edge must accept exactly that set — a verb the boot gate allows
+    /// but registration skips (or the reverse) would leave the warn-and-skip
+    /// path live and a declared route silently unregistered.
+    #[test]
+    fn declared_methods_mirror_the_registry_route_gate() {
+        for verb in kelson_registry::ROUTE_METHODS {
+            assert!(
+                declared_methods(verb).is_some(),
+                "registry verb {verb} must register at the edge"
+            );
+        }
+        for verb in ["PURGE", "TRACE", "CONNECT", "", "get "] {
+            assert!(
+                declared_methods(verb).is_none(),
+                "edge skips {verb:?}, so the boot gate must refuse it"
+            );
+        }
+    }
 }
