@@ -1850,3 +1850,69 @@ fn a_declared_component_still_refuses_in_a_build_without_the_feature() {
     assert!(text.contains("component-model"), "{text}");
     assert!(text.contains("refusing"), "{text}");
 }
+
+// ------------------------------------------------- Stage C module artifact
+
+/// The Stage C marker module: compiled artifact plus reviewed sidecar, pointed
+/// at the way a `packages.toml` `[[wasm]]` entry points at one. Absolute, so
+/// the test's temp index resolves them from any temp root.
+fn marker_entry() -> WasmModuleEntry {
+    let dir = PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testing/module-marker"
+    ));
+    WasmModuleEntry {
+        name: "marker".to_string(),
+        version: "0.1.0".to_string(),
+        path: dir
+            .join("artifact/kelson_module_marker.wasm")
+            .display()
+            .to_string(),
+        manifest: dir.join("module.toml").display().to_string(),
+    }
+}
+
+/// Stage C.5: the workspace's first compiled module artifact loads through the
+/// exact `load_wasm_plugins` call production boot makes, and answers with the
+/// marker its build embedded.
+///
+/// The load alone proves two separate things. The guest links against the
+/// host's hand-rolled `wasi_snapshot_preview1` shim — an import the shim does
+/// not supply fails at `instantiate_pre`, before anything below runs — and the
+/// guest's `kelson_manifest()` JSON normalizes to the identical document as
+/// `module.toml`, since drift refuses the load rather than running one of the
+/// two.
+///
+/// The marker asserted is the one THIS test was built with: rebuild the
+/// artifact as `KELSON_MODULE_MARKER=v2` and build the test with the same
+/// variable, and the assertion follows it. A fixture moved to v2 while the
+/// tree still builds the test as v1 fails loudly instead of quietly serving
+/// bytes nobody reviewed.
+#[tokio::test]
+async fn compiled_marker_module_loads_and_answers_with_its_build_marker() {
+    let root = temp_root("marker");
+    write_index(&root, vec![marker_entry()]);
+    let bundle = crate::load_wasm_plugins(&root)
+        .expect("the marker artifact links and its manifest does not drift")
+        .expect("bundle present");
+    assert_eq!(bundle.0.len(), 1, "one handler per declared capability");
+
+    let mut bus = kelson_command::CommandBus::new(engine(Arc::new(AllowAll)));
+    for handler in &bundle.0 {
+        bus.register(handler.clone()).expect("registers");
+    }
+
+    let out = bus
+        .dispatch(ctx(), &op("marker.read"), json!({}), None)
+        .await
+        .expect("the marker dispatches");
+    let expected = option_env!("KELSON_MODULE_MARKER").unwrap_or("v1");
+    assert_eq!(out.result["marker"], json!(expected), "{}", out.result);
+    assert_eq!(out.result["operation"], json!("read"), "{}", out.result);
+    assert_eq!(
+        out.result["received"],
+        json!(2),
+        "the empty object round-tripped through kelson_alloc: {}",
+        out.result
+    );
+}

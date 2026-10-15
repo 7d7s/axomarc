@@ -1450,9 +1450,9 @@ impl WasmHandler {
         let qualified = format!("{}.{}", manifest.name(), capability);
         let operation = OperationId::parse(qualified.clone())
             .map_err(|e| WasmError::Manifest(format!("operation {qualified}: {e}")))?;
-        let plan = ExecutionPlan::new(operation, spec.profile)
-            .with_capability(qualified)
-            .with_plane(manifest.module.plane.to_security_plane());
+        let mut plan = ExecutionPlan::new(operation, spec.profile)
+            .with_capability(qualified).with_plane(manifest.module.plane.to_security_plane());
+        relax_public_routes(manifest, capability, &mut plan);
         Ok(Self {
             plan,
             plugin,
@@ -1703,4 +1703,30 @@ pub mod component {
         world: "plugin",
         path: "wit",
     });
+}
+
+/// Drop the engine's authorization boundary for a capability the reviewed
+/// sidecar also publishes on a `public = true` route.
+///
+/// The edge strips the implicit `auth`/`verified` stages for a route the module
+/// declared public, so an anonymous caller reaches dispatch with no principal
+/// to authorize. Dispatch then asks the handler's plan whether one is required,
+/// and an unconditional "yes" answers that caller 401 for a route the module
+/// itself published as anonymous — unreachable rather than protected. The
+/// first-party handlers answer the same question by hand, per operation
+/// (`applications/appointments`, `applications/oauth2`); this is the same
+/// answer, taken from the manifest so a module's contract is one document.
+///
+/// Read out of `routes`, not out of the module: a capability stays guarded when
+/// its other routes are not public. And only out of the sidecar that already
+/// passed drift — the guest declared the same routes, so this reads what was
+/// reviewed, never what a request asked for.
+fn relax_public_routes(manifest: &ModuleManifest, capability: &str, plan: &mut ExecutionPlan) {
+    let publishes_publicly = manifest
+        .routes
+        .iter()
+        .any(|route| route.public && route.capability.as_deref() == Some(capability));
+    if publishes_publicly {
+        plan.authorization.required = false;
+    }
 }

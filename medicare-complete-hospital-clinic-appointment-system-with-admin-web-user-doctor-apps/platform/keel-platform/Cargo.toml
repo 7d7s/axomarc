@@ -77,8 +77,8 @@ members = [
   "xtask",
   "tests/architecture",
   "testing/testkit",
-  "examples/minimal",
-  "examples/reference",
+  "testing/module-marker",
+  "examples/minimal", "examples/reference",
 ]
 
 [workspace.package]

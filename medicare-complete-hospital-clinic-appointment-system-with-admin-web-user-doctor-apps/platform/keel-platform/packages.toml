@@ -1,0 +1,27 @@
+# Package index (Wave 8 B-24, docs/19): local-path packages merged into graph
+# compile (kelson graph/check/boot) and boot config defaults ([config] in the
+# package manifest). Maintained by `kelson pkg:add` / `pkg:list`.
+#
+# One `[[wasm]]` entry: the Stage C marker module. It is here rather than left
+# to an operator's scratch directory because the activation path only means
+# something against a module the process already has loaded -- `load_wasm_plugins`
+# runs at boot from this index, and every generation-swap commit that follows
+# starts from the generation this entry produced.
+#
+# Both paths resolve against the workspace root (the process's working
+# directory, `PackageIndex::resolve_path`), so booting from anywhere else loads
+# no module and changes nothing -- the same posture as every other discovery
+# gate in this file. Rebuild the artifact with:
+#
+#   cargo build --release --target wasm32-wasip1 -p kelson-module-marker
+#   copy target\wasm32-wasip1\release\kelson_module_marker.wasm testing\module-marker\artifact\
+#
+# The reviewed sidecar is `testing/module-marker/module.toml`; the guest's own
+# `kelson_manifest()` must normalize to the identical document or the load is
+# refused with `WasmError::Drift` before a single request reaches it.
+
+[[wasm]]
+name = "marker"
+version = "0.1.0"
+path = "testing/module-marker/artifact/kelson_module_marker.wasm"
+manifest = "testing/module-marker/module.toml"

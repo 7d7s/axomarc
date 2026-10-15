@@ -1,0 +1,35 @@
+# The reviewed sidecar for the Stage C marker module. `packages.toml` names
+# this file and the compiled artifact; at boot `WasmHost::prepare` reads the
+# guest's own `kelson_manifest()` and refuses the load (`WasmError::Drift`)
+# unless the two normalize to the identical document. The guest constant in
+# `src/lib.rs` is the other half of that comparison -- edit one, edit both.
+#
+# The guest manifest MUST declare the same `routes` block: drift compares whole
+# documents, so a route that only exists in the sidecar is a mismatch, not a
+# detail the host fills in.
+[module]
+name = "marker"
+version = "0.1.0"
+api = 1
+maturity = "L0"
+plane = "tenant"
+description = "Stage C activation marker"
+
+[capabilities]
+# One read-only capability. A READ profile maps to the guest's read-only
+# import surface: no `host.capability_write`.
+read = { profile = "READ" }
+
+[dependencies]
+contracts = []
+
+[[routes]]
+# `public = true` strips the implicit auth/verified stages the way the
+# first-party public routes do, so the proof's behavior probe can read the
+# marker anonymously.
+method = "GET"
+path = "/api/v1/marker"
+operation = "read"
+capability = "read"
+name = "read"
+public = true

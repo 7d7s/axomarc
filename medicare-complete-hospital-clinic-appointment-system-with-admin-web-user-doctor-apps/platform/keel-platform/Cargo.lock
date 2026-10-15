@@ -1935,6 +1935,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "kelson-module-marker"
+version = "0.1.0"
+
+[[package]]
 name = "kelson-mysql"
 version = "0.1.0"
 dependencies = [
