@@ -14,11 +14,11 @@ pub mod i18n;
 pub mod notification_routes;
 pub mod batch_routes;
 pub mod routes;
+pub mod runtime_status;
 pub mod shell;
 pub mod static_assets;
 pub mod telemetry_routes;
 pub mod upload_routes;
-
 use std::sync::Arc;
 
 use host::{
@@ -803,6 +803,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         notifications: notification_store,
         mail: crate::mail::port_from(cfg.mail()).map_err(|error| error.public_message)?,
         uploads: crate::upload_routes::UploadPolicy::from_config(cfg.files()),
+        // Row 20: identity + generation + digest for `/__runtime/status`.
+        runtime: crate::runtime_status::boot_status(&root, &platform_cfg),
         channels: broadcast_routes::resolve_channels(&graph),
         presence: Arc::new(kelson_realtime::PresenceHub::new()),
         queue: queue_stats,
@@ -812,9 +814,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         // traces handle points at the SAME file plane the engine saves to
         // and `kelson inspect` reads (`storage/framework/traces`).
         schedule: None,
-        traces: Some(Arc::new(kelson_execution::FileTraceStore::standard(
-            &root,
-        ))),
+        traces: Some(Arc::new(kelson_execution::FileTraceStore::standard(&root))),
         route_inventory,
         middleware_catalog,
         route_bindings,
@@ -1001,8 +1001,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // route bundle and the ambient flag set, and start the trigger
     // poller: config file mtime every 500ms PLUS the route artifact's own
     // mtime, so a `kelson route:cache` rewrite lands with no config edit.
-    // Every swap is Arc-level behind a read lock — no restart, in-flight
-    // requests unaffected (§10 DoD "boot-time freeze" row).
+    // Every swap is Arc-level behind a read lock — no restart, in-flight requests unaffected.
     let config_rt = kelson_config::ConfigRuntime::boot(
         kelson_config::FileConfigSource::new(&cfg_path),
         platform_cfg,
@@ -1020,6 +1019,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         PrincipalId::from_uuid(uuid::Uuid::parse_str(host::BOOT_ACTOR_UUID).expect("static uuid")),
         state.clone(),
     ));
+    config_rt.subscribe(crate::runtime_status::StatusReloader::new(state.runtime.clone()));
     // Row 16 wiring: the poller is the config module's runtime health check.
     // It shares the same module registry as the host (via `state`), so a
     // refused reload degrades `config` and a reload that lands recovers it.
@@ -1729,6 +1729,8 @@ fn build_app_state_inner(
         disks: Arc::new(disks), notifications: notification_store,
         mail: None,
         uploads: Default::default(),
+        // Row 20: no config file or disk manifests in the harness: empty digest components.
+        runtime: Arc::new(crate::runtime_status::RuntimeStatus::at_boot("", "")),
         channels: broadcast_routes::resolve_channels(&graph),
         presence: Arc::new(kelson_realtime::PresenceHub::new()),
         // No pool in the builder: no durable store — the /metrics queue
@@ -1739,12 +1741,10 @@ fn build_app_state_inner(
         // Wave 8 ADR 0009 (D-52 posture, like `queue`): no registry is
         // registered and no trace plane is attached in the harness — the
         // ops dashboard's sections degrade inline; tests inject handles.
-        schedule: None,
-        traces: None,
+        schedule: None, traces: None,
         route_inventory: graph_routes::route_inventory(&graph),
         middleware_catalog: kelson_http::MiddlewareCatalog::builtin(),
-        route_bindings,
-        probes,
+        route_bindings, probes,
         throttle_buckets: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         route_plans: Arc::new(std::sync::RwLock::new(None)),
         metrics: Arc::new(kelson_metrics::MetricsRegistry::new(4096)),

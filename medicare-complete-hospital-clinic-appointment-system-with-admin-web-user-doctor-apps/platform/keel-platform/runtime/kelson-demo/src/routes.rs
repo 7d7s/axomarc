@@ -225,6 +225,9 @@ pub struct AppState {
     pub mail: Option<Arc<dyn kelson_notifications::MailPort>>,
     /// Row 19: `[files]` limits + per-tenant quota ledger (harness: defaults, no quota).
     pub uploads: crate::upload_routes::UploadPolicy,
+    /// Row 20: process identity + activation generation + canonical content
+    /// digest, served by `/__runtime/status` for the no-rebuild proof.
+    pub runtime: Arc<crate::runtime_status::RuntimeStatus>,
 }
 
 impl AppState {
@@ -241,10 +244,8 @@ impl AppState {
     /// detail; per-code custom renderer output lands in `error.meta`.
     /// Report-only codes (`renderable = false`) keep the mapped status but
     /// serve the generic internal body.
-    pub fn error_envelope(
-        &self,
-        err: &kelson_foundation::AppError,
-    ) -> (axum::http::StatusCode, Envelope<serde_json::Value>) {
+    pub fn error_envelope(&self, err: &kelson_foundation::AppError)
+    -> (axum::http::StatusCode, Envelope<serde_json::Value>) {
         let plan = self.error_renders.plan(err);
         if plan.reportable {
             tracing::warn!(
@@ -279,8 +280,7 @@ impl AppState {
 
     /// `(status, envelope body)` tuple for the JSON edges.
     pub fn error_json(
-        &self,
-        err: &kelson_foundation::AppError,
+        &self, err: &kelson_foundation::AppError,
     ) -> (axum::http::StatusCode, Json<serde_json::Value>) {
         let (status, envelope) = self.error_envelope(err);
         (
@@ -398,6 +398,7 @@ pub fn router(state: AppState) -> Router {
         .route("/meta/boot", get(boot_meta))
         .route("/meta/flags", get(flags_meta))
         .route("/meta/routes", get(routes_meta))
+        .route("/__runtime/status", get(crate::runtime_status::status_meta))
         .route("/metrics", get(metrics_text))
         .route("/_dashboard", get(dashboard))
         // Wave 8 ADR 0009: the operational half — same `dashboard_enabled`
@@ -414,8 +415,7 @@ pub fn router(state: AppState) -> Router {
 /// provable in tests without flipping global state.
 async fn metrics_text(State(s): State<AppState>) -> axum::response::Response {
     if !s.flags.read().unwrap().iter().any(|f| f == "app.metrics") {
-        let err =
-            kelson_foundation::AppError::not_found("metrics exposition disabled (enable flag app.metrics)");
+        let err = kelson_foundation::AppError::not_found("metrics exposition disabled (enable flag app.metrics)");
         return s.error_json(&err).into_response();
     }
     s.metrics.set_gauge(
