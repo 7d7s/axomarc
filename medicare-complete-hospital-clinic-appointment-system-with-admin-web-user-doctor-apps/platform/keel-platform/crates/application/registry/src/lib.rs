@@ -1012,7 +1012,7 @@ impl PlatformGraph {
                         ),
                     });
                 }
-                let operation_id = format!("{}.{}", m.name(), r.operation);
+                let operation_id = if r.from_route_file { r.operation.clone() } else { format!("{}.{}", m.name(), r.operation) };
                 if kelson_foundation::OperationId::parse(&operation_id).is_err() {
                     violations.push(GraphViolation {
                         code: "GRAPH-ROUTE-OPID".into(),

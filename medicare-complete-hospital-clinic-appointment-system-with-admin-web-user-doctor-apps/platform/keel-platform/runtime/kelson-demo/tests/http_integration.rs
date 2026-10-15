@@ -5982,3 +5982,89 @@ async fn every_manifest_route_reaches_the_http_router() {
     }
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ------------------------------------------------------- route-file dispatch
+
+/// Row 19: a `routes/api.toml` route dispatches to the DECLARED module's
+/// handler. Registration resolves the operation id to the route file's own
+/// qualified `module.operation` (the synthetic `routes_api.` prefix is a
+/// discovery artifact, never a dispatch key), so the booking below runs
+/// through the route-file path and lands in the appointments handler —
+/// status 200 with an id — instead of missing the bus at runtime.
+#[tokio::test]
+async fn route_file_route_dispatches_to_the_declared_module_handler() {
+    let dir = std::env::temp_dir().join(format!("kelson-demo-rf-{}", uuid::Uuid::now_v7()));
+    std::fs::create_dir_all(dir.join("routes")).unwrap();
+    std::fs::write(
+        dir.join("routes").join("api.toml"),
+        "[[route]]\nmethod = \"POST\"\npath = \"/api/v1/hooks/book\"\noperation = \"appointments.book\"\n",
+    )
+    .unwrap();
+
+    // Discovery: the synthetic route-file module plus the real appointments
+    // module (the same manifest build_app_state wires its handlers from).
+    let mut manifests = kelson_demo::graph_routes::discover_manifests(&dir).expect("discovers");
+    let appointments_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../applications/appointments/module.toml"
+    );
+    let raw = std::fs::read_to_string(appointments_path).expect("appointments manifest");
+    manifests.push(kelson_registry::ModuleManifest::from_toml(&raw).expect("parses"));
+    let graph = kelson_registry::PlatformGraph::compile(manifests).expect("graph compiles");
+    assert!(
+        graph.operations.contains_key("appointments.book"),
+        "{:?}",
+        graph.operations.keys()
+    );
+
+    // The inventory reports the dispatched id (raw), not a synthetic prefix.
+    let inventory = kelson_demo::graph_routes::route_inventory(&graph);
+    assert!(
+        inventory.iter().any(|r| r.path == "/api/v1/hooks/book"
+            && r.operation == "appointments.book"),
+        "{inventory:?}"
+    );
+
+    // Route the production edge with THIS graph (route file included).
+    let (state, _, store) = kelson_demo::build_app_state(&dir, true, true);
+    let router = kelson_demo::routes::router(state.clone())
+        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph))
+        .merge(kelson_demo::auth_routes::router(state.clone()))
+        .merge(kelson_demo::upload_routes::router(state.clone()))
+        .merge(kelson_demo::notification_routes::router(state.clone()))
+        .merge(kelson_demo::batch_routes::router(state.clone()));
+    let router = state
+        .sessions
+        .as_ref()
+        .expect("sessions enabled")
+        .as_ref()
+        .clone()
+        .apply(router);
+    let app = App {
+        router,
+        state,
+        store,
+    };
+
+    let email = format!("route-file-{}@clinic.test", uuid::Uuid::now_v7());
+    let cookie = register(&app, &email).await.session_cookie().unwrap();
+    let book = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/api/v1/hooks/book",
+            serde_json::json!({ "patient": "A. Patient", "slot": "2026-09-01T10:00Z" }),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(book.status, StatusCode::OK, "{}", book.body);
+    assert!(
+        book.data()["id"].as_str().is_some(),
+        "the handler ran and created an appointment: {}",
+        book.body
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

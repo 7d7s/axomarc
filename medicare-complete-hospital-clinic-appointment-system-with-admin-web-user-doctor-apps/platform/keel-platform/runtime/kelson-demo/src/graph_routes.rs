@@ -392,7 +392,7 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
                 tracing::warn!(module = module.name(), method = %spec.method, path = %spec.path, "graph route skipped: unsupported method");
                 continue;
             };
-            let operation_id = format!("{}.{}", module.name(), spec.operation);
+            let operation_id = if spec.from_route_file { spec.operation.clone() } else { format!("{}.{}", module.name(), spec.operation) };
             let Ok(operation) = OperationId::parse(&operation_id) else {
                 tracing::warn!(operation = %operation_id, "graph route skipped: invalid operation id");
                 continue;
@@ -425,12 +425,12 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
 
             let validation_entries: Vec<kelson_registry::ValidationSpec> = match cached {
                 Some(plan) => plan.validation.clone(),
-                None => module
-                    .validation
-                    .iter()
-                    .filter(|s| s.operation == spec.operation)
-                    .cloned()
-                    .collect(),
+                None => {
+                    // A route-file route carries no rules of its own; inherit the declaring module's.
+                    let owner = spec.from_route_file.then(|| graph.operations.get(&operation_id)).flatten().and_then(|o| graph.modules.iter().find(|m| m.name() == o.as_str()));
+                    owner.into_iter().chain(std::iter::once(module)).flat_map(|m| m.validation.iter())
+                        .filter(|s| s.operation == spec.operation || spec.operation.ends_with(&format!(".{}", s.operation))).cloned().collect()
+                }
             };
             let validator = match compile_validator(&validation_entries) {
                 Ok(validator) => validator,
@@ -447,11 +447,11 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
                 .map(|plan| plan.constraints.clone())
                 .unwrap_or_else(|| spec.resolved_constraints.clone());
 
-            let profile = module
-                .capabilities
-                .get(&spec.operation)
-                .map(|c| c.profile)
-                .unwrap_or(ExecutionProfileKind::Command);
+            let profile = module.capabilities.get(&spec.operation).map(|c| c.profile)
+                .unwrap_or_else(|| graph.operations.get(&operation_id)
+                    .and_then(|owner| graph.modules.iter().find(|m| m.name() == owner.as_str()))
+                    .and_then(|m| spec.operation.strip_prefix(&format!("{}.", m.name())).and_then(|cap| m.capabilities.get(cap)))
+                    .map(|c| c.profile).unwrap_or(ExecutionProfileKind::Command));
             let dispatch = Arc::new(RouteDispatch {
                 operation,
                 profile,
@@ -859,7 +859,7 @@ pub fn route_inventory(graph: &PlatformGraph) -> Vec<RouteEntry> {
                 module: module.name().to_string(),
                 method: spec.method.to_ascii_uppercase(),
                 path: spec.path.clone(),
-                operation: format!("{}.{}", module.name(), spec.operation),
+                operation: if spec.from_route_file { spec.operation.clone() } else { format!("{}.{}", module.name(), spec.operation) },
                 capability: spec.capability.clone(),
             });
         }
