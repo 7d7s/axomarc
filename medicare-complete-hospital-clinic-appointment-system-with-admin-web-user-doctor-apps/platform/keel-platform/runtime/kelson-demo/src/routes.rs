@@ -24,7 +24,7 @@ use crate::host::{dev_context, SystemHealth};
 
 #[derive(Clone)]
 pub struct AppState {
-    pub bus: Arc<CommandBus>,
+    pub bus: Arc<DispatchBus>,
     pub health: Arc<SystemHealth>,
     /// Runtime module lifecycle states (docs/15-EXTENSION, Row 16 wiring).
     /// The host shares the very registry it populated at boot; the health
@@ -632,5 +632,137 @@ async fn demo_echo(
             Json(serde_json::to_value(Envelope::ok(outcome.result)).unwrap()),
         ),
         Err(err) => s.error_json(&err),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Generation-swappable dispatch
+// ---------------------------------------------------------------------------
+
+use std::collections::HashMap;
+
+use kelson_context::ExecutionContext;
+use kelson_execution::{IdempotencyKey, OperationHandler, OperationOutcome};
+use serde_json::Value;
+
+/// One published generation: the operations it serves, mapped to their handlers.
+type HandlerMap = HashMap<OperationId, Arc<dyn OperationHandler>>;
+
+/// The bus every request resolves through: a boot-frozen [`CommandBus`] plus
+/// the module generation currently published for dispatch.
+///
+/// `CommandBus` itself keeps exactly the shape the ledger records for it —
+/// handlers populated at boot from compiled-in implementations and never
+/// runtime-populated (`platform/docs/20-ARCHITECTURE-VERIFICATION.md`, claim 1).
+/// What a live activation changes is *this* wrapper's cell, so a control-plane
+/// activation publishes one complete aggregate instead of reaching into the
+/// registry — the shape `ARCHITECTURE-CONTRACT.md` requires of that edge
+/// (control plane -> release/config/module contracts; never private mutable
+/// state of the serving process).
+///
+/// Resolution reads the cell **once** and clones the `Arc` out, which is what
+/// gives the snapshot invariants their teeth: a request pins generation N for
+/// its whole execution, so the generation it started on is the one it finishes
+/// on, and the old generation stays alive for the calls already inside it while
+/// new requests take the new one. Readers see the old complete map or the new
+/// complete map — never a half-swapped mix, because the whole map is published
+/// in a single write.
+///
+/// With nothing published the cell is empty and every lookup falls through to
+/// the boot handlers, so dispatch is byte-for-byte the pre-swap behaviour.
+pub struct DispatchBus {
+    boot: Arc<CommandBus>,
+    active: std::sync::RwLock<Arc<HandlerMap>>,
+}
+
+impl DispatchBus {
+    /// The boot bus with no runtime generation published over it yet.
+    pub fn new(boot: Arc<CommandBus>) -> Self {
+        Self {
+            boot,
+            active: std::sync::RwLock::new(Arc::new(HashMap::new())),
+        }
+    }
+
+    /// Add `handler` to the published generation.
+    ///
+    /// Mirrors [`CommandBus::register`] — same duplicate refusal and message —
+    /// so callers that used to register on the boot bus keep their contract.
+    /// The whole map is written back in one step, so a reader sees the map
+    /// with the handler or without it, never a partial insert.
+    pub fn register(&self, handler: Arc<dyn OperationHandler>) -> Result<(), kelson_foundation::AppError> {
+        let op = handler.plan().operation.clone();
+        let mut cell = self.active.write().unwrap_or_else(|e| e.into_inner());
+        let mut map = (**cell).clone();
+        if map.insert(op.clone(), handler).is_some() {
+            return Err(kelson_foundation::AppError::internal(format!(
+                "command handler registered twice: {op}"
+            )));
+        }
+        *cell = Arc::new(map);
+        Ok(())
+    }
+
+    /// The handler serving `operation` right now, pinned for the caller.
+    ///
+    /// The published map is read a single time and the handle cloned out of it;
+    /// the `Arc` therefore outlives any swap that lands mid-request.
+    pub fn handler(&self, operation: &OperationId) -> Option<Arc<dyn OperationHandler>> {
+        let active = self.active.read().unwrap_or_else(|e| e.into_inner());
+        if let Some(handler) = active.get(operation) {
+            return Some(Arc::clone(handler));
+        }
+        drop(active);
+        self.boot.handler(operation)
+    }
+
+    /// Every operation the current generation serves.
+    ///
+    /// Unchanged from the boot bus until a generation is published: an empty
+    /// cell is not a degenerate "no operations", it is "nothing swapped".
+    pub fn operations(&self) -> Vec<OperationId> {
+        let active = self.active.read().unwrap_or_else(|e| e.into_inner());
+        if active.is_empty() {
+            drop(active);
+            return self.boot.operations();
+        }
+        let mut ops: Vec<OperationId> = self.boot.operations();
+        ops.extend(
+            active
+                .keys()
+                .filter(|op| !ops.contains(op))
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+        ops.sort();
+        ops.dedup();
+        ops
+    }
+
+    /// Publish `map` as the serving generation in one write.
+    ///
+    /// Callers hand in a whole map rather than mutating entries: the write is
+    /// the commit, and it is the only thing that changes what dispatch resolves.
+    /// Operations absent from `map` keep their boot handlers, so a generation
+    /// re-points what it owns without going dark on anything else.
+    pub fn publish(&self, map: HandlerMap) {
+        let mut cell = self.active.write().unwrap_or_else(|e| e.into_inner());
+        *cell = Arc::new(map);
+    }
+
+    /// Dispatch through the current generation's handler.
+    pub async fn dispatch(
+        &self,
+        ctx: Arc<ExecutionContext>,
+        operation: &OperationId,
+        input: Value,
+        key: Option<IdempotencyKey>,
+    ) -> Result<OperationOutcome, kelson_foundation::AppError> {
+        let handler = self.handler(operation).ok_or_else(|| {
+            kelson_foundation::AppError::not_found(format!("operation {operation}"))
+        })?;
+        self.boot
+            .dispatch_handler(&handler, ctx, input, key)
+            .await
     }
 }

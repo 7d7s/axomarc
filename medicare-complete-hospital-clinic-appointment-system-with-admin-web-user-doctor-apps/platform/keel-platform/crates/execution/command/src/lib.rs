@@ -60,6 +60,24 @@ impl CommandBus {
             .ok_or_else(|| AppError::not_found(format!("operation {operation}")))?;
         self.engine.execute(ctx, handler.as_ref(), input, key).await
     }
+
+    /// Run a caller-supplied handler through this bus's execution pipeline.
+    ///
+    /// A live module activation swaps *which* handler serves an operation, but
+    /// never *how* it executes: authorization, idempotency, transaction, delta
+    /// and audit all still run in the engine, through exactly the path a
+    /// boot-time handler takes. The handler registry itself stays boot-frozen
+    /// and never runtime-populated — the caller resolves the current
+    /// generation and hands the pinned `Arc` in here.
+    pub async fn dispatch_handler(
+        &self,
+        handler: &Arc<dyn OperationHandler>,
+        ctx: Arc<ExecutionContext>,
+        input: Value,
+        key: Option<IdempotencyKey>,
+    ) -> Result<OperationOutcome, AppError> {
+        self.engine.execute(ctx, handler.as_ref(), input, key).await
+    }
 }
 
 #[cfg(test)]

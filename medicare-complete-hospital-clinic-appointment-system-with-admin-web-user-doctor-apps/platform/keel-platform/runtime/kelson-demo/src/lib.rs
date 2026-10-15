@@ -781,7 +781,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|error| error.public_message)?;
 
     let state = routes::AppState {
-        bus,
+        bus: Arc::new(routes::DispatchBus::new(bus)),
         health: health.clone(), modules: host.modules_shared(),
         env,
         // Phase 3 (§4.3): shared cell — the FlagsReloader subscriber swaps
@@ -1702,7 +1702,7 @@ fn build_app_state_inner(
     // shared by the dispatch and the feed).
 
     let state = routes::AppState {
-        bus: Arc::new(bus),
+        bus: Arc::new(routes::DispatchBus::new(Arc::new(bus))),
         health: host::SystemHealth::new(false, "ok"),
         // Row 16 wiring: the harness boots without a host, so the module
         // registry starts empty — `/readyz` stays ready and `/meta/boot`
