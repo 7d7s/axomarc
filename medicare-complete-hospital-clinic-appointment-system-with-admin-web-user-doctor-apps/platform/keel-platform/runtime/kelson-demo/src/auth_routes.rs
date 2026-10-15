@@ -598,9 +598,40 @@ async fn confirm(
 #[derive(Debug, Serialize)]
 struct ResetRequestData {
     sent: bool,
-    /// Dev/test only: surfaced because no mail channel is wired yet.
+    /// Dev/test only (non-prod): the plaintext — the mail channel delivers
+    /// the same token (Row 19).
     #[serde(skip_serializing_if = "Option::is_none")]
     dev_token: Option<String>,
+}
+
+/// Row 19: deliver a token mail through the edge's configured mail port
+/// (`AppState::mail`, the `[mail]` failover chain built at boot). SMTP is
+/// blocking, so the send runs on the blocking pool and the handler awaits
+/// it — the sync mailer posture: the response never precedes delivery, so
+/// a failed send surfaces to the caller's retry instead of being lost.
+/// Delivery failure never changes the response: the request stays
+/// enumeration-safe (a transport error must not reveal whether the account
+/// exists). With no port configured the token simply is not delivered —
+/// dev/test keep the `dev_token` surface.
+async fn deliver_token_mail(state: &AppState, to: &str, subject: &str, body: &str) {
+    let Some(port) = state.mail.clone() else {
+        tracing::debug!(target: "auth::mail", %to, "no mail port configured; token not delivered");
+        return;
+    };
+    let msg = kelson_notifications::NotifyMessage {
+        channel: kelson_notifications::Channel::Email,
+        to: to.to_string(),
+        template: body.to_string(),
+        vars: std::collections::BTreeMap::new(),
+        tenant_id: state.default_tenant_id,
+        locale: None,
+    };
+    let subject = subject.to_string();
+    match tokio::task::spawn_blocking(move || port.send(&msg, &subject)).await {
+        Ok(Ok(())) => tracing::info!(target: "auth::mail", %to, "token mail delivered"),
+        Ok(Err(error)) => tracing::warn!(target: "auth::mail", %to, %error, "token mail delivery failed"),
+        Err(error) => tracing::warn!(target: "auth::mail", %to, %error, "token mail delivery task failed"),
+    }
 }
 
 async fn reset_request(
@@ -617,6 +648,14 @@ async fn reset_request(
             RESET_TTL,
             None,
         ) {
+            let body_text = format!(
+                "Someone requested a password reset for this address.\n\n\
+                 Reset token (single use, valid {} minutes):\n\n{}\n\n\
+                 If you did not request this, ignore this message.",
+                RESET_TTL.whole_minutes(),
+                issued.plaintext
+            );
+            deliver_token_mail(&state, &email, "Reset your password", &body_text).await;
             if !state.env.is_prod() && !matches!(state.env, kelson_config::Environment::Staging) {
                 dev_token = Some(issued.plaintext);
             }
@@ -677,14 +716,15 @@ struct VerifyConfirmBody {
 #[derive(Debug, Serialize)]
 struct VerifyRequestData {
     sent: bool,
-    /// Dev/test only: surfaced because no mail channel is wired yet.
+    /// Dev/test only (non-prod): the plaintext — the mail channel delivers
+    /// the same token (Row 19).
     #[serde(skip_serializing_if = "Option::is_none")]
     dev_token: Option<String>,
 }
 
-/// B-23 step 1: issue a single-use email verification token. The plaintext
-/// would be delivered by the notification layer in production; dev/test
-/// surfaces it directly. Enumeration-safe: always reports sent.
+/// B-23 step 1: issue a single-use email verification token and deliver it
+/// through the configured mail port (Row 19); dev/test also surfaces it
+/// directly. Enumeration-safe: always reports sent.
 async fn verification_request(
     State(state): State<AppState>,
     Json(body): Json<VerifyRequestBody>,
@@ -698,6 +738,13 @@ async fn verification_request(
             VERIFY_TTL,
             None,
         ) {
+            let body_text = format!(
+                "Confirm this address is yours.\n\n\
+                 Verification token (single use, valid {} minutes):\n\n{}",
+                VERIFY_TTL.whole_minutes(),
+                issued.plaintext
+            );
+            deliver_token_mail(&state, &email, "Verify your email address", &body_text).await;
             if !state.env.is_prod() && !matches!(state.env, kelson_config::Environment::Staging) {
                 dev_token = Some(issued.plaintext);
             }

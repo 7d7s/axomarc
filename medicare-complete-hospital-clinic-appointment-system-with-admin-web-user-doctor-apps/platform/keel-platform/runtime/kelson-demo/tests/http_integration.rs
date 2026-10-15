@@ -6204,3 +6204,156 @@ fn two_plane_fallbacks_refuse_at_the_edge() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ------------------------------------------------------------- auth token mail
+
+/// Row 19: a recording mail port — captures every mail the auth token flows
+/// deliver, so the suite pins recipient, subject and token body without a
+/// transport.
+#[derive(Clone, Default)]
+struct RecordingMail(Arc<std::sync::Mutex<Vec<kelson_notifications::Mailable>>>);
+
+impl RecordingMail {
+    fn captured(&self) -> Vec<kelson_notifications::Mailable> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+impl kelson_notifications::MailPort for RecordingMail {
+    fn send(
+        &self,
+        msg: &kelson_notifications::NotifyMessage,
+        subject: &str,
+    ) -> Result<(), kelson_foundation::AppError> {
+        self.0.lock().unwrap().push(kelson_notifications::Mailable {
+            to: vec![msg.to.clone()],
+            cc: vec![],
+            bcc: vec![],
+            from: None,
+            reply_to: None,
+            subject: subject.to_string(),
+            text: Some(msg.template.clone()),
+            html: None,
+            headers: vec![],
+            attachments: vec![],
+        });
+        Ok(())
+    }
+
+    fn send_mailable(
+        &self,
+        mail: &kelson_notifications::Mailable,
+        _attachments: &[kelson_notifications::ResolvedMailAttachment],
+    ) -> Result<(), kelson_foundation::AppError> {
+        self.0.lock().unwrap().push(mail.clone());
+        Ok(())
+    }
+}
+
+/// Row 19 (auth mail): both token flows deliver through the configured port —
+/// the mail carries the SAME plaintext the dev/test surface reports, and an
+/// unknown address stays enumeration-safe on the delivery side too (reports
+/// sent, delivers nothing).
+#[tokio::test]
+async fn password_reset_and_verification_requests_deliver_token_mail() {
+    let dir = std::env::temp_dir().join(format!("kelson-demo-mail-{}", uuid::Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).expect("temp root");
+    let (mut state, graph, store) = kelson_demo::build_app_state(&dir, true, true);
+    let mail = RecordingMail::default();
+    state.mail = Some(Arc::new(mail.clone()));
+    let router = kelson_demo::routes::router(state.clone())
+        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph))
+        .merge(kelson_demo::auth_routes::router(state.clone()))
+        .merge(kelson_demo::upload_routes::router(state.clone()))
+        .merge(kelson_demo::notification_routes::router(state.clone()))
+        .merge(kelson_demo::batch_routes::router(state.clone()));
+    let router = state
+        .sessions
+        .as_ref()
+        .expect("sessions enabled")
+        .as_ref()
+        .clone()
+        .apply(router);
+    let app = App {
+        router,
+        state,
+        store,
+    };
+
+    let email = format!("token-mail-{}@clinic.test", uuid::Uuid::now_v7());
+    assert_eq!(register(&app, &email).await.status, StatusCode::OK);
+
+    // Password reset: one mail, addressed, carrying the issued token.
+    let request = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/auth/password-reset/request",
+            serde_json::json!({ "email": email }),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(request.status, StatusCode::OK, "{}", request.body);
+    assert_eq!(request.data()["sent"], serde_json::json!(true));
+    let dev = request.data()["dev_token"]
+        .as_str()
+        .expect("dev token in non-prod")
+        .to_string();
+    let sent = mail.captured();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0].to, vec![email.clone()]);
+    assert!(!sent[0].subject.is_empty());
+    assert!(
+        sent[0].text.as_deref().unwrap_or("").contains(&dev),
+        "the delivered mail carries the redemption token: {:?}",
+        sent[0].text
+    );
+
+    // Email verification: a second, separate mail with its own token.
+    let verify = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/auth/email-verification/request",
+            serde_json::json!({ "email": email }),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(verify.status, StatusCode::OK, "{}", verify.body);
+    let verify_dev = verify.data()["dev_token"]
+        .as_str()
+        .expect("dev token in non-prod")
+        .to_string();
+    let sent = mail.captured();
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert!(
+        sent[1].text.as_deref().unwrap_or("").contains(&verify_dev),
+        "the verification mail carries its own token: {:?}",
+        sent[1].text
+    );
+    assert_ne!(dev, verify_dev);
+
+    // Enumeration safety holds on the delivery side: an unknown address
+    // reports sent and delivers nothing.
+    let ghost = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/auth/password-reset/request",
+            serde_json::json!({ "email": format!("ghost-{}@clinic.test", uuid::Uuid::now_v7()) }),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(ghost.status, StatusCode::OK, "{}", ghost.body);
+    assert_eq!(ghost.data()["sent"], serde_json::json!(true));
+    assert!(ghost.data()["dev_token"].is_null());
+    assert_eq!(mail.captured().len(), 2);
+
+    std::fs::remove_dir_all(&dir).ok();
+}

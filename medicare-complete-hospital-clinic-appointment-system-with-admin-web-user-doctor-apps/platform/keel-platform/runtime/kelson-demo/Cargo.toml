@@ -46,6 +46,7 @@ kelson-postgres = { workspace = true }
 kelson-mysql = { workspace = true }
 kelson-observability = { workspace = true }
 kelson-notifications = { workspace = true }
+kelson-mail-smtp = { workspace = true }
 kelson-feature-flags = { workspace = true }
 kelson-session = { workspace = true }
 kelson-realtime = { workspace = true }

@@ -802,6 +802,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         storage,
         disks,
         notifications: notification_store,
+        mail: crate::mail::port_from(cfg.mail()).map_err(|error| error.public_message)?,
         channels: broadcast_routes::resolve_channels(&graph),
         presence: Arc::new(kelson_realtime::PresenceHub::new()),
         queue: queue_stats,
@@ -865,8 +866,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .registry()
             .get::<kelson_models::PruneRegistryRef>()
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?
-            .0
-            .clone();
+            .0.clone();
         let store = host
             .registry()
             .get::<kelson_models::ModelStoreRef>()
@@ -1726,8 +1726,8 @@ pub fn build_app_state(
         jwt: None,
         body_limit: 1024 * 1024,
         storage,
-        disks: Arc::new(disks),
-        notifications: notification_store,
+        disks: Arc::new(disks), notifications: notification_store,
+        mail: None,
         channels: broadcast_routes::resolve_channels(&graph),
         presence: Arc::new(kelson_realtime::PresenceHub::new()),
         // No pool in the builder: no durable store — the /metrics queue
@@ -2538,3 +2538,7 @@ mod config_poll_tests {
         );
     }
 }
+
+// Row 19 (auth mail): the `[mail]` failover chain behind the notifications
+// `MailPort`, wired into `AppState::mail` at boot (harness leaves it `None`).
+mod mail;

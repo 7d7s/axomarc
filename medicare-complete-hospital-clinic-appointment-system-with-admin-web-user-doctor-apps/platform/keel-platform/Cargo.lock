@@ -1581,6 +1581,7 @@ dependencies = [
  "kelson-identity",
  "kelson-jobs",
  "kelson-lifecycle",
+ "kelson-mail-smtp",
  "kelson-metrics",
  "kelson-mod-appointments",
  "kelson-mod-oauth2",

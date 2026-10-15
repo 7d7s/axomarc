@@ -219,6 +219,10 @@ pub struct AppState {
     /// attaches nothing and stays token-authenticated (19-PARITY "CSRF
     /// on-by-default for the web plane").
     pub csrf: kelson_http::CsrfGuard,
+    /// The `[mail]` failover chain behind the notifications `MailPort`
+    /// (built at boot by `crate::mail`); `None` = no transport — the
+    /// auth token flows skip delivery and dev/test keep `dev_token`.
+    pub mail: Option<Arc<dyn kelson_notifications::MailPort>>,
 }
 
 impl AppState {
@@ -226,8 +230,7 @@ impl AppState {
     /// `crate::edge::edge_mw`, applied last in `run()` so it wraps every
     /// route including the merged module/auth surfaces.
     pub fn edge_config(&self) -> crate::edge::EdgeConfig {
-        crate::edge::EdgeConfig::new(Arc::clone(&self.terminating))
-            .with_cipher(self.cookie_cipher.clone())
+        crate::edge::EdgeConfig::new(Arc::clone(&self.terminating)).with_cipher(self.cookie_cipher.clone())
     }
 
     /// Wave 2 error rendering (the choke point every JSON edge goes through):
@@ -253,10 +256,7 @@ impl AppState {
         }
         let envelope = if plan.renderable {
             let mut envelope = Envelope::<serde_json::Value>::error(err);
-            let mut error = envelope
-                .error
-                .take()
-                .unwrap_or_else(|| kelson_http::ErrorBody::from_app_error(err));
+            let mut error = envelope.error.take().unwrap_or_else(|| kelson_http::ErrorBody::from_app_error(err));
             if let Some(detail) = self.error_renders.detail(err) {
                 error = error.with_detail(detail);
             }
