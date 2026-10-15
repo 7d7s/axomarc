@@ -1433,13 +1433,14 @@ type HarnessAppStore = Arc<kelson_mod_appointments::AppointmentStore>;
 #[cfg(not(feature = "demo"))]
 type HarnessAppStore = Arc<kelson_models::InMemoryModelStore>;
 
-/// In-memory application state for the integration suite (S7 test plan) and
-/// dev harnesses. Mirrors production wiring minus PostgreSQL and the
-/// lifecycle host: same bus assembly, same stores, same auth model.
-pub fn build_app_state(
+/// Harness application state for the integration suite (S7 test plan) and
+/// dev harnesses. Mirrors production wiring minus the lifecycle host: same
+/// bus, stores and auth model; appointments default to the in-memory store.
+fn build_app_state_inner(
     storage_root: &std::path::Path,
     sessions_enabled: bool,
     registration_open: bool,
+    _appt_backend: std::sync::Arc<dyn kelson_models::ModelStore>,
 ) -> (
     routes::AppState,
     kelson_registry::PlatformGraph,
@@ -1461,11 +1462,10 @@ pub fn build_app_state(
     ));
 
     #[cfg(feature = "demo")]
-    let appt_backend = Arc::new(kelson_models::InMemoryModelStore::new());
+    let appt_backend = _appt_backend;
     #[cfg(feature = "demo")]
-    let appt_store = Arc::new(kelson_mod_appointments::AppointmentStore::new(
-        appt_backend.clone(),
-    ));
+    let appt_store =
+        Arc::new(kelson_mod_appointments::AppointmentStore::new(appt_backend.clone()));
     // No `demo`: a live (empty) store handle so the third tuple element of
     // the signature below stays real; every demo-only registration is cfg'd
     // out, so nothing ever reads a model out of it.
@@ -2542,3 +2542,42 @@ mod config_poll_tests {
 // Row 19 (auth mail): the `[mail]` failover chain behind the notifications
 // `MailPort`, wired into `AppState::mail` at boot (harness leaves it `None`).
 mod mail;
+
+/// Harness boot with the appointments handlers bound to the caller's model
+/// store (Row 19): the HTTP-over-PostgreSQL e2e seam — production's
+/// `PersistenceProvider` binds the same handlers to `PgModelStore` when the
+/// driver pool is up. Every other suite keeps the in-memory backend through
+/// `build_app_state` below.
+#[cfg(feature = "demo")]
+pub fn build_app_state_with_backend(
+    storage_root: &std::path::Path,
+    sessions_enabled: bool,
+    registration_open: bool,
+    appt_backend: std::sync::Arc<dyn kelson_models::ModelStore>,
+) -> (
+    routes::AppState,
+    kelson_registry::PlatformGraph,
+    HarnessAppStore,
+) {
+    build_app_state_inner(storage_root, sessions_enabled, registration_open, appt_backend)
+}
+
+/// The harness boot every suite builds on: appointments over a fresh
+/// in-memory model store (S7 test plan).
+pub fn build_app_state(
+    storage_root: &std::path::Path,
+    sessions_enabled: bool,
+    registration_open: bool,
+) -> (
+    routes::AppState,
+    kelson_registry::PlatformGraph,
+    HarnessAppStore,
+) {
+    build_app_state_inner(
+        storage_root,
+        sessions_enabled,
+        registration_open,
+        // The harness default is the in-memory store every suite pins.
+        std::sync::Arc::new(kelson_models::InMemoryModelStore::new()),
+    )
+}
