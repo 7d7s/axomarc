@@ -673,6 +673,21 @@ type HandlerMap = HashMap<OperationId, Arc<dyn OperationHandler>>;
 pub struct DispatchBus {
     boot: Arc<CommandBus>,
     active: std::sync::RwLock<Arc<HandlerMap>>,
+    /// Operations a published generation has taken *away*.
+    ///
+    /// `CommandBus` has no removal, so the boot bus keeps every handler it was
+    /// handed for the life of the process. Shadowing covers a capability the
+    /// new generation still declares, but a module that drops a capability
+    /// would otherwise keep serving the retired one through the fallthrough —
+    /// so a publication records what it superseded, and lookup stops there.
+    /// The `Arc`s stay owned by the boot bus; only their reachability goes.
+    retired: std::sync::RwLock<std::collections::HashSet<OperationId>>,
+    /// Serializes the activate sequence: stage (read-only), reserve the
+    /// generation, publish, record. Without it two operators racing the same
+    /// module could both pass their compare-and-swap at different values and
+    /// then write their handlers in either order, leaving the winning
+    /// generation number describing the losing plugin.
+    activation: std::sync::Mutex<()>,
 }
 
 impl DispatchBus {
@@ -681,6 +696,8 @@ impl DispatchBus {
         Self {
             boot,
             active: std::sync::RwLock::new(Arc::new(HashMap::new())),
+            retired: std::sync::RwLock::new(std::collections::HashSet::new()),
+            activation: std::sync::Mutex::new(()),
         }
     }
 
@@ -713,6 +730,15 @@ impl DispatchBus {
             return Some(Arc::clone(handler));
         }
         drop(active);
+        if self
+            .retired
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(operation)
+        {
+            // A generation published this operation away: no boot fallthrough.
+            return None;
+        }
         self.boot.handler(operation)
     }
 
@@ -722,11 +748,18 @@ impl DispatchBus {
     /// cell is not a degenerate "no operations", it is "nothing swapped".
     pub fn operations(&self) -> Vec<OperationId> {
         let active = self.active.read().unwrap_or_else(|e| e.into_inner());
-        if active.is_empty() {
+        let retired = self.retired.read().unwrap_or_else(|e| e.into_inner());
+        if active.is_empty() && retired.is_empty() {
             drop(active);
+            drop(retired);
             return self.boot.operations();
         }
-        let mut ops: Vec<OperationId> = self.boot.operations();
+        let mut ops: Vec<OperationId> = self
+            .boot
+            .operations()
+            .into_iter()
+            .filter(|op| !retired.contains(op))
+            .collect();
         ops.extend(
             active
                 .keys()
@@ -747,6 +780,42 @@ impl DispatchBus {
     /// re-points what it owns without going dark on anything else.
     pub fn publish(&self, map: HandlerMap) {
         let mut cell = self.active.write().unwrap_or_else(|e| e.into_inner());
+        *cell = Arc::new(map);
+    }
+
+    /// The guard an activation holds across stage → reserve → publish → record.
+    ///
+    /// Everything between taking it and dropping it happens while no other
+    /// activation can interleave, which is what makes the generation
+    /// compare-and-swap on the status surface describe *this* publication
+    /// rather than the one that happened to land between the two calls.
+    pub fn activation_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.activation.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Publish `handlers` as `module`'s serving generation in one write.
+    ///
+    /// The module's own operations — every one this cell holds for it — are
+    /// replaced wholesale, so a generation that drops a capability stops
+    /// serving it rather than leaving a hole the boot bus would fill. Ops the
+    /// boot bus owns for the module are recorded as retired for the same
+    /// reason: they are unreachable afterwards, not still-wired. Everything
+    /// outside `module`'s namespace is untouched, and readers see the whole
+    /// aggregate before the write or the whole aggregate after it.
+    pub fn publish_module(&self, module: &str, handlers: Vec<Arc<dyn OperationHandler>>) {
+        let prefix = format!("{module}.");
+        let mut cell = self.active.write().unwrap_or_else(|e| e.into_inner());
+        let mut retired = self.retired.write().unwrap_or_else(|e| e.into_inner());
+        for op in self.boot.operations() {
+            if op.as_str().starts_with(&prefix) {
+                retired.insert(op);
+            }
+        }
+        let mut map = (**cell).clone();
+        map.retain(|operation, _| !operation.as_str().starts_with(&prefix));
+        for handler in handlers {
+            map.insert(handler.plan().operation.clone(), handler);
+        }
         *cell = Arc::new(map);
     }
 

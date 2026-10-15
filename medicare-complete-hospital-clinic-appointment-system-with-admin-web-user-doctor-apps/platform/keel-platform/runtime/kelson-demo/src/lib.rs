@@ -1730,7 +1730,7 @@ fn build_app_state_inner(
         mail: None,
         uploads: Default::default(),
         // Row 20: no config file or disk manifests in the harness: empty digest components.
-        runtime: Arc::new(crate::runtime_status::RuntimeStatus::at_boot("", "")),
+        runtime: Arc::new(crate::runtime_status::RuntimeStatus::at_boot("", "", "")),
         channels: broadcast_routes::resolve_channels(&graph),
         presence: Arc::new(kelson_realtime::PresenceHub::new()),
         // No pool in the builder: no durable store — the /metrics queue
