@@ -6068,3 +6068,139 @@ async fn route_file_route_dispatches_to_the_declared_module_handler() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ----------------------------------------------------------- fallback routes
+
+/// Row 19: `fallback = true` is wired at the edge — the catch-all attaches as
+/// the router's fallback service (registered routes win; the fallback sees
+/// only unmatched paths), runs the normal auth chain (anonymous is a 401
+/// envelope, not a free pass), and dispatches its declared operation. Without
+/// a fallback the same path is the baseline 404 (pinned by
+/// `unknown_route_is_404_and_demo_echo_still_golden`).
+#[tokio::test]
+async fn fallback_route_attaches_and_dispatches_on_unmatched_paths() {
+    let dir = std::env::temp_dir().join(format!("kelson-demo-fb-{}", uuid::Uuid::now_v7()));
+    let raw = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../applications/appointments/module.toml"
+    ))
+    .expect("appointments manifest");
+    assert!(raw.contains("[[routes]]"), "appointments declares routes");
+    // Prepend a fallback route: any path no route matches dispatches
+    // `appointments.list`.
+    let mutated = raw.replacen(
+        "[[routes]]",
+        "[[routes]]\nmethod = \"GET\"\npath = \"/\"\noperation = \"list\"\nfallback = true\n\n[[routes]]",
+        1,
+    );
+    let manifest =
+        kelson_registry::ModuleManifest::from_toml(&mutated).expect("mutated manifest parses");
+    let graph =
+        kelson_registry::PlatformGraph::compile(vec![manifest]).expect("graph compiles");
+
+    let (state, _, store) = kelson_demo::build_app_state(&dir, true, true);
+    let router = kelson_demo::routes::router(state.clone())
+        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph))
+        .merge(kelson_demo::auth_routes::router(state.clone()))
+        .merge(kelson_demo::upload_routes::router(state.clone()))
+        .merge(kelson_demo::notification_routes::router(state.clone()))
+        .merge(kelson_demo::batch_routes::router(state.clone()));
+    let router = state
+        .sessions
+        .as_ref()
+        .expect("sessions enabled")
+        .as_ref()
+        .clone()
+        .apply(router);
+    let app = App {
+        router,
+        state,
+        store,
+    };
+
+    // Anonymous: the fallback runs the normal auth chain.
+    let anon = send(
+        &app,
+        json_req(Method::GET, "/definitely/not/a/route", Value::Null, None, None),
+    )
+    .await;
+    assert_eq!(anon.status, StatusCode::UNAUTHORIZED, "{}", anon.body);
+
+    // Authenticated: the unmatched path dispatches the fallback's operation.
+    let email = format!("fallback-{}@clinic.test", uuid::Uuid::now_v7());
+    let cookie = register(&app, &email).await.session_cookie().unwrap();
+    let hit = send(
+        &app,
+        json_req(
+            Method::GET,
+            "/definitely/not/a/route",
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(hit.status, StatusCode::OK, "{}", hit.body);
+    assert!(
+        hit.body["data"]["appointments"].is_array(),
+        "the fallback dispatched appointments.list: {}",
+        hit.body
+    );
+
+    // A registered route still wins over the fallback: the same graph's real
+    // list route answers normally.
+    let registered = send(
+        &app,
+        json_req(
+            Method::GET,
+            "/api/v1/appointments",
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(registered.status, StatusCode::OK, "{}", registered.body);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Row 19: one fallback per plane is compile-legal (`GRAPH-FALLBACK-DUP`
+/// buckets by plane), but the merged edge router serves no plane partition —
+/// a second fallback is refused at the edge (panics) rather than silently
+/// answering some other plane's misses.
+#[test]
+fn two_plane_fallbacks_refuse_at_the_edge() {
+    let dir = std::env::temp_dir().join(format!("kelson-demo-fb2-{}", uuid::Uuid::now_v7()));
+    let raw = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../applications/appointments/module.toml"
+    ))
+    .expect("appointments manifest");
+    let api_fallback = raw.replacen(
+        "[[routes]]",
+        "[[routes]]\nmethod = \"GET\"\npath = \"/\"\noperation = \"list\"\nfallback = true\n\n[[routes]]",
+        1,
+    );
+    let appointments =
+        kelson_registry::ModuleManifest::from_toml(&api_fallback).expect("parses");
+    let alpha = kelson_registry::ModuleManifest::from_toml(
+        "[module]\nname = \"alpha\"\nversion = \"0.1.0\"\napi = 1\n\n\
+         [capabilities]\n\"index\" = { profile = \"READ\" }\n\n\
+         [[routes]]\nmethod = \"GET\"\npath = \"/web-catch-all\"\noperation = \"index\"\nplane = \"web\"\nfallback = true\n",
+    )
+    .expect("alpha parses");
+    let graph = kelson_registry::PlatformGraph::compile(vec![appointments, alpha])
+        .expect("compiles: one fallback per plane is legal");
+
+    let (state, _, _) = kelson_demo::build_app_state(&dir, true, true);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        kelson_demo::graph_routes::graph_router(state, &graph)
+    }));
+    assert!(
+        result.is_err(),
+        "the merged edge refuses a second plane-scoped fallback"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

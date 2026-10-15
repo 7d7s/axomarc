@@ -365,6 +365,7 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
     let mut allow: BTreeMap<String, BTreeSet<&'static str>> = BTreeMap::new();
     let mut explicit_options: BTreeSet<String> = BTreeSet::new();
     let mut probe_paths: BTreeSet<String> = BTreeSet::new();
+    let mut fallback_route: Option<MethodRouter> = None;
     for module in &graph.modules {
         for spec in &module.routes {
             let Some(methods) = declared_methods(&spec.method) else {
@@ -506,8 +507,7 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
             // api-plane request stays token-authenticated and never sees
             // the layer — and always on (no flag or env); the deployment's
             // `[security.csrf]` skip paths ride the guard itself.
-            let csrf = (dispatch.route_plane == RoutePlane::Web)
-                .then(|| state.csrf.clone());
+            let csrf = (dispatch.route_plane == RoutePlane::Web).then(|| state.csrf.clone());
             let mut route: MethodRouter = axum::routing::on(filter, graph_dispatch)
                 .with_state((state.clone(), dispatch.clone()))
                 .layer(axum::middleware::from_fn_with_state(
@@ -551,7 +551,7 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
                     kelson_http::security_headers_fn,
                 ));
             }
-            router = router.route(&path, route);
+            if spec.fallback { if fallback_route.is_some() { panic!("module {}: route {} {} is a second fallback route; the merged edge router attaches at most one", module.name(), spec.method, spec.path); } fallback_route = Some(route); } else { router = router.route(&path, route); }
             tracing::info!(method = %spec.method, path = %spec.path, operation = %operation_id, "graph route registered");
         }
     }
@@ -585,7 +585,7 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
         kelson_foundation::codes::MODULE_NOT_SERVING,
         StatusCode::SERVICE_UNAVAILABLE,
     );
-    router
+    if let Some(fb) = fallback_route { router.fallback_service(fb) } else { router }
 }
 
 // ------------------------------------------- Wave 2 routing edge (19-PARITY)
