@@ -15,7 +15,7 @@ use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{Json, Router};
-use kelson_foundation::AppError;
+use kelson_foundation::{AppError, PrincipalId, TenantId};
 use kelson_http::{Envelope, ResolvedSession};
 use serde::{Deserialize, Serialize};
 
@@ -34,13 +34,13 @@ pub fn router(state: AppState) -> Router {
 }
 
 /// Session + operator capability gate (module lifecycle control is never public — same shape as the telemetry incident gate).
-fn authorize(state: &AppState, session: &ResolvedSession) -> Result<(), AppError> {
-    let Some(tenant) = session.session.tenant else {
+fn authorize(state: &AppState, principal: PrincipalId, tenant: Option<TenantId>) -> Result<(), AppError> {
+    let Some(tenant) = tenant else {
         return Err(AppError::denied(
             "module control requires a tenant session",
         ));
     };
-    let Some(snapshot) = state.policy.snapshot(session.session.principal, tenant) else {
+    let Some(snapshot) = state.policy.snapshot(principal, tenant) else {
         return Err(AppError::denied("no active access snapshot"));
     };
     if !snapshot.capabilities.contains(MODULE_MANAGE_CAPABILITY) {
@@ -75,7 +75,7 @@ async fn manage(
     let Some(session) = session else {
         return state.error_response(&AppError::unauthenticated(), &headers, None);
     };
-    if let Err(err) = authorize(&state, &session) {
+    if let Err(err) = authorize(&state, session.session.principal, session.session.tenant) {
         return state.error_response(&err, &headers, None);
     }
 
@@ -156,10 +156,18 @@ async fn activate(
     session: Option<axum::extract::Extension<ResolvedSession>>,
     Json(request): Json<ActivateRequest>,
 ) -> axum::response::Response {
-    let Some(session) = session else {
-        return state.error_response(&AppError::unauthenticated(), &headers, None);
+    // Session cookie first, then bearer PAT — the same resolution every other
+    // non-graph edge uses, so an operator script holding a token reaches the
+    // module surface the way the console does.
+    let (principal, tenant) = match crate::graph_routes::resolve_identity(
+        &state,
+        &headers,
+        session.as_deref(),
+    ) {
+        Ok(resolved) => resolved,
+        Err(err) => return state.error_response(&err, &headers, None),
     };
-    if let Err(err) = authorize(&state, &session) {
+    if let Err(err) = authorize(&state, principal, tenant) {
         return state.error_response(&err, &headers, None);
     }
     match publish_activation(&state, &request) {
