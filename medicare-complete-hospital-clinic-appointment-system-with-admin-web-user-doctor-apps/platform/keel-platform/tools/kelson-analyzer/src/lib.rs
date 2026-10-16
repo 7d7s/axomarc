@@ -46,6 +46,18 @@ pub enum Class {
     /// Data, not code: the crate has no dependencies at all, so its allow-list
     /// is empty. If that ever changes, this gate is where it should be noticed.
     Templates,
+    /// `crates/module`: the WASM application-module seam (ADR 0020). Two
+    /// crates live here — `kelson-module-contract`, the shapes both sides of
+    /// the import world agree on, and `kelson-module-sdk`, the guest half a
+    /// module is built against. Added by the module-activation program —
+    /// STAGE-0-SPEC §2 predates the class and stays FROZEN, in line with the
+    /// Framework, Extension and Templates precedent.
+    ///
+    /// It is deliberately its own class rather than folded into `Data` or
+    /// `Security`: it carries the *shapes* of the data and security store
+    /// traits, not the stores. An extension may reach it and an application
+    /// module may reach it; neither may reach a store service.
+    Module,
 }
 
 impl Class {
@@ -72,6 +84,7 @@ impl Class {
             Class::Framework => "framework",
             Class::Extension => "extension",
             Class::Templates => "templates",
+            Class::Module => "module",
         }
     }
 
@@ -96,6 +109,7 @@ impl Class {
                 "ai" => Some(Class::Ai),
                 "framework" => Some(Class::Framework),
                 "extension" => Some(Class::Extension),
+                "module" => Some(Class::Module),
                 _ => None,
             },
             "testing" => Some(Class::Testing),
@@ -117,7 +131,17 @@ impl Class {
             Foundation => &[Foundation],
             Security => &[Foundation, Security],
             Execution => &[Foundation, Security, Execution],
-            Application => &[Foundation, Security, Execution, Application],
+            Application => &[
+                Foundation,
+                Security,
+                Execution,
+                Application,
+                // ADR 0020: an application module is by definition built on
+                // the module SDK — that is what makes it a module rather than
+                // a crate linked into the kernel. The direction stays
+                // one-way: the seam never depends on application modules.
+                Module,
+            ],
             // D-77 (recorded as D-73 before Sentinel renumbering): web may use framework services (upload edge -> object storage).
             Web => &[Foundation, Security, Execution, Application, Services, Web],
             Services => &[Foundation, Security, Execution, Application, Services],
@@ -187,6 +211,12 @@ impl Class {
                 Adapters,
                 Applications,
                 Extension,
+                // ADR 0020: the composition root is what hands the stores to
+                // the seam, so it reaches the seam. It is the one place the
+                // two halves meet, and it is a binary rather than a library —
+                // the wall between an extension and the data layer still runs
+                // through everything below it.
+                Module,
                 Runtime,
             ],
             // STAGE-0-SPEC §3: tools -> anything except runtime binaries.
@@ -265,12 +295,29 @@ impl Class {
             // through the OperationHandler trait (Execution), and reports
             // through Foundation errors. It must NOT reach Web/Security/Data
             // services: the sandbox has no host-side I/O surface by design.
-            Extension => &[Foundation, Execution, Application, Extension],
+            //
+            // ADR 0020 adds exactly one reachable class to that: the module
+            // seam. What a guest reaches through `host.model_*` and
+            // `host.token_*` is a shape and a dispatcher, not a service — the
+            // store traits arrive re-exported from the seam crate and the
+            // store *values* arrive from the runtime, at boot, in a type it
+            // owns. Extension still may not name `kelson-models` or
+            // `kelson-tokens` directly, and this list is where an attempt to
+            // change that would be noticed.
+            Extension => &[Foundation, Execution, Application, Extension, Module],
             // Data, not code: the crate embeds template files and depends on
             // nothing at all. An empty allow-list is deliberate - a crate that
             // only ships files has no business importing the platform, and any
             // dependency added to it should show up here as a violation.
             Templates => &[],
+            // ADR 0020: the seam's contract names the `ModelStore` and
+            // `TokenStore` traits because the dispatcher is the single match
+            // over their methods, so `Data` and `Security` are unavoidable
+            // and nothing else is. The SDK reaches the same two plus
+            // `Execution` for the `OperationHandler` it hosts a module's
+            // handlers behind. Web, Services, Adapters, Runtime: none of it
+            // belongs on a boundary whose whole job is to be narrow.
+            Module => &[Foundation, Security, Execution, Data, Module],
         }
     }
 }

@@ -35,12 +35,29 @@
 //! host crash.
 
 use kelson_foundation::{AppError, PrincipalId, TenantId};
-use kelson_models::{AggregateOp, FieldFilter, ListOpts, ModelDef, ModelStore, Record};
-use kelson_tokens::{AuthToken, TokenPurpose, TokenStore};
+use kelson_models::{AggregateOp, FieldFilter, ListOpts, ModelDef, Record};
+use kelson_tokens::{AuthToken, TokenPurpose};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use uuid::Uuid;
+
+// ---------------------------------------------------------------------------
+// The two traits the dispatcher speaks
+// ---------------------------------------------------------------------------
+//
+// Re-exported, not redefined. `ModelStore` and `TokenStore` are owned by the
+// data and security classes, and STAGE-0-SPEC §3 says the plugin runtime may
+// depend on neither. This re-export is what lets `kelson-wasm` name the type
+// of the service it marshals across the import boundary without reaching past
+// the seam to find it.
+//
+// It is the same trait either way — one definition, one vtable, not a second
+// one that could drift. What it does *not* do is move ownership: the
+// implementations live where they lived, the runtime hands the values in at
+// boot, and no path opens from the extension class to a store service.
+pub use kelson_models::ModelStore;
+pub use kelson_tokens::TokenStore;
 
 // ---------------------------------------------------------------------------
 // The reply envelope

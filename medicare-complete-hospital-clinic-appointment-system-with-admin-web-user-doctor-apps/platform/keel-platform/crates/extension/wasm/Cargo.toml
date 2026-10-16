@@ -17,10 +17,12 @@ keywords.workspace = true
 kelson-foundation = { workspace = true }
 kelson-context = { workspace = true }
 kelson-execution = { workspace = true }
-kelson-models = { workspace = true }
+# ADR 0020 + STAGE-0-SPEC §3: the two store traits reach this crate through
+# the seam's re-export, never directly. `Extension` may not depend on the
+# `Data` or `Security` classes, and this list is where an attempt to change
+# that would show up as DEP-CLASS.
 kelson-module-contract = { workspace = true }
 kelson-registry = { workspace = true }
-kelson-tokens = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }

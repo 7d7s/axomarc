@@ -105,15 +105,15 @@ pub const DEFAULT_MEMORY_BYTES: usize = 16 * 1024 * 1024;
 /// silently gets no rows is worse than one that is told the store is missing.
 #[derive(Clone, Default)]
 pub struct ModuleHostServices {
-    pub model: Option<Arc<dyn kelson_models::ModelStore>>,
-    pub tokens: Option<Arc<dyn kelson_tokens::TokenStore>>,
+    pub model: Option<Arc<dyn kelson_module_contract::ModelStore>>,
+    pub tokens: Option<Arc<dyn kelson_module_contract::TokenStore>>,
 }
 
 impl ModuleHostServices {
     /// Services wired to both stores.
     pub fn new(
-        model: Arc<dyn kelson_models::ModelStore>,
-        tokens: Arc<dyn kelson_tokens::TokenStore>,
+        model: Arc<dyn kelson_module_contract::ModelStore>,
+        tokens: Arc<dyn kelson_module_contract::TokenStore>,
     ) -> Self {
         Self {
             model: Some(model),
@@ -122,12 +122,12 @@ impl ModuleHostServices {
     }
 
     /// The store a `host.model_*` import should reach, if one is wired.
-    pub fn model_store(&self) -> Option<&dyn kelson_models::ModelStore> {
+    pub fn model_store(&self) -> Option<&dyn kelson_module_contract::ModelStore> {
         self.model.as_deref()
     }
 
     /// The store a `host.token_*` import should reach, if one is wired.
-    pub fn token_store(&self) -> Option<&dyn kelson_tokens::TokenStore> {
+    pub fn token_store(&self) -> Option<&dyn kelson_module_contract::TokenStore> {
         self.tokens.as_deref()
     }
 }
