@@ -1,0 +1,29 @@
+[package]
+name = "kelson-module-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+publish = false
+description = "Guest-side SDK for WASM application modules: host-backed implementations of the contract traits plus the module entry scaffolding."
+
+[dependencies]
+kelson-foundation = { workspace = true }
+kelson-context = { workspace = true }
+kelson-execution = { workspace = true }
+kelson-query = { workspace = true }
+kelson-models = { workspace = true }
+kelson-tokens = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+
+[lib]
+# Every test that exercises this crate runs inside a WASM guest, so the crate
+# opts out of its own test target and doctests. The suite count stays 150.
+test = false
+doctest = false

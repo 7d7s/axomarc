@@ -51,6 +51,7 @@ members = [
   "crates/enterprise/feature-flags",
   "crates/enterprise/deployment",
   "crates/extension/wasm",
+  "crates/module/sdk",
   "adapters/kelson-cache-memory",
   "adapters/kelson-cache-redis",
   "adapters/kelson-session-redis",
