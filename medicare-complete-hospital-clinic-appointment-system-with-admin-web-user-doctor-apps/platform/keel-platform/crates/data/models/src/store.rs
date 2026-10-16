@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use kelson_foundation::{AppError, TenantId};
 use kelson_query::PageReq;
+use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use uuid::Uuid;
 
@@ -24,7 +25,7 @@ use crate::{FieldType, ModelDef};
 pub type Record = serde_json::Map<String, Json>;
 
 /// Comparison operators for semantic filters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FilterOp {
     Eq,
     Ne,
@@ -48,7 +49,7 @@ pub enum FilterOp {
 /// groups split at OR-tagged [`FieldFilter::Exists`] terms and the groups OR
 /// together (the first term's junction is implicit, mirroring
 /// [`kelson_query::Select`]'s clause rendering).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FieldFilter {
     /// Column comparison against a declared field.
     Cmp {
@@ -67,7 +68,7 @@ pub enum FieldFilter {
 /// sub_table.sub_key = outer_table.outer_key [AND sub_filters...])`.
 /// Nested existence (`Exists` inside `filters`) is refused by both stores —
 /// keep the sub conditions field-level.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExistsFilter {
     /// `NOT EXISTS` instead of `EXISTS` (`doesnt_have` semantics).
     pub negated: bool,
@@ -148,7 +149,7 @@ impl FieldFilter {
 /// Aggregate request for [`ModelStore::aggregate`]. COUNT(*) needs no field;
 /// SUM/AVG require a numeric field and MIN/MAX any orderable field — both
 /// validated against the model by the store at call time.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AggregateOp {
     /// COUNT(*)
     Count,
@@ -193,7 +194,7 @@ impl AggregateOp {
 
 /// List options: pagination (`None` = unbounded, for eager loads), the
 /// soft-delete trash toggle, and (for eager fetches) a sort + row cap.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ListOpts {
     pub page: Option<PageReq>,
     pub include_deleted: bool,
