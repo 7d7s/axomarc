@@ -110,9 +110,23 @@ fn answer<T: Serialize>(result: Result<T, AppError>) -> String {
     }
 }
 
-/// Decode one method's arguments.
-fn arguments<T: DeserializeOwned>(args: &str) -> Result<T, AppError> {
-    serde_json::from_str::<T>(args)
+/// Decode one method's arguments — the single point every method decodes at.
+///
+/// The object check is the whole reason this is one function. Serde accepts a
+/// derived struct from a JSON *array* as well as from an object, in field
+/// declaration order, so a guest that hand-rolled its marshalling could send a
+/// positional array and have it decode with the fields in the wrong place. The
+/// contract exists so that there is no position to get wrong; this is where
+/// that is made true rather than assumed.
+pub fn arguments<T: DeserializeOwned>(args: &str) -> Result<T, AppError> {
+    let value: Json = serde_json::from_str(args)
+        .map_err(|e| AppError::internal(format!("seam arguments are not readable: {e}")))?;
+    if !value.is_object() {
+        return Err(AppError::internal(
+            "seam arguments must be a named object, not a positional array",
+        ));
+    }
+    serde_json::from_value(value)
         .map_err(|e| AppError::internal(format!("seam arguments are not readable: {e}")))
 }
 

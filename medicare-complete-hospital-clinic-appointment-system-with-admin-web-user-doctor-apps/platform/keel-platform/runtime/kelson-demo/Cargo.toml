@@ -79,6 +79,11 @@ all-features = true
 [dev-dependencies]
 kelson-policy = { workspace = true }
 kelson-foundation = { workspace = true }
+# ADR 0020: the seam contract sets `test = false` - an argument shape is only
+# meaningful against a live dispatch, and `wasm_tests` is where the seam is
+# exercised end to end anyway. Its assertions ride that suite, so the count
+# stays 150 (oauth2 precedent).
+kelson-module-contract = { workspace = true }
 # ADR 0019: the component fixture cases drive `wasmtime::component` directly
 # over the existing `wasm_tests` suite. `wasmtime` is already an external in
 # `[workspace.dependencies]` (DEPENDENCY-POLICY row 46), so this adds no new

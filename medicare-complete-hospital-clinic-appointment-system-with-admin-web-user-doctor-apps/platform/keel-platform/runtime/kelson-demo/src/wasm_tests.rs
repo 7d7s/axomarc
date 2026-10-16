@@ -1916,3 +1916,116 @@ async fn compiled_marker_module_loads_and_answers_with_its_build_marker() {
         out.result
     );
 }
+
+// ---------------------------------------------------------------------------
+// The seam contract (ADR 0020)
+// ---------------------------------------------------------------------------
+//
+// `kelson-module-contract` sets `test = false`. An argument shape is only
+// meaningful against a live dispatch, and this suite is where the seam is
+// exercised end to end anyway, so its assertions ride here - the suite count
+// stays 150 (the oauth2 precedent).
+
+#[test]
+fn seam_reply_envelope_separates_stored_from_refused() {
+    // The empty string is what a gate refusal answers with, so a
+    // `()`-returning method answering with one would make "stored" and
+    // "refused" the same bytes on the wire. `{"ok":null}` is the answer that
+    // keeps them apart.
+    let stored = kelson_module_contract::SeamResult::Ok(serde_json::Value::Null).encode();
+    assert_eq!(stored, r#"{"ok":null}"#);
+    assert!(!stored.is_empty(), "a success is never the refusal bytes");
+
+    let answered = kelson_module_contract::SeamResult::Ok(serde_json::json!({ "id": 7 })).encode();
+    assert_eq!(answered, r#"{"ok":{"id":7}}"#);
+}
+
+#[test]
+fn seam_reply_carries_a_store_failure_intact() {
+    let wire = kelson_module_contract::SeamResult::Err(kelson_foundation::AppError::not_found(
+        "model",
+    ))
+    .encode();
+    assert!(
+        wire.starts_with(r#"{"err":"#),
+        "a failure rides the error arm, not a generic body: {wire}"
+    );
+
+    let back = kelson_module_contract::SeamResult::decode(&wire).expect("decodes");
+    assert_eq!(
+        back.encode(),
+        wire,
+        "a store failure loses nothing crossing the seam: the module answers \
+         with the status it would have produced locally"
+    );
+}
+
+#[test]
+fn seam_dispatch_without_a_store_is_an_error_not_a_silence() {
+    // A host that was not wired for the seam is a boot misconfiguration, not
+    // a policy verdict. Answering with the refusal bytes would tell the
+    // module its request was denied, which is a different fact entirely.
+    let wire = kelson_module_contract::model_read(None, "list", "{}");
+    assert!(
+        !wire.is_empty(),
+        "an unwired host must never answer with the refusal bytes"
+    );
+    assert!(wire.starts_with(r#"{"err":"#), "{wire}");
+}
+
+#[test]
+fn seam_arguments_are_a_named_object_not_a_position() {
+    let id = uuid::Uuid::new_v4();
+    let at = time::OffsetDateTime::from_unix_timestamp(1_700_000_000).expect("valid instant");
+    let wire = serde_json::to_value(kelson_module_contract::MarkConsumedArgs { id, at })
+        .expect("encodes");
+
+    let object = wire
+        .as_object()
+        .expect("an argument struct is an object, never an array");
+    assert_eq!(
+        object.len(),
+        2,
+        "every argument is named, so the guest and the host cannot drift on order"
+    );
+    assert!(
+        object.contains_key("id"),
+        "the named form carries an id field: {object:?}"
+    );
+    assert!(
+        object.contains_key("at"),
+        "the named form carries an at field: {object:?}"
+    );
+
+    let back: kelson_module_contract::MarkConsumedArgs =
+        serde_json::from_value(wire).expect("decodes back");
+    assert_eq!(back.id, id);
+    assert_eq!(back.at, at);
+}
+
+#[test]
+fn seam_arguments_of_a_positional_array_do_not_decode() {
+    // What a hand-rolled ABI would have sent. Serde would decode a derived
+    // struct from this in field declaration order, which is exactly the drift
+    // the contract exists to make impossible - so the seam refuses it at the
+    // one place arguments are decoded, and the guest is told so rather than
+    // answered as though it had asked for something.
+    let id = uuid::Uuid::new_v4();
+    let at = time::OffsetDateTime::from_unix_timestamp(1_700_000_000).expect("valid instant");
+    let positional = serde_json::json!([id.to_string(), "2026-01-02T03:04:05Z"]).to_string();
+
+    let refused =
+        kelson_module_contract::arguments::<kelson_module_contract::MarkConsumedArgs>(&positional);
+    assert!(
+        refused.is_err(),
+        "a positional array must not decode, or the fields could land in the wrong place"
+    );
+
+    let named = serde_json::to_string(&kelson_module_contract::MarkConsumedArgs { id, at })
+        .expect("encodes");
+    let accepted =
+        kelson_module_contract::arguments::<kelson_module_contract::MarkConsumedArgs>(&named)
+            .expect("the named form is the form");
+    assert_eq!(accepted.id, id);
+    assert_eq!(accepted.at, at);
+}
