@@ -51,6 +51,7 @@ members = [
   "crates/enterprise/feature-flags",
   "crates/enterprise/deployment",
   "crates/extension/wasm",
+  "crates/module/contract",
   "crates/module/sdk",
   "adapters/kelson-cache-memory",
   "adapters/kelson-cache-redis",
@@ -144,6 +145,11 @@ kelson-feature-flags = { version = "0.1.0", path = "crates/enterprise/feature-fl
 kelson-deployment = { version = "0.1.0", path = "crates/enterprise/deployment" }
 # --- internal (EXTENSION) ---
 kelson-wasm = { path = "crates/extension/wasm" }
+# --- internal (MODULE) ---
+# The WASM application-module layer: the seam's data contract (shared by the
+# host and every guest) and the guest-side SDK (used by modules only).
+kelson-module-contract = { path = "crates/module/contract" }
+kelson-module-sdk = { path = "crates/module/sdk" }
 # --- internal (OBSERVABILITY) ---
 kelson-observability = { version = "0.1.0", path = "crates/observability/logging" }
 kelson-telemetry = { version = "0.1.0", path = "crates/observability/telemetry" }

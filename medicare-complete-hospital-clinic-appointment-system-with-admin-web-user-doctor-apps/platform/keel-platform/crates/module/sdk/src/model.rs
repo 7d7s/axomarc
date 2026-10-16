@@ -6,32 +6,34 @@
 //! are seventeen arguments-and-answers rather than seventeen hand-written
 //! marshalling paths in each module.
 //!
-//! Reads and writes reach *different imports*, and that is the capability
-//! gate rather than an optimisation: the host checks a read the way it checks
-//! `capability_check` and a write the way it checks `capability_write`. A
-//! module cannot reach a write through a read-shaped call, so the gate does
-//! not depend on this file being careful.
+//! The arguments each method builds are the ones from
+//! [`kelson_module_contract`] — the very structs the host decodes — so the
+//! seam has one definition of every shape and no positional convention to
+//! drift. Reads and writes reach *different imports*, which is the
+//! capability gate rather than an optimisation: the host checks a write
+//! against the guest's profile, and no method here can reach one through a
+//! read-shaped call.
 
 use kelson_foundation::{AppError, TenantId};
-use kelson_models::{
-    AggregateOp, FieldFilter, ListOpts, ModelDef, ModelStore, Record,
+use kelson_models::{AggregateOp, FieldFilter, ListOpts, ModelDef, ModelStore, Record};
+use kelson_module_contract::{
+    AggregateArgs, DeleteArgs, DeleteFilteredArgs, ExistsArgs, FindArgs, FindByArgs,
+    FindForUpdateArgs, ForceDeleteArgs, IncrementArgs, InsertArgs, InsertOrIgnoreArgs, ListArgs,
+    RestoreArgs, TruncateArgs, UpdateArgs, UpdateFilteredArgs, UpsertArgs,
 };
 use kelson_query::Page;
 use serde_json::Value as Json;
 use uuid::Uuid;
 
-use crate::{host_call, Port};
+use crate::{call, Port};
 
-/// Encode arguments as the JSON array the host decodes positionally.
-fn encode<T: serde::Serialize>(args: T) -> Result<String, AppError> {
-    serde_json::to_string(&args)
-        .map_err(|e| AppError::internal(format!("module sdk: arguments are not encodable: {e}")))
-}
-
-/// Decode a host answer.
-fn decode<T: serde::de::DeserializeOwned>(body: &str, method: &str) -> Result<T, AppError> {
-    serde_json::from_str(body)
-        .map_err(|e| AppError::internal(format!("module sdk: {method} answer is unreadable: {e}")))
+/// Decode a host answer into the method's result type.
+///
+/// A shape the guest and host disagree about is a bug in whichever of them
+/// changed, and it surfaces here rather than as plausible-looking rows.
+fn decode<T: serde::de::DeserializeOwned>(value: Json) -> Result<T, AppError> {
+    serde_json::from_value(value)
+        .map_err(|e| AppError::internal(format!("module sdk: seam answer is unreadable: {e}")))
 }
 
 /// A `ModelStore` whose rows live wherever the host keeps them.
@@ -55,8 +57,16 @@ impl ModelStore for HostModelStore {
         filters: &[FieldFilter],
         opts: &ListOpts,
     ) -> Result<Page<Record>, AppError> {
-        let out = host_call(Port::ModelRead, "list", &encode((model, tenant, filters, opts))?)?;
-        decode(&out, "list")
+        decode(call(
+            Port::ModelRead,
+            "list",
+            &ListArgs {
+                model: model.clone(),
+                tenant,
+                filters: filters.to_vec(),
+                opts: opts.clone(),
+            },
+        )?)
     }
 
     fn find(
@@ -66,17 +76,27 @@ impl ModelStore for HostModelStore {
         tenant: Option<TenantId>,
         include_deleted: bool,
     ) -> Result<Option<Record>, AppError> {
-        let out = host_call(
+        decode(call(
             Port::ModelRead,
             "find",
-            &encode((model, id, tenant, include_deleted))?,
-        )?;
-        decode(&out, "find")
+            &FindArgs {
+                model: model.clone(),
+                id,
+                tenant,
+                include_deleted,
+            },
+        )?)
     }
 
     fn insert(&self, model: &ModelDef, record: &Record) -> Result<Record, AppError> {
-        let out = host_call(Port::ModelWrite, "insert", &encode((model, record))?)?;
-        decode(&out, "insert")
+        decode(call(
+            Port::ModelWrite,
+            "insert",
+            &InsertArgs {
+                model: model.clone(),
+                record: record.clone(),
+            },
+        )?)
     }
 
     fn update(
@@ -86,12 +106,16 @@ impl ModelStore for HostModelStore {
         tenant: Option<TenantId>,
         changes: &Record,
     ) -> Result<Option<Record>, AppError> {
-        let out = host_call(
+        decode(call(
             Port::ModelWrite,
             "update",
-            &encode((model, id, tenant, changes))?,
-        )?;
-        decode(&out, "update")
+            &UpdateArgs {
+                model: model.clone(),
+                id,
+                tenant,
+                changes: changes.clone(),
+            },
+        )?)
     }
 
     fn delete(
@@ -100,8 +124,15 @@ impl ModelStore for HostModelStore {
         id: Uuid,
         tenant: Option<TenantId>,
     ) -> Result<bool, AppError> {
-        let out = host_call(Port::ModelWrite, "delete", &encode((model, id, tenant))?)?;
-        decode(&out, "delete")
+        decode(call(
+            Port::ModelWrite,
+            "delete",
+            &DeleteArgs {
+                model: model.clone(),
+                id,
+                tenant,
+            },
+        )?)
     }
 
     fn upsert(
@@ -110,8 +141,15 @@ impl ModelStore for HostModelStore {
         record: &Record,
         conflict: &[String],
     ) -> Result<Record, AppError> {
-        let out = host_call(Port::ModelWrite, "upsert", &encode((model, record, conflict))?)?;
-        decode(&out, "upsert")
+        decode(call(
+            Port::ModelWrite,
+            "upsert",
+            &UpsertArgs {
+                model: model.clone(),
+                record: record.clone(),
+                conflict: conflict.to_vec(),
+            },
+        )?)
     }
 
     fn aggregate(
@@ -121,12 +159,16 @@ impl ModelStore for HostModelStore {
         filters: &[FieldFilter],
         op: AggregateOp,
     ) -> Result<Json, AppError> {
-        let out = host_call(
+        decode(call(
             Port::ModelRead,
             "aggregate",
-            &encode((model, tenant, filters, op))?,
-        )?;
-        decode(&out, "aggregate")
+            &AggregateArgs {
+                model: model.clone(),
+                tenant,
+                filters: filters.to_vec(),
+                op,
+            },
+        )?)
     }
 
     fn exists(
@@ -135,8 +177,15 @@ impl ModelStore for HostModelStore {
         tenant: Option<TenantId>,
         filters: &[FieldFilter],
     ) -> Result<bool, AppError> {
-        let out = host_call(Port::ModelRead, "exists", &encode((model, tenant, filters))?)?;
-        decode(&out, "exists")
+        decode(call(
+            Port::ModelRead,
+            "exists",
+            &ExistsArgs {
+                model: model.clone(),
+                tenant,
+                filters: filters.to_vec(),
+            },
+        )?)
     }
 
     fn find_by(
@@ -146,12 +195,16 @@ impl ModelStore for HostModelStore {
         filters: &[FieldFilter],
         include_deleted: bool,
     ) -> Result<Option<Record>, AppError> {
-        let out = host_call(
+        decode(call(
             Port::ModelRead,
             "find_by",
-            &encode((model, tenant, filters, include_deleted))?,
-        )?;
-        decode(&out, "find_by")
+            &FindByArgs {
+                model: model.clone(),
+                tenant,
+                filters: filters.to_vec(),
+                include_deleted,
+            },
+        )?)
     }
 
     fn find_for_update(
@@ -161,12 +214,16 @@ impl ModelStore for HostModelStore {
         tenant: Option<TenantId>,
         include_deleted: bool,
     ) -> Result<Option<Record>, AppError> {
-        let out = host_call(
+        decode(call(
             Port::ModelRead,
             "find_for_update",
-            &encode((model, id, tenant, include_deleted))?,
-        )?;
-        decode(&out, "find_for_update")
+            &FindForUpdateArgs {
+                model: model.clone(),
+                id,
+                tenant,
+                include_deleted,
+            },
+        )?)
     }
 
     fn insert_or_ignore(
@@ -174,12 +231,14 @@ impl ModelStore for HostModelStore {
         model: &ModelDef,
         record: &Record,
     ) -> Result<Option<Record>, AppError> {
-        let out = host_call(
+        decode(call(
             Port::ModelWrite,
             "insert_or_ignore",
-            &encode((model, record))?,
-        )?;
-        decode(&out, "insert_or_ignore")
+            &InsertOrIgnoreArgs {
+                model: model.clone(),
+                record: record.clone(),
+            },
+        )?)
     }
 
     fn update_filtered(
@@ -189,12 +248,16 @@ impl ModelStore for HostModelStore {
         filters: &[FieldFilter],
         changes: &Record,
     ) -> Result<Vec<Record>, AppError> {
-        let out = host_call(
+        decode(call(
             Port::ModelWrite,
             "update_filtered",
-            &encode((model, tenant, filters, changes))?,
-        )?;
-        decode(&out, "update_filtered")
+            &UpdateFilteredArgs {
+                model: model.clone(),
+                tenant,
+                filters: filters.to_vec(),
+                changes: changes.clone(),
+            },
+        )?)
     }
 
     fn delete_filtered(
@@ -203,12 +266,15 @@ impl ModelStore for HostModelStore {
         tenant: Option<TenantId>,
         filters: &[FieldFilter],
     ) -> Result<Vec<Record>, AppError> {
-        let out = host_call(
+        decode(call(
             Port::ModelWrite,
             "delete_filtered",
-            &encode((model, tenant, filters))?,
-        )?;
-        decode(&out, "delete_filtered")
+            &DeleteFilteredArgs {
+                model: model.clone(),
+                tenant,
+                filters: filters.to_vec(),
+            },
+        )?)
     }
 
     fn force_delete(
@@ -217,25 +283,31 @@ impl ModelStore for HostModelStore {
         id: Uuid,
         tenant: Option<TenantId>,
     ) -> Result<bool, AppError> {
-        let out = host_call(
+        decode(call(
             Port::ModelWrite,
             "force_delete",
-            &encode((model, id, tenant))?,
-        )?;
-        decode(&out, "force_delete")
+            &ForceDeleteArgs {
+                model: model.clone(),
+                id,
+                tenant,
+            },
+        )?)
     }
 
     fn truncate(&self, model: &ModelDef, env: &str) -> Result<(), AppError> {
-        // `truncate` answers nothing, and an empty answer is the refusal
-        // every returning import uses. A `()` decode therefore cannot work:
-        // the host's success value and its refusal are the same bytes, so
-        // this method reads its verdict off a non-empty acknowledgement
-        // instead of pretending to decode a unit.
-        let out = host_call(Port::ModelWrite, "truncate", &encode((model, env))?)?;
-        if out.trim().is_empty() {
-            return Err(AppError::internal("module sdk: truncate was refused"));
-        }
-        Ok(())
+        // A `()` answer has nothing to decode, and the envelope settles what
+        // used to be ambiguous: `{"ok":null}` is "truncated" and the failure
+        // arm carries the reason. Both are non-empty, so "stored" and
+        // "refused" can no longer look alike.
+        call(
+            Port::ModelWrite,
+            "truncate",
+            &TruncateArgs {
+                model: model.clone(),
+                env: env.to_string(),
+            },
+        )
+        .map(|_| ())
     }
 
     fn increment(
@@ -247,12 +319,18 @@ impl ModelStore for HostModelStore {
         by: i64,
         extra: &Record,
     ) -> Result<Option<Record>, AppError> {
-        let out = host_call(
+        decode(call(
             Port::ModelWrite,
             "increment",
-            &encode((model, id, tenant, field, by, extra))?,
-        )?;
-        decode(&out, "increment")
+            &IncrementArgs {
+                model: model.clone(),
+                id,
+                tenant,
+                field: field.to_string(),
+                by,
+                extra: extra.clone(),
+            },
+        )?)
     }
 
     fn restore(
@@ -261,7 +339,14 @@ impl ModelStore for HostModelStore {
         id: Uuid,
         tenant: Option<TenantId>,
     ) -> Result<Option<Record>, AppError> {
-        let out = host_call(Port::ModelWrite, "restore", &encode((model, id, tenant))?)?;
-        decode(&out, "restore")
+        decode(call(
+            Port::ModelWrite,
+            "restore",
+            &RestoreArgs {
+                model: model.clone(),
+                id,
+                tenant,
+            },
+        )?)
     }
 }

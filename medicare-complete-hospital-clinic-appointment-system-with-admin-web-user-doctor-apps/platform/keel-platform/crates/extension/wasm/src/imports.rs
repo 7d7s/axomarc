@@ -18,6 +18,15 @@
 //!   buffers through the execution unit after a successful call and
 //!   discards them when the guest fails.
 //!
+//!   Plus the four **seam** imports of ADR 0020 — `model_read`,
+//!   `model_write`, `token_read`, `token_write` — which are how a module
+//!   guest reaches the host's stores. They are grouped by write-ness rather
+//!   than by trait method, so the capability gate is enforced by *which
+//!   import was called* instead of by a rule repeated across seventeen match
+//!   arms. Their answers travel the other way, back into memory the guest
+//!   allocated, because ABI v1 gives the host no other way to hand a string
+//!   over (see [`reply`]).
+//!
 //! `fd_write` only writes to stdout/stderr; env/args are empty by design
 //! (plugins get no ambient environment).
 
@@ -63,6 +72,52 @@ fn read_guest_str(
     let mut buf = vec![0u8; len as usize];
     memory.read(caller, ptr as usize, &mut buf).ok()?;
     Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Hand a seam answer back to the guest, returning the packed
+/// `(ptr << 32) | len` the SDK unpacks — or `0` for every failure.
+///
+/// The guest allocates the buffer through its own `kelson_response_alloc`
+/// export, which is the only reason an import can answer with a string at
+/// all. ABI v1's `kelson_alloc` contract is *one buffer per dispatch*, and a
+/// host that reused it to deliver import results would be writing over the
+/// `op ‖ input` the dispatch is still reading — the marker's no-aliasing
+/// argument would quietly stop holding partway through a call. So the reply
+/// comes from a second arena the guest owns, wrapped freely by an import
+/// loop without ever disturbing the dispatch in flight.
+///
+/// Nothing here traps: no such export, a wrong signature, a guest trap on
+/// the call, a pointer the guest's allocator declined — each is `0`, and the
+/// caller turns that into a refusal. An *empty* answer is `0` too, and is
+/// not a failure: that is the write gate saying no, and it carries no bytes
+/// by design.
+fn reply(caller: &mut Caller<'_, CallState>, answer: &str) -> i64 {
+    let bytes = answer.as_bytes();
+    if bytes.is_empty() {
+        return 0;
+    }
+    let Some(func) = caller
+        .get_export("kelson_response_alloc")
+        .and_then(Extern::into_func)
+    else {
+        return 0;
+    };
+    let Ok(func) = func.typed::<i32, i32>(&mut *caller) else {
+        return 0;
+    };
+    let Ok(ptr) = func.call(&mut *caller, bytes.len() as i32) else {
+        return 0;
+    };
+    if ptr <= 0 {
+        return 0;
+    }
+    let Some(memory) = memory_of(caller) else {
+        return 0;
+    };
+    if memory.write(caller, ptr as usize, bytes).is_err() {
+        return 0;
+    }
+    crate::pack(ptr as usize, bytes.len())
 }
 
 // ---------------------------------------------------------------------------
@@ -188,6 +243,24 @@ impl crate::component::kelson::plugin::host::Host for CallState {
     fn capability_audit(&mut self, action: String, record: String) -> bool {
         self.host_capability_audit(&action, &record)
     }
+}
+
+/// Read a seam import's two string arguments out of the guest's memory.
+///
+/// `None` on anything unreadable — a pointer outside memory, an oversize
+/// payload, a non-UTF-8 answer. Every caller turns that into `0`, so a guest
+/// with a bad pointer is refused rather than handed a trap.
+fn seam_args(
+    caller: &mut Caller<'_, CallState>,
+    method_ptr: u32,
+    method_len: u32,
+    args_ptr: u32,
+    args_len: u32,
+) -> Option<(String, String)> {
+    let memory = memory_of(caller)?;
+    let method = read_guest_str(&memory, caller, method_ptr, method_len)?;
+    let args = read_guest_str(&memory, caller, args_ptr, args_len)?;
+    Some((method, args))
 }
 
 /// Register every linked import on `linker`. Any registration failure is a
@@ -536,5 +609,126 @@ fn define_host(linker: &mut Linker<CallState>) -> Result<(), WasmError> {
             i32::from(caller.data_mut().host_capability_audit(&action, &record))
         },
     )?;
+
+    // --- the module seam (ADR 0020) -------------------------------------
+    //
+    // Four imports grouped by write-ness rather than by trait method, which
+    // is what makes the capability gate structural: a write is reachable
+    // only through an import that checks the guest's profile, so a method
+    // added to `ModelStore` tomorrow inherits the right posture without a
+    // new match arm remembering to gate it. The dispatch itself lives in
+    // `kelson-module-contract`, where both sides of the seam agree on it.
+
+    // host.model_read(method, args) -> packed SeamResult JSON, or 0 when
+    // the guest cannot receive an answer. Reads carry no capability gate:
+    // tenant scoping is `ModelStore`'s own job, enforced in the arguments.
+    wrap!(
+        linker,
+        "host",
+        "model_read",
+        |mut caller: Caller<'_, CallState>,
+         method_ptr: u32,
+         method_len: u32,
+         args_ptr: u32,
+         args_len: u32|
+         -> i64 {
+            let Some((method, args)) =
+                seam_args(&mut caller, method_ptr, method_len, args_ptr, args_len)
+            else {
+                return 0;
+            };
+            let answer = {
+                let state = caller.data();
+                kelson_module_contract::model_read(state.services.model_store(), &method, &args)
+            };
+            reply(&mut caller, &answer)
+        },
+    )?;
+
+    // host.model_write(method, args) -> packed SeamResult JSON, or 0 for a
+    // read-only guest. The gate is the same enabling condition
+    // `capability_write` checks, read here rather than repeated per method.
+    wrap!(
+        linker,
+        "host",
+        "model_write",
+        |mut caller: Caller<'_, CallState>,
+         method_ptr: u32,
+         method_len: u32,
+         args_ptr: u32,
+         args_len: u32|
+         -> i64 {
+            let Some((method, args)) =
+                seam_args(&mut caller, method_ptr, method_len, args_ptr, args_len)
+            else {
+                return 0;
+            };
+            let answer = {
+                let state = caller.data();
+                kelson_module_contract::model_write(
+                    state.services.model_store(),
+                    &method,
+                    &args,
+                    state.profile.can_write(),
+                )
+            };
+            reply(&mut caller, &answer)
+        },
+    )?;
+
+    // host.token_read(method, args) -> packed SeamResult JSON.
+    wrap!(
+        linker,
+        "host",
+        "token_read",
+        |mut caller: Caller<'_, CallState>,
+         method_ptr: u32,
+         method_len: u32,
+         args_ptr: u32,
+         args_len: u32|
+         -> i64 {
+            let Some((method, args)) =
+                seam_args(&mut caller, method_ptr, method_len, args_ptr, args_len)
+            else {
+                return 0;
+            };
+            let answer = {
+                let state = caller.data();
+                kelson_module_contract::token_read(state.services.token_store(), &method, &args)
+            };
+            reply(&mut caller, &answer)
+        },
+    )?;
+
+    // host.token_write(method, args) -> packed SeamResult JSON, gated the
+    // same way `model_write` is.
+    wrap!(
+        linker,
+        "host",
+        "token_write",
+        |mut caller: Caller<'_, CallState>,
+         method_ptr: u32,
+         method_len: u32,
+         args_ptr: u32,
+         args_len: u32|
+         -> i64 {
+            let Some((method, args)) =
+                seam_args(&mut caller, method_ptr, method_len, args_ptr, args_len)
+            else {
+                return 0;
+            };
+            let answer = {
+                let state = caller.data();
+                kelson_module_contract::token_write(
+                    state.services.token_store(),
+                    &method,
+                    &args,
+                    state.profile.can_write(),
+                )
+            };
+            reply(&mut caller, &answer)
+        },
+    )?;
+
     Ok(())
 }

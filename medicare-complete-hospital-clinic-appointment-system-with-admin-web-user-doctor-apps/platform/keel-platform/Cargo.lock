@@ -1935,8 +1935,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "kelson-module-contract"
+version = "0.1.0"
+dependencies = [
+ "kelson-foundation",
+ "kelson-models",
+ "kelson-tokens",
+ "serde",
+ "serde_json",
+ "time",
+ "uuid",
+]
+
+[[package]]
 name = "kelson-module-marker"
 version = "0.1.0"
+
+[[package]]
+name = "kelson-module-sdk"
+version = "0.1.0"
+dependencies = [
+ "kelson-context",
+ "kelson-execution",
+ "kelson-foundation",
+ "kelson-models",
+ "kelson-module-contract",
+ "kelson-query",
+ "kelson-tokens",
+ "serde",
+ "serde_json",
+ "time",
+ "uuid",
+]
 
 [[package]]
 name = "kelson-mysql"
@@ -2349,7 +2379,10 @@ dependencies = [
  "kelson-context",
  "kelson-execution",
  "kelson-foundation",
+ "kelson-models",
+ "kelson-module-contract",
  "kelson-registry",
+ "kelson-tokens",
  "rand 0.8.8",
  "serde_json",
  "tracing",

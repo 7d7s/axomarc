@@ -89,36 +89,77 @@ implementation and only persistence crosses the boundary.
 The port is therefore mostly mechanical: entry points and a backend
 implementation, not a rewrite.
 
-### 2. The import surface is JSON over strings
+### 2. The import surface is JSON over strings, and it is grouped by capability
 
 Every value crossing the seam is already serde-serializable, so the ABI v1
-imports exchange `JSON`-shaped strings and never a structured value. The
-surface is eight additions to the `host` namespace:
+imports exchange JSON-shaped strings and never a structured value.
+
+**How many imports this needs was the one place this ADR was first written
+wrong, and the correction is the better design.** `ModelStore` is not the
+five-method CRUD port the trait's doc comment suggests; it carries **seventeen**
+methods (`crates/data/models/src/store.rs:209-365`), from `list` through
+`truncate` and `restore`. One import per method would be seventeen model
+functions plus five for `TokenStore`, and — worse — it would make *every future
+addition to a contract-layer trait an ABI change*. A guest and a host built
+from different revisions of the same trait would simply fail to link.
+
+So the surface is four imports, split along the line that already exists for
+capability enforcement:
 
 ```wit
-// model access — the ModelStore trait, one import per method
-model-list:   func(model: string, tenant: string, filters: string, opts: string) -> string;
-model-find:   func(model: string, id: string, tenant: string, include-deleted: bool) -> string;
-model-insert: func(model: string, record: string) -> string;
-model-update: func(model: string, id: string, tenant: string, changes: string) -> string;
-model-delete: func(model: string, id: string, tenant: string) -> bool;
+// reads  — gated like capability_check
+model-read:  func(method: string, args: string) -> string;
+token-read:  func(method: string, args: string) -> string;
 
-// tokens — issue and verify
-token-issue:  func(purpose: string, subject: string) -> string;
-token-verify: func(purpose: string, label: string) -> string;
+// writes — gated like capability_write, and buffered like it
+model-write: func(method: string, args: string) -> string;
+token-write: func(method: string, args: string) -> string;
 ```
 
-An empty string is the refusal for every returning import, matching the
-existing four's "answer, never trap" posture
-(`crates/extension/wasm/src/imports.rs:87-89`). A guest therefore cannot tell
-a denied request from a missing record, which is deliberate: the distinction
-is an oracle, and a module that needs to branch should be told *by its own
-policy*, not by the shape of a failure.
+`method` is one of the trait's own method names (`"list"`, `"insert"`,
+`"truncate"`); `args` is a **named struct from a shared contract crate**, not
+a JSON array in declaration order. The host shim matches once and calls the
+trait method, so it is the same "one implementation, several front doors"
+discipline the four existing primitives already follow
+(`crates/extension/wasm/src/imports.rs:68-85`) — and the trait gaining an
+eighth write method is a shim change, not an ABI change.
 
-`tenant` is spelled as a `string` and carries `""` for none, rather than an
-`option<string>`, because ABI v1 has no options and the WIT spelling has to
-match what the v1 closure can actually pass. ADR 0019 §5 records the same
-compromise for `%record`.
+The struct is the part this ADR got wrong a second time, and again in the
+direction of less machinery. An array would make every argument *positional*,
+so the guest's field order and the host's field order would have to agree
+forever across a seam compiled from two different graphs. `crates/module/contract`
+names `ListArgs`, `InsertArgs`, `MarkConsumedArgs` and the other twenty once;
+the guest builds them and the host decodes them. There is no position left to
+get wrong, and the residual risk — naming an `Args` type for the wrong method
+string — fails closed, because the host cannot decode what it did not send.
+
+The read/write split is not cosmetic grouping. It is **where the capability
+gate is enforced**: a guest reaches a write only by calling an import that is
+checked as a write, so the gate is structural — the shim never has to look at
+`method` to decide which posture applies. §4 says the same thing as a rule;
+this is the shape that makes the rule checkable in one place rather than
+repeated across seventeen match arms.
+
+Every returning import answers in one of exactly three ways, and the two that
+are not refusals are JSON: `{"ok": <value>}` when the store answered and
+`{"err": {AppError}}` when it failed. An *empty* string is reserved for the
+gate saying no, and carries no detail at all. That split keeps what the four
+existing primitives do ("answer, never trap",
+`crates/extension/wasm/src/imports.rs:87-89`) without collapsing two things
+that were previously indistinguishable: `{"ok":null}` is a `()`-returning
+method saying *stored*, so "stored" and "refused" can no longer look alike,
+and a store failure carries the `AppError` whole so the module answers its
+own caller with the status code it would have produced running in-process.
+A guest still cannot tell a denied request from a missing record — the answer
+to a gate is empty either way — and that is deliberate: the distinction is an
+oracle, and a module that needs to branch should be told *by its own policy*,
+not by the shape of a failure.
+
+`tenant` arrives as `null` rather than as an empty string, because it is a
+`Option<TenantId>` inside the argument struct and serde spells that the way
+serde spells it. ADR 0019 §5 recorded the opposite compromise for `%record`,
+where the value had to be a WIT-visible type; on this side of the seam both
+ends read the same Rust type, so no compromise is needed.
 
 ### 3. Host-to-guest returns need a second arena
 
@@ -147,26 +188,61 @@ cannot grow guest memory without bound.
 The four existing primitives are methods on `CallState`
 (`crates/extension/wasm/src/imports.rs:90`), which today holds only `label`,
 the sidecar-verified `declared` capability set, and the resolved scope chain.
-The new imports need real services, so `WasmPlugin` gains an optional
-`ModuleHostServices` — `Arc<dyn ModelStore>`, the token store, the
-notification hub — populated at boot and handed down at call time.
+The new imports need real services, so `CallState` gains a
+`ModuleHostServices` — `Arc<dyn ModelStore>` and `Arc<dyn TokenStore>` — and
+`WasmPlugin` holds the copy it hands down per call.
 
-**Every model import is gated on the declared capability set, and writes go
-through the same buffered discipline `capability_write` uses.** This is not a
-preference. `capability_write` refuses unless the executing capability runs a
-ReadWrite or Admin profile, buffers the delta into `CallState`, and lets the
-handler commit after a successful call and discard on failure
-(`crates/extension/wasm/src/imports.rs:17-19`). A `model-insert` that wrote
-straight through would be a second, unmediated write path into the host's
-store — the module would be able to mutate any model it could name, regardless
-of profile, with no buffer to discard when its own call later failed. That is
-a regression the tree's fail-closed posture has held out against since Wave 9,
-and the port does not get to buy G3 with it.
+The notification hub is **not** in that pair, though §1 lists it as a thing
+modules use. `NotificationStore::insert` returns a `BoxFuture`, ABI v1 imports
+are synchronous, and a guest handler that suspends is refused rather than
+silently dropped — so a hub behind the seam would be a promise the ABI cannot
+keep. Both ported modules take `Option<Arc<NotifyHub>>` at their call sites
+already (`applications/appointments/src/lib.rs:419`), so they run the way they
+always did with it absent. It joins the seam when the ABI has a way to return
+later, and that is recorded rather than assumed.
 
-The capability mapping is one rule, stated so it can be checked: **`model-list`
-and `model-find` answer to the same gate as `capability_check`; `model-insert`,
-`model-update` and `model-delete` answer to the same gate as
-`capability_write`, and buffer.**
+Wiring has to happen *after* boot, because `load_wasm_plugins` runs before it
+so that a bad plugin refuses the boot outright rather than surfacing at first
+dispatch — and the stores a plugin will read are created *by* boot. The
+ordering therefore is: load and commit the generations with an empty service
+cell, then hand the stores over at Modules phase, which runs after Platform.
+`WasmHandlerBundle` carries the generations behind its handlers for exactly
+that one hand-off, and a second install is refused rather than swapped
+quietly: which rows a plugin reads is a property of the generation under
+review, not a per-call choice.
+
+**Writes are gated on the capability profile and then go through; reads carry
+no capability gate of their own.** This corrects the first draft of this ADR,
+which claimed the opposite of the second half and got the first half wrong.
+
+The gate is real and structural. `capability_write` refuses unless the
+executing capability runs a ReadWrite or Admin profile, and `model_write` and
+`token_write` refuse under exactly that condition — checked once on the
+import, before any method name is looked at, so a method added to `ModelStore`
+tomorrow inherits the posture without anyone remembering to write a match arm.
+A ReadOnly guest reaches no write, and the refusal is the empty answer with
+no detail in it.
+
+What is *not* true is that a model write buffers. It does not, and it should
+not. `ModelStore::insert` is defined as returning the row it stored
+(`crates/data/models/src/store.rs:209-365`); a write held in a buffer has no
+row to return, so the port would either break the trait or invent a second
+meaning for its return value. Nor would buffering buy the atomicity it looks
+like it buys: `capability_write`'s buffer is not how writes reach the store
+in the first place — it is a channel the guest *declares* effects on and
+`WasmHandler::handle` records them through the execution unit
+(`crates/extension/wasm/src/lib.rs:1502-1505`) *in addition* to whatever the
+store already did. The first-party modules this port replaces have always
+written straight through their store from inside `handle()`; a seam that
+buffered would behave differently from the thing it stands in for, which is
+the one failure mode ADR 0020 §1 exists to prevent.
+
+So the rule stands as one checkable line: **`model_write` and `token_write`
+answer to `profile.can_write()` — the condition `capability_write` enables
+writes with — and both then write through; `model_read` and `token_read` are
+gated by nothing, because tenant scoping is `ModelStore`'s own job, enforced
+in the arguments the guest passes.** Because §2 split the imports by
+write-ness, the shim enforces this in two places rather than seventeen.
 
 ### 5. `kelson-module-sdk` is the guest's shared half
 
@@ -253,7 +329,7 @@ blocking import whose danger is invisible until a real store lands.
   makes the kernel bigger, and it is buying exactly the thing the kernel needs
   to stop being handed modules at compile time.
 - **The port's real size is now visible.** Roughly: an ADR (this), one new SDK
-  crate, eight imports with a host shim each, `CallState` service handles, two
+  crate, four imports with a host shim each, `CallState` service handles, two
   `cdylib` entry points, two sidecars, two artifacts, and the removal of
   twenty-one references. The business logic in the two modules is untouched,
   which is the whole reason for §1.

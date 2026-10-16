@@ -3,7 +3,7 @@
 
 use crate::id::CorrelationId;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ErrorCategory {
     Validation,
     Authentication,
@@ -18,7 +18,7 @@ pub enum ErrorCategory {
     Internal,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Severity {
     Low,
     Medium,
@@ -26,7 +26,7 @@ pub enum Severity {
     Critical,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Retryability {
     Retryable,
     NotRetryable,
@@ -119,18 +119,31 @@ pub mod codes {
 }
 
 /// The one error type. `meta` must stay PHI-free (safe metadata only).
-#[derive(Debug, Clone, serde::Serialize)]
+///
+/// Deserialize exists because a failure is a *value* a caller may have to
+/// carry somewhere and re-raise — ADR 0020 puts one of those boundaries
+/// between a WASM module guest and its host, where a store's `AppError` has
+/// to reach the module as the same status code it would have produced
+/// locally. Round-tripping is lossless for every field except
+/// `correlation`, which is host-side tracing metadata a guest cannot use:
+/// it is written on serialize and skipped on deserialize rather than being
+/// dropped silently on the way out.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AppError {
     pub code: String,
     pub category: ErrorCategory,
     pub severity: Severity,
     pub retryable: Retryability,
     pub public_message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub internal: Option<String>,
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub meta: serde_json::Map<String, serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        skip_deserializing
+    )]
     pub correlation: Option<CorrelationId>,
 }
 

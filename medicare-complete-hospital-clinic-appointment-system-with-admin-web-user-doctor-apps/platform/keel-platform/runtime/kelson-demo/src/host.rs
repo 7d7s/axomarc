@@ -394,6 +394,26 @@ impl Provider for WasmModulesProvider {
     }
     fn init(&self, r: &mut ServiceRegistry) -> Result<(), BootError> {
         if let Some(bundle) = &self.bundle {
+            // ADR 0020: hand every generation the stores its seam imports
+            // read and write. This runs at Modules phase, after Platform —
+            // where `PersistenceProvider` and `IdentityProvider` create those
+            // stores — and that ordering is the whole reason the wiring sits
+            // here rather than in `load_wasm_plugins`, which runs BEFORE boot.
+            //
+            // Both are required. A bundle with no store behind it would still
+            // serve, and a module would discover at first dispatch that it
+            // reads nothing; failing here says which store was missing.
+            let model = r.get::<kelson_models::ModelStoreRef>()?;
+            let tokens = r.get::<TokenStoreRef>()?;
+            bundle
+                .install_services(kelson_wasm::ModuleHostServices::new(
+                    Arc::clone(&model.0),
+                    Arc::clone(&tokens.0),
+                ))
+                .map_err(|e| BootError::ProviderFailed {
+                    provider: "module.wasm".into(),
+                    source: e.to_string(),
+                })?;
             r.insert("module.wasm.handlers", Arc::new(bundle.clone()))?;
         }
         Ok(())
@@ -536,6 +556,13 @@ pub struct PrincipalStoreRef(pub Arc<dyn kelson_identity::PrincipalStore>);
 #[derive(Clone)]
 pub struct CredentialStoreRef(pub Arc<dyn kelson_identity::CredentialStore>);
 
+/// The token store *behind* `security.tokens`. `TokenService` holds its
+/// store privately, and the module seam needs the port rather than the
+/// service — a guest implementing `TokenStore` must reach the same rows PAT
+/// issuance writes, not a second copy of them (ADR 0020).
+#[derive(Clone)]
+pub struct TokenStoreRef(pub Arc<dyn kelson_tokens::TokenStore>);
+
 #[derive(Clone)]
 pub struct StorageRef(pub Arc<dyn kelson_storage::StoragePort>);
 
@@ -590,6 +617,10 @@ impl Provider for IdentityProvider {
         r.insert(
             "identity.credentials",
             Arc::new(CredentialStoreRef(credentials)),
+        )?;
+        r.insert(
+            "security.token_store",
+            Arc::new(TokenStoreRef(token_store.clone())),
         )?;
         r.insert(
             "security.tokens",

@@ -92,6 +92,46 @@ pub const DEFAULT_FUEL: u64 = 10_000_000;
 /// Default store memory cap: 16 MiB of linear memory per plugin instance.
 pub const DEFAULT_MEMORY_BYTES: usize = 16 * 1024 * 1024;
 
+/// Host services a module guest reaches through the seam imports (ADR 0020).
+///
+/// Built at boot from the *same* store the rest of the platform writes, so a
+/// module reads and writes the rows first-party code reads and writes rather
+/// than a second copy of them — the property the whole port exists to
+/// preserve. Carried into each dispatch by value: two `Arc`s, cloned once per
+/// call.
+///
+/// `None` in either slot means the host was not wired for it, and the seam
+/// answers with a named error rather than a silence, because a module that
+/// silently gets no rows is worse than one that is told the store is missing.
+#[derive(Clone, Default)]
+pub struct ModuleHostServices {
+    pub model: Option<Arc<dyn kelson_models::ModelStore>>,
+    pub tokens: Option<Arc<dyn kelson_tokens::TokenStore>>,
+}
+
+impl ModuleHostServices {
+    /// Services wired to both stores.
+    pub fn new(
+        model: Arc<dyn kelson_models::ModelStore>,
+        tokens: Arc<dyn kelson_tokens::TokenStore>,
+    ) -> Self {
+        Self {
+            model: Some(model),
+            tokens: Some(tokens),
+        }
+    }
+
+    /// The store a `host.model_*` import should reach, if one is wired.
+    pub fn model_store(&self) -> Option<&dyn kelson_models::ModelStore> {
+        self.model.as_deref()
+    }
+
+    /// The store a `host.token_*` import should reach, if one is wired.
+    pub fn token_store(&self) -> Option<&dyn kelson_tokens::TokenStore> {
+        self.tokens.as_deref()
+    }
+}
+
 /// Per-store host state reachable from `host.*` imports.
 pub(crate) struct CallState {
     pub limits: StoreLimits,
@@ -109,6 +149,11 @@ pub(crate) struct CallState {
     /// imports consult it per call, so one shared linker serves every
     /// profile without leaking write power into read-only guests.
     pub profile: WasmCapabilityProfile,
+    /// The stores a module guest's seam imports reach (ADR 0020), or all
+    /// empty when this store was built for a manifest scan. Cloned in per
+    /// call: two `Arc`s, and the read side of the import never touches
+    /// anything behind them that isn't `Sync`.
+    pub services: ModuleHostServices,
     /// Mutation deltas the guest recorded via `host.capability_write`
     /// (raw JSON; converted to [`MutationRecord`](kelson_execution::MutationRecord)
     /// by the handler after a successful call, discarded on guest failure).
@@ -279,6 +324,18 @@ impl std::error::Error for WasmError {}
 fn unpack(packed: i64) -> (u32, u32) {
     let bits = packed as u64;
     ((bits >> 32) as u32, bits as u32)
+}
+
+/// Pack a `(ptr, len)` pair the way a guest reads it back: `ptr << 32 | len`.
+///
+/// The mirror of [`unpack`], needed now that the host is the side writing
+/// into guest memory — a seam import allocates a buffer *inside* the guest
+/// and fills it, so the answer travels in the same encoding a guest's own
+/// `kelson_manifest` return uses. Masked rather than assumed: both halves
+/// are 32-bit by construction, and shifting an unmasked `usize` would let a
+/// bogus pointer bleed into the length.
+fn pack(ptr: usize, len: usize) -> i64 {
+    (((ptr as u64 & 0xFFFF_FFFF) << 32) | (len as u64 & 0xFFFF_FFFF)) as i64
 }
 
 /// Classify a failed guest call: fuel exhaustion and deadline expiry are each
@@ -706,6 +763,10 @@ impl WasmHost {
     /// what lets the manifest scan and the dispatch path build the *same*
     /// store from the *same* code — otherwise the two could drift into
     /// applying different sandboxes to one plugin and nothing would report it.
+    // Kept flat deliberately: the two callers must build byte-identical
+    // sandboxes, and an argument struct would let one of them start leaving
+    // fields defaulted. The doc on `Self::prepare` explains why that matters.
+    #[allow(clippy::too_many_arguments)]
     fn new_store(
         engine: &Engine,
         label: &str,
@@ -713,6 +774,7 @@ impl WasmHost {
         scope_paths: Vec<String>,
         has_scope: bool,
         profile: WasmCapabilityProfile,
+        services: ModuleHostServices,
         budget: &CallBudget,
     ) -> Result<Store<CallState>, WasmError> {
         let limits = StoreLimitsBuilder::new()
@@ -727,6 +789,7 @@ impl WasmHost {
                 scope_paths,
                 has_scope,
                 profile,
+                services,
                 deltas: Vec::new(),
                 audits: Vec::new(),
             },
@@ -822,6 +885,11 @@ impl WasmHost {
                 Vec::new(),
                 false,
                 WasmCapabilityProfile::ReadOnly,
+                // No services for the manifest scan: this store exists to
+                // read one export's bytes, and a guest that reached for a
+                // model from `kelson_manifest()` would be refused rather
+                // than handed a store it was never reviewed to use.
+                ModuleHostServices::default(),
                 &budget,
             )?;
             match &guest {
@@ -916,6 +984,10 @@ impl WasmHost {
             // machinery.
             ticker,
             in_flight: std::sync::atomic::AtomicU32::new(0),
+            // Empty until the boot path installs the host's stores; a call
+            // that reaches dispatch before then is told the seam has no
+            // store rather than handed rows nobody wired.
+            services: std::sync::OnceLock::new(),
             // prepare's product: validated but uncommitted, so it cannot
             // dispatch until the host says so.
             state: std::sync::atomic::AtomicU8::new(PluginState::Prepared as u8),
@@ -1027,6 +1099,14 @@ pub struct WasmPlugin {
     ticker: Option<Arc<EpochTicker>>,
     /// Concurrent calls in flight, against [`CallBudget::max_concurrency`].
     in_flight: std::sync::atomic::AtomicU32,
+    /// Host services the seam imports reach (ADR 0020).
+    ///
+    /// Installed once, *after* `prepare` and before the bundle is published:
+    /// the boot path loads plugins before `host.boot()`, and the stores those
+    /// plugins will read and write are created by boot, so the ordering is
+    /// fixed and no other arrangement works. A cell rather than a field for
+    /// that reason alone — the value still only ever goes in once.
+    services: std::sync::OnceLock<ModuleHostServices>,
     /// Position in the `prepare → commit → drain` lifecycle (ADR 0019 §6),
     /// encoded as a [`PluginState`] discriminant so it can be read with one
     /// relaxed-free atomic load on the dispatch path.
@@ -1070,6 +1150,32 @@ impl WasmPlugin {
     /// against the host at load and fixed for the plugin's lifetime.
     pub fn budget(&self) -> CallBudget {
         self.budget
+    }
+
+    /// The services this generation's seam imports may reach.
+    ///
+    /// Empty before [`Self::install_services`] runs, which is the right
+    /// answer rather than a placeholder: a call that got that far without
+    /// services hears "no store is configured" from the seam instead of
+    /// reading an empty one.
+    pub fn services(&self) -> ModuleHostServices {
+        self.services.get().cloned().unwrap_or_default()
+    }
+
+    /// Wire this generation's seam imports to the host's stores.
+    ///
+    /// Called once by the boot path, after boot has created those stores and
+    /// before the bundle is published. A second install is refused rather
+    /// than silently swapping the stores a generation serves with: which
+    /// rows a plugin reads is a property of the generation under review, not
+    /// a per-call choice.
+    pub fn install_services(&self, services: ModuleHostServices) -> Result<(), WasmError> {
+        self.services.set(services).map_err(|_| {
+            WasmError::Lifecycle(format!(
+                "plugin {} already has its module host services installed",
+                self.manifest.name()
+            ))
+        })
     }
 
     /// Whether this plugin's `execution_timeout_ms` is actually enforceable —
@@ -1263,6 +1369,7 @@ impl WasmPlugin {
             scope_paths,
             has_scope,
             profile,
+            self.services(),
             &budget,
         )?;
 
@@ -1668,15 +1775,44 @@ pub fn handlers(
     Ok(out)
 }
 
-/// Handler bundle carrier for the `ServiceRegistry` — the same newtype
+/// Handler bundle carrier for the `ServiceRegistry` - the same newtype
 /// pattern as oauth2's `OauthHandlerBundle` (one instance per concrete
 /// type; the plain `Vec<Arc<dyn OperationHandler>>` slot is appointments').
+///
+/// Carries the generations behind the handlers as well, because the boot
+/// path loads plugins *before* `host.boot()` and the stores they read and
+/// write only exist after it: wiring the seam (ADR 0020) is therefore a
+/// second act, done on this bundle once boot has produced the stores.
 #[derive(Clone)]
-pub struct WasmHandlerBundle(pub Vec<Arc<dyn OperationHandler>>);
+pub struct WasmHandlerBundle(
+    /// One handler per declared capability of every loaded generation.
+    pub Vec<Arc<dyn OperationHandler>>,
+    /// The generations those handlers dispatch to.
+    pub Vec<Arc<WasmPlugin>>,
+);
+
+impl WasmHandlerBundle {
+    /// Wire every generation in this bundle to the same host stores.
+    ///
+    /// All-or-nothing: a bundle where one plugin is wired and another is not
+    /// would serve one capability with rows and another without, and nothing
+    /// would report which.
+    pub fn install_services(
+        &self,
+        services: ModuleHostServices,
+    ) -> Result<(), WasmError> {
+        for plugin in &self.1 {
+            plugin.install_services(services.clone())?;
+        }
+        Ok(())
+    }
+}
 
 impl std::fmt::Debug for WasmHandlerBundle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("WasmHandlerBundle").field(&self.0.len()).finish()
+        f.debug_tuple("WasmHandlerBundle")
+            .field(&self.0.len())
+            .finish()
     }
 }
 

@@ -14,6 +14,7 @@ description = "Guest-side SDK for WASM application modules: host-backed implemen
 kelson-foundation = { workspace = true }
 kelson-context = { workspace = true }
 kelson-execution = { workspace = true }
+kelson-module-contract = { workspace = true }
 kelson-query = { workspace = true }
 kelson-models = { workspace = true }
 kelson-tokens = { workspace = true }

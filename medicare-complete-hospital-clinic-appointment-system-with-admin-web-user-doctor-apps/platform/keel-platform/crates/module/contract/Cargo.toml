@@ -1,0 +1,28 @@
+[package]
+name = "kelson-module-contract"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+publish = false
+description = "The module seam's data contract: argument shapes, the reply envelope, and the one dispatcher both sides of the WASM import world agree on (ADR 0020)."
+
+[dependencies]
+kelson-foundation = { workspace = true }
+kelson-models = { workspace = true }
+kelson-tokens = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+
+[lib]
+# Every assertion about this crate rides the existing `kelson-demo`
+# `wasm_tests` facet, which is where the seam is exercised end to end
+# anyway — argument shapes are only meaningful against a live dispatch.
+# The suite count therefore stays 150 (oauth2 precedent).
+test = false
+doctest = false

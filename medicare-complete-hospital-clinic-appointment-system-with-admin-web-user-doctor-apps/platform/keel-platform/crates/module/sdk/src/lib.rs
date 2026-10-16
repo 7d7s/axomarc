@@ -28,17 +28,26 @@
 //!
 //! Four imports, split by capability rather than by trait method
 //! (`crates/extension/wasm/src/imports.rs`), so a write is reachable only
-//! through an import that is checked and buffered as a write:
+//! through an import that checks the guest's capability profile:
 //!
 //! ```text
 //! host.model_read(method, args)   host.model_write(method, args)
 //! host.token_read(method, args)   host.token_write(method, args)
 //! ```
 //!
-//! Every argument and every answer is JSON. A refusal is an empty string on
-//! every returning import, so a guest cannot distinguish "denied" from "no
-//! such record" — the distinction is an oracle, and a module that needs to
-//! branch should be told by its own policy instead.
+//! Arguments and answers are both JSON, and the shapes are shared with the
+//! host through [`kelson_module_contract`] — this crate names the same
+//! argument structs the host decodes, so there is no positional convention
+//! to keep in step across a seam that is compiled from two different graphs.
+//!
+//! An import answers three ways and only three. `""` is the write gate
+//! saying no, and it carries nothing — a guest cannot tell "denied" from
+//! "no such record", which is the point, since that distinction is an
+//! oracle. `{"ok": <value>}` is the store answering. `{"err": {...}}` is
+//! the store failing, with the [`AppError`] intact so a module returns the
+//! same status code it would have running in-process.
+//!
+//! [`AppError`]: kelson_foundation::AppError
 
 use std::sync::Arc;
 
@@ -225,12 +234,23 @@ pub enum Port {
 
 /// Issue one import call and decode the answer.
 ///
-/// The empty string is refusal on every returning import, so an absent
-/// answer and a denied answer are the same value by design. What is *not*
-/// collapsed is a transport failure: a guest whose host does not provide the
-/// import at all gets an error rather than a silent empty record, because
-/// that is a misconfigured deployment and not a policy verdict.
-pub fn host_call(port: Port, method: &str, args: &str) -> Result<String, kelson_foundation::AppError> {
+/// The import answers one of three ways, and only the third is an error the
+/// guest can act on:
+///
+/// * `""` — the import gate refused (a write from a read-only guest), or the
+///   host could not deliver an answer at all. Both are refusals to a module,
+///   and neither can be told apart from here — deliberately, so a guest
+///   learns nothing from a gate that said no.
+/// * `{"ok": <value>}` — the store answered, and this returns the value.
+/// * `{"err": {...}}` — the store failed, and the [`AppError`] crosses whole:
+///   the module answers its own caller with the status code it would have
+///   produced running in-process, which is the property the whole port is
+///   there to preserve.
+pub fn host_call(
+    port: Port,
+    method: &str,
+    args: &str,
+) -> Result<serde_json::Value, kelson_foundation::AppError> {
     if method.is_empty() {
         return Err(kelson_foundation::AppError::validation(
             "module sdk: empty method name",
@@ -268,7 +288,11 @@ pub fn host_call(port: Port, method: &str, args: &str) -> Result<String, kelson_
             )));
         }
         let body = read_return(ptr, len);
-        Ok(String::from_utf8_lossy(body).into_owned())
+        let text = String::from_utf8_lossy(body).into_owned();
+        match kelson_module_contract::SeamResult::decode(&text)? {
+            kelson_module_contract::SeamResult::Ok(value) => Ok(value),
+            kelson_module_contract::SeamResult::Err(err) => Err(err),
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -278,6 +302,21 @@ pub fn host_call(port: Port, method: &str, args: &str) -> Result<String, kelson_
             "module sdk: host imports exist only in a wasm32 guest",
         ))
     }
+}
+
+/// Encode one call's arguments and issue it.
+///
+/// Both sides build the same [`kelson_module_contract`] argument struct, so
+/// there is no positional convention to keep in step across the seam.
+pub fn call<T: serde::Serialize>(
+    port: Port,
+    method: &str,
+    args: &T,
+) -> Result<serde_json::Value, kelson_foundation::AppError> {
+    let payload = serde_json::to_string(args).map_err(|e| {
+        kelson_foundation::AppError::internal(format!("module sdk: arguments are not encodable: {e}"))
+    })?;
+    host_call(port, method, &payload)
 }
 
 /// Structured log line into the host's plugin-tagged logger.

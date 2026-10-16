@@ -57,6 +57,7 @@ pub fn load_wasm_plugins(
     }
     let host = kelson_wasm::WasmHost::new().map_err(|e| e.to_string())?;
     let mut handlers: Vec<Arc<dyn kelson_execution::OperationHandler>> = Vec::new();
+    let mut plugins: Vec<Arc<kelson_wasm::WasmPlugin>> = Vec::new();
     for entry in &index.wasm {
         // Shared discovery rules (sidecar parses, name/version agree,
         // binary exists, capabilities present with mappable op profiles) —
@@ -85,9 +86,10 @@ pub fn load_wasm_plugins(
         plugin
             .commit()
             .map_err(|e| format!("wasm plugin {}: {e}", entry.name))?;
+        plugins.push(Arc::clone(&plugin));
         tracing::info!(plugin = %entry.name, handlers = handlers.len(), "wasm plugin loaded");
     }
-    Ok(Some(kelson_wasm::WasmHandlerBundle(handlers)))
+    Ok(Some(kelson_wasm::WasmHandlerBundle(handlers, plugins)))
 }
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {

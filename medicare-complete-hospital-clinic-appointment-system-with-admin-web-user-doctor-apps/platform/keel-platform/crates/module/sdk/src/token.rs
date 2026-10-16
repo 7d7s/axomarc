@@ -8,25 +8,23 @@
 //! had to re-implement token semantics would be a second implementation to
 //! keep correct.
 //!
-//! `verify` and `consume` read a row by hash, so they are reads; issuing and
-//! revoking are writes and reach the write import, where the host applies the
-//! capability_write posture.
+//! Issuing and revoking reach the write import, where the host checks the
+//! guest's capability profile; verifying by hash and listing are reads.
 
 use kelson_foundation::{AppError, PrincipalId};
+use kelson_module_contract::{
+    FindByHashArgs, ListForArgs, MarkConsumedArgs, RevokeArgs, TokenInsertArgs,
+};
 use kelson_tokens::{AuthToken, TokenPurpose, TokenStore};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{host_call, Port};
+use crate::{call, Port};
 
-fn encode<T: serde::Serialize>(args: T) -> Result<String, AppError> {
-    serde_json::to_string(&args)
-        .map_err(|e| AppError::internal(format!("module sdk: arguments are not encodable: {e}")))
-}
-
-fn decode<T: serde::de::DeserializeOwned>(body: &str, method: &str) -> Result<T, AppError> {
-    serde_json::from_str(body)
-        .map_err(|e| AppError::internal(format!("module sdk: {method} answer is unreadable: {e}")))
+/// Decode a host answer into the method's result type.
+fn decode<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, AppError> {
+    serde_json::from_value(value)
+        .map_err(|e| AppError::internal(format!("module sdk: seam answer is unreadable: {e}")))
 }
 
 /// A `TokenStore` whose rows live wherever the host keeps them.
@@ -41,8 +39,12 @@ impl HostTokenStore {
 
 impl TokenStore for HostTokenStore {
     fn insert(&self, token: AuthToken) -> Result<(), AppError> {
-        let out = host_call(Port::TokenWrite, "insert", &encode((token,))?)?;
-        acknowledgement(&out, "insert")
+        call(
+            Port::TokenWrite,
+            "insert",
+            &TokenInsertArgs { token },
+        )
+        .map(|_| ())
     }
 
     fn find_by_hash(
@@ -50,39 +52,33 @@ impl TokenStore for HostTokenStore {
         purpose: TokenPurpose,
         hash: &str,
     ) -> Result<Option<AuthToken>, AppError> {
-        let out = host_call(Port::TokenRead, "find_by_hash", &encode((purpose, hash))?)?;
-        decode(&out, "find_by_hash")
+        decode(call(
+            Port::TokenRead,
+            "find_by_hash",
+            &FindByHashArgs {
+                purpose,
+                hash: hash.to_string(),
+            },
+        )?)
     }
 
     fn mark_consumed(&self, id: Uuid, at: OffsetDateTime) -> Result<bool, AppError> {
-        let out = host_call(Port::TokenWrite, "mark_consumed", &encode((id, at))?)?;
-        decode(&out, "mark_consumed")
+        decode(call(
+            Port::TokenWrite,
+            "mark_consumed",
+            &MarkConsumedArgs { id, at },
+        )?)
     }
 
     fn revoke(&self, id: Uuid) -> Result<(), AppError> {
-        let out = host_call(Port::TokenWrite, "revoke", &encode((id,))?)?;
-        acknowledgement(&out, "revoke")
+        call(Port::TokenWrite, "revoke", &RevokeArgs { id }).map(|_| ())
     }
 
     fn list_for(&self, principal: PrincipalId) -> Result<Vec<AuthToken>, AppError> {
-        let out = host_call(Port::TokenRead, "list_for", &encode((principal,))?)?;
-        decode(&out, "list_for")
+        decode(call(
+            Port::TokenRead,
+            "list_for",
+            &ListForArgs { principal },
+        )?)
     }
-}
-
-/// Read a write's verdict.
-///
-/// A `()`-returning store method has no value to decode, and the empty
-/// string is refusal on every returning import — so a successful void write
-/// and a denied one would otherwise be the same bytes, and the caller could
-/// not tell "stored" from "refused". The host therefore answers a void write
-/// with a non-empty acknowledgement, and this is the one place that
-/// distinction is read back.
-fn acknowledgement(out: &str, method: &str) -> Result<(), AppError> {
-    if out.trim().is_empty() {
-        return Err(AppError::internal(format!(
-            "module sdk: host refused {method}"
-        )));
-    }
-    Ok(())
 }
