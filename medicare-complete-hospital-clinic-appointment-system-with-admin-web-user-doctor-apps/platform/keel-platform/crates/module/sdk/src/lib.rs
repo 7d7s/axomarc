@@ -212,6 +212,8 @@ fn respond(body: &str) -> i64 {
 extern "C" {
     fn log(ptr: u32, len: u32);
     fn capability_check(action_ptr: u32, action_len: u32, path_ptr: u32, path_len: u32) -> i32;
+    fn capability_write(action_ptr: u32, action_len: u32, delta_ptr: u32, delta_len: u32) -> i32;
+    fn capability_audit(action_ptr: u32, action_len: u32, record_ptr: u32, record_len: u32) -> i32;
     fn model_read(method_ptr: u32, method_len: u32, args_ptr: u32, args_len: u32) -> i64;
     fn model_write(method_ptr: u32, method_len: u32, args_ptr: u32, args_len: u32) -> i64;
     fn token_read(method_ptr: u32, method_len: u32, args_ptr: u32, args_len: u32) -> i64;
@@ -352,6 +354,50 @@ pub fn capability_allowed(action: &str, path: &str) -> bool {
     }
 }
 
+/// Declare one mutation delta to the host.
+///
+/// This is not the seam: a `MutationRecord` a handler wrote through the
+/// execution unit is *record*, not application — the host applies the same
+/// buffer to its own unit after a successful call and discards it on failure.
+/// `false` means the host refused it (undeclared action, malformed record,
+/// buffer full), and the caller must treat that as a failure rather than
+/// carry on with one fewer effect than the handler recorded.
+pub fn record_write(action: &str, delta: &serde_json::Value) -> bool {
+    emit("capability_write", action, delta)
+}
+
+/// Declare one audit entry to the host. Every profile may record, including
+/// a read-only one: accountability is append-only and is not a mutation.
+pub fn record_audit(action: &str, entry: &serde_json::Value) -> bool {
+    emit("capability_audit", action, entry)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn emit(import: &str, action: &str, payload: &serde_json::Value) -> bool {
+    let Ok(payload) = serde_json::to_string(payload) else {
+        return false;
+    };
+    let (a, p) = (action.as_bytes(), payload.as_bytes());
+    let (a_ptr, a_len) = (a.as_ptr() as u32, a.len() as u32);
+    let (p_ptr, p_len) = (p.as_ptr() as u32, p.len() as u32);
+    unsafe {
+        let verdict = match import {
+            "capability_write" => capability_write(a_ptr, a_len, p_ptr, p_len),
+            _ => capability_audit(a_ptr, a_len, p_ptr, p_len),
+        };
+        verdict != 0
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn emit(import: &str, action: &str, payload: &serde_json::Value) -> bool {
+    // No host behind an import on this build. Refusing is the honest answer
+    // rather than pretending the record was delivered: the whole point of the
+    // return value is that a caller must not continue as though it were.
+    let _ = (import, action, payload);
+    false
+}
+
 // ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
@@ -409,7 +455,79 @@ pub fn dispatch(
     let future = handler.handle(ctx, payload, &mut unit);
     // One call, one instance, one thread: the future is polled to completion
     // here rather than handed to an executor a guest does not have.
-    poll(future)
+    let result = poll(future);
+
+    // The handler recorded its effects into THIS unit, which is not the
+    // engine's and dies with this call — nothing else carries them home. So a
+    // success is the moment they go to the host, through the same two imports
+    // the marker uses and the same buffer `WasmHandler` drains after a
+    // successful call and drops on a failed one.
+    //
+    // A record the host will not take fails the call. The handler wrote it
+    // because it happened, and a body saying "created" beside an effect log
+    // that does not contain the creation is worse than an error.
+    #[cfg(target_arch = "wasm32")]
+    if result.is_ok() {
+        replay_effects(op, &unit)?;
+    }
+    result
+}
+
+/// Hand a completed handler's unit records to the host.
+///
+/// Two channels exist and no third is invented here:
+///
+/// * mutations become `capability_write` deltas in the shape
+///   `decode_mutation` reads, and audits become `capability_audit` entries in
+///   the shape `decode_audit` reads — both schemas are field-for-field the
+///   record types, so nothing is translated, only named.
+/// * `MutationRecord::stream` does not cross, because the delta schema has
+///   never had a field for it (the host hardcodes `None` and falls back to the
+///   capability's own plan). That is a pre-existing limit of the import, not
+///   something this path widens.
+/// * `OutboxMessage`s do not cross either: there is no outbox import, and
+///   inventing one mid-port would be a second ABI to get wrong. A module that
+///   queues outbox work is not yet fully ported, and that is recorded in the
+///   SDK rather than hidden by an empty success.
+#[cfg(target_arch = "wasm32")]
+fn replay_effects(
+    action: &str,
+    unit: &unit::GuestUnit,
+) -> Result<(), kelson_foundation::AppError> {
+    let refused = |what: &str, index: usize| {
+        kelson_foundation::AppError::internal(format!(
+            "module sdk: the host refused the {what} this handler recorded at index {index}"
+        ))
+    };
+    for (i, m) in unit.mutations().iter().enumerate() {
+        let delta = serde_json::json!({
+            "resource_type": m.resource_type,
+            "resource_id": m.resource_id.map(|id| id.to_string()),
+            "resource_version": m.resource_version,
+            "before": m.before,
+            "after": m.after,
+        });
+        if !record_write(action, &delta) {
+            return Err(refused("mutation", i));
+        }
+    }
+    for (i, a) in unit.audits().iter().enumerate() {
+        let entry = serde_json::json!({
+            "action": a.action,
+            "resource": a.resource,
+            "authority": a.authority,
+            "outcome": match a.outcome {
+                kelson_execution::AuditOutcome::Success => "success",
+                kelson_execution::AuditOutcome::Denied => "denied",
+                kelson_execution::AuditOutcome::Failed => "failed",
+            },
+            "detail": a.detail,
+        });
+        if !record_audit(action, &entry) {
+            return Err(refused("audit", i));
+        }
+    }
+    Ok(())
 }
 
 /// Drive a `'static` future to completion inside a guest.
