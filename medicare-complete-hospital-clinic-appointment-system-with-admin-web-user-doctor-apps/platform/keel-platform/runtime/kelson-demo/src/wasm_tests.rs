@@ -1908,7 +1908,7 @@ async fn compiled_marker_module_loads_and_answers_with_its_build_marker() {
         .expect("the marker dispatches");
     let expected = option_env!("KELSON_MODULE_MARKER").unwrap_or("v1");
     assert_eq!(out.result["marker"], json!(expected), "{}", out.result);
-    assert_eq!(out.result["operation"], json!("read"), "{}", out.result);
+    assert_eq!(out.result["operation"], json!("marker.read"), "{}", out.result);
     assert_eq!(
         out.result["received"],
         json!(2),

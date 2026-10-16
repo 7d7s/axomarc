@@ -1558,12 +1558,20 @@ impl WasmHandler {
         let operation = OperationId::parse(qualified.clone())
             .map_err(|e| WasmError::Manifest(format!("operation {qualified}: {e}")))?;
         let mut plan = ExecutionPlan::new(operation, spec.profile)
-            .with_capability(qualified).with_plane(manifest.module.plane.to_security_plane());
+            .with_capability(qualified.clone())
+            .with_plane(manifest.module.plane.to_security_plane());
         relax_public_routes(manifest, capability, &mut plan);
         Ok(Self {
             plan,
             plugin,
-            local: capability.to_string(),
+            // What the guest is dispatched. It is the operation the host
+            // registered this handler under, not the bare capability name: a
+            // module's handlers declare `oauth2.authorize`, and a seam that
+            // sent `authorize` would leave them unfindable inside the guest.
+            // The same string is recorded on the mutations and audits this
+            // call produces, and a module-qualified id is the only spelling
+            // that stays unique once more than one module is loaded.
+            local: qualified,
             profile,
         })
     }
