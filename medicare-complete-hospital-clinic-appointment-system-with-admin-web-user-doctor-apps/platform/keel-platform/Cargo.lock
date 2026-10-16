@@ -1586,6 +1586,7 @@ dependencies = [
  "kelson-mod-appointments",
  "kelson-mod-oauth2",
  "kelson-models",
+ "kelson-module-contract",
  "kelson-mysql",
  "kelson-notifications",
  "kelson-observability",
