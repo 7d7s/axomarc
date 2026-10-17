@@ -53,6 +53,8 @@ use std::sync::Arc;
 
 use kelson_context::ExecutionContext;
 use serde_json::Value;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::OnceLock;
 
 pub mod model;
 pub mod token;
@@ -423,8 +425,28 @@ fn emit(import: &str, action: &str, payload: &serde_json::Value) -> bool {
     // No host behind an import on this build. Refusing is the honest answer
     // rather than pretending the record was delivered: the whole point of the
     // return value is that a caller must not continue as though it were.
-    let _ = (import, action, payload);
-    false
+    //
+    // A native embedder may still give these records somewhere to go: a host
+    // compiled into the same binary as the module is a host, just an
+    // in-process one. It says so once, at boot, and only it ever says so.
+    match NATIVE_RECORD_SINK.get() {
+        Some(sink) => sink(import, action, payload),
+        None => false,
+    }
+}
+
+/// Where native builds put a record the SDK would otherwise have to refuse.
+#[cfg(not(target_arch = "wasm32"))]
+static NATIVE_RECORD_SINK: OnceLock<fn(&str, &str, &serde_json::Value) -> bool> =
+    OnceLock::new();
+
+/// Give native records somewhere to go. Installs once; a later call is
+/// refused (`false`) rather than replacing what the first caller chose.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn install_native_record_sink(
+    sink: fn(&str, &str, &serde_json::Value) -> bool,
+) -> bool {
+    NATIVE_RECORD_SINK.set(sink).is_ok()
 }
 
 // ---------------------------------------------------------------------------
