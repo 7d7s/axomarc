@@ -218,6 +218,7 @@ extern "C" {
     fn model_write(method_ptr: u32, method_len: u32, args_ptr: u32, args_len: u32) -> i64;
     fn token_read(method_ptr: u32, method_len: u32, args_ptr: u32, args_len: u32) -> i64;
     fn token_write(method_ptr: u32, method_len: u32, args_ptr: u32, args_len: u32) -> i64;
+    fn notify_enqueue(request_ptr: u32, request_len: u32) -> i32;
 }
 
 /// Which of the four import families a call reaches, and therefore which
@@ -372,6 +373,25 @@ pub fn record_audit(action: &str, entry: &serde_json::Value) -> bool {
     emit("capability_audit", action, entry)
 }
 
+/// Declare one notification the module wants delivered (ADR 0020 §5).
+///
+/// `request` is a [`kelson_module_contract::NotificationRequest`]: the name
+/// of a notification this module registered, plus the producer's template
+/// vars. It is *intent*, not a rendered message — the host resolves the
+/// def, the catalog, the locale and the channels, because that is where
+/// those live.
+///
+/// Unlike a mutation, the host buffers this and only delivers once the whole
+/// call has succeeded, so a handler that notifies and then fails leaves
+/// nothing behind. Call it on the success path, after the writes that the
+/// notification is about have been accepted. `false` means the host refused
+/// it (a read-only profile, or a host wired with no notification sink), and
+/// the caller must treat that as a failure rather than carry on as though
+/// the notification went out.
+pub fn record_notification(request: &serde_json::Value) -> bool {
+    emit("notify_enqueue", "", request)
+}
+
 #[cfg(target_arch = "wasm32")]
 fn emit(import: &str, action: &str, payload: &serde_json::Value) -> bool {
     let Ok(payload) = serde_json::to_string(payload) else {
@@ -383,6 +403,7 @@ fn emit(import: &str, action: &str, payload: &serde_json::Value) -> bool {
     unsafe {
         let verdict = match import {
             "capability_write" => capability_write(a_ptr, a_len, p_ptr, p_len),
+            "notify_enqueue" => notify_enqueue(p_ptr, p_len),
             _ => capability_audit(a_ptr, a_len, p_ptr, p_len),
         };
         verdict != 0
@@ -408,8 +429,8 @@ fn emit(import: &str, action: &str, payload: &serde_json::Value) -> bool {
 /// `context_*` import family: it is serde-serializable already, one field
 /// costs nothing, and a second import family would have to be versioned for
 /// a type that already has a wire shape.
-const ENVELOPE_CTX: &str = "__kelson_ctx";
-const ENVELOPE_INPUT: &str = "input";
+const ENVELOPE_CTX: &str = kelson_module_contract::ENVELOPE_CTX;
+const ENVELOPE_INPUT: &str = kelson_module_contract::ENVELOPE_INPUT;
 
 /// Run one operation against the module's handlers.
 ///
@@ -468,9 +489,25 @@ pub fn dispatch(
     // that does not contain the creation is worse than an error.
     #[cfg(target_arch = "wasm32")]
     if result.is_ok() {
-        replay_effects(op, &unit)?;
+        replay_effects(capability_of(op), &unit)?;
     }
     result
+}
+
+/// The capability a qualified operation names.
+///
+/// The host's declared set names CAPABILITIES ("book"), because that is what a
+/// sidecar can review and refuse drift over; the operation it dispatches is
+/// the qualified route ("appointments.book"), because that is what a caller
+/// names. Routes are `{module}.{capability}`, so the capability is the last
+/// segment - and naming it here means the guest asks the host for exactly what
+/// was reviewed instead of for a string the host has to guess about. Guessing
+/// cost this port every delta a module recorded: the write was refused, the
+/// unit came back empty, and the engine reported a successful mutation
+/// operation that had mutated nothing.
+#[cfg(target_arch = "wasm32")]
+fn capability_of(operation: &str) -> &str {
+    operation.rsplit('.').next().unwrap_or(operation)
 }
 
 /// Hand a completed handler's unit records to the host.
@@ -576,7 +613,12 @@ pub fn encode_call(
     let input = read_input(in_ptr, in_len);
     let encoded = match dispatch(handlers, op, input) {
         Ok(value) => serde_json::to_string(&value),
-        Err(err) => serde_json::to_string(&err.to_string()),
+        // A failure is answered in its OWN envelope, never as bare text: a
+        // bare document is a successful body, so an error encoded as a string
+        // makes every rejection this module raises look like a 200.
+        Err(err) => serde_json::to_string(&serde_json::json!({
+            kelson_module_contract::ENVELOPE_ERR: err,
+        })),
     };
     match encoded {
         Ok(body) => respond(&body),

@@ -217,6 +217,35 @@ impl CallState {
         self.audits.push(value);
         true
     }
+
+    /// `notify_enqueue(request)` — accepted for delivery?
+    ///
+    /// ADR 0020 §5, and the same shape as the two effects above: it buffers
+    /// rather than delivering, because delivery is async (the database
+    /// channel writes rows through a store port) and because a handler that
+    /// notifies and then fails must leave nothing behind. Drained by
+    /// [`crate::WasmHandler`] only once the call has succeeded.
+    ///
+    /// Gated like a write: a read-only guest may not make the host notify
+    /// anyone, even though it names the import.
+    pub(crate) fn host_notify_enqueue(&mut self, request: &str) -> bool {
+        if !self.profile.can_write() {
+            return false;
+        }
+        let Ok(parsed) =
+            serde_json::from_str::<kelson_module_contract::NotificationRequest>(request)
+        else {
+            return false;
+        };
+        if parsed.event.trim().is_empty() {
+            return false;
+        }
+        if self.notifications.len() >= MAX_CALL_EFFECTS {
+            return false;
+        }
+        self.notifications.push(parsed);
+        true
+    }
 }
 
 /// The ABI v2 face of the same four primitives: the `Host` trait generated
@@ -727,6 +756,30 @@ fn define_host(linker: &mut Linker<CallState>) -> Result<(), WasmError> {
                 )
             };
             reply(&mut caller, &answer)
+        },
+    )?;
+
+    // host.notify_enqueue(request) -> 1 accepted / 0 refused (ADR 0020 §5).
+    // Buffers one [`NotificationRequest`] for the handler to deliver after
+    // the call succeeds — it does not deliver here, because delivery writes
+    // rows through an async store port and a handler that notifies and then
+    // fails must leave nothing behind. Gated like `model_write`: a
+    // read-only guest cannot make the host notify anyone.
+    wrap!(
+        linker,
+        "host",
+        "notify_enqueue",
+        |mut caller: Caller<'_, CallState>, ptr: u32, len: u32| -> i32 {
+            let request = {
+                let Some(memory) = memory_of(&mut caller) else {
+                    return 0;
+                };
+                let Some(request) = read_guest_str(&memory, &mut caller, ptr, len) else {
+                    return 0;
+                };
+                request
+            };
+            i32::from(caller.data_mut().host_notify_enqueue(&request))
         },
     )?;
 

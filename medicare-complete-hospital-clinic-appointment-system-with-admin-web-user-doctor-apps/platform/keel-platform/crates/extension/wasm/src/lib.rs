@@ -107,6 +107,10 @@ pub const DEFAULT_MEMORY_BYTES: usize = 16 * 1024 * 1024;
 pub struct ModuleHostServices {
     pub model: Option<Arc<dyn kelson_module_contract::ModelStore>>,
     pub tokens: Option<Arc<dyn kelson_module_contract::TokenStore>>,
+    /// The notification sink a `host.notify_enqueue` import reaches (ADR 0020
+    /// §5). `None` means the host was not wired for notifications, which the
+    /// seam answers with a named error rather than a silence.
+    pub notify: Option<Arc<dyn kelson_module_contract::NotificationSink>>,
 }
 
 impl ModuleHostServices {
@@ -118,6 +122,7 @@ impl ModuleHostServices {
         Self {
             model: Some(model),
             tokens: Some(tokens),
+            notify: None,
         }
     }
 
@@ -129,6 +134,22 @@ impl ModuleHostServices {
     /// The store a `host.token_*` import should reach, if one is wired.
     pub fn token_store(&self) -> Option<&dyn kelson_module_contract::TokenStore> {
         self.tokens.as_deref()
+    }
+
+    /// The sink a `host.notify_enqueue` import reaches, if one is wired.
+    ///
+    /// Additive rather than a third parameter to [`Self::new`]: a host that
+    /// has no notification story at all keeps the two-store constructor it
+    /// already had, and a module that notifies against it is refused loudly
+    /// instead of being handed an empty inbox.
+    pub fn with_notifications(mut self, sink: Arc<dyn kelson_module_contract::NotificationSink>) -> Self {
+        self.notify = Some(sink);
+        self
+    }
+
+    /// The sink a `host.notify_enqueue` import should reach, if one is wired.
+    pub fn notification_sink(&self) -> Option<&dyn kelson_module_contract::NotificationSink> {
+        self.notify.as_deref()
     }
 }
 
@@ -161,6 +182,11 @@ pub(crate) struct CallState {
     /// Audit records the guest recorded via `host.capability_audit`
     /// (same lifecycle as `deltas`).
     pub audits: Vec<serde_json::Value>,
+    /// Notifications the guest declared via `host.notify_enqueue` (ADR 0020
+    /// §5). Same lifecycle as the two above: drained only after a successful
+    /// call and dropped with the rest of the effects on a failed one, so a
+    /// handler that notifies and then fails leaves nothing behind.
+    pub notifications: Vec<kelson_module_contract::NotificationRequest>,
 }
 
 /// Guest capability profile (§5.3, KEEL-007): which `host.*` imports a
@@ -792,6 +818,7 @@ impl WasmHost {
                 services,
                 deltas: Vec::new(),
                 audits: Vec::new(),
+                notifications: Vec::new(),
             },
         );
         store.limiter(|state| &mut state.limits);
@@ -955,9 +982,14 @@ impl WasmHost {
         // Declaring it in the guest manifest therefore neither helps nor
         // hurts — the sidecar's copy is the review gate, checked separately.
         plugin_cmp.abi = None;
+        // Host-side review state, not guest-declared (see the field's own
+        // note); the drift check compares what the guest committed to, and a
+        // guest cannot commit to whether its host wraps its payload.
+        plugin_cmp.envelope_context = false;
         let mut sidecar_cmp = sidecar.clone();
         sidecar_cmp.budget = kelson_registry::ModuleBudget::default();
         sidecar_cmp.abi = None;
+        sidecar_cmp.envelope_context = false;
         let plugin_ser = serde_json::to_string(&plugin_cmp)
             .map_err(|e| WasmError::Manifest(format!("manifest re-encode failed: {e}")))?;
         let sidecar_ser = serde_json::to_string(&sidecar_cmp)
@@ -972,10 +1004,17 @@ impl WasmHost {
         let declared: Arc<BTreeSet<String>> =
             Arc::new(parsed.capabilities.keys().cloned().collect());
         let label = parsed.name().to_string();
+        // Drift has already been refused above, so the two documents agree on
+        // everything a guest CAN declare. What is left to take from the
+        // sidecar is the host-side review state a guest cannot know about —
+        // how this generation is dispatched, which is what the review
+        // approved when it read the handlers.
+        let mut manifest = parsed;
+        manifest.envelope_context = sidecar.envelope_context;
         Ok(WasmPlugin {
             engine: self.engine.clone(),
             guest,
-            manifest: parsed,
+            manifest,
             declared,
             label,
             budget,
@@ -1126,6 +1165,9 @@ pub struct CallOutput {
     pub deltas: Vec<serde_json::Value>,
     /// Raw audit records from `host.capability_audit`.
     pub audits: Vec<serde_json::Value>,
+    /// The notifications the guest declared, in order, drained only once the
+    /// call succeeded.
+    pub notifications: Vec<kelson_module_contract::NotificationRequest>,
 }
 
 impl WasmPlugin {
@@ -1389,10 +1431,12 @@ impl WasmPlugin {
         let effects = &mut store.data_mut();
         let deltas = std::mem::take(&mut effects.deltas);
         let audits = std::mem::take(&mut effects.audits);
+        let notifications = std::mem::take(&mut effects.notifications);
         Ok(CallOutput {
             body,
             deltas,
             audits,
+            notifications,
         })
     }
 }
@@ -1603,8 +1647,28 @@ impl OperationHandler for WasmHandler {
         let local = self.local.clone();
         let profile = self.profile;
         let scope = ctx.scope.clone();
-        let result = (|| -> Result<Value, AppError> {
-            let input_json = serde_json::to_string(&input)
+        let sink = self.plugin.services().notify;
+        // Only the guests whose handlers take no `ctx` parameter need it
+        // carried inside the payload; the checked-in WASM fixtures echo their
+        // input verbatim and were written against the bare-payload shape.
+        // The sidecar records which is which, as review state (`abi`'s
+        // precedent), so this is a fact the review approved rather than a
+        // guess made per call.
+        let envelope_context = self.plugin.manifest().envelope_context;
+        let result = (|| -> Result<(Value, Vec<kelson_module_contract::NotificationRequest>), AppError> {
+            let ctx_json = serde_json::to_value(ctx.as_ref())
+                .map_err(|e| AppError::internal(format!("wasm context encode: {e}")))?;
+            // A guest entrypoint has no `ctx` parameter, so the executing
+            // context travels INSIDE the document it is handed — the one
+            // shape both halves of the seam name. Sending the bare payload
+            // instead is how a module ends up reporting "execution context is
+            // not readable" for every call it makes.
+            let wire = if envelope_context {
+                kelson_module_contract::encode_envelope(&ctx_json, &input)
+            } else {
+                input
+            };
+            let input_json = serde_json::to_string(&wire)
                 .map_err(|e| AppError::internal(format!("wasm input encode: {e}")))?;
             let output = plugin
                 .call(&local, &input_json, scope.as_ref(), profile)
@@ -1622,11 +1686,61 @@ impl OperationHandler for WasmHandler {
                 let record = decode_audit(&local, i, entry)?;
                 unit.record_audit(record);
             }
-            serde_json::from_str(&output.body).map_err(|e| {
+            let value: Value = serde_json::from_str(&output.body).map_err(|e| {
                 AppError::internal(format!("wasm plugin output for {local} is not JSON: {e}"))
-            })
+            })?;
+            // A guest answers EITHER with its own document OR with the failure
+            // it raised, and the two must not be confusable. Without this the
+            // host reads `"[KSN_VALIDATION] ..."` - a bare JSON string - as a
+            // successful body, so every rejection a module makes reaches the
+            // caller as a 200 with the message in it, and the engine then
+            // reports the op as having produced nothing at all. The error
+            // crosses WHOLE (code, category and severity included), so the
+            // caller sees exactly what the module refused and why.
+            if let Some(raw) = value
+                .as_object()
+                .and_then(|o| o.get(kelson_module_contract::ENVELOPE_ERR))
+            {
+                return Err(serde_json::from_value::<AppError>(raw.clone()).unwrap_or_else(|_| {
+                    AppError::internal(format!(
+                        "wasm plugin {local} reported a failure the host could not decode"
+                    ))
+                }));
+            }
+            Ok((value, output.notifications))
         })();
-        Box::pin(async move { result })
+        // Notifications are the one effect that leaves the process rather
+        // than being written into the unit, so they are delivered HERE —
+        // after the call and after its deltas have been accepted, never
+        // before. A handler that notified and then failed has already been
+        // returned as an error by the closure above, so nothing is sent for
+        // it; a host wired with no sink refuses the call loudly rather than
+        // letting the module believe the notification went out.
+        Box::pin(async move {
+            let (value, notifications) = result?;
+            // Principal, tenant and locale are taken from the envelope the
+            // host built for this call, never from the guest: a module can
+            // name the event it produced but not who it notifies as.
+            let envelope = kelson_module_contract::NotificationEnvelope {
+                principal_id: ctx.principal.id,
+                tenant_id: ctx.tenant.as_ref().map(|t| t.id),
+                locale: Some(ctx.locale.lang.clone()),
+            };
+            for (i, request) in notifications.into_iter().enumerate() {
+                let Some(sink) = sink.as_deref() else {
+                    return Err(AppError::internal(format!(
+                        "wasm plugin {local} declared notification #{i} ({}) but the host wired no notification sink",
+                        request.event
+                    )));
+                };
+                sink.deliver(request, envelope.clone()).await.map_err(|e| {
+                    AppError::internal(format!(
+                        "wasm plugin {local} notification #{i} could not be delivered: {e}"
+                    ))
+                })?;
+            }
+            Ok(value)
+        })
     }
 }
 
@@ -1874,3 +1988,10 @@ fn relax_public_routes(manifest: &ModuleManifest, capability: &str, plan: &mut E
         plan.authorization.required = false;
     }
 }
+
+// Declared at the END of the file on purpose. `platform/docs/
+// 20-ARCHITECTURE-VERIFICATION.md` cites this file by exact line number more
+// than thirty times, and appending is the only kind of edit that shifts none
+// of them - so the per-instance construction lives in its own module, and
+// this is where its declaration goes.
+mod instances;

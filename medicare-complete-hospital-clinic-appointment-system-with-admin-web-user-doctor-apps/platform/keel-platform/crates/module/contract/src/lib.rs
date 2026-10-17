@@ -551,3 +551,141 @@ fn unknown(port: &str, method: &str) -> String {
     .encode()
 }
 
+// ---------------------------------------------------------------------------
+// Notifications - ADR 0020 �5
+// ---------------------------------------------------------------------------
+
+/// One notification a module asked its host to deliver.
+///
+/// Carried by `host.notify_enqueue`, the fifth seam import. It is *intent*,
+/// not a rendered message: the module names a registered notification and
+/// hands over the producer's template vars, and the host resolves the def,
+/// the catalog, the locale and the channels — exactly the work
+/// [`NotificationSink`]'s implementations do on the host side, where the
+/// catalog and the store live.
+///
+/// The `event` is never invented by the host and never computed by the
+/// module from user input: it is one of the module's own registered
+/// notifications, so a module cannot ask the host to notify on an event that
+/// is not its own.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NotificationRequest {
+    /// Stable type key of the registered notification (`appointment.booked`).
+    /// Maps to `notifications.type` and the `notifications.<key>` view.
+    pub event: String,
+    /// Template vars. D-17 nudge-not-payload: the producer's own fields,
+    /// never free-form data the module made up at call time.
+    #[serde(default)]
+    pub payload: Json,
+}
+
+/// A delivery future for one [`NotificationRequest`].
+///
+/// Boxed and `'static` because the Database channel writes rows through an
+/// async store port, so delivery cannot be synchronous — the same reason a
+/// first-party handler returns a `'static` future rather than borrowing its
+/// unit.
+pub type DeliveryFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), AppError>> + Send + 'static>>;
+
+/// The delivery side of a [`NotificationRequest`], filled in by the host and
+/// never by the module.
+///
+/// The principal, the tenant and the locale are the executing context's own,
+/// taken from the envelope the host built for the call — so a module cannot
+/// notify as somebody else, under another tenant, in a locale the request
+/// never negotiated.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NotificationEnvelope {
+    pub principal_id: PrincipalId,
+    pub tenant_id: Option<TenantId>,
+    /// Catalog locale for every rendered string (`None` = catalog default).
+    pub locale: Option<String>,
+}
+
+/// The notification half of the seam: what the host offers a module.
+///
+/// Owned here rather than in `kelson-wasm` for the same reason
+/// [`ModelStore`] and [`TokenStore`] are: this is the name the extension
+/// class gives the service it marshals across the import boundary, and the
+/// implementations stay where they lived. `kelson-wasm` depends on this
+/// crate and never on the notification service.
+pub trait NotificationSink: Send + Sync {
+    /// Deliver one notification the module declared, in the envelope the
+    /// host determined.
+    fn deliver(&self, request: NotificationRequest, envelope: NotificationEnvelope) -> DeliveryFuture;
+}
+
+/// `notify_enqueue(request)` — accepted for delivery, or a gate refusal.///
+/// Same write gate as [`model_write`] and [`token_write`]: a read-only guest
+/// may not make the host notify anyone, and the answer is the same
+/// deliberate empty string, carrying no detail back to a guest that was not
+/// supposed to be able to ask.
+///
+/// What crosses back is *acceptance*, not completion. Delivery is buffered
+/// on the call and only performed once the whole call has succeeded, so a
+/// handler that notifies and then fails leaves nothing behind — the same
+/// all-or-nothing posture [`capability_write`] gives a mutation delta.
+pub fn notify_enqueue(sink: Option<&dyn NotificationSink>, request: &str, can_write: bool) -> String {
+    if !can_write {
+        return String::new();
+    }
+    let Some(sink) = sink else {
+        return unconfigured("notification sink");
+    };
+    // Acceptance is not completion: the sink is only here so that a boot
+    // that forgot to wire one refuses loudly instead of letting the module
+    // believe the notification went out.
+    let _ = sink;
+    let a = match arguments::<NotificationRequest>(request) {
+        Ok(a) => a,
+        Err(e) => return malformed("notify_enqueue", e),
+    };
+    if a.event.trim().is_empty() {
+        return malformed(
+            "notify_enqueue",
+            AppError::internal("a notification must name the registered event it is"),
+        );
+    }
+    SeamResult::Ok(Json::Null).encode()
+}
+
+// ---------------------------------------------------------------------------
+// The dispatch envelope
+// ---------------------------------------------------------------------------
+
+/// The key the executing context travels under.
+///
+/// A guest has no `ctx` parameter: `OperationHandler::handle` receives one and
+/// a guest entrypoint does not, so the host carries the context *inside* the
+/// document it already sends. One name, declared here, is what stops the two
+/// sides from agreeing on it by coincidence — which is exactly the failure a
+/// guest reports as "execution context is not readable" and a host reports as
+/// a module that mysteriously has no principal.
+pub const ENVELOPE_CTX: &str = "__kelson_ctx";
+
+/// The key the caller's own payload travels under, beside the context.
+pub const ENVELOPE_INPUT: &str = "input";
+
+/// The key a guest answers under when the call FAILED rather than when it
+/// produced a document.
+///
+/// A bare JSON string is a perfectly good document, so encoding a rejection as
+/// one makes it indistinguishable from success - which is how a module's every
+/// refusal once reached the caller as a 200 carrying the error text. The value
+/// is the whole [`kelson_foundation::AppError`], so nothing is lost crossing
+/// the boundary but the stack.
+pub const ENVELOPE_ERR: &str = "__kelson_err";
+
+/// Wrap a payload and its executing context into the document a guest reads.
+///
+/// The host calls this; the guest reads the result back through
+/// `kelson-module-sdk`'s `dispatch`, which looks for the same two keys. Both
+/// halves name this crate, so a rename is one edit that cannot desynchronise.
+pub fn encode_envelope(ctx: &serde_json::Value, payload: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        ENVELOPE_CTX: ctx,
+        ENVELOPE_INPUT: payload,
+    })
+}
+

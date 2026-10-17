@@ -672,6 +672,18 @@ pub struct ModuleManifest {
     /// meaning two things in one file is how misconfiguration gets written.
     #[serde(default)]
     pub budget: ModuleBudget,
+    /// Whether the host carries the executing context INSIDE each call's
+    /// payload (the `__kelson_ctx` / `input` document a guest entrypoint
+    /// reads), rather than beside it.
+    ///
+    /// Host-side review state, for the same reason `abi` is: a guest cannot
+    /// compute it and cannot meaningfully declare it, because whether its
+    /// handlers take a `ctx` parameter is a property of the code the review
+    /// looked at. It is cleared before the guest/sidecar drift comparison,
+    /// and absent means `false`, so every checked-in fixture keeps the
+    /// bare-payload ABI it was written against.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub envelope_context: bool,
 }
 
 /// `[budget]` manifest section (Wave M2): a plugin's execution ceilings.
@@ -896,6 +908,9 @@ impl RouteFileManifest {
             // the host ceilings. Declaring anything here would imply a wall
             // clock or concurrency bound that nothing enforces.
             budget: ModuleBudget::default(),
+            // Not a guest artifact either, so there is no entrypoint to carry
+            // a context inside its payload.
+            envelope_context: false,
         }
     }
 }
