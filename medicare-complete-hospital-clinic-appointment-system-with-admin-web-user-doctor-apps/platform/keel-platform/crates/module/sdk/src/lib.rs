@@ -489,25 +489,9 @@ pub fn dispatch(
     // that does not contain the creation is worse than an error.
     #[cfg(target_arch = "wasm32")]
     if result.is_ok() {
-        replay_effects(capability_of(op), &unit)?;
+        replay_effects(op, &unit)?;
     }
     result
-}
-
-/// The capability a qualified operation names.
-///
-/// The host's declared set names CAPABILITIES ("book"), because that is what a
-/// sidecar can review and refuse drift over; the operation it dispatches is
-/// the qualified route ("appointments.book"), because that is what a caller
-/// names. Routes are `{module}.{capability}`, so the capability is the last
-/// segment - and naming it here means the guest asks the host for exactly what
-/// was reviewed instead of for a string the host has to guess about. Guessing
-/// cost this port every delta a module recorded: the write was refused, the
-/// unit came back empty, and the engine reported a successful mutation
-/// operation that had mutated nothing.
-#[cfg(target_arch = "wasm32")]
-fn capability_of(operation: &str) -> &str {
-    operation.rsplit('.').next().unwrap_or(operation)
 }
 
 /// Hand a completed handler's unit records to the host.

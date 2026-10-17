@@ -173,14 +173,16 @@ impl CallState {
     ///
     /// Refuses unless ALL hold: the executing capability runs a
     /// ReadWrite/Admin profile (read-only guests can never write, even when
-    /// they import the function), `action` is in the sidecar-verified declared
-    /// set (no self-elevation), `delta` parses as a JSON object (the handler
-    /// validates the shape), and the per-call buffer is not full.
+    /// they import the function), `action` names a sidecar-verified declared
+    /// capability or the operation this very dispatch serves (neither is a
+    /// self-elevation - see `CallState::own_operation`), `delta` parses as a
+    /// JSON object (the handler validates the shape), and the per-call buffer
+    /// is not full.
     pub(crate) fn host_capability_write(&mut self, action: &str, delta: &str) -> bool {
         if !self.profile.can_write() {
             return false;
         }
-        if !self.declared.contains(action) {
+        if !self.declared.contains(action) && action != self.own_operation {
             return false;
         }
         let Ok(value) = serde_json::from_str::<serde_json::Value>(delta) else {
@@ -202,7 +204,7 @@ impl CallState {
     /// ReadOnly); `action` must still be declared and `record` must parse as
     /// a JSON object. Same buffer bound as writes.
     pub(crate) fn host_capability_audit(&mut self, action: &str, record: &str) -> bool {
-        if !self.declared.contains(action) {
+        if !self.declared.contains(action) && action != self.own_operation {
             return false;
         }
         let Ok(value) = serde_json::from_str::<serde_json::Value>(record) else {

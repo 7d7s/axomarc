@@ -160,6 +160,16 @@ pub(crate) struct CallState {
     pub label: String,
     /// Sidecar-verified capability names (never computed by the guest).
     pub declared: Arc<BTreeSet<String>>,
+    /// The qualified operation THIS dispatch serves, empty for a store built
+    /// for a manifest scan.
+    ///
+    /// A capability may itself contain a dot (`clients.manage`), so the route
+    /// cannot be split back into one - and a guest cannot be asked which it
+    /// is, because believing that answer is the elevation the declared set
+    /// exists to prevent. The host already knows, since it is the side that
+    /// dispatched, and accepting exactly this operation is no elevation: the
+    /// plugin was routed here for it in the first place.
+    pub own_operation: String,
     /// Resolved scope node paths of the current execution (empty when the
     /// execution carries no scope).
     pub scope_paths: Vec<String>,
@@ -812,6 +822,7 @@ impl WasmHost {
                 limits,
                 label: label.to_string(),
                 declared,
+                own_operation: String::new(),
                 scope_paths,
                 has_scope,
                 profile,
@@ -1414,6 +1425,7 @@ impl WasmPlugin {
             self.services(),
             &budget,
         )?;
+        store.data_mut().own_operation = operation.to_string();
 
         let body = match &self.guest {
             Guest::V1(pre) => dispatch_v1(&mut store, pre, operation, input_json, budget)?,
