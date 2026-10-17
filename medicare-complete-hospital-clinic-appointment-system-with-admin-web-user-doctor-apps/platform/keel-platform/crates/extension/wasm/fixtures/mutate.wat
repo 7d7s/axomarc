@@ -18,13 +18,13 @@
 
   (data (i32.const 1024)
     "{\"module\":{\"name\":\"mutate\",\"version\":\"0.1.0\",\"api\":1},\"capabilities\":{\"write_all\":{\"profile\":\"COMMAND\"}}}\00")
-  (data (i32.const 1200) "write_all")                                    ;; 9 bytes
-  (data (i32.const 1220) "{\"resource_type\":\"notes\",\"after\":{\"text\":\"hi\"}}") ;; 47 bytes
-  (data (i32.const 1280) "{\"action\":\"notes.create\"}")                 ;; 25 bytes
-  (data (i32.const 1320) "{\"write\":")                                   ;; 9 bytes
-  (data (i32.const 1340) ",\"audit\":")                                   ;; 9 bytes
-  (data (i32.const 1360) "}")                                            ;; 1 byte
-  (data (i32.const 1380) "mutate invoked")                               ;; 14 bytes
+  (data (i32.const 1288) "write_all")                                    ;; 9 bytes
+  (data (i32.const 1140) "{\"resource_type\":\"notes\",\"after\":{\"text\":\"hi\"}}") ;; 47 bytes
+  (data (i32.const 1200) "{\"action\":\"notes.create\"}")                 ;; 25 bytes
+  (data (i32.const 1240) "{\"write\":")                                   ;; 9 bytes
+  (data (i32.const 1252) ",\"audit\":")                                   ;; 9 bytes
+  (data (i32.const 1264) "}")                                            ;; 1 byte
+  (data (i32.const 1272) "mutate invoked")                               ;; 14 bytes
 
   (func $alloc (export "kelson_alloc") (param $n i32) (result i32)
     (local $p i32)
