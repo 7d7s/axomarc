@@ -365,6 +365,16 @@ mod tests {
     fn fixture(
         capabilities: &[&str],
     ) -> (Arc<Engine>, Arc<AppointmentStore>, PrincipalId, TenantId) {
+        // These tests are the host for what a native build has nowhere to put.
+        // A booking DECLAREs `appointment.booked` (ADR 0020 sec. 5), and a native
+        // SDK has no import to ask - so without somewhere for that declaration to
+        // land it refuses, and the handler fails. A host compiled into the same
+        // binary is still a host; it says so once, here, and the sink is
+        // process-global, so the first fixture to run installs it for all of them.
+        static ACCEPT: std::sync::Once = std::sync::Once::new();
+        ACCEPT.call_once(|| {
+            kelson_module_sdk::install_native_record_sink(|_, _, _| true);
+        });
         let principal = PrincipalId::new();
         let tenant = TenantId::new();
         let policies = Arc::new(PolicyEngine::new());
@@ -707,22 +717,35 @@ mod tests {
         }
     }
 
+    /// ADR 0020 split the module in two: the host half (this provider) is
+    /// statically linked into the kernel, and the handlers are not - they ship in
+    /// the guest artifact and are dispatched by id at call time. So the contract
+    /// this provider must keep is the exact *negative* of the pre-C.2 one: booting
+    /// it must leave no handler bundle in the kernel registry. Asserting the
+    /// positive half as well (the handlers still exist, on the guest side, four of
+    /// them) keeps the old intent honest - the code moved, it did not vanish.
     #[tokio::test]
-    async fn provider_boots_and_registers_the_handler_bundle() {
+    async fn provider_boots_and_keeps_the_handler_bundle_out_of_the_kernel() {
         let mut host = kelson_lifecycle::ApplicationHost::new();
         host.add_provider(Box::new(TestModelStoreProvider));
         host.add_provider(Box::new(ModuleProvider::new()));
         host.boot().await.expect("module boots");
-        let bundle = host
-            .registry()
-            .get::<Vec<Arc<dyn OperationHandler>>>()
-            .expect("handlers registered");
-        assert_eq!(bundle.len(), 4);
         let store = host
             .registry()
             .get::<AppointmentStore>()
             .expect("store registered");
         assert!(store.list(TenantId::new()).unwrap().is_empty());
+        assert!(
+            host.registry()
+                .get::<Vec<Arc<dyn OperationHandler>>>()
+                .is_err(),
+            "the kernel must not hold operation handlers: they live in the              `kelson_mod_appointments` artifact, and a registry that carried them              would mean the kernel statically links this module's behaviour"
+        );
+        assert_eq!(
+            handlers(store.clone()).len(),
+            4,
+            "the guest entry point still exposes book + cancel + list + availability"
+        );
     }
 
     #[tokio::test]
