@@ -28,6 +28,11 @@ use kelson_foundation::{
 use kelson_execution::{
     BoxFuture, ExecutionPlan, ExecutionUnit, MutationRecord, OperationHandler, OutboxMessage,
 };
+#[cfg(test)]
+use kelson_lifecycle::{BootError, Phase, Provider, ServiceRegistry};
+#[cfg(test)]
+use kelson_models::{ModelRuntime, ModelStore, ModelStoreRef, Record};
+
 use serde_json::json;
 use uuid::Uuid;
 
@@ -352,7 +357,6 @@ impl OperationHandler for AvailabilityHandler {
 mod tests {
     use super::*;
     use kelson_context::{PrincipalContext, ScopeSnapshot, TenantContext};
-    use kelson_notifications::NotificationStore;
     use kelson_foundation::{AuthorizationRevision, FeatureRevision, ModuleRevision, PrincipalId};
     use kelson_execution::{Engine, IdempotencyKey, InMemoryBackend, InMemoryIdempotency};
     use kelson_policy::{AccessSnapshot, PolicyAuthz, PolicyEngine};
