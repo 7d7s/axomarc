@@ -29,7 +29,6 @@ use std::sync::Mutex;
 
 use kelson_foundation::AppError;
 use kelson_execution::OperationHandler;
-use kelson_identity::{hash_password, verify_password, Secret};
 use kelson_lifecycle::{BootError, ModuleState, Phase, Provider, ServiceRegistry};
 use kelson_models::{
     FieldDef, FieldFilter, FieldType, ModelDef, ModelRuntime, ModelStore, ModelStoreRef, Record,
@@ -158,7 +157,7 @@ impl OauthClientStore {
         scopes: Vec<String>,
     ) -> Result<(OauthClient, String), AppError> {
         let secret = kelson_tokens::generate_plaintext();
-        let secret_hash = hash_password(&Secret::new(secret.as_str()))?;
+        let secret_hash = hash_secret(&secret)?;
         let mut input = Record::new();
         input.insert("id".into(), json!(Uuid::now_v7().to_string()));
         input.insert("name".into(), json!(name));
@@ -204,7 +203,7 @@ impl OauthClientStore {
             .get("secret_hash")
             .and_then(|v| v.as_str())
             .unwrap_or_default();
-        match verify_password(&Secret::new(secret), stored) {
+        match verify_secret(secret, stored) {
             Ok(true) => from_record(&row),
             _ => Err(AppError::unauthenticated()),
         }
@@ -333,4 +332,41 @@ impl Provider for ModuleProvider {
         self.transition_to_ready();
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Reaching the KDF
+// ---------------------------------------------------------------------------
+
+/// Hash a client secret the way THIS build can reach argon2.
+///
+/// A guest reaches it only through `host.password_hash` (ADR 0020 §6):
+/// argon2's baseline is 19 MiB and billions of instructions, and a guest is
+/// given 16 MiB and 10M fuel - the memory ask alone is refused, so hashing
+/// in-process aborts the instance rather than returning. The host has no
+/// such ceiling and calls the crate directly.
+///
+/// Both paths run the same argon2id parameters from `kelson_identity`, so a
+/// hash written by either is readable by either; only where the seconds are
+/// spent differs.
+#[cfg(target_arch = "wasm32")]
+fn hash_secret(secret: &str) -> Result<String, AppError> {
+    kelson_module_sdk::hash_password(secret)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn hash_secret(secret: &str) -> Result<String, AppError> {
+    kelson_identity::hash_password(&kelson_identity::Secret::new(secret))
+}
+
+/// Verify a presented secret against the stored PHC string - the mirror of
+/// [`hash_secret`], on whichever side of the seam this build is running.
+#[cfg(target_arch = "wasm32")]
+fn verify_secret(secret: &str, hash: &str) -> Result<bool, AppError> {
+    kelson_module_sdk::verify_password(secret, hash)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn verify_secret(secret: &str, hash: &str) -> Result<bool, AppError> {
+    kelson_identity::verify_password(&kelson_identity::Secret::new(secret), hash)
 }

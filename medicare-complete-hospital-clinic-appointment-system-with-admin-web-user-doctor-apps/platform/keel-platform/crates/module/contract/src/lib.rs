@@ -689,3 +689,94 @@ pub fn encode_envelope(ctx: &serde_json::Value, payload: &serde_json::Value) -> 
     })
 }
 
+
+
+// ---------------------------------------------------------------------------
+// Password hashing (ADR 0020 §6)
+// ---------------------------------------------------------------------------
+
+/// Arguments for the `hash` method of `host.password_hash`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PasswordHashArgs {
+    /// The plaintext. It crosses into the host because the memory-hard KDF
+    /// the platform runs is the host's to spend, not the guest's.
+    pub secret: String,
+}
+
+/// Arguments for the `verify` method of `host.password_hash`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PasswordVerifyArgs {
+    /// The plaintext being presented - the credential a caller just handed
+    /// the module.
+    pub secret: String,
+    /// The stored PHC encoding being checked against.
+    pub hash: String,
+}
+
+/// What a successful `hash` answers with: the PHC string to store.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PasswordHashResult {
+    pub hash: String,
+}
+
+/// What a successful `verify` answers with. `false` is a normal answer,
+/// never an error - a secret that simply does not match is the common case.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PasswordVerifyResult {
+    pub valid: bool,
+}
+
+/// `password_hash(method, args)` - hash or verify a secret, on the host.
+///
+/// # Why the KDF does not run in the guest
+///
+/// argon2's baseline is `19 * 1024` KiB of memory and billions of
+/// instructions. A guest is given 16 MiB of linear memory and 10M fuel, so
+/// the memory ask alone is refused before any work happens - which is
+/// exactly how a module that hashed a client secret in-process came to abort
+/// with a 19,922,944-byte allocation and trap on `unreachable`.
+///
+/// The second half of the reason matters more than the first. Guest fuel
+/// does not run while a host import is running, so work performed HERE
+/// costs the module a handful of its own instructions and the operator
+/// seconds of real CPU. A guest looping over this import would convert its
+/// own bounded fuel into unbounded host work. Two bounds keep that trade
+/// honest, and both live at the import rather than in this dispatcher:
+/// a read-only profile cannot reach it at all, and a dispatch may ask a
+/// bounded number of times.
+///
+/// # Why it belongs to the contract
+///
+/// The shape of the exchange - two methods, one PHC string in each answer -
+/// is the part both halves have to agree on. Which host runs the KDF and
+/// which crate supplies it is the host's business, so this dispatcher names
+/// `kelson_identity` and the guest never links a call to it: a guest that
+/// reaches this at all reaches it through `host.password_hash`.
+pub fn password_hash(method: &str, args: &str) -> String {
+    match method {
+        "hash" => {
+            let a = match arguments::<PasswordHashArgs>(args) {
+                Ok(a) => a,
+                Err(e) => return malformed("password_hash", e),
+            };
+            answer(
+                kelson_identity::hash_password(&kelson_identity::Secret::new(a.secret.as_str()))
+                    .map(|hash| PasswordHashResult { hash }),
+            )
+        }
+        "verify" => {
+            let a = match arguments::<PasswordVerifyArgs>(args) {
+                Ok(a) => a,
+                Err(e) => return malformed("password_hash", e),
+            };
+            answer(
+                kelson_identity::verify_password(
+                    &kelson_identity::Secret::new(a.secret.as_str()),
+                    &a.hash,
+                )
+                .map(|valid| PasswordVerifyResult { valid }),
+            )
+        }
+        other => unknown("password", other),
+    }
+}

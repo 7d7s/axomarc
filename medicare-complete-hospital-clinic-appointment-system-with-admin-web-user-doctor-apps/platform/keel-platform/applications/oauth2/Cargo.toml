@@ -21,7 +21,6 @@ kelson-module-sdk = { workspace = true }
 kelson-foundation = { workspace = true }
 kelson-context = { workspace = true }
 kelson-execution = { workspace = true }
-kelson-identity = { workspace = true }
 kelson-lifecycle = { workspace = true }
 kelson-models = { workspace = true }
 kelson-tokens = { workspace = true }

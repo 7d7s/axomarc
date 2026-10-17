@@ -17,6 +17,7 @@ kelson-foundation = { workspace = true }
 kelson-identity = { workspace = true }
 kelson-lifecycle = { workspace = true }
 kelson-models = { workspace = true }
+kelson-module-sdk = { workspace = true }
 kelson-tokens = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -170,6 +170,10 @@ pub(crate) struct CallState {
     /// dispatched, and accepting exactly this operation is no elevation: the
     /// plugin was routed here for it in the first place.
     pub own_operation: String,
+    /// Password-hash asks this dispatch has already made of the host.
+    /// Bounded because each one is argon2's full baseline of host work,
+    /// which the guest's own fuel does not pay for while it is running.
+    pub password_hashes: u32,
     /// Resolved scope node paths of the current execution (empty when the
     /// execution carries no scope).
     pub scope_paths: Vec<String>,
@@ -823,6 +827,7 @@ impl WasmHost {
                 label: label.to_string(),
                 declared,
                 own_operation: String::new(),
+                password_hashes: 0,
                 scope_paths,
                 has_scope,
                 profile,
@@ -1617,6 +1622,7 @@ impl WasmHandler {
             .with_capability(qualified.clone())
             .with_plane(manifest.module.plane.to_security_plane());
         relax_public_routes(manifest, capability, &mut plan);
+        relax_optional_delta(spec, &mut plan);
         Ok(Self {
             plan,
             plugin,
@@ -2007,3 +2013,39 @@ fn relax_public_routes(manifest: &ModuleManifest, capability: &str, plan: &mut E
 // of them - so the per-instance construction lives in its own module, and
 // this is where its declaration goes.
 mod instances;
+
+
+/// A capability whose manifest declares `delta = "optional"` may return
+/// having transitioned nothing, and the host has to believe that instead of
+/// re-deriving the demand from the profile.
+///
+/// It cannot re-derive it correctly. `oauth2.clients.manage` serves `list`,
+/// a pure read, alongside create/update/delete, and `oauth2.revoke` may
+/// legally revoke a token that never existed (RFC 7009 sec 2.2 answers 200),
+/// so the guest's own plans relax the Command delta demand for those calls -
+/// per action, on the one plan the guest runs. The host holds a plan per
+/// CAPABILITY, rebuilt from the sidecar profile, and demanding a delta there
+/// turns a protocol-legal no-op into `KSN_NO_EFFECT`.
+///
+/// So the demand comes from the declaration rather than from a guess, and it
+/// comes from the sidecar rather than from the guest: asking the guest would
+/// hand it the one input that turns the lineage guard off, which is the
+/// self-elevation `declared` exists to prevent. This is `relax_public_routes`
+/// again in a different dimension - a field nothing reads is not a
+/// declaration, and the review only means something once both halves act on
+/// what it said.
+///
+/// Relaxing here does not weaken a capability that still declares
+/// `required`: the guard keeps failing those that promise a transition and
+/// emit none, and every write under an `optional` capability still records
+/// the mutations it performed. Only the promise changes - which is the point,
+/// because a promise the module never made is not a promise.
+fn relax_optional_delta(spec: &kelson_registry::CapabilitySpec, plan: &mut ExecutionPlan) {
+    if spec.delta == kelson_registry::Requirement::Optional {
+        // G06: the profile flag and the plan flag move together. Relaxing
+        // one without the other fails `ExecutionPlan::validate`, which is why
+        // the guest's handlers clear both.
+        plan.profile.delta_required = false;
+        plan.delta.required = false;
+    }
+}

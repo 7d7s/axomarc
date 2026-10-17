@@ -1927,7 +1927,6 @@ dependencies = [
  "kelson-context",
  "kelson-execution",
  "kelson-foundation",
- "kelson-identity",
  "kelson-lifecycle",
  "kelson-models",
  "kelson-module-sdk",
@@ -1958,6 +1957,7 @@ name = "kelson-module-contract"
 version = "0.1.0"
 dependencies = [
  "kelson-foundation",
+ "kelson-identity",
  "kelson-models",
  "kelson-tokens",
  "serde",
@@ -2035,6 +2035,7 @@ dependencies = [
  "kelson-identity",
  "kelson-lifecycle",
  "kelson-models",
+ "kelson-module-sdk",
  "kelson-tokens",
  "serde",
  "serde_json",

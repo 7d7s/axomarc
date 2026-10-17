@@ -219,9 +219,10 @@ extern "C" {
     fn token_read(method_ptr: u32, method_len: u32, args_ptr: u32, args_len: u32) -> i64;
     fn token_write(method_ptr: u32, method_len: u32, args_ptr: u32, args_len: u32) -> i64;
     fn notify_enqueue(request_ptr: u32, request_len: u32) -> i32;
+    fn password_hash(method_ptr: u32, method_len: u32, args_ptr: u32, args_len: u32) -> i64;
 }
 
-/// Which of the four import families a call reaches, and therefore which
+/// Which of the five import families a call reaches, and therefore which
 /// capability posture the host applies to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Port {
@@ -233,6 +234,10 @@ pub enum Port {
     TokenRead,
     /// Token writes.
     TokenWrite,
+    /// Password hashing/verification. Reaches the host's argon2, because
+    /// neither the memory nor the instructions it needs exist in a guest
+    /// (ADR 0020 §6).
+    PasswordHash,
 }
 
 /// Issue one import call and decode the answer.
@@ -280,6 +285,9 @@ pub fn host_call(
                 }
                 Port::TokenWrite => {
                     token_write(m.as_ptr() as u32, m.len() as u32, a.as_ptr() as u32, a.len() as u32)
+                }
+                Port::PasswordHash => {
+                    password_hash(m.as_ptr() as u32, m.len() as u32, a.as_ptr() as u32, a.len() as u32)
                 }
             }
         };
@@ -672,3 +680,54 @@ macro_rules! guest_entry {
 /// Re-exported so a module and [`guest_entry!`] can name the trait without
 /// each spelling the dependency itself.
 pub use kelson_execution::OperationHandler;
+
+// ---------------------------------------------------------------------------
+// Password hashing through the host (ADR 0020 §6)
+// ---------------------------------------------------------------------------
+
+/// Hash a secret through `host.password_hash`.
+///
+/// The answer is a PHC string identical to what hashing in-process would
+/// have produced - same argon2id parameters, same crate, same result - so a
+/// hash written by a guest and one written by the host are interchangeable
+/// at rest. What moved is only *where the work is affordable*: argon2's
+/// baseline wants 19 MiB and billions of instructions, and a guest has
+/// neither, while the host pays it out of its own budget where fuel does
+/// not apply.
+pub fn hash_password(secret: &str) -> Result<String, kelson_foundation::AppError> {
+    let args = kelson_module_contract::PasswordHashArgs {
+        secret: secret.to_string(),
+    };
+    let value = call(Port::PasswordHash, "hash", &args)?;
+    serde_json::from_value::<kelson_module_contract::PasswordHashResult>(value).map(
+        |answer| answer.hash,
+    )
+    .map_err(|e| {
+        kelson_foundation::AppError::internal(format!(
+            "module sdk: host hash answer is not decodable: {e}"
+        ))
+    })
+}
+
+/// Verify a secret against a stored PHC string through `host.password_hash`.
+///
+/// `Ok(false)` is an ordinary mismatch, not a failure: a secret that simply
+/// is not the right one is the case this exists to answer. A refusal (a
+/// read-only profile, or a dispatch that has already asked as often as it
+/// may) crosses as `Err`, because a caller that cannot verify at all must
+/// not be handed `false` and go on to answer as though it had.
+pub fn verify_password(secret: &str, hash: &str) -> Result<bool, kelson_foundation::AppError> {
+    let args = kelson_module_contract::PasswordVerifyArgs {
+        secret: secret.to_string(),
+        hash: hash.to_string(),
+    };
+    let value = call(Port::PasswordHash, "verify", &args)?;
+    serde_json::from_value::<kelson_module_contract::PasswordVerifyResult>(value).map(
+        |answer| answer.valid,
+    )
+    .map_err(|e| {
+        kelson_foundation::AppError::internal(format!(
+            "module sdk: host verify answer is not decodable: {e}"
+        ))
+    })
+}

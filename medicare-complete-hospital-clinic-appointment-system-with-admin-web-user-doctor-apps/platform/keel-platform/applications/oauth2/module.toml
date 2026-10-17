@@ -20,8 +20,15 @@ description = "OAuth2 authorization server: authorize, token, revoke, client reg
 # where RFC error semantics belong).
 authorize = { profile = "COMMAND", inputs = ["client_id", "redirect_uri", "response_type", "state", "scope", "code_challenge", "code_challenge_method"] }
 token = { profile = "COMMAND", inputs = ["grant_type", "code", "code_verifier", "refresh_token", "client_id", "client_secret", "redirect_uri"] }
-revoke = { profile = "COMMAND", inputs = ["token", "token_type_hint", "client_id", "client_secret"] }
-"clients.manage" = { profile = "COMMAND", inputs = ["action", "id", "name", "redirect_uris", "scopes"] }
+# `delta = "optional"` on these two: both MAY return having transitioned
+# nothing. RFC 7009 sec 2.2 answers 200 for a token that never existed,
+# and `clients.manage` also serves `list`, a pure read - so the handlers
+# relax the Command delta demand for those calls rather than fabricate a
+# transition for a legal no-op. Every write under them still records the
+# effect it performed; only the promise of "at least one" is withdrawn,
+# because it was never one this module made.
+revoke = { profile = "COMMAND", delta = "optional", inputs = ["token", "token_type_hint", "client_id", "client_secret"] }
+"clients.manage" = { profile = "COMMAND", delta = "optional", inputs = ["action", "id", "name", "redirect_uris", "scopes"] }
 
 [dependencies]
 contracts = []

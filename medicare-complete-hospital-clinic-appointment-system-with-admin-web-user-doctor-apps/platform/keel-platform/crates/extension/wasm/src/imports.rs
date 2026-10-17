@@ -53,6 +53,15 @@ const MAX_GUEST_STR: u32 = 1 << 20; // 1 MiB
 /// instead of growing the buffers.
 const MAX_CALL_EFFECTS: usize = 64;
 
+/// Most password hashes/verifies one dispatch may ask the host for.
+/// Each one is argon2's full baseline of host CPU, paid for by a few
+/// guest instructions while the guest's own fuel does not advance - so
+/// the bound is what stops a module trading its bounded budget for
+/// unbounded host work. A real operation hashes at most a secret or two
+/// (a client create is one hash, a token grant is one verify), and 8
+/// leaves room for that to grow without leaving a loop open.
+const MAX_CALL_HASHES: u32 = 8;
+
 fn memory_of(caller: &mut Caller<'_, CallState>) -> Option<Memory> {
     match caller.get_export("memory") {
         Some(Extern::Memory(memory)) => Some(memory),
@@ -782,6 +791,45 @@ fn define_host(linker: &mut Linker<CallState>) -> Result<(), WasmError> {
                 request
             };
             i32::from(caller.data_mut().host_notify_enqueue(&request))
+        },
+    )?;
+
+    // host.password_hash(method, args) -> packed SeamResult JSON (ADR 0020 §6).
+    // argon2 runs HERE: its baseline needs 19 MiB and billions of
+    // instructions, neither of which a 16 MiB / 10M-fuel guest has - the
+    // memory ask alone is refused, and the work would otherwise be host CPU
+    // bought with guest fuel that does not advance during a host call. Two
+    // bounds: a read-only profile cannot reach it at all, and a dispatch may
+    // ask a bounded number of times. A refusal answers the empty string, the
+    // same silence every other gate gives a guest that was not supposed to
+    // be able to ask.
+    wrap!(
+        linker,
+        "host",
+        "password_hash",
+        |mut caller: Caller<'_, CallState>,
+         method_ptr: u32,
+         method_len: u32,
+         args_ptr: u32,
+         args_len: u32|
+         -> i64 {
+            let Some((method, args)) =
+                seam_args(&mut caller, method_ptr, method_len, args_ptr, args_len)
+            else {
+                return 0;
+            };
+            if !caller.data().profile.can_write() {
+                return 0;
+            }
+            {
+                let state = caller.data_mut();
+                if state.password_hashes >= MAX_CALL_HASHES {
+                    return 0;
+                }
+                state.password_hashes += 1;
+            }
+            let answer = kelson_module_contract::password_hash(&method, &args);
+            reply(&mut caller, &answer)
         },
     )?;
 

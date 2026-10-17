@@ -12,6 +12,7 @@ description = "The module seam's data contract: argument shapes, the reply envel
 
 [dependencies]
 kelson-foundation = { workspace = true }
+kelson-identity = { workspace = true }
 kelson-models = { workspace = true }
 kelson-tokens = { workspace = true }
 serde = { workspace = true }
