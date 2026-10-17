@@ -420,11 +420,9 @@ mod tests {
     // `AccessSnapshot` is named only by the demo-gated capability test
     // below, so the import rides the same gate: ungated it is an unused
     // import in a build without `demo`.
-    #[cfg(feature = "demo")]
     use kelson_policy::AccessSnapshot;
 
-    #[cfg(feature = "demo")]
-    fn harness() -> (AppState, Arc<kelson_mod_appointments::AppointmentStore>) {
+    fn harness() -> (AppState, Arc<kelson_appointments_contract::AppointmentStore>) {
         let dir = std::env::temp_dir().join(format!("kelson-shell-{}", uuid::Uuid::now_v7()));
         let (state, _graph, store) = crate::build_app_state(&dir, false, true);
         (state, store)
@@ -477,7 +475,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "demo")]
 
 
     #[tokio::test]
@@ -494,7 +491,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "demo")]
 
 
     #[tokio::test]
@@ -508,7 +504,6 @@ mod tests {
         assert!(text.contains("help"), "{text}");
     }
 
-    #[cfg(feature = "demo")]
 
 
     #[tokio::test]
@@ -525,7 +520,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "demo")]
 
 
     #[tokio::test]
@@ -543,7 +537,6 @@ mod tests {
         assert!(text.contains("anonymous"), "{text}");
     }
 
-    #[cfg(feature = "demo")]
 
 
     #[tokio::test]
@@ -575,7 +568,6 @@ mod tests {
         assert!(session.principal.is_none(), "failed login installs nothing");
     }
 
-    #[cfg(feature = "demo")]
 
 
     #[tokio::test]
@@ -601,7 +593,6 @@ mod tests {
         assert!(session.principal.is_none());
     }
 
-    #[cfg(feature = "demo")]
 
 
     #[tokio::test]
@@ -639,7 +630,6 @@ mod tests {
 
     /// The gap-row gate: the REPL executes through the engine under the caller
     /// principal, and capability denial is enforced (no store write happens).
-    #[cfg(feature = "demo")]
 
     #[tokio::test]
     async fn capability_denial_enforced_and_writes_nothing() {
@@ -679,7 +669,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "demo")]
 
 
     #[tokio::test]
@@ -703,7 +692,6 @@ mod tests {
     /// Wave 4 Phase 9 (B-29 completion): `caps` marks session grants over
     /// the declared catalog (anonymous sees the catalog without grants);
     /// `models` lists the binding + probe registries with their services.
-    #[cfg(feature = "demo")]
 
     #[tokio::test]
     async fn caps_and_models_introspect_grants_and_registries() {

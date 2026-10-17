@@ -170,7 +170,6 @@ pub async fn execute(
 mod tests {
     use super::*;
     // Only the demo-gated capability test below names a status code.
-    #[cfg(feature = "demo")]
     use kelson_foundation::codes;
 
     /// Dev/test harness: production bus assembly (appointments handlers +
@@ -266,7 +265,6 @@ operation = "appointments.list"
     /// "not granted" reason, and the granted snapshot executes for real.
     // `appointments.list` is registered by the demo module's handler bundle,
     // so this dispatch can only be exercised with `--features demo`.
-    #[cfg(feature = "demo")]
     #[tokio::test]
     async fn console_route_dispatch_enforces_capability_checks() {
         let state = app();

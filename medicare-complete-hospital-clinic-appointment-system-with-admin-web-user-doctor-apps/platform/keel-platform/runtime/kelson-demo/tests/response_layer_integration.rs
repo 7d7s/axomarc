@@ -1,4 +1,3 @@
-#![cfg(feature = "demo")]
 //! Wave 2 request/response layer (19-PARITY "Request/response layer"):
 //! response kinds that reach the wire (`no_content`, `stream`), the
 //! per-route `Cache-Control` policy and the ETag/conditional-GET (304)

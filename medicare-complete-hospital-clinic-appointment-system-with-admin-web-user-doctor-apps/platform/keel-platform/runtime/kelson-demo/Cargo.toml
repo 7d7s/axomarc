@@ -1,7 +1,11 @@
 [package]
 name = "kelson-demo"
 description = "Kelson API host: boots the ApplicationHost, serves health/readiness and the first routes"
-# Demo/dev API host (renamed to kelson-demo): hard-wires kelson-mod-appointments and the Sentinel# metrics layer, neither of which ships to crates.io (Wave 2 publish-dry triage).
+# Demo/dev API host (renamed to kelson-demo): hard-wires the Sentinel#
+# metrics layer, which does not ship to crates.io (Wave 2 publish-dry
+# triage). The application modules are NOT linked in - Stage C.2 moved
+# their handlers behind the ADR 0020 seam, so this kernel reaches them
+# only through their artifacts at boot.
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -16,7 +20,6 @@ name = "kelson-demo"
 path = "src/main.rs"
 
 [features]
-demo = ["kelson-mod-appointments", "kelson-mod-oauth2"]
 # ADR 0019 §4 opt-in, forwarded so the component fixture cases in the existing
 # `wasm_tests` suite can be compiled and run explicitly (`--features
 # component-model`). Off by default: no mandated gate passes `--all-features`.
@@ -51,14 +54,26 @@ kelson-feature-flags = { workspace = true }
 kelson-session = { workspace = true }
 kelson-realtime = { workspace = true }
 kelson-tokens = { workspace = true }
+# ADR 0020: the seam contract. The harness reaches the modules' behaviour only
+# over the seam, but the contract's *shapes* - the stores, the argument structs,
+# and now the notification request the fifth import carries - are host-side data
+# this kernel both seeds and reads, so it is linked normally. The contract sets
+# `test = false`: an argument shape is only meaningful against a live dispatch,
+# and `wasm_tests` is where the seam is exercised end to end anyway. Its
+# assertions ride that suite, so the count stays 150 (oauth2 precedent).
+kelson-module-contract = { workspace = true }
 kelson-tenancy = { workspace = true }
 kelson-identity = { workspace = true }
 kelson-storage = { workspace = true }
 kelson-storage-local = { workspace = true }
 kelson-storage-s3 = { workspace = true }
 kelson-views = { workspace = true }
-kelson-mod-appointments = { workspace = true, optional = true }
-kelson-mod-oauth2 = { workspace = true, optional = true }
+# Stage C.2: the modules' CONTRACT halves, statically linked into the
+# kernel. The behaviour lives in the guests and reaches this process only
+# over the seam; what is linked here is the schema, the store and the
+# resolver - the data the harness seeds and reads.
+kelson-appointments-contract = { workspace = true }
+kelson-oauth2-contract = { workspace = true }
 # Wave 9 B-30: the WASM plugin runtime (internal-only, publish = false — the
 # publish set stays 61; only this runtime hosts plugins, never the console).
 kelson-wasm = { workspace = true }
@@ -79,11 +94,6 @@ all-features = true
 [dev-dependencies]
 kelson-policy = { workspace = true }
 kelson-foundation = { workspace = true }
-# ADR 0020: the seam contract sets `test = false` - an argument shape is only
-# meaningful against a live dispatch, and `wasm_tests` is where the seam is
-# exercised end to end anyway. Its assertions ride that suite, so the count
-# stays 150 (oauth2 precedent).
-kelson-module-contract = { workspace = true }
 # ADR 0019: the component fixture cases drive `wasmtime::component` directly
 # over the existing `wasm_tests` suite. `wasmtime` is already an external in
 # `[workspace.dependencies]` (DEPENDENCY-POLICY row 46), so this adds no new

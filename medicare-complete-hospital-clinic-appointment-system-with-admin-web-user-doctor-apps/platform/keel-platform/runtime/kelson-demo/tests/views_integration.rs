@@ -1,4 +1,3 @@
-#![cfg(feature = "demo")]
 //! Wave 2 views edge integration: `response = "html"` routes render a view
 //! with the operation result as the template context, web-plane errors render
 //! `errors.404`-style pages, and JSON clients / the api plane keep the

@@ -270,6 +270,14 @@ impl Class {
                 Enterprise,
                 Adapters,
                 Applications,
+                // Stage C.2: an application module ships as a WASM guest, so
+                // `applications/<name>` is now the guest half and reaches the
+                // seam it is built against (the SDK) and the module's own host
+                // contract. The host half moved to `crates/data/<name>`, which
+                // is what keeps the composition root off `Applications`
+                // altogether. Added by the module-activation program in the
+                // same spirit as the `Extension`/`Module` entries.
+                Module,
             ],
             // The umbrella re-exports the published framework surface, so it
             // spans every library layer a host or application module reaches.

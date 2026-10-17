@@ -1,4 +1,4 @@
-﻿#![cfg(feature = "demo")]
+﻿//! `kelson` validation edge integration.
 //! Wave 4 Phase 4 validation edge (19-PARITY database rules + per-field
 //! messages + custom rules): the manifest's `unique`/`exists` grammar runs
 //! against the `model.probes` registry (default column = final field segment,
@@ -73,8 +73,7 @@ struct App {
     router: axum::Router,
     state: kelson_demo::routes::AppState,
 
-    #[cfg(feature = "demo")]
-    store: Arc<kelson_mod_appointments::AppointmentStore>,
+    store: Arc<kelson_appointments_contract::AppointmentStore>,
 }
 
 fn app() -> App {
@@ -198,15 +197,14 @@ async fn register(app: &App, email: &str) -> String {
 
 /// Seed a live appointment row the probe rules can find (same tenant the
 /// authenticated caller books into).
-#[cfg(feature = "demo")]
 fn seed_slot(app: &App, slot: &str) {
     app.store
-        .insert(kelson_mod_appointments::Appointment {
+        .insert(kelson_appointments_contract::Appointment {
             id: uuid::Uuid::now_v7(),
             tenant: app.state.default_tenant_id.expect("default tenant"),
             patient: "Probe Patient".into(),
             slot: slot.into(),
-            status: kelson_mod_appointments::AppointmentStatus::Booked,
+            status: kelson_appointments_contract::AppointmentStatus::Booked,
             version: 1,
         })
         .expect("seeded row inserts");

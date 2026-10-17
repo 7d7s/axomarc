@@ -1,4 +1,10 @@
 # module.toml — immutable contract shape (11-SPEC SS7). `kelson graph` compiles it.
+# Host-side review state (`abi`'s precedent): this module's handlers take no
+# `ctx` parameter, so the executing context travels inside each payload. It
+# is cleared before the guest/sidecar drift comparison - a guest cannot
+# declare whether its own handlers take one.
+envelope_context = true
+
 [module]
 name = "appointments"
 api = 1

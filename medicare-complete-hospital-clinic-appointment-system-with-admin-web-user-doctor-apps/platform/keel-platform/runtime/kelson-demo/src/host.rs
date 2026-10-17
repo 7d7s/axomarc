@@ -287,22 +287,11 @@ impl Provider for DemoModuleProvider {
     /// real and cycle-checked.)
     ///
     /// The edges MUST mirror what is actually registered: `module.wasm` always
-    /// is, but the appointments/oauth2 providers exist only under
-    /// `--features demo`. Phase P gated those registrations without gating
-    /// this list, so every non-demo boot died on
-    /// `UnknownDependency { provider: "module.demo", depends_on:
-    /// "module.appointments" }` — which took `kelson serve`, `call`, `shell`
-    /// and `model:prune` down with it, since none of them passed the feature.
+    /// is, and Stage C.2 routed both application modules through it rather
+    /// than through their own providers, so this list names the seams the
+    /// graph binds rather than the crates a build happens to contain.
     fn dependencies(&self) -> Vec<&'static str> {
-        // `cfg!` rather than `#[cfg]`: the Vec is built at runtime either way,
-        // and this keeps the statement compiled — and warning-free — in both
-        // configurations instead of needing an `allow(unused_mut)` on the
-        // non-demo build.
-        let mut deps = vec!["module.wasm"];
-        if cfg!(feature = "demo") {
-            deps.extend(["module.appointments", "module.oauth2"]);
-        }
-        deps
+        vec!["module.wasm"]
     }
     fn init(&self, r: &mut ServiceRegistry) -> Result<(), BootError> {
         let engine = r.get::<kelson_execution::Engine>()?;
@@ -323,20 +312,9 @@ impl Provider for DemoModuleProvider {
                     })?;
             }
         }
-        // Wave 8 P5 (B-21): the oauth2 module rides its own newtype bundle —
-        // the ServiceRegistry holds one instance per type, and the plain
-        // `Vec<Arc<dyn OperationHandler>>` slot above is appointments'.
-
-    #[cfg(feature = "demo")]
-        if let Ok(bundle) = r.get::<kelson_mod_oauth2::OauthHandlerBundle>() {
-            for handler in bundle.0.iter() {
-                bus.register(handler.clone())
-                    .map_err(|e| BootError::ProviderFailed {
-                        provider: "module.demo".into(),
-                        source: e.to_string(),
-                    })?;
-            }
-        }
+        // Wave 8 P5 (B-21) the oauth2 module rode its own newtype bundle here;
+        // Stage C.2 moved that module behind the seam, so nothing inserts the
+        // newtype any more and the slot is gone with it.
         // Wave 9 B-30: WASM plugins ride their own newtype bundle too —
         // one handler per sidecar-verified READ capability. Registered
         // through the same provider graph, so the bus sees them exactly
@@ -405,11 +383,24 @@ impl Provider for WasmModulesProvider {
             // reads nothing; failing here says which store was missing.
             let model = r.get::<kelson_models::ModelStoreRef>()?;
             let tokens = r.get::<TokenStoreRef>()?;
+            // ADR 0020 §5: the fifth import reaches the same hub the
+            // framework registered in the Platform phase, so a module that
+            // declares a booking announces it through exactly the catalog,
+            // locale and channels every other notification uses. A boot with
+            // no hub wired still serves — the import then refuses loudly at
+            // the first declaration, which is the posture the seam takes for
+            // a store it was never given.
+            let notify = r.get::<kelson_notifications::NotifyHub>().ok();
+            let services = kelson_wasm::ModuleHostServices::new(
+                Arc::clone(&model.0),
+                Arc::clone(&tokens.0),
+            );
+            let services = match notify {
+                Some(hub) => services.with_notifications(Arc::new(crate::HubSink(hub))),
+                None => services,
+            };
             bundle
-                .install_services(kelson_wasm::ModuleHostServices::new(
-                    Arc::clone(&model.0),
-                    Arc::clone(&tokens.0),
-                ))
+                .install_services(services)
                 .map_err(|e| BootError::ProviderFailed {
                     provider: "module.wasm".into(),
                     source: e.to_string(),
@@ -769,14 +760,12 @@ mod error_render_tests {
 mod demo_module_dependency_tests {
     use super::*;
 
-    /// Phase P gated the appointments/oauth2 *registrations* behind
-    /// `--features demo` but left `DemoModuleProvider::dependencies()` naming
-    /// them unconditionally. The declared edges must mirror what is actually
-    /// registered, or the lifecycle host refuses to boot — which is exactly
-    /// what happened: every non-demo boot died on
-    /// `UnknownDependency { provider: "module.demo", depends_on:
-    /// "module.appointments" }`, taking `kelson serve`, `call`, `shell` and
-    /// `model:prune` with it.
+    /// Stage C.2 routed both application modules through `module.wasm`, so
+    /// neither has a provider of its own to depend on. The declared edges
+    /// must mirror what is actually registered in EITHER direction: naming a
+    /// provider that no longer registers is refused by the lifecycle host as
+    /// `UnknownDependency`, which took `kelson serve`, `call`, `shell` and
+    /// `model:prune` down with it back when the mismatch first appeared.
     #[test]
     fn demo_module_dependencies_mirror_the_registered_providers() {
         let deps = DemoModuleProvider {
@@ -793,8 +782,8 @@ mod demo_module_dependency_tests {
             .any(|d| matches!(*d, "module.appointments" | "module.oauth2"));
         assert_eq!(
             demo_edges,
-            cfg!(feature = "demo"),
-            "the demo module edges exist exactly when those providers are registered"
+            false,
+            "Stage C.2 removed those providers, so naming them would be a dead edge"
         );
     }
 }

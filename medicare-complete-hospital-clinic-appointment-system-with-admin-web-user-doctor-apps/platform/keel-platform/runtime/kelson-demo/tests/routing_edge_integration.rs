@@ -1,4 +1,3 @@
-#![cfg(feature = "demo")]
 //! Wave 2 routing edge (19-PARITY route dispatch + host matching + URL
 //! resolution): `method = "ANY"` dispatch, automatic HEAD/OPTIONS
 //! registration, `domain`/`subdomain` enforcement before the auth chain with
@@ -12,8 +11,7 @@ use axum::body::Body;
 use axum::http::{header, HeaderMap, Method, Request, StatusCode};
 use kelson_foundation::{PrincipalId, TenantId, TenantRevision};
 
-#[cfg(feature = "demo")]
-use kelson_mod_appointments::{Appointment, AppointmentStatus};
+use kelson_appointments_contract::{Appointment, AppointmentStatus};
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -161,8 +159,7 @@ struct Fixture {
     state: kelson_demo::routes::AppState,
     graph: kelson_registry::PlatformGraph,
 
-    #[cfg(feature = "demo")]
-    store: Arc<kelson_mod_appointments::AppointmentStore>,
+    store: Arc<kelson_appointments_contract::AppointmentStore>,
 }
 
 fn fixture() -> Fixture {

@@ -1,0 +1,35 @@
+[package]
+name = "kelson-oauth2-contract"
+# Internal-only crate: not published to crates.io.
+publish = false
+description = "Host-side contract of the oauth2 module: client record, client store, handler bundle carrier"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+
+[dependencies]
+kelson-execution = { workspace = true }
+kelson-foundation = { workspace = true }
+kelson-identity = { workspace = true }
+kelson-lifecycle = { workspace = true }
+kelson-models = { workspace = true }
+kelson-tokens = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+
+[lib]
+# The contract carries the module's shapes and its client store, not its
+# behaviour: the four handlers that exercise both live in `kelson-mod-oauth2`
+# and its suite stays the one that runs them (this crate opts out of its own
+# test target so `cargo test --workspace` keeps its existing suite count).
+test = false
+doctest = false
+
+[package.metadata.docs.rs]
+all-features = true

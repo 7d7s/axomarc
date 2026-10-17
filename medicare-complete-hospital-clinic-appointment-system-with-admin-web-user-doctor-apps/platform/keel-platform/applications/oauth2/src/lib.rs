@@ -1,32 +1,26 @@
-//! Module: oauth2 — OAuth2 authorization server (B-21, Wave 8 P5).
+//! Module: oauth2 -- the guest half (Stage C.2).
 //!
-//! Ships through the module ABI gate (module.toml + crate), never core:
-//! four capabilities (`authorize`, `token`, `revoke`, `clients.manage`)
-//! registered on the shared CommandBus like any other module.
+//! Everything this module *is* lives in `kelson-oauth2-contract`, the
+//! host-side contract the kernel links: the `OauthClient` record, the client
+//! store, the handler-bundle carrier and the `ModuleProvider`. What lives
+//! here is what the module *does* -- the four RFC 6749 handlers -- and it
+//! ships as a `cdylib` the runtime loads from `packages.toml` instead of a
+//! library `kelson-demo` links.
 //!
-//! Design posture (docs/19 B-21):
-//! - **Codes and refresh tokens reuse `kelson-tokens`** — hashed, single-use,
-//!   TTL rows (`TokenPurpose::OauthCode` / `OauthRefresh`, landed earlier
-//!   for exactly this). Only sha256 hex of the plaintext is persisted.
-//! - **Access tokens are the platform's existing PATs** (`TokenPurpose::Api`)
-//!   with the `tenant:<uuid>` label the bearer resolver already reads, so a
-//!   minted access token authenticates every api-plane route unchanged.
-//! - **PKCE is S256 only** (RFC 7636): the authorize endpoint requires a
-//!   `code_challenge`, the token endpoint re-derives it from `code_verifier`.
-//! - **The client registry is global** (`oauth_clients`, no tenant column):
-//!   the token/revoke endpoints are anonymous machine calls that resolve a
-//!   client by its globally unique `client_id`; secrets are argon2 hashed
-//!   through the shared identity password helpers and shown exactly once.
-//! - **The browser flow is consent-less for first-party clients**: the
-//!   session on `GET/POST /oauth/authorize` IS the approval — both verbs
-//!   issue a bound code and 302 back to an allowlisted `redirect_uri`
-//!   (web plane, CSRF-protected POST). Failures before the redirect is
-//!   validated fail closed as envelopes and NEVER redirect.
-
+//! That separation is the whole point of Stage C.2: the kernel must not
+//! statically link business behaviour. The artifact build is the only reason
+//! this crate exists as a library target:
+//!
+//!   cargo build --release --target wasm32-wasip1 -p kelson-mod-oauth2
+//!
+//! The guest's manifest is declared by `guest_entry!` below and must
+//! normalize to the reviewed sidecar (`module.toml` beside this crate) or
+//! `WasmHost::prepare` refuses the load with `WasmError::Drift`.
 use std::sync::Arc;
 
 use std::sync::Mutex;
 
+use kelson_oauth2_contract::*;
 use kelson_context::ExecutionContext;
 use kelson_foundation::{AppError, ExecutionProfileKind, OperationId, PrincipalId, TenantId};
 use kelson_execution::{BoxFuture, ExecutionPlan, ExecutionUnit, MutationRecord, OperationHandler};
@@ -40,12 +34,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use time::Duration;
 use uuid::Uuid;
-
-pub const OP_AUTHORIZE: &str = "oauth2.authorize";
-pub const OP_TOKEN: &str = "oauth2.token";
-pub const OP_REVOKE: &str = "oauth2.revoke";
-pub const OP_CLIENTS_MANAGE: &str = "oauth2.clients.manage";
-
 /// RFC 6749 sec 4.1.2: codes are short-lived (minutes, not hours) and
 /// single-use — the shortest TTL the platform's TTL clock can express.
 const CODE_TTL: Duration = Duration::minutes(60);
@@ -55,224 +43,6 @@ const REFRESH_TTL: Duration = Duration::days(14);
 /// Access tokens ARE the platform PATs — the same 30-day TTL
 /// `POST /auth/login` issues for `TokenPurpose::Api`.
 const ACCESS_TTL: Duration = Duration::days(30);
-
-// ------------------------------------------------------------ client model
-
-/// One registered OAuth client. The secret hash never leaves the store.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OauthClient {
-    pub id: Uuid,
-    pub name: String,
-    /// Public client identifier (opaque, globally unique).
-    pub client_id: String,
-    /// Exact-match redirect allowlist (RFC 6749 sec 3.1.2.3).
-    pub redirect_uris: Vec<String>,
-    /// Registered scopes; authorize requests may narrow but never widen.
-    pub scopes: Vec<String>,
-    pub version: i64,
-}
-
-/// The persisted model: mirrors the `20260826000001_oauth2.sql` migration
-/// exactly. Not tenant-scoped (see crate docs) and physically deleting —
-/// there is no `deleted_at` column to soften into.
-fn oauth_client_model() -> ModelDef {
-    ModelDef::new("OauthClient", "oauth_clients")
-        .hard_deletes()
-        .field(FieldDef::new("id", FieldType::Uuid).required())
-        .field(FieldDef::new("name", FieldType::Text).required())
-        .field(
-            FieldDef::new("client_id", FieldType::Text)
-                .required()
-                .unique(),
-        )
-        .field(FieldDef::new("secret_hash", FieldType::Text).required())
-        .field(FieldDef::new("redirect_uris", FieldType::Json).required())
-        .field(FieldDef::new("scopes", FieldType::Json).required())
-        .field(
-            FieldDef::new("version", FieldType::Int64)
-                .required()
-                .with_default("1"),
-        )
-        .field(
-            FieldDef::new("created_at", FieldType::Timestamp)
-                .required()
-                .with_default("now()"),
-        )
-        .field(
-            FieldDef::new("updated_at", FieldType::Timestamp)
-                .required()
-                .with_default("now()"),
-        )
-}
-
-fn from_record(record: &Record) -> Result<OauthClient, AppError> {
-    let id = record
-        .get("id")
-        .and_then(|v| v.as_str())
-        .and_then(|s| Uuid::parse_str(s).ok())
-        .ok_or_else(|| AppError::validation("oauth client record missing id"))?;
-    let list = |field: &str| -> Vec<String> {
-        record
-            .get(field)
-            .and_then(|v| v.as_array())
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|v| v.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
-    Ok(OauthClient {
-        id,
-        name: record
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        client_id: record
-            .get("client_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        redirect_uris: list("redirect_uris"),
-        scopes: list("scopes"),
-        version: record.get("version").and_then(|v| v.as_i64()).unwrap_or(1),
-    })
-}
-
-// ------------------------------------------------------------ client store
-
-/// Domain store over the framework `ModelStore` port (global scope — every
-/// lookup passes `None` for tenant because the registry is not tenant
-/// keyed). Backends: `InMemoryModelStore` in the harness, `PgModelStore`
-/// in production over the `oauth_clients` table.
-#[derive(Clone)]
-pub struct OauthClientStore {
-    backend: Arc<dyn ModelStore>,
-    runtime: ModelRuntime,
-}
-
-impl OauthClientStore {
-    pub fn new(backend: Arc<dyn ModelStore>) -> Self {
-        Self {
-            backend,
-            runtime: ModelRuntime::new(oauth_client_model()),
-        }
-    }
-
-    /// Register a client. Returns the row plus the PLAINTEXT secret — the
-    /// only moment it ever exists outside a caller's hands.
-    pub fn create(
-        &self,
-        name: &str,
-        redirect_uris: Vec<String>,
-        scopes: Vec<String>,
-    ) -> Result<(OauthClient, String), AppError> {
-        let secret = kelson_tokens::generate_plaintext();
-        let secret_hash = hash_password(&Secret::new(secret.as_str()))?;
-        let mut input = Record::new();
-        input.insert("id".into(), json!(Uuid::now_v7().to_string()));
-        input.insert("name".into(), json!(name));
-        input.insert("client_id".into(), json!(Uuid::now_v7().to_string()));
-        input.insert("secret_hash".into(), json!(secret_hash));
-        input.insert("redirect_uris".into(), json!(redirect_uris));
-        input.insert("scopes".into(), json!(scopes));
-        input.insert("version".into(), json!(1));
-        let stored = self.runtime.insert(&*self.backend, &input, None)?;
-        Ok((from_record(&stored)?, secret))
-    }
-
-    fn row(&self, client_id: &str) -> Result<Option<Record>, AppError> {
-        let page = self.runtime.list(
-            &*self.backend,
-            None,
-            vec![FieldFilter::eq("client_id", client_id)],
-            &[],
-            None,
-        )?;
-        Ok(page.items.into_iter().next())
-    }
-
-    /// Authorize-endpoint lookup: unknown client fails the envelope path
-    /// (fail closed — no redirect is ever attempted for it).
-    pub fn require(&self, client_id: &str) -> Result<OauthClient, AppError> {
-        let row = self
-            .row(client_id)?
-            .ok_or_else(|| AppError::validation("unknown oauth client"))?;
-        from_record(&row)
-    }
-
-    /// Client authentication for the machine endpoints (RFC 6749 sec 2.3).
-    /// Uniform 401: missing, unknown and wrong-secret are indistinguishable.
-    pub fn authenticate(&self, client_id: &str, secret: &str) -> Result<OauthClient, AppError> {
-        if client_id.is_empty() || secret.is_empty() {
-            return Err(AppError::unauthenticated());
-        }
-        let row = self
-            .row(client_id)?
-            .ok_or_else(AppError::unauthenticated)?;
-        let stored = row
-            .get("secret_hash")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        match verify_password(&Secret::new(secret), stored) {
-            Ok(true) => from_record(&row),
-            _ => Err(AppError::unauthenticated()),
-        }
-    }
-
-    pub fn get(&self, id: Uuid) -> Result<OauthClient, AppError> {
-        from_record(&self.runtime.get(&*self.backend, id, None)?)
-    }
-
-    pub fn list(&self) -> Result<Vec<OauthClient>, AppError> {
-        let page = self.runtime.list(&*self.backend, None, vec![], &[], None)?;
-        page.items.iter().map(from_record).collect()
-    }
-
-    pub fn update(
-        &self,
-        id: Uuid,
-        name: Option<String>,
-        redirect_uris: Option<Vec<String>>,
-        scopes: Option<Vec<String>>,
-    ) -> Result<OauthClient, AppError> {
-        let mut changes = Record::new();
-        if let Some(name) = name {
-            changes.insert("name".into(), json!(name));
-        }
-        if let Some(uris) = redirect_uris {
-            changes.insert("redirect_uris".into(), json!(uris));
-        }
-        if let Some(scopes) = scopes {
-            changes.insert("scopes".into(), json!(scopes));
-        }
-        let current = from_record(&self.runtime.get(&*self.backend, id, None)?)?;
-        changes.insert("version".into(), json!(current.version + 1));
-        let stored = self
-            .runtime
-            .update(&*self.backend, id, None, &changes)?;
-        from_record(&stored)
-    }
-
-    pub fn delete(&self, id: Uuid) -> Result<(), AppError> {
-        self.runtime.delete(&*self.backend, id, None)?;
-        Ok(())
-    }
-}
-
-// -------------------------------------------------------------- primitives
-
-fn text_field(input: &Value, field: &str) -> String {
-    input
-        .get(field)
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string()
-}
-
 fn require_tenant(ctx: &ExecutionContext) -> Result<TenantId, AppError> {
     ctx.tenant
         .as_ref()
@@ -955,72 +725,28 @@ pub fn handlers(
     ]
 }
 
-/// Handler bundle carrier for the `ServiceRegistry`. The registry is a
-/// typed singleton map (one instance per concrete type; a duplicate insert
-/// refuses boot) and plain `Vec<Arc<dyn OperationHandler>>` is already
-/// owned by the appointments module — so this module rides its own
-/// newtype, which the host's CommandBus assembly reads alongside the
-/// legacy slot.
-pub struct OauthHandlerBundle(pub Vec<Arc<dyn OperationHandler>>);
+// ------------------------------------------------------------- module entry
 
-/// Tracks the module's lifecycle state (Discovered -> Validated -> Registered
-/// -> Initialized -> Ready -> Degraded/Disabled).
-pub struct ModuleProvider {
-    state: Mutex<ModuleState>,
+/// What this guest declares to `WasmHost::prepare` (see the appointments
+/// guest for why this string is generated from the sidecar).
+const MANIFEST_JSON: &str = r#"{"module":{"name":"oauth2","version":"0.1.0","maturity":"L0","plane":"tenant","description":"OAuth2 authorization server: authorize, token, revoke, client registry","api":1},"capabilities":{"authorize":{"profile":"COMMAND","delta":"required","audit":"required","idempotency":"required","inputs":["client_id","redirect_uri","response_type","state","scope","code_challenge","code_challenge_method"]},"clients.manage":{"profile":"COMMAND","delta":"required","audit":"required","idempotency":"required","inputs":["action","id","name","redirect_uris","scopes"]},"revoke":{"profile":"COMMAND","delta":"required","audit":"required","idempotency":"required","inputs":["token","token_type_hint","client_id","client_secret"]},"token":{"profile":"COMMAND","delta":"required","audit":"required","idempotency":"required","inputs":["grant_type","code","code_verifier","refresh_token","client_id","client_secret","redirect_uri"]}},"dependencies":{"contracts":[]},"routes":[{"method":"GET","path":"/oauth/authorize","operation":"authorize","capability":"authorize","version":"v1","name":"authorize","resource":null,"only":[],"except":[],"middleware":[],"public":false,"deprecated":false,"response":"redirect","bindings":[],"plane":"web","group":null,"constraints":[],"singleton":false,"fallback":false,"excluded_middleware":[],"view":null,"domain":null,"subdomain":null},{"method":"POST","path":"/oauth/authorize","operation":"authorize","capability":"authorize","version":"v1","name":"authorize_post","resource":null,"only":[],"except":[],"middleware":[],"public":false,"deprecated":false,"response":"redirect","bindings":[],"plane":"web","group":null,"constraints":[],"singleton":false,"fallback":false,"excluded_middleware":[],"view":null,"domain":null,"subdomain":null},{"method":"POST","path":"/oauth/token","operation":"token","capability":"token","version":"v1","name":"token","resource":null,"only":[],"except":[],"middleware":[],"public":true,"deprecated":false,"response":"json","bindings":[],"plane":null,"group":null,"constraints":[],"singleton":false,"fallback":false,"excluded_middleware":[],"view":null,"domain":null,"subdomain":null},{"method":"POST","path":"/oauth/revoke","operation":"revoke","capability":"revoke","version":"v1","name":"revoke","resource":null,"only":[],"except":[],"middleware":[],"public":true,"deprecated":false,"response":"json","bindings":[],"plane":null,"group":null,"constraints":[],"singleton":false,"fallback":false,"excluded_middleware":[],"view":null,"domain":null,"subdomain":null}],"events":[],"workflows":[],"validation":[],"route_groups":[],"console_commands":[],"channels":[],"url":{"defaults":{}},"config":null,"budget":{"max_memory_mb":null,"max_fuel":null,"max_concurrency":null,"execution_timeout_ms":null}}"#;
+
+/// Build the handlers a dispatch session sees, behind the seam's
+/// host-backed stores: client rows travel through `host.model_*` and codes,
+/// refresh tokens and PATs through `host.token_*`, each landing in the store
+/// the runtime installed at boot. The kernel therefore owns both stores while
+/// never linking the RFC 6749 behaviour that reads and writes them.
+fn build_handlers() -> Vec<Arc<dyn OperationHandler>> {
+    let store = Arc::new(OauthClientStore::new(Arc::new(
+        kelson_module_sdk::HostModelStore::new(),
+    )));
+    let tokens = Arc::new(TokenService::new(Arc::new(
+        kelson_module_sdk::HostTokenStore::new(),
+    )));
+    handlers(store, tokens)
 }
 
-impl ModuleProvider {
-    pub fn new() -> Self {
-        Self { state: Mutex::new(ModuleState::Discovered) }
-    }
-
-    pub fn state(&self) -> ModuleState {
-        *self.state.lock().unwrap()
-    }
-
-    #[allow(dead_code)]
-    fn transition_to_validated(&self) {
-        *self.state.lock().unwrap() = ModuleState::Validated;
-    }
-
-    #[allow(dead_code)]
-    fn transition_to_registered(&self) {
-        *self.state.lock().unwrap() = ModuleState::Registered;
-    }
-
-    #[allow(dead_code)]
-    fn transition_to_ready(&self) {
-        *self.state.lock().unwrap() = ModuleState::Ready;
-    }
-}
-
-impl Default for ModuleProvider {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Provider for ModuleProvider {
-    fn name(&self) -> &str {
-        "module.oauth2"
-    }
-    fn phase(&self) -> Phase {
-        Phase::Modules
-    }
-    fn init(&self, registry: &mut ServiceRegistry) -> Result<(), BootError> {
-        // Transition: Discovered -> Validated -> Registered
-        self.transition_to_validated();
-        let backend = registry.get::<ModelStoreRef>()?;
-        let tokens = registry.get::<TokenService>()?;
-        let store = Arc::new(OauthClientStore::new(backend.0.clone()));
-        // Transition: Registered
-        self.transition_to_registered();
-        registry.insert(
-            "module.oauth2.handlers",
-            Arc::new(OauthHandlerBundle(handlers(store, tokens))),
-        )?;
-        // Transition: Initialized -> Ready
-        self.transition_to_ready();
-        Ok(())
-    }
+kelson_module_sdk::guest_entry! {
+    manifest: MANIFEST_JSON,
+    handlers: build_handlers
 }

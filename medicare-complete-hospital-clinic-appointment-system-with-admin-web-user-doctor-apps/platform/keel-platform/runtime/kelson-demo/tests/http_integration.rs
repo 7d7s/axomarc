@@ -1,4 +1,3 @@
-#![cfg(feature = "demo")]
 //! S7 HTTP integration suite: the full application edge exercised over a
 //! real axum router with the production wiring (graph routes, auth, session
 //! middleware, uploads). In-memory backends; see lib.rs::build_app_state.
@@ -14,8 +13,7 @@ struct App {
     router: axum::Router,
     state: kelson_demo::routes::AppState,
 
-    #[cfg(feature = "demo")]
-    store: Arc<kelson_mod_appointments::AppointmentStore>,
+    store: Arc<kelson_appointments_contract::AppointmentStore>,
 }
 
 fn app() -> App {

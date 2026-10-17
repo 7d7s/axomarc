@@ -1,0 +1,33 @@
+[package]
+name = "kelson-appointments-contract"
+# Internal-only crate: not published to crates.io.
+publish = false
+description = "Host-side contract of the appointments module: record, model, store, binding resolver, notifications"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+
+[dependencies]
+kelson-foundation = { workspace = true }
+kelson-lifecycle = { workspace = true }
+kelson-models = { workspace = true }
+kelson-notifications = { workspace = true }
+kelson-query = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+
+[lib]
+# The contract carries the module's shapes and its store, not its behaviour:
+# the handlers that exercise both live in `kelson-mod-appointments` and its
+# suite stays the one that runs them. Keeping this target off also keeps
+# `cargo test --workspace` at its existing suite count.
+test = false
+doctest = false
+
+[package.metadata.docs.rs]
+all-features = true

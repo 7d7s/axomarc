@@ -563,12 +563,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     // Modules phase: domain module first (registers its handler bundle), then
     // the demo provider assembles the CommandBus from every registered bundle.
-    #[cfg(feature = "demo")]
-    host.add_provider(Box::new(kelson_mod_appointments::ModuleProvider::new()));
+    host.add_provider(Box::new(kelson_appointments_contract::ModuleProvider::new()));
     // Wave 8 P5 (B-21): the OAuth2 module registers its own handler bundle
     // (distinct newtype slot) BEFORE the bus assembly below.
-    #[cfg(feature = "demo")]
-    host.add_provider(Box::new(kelson_mod_oauth2::ModuleProvider::new()));
+    host.add_provider(Box::new(kelson_oauth2_contract::ModuleProvider::new()));
     // Wave 9 B-30: WASM plugins load BEFORE boot (fail-closed: compile,
     // link, ABI, capability and manifest-drift failures refuse the boot
     // outright). The provider then only publishes the bundle for the bus
@@ -1425,15 +1423,11 @@ pub fn disk_registry(
 
 // ------------------------------------------------------------ test harness
 
-// The appointment store is a demo-module type. Behind `demo` the harness
-// hands back the real store; without it the harness still boots and hands
-// back an ordinary in-memory model store of the same shape, so every
-// demo-only registration below compiles out instead of hard-wiring the
-// unpublished module crates into the default build.
-#[cfg(feature = "demo")]
-type HarnessAppStore = Arc<kelson_mod_appointments::AppointmentStore>;
-#[cfg(not(feature = "demo"))]
-type HarnessAppStore = Arc<kelson_models::InMemoryModelStore>;
+// The appointment store is the module's own. The harness hands back the
+// same type the guest's handlers are written against, so a test seeds and
+// reads through the real contract rather than an imitation of it -- and the
+// behaviour behind it arrives over the seam, not through a `use`.
+type HarnessAppStore = Arc<kelson_appointments_contract::AppointmentStore>;
 
 /// Harness application state for the integration suite (S7 test plan) and
 /// dev harnesses. Mirrors production wiring minus the lifecycle host: same
@@ -1448,9 +1442,7 @@ fn build_app_state_inner(
     kelson_registry::PlatformGraph,
     HarnessAppStore,
 ) {
-    use kelson_execution::{
-        AuthorizationPort, Engine, InMemoryBackend, InMemoryIdempotency, OperationHandler,
-    };
+    use kelson_execution::{AuthorizationPort, Engine, InMemoryBackend, InMemoryIdempotency};
     use kelson_policy::{AccessSnapshot, PolicyAuthz, PolicyEngine};
 
     let policy = Arc::new(PolicyEngine::new());
@@ -1463,16 +1455,9 @@ fn build_app_state_inner(
         Arc::new(InMemoryIdempotency::new()),
     ));
 
-    #[cfg(feature = "demo")]
     let appt_backend = _appt_backend;
-    #[cfg(feature = "demo")]
-    let appt_store =
-        Arc::new(kelson_mod_appointments::AppointmentStore::new(appt_backend.clone()));
-    // No `demo`: a live (empty) store handle so the third tuple element of
-    // the signature below stays real; every demo-only registration is cfg'd
-    // out, so nothing ever reads a model out of it.
-    #[cfg(not(feature = "demo"))]
-    let appt_store: HarnessAppStore = kelson_models::InMemoryModelStore::new();
+    let appt_store: HarnessAppStore =
+        Arc::new(kelson_appointments_contract::AppointmentStore::new(appt_backend.clone()));
 
     // Wave 6 P3/P5/P6: the harness catalog (`<storage_root>/lang`, absent
     // = the empty default catalog) and a fresh in-memory inbox store, plus
@@ -1486,7 +1471,6 @@ fn build_app_state_inner(
     );
     let notification_store: Arc<dyn kelson_notifications::NotificationStore> =
         Arc::new(kelson_notifications::InMemoryNotificationStore::new());
-    #[cfg(feature = "demo")]
     let notify_hub = Arc::new(
         kelson_notifications::NotifyHub::with_catalog(messages.clone())
             .with_store(notification_store.clone()),
@@ -1495,27 +1479,9 @@ fn build_app_state_inner(
     let mut bus = kelson_command::CommandBus::new(engine);
     bus.register(Arc::new(host::EchoHandler::new()))
         .expect("demo handler registers");
-    #[cfg(feature = "demo")]
-    let bundle: Vec<Arc<dyn OperationHandler>> = vec![
-        Arc::new(
-            kelson_mod_appointments::BookHandler::new(appt_store.clone())
-                .with_notifier(Some(notify_hub.clone())),
-        ),
-        Arc::new(
-            kelson_mod_appointments::CancelHandler::new(appt_store.clone())
-                .with_notifier(Some(notify_hub.clone())),
-        ),
-        Arc::new(kelson_mod_appointments::ListHandler::new(appt_store.clone())),
-        Arc::new(kelson_mod_appointments::AvailabilityHandler::new(
-            appt_store.clone(),
-        )),
-    ];
-    #[cfg(not(feature = "demo"))]
-    let bundle: Vec<Arc<dyn OperationHandler>> = Vec::new();
-    for handler in bundle {
-        bus.register(handler)
-            .expect("appointments handlers register");
-    }
+    // The appointments handlers are not linked into this process any more
+    // (Stage C.2); they are registered from their artifact further down,
+    // once the token service the oauth2 module needs exists.
 
     // Dev golden-path snapshot: demo.echo stays authorized without identity.
     policy.install_snapshot(AccessSnapshot {
@@ -1561,21 +1527,24 @@ fn build_app_state_inner(
         )
         .collect();
 
-    let tokens = Arc::new(kelson_tokens::TokenService::new(Arc::new(
-        kelson_tokens::InMemoryTokenStore::new(),
-    )));
-    // Wave 8 P5 (B-21): the oauth2 handlers need the token service, so they
-    // register onto the harness bus here (after `tokens`, before the bus is
-    // moved into AppState). The client registry gets its own in-memory
-    // backend — `oauth_clients` is global, never tenant keyed.
-    #[cfg(feature = "demo")]
-    let oauth_store = Arc::new(kelson_mod_oauth2::OauthClientStore::new(Arc::new(
-        kelson_models::InMemoryModelStore::new(),
-    )));
-    #[cfg(feature = "demo")]
-    for handler in kelson_mod_oauth2::handlers(oauth_store, tokens.clone()) {
-        bus.register(handler).expect("oauth2 handlers register");
-    }
+    let token_store = Arc::new(kelson_tokens::InMemoryTokenStore::new());
+    let tokens = Arc::new(kelson_tokens::TokenService::new(token_store.clone()));
+    // The oauth2 module's client registry is global, never tenant keyed, so it
+    // gets a backend of its own instead of sharing the appointments one. The
+    // module itself arrives as an artifact like the appointments module does.
+    let oauth_backend: Arc<dyn kelson_models::ModelStore> =
+        Arc::new(kelson_models::InMemoryModelStore::new());
+    // Both application modules dispatch through their WASM artifacts, not
+    // through handlers linked into the kernel. Each harness takes a fresh
+    // instance of every prepared generation so the services it installs are
+    // its own, while the compiled code is shared across the whole process.
+    install_wasm_modules(
+        &mut bus,
+        appt_backend.clone(),
+        oauth_backend,
+        token_store,
+        notify_hub.clone(),
+    );
     let principals: Arc<dyn kelson_identity::PrincipalStore> =
         Arc::new(kelson_identity::InMemoryPrincipalStore::new());
     let credentials: Arc<dyn kelson_identity::CredentialStore> =
@@ -1609,9 +1578,8 @@ fn build_app_state_inner(
     // appointments reference resolver registered (production boot wires it
     // through the module provider + the route.bindings service instead).
     let route_bindings = Arc::new(kelson_models::RouteBindingRegistry::new());
-    #[cfg(feature = "demo")]
     route_bindings.register(Arc::new(
-        kelson_mod_appointments::AppointmentBindingResolver::new(appt_store.clone()),
+        kelson_appointments_contract::AppointmentBindingResolver::new(appt_store.clone()),
     ));
 
     // Wave 4 Phase 4: model.probes — the harness registers the appointments
@@ -1619,9 +1587,8 @@ fn build_app_state_inner(
     // the well-known service instead), so `unique`/`exists` rules run
     // against the same store the handlers write to.
     let probes = Arc::new(kelson_models::ProbeRegistry::new());
-    #[cfg(feature = "demo")]
     probes.register(Arc::new(kelson_models::StoreProbe::new(
-        kelson_mod_appointments::appointment_model(),
+        kelson_appointments_contract::appointment_model(),
         appt_backend,
     )));
 
@@ -2115,7 +2082,6 @@ mod wave6_mail_tests {
     /// (`kelson-mod-appointments::AppointmentBooked`) renders subject and
     /// text through the hub catalog with `{patient}` interpolated from
     /// the payload: FR bytes out of an FR request locale.
-    #[cfg(feature = "demo")]
     #[tokio::test]
     async fn producer_mail_localizes_through_the_shipped_catalog_and_resolver() {
         use kelson_notifications::{
@@ -2156,7 +2122,7 @@ mod wave6_mail_tests {
         let mut hub = NotifyHub::with_catalog(catalog);
         hub.mail = Some(Box::new(RecordingMail { sent: log.clone() }));
 
-        let def = kelson_mod_appointments::AppointmentBooked {
+        let def = kelson_appointments_contract::AppointmentBooked {
             patient: "Ada".into(),
             slot: "2026-09-01T10:00Z".into(),
             locale: Some(locale.clone()),
@@ -2550,7 +2516,6 @@ mod mail;
 /// `PersistenceProvider` binds the same handlers to `PgModelStore` when the
 /// driver pool is up. Every other suite keeps the in-memory backend through
 /// `build_app_state` below.
-#[cfg(feature = "demo")]
 pub fn build_app_state_with_backend(
     storage_root: &std::path::Path,
     sessions_enabled: bool,
@@ -2582,4 +2547,151 @@ pub fn build_app_state(
         // The harness default is the in-memory store every suite pins.
         std::sync::Arc::new(kelson_models::InMemoryModelStore::new()),
     )
+}
+
+// ------------------------------------------------- module artifacts (C.2)
+//
+// Everything below is appended at the END of the file on purpose:
+// `platform/docs/20-ARCHITECTURE-VERIFICATION.md` cites this file by exact
+// line number, and appending is the only kind of edit that shifts none of
+// them.
+
+/// The prepared module artifacts, compiled ONCE per process.
+///
+/// Compiling a guest dominates everything else about loading one --
+/// cranelift over a release artifact costs seconds, and a debug-built host
+/// pays tens of seconds for the same bytes -- while what separates one
+/// *instance* of a generation from another is a cell. So the plugins are
+/// prepared here a single time, and each harness takes a
+/// [`kelson_wasm::WasmPlugin::reinstantiate`] of them: the compiled code is
+/// shared, the services are this harness's own. Without that split the
+/// integration harness would pay a full compile per `app()` call.
+static PREPARED_MODULES: std::sync::OnceLock<kelson_wasm::WasmHandlerBundle> =
+    std::sync::OnceLock::new();
+
+/// The workspace root this crate was built from.
+///
+/// `packages.toml` resolves every path in it against the workspace root, so
+/// this is what makes the index load the same from a test binary's working
+/// directory (the crate dir) and from whatever directory an operator chose
+/// to run `cargo run` in.
+fn workspace_root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// Register every indexed application module on this harness's bus.
+///
+/// Each generation is a fresh instance of the cached compilation, committed
+/// and wired to THIS harness's stores before its handlers are built -- the
+/// ordering the boot path follows, because the stores a plugin's seam
+/// imports reach are created here and the plugin has to see these ones.
+fn install_wasm_modules(
+    bus: &mut kelson_command::CommandBus,
+    tenant_backend: std::sync::Arc<dyn kelson_models::ModelStore>,
+    global_backend: std::sync::Arc<dyn kelson_models::ModelStore>,
+    token_store: std::sync::Arc<dyn kelson_tokens::TokenStore>,
+    notify_hub: std::sync::Arc<kelson_notifications::NotifyHub>,
+) {
+    let prepared = PREPARED_MODULES.get_or_init(|| {
+        load_wasm_plugins(&workspace_root())
+            .expect("the indexed module artifacts prepare")
+            .expect("packages.toml indexes the application modules")
+    });
+
+    for plugin in &prepared.1 {
+        let fresh = std::sync::Arc::new(plugin.reinstantiate());
+        // `oauth_clients` is global, never tenant keyed, so that module gets a
+        // backend of its own rather than sharing the appointments one.
+        let backend = if plugin.manifest().name() == "oauth2" {
+            global_backend.clone()
+        } else {
+            tenant_backend.clone()
+        };
+        fresh
+            .install_services(
+                kelson_wasm::ModuleHostServices::new(backend, token_store.clone())
+                    .with_notifications(std::sync::Arc::new(HubSink(std::sync::Arc::clone(
+                        &notify_hub,
+                    )))),
+            )
+            .expect("a fresh instance has no services installed yet");
+        fresh.commit().expect("a fresh generation commits");
+        let built = kelson_wasm::handlers(std::sync::Arc::clone(&fresh))
+            .expect("a committed generation's declared capabilities build");
+        for handler in built {
+            bus.register(handler).expect("module handler registers");
+        }
+    }
+}
+
+/// The platform notify hub behind the seam's fifth import (ADR 0020 §5).
+///
+/// The runtime owns this adapter for the same reason it owns the job-queue
+/// port: the service crate cannot depend on the seam's contract, and the
+/// seam's contract cannot depend on the notification service. One small
+/// type in between keeps both crates pointing the way they already did.
+struct HubSink(std::sync::Arc<kelson_notifications::NotifyHub>);
+
+/// The registry that makes a module's event name mean something.
+///
+/// A name nothing is registered under is a loud dispatch error, never a
+/// silent drop -- the same posture the queued-delivery port takes, so a
+/// typo in a guest is refused where it is declared rather than discovered
+/// in an inbox that quietly stayed empty.
+fn notification_def_for(
+    event: &str,
+    payload: &serde_json::Value,
+    locale: Option<String>,
+) -> Result<Box<dyn kelson_notifications::NotificationDef>, kelson_foundation::AppError> {
+    let field = |name: &str| {
+        payload
+            .get(name)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    match event {
+        kelson_appointments_contract::EVENT_BOOKED => {
+            Ok(Box::new(kelson_appointments_contract::AppointmentBooked {
+                patient: field("patient"),
+                slot: field("slot"),
+                locale,
+            }))
+        }
+        kelson_appointments_contract::EVENT_CANCELLED => Ok(Box::new(
+            kelson_appointments_contract::AppointmentCancelled {
+                patient: field("patient"),
+                slot: field("slot"),
+                locale,
+            },
+        )),
+        other => Err(kelson_foundation::AppError::not_implemented(format!(
+            "no notification is registered under the name {other}"
+        ))),
+    }
+}
+
+impl kelson_module_contract::NotificationSink for HubSink {
+    fn deliver(
+        &self,
+        request: kelson_module_contract::NotificationRequest,
+        envelope: kelson_module_contract::NotificationEnvelope,
+    ) -> kelson_module_contract::DeliveryFuture {
+        let hub = std::sync::Arc::clone(&self.0);
+        Box::pin(async move {
+            let ctx = kelson_notifications::NotificationContext {
+                principal_id: envelope.principal_id,
+                tenant_id: envelope.tenant_id,
+                locale: envelope.locale.clone(),
+            };
+            let def = notification_def_for(&request.event, &request.payload, envelope.locale)?;
+            hub.dispatch_notification(
+                def.as_ref(),
+                kelson_notifications::Channel::Database,
+                None,
+                &ctx,
+            )
+            .await
+        })
+    }
 }

@@ -269,7 +269,6 @@ mod tests {
     /// holds — same shape `SwappableGraphRoutes::call` takes).
     ///
     /// Demo-only: every caller drives a route from the appointments manifest.
-    #[cfg(feature = "demo")]
     async fn envelope_of(bundle: Router, method: Method, path: &str) -> (StatusCode, String) {
         let req = Request::builder()
             .method(method)
@@ -288,7 +287,6 @@ mod tests {
         (status, code)
     }
 
-    #[cfg(feature = "demo")]
     async fn envelope_via(cell: &BundleCell, method: Method, path: &str) -> (StatusCode, String) {
         let bundle = cell.read().unwrap().as_ref().clone();
         envelope_of(bundle, method, path).await
@@ -296,7 +294,6 @@ mod tests {
 
     /// What the dispatch-level auth produces for anon callers (the graph's
     /// non-public routes enforce in dispatch, independent of the chain).
-    #[cfg(feature = "demo")]
     fn auth_envelope() -> (StatusCode, String) {
         (StatusCode::UNAUTHORIZED, "AUTH_UNAUTHENTICATED".to_string())
     }
@@ -328,7 +325,6 @@ mod tests {
     // The fixture route (`/api/v1/appointments/availability`) and its
     // anon-tolerant handler come from the demo appointments module, so the
     // sanity baseline only exists with `--features demo`.
-    #[cfg(feature = "demo")]
     #[tokio::test]
     async fn route_bundle_hot_swaps_under_50ms_in_flight_keeps_old_bundle() {
         let (state, graph, dir) = fixture();

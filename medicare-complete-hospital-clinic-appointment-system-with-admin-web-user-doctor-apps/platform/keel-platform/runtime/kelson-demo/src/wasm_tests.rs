@@ -2029,3 +2029,51 @@ fn seam_arguments_of_a_positional_array_do_not_decode() {
     assert_eq!(accepted.id, id);
     assert_eq!(accepted.at, at);
 }
+
+/// Stage C.2: the two ported module artifacts are checked in, indexed by
+/// `packages.toml` and reviewed by their sidecars, so the exact call
+/// production boot makes -- `load_wasm_plugins` over the workspace root --
+/// has to compile them, clear the ABI, capability and manifest-drift gates,
+/// and hand back their handlers.
+///
+/// Drift is the failure that only ever shows up here: a route added to
+/// `applications/*/module.toml` and not to the guest's `kelson_manifest()`
+/// (or the reverse) is invisible until someone boots. The wall clock below
+/// is what the integration harness would pay per `build_app_state` call if it
+/// re-prepared on every one, which is why that path caches instead.
+#[test]
+fn the_ported_module_artifacts_load_from_the_index_and_pass_drift() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let started = std::time::Instant::now();
+    let bundle = crate::load_wasm_plugins(&root)
+        .expect("the indexed artifacts prepare")
+        .expect("packages.toml indexes the modules");
+    let elapsed = started.elapsed();
+
+    let ops: Vec<String> = bundle
+        .0
+        .iter()
+        .map(|h| h.plan().operation.as_str().to_string())
+        .collect();
+    for expected in [
+        "appointments.book",
+        "appointments.cancel",
+        "appointments.list",
+        "appointments.availability",
+        "oauth2.authorize",
+        "oauth2.token",
+        "oauth2.revoke",
+        "oauth2.clients.manage",
+    ] {
+        assert!(
+            ops.iter().any(|o| o == expected),
+            "the {expected} handler never reached the bus; loaded {ops:?}"
+        );
+    }
+    assert_eq!(
+        bundle.1.len(),
+        3,
+        "marker, appointments and oauth2 are all indexed"
+    );
+    eprintln!("load_wasm_plugins over 3 artifacts: {elapsed:?}");
+}

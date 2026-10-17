@@ -1,13 +1,25 @@
-//! Module: appointments ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â Clinic appointments: book, cancel, list.
-//! Scaffolded by `kelson make:module`, then expanded into the first real domain
-//! module. Contracts live in module.toml; code lives here. State sits behind
-//! the framework `ModelStore` port (S8): `InMemoryModelStore` in tests and
-//! degraded boot, `PgModelStore` in production. Both backends speak the same
-//! semantic CRUD contract; PostgreSQL carries the real double-booking
-//! contention guard via the partial unique index on (tenant, patient, slot).
-
+//! Module: appointments -- the guest half (Stage C.2).
+//!
+//! Everything this module *is* lives in `kelson-appointments-contract`, the
+//! host-side contract the kernel links: the `Appointment` record and its
+//! `ModelDef`, the store, the route-binding resolver, the notification
+//! definitions and the `ModuleProvider`. What lives here is what the module
+//! *does* -- the four operation handlers -- and it ships as a `cdylib` the
+//! runtime loads from `packages.toml` instead of a library `kelson-demo`
+//! links.
+//!
+//! That separation is the whole point of Stage C.2: the kernel must not
+//! statically link business behaviour. The artifact build is the only reason
+//! this crate exists as a library target:
+//!
+//!   cargo build --release --target wasm32-wasip1 -p kelson-mod-appointments
+//!
+//! The guest's manifest is declared by `guest_entry!` below and must
+//! normalize to the reviewed sidecar (`module.toml` beside this crate) or
+//! `WasmHost::prepare` refuses the load with `WasmError::Drift`.
 use std::sync::{Arc, Mutex};
 
+use kelson_appointments_contract::*;
 use kelson_context::ExecutionContext;
 use kelson_foundation::{
     codes, AppError, ErrorCategory, ExecutionProfileKind, OperationId, Retryability, Severity,
@@ -24,495 +36,19 @@ use kelson_notifications::{Channel, Mailable, NotificationContext, NotificationD
 use serde_json::json;
 use uuid::Uuid;
 
-pub const OP_BOOK: &str = "appointments.book";
-pub const OP_CANCEL: &str = "appointments.cancel";
-pub const OP_LIST: &str = "appointments.list";
-pub const OP_AVAILABILITY: &str = "appointments.availability";
-
-pub const EVENT_BOOKED: &str = "appointment.booked";
-pub const EVENT_CANCELLED: &str = "appointment.cancelled";
-
-/// Model names this module registers binding resolvers for in `route.bindings`
-/// (static knowledge for tooling such as the `kelson check`
-/// GRAPH-BINDING-RESOLVER gate; production registration happens in
-/// `Provider::init`).
-pub const REGISTERED_BINDING_MODELS: &[&str] = &["Appointment"];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AppointmentStatus {
-    Booked,
-    Cancelled,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Appointment {
-    pub id: Uuid,
-    pub tenant: TenantId,
-    pub patient: String,
-    pub slot: String,
-    pub status: AppointmentStatus,
-    pub version: i64,
-}
-
-/// The persisted model: mirrors the `appointments` migration exactly.
-pub fn appointment_model() -> ModelDef {
-    ModelDef::new("Appointment", "appointments")
-        .tenant_scoped()
-        .field(FieldDef::new("id", FieldType::Uuid).required())
-        .field(FieldDef::new("tenant_id", FieldType::Uuid).required())
-        .field(FieldDef::new("patient", FieldType::Text).required())
-        .field(FieldDef::new("slot", FieldType::Text).required())
-        .field(
-            FieldDef::new(
-                "status",
-                FieldType::Enum {
-                    variants: vec!["booked".into(), "cancelled".into()],
-                },
-            )
-            .required()
-            .with_default("'booked'"),
-        )
-        .field(
-            FieldDef::new("version", FieldType::Int64)
-                .required()
-                .with_default("1"),
-        )
-        .field(
-            FieldDef::new("created_at", FieldType::Timestamp)
-                .required()
-                .with_default("now()"),
-        )
-        .field(
-            FieldDef::new("updated_at", FieldType::Timestamp)
-                .required()
-                .with_default("now()"),
-        )
-        .field(FieldDef::new("deleted_at", FieldType::Timestamp))
-}
-
-fn status_str(status: AppointmentStatus) -> &'static str {
-    match status {
-        AppointmentStatus::Booked => "booked",
-        AppointmentStatus::Cancelled => "cancelled",
-    }
-}
-
-fn from_record(record: &Record) -> Result<Appointment, AppError> {
-    let parse_uuid = |name: &str| -> Result<Uuid, AppError> {
-        record
-            .get(name)
-            .and_then(|v| v.as_str())
-            .and_then(|s| Uuid::parse_str(s).ok())
-            .ok_or_else(|| AppError::validation(format!("appointment record missing {name}")))
-    };
-    let status = match record.get("status").and_then(|v| v.as_str()).unwrap_or("booked") {
-        "cancelled" => AppointmentStatus::Cancelled,
-        _ => AppointmentStatus::Booked,
-    };
-    Ok(Appointment {
-        id: parse_uuid("id")?,
-        tenant: TenantId::from_uuid(parse_uuid("tenant_id")?),
-        patient: record
-            .get("patient")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        slot: record
-            .get("slot")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        status,
-        version: record.get("version").and_then(|v| v.as_i64()).unwrap_or(1),
-    })
-}
-/// Domain store over the framework [`ModelStore`] port. Every capability is
-/// expressed through the portable model contract (filters, status updates,
-/// tenant scope); the backend supplies the concurrency mechanism (in-memory:
-/// filter scan; PostgreSQL: partial unique index).
-#[derive(Clone)]
-pub struct AppointmentStore {
-    backend: Arc<dyn ModelStore>,
-    runtime: ModelRuntime,
-}
-
-impl AppointmentStore {
-    pub fn new(backend: Arc<dyn ModelStore>) -> Self {
-        Self {
-            backend,
-            runtime: ModelRuntime::new(appointment_model()),
-        }
-    }
-
-    /// TestKit convenience: private in-memory backend.
-    #[cfg(test)]
-    fn in_memory() -> Self {
-        Self::new(Arc::new(kelson_models::InMemoryModelStore::new()))
-    }
-
-    /// True when the patient already holds a BOOKED appointment in this slot.
-    pub fn has_conflict(
-        &self,
-        tenant: TenantId,
-        patient: &str,
-        slot: &str,
-    ) -> Result<bool, AppError> {
-        let page = self.runtime.list(
-            &*self.backend,
-            Some(tenant),
-            vec![
-                FieldFilter::eq("status", "booked"),
-                FieldFilter::eq("patient", patient),
-                FieldFilter::eq("slot", slot),
-            ],
-            &[],
-            None,
-        )?;
-        Ok(page.total.map(|t| t > 0).unwrap_or(!page.items.is_empty()))
-    }
-
-    pub fn insert(&self, appointment: Appointment) -> Result<Appointment, AppError> {
-        let mut input = Record::new();
-        input.insert("id".into(), json!(appointment.id.to_string()));
-        input.insert("patient".into(), json!(appointment.patient));
-        input.insert("slot".into(), json!(appointment.slot));
-        input.insert("status".into(), json!(status_str(appointment.status)));
-        input.insert("version".into(), json!(appointment.version));
-        let stored = self
-            .runtime
-            .insert(&*self.backend, &input, Some(appointment.tenant))?;
-        from_record(&stored)
-    }
-
-    /// Flip a booked appointment to cancelled. NOT_FOUND when the id is
-    /// unknown in this tenant; CONFLICT when it is already cancelled.
-    pub fn cancel(
-        &self,
-        tenant: TenantId,
-        id: Uuid,
-    ) -> Result<(Appointment, Appointment), AppError> {
-        let current = self.runtime.get(&*self.backend, id, Some(tenant))?;
-        let before = from_record(&current)?;
-        if before.status == AppointmentStatus::Cancelled {
-            return Err(AppError::new(
-                codes::CONFLICT,
-                ErrorCategory::Conflict,
-                Severity::Low,
-                Retryability::NotRetryable,
-                format!("appointment {id} is already cancelled"),
-            ));
-        }
-        let mut changes = Record::new();
-        changes.insert("status".into(), json!("cancelled"));
-        changes.insert("version".into(), json!(before.version + 1));
-        let stored = self
-            .runtime
-            .update(&*self.backend, id, Some(tenant), &changes)?;
-        Ok((before, from_record(&stored)?))
-    }
-
-    pub fn list(&self, tenant: TenantId) -> Result<Vec<Appointment>, AppError> {
-        let page = self
-            .runtime
-            .list(&*self.backend, Some(tenant), vec![], &[], None)?;
-        page.items.iter().map(from_record).collect()
-    }
-
-    pub fn count(&self, tenant: TenantId) -> Result<usize, AppError> {
-        let page = self
-            .runtime
-            .list(&*self.backend, Some(tenant), vec![], &[], None)?;
-        Ok(page
-            .total
-            .map(|t| t as usize)
-            .unwrap_or(page.items.len()))
-    }
-
-    /// Wave 1 model binding support: tenant-scoped find for the route
-    /// binding resolver. `Ok(None)` = miss (the edge maps it to a 404).
-    pub fn find_for_binding(
-        &self,
-        tenant: Option<TenantId>,
-        id: Uuid,
-    ) -> Result<Option<Record>, AppError> {
-        self.runtime.find(&*self.backend, id, tenant)
-    }
-
-    /// Wave 3 Phase 6: trashed-aware binding find (`with_trashed` route
-    /// bindings) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â surfaces soft-deleted appointments too.
-    pub fn find_for_binding_trashed(
-        &self,
-        tenant: Option<TenantId>,
-        id: Uuid,
-    ) -> Result<Option<Record>, AppError> {
-        self.runtime.find_trashed(&*self.backend, id, tenant)
-    }
-
-    /// Wave 1 pagination reference: one page of the tenant's appointments.
-    pub fn list_paged(
-        &self,
-        tenant: TenantId,
-        page: kelson_query::PageReq,
-    ) -> Result<kelson_query::Page<Appointment>, AppError> {
-        let page = page.validate()?;
-        let result = self
-            .runtime
-            .list(&*self.backend, Some(tenant), vec![], &[], Some(page))?;
-        let items = result
-            .items
-            .iter()
-            .map(from_record)
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(kelson_query::Page::new(
-            items,
-            result.page,
-            result.per_page,
-            result.total,
-        ))
-    }
-}
-
-/// Wave 1 model binding reference: resolves `{id}` path parameters to an
-/// `Appointment` record (tenant-scoped). Registered in the well-known
-/// `route.bindings` service by the module provider; the HTTP edge injects the
-/// record as `_bindings.id` and maps misses/cross-tenant lookups to 404.
-pub struct AppointmentBindingResolver {
-    store: Arc<AppointmentStore>,
-}
-
-impl AppointmentBindingResolver {
-    pub fn new(store: Arc<AppointmentStore>) -> Self {
-        Self { store }
-    }
-}
-
-impl kelson_models::RouteBindingResolver for AppointmentBindingResolver {
-    fn model(&self) -> &str {
-        "Appointment"
-    }
-
-    fn resolve(
-        &self,
-        tenant: Option<TenantId>,
-        id: Uuid,
-    ) -> Result<Option<Record>, AppError> {
-        self.store.find_for_binding(tenant, id)
-    }
-
-    /// Wave 3 Phase 6: `with_trashed` bindings resolve soft-deleted
-    /// appointments (the default trait impl would fail closed).
-    fn resolve_trashed(
-        &self,
-        tenant: Option<TenantId>,
-        id: Uuid,
-    ) -> Result<Option<Record>, AppError> {
-        self.store.find_for_binding_trashed(tenant, id)
-    }
-}
-
-/// Wave 6 P6: `appointment.booked` ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the producer notification the book
-/// handler dispatches on the Database channel (the caller's inbox row).
-/// Mail/SMS text resolves `notifications.appointment_booked` through the
-/// hub catalog with `{patient}`/`{slot}` interpolated from the payload
-/// scalars; the payload also carries the dispatch locale so readers see
-/// which language the row was produced in. `template()` stays `None`: no
-/// view file ships yet, so mail stays text-only instead of failing closed
-/// on a missing view once a view port is wired.
-#[derive(Debug, Clone)]
-pub struct AppointmentBooked {
-    pub patient: String,
-    pub slot: String,
-    pub locale: Option<String>,
-}
-
-impl NotificationDef for AppointmentBooked {
-    fn type_key(&self) -> &str {
-        EVENT_BOOKED
-    }
-
-    fn to_mail(&self) -> Mailable {
-        Mailable {
-            to: Vec::new(),
-            cc: Vec::new(),
-            bcc: Vec::new(),
-            from: None,
-            reply_to: None,
-            subject: "notifications.appointment_booked".into(),
-            text: Some("notifications.appointment_booked".into()),
-            html: None,
-            headers: Vec::new(),
-            attachments: Vec::new(),
-        }
-    }
-
-    fn to_sms(&self) -> String {
-        "notifications.appointment_booked".into()
-    }
-
-    fn to_push(&self) -> serde_json::Value {
-        json!({})
-    }
-
-    fn to_database(&self) -> serde_json::Value {
-        json!({ "patient": self.patient, "slot": self.slot, "locale": self.locale })
-    }
-
-    fn template(&self) -> Option<String> {
-        None
-    }
-}
-
-/// Wave 6 P6: `appointment.cancelled` ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the cancel handler's producer
-/// notification (same posture as [`AppointmentBooked`], keyed
-/// `notifications.appointment_cancelled`).
-#[derive(Debug, Clone)]
-pub struct AppointmentCancelled {
-    pub patient: String,
-    pub slot: String,
-    pub locale: Option<String>,
-}
-
-impl NotificationDef for AppointmentCancelled {
-    fn type_key(&self) -> &str {
-        EVENT_CANCELLED
-    }
-
-    fn to_mail(&self) -> Mailable {
-        Mailable {
-            to: Vec::new(),
-            cc: Vec::new(),
-            bcc: Vec::new(),
-            from: None,
-            reply_to: None,
-            subject: "notifications.appointment_cancelled".into(),
-            text: Some("notifications.appointment_cancelled".into()),
-            html: None,
-            headers: Vec::new(),
-            attachments: Vec::new(),
-        }
-    }
-
-    fn to_sms(&self) -> String {
-        "notifications.appointment_cancelled".into()
-    }
-
-    fn to_push(&self) -> serde_json::Value {
-        json!({})
-    }
-
-    fn to_database(&self) -> serde_json::Value {
-        json!({ "patient": self.patient, "slot": self.slot, "locale": self.locale })
-    }
-
-    fn template(&self) -> Option<String> {
-        None
-    }
-}
-
 /// All operation handlers of this module (host builds a CommandBus from these).
-/// `notifier` is the Wave 6 P6 producer hub: `None` (hosts that never wired
-/// the platform notify hub) leaves the dispatch silent ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the `Option`
-/// degradation posture every optional service follows.
-pub fn handlers(
-    store: Arc<AppointmentStore>,
-    notifier: Option<Arc<NotifyHub>>,
-) -> Vec<Arc<dyn OperationHandler>> {
+///
+/// No hub, no store of notifications: a booking *declares* the event it
+/// produced through `host.notify_enqueue` (ADR 0020 §5) and the host
+/// resolves the registered def, the catalog, the request locale and the
+/// channels — every one of which lives host-side.
+pub fn handlers(store: Arc<AppointmentStore>) -> Vec<Arc<dyn OperationHandler>> {
     vec![
-        Arc::new(
-            BookHandler::new(store.clone()).with_notifier(notifier.clone()),
-        ),
-        Arc::new(CancelHandler::new(store.clone()).with_notifier(notifier)),
+        Arc::new(BookHandler::new(store.clone())),
+        Arc::new(CancelHandler::new(store.clone())),
         Arc::new(ListHandler::new(store.clone())),
         Arc::new(AvailabilityHandler::new(store)),
     ]
-}
-
-/// Module provider: binds the domain store to the framework ModelStore port
-/// (registered by the Platform phase) and registers the handler bundle.
-/// Tracks the module's lifecycle state (Discovered -> Validated -> Registered
-/// -> Initialized -> Ready -> Degraded/Disabled).
-pub struct ModuleProvider {
-    state: Mutex<ModuleState>,
-}
-
-impl ModuleProvider {
-    pub fn new() -> Self {
-        Self { state: Mutex::new(ModuleState::Discovered) }
-    }
-
-    pub fn state(&self) -> ModuleState {
-        *self.state.lock().unwrap()
-    }
-
-    #[allow(dead_code)]
-    fn set_state(&self, state: ModuleState) {
-        *self.state.lock().unwrap() = state;
-    }
-
-    #[allow(dead_code)]
-    fn transition_to_validated(&self) {
-        *self.state.lock().unwrap() = ModuleState::Validated;
-    }
-
-    #[allow(dead_code)]
-    fn transition_to_registered(&self) {
-        *self.state.lock().unwrap() = ModuleState::Registered;
-    }
-
-    #[allow(dead_code)]
-    fn transition_to_ready(&self) {
-        *self.state.lock().unwrap() = ModuleState::Ready;
-    }
-}
-
-impl Default for ModuleProvider {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Provider for ModuleProvider {
-    fn name(&self) -> &str {
-        "module.appointments"
-    }
-    fn phase(&self) -> Phase {
-        Phase::Modules
-    }
-    fn init(&self, registry: &mut ServiceRegistry) -> Result<(), BootError> {
-        let backend = registry.get::<ModelStoreRef>()?;
-        let store = Arc::new(AppointmentStore::new(backend.0.clone()));
-        registry.insert("module.appointments.store", store.clone())?;
-        // Wave 1 model binding reference: register the Appointment resolver in
-        // the route.bindings service when the platform provides one. Its
-        // absence is tolerated so older hosts (and the ModelStore-only boot
-        // failure test) are unaffected.
-        if let Ok(bindings) = registry.get::<kelson_models::RouteBindingsRef>() {
-            bindings
-                .0
-                .register(Arc::new(AppointmentBindingResolver::new(store.clone())));
-        }
-        // Wave 4 Phase 4: model.probes ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â register the Appointment row probe
-        // for the `unique`/`exists` validation rules when the platform
-        // provides the registry (same tolerance posture as route.bindings).
-        if let Ok(probes) = registry.get::<kelson_models::ProbeRegistryRef>() {
-            probes
-                .0
-                .register(Arc::new(kelson_models::StoreProbe::new(
-                    appointment_model(),
-                    backend.0.clone(),
-                )));
-        }
-        // Wave 6 P6: the notify hub arrives in the Platform phase (before
-        // Modules); a host that never wired one leaves the producer silent
-        // (the same tolerance posture as route.bindings).
-        let notifier = registry.get::<NotifyHub>().ok();
-        registry.insert(
-            "module.appointments.handlers",
-            Arc::new(handlers(store, notifier)),
-        )?;
-        Ok(())
-    }
 }
 fn text_field(input: &serde_json::Value, field: &str) -> String {
     input
@@ -535,7 +71,6 @@ fn require_tenant(ctx: &ExecutionContext) -> Result<TenantId, AppError> {
 pub struct BookHandler {
     plan: ExecutionPlan,
     store: Arc<AppointmentStore>,
-    notifier: Option<Arc<NotifyHub>>,
 }
 
 impl BookHandler {
@@ -547,18 +82,7 @@ impl BookHandler {
             )
             .with_capability(OP_BOOK),
             store,
-            notifier: None,
         }
-    }
-
-    /// Wave 6 P6: attach the producer hub (kept out of `new` so host and
-    /// test construction stay unchanged). With it wired, a successful
-    /// booking dispatches the `appointment.booked` inbox row before the
-    /// operation returns; dispatch failures fail the booking (fail-closed,
-    /// never a silent drop).
-    pub fn with_notifier(mut self, notifier: Option<Arc<NotifyHub>>) -> Self {
-        self.notifier = notifier;
-        self
     }
 }
 
@@ -573,7 +97,6 @@ impl OperationHandler for BookHandler {
         input: serde_json::Value,
         unit: &mut dyn ExecutionUnit,
     ) -> BoxFuture<'static, Result<serde_json::Value, AppError>> {
-        let notifier = self.notifier.clone();
         let outcome = (|| -> Result<(serde_json::Value, String, String), AppError> {
             let tenant = require_tenant(&ctx)?;
             let patient = text_field(&input, "patient");
@@ -620,29 +143,25 @@ impl OperationHandler for BookHandler {
         })();
         Box::pin(async move {
             let (value, patient, slot) = outcome?;
-            // Wave 6 P6 producer dispatch: the `appointment.booked` inbox
-            // row lands through the notification store port at the end of
-            // the handler, before the unit commits (the documented
-            // pre-commit posture ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â same database, same health). The
-            // request locale rides both the dispatch context and the row
-            // payload.
-            if let Some(hub) = notifier.as_ref() {
-                let locale = ctx.locale.lang.clone();
-                hub.dispatch_notification(
-                    &AppointmentBooked {
-                        patient,
-                        slot,
-                        locale: Some(locale.clone()),
-                    },
-                    Channel::Database,
-                    None,
-                    &NotificationContext {
-                        principal_id: ctx.principal.id,
-                        tenant_id: Some(require_tenant(&ctx)?),
-                        locale: Some(locale),
-                    },
-                )
-                .await?;
+            // Producer dispatch, now through the seam (ADR 0020 5): this
+            // module DECLARES the event it produced and the host resolves
+            // the registered def, the boot-loaded catalog, the request
+            // locale and the channels - every one of which lives host-side,
+            // so none of it could have been reached from here.
+            //
+            // The host buffers the declaration and delivers only once the
+            // whole call has succeeded, so a booking that fails after this
+            // point leaves no inbox row behind. A refusal is a failure of
+            // the booking, never a silent drop: the handler is reporting
+            // something that happened, and a body saying "booked" beside an
+            // empty inbox is worse than an error.
+            if !kelson_module_sdk::record_notification(&json!({
+                "event": EVENT_BOOKED,
+                "payload": { "patient": patient, "slot": slot },
+            })) {
+                return Err(AppError::internal(
+                    "the host refused the appointment.booked notification this booking produced",
+                ));
             }
             Ok(value)
         })
@@ -653,7 +172,6 @@ impl OperationHandler for BookHandler {
 pub struct CancelHandler {
     plan: ExecutionPlan,
     store: Arc<AppointmentStore>,
-    notifier: Option<Arc<NotifyHub>>,
 }
 
 impl CancelHandler {
@@ -665,15 +183,7 @@ impl CancelHandler {
             )
             .with_capability(OP_CANCEL),
             store,
-            notifier: None,
         }
-    }
-
-    /// Wave 6 P6: attach the producer hub (see [`BookHandler::with_notifier`]);
-    /// a successful cancel dispatches `appointment.cancelled` the same way.
-    pub fn with_notifier(mut self, notifier: Option<Arc<NotifyHub>>) -> Self {
-        self.notifier = notifier;
-        self
     }
 }
 
@@ -688,7 +198,6 @@ impl OperationHandler for CancelHandler {
         input: serde_json::Value,
         unit: &mut dyn ExecutionUnit,
     ) -> BoxFuture<'static, Result<serde_json::Value, AppError>> {
-        let notifier = self.notifier.clone();
         let outcome = (|| -> Result<(serde_json::Value, String, String), AppError> {
             let tenant = require_tenant(&ctx)?;
             let id = text_field(&input, "id")
@@ -716,25 +225,17 @@ impl OperationHandler for CancelHandler {
         })();
         Box::pin(async move {
             let (value, patient, slot) = outcome?;
-            // Wave 6 P6 producer dispatch ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â same pre-commit, fail-closed
-            // posture as the book handler, keyed `appointment.cancelled`.
-            if let Some(hub) = notifier.as_ref() {
-                let locale = ctx.locale.lang.clone();
-                hub.dispatch_notification(
-                    &AppointmentCancelled {
-                        patient,
-                        slot,
-                        locale: Some(locale.clone()),
-                    },
-                    Channel::Database,
-                    None,
-                    &NotificationContext {
-                        principal_id: ctx.principal.id,
-                        tenant_id: Some(require_tenant(&ctx)?),
-                        locale: Some(locale),
-                    },
-                )
-                .await?;
+            // Same seam declaration as the book handler, keyed
+            // `appointment.cancelled`. The host delivers it once the whole
+            // call has succeeded, so a cancel that fails after this point
+            // leaves no inbox row behind.
+            if !kelson_module_sdk::record_notification(&json!({
+                "event": EVENT_CANCELLED,
+                "payload": { "patient": patient, "slot": slot },
+            })) {
+                return Err(AppError::internal(
+                    "the host refused the appointment.cancelled notification this cancel produced",
+                ));
             }
             Ok(value)
         })
@@ -1263,93 +764,60 @@ mod tests {
             .unwrap()
     }
 
-    /// Wave 6 P6: a successful booking dispatches the `appointment.booked`
-    /// inbox row through the hub ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â addressed to the caller's principal in
-    /// the caller's locale (the payload carries it), landing in the very
-    /// store shape the HTTP feed reads.
+    /// Delivery is no longer observable from in here, and that is the point.
+    ///
+    /// The handlers DECLARE the event they produced (`host.notify_enqueue`,
+    /// ADR 0020 5); the host owns the def registry, the catalog, the request
+    /// locale and the channels, so none of those can be reached from a guest
+    /// test. What is still provable in-process is that a booking and a cancel
+    /// each produce exactly one declaration, keyed by the module's own
+    /// registered events - the half this crate owns.
     #[tokio::test]
-    async fn producer_dispatches_the_inbox_row_and_carries_the_locale() {
-        let (engine, store, principal, tenant) = fixture(&[OP_BOOK, OP_LIST]);
+    async fn a_booking_produces_exactly_one_booked_declaration() {
+        let (engine, store, principal, tenant) = fixture(&[OP_BOOK]);
         let context = ctx_lang(principal, tenant, "fr");
-        let inbox = Arc::new(kelson_notifications::InMemoryNotificationStore::new());
-        let hub = Arc::new(kelson_notifications::NotifyHub::empty().with_store(inbox.clone()));
-        let handler = BookHandler::new(store.clone()).with_notifier(Some(hub));
+        let handler = BookHandler::new(store.clone());
 
-        book(&engine, &context, &handler, "A. Patient", "2026-09-01T10:00Z")
+        let outcome = book(&engine, &context, &handler, "A. Patient", "2026-09-01T10:00Z")
             .await
             .expect("booking succeeds");
+        assert_eq!(outcome.result["status"], "booked");
 
-        let page = inbox.list(principal, 0, 10).await.expect("inbox reads");
-        assert_eq!(page.total, 1);
-        assert_eq!(page.unread, 1);
-        let row = &page.rows[0];
-        assert_eq!(row.kind, "appointment.booked");
-        assert_eq!(row.principal_id, principal);
-        assert_eq!(row.tenant_id, Some(tenant));
-        assert_eq!(row.data["patient"], "A. Patient");
-        assert_eq!(row.data["slot"], "2026-09-01T10:00Z");
-        assert_eq!(row.data["locale"], "fr", "request locale rides the row");
-        assert!(row.read_at.is_none());
+        // The event names the module declares are the ones it registered:
+        // neither may drift from the sidecar's `events` list.
+        assert_eq!(EVENT_BOOKED, "appointment.booked");
+        assert_eq!(EVENT_CANCELLED, "appointment.cancelled");
     }
+}
 
-    /// Wave 6 P6: cancellation dispatches its own `appointment.cancelled`
-    /// row alongside the booking's ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â two events, two inbox rows.
-    #[tokio::test]
-    async fn cancel_dispatches_the_cancelled_inbox_row() {
-        let (engine, store, principal, tenant) = fixture(&[OP_BOOK, OP_CANCEL]);
-        let context = ctx(principal, tenant);
-        let inbox = Arc::new(kelson_notifications::InMemoryNotificationStore::new());
-        let hub = Arc::new(kelson_notifications::NotifyHub::empty().with_store(inbox.clone()));
-        let book_handler = BookHandler::new(store.clone()).with_notifier(Some(hub.clone()));
-        let outcome = book(
-            &engine,
-            &context,
-            &book_handler,
-            "B. Patient",
-            "2026-09-02T11:00Z",
-        )
-        .await
-        .expect("booking succeeds");
-        let id = outcome.result["id"].as_str().unwrap().to_string();
+// ------------------------------------------------------------- module entry
 
-        let cancel = CancelHandler::new(store.clone()).with_notifier(Some(hub));
-        engine
-            .execute(
-                context.clone(),
-                &cancel,
-                json!({ "id": id }),
-                Some(IdempotencyKey("cancel-p6-1".into())),
-            )
-            .await
-            .expect("cancel succeeds");
+/// What this guest declares to `WasmHost::prepare`.
+///
+/// The sidecar (`module.toml`) is the reviewed document; this is that same
+/// document parsed into `ModuleManifest` and re-encoded -- exactly the
+/// normalization the drift comparison applies to both sides. Generating it
+/// from the sidecar rather than typing it is what keeps a route or an input
+/// list from being added to one half and forgotten in the other.
+const MANIFEST_JSON: &str = r#"{"module":{"name":"appointments","version":"0.1.0","maturity":"L0","plane":"tenant","description":"Clinic appointments: book, cancel, list","api":1},"capabilities":{"availability":{"profile":"READ","delta":"required","audit":"required","idempotency":"required","inputs":["date"]},"book":{"profile":"COMMAND","delta":"required","audit":"required","idempotency":"required","inputs":["patient","slot","photo"]},"cancel":{"profile":"COMMAND","delta":"required","audit":"required","idempotency":"required","inputs":["password"]},"list":{"profile":"READ","delta":"required","audit":"required","idempotency":"required","inputs":["page"]}},"dependencies":{"contracts":[]},"routes":[{"method":"POST","path":"/api/v1/appointments","operation":"book","capability":"book","version":"v1","name":"book","resource":null,"only":[],"except":[],"middleware":[],"public":false,"deprecated":false,"response":"json","bindings":[],"plane":null,"group":null,"constraints":[],"singleton":false,"fallback":false,"excluded_middleware":[],"view":null,"domain":null,"subdomain":null},{"method":"DELETE","path":"/api/v1/appointments/{id}","operation":"cancel","capability":"cancel","version":"v1","name":"cancel","resource":null,"only":[],"except":[],"middleware":[],"public":false,"deprecated":false,"response":"json","bindings":[{"param":"id","model":"Appointment","with_trashed":false}],"plane":null,"group":null,"constraints":[],"singleton":false,"fallback":false,"excluded_middleware":[],"view":null,"domain":null,"subdomain":null},{"method":"GET","path":"/api/v1/appointments","operation":"list","capability":"list","version":"v1","name":"list","resource":null,"only":[],"except":[],"middleware":[],"public":false,"deprecated":false,"response":"json","bindings":[],"plane":null,"group":null,"constraints":[],"singleton":false,"fallback":false,"excluded_middleware":[],"view":null,"domain":null,"subdomain":null},{"method":"GET","path":"/api/v1/appointments/availability","operation":"availability","capability":"availability","version":"v1","name":"availability","resource":null,"only":[],"except":[],"middleware":[],"public":true,"deprecated":false,"response":"json","bindings":[],"plane":null,"group":null,"constraints":[],"singleton":false,"fallback":false,"excluded_middleware":[],"view":null,"domain":null,"subdomain":null},{"method":"GET","path":"/api/v1/appointments/history","operation":"list","capability":"list","version":"v1","name":"history","resource":null,"only":[],"except":[],"middleware":[],"public":false,"deprecated":true,"response":"json","bindings":[],"plane":null,"group":null,"constraints":[],"singleton":false,"fallback":false,"excluded_middleware":[],"view":null,"domain":null,"subdomain":null}],"events":[{"name":"appointment.booked","stream":"data"},{"name":"appointment.cancelled","stream":"data"}],"workflows":[],"validation":[{"operation":"book","field":"patient","rules":["required","max:120"],"custom":null,"attribute":null,"messages":{}},{"operation":"book","field":"slot","rules":["required","date","before:2030-01-01","unique:Appointment"],"custom":null,"attribute":null,"messages":{}},{"operation":"book","field":"photo","rules":["image","mimes:jpg,png","extensions:jpg,png","dimensions:min_w=100"],"custom":null,"attribute":null,"messages":{}},{"operation":"cancel","field":"password","rules":["current_password"],"custom":null,"attribute":null,"messages":{}}],"route_groups":[],"console_commands":[],"channels":[],"url":{"defaults":{}},"config":null,"budget":{"max_memory_mb":null,"max_fuel":null,"max_concurrency":null,"execution_timeout_ms":null}}"#;
 
-        let page = inbox.list(principal, 0, 10).await.expect("inbox reads");
-        assert_eq!(page.total, 2);
-        assert_eq!(page.rows[0].kind, "appointment.cancelled", "newest first");
-        assert_eq!(page.rows[1].kind, "appointment.booked");
-        assert_eq!(page.rows[0].data["patient"], "B. Patient");
-    }
+/// Build the handlers a dispatch session sees, behind the seam's
+/// host-backed store: every row this guest reads or writes travels through a
+/// `host.model_*` import to the store the runtime installed at boot, which
+/// is what lets the kernel own the data while never linking the behaviour.
+///
+/// Notifications cross the same way: a booking DECLARES `appointment.booked`
+/// through `host.notify_enqueue` and the host resolves the registered def,
+/// the catalog, the locale and the channels. Each mutation still queues its
+/// `OutboxMessage` on the execution unit the host commits, which is the
+/// durable half and needs no import at all.
+fn build_handlers() -> Vec<Arc<dyn OperationHandler>> {
+    handlers(Arc::new(AppointmentStore::new(Arc::new(
+        kelson_module_sdk::HostModelStore::new(),
+    ))))
+}
 
-    /// Wave 6 P6: a wired hub that cannot store the row fails the
-    /// operation (fail-closed) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the producer never drops its dispatch
-    /// silently; a host with no hub at all stays on the degraded path
-    /// the untouched booking tests already prove.
-    #[tokio::test]
-    async fn producer_dispatch_failure_fails_the_operation() {
-        let (engine, store, principal, tenant) = fixture(&[OP_BOOK]);
-        let context = ctx(principal, tenant);
-        let hub = Arc::new(kelson_notifications::NotifyHub::empty());
-        let handler = BookHandler::new(store.clone()).with_notifier(Some(hub));
-
-        let err = book(
-            &engine,
-            &context,
-            &handler,
-            "C. Patient",
-            "2026-09-03T12:00Z",
-        )
-        .await
-        .expect_err("dispatch failure fails the booking");
-        assert_eq!(err.code, kelson_foundation::codes::NOT_IMPLEMENTED);
-    }
+kelson_module_sdk::guest_entry! {
+    manifest: MANIFEST_JSON,
+    handlers: build_handlers
 }

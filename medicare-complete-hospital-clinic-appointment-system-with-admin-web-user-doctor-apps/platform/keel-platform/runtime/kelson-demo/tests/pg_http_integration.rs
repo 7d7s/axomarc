@@ -1,4 +1,3 @@
-#![cfg(feature = "demo")]
 //! Row 19 (tenant Pg adapter): HTTP dispatch over the PostgreSQL model
 //! store. Production's boot binds the appointments handlers to
 //! `PgModelStore` when the driver pool is up and seeds the dev tenant (the

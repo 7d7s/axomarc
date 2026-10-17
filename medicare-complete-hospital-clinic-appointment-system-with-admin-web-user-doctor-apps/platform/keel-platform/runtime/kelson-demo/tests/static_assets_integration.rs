@@ -1,4 +1,3 @@
-#![cfg(feature = "demo")]
 //! Wave 2 static assets edge integration: `public/` answers real files
 //! through the router fallback (immutable headers for fingerprinted build
 //! assets, `index.html` at `/`), declared routes keep winning over files,

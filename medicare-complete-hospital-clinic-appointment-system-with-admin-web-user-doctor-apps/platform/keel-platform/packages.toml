@@ -2,11 +2,18 @@
 # compile (kelson graph/check/boot) and boot config defaults ([config] in the
 # package manifest). Maintained by `kelson pkg:add` / `pkg:list`.
 #
-# One `[[wasm]]` entry: the Stage C marker module. It is here rather than left
-# to an operator's scratch directory because the activation path only means
+# Three `[[wasm]]` entries: the Stage C marker module, plus the two real
+# application modules Stage C.2 ported. They are here rather than left to an
+# operator's scratch directory because the activation path only means
 # something against a module the process already has loaded -- `load_wasm_plugins`
 # runs at boot from this index, and every generation-swap commit that follows
 # starts from the generation this entry produced.
+#
+# `appointments` and `oauth2` are why `kelson-demo` no longer links
+# `kelson-mod-appointments`/`kelson-mod-oauth2`: their handlers cross the ADR
+# 0020 seam instead of being statically linked into the kernel, so these bytes
+# are the only path from a route to a handler. The manifest each guest
+# declares in `guest_entry!` must normalize to the reviewed sidecar below.
 #
 # Both paths resolve against the workspace root (the process's working
 # directory, `PackageIndex::resolve_path`), so booting from anywhere else loads
@@ -15,6 +22,10 @@
 #
 #   cargo build --release --target wasm32-wasip1 -p kelson-module-marker
 #   copy target\wasm32-wasip1\release\kelson_module_marker.wasm testing\module-marker\artifact\
+#
+#   cargo build --release --target wasm32-wasip1 -p kelson-mod-appointments -p kelson-mod-oauth2
+#   copy target\wasm32-wasip1\release\kelson_mod_appointments.wasm applications\appointments\artifact\
+#   copy target\wasm32-wasip1\release\kelson_mod_oauth2.wasm applications\oauth2\artifact\
 #
 # The reviewed sidecar is `testing/module-marker/module.toml`; the guest's own
 # `kelson_manifest()` must normalize to the identical document or the load is
@@ -25,3 +36,19 @@ name = "marker"
 version = "0.1.0"
 path = "testing/module-marker/artifact/kelson_module_marker.wasm"
 manifest = "testing/module-marker/module.toml"
+
+# Stage C.2: the appointments module, ported to the seam. `path` is the
+# artifact and `manifest` the reviewed sidecar; `name` must equal the
+# sidecar's `[module] name` or `PackageIndex::wasm_manifest` refuses the
+# entry before anything is compiled.
+[[wasm]]
+name = "appointments"
+version = "0.1.0"
+path = "applications/appointments/artifact/kelson_mod_appointments.wasm"
+manifest = "applications/appointments/module.toml"
+
+[[wasm]]
+name = "oauth2"
+version = "0.1.0"
+path = "applications/oauth2/artifact/kelson_mod_oauth2.wasm"
+manifest = "applications/oauth2/module.toml"

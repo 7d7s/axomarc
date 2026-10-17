@@ -25,6 +25,8 @@ members = [
   "crates/data/postgres",
   "crates/data/mysql",
   "crates/data/models",
+  "crates/data/appointments",
+  "crates/data/oauth2",
   "crates/async/events",
   "crates/async/jobs",
   "crates/async/workflows",
@@ -179,7 +181,15 @@ kelson-webhooks = { version = "0.1.0", path = "adapters/kelson-webhooks" }
 kelson-search-pgvector = { version = "0.1.0", path = "adapters/kelson-search-pgvector" }
 # --- umbrella + reference application modules (merged from keel-kernel) ---
 kelson-framework = { version = "0.1.0", path = "crates/framework" }
+# Stage C.2: the module's host half (record, model, store, binding resolver,
+# notifications, provider) is a contract the kernel links; the behaviour that
+# consumes it ships as the `applications/*` guest artifact.
+kelson-appointments-contract = { path = "crates/data/appointments" }
 kelson-mod-appointments = { path = "applications/appointments" }
+# Stage C.2: the module's host half (client record, client store, bundle
+# carrier, provider) is a contract the kernel links; the RFC 6749 handlers
+# that consume it ship as the `applications/*` guest artifact.
+kelson-oauth2-contract = { path = "crates/data/oauth2" }
 kelson-mod-oauth2 = { path = "applications/oauth2" }
 # --- external (budget: policy v2 D-62, cap 25; see DEPENDENCY-POLICY.md) ---
 axum = { version = "=0.8.6", features = ["ws", "multipart"] }

@@ -1,4 +1,3 @@
-#![cfg(feature = "demo")]
 //! Wave 2 error rendering (19-PARITY "Error rendering"): the typed status
 //! registry, the `reportable`/`renderable` split, per-code renderer output,
 //! the `app.debug` detail gate (redacted through the logging list) and the

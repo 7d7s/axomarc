@@ -12,6 +12,12 @@ readme.workspace = true
 keywords.workspace = true
 
 [dependencies]
+# The host half of this module. The guest is the only consumer.
+kelson-oauth2-contract = { workspace = true }
+# ADR 0020: the seam. `guest_entry!` declares the ABI exports and hands the
+# host-backed `HostModelStore`/`HostTokenStore`, which is how the handlers
+# reach rows and tokens without the kernel ever linking this crate.
+kelson-module-sdk = { workspace = true }
 kelson-foundation = { workspace = true }
 kelson-context = { workspace = true }
 kelson-execution = { workspace = true }
@@ -31,6 +37,12 @@ uuid = { workspace = true }
 # --workspace` keeps its suite count unchanged.
 test = false
 doctest = false
+# A module ships as an artifact the host loads, not as a library other crates
+# link. The host-target build is what `cargo clippy --workspace` lints; the
+# artifact itself comes from:
+#
+#   cargo build --release --target wasm32-wasip1 -p kelson-mod-oauth2
+crate-type = ["cdylib"]
 
 [package.metadata.docs.rs]
 all-features = true
