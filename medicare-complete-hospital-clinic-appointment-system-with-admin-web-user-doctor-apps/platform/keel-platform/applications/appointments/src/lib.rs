@@ -17,7 +17,7 @@
 //! The guest's manifest is declared by `guest_entry!` below and must
 //! normalize to the reviewed sidecar (`module.toml` beside this crate) or
 //! `WasmHost::prepare` refuses the load with `WasmError::Drift`.
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use kelson_appointments_contract::*;
 use kelson_context::ExecutionContext;
@@ -28,11 +28,6 @@ use kelson_foundation::{
 use kelson_execution::{
     BoxFuture, ExecutionPlan, ExecutionUnit, MutationRecord, OperationHandler, OutboxMessage,
 };
-use kelson_lifecycle::{BootError, ModuleState, Phase, Provider, ServiceRegistry};
-use kelson_models::{
-    FieldDef, FieldFilter, FieldType, ModelDef, ModelRuntime, ModelStore, ModelStoreRef, Record,
-};
-use kelson_notifications::{Channel, Mailable, NotificationContext, NotificationDef, NotifyHub};
 use serde_json::json;
 use uuid::Uuid;
 
