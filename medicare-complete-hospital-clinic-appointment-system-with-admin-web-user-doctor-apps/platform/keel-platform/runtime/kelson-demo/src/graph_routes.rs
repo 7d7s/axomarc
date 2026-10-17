@@ -72,7 +72,32 @@ pub fn discover_manifests(root: &Path) -> Result<Vec<ModuleManifest>, String> {
             }
         }
     }
-    out.extend(kelson_registry::PackageIndex::load(root)?.manifests(root)?);
+    // An indexed package normally LIVES in the layout walked above:
+    // `packages.toml` records `manifest = "applications/appointments/module.toml"`
+    // and the `applications/` loop just read that same file. Two reads of one
+    // file are one declaration, but `out.extend` handed both to the graph, whose
+    // duplicate gate fired on the discovery order rather than on a second module
+    // -- `GRAPH-DUP-MODULE ... declared by appointments and appointments` refused
+    // boot after every wasm plugin had already loaded, so a clean checkout could
+    // not serve at all. `tests/architecture` stayed green because it keeps its
+    // own copy of this loop and never runs the index pass.
+    //
+    // Only byte-identical declarations collapse. A name the index resolves to
+    // *different* content is a real second declaration, so both survive and the
+    // gate still reports it - deduplication must not become a way to hide drift.
+    for manifest in kelson_registry::PackageIndex::load(root)?.manifests(root)? {
+        let canon = serde_json::to_string(&manifest).ok();
+        let already_declared = out.iter().any(|seen| {
+            seen.name() == manifest.name()
+                && match (&canon, serde_json::to_string(seen).ok()) {
+                    (Some(a), Some(b)) => a.as_str() == b.as_str(),
+                    _ => false,
+                }
+        });
+        if !already_declared {
+            out.push(manifest);
+        }
+    }
     out.extend(discover_route_files(root)?);
     out.sort_by(|a, b| a.name().cmp(b.name()));
     Ok(out)
