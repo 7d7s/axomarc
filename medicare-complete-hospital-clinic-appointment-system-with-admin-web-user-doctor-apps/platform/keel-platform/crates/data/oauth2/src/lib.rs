@@ -138,13 +138,15 @@ fn from_record(record: &Record) -> Result<OauthClient, AppError> {
 pub struct OauthClientStore {
     backend: Arc<dyn ModelStore>,
     runtime: ModelRuntime,
+    hasher: Arc<dyn SecretHasher>,
 }
 
 impl OauthClientStore {
-    pub fn new(backend: Arc<dyn ModelStore>) -> Self {
+    pub fn new(backend: Arc<dyn ModelStore>, hasher: Arc<dyn SecretHasher>) -> Self {
         Self {
             backend,
             runtime: ModelRuntime::new(oauth_client_model()),
+            hasher,
         }
     }
 
@@ -157,7 +159,7 @@ impl OauthClientStore {
         scopes: Vec<String>,
     ) -> Result<(OauthClient, String), AppError> {
         let secret = kelson_tokens::generate_plaintext();
-        let secret_hash = hash_secret(&secret)?;
+        let secret_hash = self.hasher.hash(&secret)?;
         let mut input = Record::new();
         input.insert("id".into(), json!(Uuid::now_v7().to_string()));
         input.insert("name".into(), json!(name));
@@ -203,7 +205,7 @@ impl OauthClientStore {
             .get("secret_hash")
             .and_then(|v| v.as_str())
             .unwrap_or_default();
-        match verify_secret(secret, stored) {
+        match self.hasher.verify(secret, stored) {
             Ok(true) => from_record(&row),
             _ => Err(AppError::unauthenticated()),
         }
@@ -334,39 +336,36 @@ impl Provider for ModuleProvider {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Reaching the KDF
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------- the KDF side
 
-/// Hash a client secret the way THIS build can reach argon2.
+/// Who runs the KDF for this store.
 ///
-/// A guest reaches it only through `host.password_hash` (ADR 0020 §6):
-/// argon2's baseline is 19 MiB and billions of instructions, and a guest is
-/// given 16 MiB and 10M fuel - the memory ask alone is refused, so hashing
-/// in-process aborts the instance rather than returning. The host has no
-/// such ceiling and calls the crate directly.
+/// Injected rather than called directly: argon2's baseline (19 * 1024 KiB
+/// and billions of instructions) is affordable natively but not inside a
+/// 16 MiB / 10M-fuel guest, so a guest reaches it through
+/// `host.password_hash` while a host calls `kelson_identity` itself. Which
+/// of the two a build is doing belongs to that build - and a data crate
+/// reaches neither an SDK nor a host, hence a seam here instead of a `cfg`.
 ///
-/// Both paths run the same argon2id parameters from `kelson_identity`, so a
-/// hash written by either is readable by either; only where the seconds are
-/// spent differs.
-#[cfg(target_arch = "wasm32")]
-fn hash_secret(secret: &str) -> Result<String, AppError> {
-    kelson_module_sdk::hash_password(secret)
+/// Both paths run the same argon2id parameters, so a hash written by one is
+/// readable by the other; only where the seconds are spent differs.
+pub trait SecretHasher: Send + Sync {
+    /// Hash a secret for storage. The plaintext never leaves the caller.
+    fn hash(&self, secret: &str) -> Result<String, AppError>;
+    /// Whether a presented secret matches what was stored.
+    fn verify(&self, secret: &str, hash: &str) -> Result<bool, AppError>;
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn hash_secret(secret: &str) -> Result<String, AppError> {
-    kelson_identity::hash_password(&kelson_identity::Secret::new(secret))
-}
+/// The KDF as the platform runs it outside a sandbox: `kelson_identity`
+/// directly, no seam, no metering.
+pub struct LocalSecretHasher;
 
-/// Verify a presented secret against the stored PHC string - the mirror of
-/// [`hash_secret`], on whichever side of the seam this build is running.
-#[cfg(target_arch = "wasm32")]
-fn verify_secret(secret: &str, hash: &str) -> Result<bool, AppError> {
-    kelson_module_sdk::verify_password(secret, hash)
-}
+impl SecretHasher for LocalSecretHasher {
+    fn hash(&self, secret: &str) -> Result<String, AppError> {
+        kelson_identity::hash_password(&kelson_identity::Secret::new(secret))
+    }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn verify_secret(secret: &str, hash: &str) -> Result<bool, AppError> {
-    kelson_identity::verify_password(&kelson_identity::Secret::new(secret), hash)
+    fn verify(&self, secret: &str, hash: &str) -> Result<bool, AppError> {
+        kelson_identity::verify_password(&kelson_identity::Secret::new(secret), hash)
+    }
 }

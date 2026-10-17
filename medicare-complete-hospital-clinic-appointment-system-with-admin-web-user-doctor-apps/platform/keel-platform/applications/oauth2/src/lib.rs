@@ -734,9 +734,10 @@ const MANIFEST_JSON: &str = r#"{"module":{"name":"oauth2","version":"0.1.0","mat
 /// the runtime installed at boot. The kernel therefore owns both stores while
 /// never linking the RFC 6749 behaviour that reads and writes them.
 fn build_handlers() -> Vec<Arc<dyn OperationHandler>> {
-    let store = Arc::new(OauthClientStore::new(Arc::new(
-        kelson_module_sdk::HostModelStore::new(),
-    )));
+    let store = Arc::new(OauthClientStore::new(
+        Arc::new(kelson_module_sdk::HostModelStore::new()),
+        seam_hasher(),
+    ));
     let tokens = Arc::new(TokenService::new(Arc::new(
         kelson_module_sdk::HostTokenStore::new(),
     )));
@@ -746,4 +747,32 @@ fn build_handlers() -> Vec<Arc<dyn OperationHandler>> {
 kelson_module_sdk::guest_entry! {
     manifest: MANIFEST_JSON,
     handlers: build_handlers
+}
+
+// ------------------------------------------------------------ reaching the KDF
+
+/// The KDF this build hands ["OauthClientStore"].
+///
+/// In a guest argon2's baseline wants 19 * 1024 KiB and billions of
+/// instructions while the sandbox offers 16 MiB and 10M fuel, so the
+/// hashing crosses to the host through host.password_hash (ADR 0020
+/// sec. 6). Natively - the test target - kelson_identity does it
+/// directly. Same parameters either way, so hashes interchange at rest.
+#[cfg(target_arch = "wasm32")]
+fn seam_hasher() -> Arc<dyn SecretHasher> {
+    struct OverTheSeam;
+    impl SecretHasher for OverTheSeam {
+        fn hash(&self, secret: &str) -> Result<String, AppError> {
+            kelson_module_sdk::hash_password(secret)
+        }
+        fn verify(&self, secret: &str, hash: &str) -> Result<bool, AppError> {
+            kelson_module_sdk::verify_password(secret, hash)
+        }
+    }
+    Arc::new(OverTheSeam)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn seam_hasher() -> Arc<dyn SecretHasher> {
+    Arc::new(LocalSecretHasher)
 }
