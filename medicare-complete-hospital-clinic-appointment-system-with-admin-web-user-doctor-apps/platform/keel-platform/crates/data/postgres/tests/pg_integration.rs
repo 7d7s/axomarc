@@ -1232,21 +1232,18 @@ async fn mysql_job_store_claim_completes_and_fails_with_skip_locked() {
     assert!(listed.iter().any(|j| j.id == second.id), "requeued row lists");
 }
 
-/// P0 runtime-safety reproduction (queue crash recovery, MySQL fabric).
+/// P0 runtime-safety acceptance (queue crash recovery, MySQL fabric).
 ///
-/// A worker that dies mid-execution leaves a `running` row owned by a worker
-/// that no longer exists. A fresh worker must recover it once the claim lease
-/// has expired. Today `claim` only ever selects `status = 'pending'` and
-/// `requeue` refuses anything that is not `failed`/`dead`, so the job is
-/// orphaned permanently — it can neither run again nor be requeued.
+/// A worker that dies mid-execution leaves a `running` row whose owner no
+/// longer exists. The claim lease makes that row recyclable: once the lease
+/// expires a fresh worker reclaims it, the epoch (`attempt`) advances, and the
+/// dead worker's stale completion/failure is refused by the fence.
 ///
-/// KNOWN-FAILING until a lease/reclaim arm lands. Kept `#[ignore]` so the
-/// suite stays green; the fix removes the `#[ignore]` and this becomes its
-/// acceptance gate. Run it now with `-- --ignored` to observe the gap.
+/// The matrix runs the physical queue tests serially (`--test-threads=1`);
+/// they share `jobs_queue`, exactly as the pre-existing claim test does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "P0 gap: crashed-worker reclaim missing (claim selects only pending; requeue refuses running)"]
 async fn mysql_job_store_recovers_orphaned_running_job_after_worker_crash() {
-    use kelson_jobs::{build_from_def, JobDef, JobStatus, JobStore};
+    use kelson_jobs::{build_from_def, JobDef, JobStatus, JobStore, JobStoreAdmin};
 
     let Some(pool) = mysql_pool().await else { return };
     let store = kelson_mysql::MySqlJobStore::new(pool.clone());
@@ -1256,16 +1253,24 @@ async fn mysql_job_store_recovers_orphaned_running_job_after_worker_crash() {
         .await
         .expect("clean claimable queue");
 
-    let def = JobDef::new("mysql.reclaim.probe");
+    let mut def = JobDef::new("mysql.reclaim.probe");
+    def.max_attempts = 3;
     let now = OffsetDateTime::now_utc();
     let mut job = build_from_def(&def, serde_json::json!({}), now);
     job.available_at = now - time::Duration::seconds(60);
     let id = store.enqueue(job).expect("enqueue");
 
-    // Worker A claims the job, then "crashes" (never completes or fails it).
+    // Worker A claims the job, then "crashes": it never completes or fails it.
     let claimed = store.claim("mysql-worker-A").expect("claim").expect("row");
     assert_eq!(claimed.id, id);
     assert_eq!(claimed.status, JobStatus::Running);
+    assert_eq!(claimed.attempt, 1, "the claim epoch starts at 1");
+
+    // A claim INSIDE its lease is never stolen — reclaim is lease-gated.
+    assert!(
+        store.claim("mysql-worker-B").expect("live claim").is_none(),
+        "a healthy in-flight claim must not be taken by another worker"
+    );
 
     // Time passes: the abandoned claim is now a full lease old.
     sqlx::query("UPDATE jobs_queue SET claimed_at = claimed_at - INTERVAL 1 HOUR WHERE id = ?")
@@ -1274,12 +1279,241 @@ async fn mysql_job_store_recovers_orphaned_running_job_after_worker_crash() {
         .await
         .expect("age the abandoned claim");
 
-    // Worker B starts. The row is `running`, its owner is gone, and the lease
-    // has expired, so recovery must hand it back instead of orphaning it.
-    let recovered = store.claim("mysql-worker-B").expect("reclaim");
+    // Worker B starts. The row is `running`, its owner is gone and the lease
+    // has expired, so recovery hands it back instead of orphaning it.
+    let recovered = store
+        .claim("mysql-worker-B")
+        .expect("reclaim")
+        .expect("a crashed worker's in-flight job is reclaimed, not orphaned");
+    assert_eq!(recovered.id, id);
+    assert_eq!(recovered.attempt, 2, "the reclaim advances the epoch");
     assert_eq!(
-        recovered.map(|j| j.id),
-        Some(id),
-        "a crashed worker's in-flight job must be reclaimed, not orphaned"
+        recovered.claimed_by.as_deref(),
+        Some("mysql-worker-B"),
+        "ownership moves to the reclaiming worker"
     );
+
+    // Fencing: the resurrected worker A cannot finish (or fail) a job whose
+    // claim it lost — it presents the stale epoch 1.
+    let stale = store
+        .complete_claim(id, 1)
+        .expect_err("a stale claim cannot complete");
+    assert_eq!(stale.code, kelson_foundation::codes::CONFLICT);
+    let stale = store
+        .fail_claim(id, 1, "stale worker")
+        .expect_err("a stale claim cannot fail");
+    assert_eq!(stale.code, kelson_foundation::codes::CONFLICT);
+    let alive = store.get(id).expect("reads").expect("row");
+    assert_eq!(
+        alive.status,
+        JobStatus::Running,
+        "the fence left the new owner's claim alone"
+    );
+
+    // The fence guards the admin transitions a claimed job can take too.
+    let stale = store
+        .defer_claim(id, 1, now + time::Duration::seconds(30))
+        .expect_err("a stale claim cannot defer");
+    assert_eq!(stale.code, kelson_foundation::codes::CONFLICT);
+    let stale = store
+        .kill_claim(id, 1, "stale worker")
+        .expect_err("a stale claim cannot kill");
+    assert_eq!(stale.code, kelson_foundation::codes::CONFLICT);
+
+    // The real owner finishes normally.
+    store.complete_claim(id, 2).expect("current claim completes");
+    assert_eq!(
+        store.get(id).expect("reads").expect("row").status,
+        JobStatus::Succeeded
+    );
+
+    sqlx::query("DELETE FROM jobs_queue WHERE id = ?")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .expect("clean up the probe row");
+}
+
+/// The poison-job bound: an abandoned claim whose retry budget is already
+/// spent is dead-lettered by the claim sweep, so it becomes terminal and
+/// countable instead of sitting `running` forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mysql_job_store_dead_letters_an_exhausted_orphan_claim() {
+    use kelson_jobs::{build_from_def, JobDef, JobStatus, JobStore, JobStoreAdmin};
+
+    let Some(pool) = mysql_pool().await else { return };
+    let store = kelson_mysql::MySqlJobStore::new(pool.clone());
+
+    sqlx::query("DELETE FROM jobs_queue WHERE status IN ('pending', 'running')")
+        .execute(&pool)
+        .await
+        .expect("clean claimable queue");
+
+    let mut def = JobDef::new("mysql.exhausted.probe");
+    def.max_attempts = 1;
+    let now = OffsetDateTime::now_utc();
+    let mut job = build_from_def(&def, serde_json::json!({}), now);
+    job.available_at = now - time::Duration::seconds(60);
+    let id = store.enqueue(job).expect("enqueue");
+
+    let claimed = store.claim("mysql-worker-A").expect("claim").expect("row");
+    assert_eq!(claimed.attempt, 1);
+    assert_eq!(claimed.max_attempts, 1, "the retry budget is already spent");
+
+    sqlx::query("UPDATE jobs_queue SET claimed_at = claimed_at - INTERVAL 1 HOUR WHERE id = ?")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .expect("age the abandoned claim");
+
+    // No worker may reclaim it: the budget is gone, so the sweep makes the
+    // row terminal and this claim finds nothing.
+    assert!(store.claim("mysql-worker-B").expect("sweep").is_none());
+    let row = store.get(id).expect("reads").expect("row");
+    assert_eq!(
+        row.status,
+        JobStatus::Dead,
+        "an exhausted orphan becomes dead, not invisible"
+    );
+    assert_eq!(
+        row.last_error.as_deref(),
+        Some("claim lease expired; retries exhausted")
+    );
+
+    sqlx::query("DELETE FROM jobs_queue WHERE id = ?")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .expect("clean up the probe row");
+}
+
+/// P0 FINDING (repro; the schema fix is NOT approved yet).
+///
+/// The MySQL tenant-scoped job queue is unusable end-to-end:
+/// `jobs_queue.tenant_id` is declared `CHAR(36)` (migration
+/// `20261005000001_jobs_queue_tenant.sql`) while both data paths treat it as a
+/// 16-byte UUID — `enqueue` binds `*tenant.as_uuid()` (raw bytes, which MySQL
+/// refuses to store in a utf8mb4 column) and `job_from_row` decodes
+/// `Option<Uuid>` (binary). Every tenant-scoped enqueue fails server-side with
+/// `1366 (HY000): Incorrect string value: '\x…' for column 'tenant_id' at row
+/// 1`, so only the unscoped (tenant-NULL) path works — which is exactly why
+/// the rest of the matrix is green. The same latency hides the tenant filter
+/// the new reclaim arm must preserve.
+///
+/// Kept `#[ignore]` so the suite stays green; once the schema is aligned this
+/// becomes the tenant-isolation acceptance gate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "P0 finding: jobs_queue.tenant_id is CHAR(36) while the store binds/decodes a 16-byte UUID (1366 on every tenant enqueue)"]
+async fn mysql_job_store_tenant_scoped_queue_is_usable_and_isolated() {
+    use kelson_jobs::{build_from_def, JobDef, TenantJobStore};
+
+    let Some(pool) = mysql_pool().await else { return };
+    let store = kelson_mysql::MySqlJobStore::new(pool.clone());
+    let tenant_a = TenantId::from_uuid(uuid::Uuid::now_v7());
+    let tenant_b = TenantId::from_uuid(uuid::Uuid::now_v7());
+
+    let now = OffsetDateTime::now_utc();
+    let mut job = build_from_def(
+        &JobDef::new("mysql.tenant.probe"),
+        serde_json::json!({}),
+        now,
+    );
+    job.available_at = now - time::Duration::seconds(60);
+    let id = store.enqueue_for(tenant_a, job).expect("tenant enqueue");
+
+    // Another tenant never sees it...
+    assert!(
+        store
+            .claim_for(tenant_b, "mysql-worker-B")
+            .expect("cross-tenant claim")
+            .is_none(),
+        "another tenant's pending job is never visible"
+    );
+    // ...its owner does...
+    assert_eq!(
+        store
+            .claim_for(tenant_a, "mysql-worker-A")
+            .expect("own claim")
+            .expect("own pending job is claimable")
+            .id,
+        id
+    );
+    // ...and an EXPIRED claim stays invisible across the tenant boundary.
+    sqlx::query("UPDATE jobs_queue SET claimed_at = claimed_at - INTERVAL 1 HOUR WHERE id = ?")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .expect("age the claim");
+    assert!(
+        store
+            .claim_for(tenant_b, "mysql-worker-B")
+            .expect("cross-tenant reclaim")
+            .is_none(),
+        "tenant scoping survives the reclaim arm"
+    );
+
+    sqlx::query("DELETE FROM jobs_queue WHERE id = ?")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .expect("clean up the probe row");
+}
+
+/// PostgreSQL twin of the reclaim/fence acceptance. Skipped when DATABASE_URL
+/// is not a reachable `postgres://` URL (see the module note).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pg_job_store_recovers_orphaned_running_job_after_worker_crash() {
+    use kelson_jobs::{build_from_def, JobDef, JobStatus, JobStore, JobStoreAdmin};
+
+    let Some(pool) = pool().await else { return };
+    let store = kelson_postgres::PgJobStore::new(pool.clone());
+
+    sqlx::query("DELETE FROM jobs_queue WHERE status IN ('pending', 'running')")
+        .execute(&pool)
+        .await
+        .expect("clean claimable queue");
+
+    let mut def = JobDef::new("pg.reclaim.probe");
+    def.max_attempts = 3;
+    let now = OffsetDateTime::now_utc();
+    let mut job = build_from_def(&def, serde_json::json!({}), now);
+    job.available_at = now - time::Duration::seconds(60);
+    let id = store.enqueue(job).expect("enqueue");
+
+    let claimed = store.claim("pg-worker-A").expect("claim").expect("row");
+    assert_eq!(claimed.id, id);
+    assert_eq!(claimed.attempt, 1);
+    assert!(
+        store.claim("pg-worker-B").expect("live claim").is_none(),
+        "claims inside the lease are not stolen"
+    );
+
+    sqlx::query("UPDATE jobs_queue SET claimed_at = claimed_at - INTERVAL '1 hour' WHERE id = $1")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .expect("age the abandoned claim");
+
+    let recovered = store
+        .claim("pg-worker-B")
+        .expect("reclaim")
+        .expect("a crashed worker's job is reclaimed, not orphaned");
+    assert_eq!(recovered.id, id);
+    assert_eq!(recovered.attempt, 2);
+
+    let stale = store
+        .complete_claim(id, 1)
+        .expect_err("a stale claim cannot complete");
+    assert_eq!(stale.code, kelson_foundation::codes::CONFLICT);
+    store.complete_claim(id, 2).expect("current claim completes");
+    assert_eq!(
+        store.get(id).expect("reads").expect("row").status,
+        JobStatus::Succeeded
+    );
+
+    sqlx::query("DELETE FROM jobs_queue WHERE id = $1")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .expect("clean up the probe row");
 }

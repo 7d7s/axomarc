@@ -179,3 +179,74 @@ refuses a non-deterministic graph (fail-closed behaviour is itself correct).
 
 Overall: **CONDITIONALLY READY** — the no-rebuild and outbox-durability claims are now evidence-backed; the
 hard-crash queue-recovery gap (F1) is a genuine production-safety defect and is the next fix.
+
+---
+
+## 8. F1 fix landed (lease reclaim + fencing), live-proven
+
+Status: implemented, tested and proven at process level on branch `p0-runtime-safety`.
+
+### 8.1 What changed
+
+- **`kelson_jobs`** — `DEFAULT_CLAIM_LEASE_SECS = 900` and a fenced claim-completion API, added as trait
+  *defaults* so non-durable stores keep working: `JobStore::complete_claim(id, attempt)` /
+  `fail_claim(id, attempt, error)`, `TenantJobStore::complete_claim_for` / `fail_claim_for`, and
+  `JobStoreAdmin::defer_claim` / `kill_claim`. `attempt` is the claim epoch: it advances on every
+  claim/reclaim, so a stale holder is refused.
+- **Both durable stores** (`kelson-mysql`, `kelson-postgres`) — `claim`/`claim_for` now have a second
+  candidate class: `status = 'running' AND attempt < max_attempts AND claimed_at < now - lease`
+  (the SKIP LOCKED / candidate-lock structure is unchanged, so single-claim still holds), plus a
+  **dead-letter sweep** that turns an abandoned claim with no retries left into `dead` with
+  `last_error = 'claim lease expired; retries exhausted'` instead of leaving it `running` forever.
+- **Fence on every terminal write** — a worker whose claim was reclaimed can no longer complete, fail,
+  defer or kill the job: those writes require `AND attempt = <epoch>` and return `KSN_CONFLICT` otherwise.
+- **`kelson-worker`** — `DispatchCtx::once` captures the epoch at claim time and routes all four terminal
+  transitions through the fenced calls.
+- **F2, made explicit** — the MySQL job store now writes/compares `UTC_TIMESTAMP(6)` rather than `NOW(6)`,
+  so correctness no longer rests on sqlx's implicit session default (`time_zone='+00:00'`).
+
+One implementation bug was caught by the new tests and fixed before landing: the MySQL dead-letter sweep was
+originally written *inside* the claim transaction, which is rolled back whenever no candidate is found — the
+sweep was therefore undone (test evidence: exhausted orphan stayed `running`). It now runs in autocommit
+*ahead* of the claim transaction. PostgreSQL does not have the hazard: the sweep is a leading
+data-modifying CTE of the same statement, which always commits.
+
+### 8.2 Evidence
+
+| Check | Result | Evidence |
+|---|---|---|
+| `kelson-jobs` unit tests | **PASS** | 35 passed, 0 failed |
+| MySQL integration matrix (serial, live DB) | **PASS** | 13 passed / 0 failed / 1 ignored, 3.27 s, no skip lines |
+| Reclaim + fence acceptance | **PASS** | `mysql_job_store_recovers_orphaned_running_job_after_worker_crash`: an in-lease claim is **not** stolen; an expired one is reclaimed with `attempt` 1→2 and the owner moved to worker B; worker A's `complete`/`fail`/`defer`/`kill` at epoch 1 are all refused with `KSN_CONFLICT`; worker B's `complete` at epoch 2 succeeds |
+| Poison-job bound | **PASS** | `mysql_job_store_dead_letters_an_exhausted_orphan_claim`: `max_attempts = 1` + expired claim → not reclaimable, row becomes `dead` with the lease-expired error |
+| **Live process-level reclaim** | **PASS** | Planted `running` / `attempt 1` / `claimed_by='kelson-worker-DEAD-9999'` / claim 1 h stale → real worker `kelson-worker-8072` booted `degraded:false`, logged `job succeeded {"job":"demo.job","job_id":"eeeeeeee-0000-0000-0000-000000000001","ms":3}`, stopped `{"jobs":1}`; row after: `succeeded` / **`attempt 2`** / `claimed_by='kelson-worker-8072'`. Before the fix the same plant produced `jobs:0` and the row stayed `running` forever |
+| PostgreSQL twin | **compiled, skipped here** | `pg_job_store_recovers_orphaned_running_job_after_worker_crash` mirrors the acceptance; PostgreSQL is unusable on this host (see §0) |
+
+### 8.3 New finding F5 — the tenant-scoped job queue is unusable on MySQL
+
+`jobs_queue.tenant_id` is declared `CHAR(36)` (`database/migrations-mysql/20261005000001_jobs_queue_tenant.sql`)
+while **both** data paths treat it as a 16-byte UUID: `enqueue` binds `*tenant.as_uuid()` (raw bytes) and
+`job_from_row` decodes `Option<Uuid>`. Every tenant-scoped enqueue therefore fails server-side:
+
+```
+1366 (HY000): Incorrect string value: '\xA1O\xB1\xFA\xF1w...' for column 'tenant_id' at row 1
+```
+
+Only the unscoped (tenant-NULL) path works, which is exactly why the rest of the matrix is green — and it means
+the tenant filter the new reclaim arm must preserve cannot be exercised on MySQL today. The repro is committed
+`#[ignore]`d with its reason: `mysql_job_store_tenant_scoped_queue_is_usable_and_isolated`.
+
+Proposed fix (**not applied; needs approval**): align the schema with the code and the house convention —
+`ALTER TABLE jobs_queue MODIFY tenant_id BINARY(16) NULL;` as a new migration. That matches the store's binary
+binds and `Uuid` decoding, the `outbox` table (`tenant_id binary(16)`) and the model tables (binary UUID binds).
+The column cannot hold real data today (every write failed), so the ALTER is lossless. The alternative —
+string binds plus string decoding — keeps `CHAR(36)` but diverges from every other MySQL store.
+
+### 8.4 Refinement of the skip hazard (§0)
+
+The MySQL skip behaviour is real but the PostgreSQL half is worse than first reported: **without `--nocapture`
+the skip line is invisible**. `eprintln!` output from a *passing* test is captured and discarded by the test
+harness, so a full run against an unreachable database reported `10 pg_* tests ok, 0 failed` with **zero** skip
+text in the captured log; only the single test run with `--nocapture` showed
+`pg-tests: cannot connect ([DB_ERROR] a database error occurred); skipping`. A green PG matrix is therefore not
+evidence of anything unless the run shows `--nocapture` output or the DB is independently confirmed reachable.

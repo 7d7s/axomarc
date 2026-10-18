@@ -129,13 +129,38 @@ impl JobStore for PgJobStore {
         let worker = worker.to_string();
         let pool = self.pool.clone();
         block_on(async move {
+            // P0 crash recovery: the candidate set is now TWO classes. (1) the
+            // due `pending` rows, exactly as before; and (2) `running` rows
+            // whose claim lease has expired — a worker that crashed, was
+            // evicted, or lost its host left them `running` forever, and
+            // before this arm existed such a job could neither run again nor
+            // be requeued (`requeue` refuses `running`). Reclaiming re-enters
+            // the normal path and advances `attempt`, so the retry budget
+            // still bounds a job that keeps killing its worker. The leading
+            // data-modifying CTE dead-letters abandoned claims whose budget is
+            // already spent, so an exhausted orphan becomes terminal instead
+            // of invisible; the outer select already excludes it (`attempt <
+            // max_attempts`), so the sweep and the pick never race.
             let row: Option<sqlx::postgres::PgRow> = sqlx::query(
-                "UPDATE jobs_queue
+                "WITH swept AS (
+                     UPDATE jobs_queue
+                     SET status = 'dead',
+                         last_error = COALESCE(last_error, 'claim lease expired; retries exhausted'),
+                         finished_at = now()
+                     WHERE status = 'running' AND attempt >= max_attempts
+                       AND claimed_at IS NOT NULL
+                       AND claimed_at < now() - make_interval(secs => $2)
+                     RETURNING 1
+                 )
+                 UPDATE jobs_queue
                  SET status = 'running', attempt = attempt + 1,
                      claimed_by = $1, claimed_at = now()
                  WHERE id = (
                      SELECT id FROM jobs_queue
-                     WHERE status = 'pending' AND available_at <= now()
+                     WHERE (status = 'pending' AND available_at <= now())
+                        OR (status = 'running' AND attempt < max_attempts
+                            AND claimed_at IS NOT NULL
+                            AND claimed_at < now() - make_interval(secs => $2))
                      ORDER BY priority DESC, available_at, enqueued_at
                      LIMIT 1
                      FOR UPDATE SKIP LOCKED
@@ -143,6 +168,7 @@ impl JobStore for PgJobStore {
                  RETURNING *",
             )
             .bind(&worker)
+            .bind(kelson_jobs::DEFAULT_CLAIM_LEASE_SECS as f64)
             .fetch_optional(&pool)
             .await
             .map_err(pg)?;
@@ -191,6 +217,61 @@ impl JobStore for PgJobStore {
             .map_err(pg)?;
             let Some((status,)) = row else {
                 return Err(AppError::conflict(format!("job {id} is not running")));
+            };
+            status_from(&status)
+        })
+    }
+
+    fn complete_claim(&self, id: Uuid, attempt: u32) -> Result<(), AppError> {
+        let pool = self.pool.clone();
+        block_on(async move {
+            // The fence: `attempt` is the epoch the caller was handed at claim
+            // time. If the lease expired and another worker reclaimed the row,
+            // `attempt` has moved on and this write matches nothing.
+            let done = sqlx::query(
+                "UPDATE jobs_queue
+                 SET status = 'succeeded', finished_at = now()
+                 WHERE id = $1 AND status = 'running' AND attempt = $2",
+            )
+            .bind(id)
+            .bind(attempt as i32)
+            .execute(&pool)
+            .await
+            .map_err(pg)?;
+            if done.rows_affected() == 0 {
+                return Err(AppError::conflict(format!(
+                    "job {id} claim is stale (attempt {attempt} was reclaimed); completion refused"
+                )));
+            }
+            Ok(())
+        })
+    }
+
+    fn fail_claim(&self, id: Uuid, attempt: u32, error: &str) -> Result<JobStatus, AppError> {
+        let error = error.to_string();
+        let pool = self.pool.clone();
+        block_on(async move {
+            let row: Option<(String,)> = sqlx::query_as(
+                "UPDATE jobs_queue
+                 SET last_error = $2,
+                     status = CASE WHEN attempt >= max_attempts THEN 'dead' ELSE 'pending' END,
+                     available_at = CASE WHEN attempt >= max_attempts THEN available_at
+                                         ELSE now() + make_interval(secs => LEAST(600, 30 * power(2, GREATEST(attempt - 1, 0)))::int)
+                                    END,
+                     finished_at = CASE WHEN attempt >= max_attempts THEN now() ELSE NULL END
+                 WHERE id = $1 AND status = 'running' AND attempt = $3
+                 RETURNING status",
+            )
+            .bind(id)
+            .bind(&error)
+            .bind(attempt as i32)
+            .fetch_optional(&pool)
+            .await
+            .map_err(pg)?;
+            let Some((status,)) = row else {
+                return Err(AppError::conflict(format!(
+                    "job {id} claim is stale (attempt {attempt} was reclaimed); failure refused"
+                )));
             };
             status_from(&status)
         })
@@ -366,6 +447,61 @@ impl JobStoreAdmin for PgJobStore {
             Ok(())
         })
     }
+
+    fn defer_claim(
+        &self,
+        id: Uuid,
+        attempt: u32,
+        available_at: time::OffsetDateTime,
+    ) -> Result<(), AppError> {
+        let pool = self.pool.clone();
+        block_on(async move {
+            let done = sqlx::query(
+                "UPDATE jobs_queue
+                 SET status = 'pending',
+                     attempt = GREATEST(attempt - 1, 0),
+                     available_at = $2,
+                     claimed_by = NULL, claimed_at = NULL
+                 WHERE id = $1 AND status = 'running' AND attempt = $3",
+            )
+            .bind(id)
+            .bind(available_at)
+            .bind(attempt as i32)
+            .execute(&pool)
+            .await
+            .map_err(pg)?;
+            if done.rows_affected() == 0 {
+                return Err(AppError::conflict(format!(
+                    "job {id} claim is stale (attempt {attempt} was reclaimed); defer refused"
+                )));
+            }
+            Ok(())
+        })
+    }
+
+    fn kill_claim(&self, id: Uuid, attempt: u32, error: &str) -> Result<(), AppError> {
+        let error = error.to_string();
+        let pool = self.pool.clone();
+        block_on(async move {
+            let done = sqlx::query(
+                "UPDATE jobs_queue
+                 SET status = 'dead', last_error = $2, finished_at = now()
+                 WHERE id = $1 AND status = 'running' AND attempt = $3",
+            )
+            .bind(id)
+            .bind(&error)
+            .bind(attempt as i32)
+            .execute(&pool)
+            .await
+            .map_err(pg)?;
+            if done.rows_affected() == 0 {
+                return Err(AppError::conflict(format!(
+                    "job {id} claim is stale (attempt {attempt} was reclaimed); kill refused"
+                )));
+            }
+            Ok(())
+        })
+    }
 }
 
 // ----------------------------------------- tenant-scoped port (target §3.1)
@@ -411,14 +547,31 @@ impl TenantJobStore for PgJobStore {
         let tenant = *tenant.as_uuid();
         let pool = self.pool.clone();
         block_on(async move {
+            // Tenant-filtered twin of the physical claim, including the P0
+            // crash-recovery arm: an expired claim lease re-enters this
+            // tenant's candidate set, and a spent-budget orphan is
+            // dead-lettered first. Another tenant's rows are never touched.
             let row: Option<sqlx::postgres::PgRow> = sqlx::query(
-                "UPDATE jobs_queue
+                "WITH swept AS (
+                     UPDATE jobs_queue
+                     SET status = 'dead',
+                         last_error = COALESCE(last_error, 'claim lease expired; retries exhausted'),
+                         finished_at = now()
+                     WHERE status = 'running' AND attempt >= max_attempts AND tenant_id = $2
+                       AND claimed_at IS NOT NULL
+                       AND claimed_at < now() - make_interval(secs => $3)
+                     RETURNING 1
+                 )
+                 UPDATE jobs_queue
                  SET status = 'running', attempt = attempt + 1,
                      claimed_by = $1, claimed_at = now()
                  WHERE id = (
                      SELECT id FROM jobs_queue
-                     WHERE status = 'pending' AND available_at <= now()
-                       AND tenant_id = $2
+                     WHERE tenant_id = $2
+                       AND ((status = 'pending' AND available_at <= now())
+                            OR (status = 'running' AND attempt < max_attempts
+                                AND claimed_at IS NOT NULL
+                                AND claimed_at < now() - make_interval(secs => $3)))
                      ORDER BY priority DESC, available_at, enqueued_at
                      LIMIT 1
                      FOR UPDATE SKIP LOCKED
@@ -427,6 +580,7 @@ impl TenantJobStore for PgJobStore {
             )
             .bind(&worker)
             .bind(tenant)
+            .bind(kelson_jobs::DEFAULT_CLAIM_LEASE_SECS as f64)
             .fetch_optional(&pool)
             .await
             .map_err(pg)?;
@@ -484,6 +638,76 @@ impl TenantJobStore for PgJobStore {
             let Some((status,)) = row else {
                 let miss = scoped_miss(&pool, id, tenant, || {
                     AppError::conflict(format!("job {id} is not running"))
+                })
+                .await?;
+                return Err(miss);
+            };
+            status_from(&status)
+        })
+    }
+
+    fn complete_claim_for(&self, tenant: TenantId, id: Uuid, attempt: u32) -> Result<(), AppError> {
+        let tenant = *tenant.as_uuid();
+        let pool = self.pool.clone();
+        block_on(async move {
+            let done = sqlx::query(
+                "UPDATE jobs_queue
+                 SET status = 'succeeded', finished_at = now()
+                 WHERE id = $1 AND status = 'running' AND tenant_id = $2 AND attempt = $3",
+            )
+            .bind(id)
+            .bind(tenant)
+            .bind(attempt as i32)
+            .execute(&pool)
+            .await
+            .map_err(pg)?;
+            if done.rows_affected() == 0 {
+                let miss = scoped_miss(&pool, id, tenant, || {
+                    AppError::conflict(format!(
+                        "job {id} claim is stale (attempt {attempt} was reclaimed); completion refused"
+                    ))
+                })
+                .await?;
+                return Err(miss);
+            }
+            Ok(())
+        })
+    }
+
+    fn fail_claim_for(
+        &self,
+        tenant: TenantId,
+        id: Uuid,
+        attempt: u32,
+        error: &str,
+    ) -> Result<JobStatus, AppError> {
+        let error = error.to_string();
+        let tenant = *tenant.as_uuid();
+        let pool = self.pool.clone();
+        block_on(async move {
+            let row: Option<(String,)> = sqlx::query_as(
+                "UPDATE jobs_queue
+                 SET last_error = $2,
+                     status = CASE WHEN attempt >= max_attempts THEN 'dead' ELSE 'pending' END,
+                     available_at = CASE WHEN attempt >= max_attempts THEN available_at
+                                         ELSE now() + make_interval(secs => LEAST(600, 30 * power(2, GREATEST(attempt - 1, 0)))::int)
+                                    END,
+                     finished_at = CASE WHEN attempt >= max_attempts THEN now() ELSE NULL END
+                 WHERE id = $1 AND status = 'running' AND tenant_id = $3 AND attempt = $4
+                 RETURNING status",
+            )
+            .bind(id)
+            .bind(&error)
+            .bind(tenant)
+            .bind(attempt as i32)
+            .fetch_optional(&pool)
+            .await
+            .map_err(pg)?;
+            let Some((status,)) = row else {
+                let miss = scoped_miss(&pool, id, tenant, || {
+                    AppError::conflict(format!(
+                        "job {id} claim is stale (attempt {attempt} was reclaimed); failure refused"
+                    ))
                 })
                 .await?;
                 return Err(miss);

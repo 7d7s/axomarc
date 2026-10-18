@@ -230,4 +230,29 @@ so the three blocked items were run against **portable MySQL 8.0.44** instead. F
   durable queue + outbox rows survived, then drained.
 
 Also found: `pg_integration` **silently skips and reports `ok`** when the database is unreachable — prior
-PostgreSQL greens are only meaningful if the DB was reachable in that exact run.
+PostgreSQL greens are only meaningful if the DB was reachable in that exact run. Confirmed and sharpened later:
+without `--nocapture` that skip line is captured and discarded because the test "passes", so an unreachable-DB
+run reports a clean green matrix with no skip text at all.
+
+### Follow-up (same day): the queue-recovery gap is fixed and live-proven
+
+- **Lease reclaim + fencing landed.** `claim` now also reclaims `running` rows whose claim is older than
+  `DEFAULT_CLAIM_LEASE_SECS` (900 s) and dead-letters abandoned claims that have spent their retry budget;
+  every terminal write is fenced on the claim epoch (`attempt`), so a resurrected zombie owner cannot complete,
+  fail, defer or kill a job another worker reclaimed. Fenced calls are trait defaults, so in-memory/Redis stores
+  are unaffected. MySQL timestamps are now explicitly `UTC_TIMESTAMP(6)` instead of relying on the driver's
+  session default.
+- **Evidence.** `kelson-jobs`: 35 passed. MySQL matrix: 13 passed / 0 failed / 1 ignored, no skips. New
+  acceptance tests: reclaim+fence (in-lease claim not stolen; stale epoch refused with `KSN_CONFLICT`),
+  dead-letter bound, PostgreSQL twin. **Live**: a planted crash-orphan
+  (`running`, `attempt 1`, `claimed_by='kelson-worker-DEAD-9999'`, claim 1 h stale) was picked up by a real
+  worker and completed — row went to `succeeded` / **`attempt 2`** / the new owner; before the fix the same
+  plant produced `jobs:0` and the row stayed `running` forever.
+- **New finding F5 (needs approval).** The MySQL tenant-scoped job queue is unusable end-to-end:
+  `jobs_queue.tenant_id` is `CHAR(36)` while the store binds raw UUID bytes and decodes `Uuid`, so every
+  tenant-scoped enqueue fails with `1366 (HY000): Incorrect string value … for column 'tenant_id'`. Repro is
+  committed `#[ignore]`d (`mysql_job_store_tenant_scoped_queue_is_usable_and_isolated`). Proposed fix: a
+  migration `ALTER TABLE jobs_queue MODIFY tenant_id BINARY(16) NULL;`, matching every other MySQL store and
+  the store's own read path.
+
+See `docs/P0-MYSQL-VERIFICATION-REPORT.md` §8 for the full detail.

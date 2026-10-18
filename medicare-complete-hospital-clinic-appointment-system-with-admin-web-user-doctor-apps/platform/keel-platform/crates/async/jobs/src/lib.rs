@@ -179,6 +179,15 @@ pub const DEFAULT_UNIQUE_TTL_SECS: u64 = 300;
 /// the retry timer).
 pub const UNIQUE_POLL_SECS: u64 = 5;
 
+/// P0 crash recovery: the claim lease. A `running` row whose claim is older
+/// than this is treated as abandoned (its worker crashed, was evicted, or
+/// lost its host) and may be re-claimed by any worker. The default is
+/// generous relative to the default job timeout ([`JobDef::timeout_secs`] =
+/// 300s) so a healthy long run is never stolen; a job that is reclaimed
+/// anyway has its previous owner FENCED — see [`JobStore::complete_claim`] —
+/// so the two runs can never both write a terminal state.
+pub const DEFAULT_CLAIM_LEASE_SECS: u64 = 900;
+
 impl JobDef {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
@@ -483,6 +492,28 @@ pub trait JobStore: Send + Sync {
     fn claim(&self, worker: &str) -> Result<Option<DurableJob>, AppError>;
     fn complete(&self, id: Uuid) -> Result<(), AppError>;
     fn fail(&self, id: Uuid, error: &str) -> Result<JobStatus, AppError>;
+
+    /// P0 crash recovery: fenced completion. Only the holder of the CURRENT
+    /// claim may finish the job — `attempt` is the claim's epoch (advanced by
+    /// every claim/reclaim), as handed back on the claimed job. A worker
+    /// whose claim was reclaimed after a lease expiry presents a stale epoch
+    /// and is refused with CONFLICT, so a resurrected "zombie" worker that
+    /// merely stalled (long GC, VM freeze, partition) can never mark another
+    /// worker's run complete. The default is the unfenced path, which is
+    /// correct for stores with no cross-process claim (in-memory, single
+    /// node): durable stores override it.
+    fn complete_claim(&self, id: Uuid, attempt: u32) -> Result<(), AppError> {
+        let _ = attempt;
+        self.complete(id)
+    }
+
+    /// P0 crash recovery: fenced failure — see [`JobStore::complete_claim`].
+    /// Without the fence a stalled zombie could fail a job another worker is
+    /// already running, burning retries that were never spent.
+    fn fail_claim(&self, id: Uuid, attempt: u32, error: &str) -> Result<JobStatus, AppError> {
+        let _ = attempt;
+        self.fail(id, error)
+    }
 }
 
 /// Tenant-scoped queue port (target-arch §3.1): every call carries `TenantId`
@@ -503,6 +534,24 @@ pub trait TenantJobStore: Send + Sync {
     fn claim_for(&self, tenant: TenantId, worker: &str) -> Result<Option<DurableJob>, AppError>;
     fn complete_for(&self, tenant: TenantId, id: Uuid) -> Result<(), AppError>;
     fn fail_for(&self, tenant: TenantId, id: Uuid, error: &str) -> Result<JobStatus, AppError>;
+
+    /// Fenced completion, tenant-scoped — see [`JobStore::complete_claim`].
+    fn complete_claim_for(&self, tenant: TenantId, id: Uuid, attempt: u32) -> Result<(), AppError> {
+        let _ = attempt;
+        self.complete_for(tenant, id)
+    }
+
+    /// Fenced failure, tenant-scoped — see [`JobStore::fail_claim`].
+    fn fail_claim_for(
+        &self,
+        tenant: TenantId,
+        id: Uuid,
+        attempt: u32,
+        error: &str,
+    ) -> Result<JobStatus, AppError> {
+        let _ = attempt;
+        self.fail_for(tenant, id, error)
+    }
 }
 
 /// Operational add-ons (item 22/29) beyond the frozen §5 surface.
@@ -534,6 +583,26 @@ pub trait JobStoreAdmin: Send + Sync {
     /// now with `error` recorded (the retry-limit abort; batch cancel
     /// reuses it). Contrasts with `fail`, which walks the retry budget.
     fn kill(&self, id: Uuid, error: &str) -> Result<(), AppError>;
+
+    /// P0 crash recovery: fenced defer. The admission `Hold` path returns a
+    /// JUST-CLAIMED job to pending; a stale epoch means the claim was already
+    /// reclaimed, so the defer is refused rather than stealing the new
+    /// owner's claim. Default is unfenced (see [`JobStore::complete_claim`]).
+    fn defer_claim(
+        &self,
+        id: Uuid,
+        attempt: u32,
+        available_at: OffsetDateTime,
+    ) -> Result<(), AppError> {
+        let _ = attempt;
+        self.defer(id, available_at)
+    }
+
+    /// P0 crash recovery: fenced kill — see [`JobStoreAdmin::defer_claim`].
+    fn kill_claim(&self, id: Uuid, attempt: u32, error: &str) -> Result<(), AppError> {
+        let _ = attempt;
+        self.kill(id, error)
+    }
 }
 
 /// Queue depth + age facts behind `kelson queue:monitor`, kept as data so the

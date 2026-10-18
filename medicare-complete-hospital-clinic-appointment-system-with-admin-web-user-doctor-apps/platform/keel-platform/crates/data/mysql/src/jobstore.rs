@@ -29,13 +29,25 @@
 //!   transaction so the status handed back is a snapshot of this write, like
 //!   pg's RETURNING row (a plain pool round-trip could read a row another
 //!   worker re-claimed in between).
-//! - `now()` -> `NOW(6)`; `now() + make_interval(secs => LEAST(600, 30 *
-//!   power(2, GREATEST(attempt - 1, 0)))::int)` -> `NOW(6) + INTERVAL
-//!   CAST(LEAST(600, 30 * POW(2, GREATEST(attempt - 1, 0))) AS SIGNED)
-//!   SECOND`, so the `::int` cast survives as `CAST(... AS SIGNED)` and the
-//!   interval expression stays an integer. (Theoretical edge: past
+//! - `now()` -> `UTC_TIMESTAMP(6)`; `now() + make_interval(secs => LEAST(600,
+//!   30 * power(2, GREATEST(attempt - 1, 0)))::int)` -> `UTC_TIMESTAMP(6) +
+//!   INTERVAL CAST(LEAST(600, 30 * POW(2, GREATEST(attempt - 1, 0))) AS
+//!   SIGNED) SECOND`, so the `::int` cast survives as `CAST(... AS SIGNED)`
+//!   and the interval expression stays an integer. (Theoretical edge: past
 //!   attempt ~1024 `POW` overflows to NULL on MySQL where pg's LEAST would
 //!   still cap at 600; unreachable while attempt < max_attempts is small.)
+//!   `DATETIME` carries no timezone, so the store is explicit about UTC
+//!   rather than leaning on the connection default: sqlx pins MySQL sessions
+//!   to `time_zone='+00:00'` today (sqlx-mysql `MySqlConnectOptions` default),
+//!   but a column default (`DEFAULT CURRENT_TIMESTAMP(6)`) or any non-sqlx
+//!   writer would otherwise store SERVER-LOCAL wall clock and be read back
+//!   five-and-a-half hours off on a non-UTC server.
+//! - P0 crash recovery: `claim` also reclaims `running` rows whose claim is
+//!   older than [`kelson_jobs::DEFAULT_CLAIM_LEASE_SECS`] (a crashed worker
+//!   left them running forever) and dead-letters abandoned claims that have
+//!   spent their retry budget. The epoch handed back is `attempt`, which
+//!   `complete_claim`/`fail_claim` require on the way out, so a stalled
+//!   zombie owner is fenced from finishing a job another worker reclaimed.
 //! - `COUNT(*) FILTER (WHERE ...)` -> `COUNT(CASE WHEN ... THEN 1 END)` and
 //!   `MIN(enqueued_at) FILTER (WHERE ...)` -> `MIN(CASE WHEN ... THEN
 //!   enqueued_at END)`: COUNT stays 0 on an empty group, MIN stays NULL, so
@@ -196,13 +208,44 @@ impl JobStore for MySqlJobStore {
             // Locking a single row by PK cannot sweep up its neighbours, so
             // the next worker skips exactly that row and takes the next
             // candidate — priority order is kept and no claimant is starved.
+            // P0 crash recovery: the candidate set is now TWO classes. (1) the
+            // due `pending` rows, exactly as before; and (2) `running` rows
+            // whose claim lease has expired — a worker that crashed, was
+            // evicted, or lost its host left them `running` forever, and
+            // before this arm existed such a job could neither run again nor
+            // be requeued (`requeue` refuses `running`). Reclaiming re-enters
+            // the normal path and advances `attempt`, so the retry budget
+            // still bounds a job that keeps killing its worker.
+            let cutoff = time::OffsetDateTime::now_utc()
+                - time::Duration::seconds(kelson_jobs::DEFAULT_CLAIM_LEASE_SECS as i64);
+            // Dead-letter abandoned claims with no retries left, so an
+            // exhausted orphan stops being invisible: it becomes terminal,
+            // countable and prunable instead of sitting `running` forever.
+            // This runs in AUTOCOMMIT, before the claim transaction opens: a
+            // claim that finds no candidate rolls its transaction back, and a
+            // dead-letter written inside it would be undone with it.
+            sqlx::query(
+                "UPDATE jobs_queue
+                 SET status = 'dead',
+                     last_error = COALESCE(last_error, 'claim lease expired; retries exhausted'),
+                     finished_at = UTC_TIMESTAMP(6)
+                 WHERE status = 'running' AND attempt >= max_attempts
+                   AND claimed_at IS NOT NULL AND claimed_at < ?",
+            )
+            .bind(cutoff)
+            .execute(&pool)
+            .await
+            .map_err(my)?;
             let mut tx = pool.begin().await.map_err(my)?;
             let candidates: Vec<Uuid> = sqlx::query_scalar(
                 "SELECT id FROM jobs_queue
-                 WHERE status = 'pending' AND available_at <= NOW(6)
+                 WHERE (status = 'pending' AND available_at <= UTC_TIMESTAMP(6))
+                    OR (status = 'running' AND attempt < max_attempts
+                        AND claimed_at IS NOT NULL AND claimed_at < ?)
                  ORDER BY priority DESC, available_at, enqueued_at
                  LIMIT 8",
             )
+            .bind(cutoff)
             .fetch_all(&mut *tx)
             .await
             .map_err(my)?;
@@ -230,11 +273,15 @@ impl JobStore for MySqlJobStore {
             let claimed = sqlx::query(
                 "UPDATE jobs_queue
                  SET status = 'running', attempt = attempt + 1,
-                     claimed_by = ?, claimed_at = NOW(6)
-                 WHERE id = ? AND status = 'pending'",
+                     claimed_by = ?, claimed_at = UTC_TIMESTAMP(6)
+                 WHERE id = ?
+                   AND (status = 'pending'
+                        OR (status = 'running' AND attempt < max_attempts
+                            AND claimed_at IS NOT NULL AND claimed_at < ?))",
             )
             .bind(&worker)
             .bind(id)
+            .bind(cutoff)
             .execute(&mut *tx)
             .await
             .map_err(my)?;
@@ -260,7 +307,7 @@ impl JobStore for MySqlJobStore {
         block_on(async move {
             let done = sqlx::query(
                 "UPDATE jobs_queue
-                 SET status = 'succeeded', finished_at = NOW(6)
+                 SET status = 'succeeded', finished_at = UTC_TIMESTAMP(6)
                  WHERE id = ? AND status = 'running'",
             )
             .bind(id)
@@ -287,9 +334,9 @@ impl JobStore for MySqlJobStore {
                  SET last_error = ?,
                      status = CASE WHEN attempt >= max_attempts THEN 'dead' ELSE 'pending' END,
                      available_at = CASE WHEN attempt >= max_attempts THEN available_at
-                                         ELSE NOW(6) + INTERVAL CAST(LEAST(600, 30 * POW(2, GREATEST(attempt - 1, 0))) AS SIGNED) SECOND
+                                         ELSE UTC_TIMESTAMP(6) + INTERVAL CAST(LEAST(600, 30 * POW(2, GREATEST(attempt - 1, 0))) AS SIGNED) SECOND
                                     END,
-                     finished_at = CASE WHEN attempt >= max_attempts THEN NOW(6) ELSE NULL END
+                     finished_at = CASE WHEN attempt >= max_attempts THEN UTC_TIMESTAMP(6) ELSE NULL END
                  WHERE id = ? AND status = 'running'",
             )
             .bind(&error)
@@ -300,6 +347,68 @@ impl JobStore for MySqlJobStore {
             if done.rows_affected() == 0 {
                 tx.rollback().await.map_err(my)?;
                 return Err(AppError::conflict(format!("job {id} is not running")));
+            }
+            let (status,): (String,) = sqlx::query_as("SELECT status FROM jobs_queue WHERE id = ?")
+                .bind(id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(my)?;
+            tx.commit().await.map_err(my)?;
+            status_from(&status)
+        })
+    }
+
+    fn complete_claim(&self, id: Uuid, attempt: u32) -> Result<(), AppError> {
+        let pool = self.pool.clone();
+        block_on(async move {
+            // The fence: `attempt` is the epoch the caller was handed at
+            // claim time. If the lease expired and another worker reclaimed
+            // the row, `attempt` has moved on and this write matches nothing.
+            let done = sqlx::query(
+                "UPDATE jobs_queue
+                 SET status = 'succeeded', finished_at = UTC_TIMESTAMP(6)
+                 WHERE id = ? AND status = 'running' AND attempt = ?",
+            )
+            .bind(id)
+            .bind(attempt as i64)
+            .execute(&pool)
+            .await
+            .map_err(my)?;
+            if done.rows_affected() == 0 {
+                return Err(AppError::conflict(format!(
+                    "job {id} claim is stale (attempt {attempt} was reclaimed); completion refused"
+                )));
+            }
+            Ok(())
+        })
+    }
+
+    fn fail_claim(&self, id: Uuid, attempt: u32, error: &str) -> Result<JobStatus, AppError> {
+        let error = error.to_string();
+        let pool = self.pool.clone();
+        block_on(async move {
+            let mut tx = pool.begin().await.map_err(my)?;
+            let done = sqlx::query(
+                "UPDATE jobs_queue
+                 SET last_error = ?,
+                     status = CASE WHEN attempt >= max_attempts THEN 'dead' ELSE 'pending' END,
+                     available_at = CASE WHEN attempt >= max_attempts THEN available_at
+                                         ELSE UTC_TIMESTAMP(6) + INTERVAL CAST(LEAST(600, 30 * POW(2, GREATEST(attempt - 1, 0))) AS SIGNED) SECOND
+                                    END,
+                     finished_at = CASE WHEN attempt >= max_attempts THEN UTC_TIMESTAMP(6) ELSE NULL END
+                 WHERE id = ? AND status = 'running' AND attempt = ?",
+            )
+            .bind(&error)
+            .bind(id)
+            .bind(attempt as i64)
+            .execute(&mut *tx)
+            .await
+            .map_err(my)?;
+            if done.rows_affected() == 0 {
+                tx.rollback().await.map_err(my)?;
+                return Err(AppError::conflict(format!(
+                    "job {id} claim is stale (attempt {attempt} was reclaimed); failure refused"
+                )));
             }
             let (status,): (String,) = sqlx::query_as("SELECT status FROM jobs_queue WHERE id = ?")
                 .bind(id)
@@ -353,7 +462,7 @@ impl JobStoreAdmin for MySqlJobStore {
         block_on(async move {
             let done = sqlx::query(
                 "UPDATE jobs_queue
-                 SET status = 'pending', available_at = NOW(6),
+                 SET status = 'pending', available_at = UTC_TIMESTAMP(6),
                      claimed_by = NULL, claimed_at = NULL, finished_at = NULL
                  WHERE id = ? AND status IN ('failed', 'dead')",
             )
@@ -468,7 +577,7 @@ impl JobStoreAdmin for MySqlJobStore {
         block_on(async move {
             let done = sqlx::query(
                 "UPDATE jobs_queue
-                 SET status = 'dead', last_error = ?, finished_at = NOW(6)
+                 SET status = 'dead', last_error = ?, finished_at = UTC_TIMESTAMP(6)
                  WHERE id = ? AND status IN ('pending', 'running', 'failed')",
             )
             .bind(&error)
@@ -479,6 +588,61 @@ impl JobStoreAdmin for MySqlJobStore {
             if done.rows_affected() == 0 {
                 return Err(AppError::conflict(format!(
                     "job {id} is already terminal; only pending, running or failed jobs can be killed"
+                )));
+            }
+            Ok(())
+        })
+    }
+
+    fn defer_claim(
+        &self,
+        id: Uuid,
+        attempt: u32,
+        available_at: time::OffsetDateTime,
+    ) -> Result<(), AppError> {
+        let pool = self.pool.clone();
+        block_on(async move {
+            let done = sqlx::query(
+                "UPDATE jobs_queue
+                 SET status = 'pending',
+                     attempt = GREATEST(attempt - 1, 0),
+                     available_at = ?,
+                     claimed_by = NULL, claimed_at = NULL
+                 WHERE id = ? AND status = 'running' AND attempt = ?",
+            )
+            .bind(available_at)
+            .bind(id)
+            .bind(attempt as i64)
+            .execute(&pool)
+            .await
+            .map_err(my)?;
+            if done.rows_affected() == 0 {
+                return Err(AppError::conflict(format!(
+                    "job {id} claim is stale (attempt {attempt} was reclaimed); defer refused"
+                )));
+            }
+            Ok(())
+        })
+    }
+
+    fn kill_claim(&self, id: Uuid, attempt: u32, error: &str) -> Result<(), AppError> {
+        let error = error.to_string();
+        let pool = self.pool.clone();
+        block_on(async move {
+            let done = sqlx::query(
+                "UPDATE jobs_queue
+                 SET status = 'dead', last_error = ?, finished_at = UTC_TIMESTAMP(6)
+                 WHERE id = ? AND status = 'running' AND attempt = ?",
+            )
+            .bind(&error)
+            .bind(id)
+            .bind(attempt as i64)
+            .execute(&pool)
+            .await
+            .map_err(my)?;
+            if done.rows_affected() == 0 {
+                return Err(AppError::conflict(format!(
+                    "job {id} claim is stale (attempt {attempt} was reclaimed); kill refused"
                 )));
             }
             Ok(())
@@ -532,15 +696,41 @@ impl TenantJobStore for MySqlJobStore {
             // Same one-connection transaction as the physical claim — the
             // candidate read is tenant-filtered so another tenant's pending
             // row is never selected, locked or claimed.
+            //
+            // P0 crash recovery mirrors the physical claim: an expired claim
+            // lease re-enters this tenant's candidate set, and a spent-budget
+            // orphan is dead-lettered first.
+            let cutoff = time::OffsetDateTime::now_utc()
+                - time::Duration::seconds(kelson_jobs::DEFAULT_CLAIM_LEASE_SECS as i64);
+            // Autocommit, before the claim transaction: a claim that finds no
+            // candidate rolls back, and would undo a dead-letter written
+            // inside it (see `claim`).
+            sqlx::query(
+                "UPDATE jobs_queue
+                 SET status = 'dead',
+                     last_error = COALESCE(last_error, 'claim lease expired; retries exhausted'),
+                     finished_at = UTC_TIMESTAMP(6)
+                 WHERE status = 'running' AND attempt >= max_attempts AND tenant_id = ?
+                   AND claimed_at IS NOT NULL AND claimed_at < ?",
+            )
+            .bind(tenant)
+            .bind(cutoff)
+            .execute(&pool)
+            .await
+            .map_err(my)?;
             let mut tx = pool.begin().await.map_err(my)?;
             let candidate: Option<Uuid> = sqlx::query_scalar(
                 "SELECT id FROM jobs_queue
-                 WHERE status = 'pending' AND available_at <= NOW(6) AND tenant_id = ?
+                 WHERE tenant_id = ?
+                   AND ((status = 'pending' AND available_at <= UTC_TIMESTAMP(6))
+                        OR (status = 'running' AND attempt < max_attempts
+                            AND claimed_at IS NOT NULL AND claimed_at < ?))
                  ORDER BY priority DESC, available_at, enqueued_at
                  LIMIT 1
                  FOR UPDATE SKIP LOCKED",
             )
             .bind(tenant)
+            .bind(cutoff)
             .fetch_optional(&mut *tx)
             .await
             .map_err(my)?;
@@ -551,12 +741,16 @@ impl TenantJobStore for MySqlJobStore {
             let claimed = sqlx::query(
                 "UPDATE jobs_queue
                  SET status = 'running', attempt = attempt + 1,
-                     claimed_by = ?, claimed_at = NOW(6)
-                 WHERE id = ? AND status = 'pending' AND tenant_id = ?",
+                     claimed_by = ?, claimed_at = UTC_TIMESTAMP(6)
+                 WHERE id = ? AND tenant_id = ?
+                   AND (status = 'pending'
+                        OR (status = 'running' AND attempt < max_attempts
+                            AND claimed_at IS NOT NULL AND claimed_at < ?))",
             )
             .bind(&worker)
             .bind(id)
             .bind(tenant)
+            .bind(cutoff)
             .execute(&mut *tx)
             .await
             .map_err(my)?;
@@ -581,7 +775,7 @@ impl TenantJobStore for MySqlJobStore {
         block_on(async move {
             let done = sqlx::query(
                 "UPDATE jobs_queue
-                 SET status = 'succeeded', finished_at = NOW(6)
+                 SET status = 'succeeded', finished_at = UTC_TIMESTAMP(6)
                  WHERE id = ? AND status = 'running' AND tenant_id = ?",
             )
             .bind(id)
@@ -611,9 +805,9 @@ impl TenantJobStore for MySqlJobStore {
                  SET last_error = ?,
                      status = CASE WHEN attempt >= max_attempts THEN 'dead' ELSE 'pending' END,
                      available_at = CASE WHEN attempt >= max_attempts THEN available_at
-                                         ELSE NOW(6) + INTERVAL CAST(LEAST(600, 30 * POW(2, GREATEST(attempt - 1, 0))) AS SIGNED) SECOND
+                                         ELSE UTC_TIMESTAMP(6) + INTERVAL CAST(LEAST(600, 30 * POW(2, GREATEST(attempt - 1, 0))) AS SIGNED) SECOND
                                     END,
-                     finished_at = CASE WHEN attempt >= max_attempts THEN NOW(6) ELSE NULL END
+                     finished_at = CASE WHEN attempt >= max_attempts THEN UTC_TIMESTAMP(6) ELSE NULL END
                  WHERE id = ? AND status = 'running' AND tenant_id = ?",
             )
             .bind(&error)
@@ -626,6 +820,83 @@ impl TenantJobStore for MySqlJobStore {
                 tx.rollback().await.map_err(my)?;
                 let miss = scoped_miss(&pool, id, tenant, || {
                     AppError::conflict(format!("job {id} is not running"))
+                })
+                .await?;
+                return Err(miss);
+            }
+            let (status,): (String,) = sqlx::query_as("SELECT status FROM jobs_queue WHERE id = ?")
+                .bind(id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(my)?;
+            tx.commit().await.map_err(my)?;
+            status_from(&status)
+        })
+    }
+
+    fn complete_claim_for(&self, tenant: TenantId, id: Uuid, attempt: u32) -> Result<(), AppError> {
+        let tenant = *tenant.as_uuid();
+        let pool = self.pool.clone();
+        block_on(async move {
+            let done = sqlx::query(
+                "UPDATE jobs_queue
+                 SET status = 'succeeded', finished_at = UTC_TIMESTAMP(6)
+                 WHERE id = ? AND status = 'running' AND tenant_id = ? AND attempt = ?",
+            )
+            .bind(id)
+            .bind(tenant)
+            .bind(attempt as i64)
+            .execute(&pool)
+            .await
+            .map_err(my)?;
+            if done.rows_affected() == 0 {
+                let miss = scoped_miss(&pool, id, tenant, || {
+                    AppError::conflict(format!(
+                        "job {id} claim is stale (attempt {attempt} was reclaimed); completion refused"
+                    ))
+                })
+                .await?;
+                return Err(miss);
+            }
+            Ok(())
+        })
+    }
+
+    fn fail_claim_for(
+        &self,
+        tenant: TenantId,
+        id: Uuid,
+        attempt: u32,
+        error: &str,
+    ) -> Result<JobStatus, AppError> {
+        let error = error.to_string();
+        let tenant = *tenant.as_uuid();
+        let pool = self.pool.clone();
+        block_on(async move {
+            let mut tx = pool.begin().await.map_err(my)?;
+            let done = sqlx::query(
+                "UPDATE jobs_queue
+                 SET last_error = ?,
+                     status = CASE WHEN attempt >= max_attempts THEN 'dead' ELSE 'pending' END,
+                     available_at = CASE WHEN attempt >= max_attempts THEN available_at
+                                         ELSE UTC_TIMESTAMP(6) + INTERVAL CAST(LEAST(600, 30 * POW(2, GREATEST(attempt - 1, 0))) AS SIGNED) SECOND
+                                    END,
+                     finished_at = CASE WHEN attempt >= max_attempts THEN UTC_TIMESTAMP(6) ELSE NULL END
+                 WHERE id = ? AND status = 'running' AND tenant_id = ? AND attempt = ?",
+            )
+            .bind(&error)
+            .bind(id)
+            .bind(tenant)
+            .bind(attempt as i64)
+            .execute(&mut *tx)
+            .await
+            .map_err(my)?;
+            if done.rows_affected() == 0 {
+                tx.rollback().await.map_err(my)?;
+                let miss = scoped_miss(&pool, id, tenant, || {
+                    AppError::conflict(format!(
+                        "job {id} claim is stale (attempt {attempt} was reclaimed); failure refused"
+                    ))
                 })
                 .await?;
                 return Err(miss);
