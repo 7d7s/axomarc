@@ -1055,8 +1055,26 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let serve = axum::serve(listener, app)
         .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-            tracing::info!("shutdown signal received");
+            // Wait for either SIGINT (Ctrl+C) or SIGTERM (production orchestrator).
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{signal, SignalKind};
+                let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler");
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {
+                        tracing::info!("SIGINT received");
+                    }
+                    _ = sigterm.recv() => {
+                        tracing::info!("SIGTERM received");
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = tokio::signal::ctrl_c().await;
+                tracing::info!("shutdown signal received");
+            }
+            tracing::info!("shutdown signal received, draining");
         })
         .await;
     // Stop the config/artifact poller (Phase 3) before draining telemetry.

@@ -16,6 +16,7 @@ use kelson_postgres::{
     create_pool, run_migrations, PgBatchLedger, PgCredentialStore, PgNotificationStore, PgPool,
     PgPrincipalStore, PgSessionStore,
 };
+use kelson_event::OutboxStore;
 use kelson_session::{SessionPolicy, SessionStore};
 use time::OffsetDateTime;
 
@@ -491,6 +492,113 @@ async fn pg_savepoint_rollback_isolates_two_tests_sharing_a_table() {
             .await
             .expect("final count");
     assert_eq!(total, 0, "no savepoint row survives its scope");
+}
+
+// ----------------------------------------------------- pg outbox store
+// Durable outbox: claim unpublished, mark published, redelivery after failure.
+#[tokio::test]
+async fn pg_outbox_store_claim_and_mark_published() {
+    let pool = match pool().await {
+        Some(p) => p,
+        None => return,
+    };
+    let store = kelson_postgres::PgOutboxStore::new(pool.clone());
+
+    // Insert a test outbox event directly.
+    let event_id = uuid::Uuid::now_v7();
+    let tenant_id = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO outbox (id, tenant_id, event, topic, payload, idempotency_key, published, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, false, now())",
+    )
+    .bind(event_id)
+    .bind(tenant_id)
+    .bind("test.event")
+    .bind("test.topic")
+    .bind(serde_json::json!({"key": "value"}))
+    .bind("test-key")
+    .execute(&pool)
+    .await
+    .expect("insert outbox row");
+
+    // Claim unpublished — should include our event.
+    let claimed = store.claim_unpublished(10).await.expect("claim");
+    assert!(
+        claimed.iter().any(|e| e.id == event_id),
+        "claimed events must include the inserted row"
+    );
+
+    // Mark published.
+    store
+        .mark_published(&[event_id])
+        .await
+        .expect("mark published");
+
+    // Re-claim — should NOT include our event (now published).
+    let reclaimed = store.claim_unpublished(10).await.expect("reclaim");
+    assert!(
+        !reclaimed.iter().any(|e| e.id == event_id),
+        "published event must not be re-claimed"
+    );
+
+    // Cleanup.
+    let _ = sqlx::query("DELETE FROM outbox WHERE id = $1")
+        .bind(event_id)
+        .execute(&pool)
+        .await;
+}
+
+// ----------------------------------------------------- mysql outbox store
+// Durable outbox: claim unpublished, mark published, redelivery after failure.
+#[tokio::test]
+async fn mysql_outbox_store_claim_and_mark_published() {
+    let pool = match mysql_pool().await {
+        Some(p) => p,
+        None => return,
+    };
+    let store = kelson_mysql::MySqlOutboxStore::new(pool.clone());
+
+    // Insert a test outbox event directly.
+    let event_id = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO outbox (id, tenant_id, event, topic, payload, idempotency_key, published, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, false, NOW(6))",
+    )
+    .bind(event_id.as_bytes().to_vec())
+    .bind(None::<Vec<u8>>)  // tenant_id nullable
+    .bind("test.event")
+    .bind("test.topic")
+    .bind(serde_json::json!({"key": "value"}).to_string())
+    .bind("test-key")
+    .execute(&pool)
+    .await
+    .expect("insert outbox row");
+
+    // Claim unpublished — should include our event.
+    let claimed = store.claim_unpublished(10).await.expect("claim");
+    assert!(
+        claimed.iter().any(|e| e.id == event_id),
+        "claimed events must include the inserted row"
+    );
+
+    // Mark published.
+    store
+        .mark_published(&[event_id])
+        .await
+        .expect("mark published");
+
+    // Re-claim — should NOT include our event (now published).
+    let reclaimed = store.claim_unpublished(10).await.expect("reclaim");
+    assert!(
+        !reclaimed.iter().any(|e| e.id == event_id),
+        "published event must not be re-claimed"
+    );
+
+    // Cleanup.
+    let _ = sqlx::query("DELETE FROM outbox WHERE id = ?")
+        .bind(event_id.as_bytes().to_vec())
+        .execute(&pool)
+        .await;
 }
 
 // ----------------------------------------------------- mysql driver matrix
@@ -1122,4 +1230,56 @@ async fn mysql_job_store_claim_completes_and_fails_with_skip_locked() {
     let listed = store.list(None, 100).expect("lists");
     assert!(listed.iter().any(|j| j.id == first.id), "succeeded row lists");
     assert!(listed.iter().any(|j| j.id == second.id), "requeued row lists");
+}
+
+/// P0 runtime-safety reproduction (queue crash recovery, MySQL fabric).
+///
+/// A worker that dies mid-execution leaves a `running` row owned by a worker
+/// that no longer exists. A fresh worker must recover it once the claim lease
+/// has expired. Today `claim` only ever selects `status = 'pending'` and
+/// `requeue` refuses anything that is not `failed`/`dead`, so the job is
+/// orphaned permanently — it can neither run again nor be requeued.
+///
+/// KNOWN-FAILING until a lease/reclaim arm lands. Kept `#[ignore]` so the
+/// suite stays green; the fix removes the `#[ignore]` and this becomes its
+/// acceptance gate. Run it now with `-- --ignored` to observe the gap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "P0 gap: crashed-worker reclaim missing (claim selects only pending; requeue refuses running)"]
+async fn mysql_job_store_recovers_orphaned_running_job_after_worker_crash() {
+    use kelson_jobs::{build_from_def, JobDef, JobStatus, JobStore};
+
+    let Some(pool) = mysql_pool().await else { return };
+    let store = kelson_mysql::MySqlJobStore::new(pool.clone());
+
+    sqlx::query("DELETE FROM jobs_queue WHERE status IN ('pending', 'running')")
+        .execute(&pool)
+        .await
+        .expect("clean claimable queue");
+
+    let def = JobDef::new("mysql.reclaim.probe");
+    let now = OffsetDateTime::now_utc();
+    let mut job = build_from_def(&def, serde_json::json!({}), now);
+    job.available_at = now - time::Duration::seconds(60);
+    let id = store.enqueue(job).expect("enqueue");
+
+    // Worker A claims the job, then "crashes" (never completes or fails it).
+    let claimed = store.claim("mysql-worker-A").expect("claim").expect("row");
+    assert_eq!(claimed.id, id);
+    assert_eq!(claimed.status, JobStatus::Running);
+
+    // Time passes: the abandoned claim is now a full lease old.
+    sqlx::query("UPDATE jobs_queue SET claimed_at = claimed_at - INTERVAL 1 HOUR WHERE id = ?")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .expect("age the abandoned claim");
+
+    // Worker B starts. The row is `running`, its owner is gone, and the lease
+    // has expired, so recovery must hand it back instead of orphaning it.
+    let recovered = store.claim("mysql-worker-B").expect("reclaim");
+    assert_eq!(
+        recovered.map(|j| j.id),
+        Some(id),
+        "a crashed worker's in-flight job must be reclaimed, not orphaned"
+    );
 }
