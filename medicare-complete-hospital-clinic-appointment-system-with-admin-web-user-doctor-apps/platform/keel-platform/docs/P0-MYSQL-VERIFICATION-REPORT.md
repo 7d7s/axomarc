@@ -167,10 +167,31 @@ stores found `NOW(6)` still in `principalstore.rs:209`, session `store.rs:94`, o
 bookkeeping `lib.rs:217`; whether those mix with UTC-bound reads the way the job store did was **not** measured,
 so it is recorded as a follow-up candidate rather than a finding.
 
-### F3 — `kelson route:cache` refuses on this workspace
-Duplicate declarations surface as `GRAPH-DUP-OP`/`GRAPH-DUP-ROUTE` for the `oauth2` module, so the route-cache
-pin is never written. This blocks only the pin-write direction of the no-rebuild proof; the graph gate correctly
-refuses a non-deterministic graph (fail-closed behaviour is itself correct).
+### F3 — `kelson route:cache` refuses on this workspace — **root-caused; fix pending approval**
+`kelson graph`, `kelson check`, `kelson route:cache` and `kelson optimize` all refuse because every module under
+`applications/` is discovered **twice**: `discover_manifests` walks `applications/*/module.toml` and then
+appends `PackageIndex::manifests(root)` — and `packages.toml` indexes those very files
+(`manifest = "applications/appointments/module.toml"`), so each is read twice and the graph's duplicate gate (a
+correct, fail-closed gate) reports `GRAPH-DUP-MODULE: module appointments declared more than once` plus a dup
+line for every operation, event and route — 4 modules (appointments, counter, echo, oauth2), 14 routes, 13
+operations, 3 events; deterministic across runs and identical under `kelson graph` (exit 1).
+
+The demo already hit and fixed exactly this in `26a653a` ("Stop discovery from declaring an indexed module
+twice"): its `discover_manifests` collapses only **byte-identical** declarations (canonical-JSON compare — a
+name the index resolves to *different* content stays a duplicate, so the dedupe cannot hide drift). The console
+keeps a second, never-updated copy of the function, and the three-way divergence (console, demo, architecture
+test) is why nothing caught it: the architecture test's copy never runs the index pass at all. The demo
+therefore serves while the console refuses.
+
+Repro committed: `tools/kelson-console/src/main.rs`
+`discovery_does_not_declare_an_indexed_module_twice` (kept `#[ignore]`d until the fix is approved) — one
+manifest in `applications/alpha` indexed by `packages.toml` must discover as ONE declaration and compile, and
+an index that resolves the same name to different content must still reach the gate. Today it fails with
+`left: ["alpha", "alpha"]`.
+
+Proposed fix (needs approval): port `26a653a`'s byte-identical collapse into the console's copy — or better,
+extract one shared `discover_manifests` so the copies cannot diverge again — then un-ignore the repro and
+re-run `route:cache`/`optimize`, closing the pin-write direction of the no-rebuild proof.
 
 ---
 

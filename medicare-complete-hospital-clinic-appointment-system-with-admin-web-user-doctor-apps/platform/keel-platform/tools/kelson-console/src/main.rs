@@ -7905,6 +7905,85 @@ middleware = ["ghost"]
         dir
     }
 
+    /// P0 finding F6 (repro; the fix is NOT approved yet).
+    ///
+    /// This console's `discover_manifests` walks `applications/*/module.toml`
+    /// and then appends `PackageIndex::manifests(root)` — but `packages.toml`
+    /// indexes those very files (`manifest = "applications/appointments/module.toml"`),
+    /// so every indexed module is read twice and handed to the graph as two
+    /// declarations: `GRAPH-DUP-MODULE: module appointments declared more than
+    /// once` plus a dup line for every operation, event and route. `kelson
+    /// graph` / `kelson check` / `route:cache` / `optimize` therefore refuse on
+    /// the shipped workspace. `kelson-demo`'s copy of this function was fixed in
+    /// 26a653a ("Stop discovery from declaring an indexed module twice") with a
+    /// byte-identical collapse rule; the console's copy never got it, which is
+    /// exactly why the demo serves and the console refuses.
+    ///
+    /// Kept `#[ignore]` so the suite stays green until the fix lands.
+    #[test]
+    #[ignore = "P0 finding F6: the console's discover_manifests lacks the demo's byte-identical dedupe (26a653a), so an indexed applications/ module is declared twice"]
+    fn discovery_does_not_declare_an_indexed_module_twice() {
+        let root = fresh_temp("pkg-dup-discovery");
+        let app = root.join("applications").join("alpha");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(
+            app.join("module.toml"),
+            "[module]\nname = \"alpha\"\nversion = \"0.1.0\"\napi = 1\n",
+        )
+        .unwrap();
+        // The normal `kelson pkg:add applications/alpha` shape: the index
+        // points at the file the layout walk just read.
+        std::fs::write(
+            root.join("packages.toml"),
+            "[[package]]\nname = \"alpha\"\nversion = \"0.1.0\"\npath = \"applications/alpha\"\n",
+        )
+        .unwrap();
+
+        let manifests = discover_manifests(&root).expect("discovers");
+        let names: Vec<&str> = manifests.iter().map(|m| m.name()).collect();
+        assert_eq!(
+            names,
+            vec!["alpha"],
+            "one file read twice is one declaration: {names:?}"
+        );
+
+        // The acceptance gate `kelson graph` / `route:cache` runs: a clean graph.
+        kelson_registry::PlatformGraph::compile(manifests).expect("one declaration compiles");
+
+        // Dedupe must not become a way to hide drift: an index that resolves
+        // the same NAME to different content is a real second declaration and
+        // must still reach the gate.
+        let drifted = root.join("packages").join("alpha");
+        std::fs::create_dir_all(&drifted).unwrap();
+        std::fs::write(
+            drifted.join("module.toml"),
+            "[module]\nname = \"alpha\"\nversion = \"9.9.9\"\napi = 1\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("packages.toml"),
+            "[[package]]\nname = \"alpha\"\nversion = \"9.9.9\"\npath = \"packages/alpha\"\n",
+        )
+        .unwrap();
+        let drifted_manifests = discover_manifests(&root).expect("discovers drifted");
+        assert_eq!(
+            drifted_manifests
+                .iter()
+                .filter(|m| m.name() == "alpha")
+                .count(),
+            2,
+            "the same name from different content survives as two declarations"
+        );
+        let violations = kelson_registry::PlatformGraph::compile(drifted_manifests)
+            .expect_err("the gate reports the drift");
+        assert!(
+            format!("{violations:?}").contains("GRAPH-DUP-MODULE"),
+            "{violations:?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     /// Wave 8 B-24: pkg:add validates the package's module.toml (the
     /// package v1 contract) and appends a root-relative entry; duplicates
     /// are refused by name; pkg:list reports ABI compatibility fail-closed
