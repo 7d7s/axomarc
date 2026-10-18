@@ -117,10 +117,10 @@ visibility-timeout / heartbeat** anywhere in the job store.
 **permanently orphaned** — it can neither run again nor be requeued. Laravel's database queue avoids this with a
 `retry_after`/`reserved_at` reclaim.
 
-Reproduction test added (currently `#[ignore]` so the suite stays green), the acceptance gate for the fix:
+Reproduction test added, the acceptance gate for the fix:
 `mysql_job_store_recovers_orphaned_running_job_after_worker_crash`
-(`crates/data/postgres/tests/pg_integration.rs`). Run with `-- --ignored`; it fails today:
-`left: None, right: Some(01a14f7b-…)`.
+(`crates/data/postgres/tests/pg_integration.rs`). It failed before the fix (`left: None, right:
+Some(01a14f7b-…)`) and is enabled and passing since §8 landed the lease reclaim.
 
 ---
 
@@ -139,13 +139,15 @@ Hard-killed the portable `mysqld` process (no clean shutdown), restarted it, and
 
 ## 6. Additional findings
 
-### F1 — Queue reclaim gap (the FAIL above)
-Fix direction (needs approval): give `claim` a lease arm — also select `running` rows whose `claimed_at` is older
-than a lease (e.g. `job.timeout_secs`) and whose `claimed_by` != a live worker, or add a periodic sweep that
-requeues stale `running` rows; plus an operator `queue:recover`. Must preserve the existing SKIP LOCKED
-single-claim guarantee.
+### F1 — Queue reclaim gap (the FAIL above) — **fixed**
+Landed: `claim` grew a lease arm — it also selects `running` rows whose `claimed_at` is older than
+`DEFAULT_CLAIM_LEASE_SECS` (900 s, `kelson-jobs`) and that still have retry budget, dead-letters exhausted
+orphans, and every terminal write is fenced on the claim token `(attempt, owner)` so a resurrected zombie owner
+cannot complete, fail, defer or kill a job another worker reclaimed. The existing single-claim guarantee is
+unchanged, and because reclaim is automatic an operator `queue:recover` was unnecessary. Evidence: §8 and the
+follow-up section of `docs/P0-EXECUTION-REPORT.md`.
 
-### F2 — MySQL timestamp handling mixes UTC parameters with server-local `NOW()`
+### F2 — MySQL timestamp handling mixes UTC parameters with server-local `NOW()` — **fixed**
 `enqueue` binds the app's `OffsetDateTime` (UTC) for `available_at` (`jobstore.rs:156`), but retry backoff and
 requeue write `available_at = NOW(6)` / `NOW(6) + INTERVAL …` (`jobstore.rs:290`, `…:356`), and `claim` compares
 against `NOW(6)` (`jobstore.rs:202`). `DATETIME` carries no timezone.
@@ -156,9 +158,14 @@ Measured on this host: the worker's session `NOW(6)` evaluates in **UTC** while 
 - The same rows with `available_at = NOW(6) - INTERVAL 1 DAY` **were** claimed and succeeded.
 
 So timestamps written via SQL `NOW()` are offset from the UTC values the app binds, and a retry/requeue can be
-delayed by the server's UTC offset. Laravel addresses this with a connection `timezone` setting. Fix direction:
-pin the connection to UTC (`MySqlConnectOptions::timezone`) **or** use `UTC_TIMESTAMP(6)` consistently in the
-job-store SQL (and audit the other MySQL stores for the same pattern).
+delayed by the server's UTC offset. Laravel addresses this with a connection `timezone` setting.
+
+Fixed the second way: every SQL-written timestamp in the MySQL job store is now `UTC_TIMESTAMP(6)` — claim
+comparison, retry/requeue backoff, dead-letter sweeps, completion — so `jobstore.rs` contains no `NOW(` at all
+and SQL-written values agree with the bound ones regardless of the session timezone. Audit of the other MySQL
+stores found `NOW(6)` still in `principalstore.rs:209`, session `store.rs:94`, outbox `tx.rs:507` and migration
+bookkeeping `lib.rs:217`; whether those mix with UTC-bound reads the way the job store did was **not** measured,
+so it is recorded as a follow-up candidate rather than a finding.
 
 ### F3 — `kelson route:cache` refuses on this workspace
 Duplicate declarations surface as `GRAPH-DUP-OP`/`GRAPH-DUP-ROUTE` for the `oauth2` module, so the route-cache
@@ -222,32 +229,53 @@ data-modifying CTE of the same statement, which always commits.
 | Check | Result | Evidence |
 |---|---|---|
 | `kelson-jobs` unit tests | **PASS** | 35 passed, 0 failed |
-| MySQL integration matrix (serial, live DB) | **PASS** | 14 passed / 0 failed / 1 ignored, 2.24 s, no skip lines |
+| MySQL integration matrix (serial, live DB) | **PASS** | 15 passed / 0 failed / 0 ignored, 2.01 s, no skip lines |
 | Reclaim + fence acceptance | **PASS** | `mysql_job_store_recovers_orphaned_running_job_after_worker_crash`: an in-lease claim is **not** stolen; an expired one is reclaimed with `attempt` 1→2 and the owner moved to worker B; worker A's `complete`/`fail`/`defer`/`kill` at (epoch 1, worker A) are all refused with `KSN_CONFLICT`; worker B's `complete` at (epoch 2, worker B) succeeds |
 | Defer/epoch-collision fence | **PASS** | `mysql_job_store_fences_a_deferred_job_reclaimed_at_the_same_epoch`: worker A defers (attempt given back), worker B re-claims at the *same* epoch 1, A's completion is refused while B's succeeds. Re-run with the owner predicate stripped: the stale completion is **accepted** and the test fails — the gate is real |
 | Poison-job bound | **PASS** | `mysql_job_store_dead_letters_an_exhausted_orphan_claim`: `max_attempts = 1` + expired claim → not reclaimable, row becomes `dead` with the lease-expired error |
 | **Live process-level reclaim** | **PASS** | Planted `running` / `attempt 1` / `claimed_by='kelson-worker-DEAD-9999'` / claim 1 h stale → real worker `kelson-worker-8072` booted `degraded:false`, logged `job succeeded {"job":"demo.job","job_id":"eeeeeeee-0000-0000-0000-000000000001","ms":3}`, stopped `{"jobs":1}`; row after: `succeeded` / **`attempt 2`** / `claimed_by='kelson-worker-8072'`. Before the fix the same plant produced `jobs:0` and the row stayed `running` forever |
 | PostgreSQL twin | **compiled, skipped here** | `pg_job_store_recovers_orphaned_running_job_after_worker_crash` mirrors the acceptance; PostgreSQL is unusable on this host (see §0) |
 
-### 8.3 New finding F5 — the tenant-scoped job queue is unusable on MySQL
+### 8.3 Finding F5 — the tenant-scoped job queue was unusable on MySQL; **fixed**
 
-`jobs_queue.tenant_id` is declared `CHAR(36)` (`database/migrations-mysql/20261005000001_jobs_queue_tenant.sql`)
+`jobs_queue.tenant_id` was declared `CHAR(36)` (`database/migrations-mysql/20261005000001_jobs_queue_tenant.sql`)
 while **both** data paths treat it as a 16-byte UUID: `enqueue` binds `*tenant.as_uuid()` (raw bytes) and
-`job_from_row` decodes `Option<Uuid>`. Every tenant-scoped enqueue therefore fails server-side:
+`job_from_row` decodes `Option<Uuid>`. Every tenant-scoped enqueue therefore failed server-side:
 
 ```
 1366 (HY000): Incorrect string value: '\xA1O\xB1\xFA\xF1w...' for column 'tenant_id' at row 1
 ```
 
-Only the unscoped (tenant-NULL) path works, which is exactly why the rest of the matrix is green — and it means
-the tenant filter the new reclaim arm must preserve cannot be exercised on MySQL today. The repro is committed
-`#[ignore]`d with its reason: `mysql_job_store_tenant_scoped_queue_is_usable_and_isolated`.
+Only the unscoped (tenant-NULL) path worked — which is exactly why the rest of the matrix was green, and it meant
+the tenancy filter the reclaim arm carries could not be exercised on MySQL at all.
 
-Proposed fix (**not applied; needs approval**): align the schema with the code and the house convention —
-`ALTER TABLE jobs_queue MODIFY tenant_id BINARY(16) NULL;` as a new migration. That matches the store's binary
-binds and `Uuid` decoding, the `outbox` table (`tenant_id binary(16)`) and the model tables (binary UUID binds).
-The column cannot hold real data today (every write failed), so the ALTER is lossless. The alternative —
-string binds plus string decoding — keeps `CHAR(36)` but diverges from every other MySQL store.
+**Fix applied:** `database/migrations-mysql/20261005000004_jobs_queue_tenant_binary.sql`
+(`ALTER TABLE jobs_queue MODIFY COLUMN tenant_id BINARY(16) NULL;`) — the form the store's own binds and
+`job_from_row` already assume, the `outbox` table's form (`tenant_id binary(16)`), and the only UUID form in the
+twin (`uuid: BINARY(16) (sqlx MySQL Uuid codec is binary)`). No row can hold a value (the write always failed),
+so the conversion is lossless; the server rebuilds `ix_jobs_queue_tenant`. PostgreSQL needs no counterpart — its
+twin-arch migration declares the column `uuid`, which is that codec's native form. `TWIN_ONLY` in
+`crates/data/mysql/tests/migration_set_parity.rs` was extended to declare the fourth twin-only entry.
+
+Evidence: live column is `binary(16)` and `20261005000004` is recorded in `_sqlx_migrations`;
+`mysql_job_store_tenant_scoped_queue_is_usable_and_isolated` is **un-ignored and passing** (tenant enqueue works,
+a foreign tenant sees neither the pending row nor the expired claim, a foreign `complete_claim_for` is
+`KSN_NOT_FOUND` rather than a conflict — no existence oracle — a stale token is `KSN_CONFLICT`, and the current
+owner completes); MySQL matrix is **15 passed / 0 failed / 0 ignored, no skips**. A **fresh-database bootstrap**
+(a throwaway schema, worker boot) applied all **13** migrations and left the column `binary(16)` with
+`degraded:false`.
+
+Two operational traps found while landing it, worth knowing for every future migration:
+
+1. **A new migration file needs a rebuild of every binary that embeds the set.** `sqlx::migrate!` is
+   compile-time, and Cargo cannot see a *file that did not exist* at the last compile as an input, so the
+   incremental build kept the old 12-file set: the first fresh-schema boot applied 12 migrations and left
+   `CHAR(36)`. `cargo clean -p kelson-mysql` (or a dependency-aware rebuild trigger) is required. This is the
+   one exception to "config/route changes need no rebuild": schema changes do.
+2. **An applied migration cannot be edited in place.** sqlx stores a checksum per applied version, so fixing
+   `20261005000001` directly would have failed every existing database with "previously applied but has been
+   modified". The correction therefore ships as a new version.
+
 
 ### 8.4 Refinement of the skip hazard (§0)
 

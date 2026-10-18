@@ -222,10 +222,12 @@ so the three blocked items were run against **portable MySQL 8.0.44** instead. F
   BLOCKED by a pre-existing duplicate-oauth2 graph gate.)
 - Outbox crash recovery — **PASS**. A committed-but-unpublished event was published (`fetched:1`) after a
   process restart; `published` 0 → 1.
-- Queue restart recovery — **graceful PASS / hard-crash FAIL**. Graceful stop/restart completed 5/5 jobs with
-  `attempt=1` everywhere (no loss, no duplication). A job orphaned in `running` by a crash is **never
-  reclaimed**: `claim` only selects `pending` and `requeue` refuses `running`. Reproduction test added
-  (`mysql_job_store_recovers_orphaned_running_job_after_worker_crash`, `#[ignore]`), failing today.
+- Queue restart recovery — **graceful PASS / hard-crash FAIL as found, PASS after the same-day fix** (see the
+  follow-up section below). Graceful stop/restart completed 5/5 jobs with `attempt=1` everywhere (no loss, no
+  duplication). A job orphaned in `running` by a crash was **never reclaimed** (`claim` only selected
+  `pending`, `requeue` refuses `running`); the reproduction test
+  (`mysql_job_store_recovers_orphaned_running_job_after_worker_crash`) is enabled and passing since lease
+  reclaim + fencing landed.
 - MySQL server crash recovery — **PASS**. After hard-killing and restarting `mysqld`, InnoDB recovered and the
   durable queue + outbox rows survived, then drained.
 
@@ -243,19 +245,26 @@ run reports a clean green matrix with no skip text at all.
   attempt back, letting a deferred job carry the same epoch as the abandoned claim. Fenced calls are trait
   defaults, so in-memory/Redis stores are unaffected. MySQL timestamps are now explicitly `UTC_TIMESTAMP(6)`
   instead of relying on the driver's session default.
-- **Evidence.** `kelson-jobs`: 35 passed. MySQL matrix: 14 passed / 0 failed / 1 ignored, no skips. New
+- **Evidence.** `kelson-jobs`: 35 passed. MySQL matrix: 15 passed / 0 failed / 0 ignored, no skips. New
   acceptance tests: reclaim+fence (in-lease claim not stolen; stale token refused with `KSN_CONFLICT`),
   defer/epoch-collision fence (falsified: without the owner predicate the stale completion is accepted),
-  dead-letter bound, PostgreSQL twin. **Live**: a planted crash-orphan
+  dead-letter bound, PostgreSQL twin, tenant-scoped queue isolation. **Live**: a planted crash-orphan
   (`running`, `attempt 1`, `claimed_by='kelson-worker-DEAD-9999'`, claim 1 h stale) was picked up by a real
   worker and completed — row went to `succeeded` / **`attempt 2`** / the new owner; before the fix the same
   plant produced `jobs:0` and the row stayed `running` forever. Re-run after the owner half of the token
   landed: same result (`kelson-worker-1684`, `attempt 2`).
-- **New finding F5 (needs approval).** The MySQL tenant-scoped job queue is unusable end-to-end:
-  `jobs_queue.tenant_id` is `CHAR(36)` while the store binds raw UUID bytes and decodes `Uuid`, so every
-  tenant-scoped enqueue fails with `1366 (HY000): Incorrect string value … for column 'tenant_id'`. Repro is
-  committed `#[ignore]`d (`mysql_job_store_tenant_scoped_queue_is_usable_and_isolated`). Proposed fix: a
-  migration `ALTER TABLE jobs_queue MODIFY tenant_id BINARY(16) NULL;`, matching every other MySQL store and
-  the store's own read path.
+- **Finding F5 (fixed the same day).** The MySQL tenant-scoped job queue was unusable end-to-end:
+  `jobs_queue.tenant_id` was `CHAR(36)` while the store binds raw UUID bytes and decodes `Uuid`, so every
+  tenant-scoped enqueue failed with `1366 (HY000): Incorrect string value … for column 'tenant_id'`. Now
+  `database/migrations-mysql/20261005000004_jobs_queue_tenant_binary.sql` converts the column to `BINARY(16)`
+  (lossless — no write could ever have succeeded), `TWIN_ONLY` in `migration_set_parity.rs` declares the
+  fourth twin-only entry, and `mysql_job_store_tenant_scoped_queue_is_usable_and_isolated` is un-ignored and
+  passing (tenant enqueue; cross-tenant invisibility across the reclaim arm; a foreign `complete_claim_for` is
+  `KSN_NOT_FOUND` rather than a conflict — no existence oracle; stale token `KSN_CONFLICT`; owner completes).
+  A throwaway-schema worker boot applied all **13** migrations on a virgin database and left the column
+  `binary(16)`. Two traps worth remembering: a **new** migration file requires rebuilding every binary that
+  embeds the set (`sqlx::migrate!` is compile-time and Cargo cannot see a file that did not exist at the last
+  compile — the first fresh-schema boot silently applied only 12 of 13), and an already-applied migration
+  cannot be edited in place because sqlx validates its checksum.
 
 See `docs/P0-MYSQL-VERIFICATION-REPORT.md` §8 for the full detail.

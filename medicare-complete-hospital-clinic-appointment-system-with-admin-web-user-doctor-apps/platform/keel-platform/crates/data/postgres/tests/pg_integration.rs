@@ -1462,25 +1462,21 @@ async fn mysql_job_store_dead_letters_an_exhausted_orphan_claim() {
         .expect("clean up the probe row");
 }
 
-/// P0 FINDING (repro; the schema fix is NOT approved yet).
+/// The tenant-scoped queue acceptance gate (P0 finding F5, fixed by migration
+/// `20261005000004_jobs_queue_tenant_binary.sql`).
 ///
-/// The MySQL tenant-scoped job queue is unusable end-to-end:
-/// `jobs_queue.tenant_id` is declared `CHAR(36)` (migration
-/// `20261005000001_jobs_queue_tenant.sql`) while both data paths treat it as a
-/// 16-byte UUID — `enqueue` binds `*tenant.as_uuid()` (raw bytes, which MySQL
-/// refuses to store in a utf8mb4 column) and `job_from_row` decodes
-/// `Option<Uuid>` (binary). Every tenant-scoped enqueue fails server-side with
+/// The column shipped as `CHAR(36)` while both data paths treat it as a 16-byte
+/// UUID — `enqueue` binds `*tenant.as_uuid()` (raw bytes, which MySQL refuses
+/// to store in a utf8mb4 column) and `job_from_row` decodes `Option<Uuid>`
+/// (binary) — so every tenant-scoped enqueue failed server-side with
 /// `1366 (HY000): Incorrect string value: '\x…' for column 'tenant_id' at row
-/// 1`, so only the unscoped (tenant-NULL) path works — which is exactly why
-/// the rest of the matrix is green. The same latency hides the tenant filter
-/// the new reclaim arm must preserve.
-///
-/// Kept `#[ignore]` so the suite stays green; once the schema is aligned this
-/// becomes the tenant-isolation acceptance gate.
+/// 1` and only the unscoped (tenant-NULL) path worked. The fix converts the
+/// column to `BINARY(16)` (the twin's UUID form everywhere else; lossless, no
+/// write could ever have succeeded), which also makes the tenancy filter the
+/// reclaim arm carries testable.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "P0 finding: jobs_queue.tenant_id is CHAR(36) while the store binds/decodes a 16-byte UUID (1366 on every tenant enqueue)"]
 async fn mysql_job_store_tenant_scoped_queue_is_usable_and_isolated() {
-    use kelson_jobs::{build_from_def, JobDef, TenantJobStore};
+    use kelson_jobs::{build_from_def, JobDef, JobStatus, JobStoreAdmin, TenantJobStore};
 
     let Some(pool) = mysql_pool().await else { return };
     let store = kelson_mysql::MySqlJobStore::new(pool.clone());
@@ -1525,6 +1521,33 @@ async fn mysql_job_store_tenant_scoped_queue_is_usable_and_isolated() {
             .expect("cross-tenant reclaim")
             .is_none(),
         "tenant scoping survives the reclaim arm"
+    );
+
+    // The reclaim lands inside the owning tenant, and the fenced terminal
+    // writes keep the trust boundary: a foreign tenant gets NOT_FOUND (no
+    // existence oracle), a stale token gets CONFLICT, the current owner wins.
+    let recovered = store
+        .claim_for(tenant_a, "mysql-worker-A2")
+        .expect("own reclaim")
+        .expect("the expired claim is reclaimed inside its tenant");
+    assert_eq!(recovered.id, id);
+    assert_eq!(recovered.attempt, 2, "the reclaim advances the epoch");
+
+    let foreign = store
+        .complete_claim_for(tenant_b, id, 2, "mysql-worker-A2")
+        .expect_err("a foreign tenant cannot complete the job");
+    assert_eq!(foreign.code, kelson_foundation::codes::NOT_FOUND);
+    let stale = store
+        .fail_claim_for(tenant_a, id, 1, "mysql-worker-A", "stale worker")
+        .expect_err("a stale claim cannot fail");
+    assert_eq!(stale.code, kelson_foundation::codes::CONFLICT);
+
+    store
+        .complete_claim_for(tenant_a, id, 2, "mysql-worker-A2")
+        .expect("the current owner completes");
+    assert_eq!(
+        store.get(id).expect("reads").expect("row").status,
+        JobStatus::Succeeded
     );
 
     sqlx::query("DELETE FROM jobs_queue WHERE id = ?")

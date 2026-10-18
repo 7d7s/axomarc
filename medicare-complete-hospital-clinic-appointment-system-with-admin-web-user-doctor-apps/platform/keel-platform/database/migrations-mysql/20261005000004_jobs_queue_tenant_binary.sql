@@ -1,0 +1,13 @@
+-- P0 fix (F5): the tenant column added by 20261005000001 must land as
+-- BINARY(16), the twin's UUID form everywhere else (foundation header:
+-- "uuid: BINARY(16) (sqlx MySQL Uuid codec is binary)"), because both data
+-- paths already treat it that way: enqueue binds *tenant.as_uuid() (16 raw
+-- bytes) and job_from_row decodes Option<Uuid>. As CHAR(36) it refused every
+-- tenant-scoped enqueue server-side with
+--   1366 (HY000): Incorrect string value ... for column 'tenant_id' at row 1
+-- so only the unscoped (tenant NULL) queue was usable. No row can hold a
+-- value - the write always failed - so the conversion is lossless, and the
+-- server rebuilds ix_jobs_queue_tenant with the new type.
+-- No PostgreSQL counterpart: migrations/20261005000001_jobs_queue_tenant.sql
+-- declares the column uuid, which is this codec's native form.
+ALTER TABLE jobs_queue MODIFY COLUMN tenant_id BINARY(16) NULL;

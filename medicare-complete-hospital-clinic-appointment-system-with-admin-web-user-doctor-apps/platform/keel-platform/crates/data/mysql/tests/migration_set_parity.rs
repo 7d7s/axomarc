@@ -2,16 +2,18 @@
 //! not an accident.
 //!
 //! The `platform` workspace (the medicare product) ships the current 9-file
-//! MySQL set; this `keel-platform` twin ships a 12-file SUPERSET that adds the
+//! MySQL set; this `keel-platform` twin ships a 10-file SUPERSET that adds the
 //! three target-architecture Phases 2/3 migrations the product has not adopted
 //! yet (§3.1 job tenant scoping, §5.2 event idempotency, §5.1 job payload
-//! versioning). Each console pairs with its OWN schema — Phase F's live
-//! promotion gate runs against the twin's 12, the base's dump/rollback gates
-//! against the base's 9 — so the two sets must stay RELATED, not identical:
+//! versioning) plus the P0 F5 fix to the first of those. Each console pairs
+//! with its OWN schema — Phase F's live promotion gate runs against the twin's
+//! 10, the base's dump/rollback gates against the base's 9 — so the two sets
+//! must stay RELATED, not identical:
 //!
 //!   1. every base migration is present in the twin BYTE-IDENTICAL (no silent
 //!      drift in the shared foundation), and
-//!   2. the twin adds EXACTLY the three target-arch migrations, nothing more.
+//!   2. the twin adds EXACTLY the declared entries in `TWIN_ONLY`, nothing
+//!      more.
 //!
 //! This test locks both directions. If the product adopts a target-arch phase
 //! (base 9 -> 10+), update `TWIN_ONLY` below; if a shared file changes,
@@ -21,14 +23,17 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-/// The three target-architecture migrations the twin adds over the base, in
-/// version order. `20261005000001` = §3.1 jobs carry their tenant;
-/// `20261005000002` = §5.2 outbox rows carry the append-time idempotency key;
-/// `20261005000003` = §5.1 durable jobs carry their payload schema version.
+/// The migrations the twin adds over the base. `20261005000001` = §3.1 jobs
+/// carry their tenant; `20261005000002` = §5.2 outbox rows carry the
+/// append-time idempotency key; `20261005000003` = §5.1 durable jobs carry
+/// their payload schema version; `20261005000004` = P0 F5 fix: that tenant
+/// column lands as BINARY(16) (the crate's UUID codec), not the CHAR(36) the
+/// first twin-only migration shipped.
 const TWIN_ONLY: &[&str] = &[
     "20261005000001_jobs_queue_tenant.sql",
     "20261005000002_outbox_idempotency_key.sql",
     "20261005000003_jobs_queue_schema_version.sql",
+    "20261005000004_jobs_queue_tenant_binary.sql",
 ];
 
 /// Every `*.sql` file in `dir`, sorted (BTreeSet order), by file name.
@@ -82,13 +87,14 @@ fn twin_mysql_migrations_superset_the_base_by_exactly_the_target_arch_phases() {
         );
     }
 
-    // 2. The twin adds EXACTLY the three target-arch migrations, nothing more.
+    // 2. The twin adds EXACTLY the declared twin-only migrations, nothing more.
     let extras: BTreeSet<String> = twin.difference(&base).cloned().collect();
     let expected: BTreeSet<String> = TWIN_ONLY.iter().map(|s| s.to_string()).collect();
     assert_eq!(
         extras, expected,
-        "the twin's migration set must be the base's plus exactly the three \
-         target-arch phases (§3.1 job tenant, §5.2 outbox idempotency, §5.1 \
-         job schema version); if the product adopted a phase, update TWIN_ONLY"
+        "the twin's migration set must be the base's plus exactly the declared \
+         twin-only entries (§3.1 job tenant, §5.2 outbox idempotency, §5.1 job \
+         schema version, P0 F5 tenant column type); if the set legitimately \
+         grew, update TWIN_ONLY"
     );
 }
