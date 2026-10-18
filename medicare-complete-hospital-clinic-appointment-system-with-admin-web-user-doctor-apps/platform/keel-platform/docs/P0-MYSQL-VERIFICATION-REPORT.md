@@ -326,3 +326,52 @@ harness, so a full run against an unreachable database reported `10 pg_* tests o
 text in the captured log; only the single test run with `--nocapture` showed
 `pg-tests: cannot connect ([DB_ERROR] a database error occurred); skipping`. A green PG matrix is therefore not
 evidence of anything unless the run shows `--nocapture` output or the DB is independently confirmed reachable.
+
+## 9. LF-007 shared conformance harness, and finding F6 — **fixed**
+
+The LF-007 gap was "no shared contract suite; the pg/mysql model-store tests are hand-copied twins". Landed:
+`kelson_models::conformance` (`crates/data/models/src/conformance.rs`) — 13 cases generic over the `ModelStore`
+port (CRUD roundtrip through the runtime prepare pipeline, tenant isolation, soft-delete restore, find_by /
+find_for_update, list sort/pagination/validation, aggregates + existence, atomic increment, filtered batch
+update/delete, force_delete purge, upsert on a plain unique key, insert_or_ignore dedupe, hard-delete posture,
+and one database-only index-guard case) — plus the adapter matrix
+`crates/data/postgres/tests/modelstore_conformance.rs` (13 pg + 13 mysql wrappers; same DATABASE_URL gating as
+the sibling matrices) and the fake's entry point (the same cases run against `InMemoryModelStore` in
+`kelson-models`' own tests).
+
+Evidence: models **135/135**; conformance target **26/26** — 13/13 MySQL cases executed green, 13 PG cases
+self-skipped (`--nocapture` shows `pg-tests: cannot connect …; skipping`); twins **5/5**; matrix **15/15**;
+clippy `-D warnings` clean on the three touched crates; `xtask dep-rules` clean. CI wiring is **not done**:
+the workflow runs `--test pg_integration` only and `.github/workflows/keel.yml` is under this program's
+no-touch constraint — the one-line addition is proposed, not applied.
+
+### F6 — `total` under `limit` diverged between the fake and both SQL adapters — **fixed**
+
+`InMemoryModelStore::list` computes `total` before applying `ListOpts::limit` (pinned by its own unit test:
+"Limit caps rows AFTER sorting; total stays pre-limit", `crates/data/models/src/store.rs:2194`), but
+`PgModelStore`/`MySqlModelStore` computed `if opts.page.is_some() { COUNT } else { rows.len() }`, so a capped
+eager fetch reported `total = returned rows`:
+
+```
+assertion `left == right` failed: total counts the whole match set, not the page
+  left: Some(2)
+ right: Some(5)
+```
+
+Caught by `mysql_conformance_list_sort_pagination_and_validation` on the first live run of the new suite (the
+failing state is preserved in this session's run logs; the harness was written to the port contract, not to the
+adapters). **Fix applied** (user-approved): the COUNT branch now also runs when only `limit` is set —
+`if opts.page.is_some() || opts.limit.is_some()` in `crates/data/postgres/src/modelstore.rs:473` and
+`crates/data/mysql/src/modelstore.rs:684` — so the pre-limit match count is reported in both modes; the extra
+COUNT runs only for explicitly capped fetches. Regression: conformance **13/13 MySQL**, twins **5/5**, matrix
+**15/15**, models **135/135**.
+
+### Recorded (not fixed, not yet a finding): raw `update` on a trashed row
+
+`ModelStore::update` docs are silent on the trash veil. The fake veils (the `!is_deleted` guard in
+`InMemoryModelStore::update`), while both SQL adapters update without a `deleted_at` predicate
+(`crates/data/postgres/src/modelstore.rs:540`, `crates/data/mysql/src/modelstore.rs:770`; the mysql readback
+repeats the write's tenant scope "plus the soft veil only" — i.e. also no veil). Live probe executed this
+batch: in-memory `None`, MySQL `Some`; PostgreSQL is source-identical but **NOT RUN** here. The runtime's own
+`update` pre-reads with the veil, so the divergence only reaches direct port users. Adjudication
+(align fake vs align adapters) is pending; no code changed.

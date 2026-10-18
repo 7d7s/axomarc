@@ -681,8 +681,11 @@ impl ModelStore for MySqlModelStore {
         };
         let compiled = select.build()?;
         let rows = fetch_rows(&self.pool, &compiled)?;
-        let total = if opts.page.is_some() {
-            // COUNT over the same shape (rebuild without limit/offset).
+        let total = if opts.page.is_some() || opts.limit.is_some() {
+            // COUNT over the same shape (rebuild without limit/offset). The
+            // port pins `total` to the pre-limit match count: `ListOpts::limit`
+            // is a row cap, so a capped eager fetch must still report how many
+            // rows matched (kelson-models `store` list contract test).
             let count_select = base_select(model, tenant, filters, opts.include_deleted)?.build()?;
             let count_sql = format!(
                 "SELECT COUNT(*) FROM ({}) AS _kelson_count",

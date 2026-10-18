@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 
 pub mod bindings;
 pub mod casts;
+pub mod conformance;
 pub mod probes;
 pub mod prune;
 pub mod runtime;
