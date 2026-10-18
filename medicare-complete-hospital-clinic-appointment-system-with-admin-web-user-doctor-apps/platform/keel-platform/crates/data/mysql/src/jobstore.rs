@@ -358,32 +358,42 @@ impl JobStore for MySqlJobStore {
         })
     }
 
-    fn complete_claim(&self, id: Uuid, attempt: u32) -> Result<(), AppError> {
+    fn complete_claim(&self, id: Uuid, attempt: u32, owner: &str) -> Result<(), AppError> {
+        let owner = owner.to_string();
         let pool = self.pool.clone();
         block_on(async move {
             // The fence: `attempt` is the epoch the caller was handed at
-            // claim time. If the lease expired and another worker reclaimed
-            // the row, `attempt` has moved on and this write matches nothing.
+            // claim time and `owner` is the worker it was handed to. If the
+            // lease expired and another worker reclaimed the row, both have
+            // moved on and this write matches nothing.
             let done = sqlx::query(
                 "UPDATE jobs_queue
                  SET status = 'succeeded', finished_at = UTC_TIMESTAMP(6)
-                 WHERE id = ? AND status = 'running' AND attempt = ?",
+                 WHERE id = ? AND status = 'running' AND attempt = ? AND claimed_by = ?",
             )
             .bind(id)
             .bind(attempt as i64)
+            .bind(&owner)
             .execute(&pool)
             .await
             .map_err(my)?;
             if done.rows_affected() == 0 {
                 return Err(AppError::conflict(format!(
-                    "job {id} claim is stale (attempt {attempt} was reclaimed); completion refused"
+                    "job {id} claim is stale (attempt {attempt} of {owner} was reclaimed); completion refused"
                 )));
             }
             Ok(())
         })
     }
 
-    fn fail_claim(&self, id: Uuid, attempt: u32, error: &str) -> Result<JobStatus, AppError> {
+    fn fail_claim(
+        &self,
+        id: Uuid,
+        attempt: u32,
+        owner: &str,
+        error: &str,
+    ) -> Result<JobStatus, AppError> {
+        let owner = owner.to_string();
         let error = error.to_string();
         let pool = self.pool.clone();
         block_on(async move {
@@ -396,18 +406,19 @@ impl JobStore for MySqlJobStore {
                                          ELSE UTC_TIMESTAMP(6) + INTERVAL CAST(LEAST(600, 30 * POW(2, GREATEST(attempt - 1, 0))) AS SIGNED) SECOND
                                     END,
                      finished_at = CASE WHEN attempt >= max_attempts THEN UTC_TIMESTAMP(6) ELSE NULL END
-                 WHERE id = ? AND status = 'running' AND attempt = ?",
+                 WHERE id = ? AND status = 'running' AND attempt = ? AND claimed_by = ?",
             )
             .bind(&error)
             .bind(id)
             .bind(attempt as i64)
+            .bind(&owner)
             .execute(&mut *tx)
             .await
             .map_err(my)?;
             if done.rows_affected() == 0 {
                 tx.rollback().await.map_err(my)?;
                 return Err(AppError::conflict(format!(
-                    "job {id} claim is stale (attempt {attempt} was reclaimed); failure refused"
+                    "job {id} claim is stale (attempt {attempt} of {owner} was reclaimed); failure refused"
                 )));
             }
             let (status,): (String,) = sqlx::query_as("SELECT status FROM jobs_queue WHERE id = ?")
@@ -598,8 +609,10 @@ impl JobStoreAdmin for MySqlJobStore {
         &self,
         id: Uuid,
         attempt: u32,
+        owner: &str,
         available_at: time::OffsetDateTime,
     ) -> Result<(), AppError> {
+        let owner = owner.to_string();
         let pool = self.pool.clone();
         block_on(async move {
             let done = sqlx::query(
@@ -608,41 +621,50 @@ impl JobStoreAdmin for MySqlJobStore {
                      attempt = GREATEST(attempt - 1, 0),
                      available_at = ?,
                      claimed_by = NULL, claimed_at = NULL
-                 WHERE id = ? AND status = 'running' AND attempt = ?",
+                 WHERE id = ? AND status = 'running' AND attempt = ? AND claimed_by = ?",
             )
             .bind(available_at)
             .bind(id)
             .bind(attempt as i64)
+            .bind(&owner)
             .execute(&pool)
             .await
             .map_err(my)?;
             if done.rows_affected() == 0 {
                 return Err(AppError::conflict(format!(
-                    "job {id} claim is stale (attempt {attempt} was reclaimed); defer refused"
+                    "job {id} claim is stale (attempt {attempt} of {owner} was reclaimed); defer refused"
                 )));
             }
             Ok(())
         })
     }
 
-    fn kill_claim(&self, id: Uuid, attempt: u32, error: &str) -> Result<(), AppError> {
+    fn kill_claim(
+        &self,
+        id: Uuid,
+        attempt: u32,
+        owner: &str,
+        error: &str,
+    ) -> Result<(), AppError> {
+        let owner = owner.to_string();
         let error = error.to_string();
         let pool = self.pool.clone();
         block_on(async move {
             let done = sqlx::query(
                 "UPDATE jobs_queue
                  SET status = 'dead', last_error = ?, finished_at = UTC_TIMESTAMP(6)
-                 WHERE id = ? AND status = 'running' AND attempt = ?",
+                 WHERE id = ? AND status = 'running' AND attempt = ? AND claimed_by = ?",
             )
             .bind(&error)
             .bind(id)
             .bind(attempt as i64)
+            .bind(&owner)
             .execute(&pool)
             .await
             .map_err(my)?;
             if done.rows_affected() == 0 {
                 return Err(AppError::conflict(format!(
-                    "job {id} claim is stale (attempt {attempt} was reclaimed); kill refused"
+                    "job {id} claim is stale (attempt {attempt} of {owner} was reclaimed); kill refused"
                 )));
             }
             Ok(())
@@ -834,25 +856,33 @@ impl TenantJobStore for MySqlJobStore {
         })
     }
 
-    fn complete_claim_for(&self, tenant: TenantId, id: Uuid, attempt: u32) -> Result<(), AppError> {
+    fn complete_claim_for(
+        &self,
+        tenant: TenantId,
+        id: Uuid,
+        attempt: u32,
+        owner: &str,
+    ) -> Result<(), AppError> {
+        let owner = owner.to_string();
         let tenant = *tenant.as_uuid();
         let pool = self.pool.clone();
         block_on(async move {
             let done = sqlx::query(
                 "UPDATE jobs_queue
                  SET status = 'succeeded', finished_at = UTC_TIMESTAMP(6)
-                 WHERE id = ? AND status = 'running' AND tenant_id = ? AND attempt = ?",
+                 WHERE id = ? AND status = 'running' AND tenant_id = ? AND attempt = ? AND claimed_by = ?",
             )
             .bind(id)
             .bind(tenant)
             .bind(attempt as i64)
+            .bind(&owner)
             .execute(&pool)
             .await
             .map_err(my)?;
             if done.rows_affected() == 0 {
                 let miss = scoped_miss(&pool, id, tenant, || {
                     AppError::conflict(format!(
-                        "job {id} claim is stale (attempt {attempt} was reclaimed); completion refused"
+                        "job {id} claim is stale (attempt {attempt} of {owner} was reclaimed); completion refused"
                     ))
                 })
                 .await?;
@@ -867,8 +897,10 @@ impl TenantJobStore for MySqlJobStore {
         tenant: TenantId,
         id: Uuid,
         attempt: u32,
+        owner: &str,
         error: &str,
     ) -> Result<JobStatus, AppError> {
+        let owner = owner.to_string();
         let error = error.to_string();
         let tenant = *tenant.as_uuid();
         let pool = self.pool.clone();
@@ -882,12 +914,13 @@ impl TenantJobStore for MySqlJobStore {
                                          ELSE UTC_TIMESTAMP(6) + INTERVAL CAST(LEAST(600, 30 * POW(2, GREATEST(attempt - 1, 0))) AS SIGNED) SECOND
                                     END,
                      finished_at = CASE WHEN attempt >= max_attempts THEN UTC_TIMESTAMP(6) ELSE NULL END
-                 WHERE id = ? AND status = 'running' AND tenant_id = ? AND attempt = ?",
+                 WHERE id = ? AND status = 'running' AND tenant_id = ? AND attempt = ? AND claimed_by = ?",
             )
             .bind(&error)
             .bind(id)
             .bind(tenant)
             .bind(attempt as i64)
+            .bind(&owner)
             .execute(&mut *tx)
             .await
             .map_err(my)?;
@@ -895,7 +928,7 @@ impl TenantJobStore for MySqlJobStore {
                 tx.rollback().await.map_err(my)?;
                 let miss = scoped_miss(&pool, id, tenant, || {
                     AppError::conflict(format!(
-                        "job {id} claim is stale (attempt {attempt} was reclaimed); failure refused"
+                        "job {id} claim is stale (attempt {attempt} of {owner} was reclaimed); failure refused"
                     ))
                 })
                 .await?;

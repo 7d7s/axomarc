@@ -494,24 +494,35 @@ pub trait JobStore: Send + Sync {
     fn fail(&self, id: Uuid, error: &str) -> Result<JobStatus, AppError>;
 
     /// P0 crash recovery: fenced completion. Only the holder of the CURRENT
-    /// claim may finish the job — `attempt` is the claim's epoch (advanced by
-    /// every claim/reclaim), as handed back on the claimed job. A worker
-    /// whose claim was reclaimed after a lease expiry presents a stale epoch
-    /// and is refused with CONFLICT, so a resurrected "zombie" worker that
-    /// merely stalled (long GC, VM freeze, partition) can never mark another
-    /// worker's run complete. The default is the unfenced path, which is
-    /// correct for stores with no cross-process claim (in-memory, single
-    /// node): durable stores override it.
-    fn complete_claim(&self, id: Uuid, attempt: u32) -> Result<(), AppError> {
-        let _ = attempt;
+    /// claim may finish the job: `attempt` is the claim's epoch (advanced by
+    /// every claim/reclaim) and `owner` is the claiming worker's name, both as
+    /// handed back on the claimed job. A worker whose claim was reclaimed
+    /// after a lease expiry presents a stale pair and is refused with
+    /// CONFLICT, so a resurrected "zombie" worker that merely stalled (long
+    /// GC, VM freeze, partition) can never finish another worker's run.
+    ///
+    /// The epoch alone is NOT a sufficient token: `defer` hands an attempt
+    /// back when admission holds a job, so a deferred job re-claimed later can
+    /// carry the same epoch as the deferred claim. The owner closes that
+    /// collision. The default is the unfenced path, which is correct for
+    /// stores with no cross-process claim (in-memory, single node): durable
+    /// stores override it.
+    fn complete_claim(&self, id: Uuid, attempt: u32, owner: &str) -> Result<(), AppError> {
+        let _ = (attempt, owner);
         self.complete(id)
     }
 
     /// P0 crash recovery: fenced failure — see [`JobStore::complete_claim`].
     /// Without the fence a stalled zombie could fail a job another worker is
     /// already running, burning retries that were never spent.
-    fn fail_claim(&self, id: Uuid, attempt: u32, error: &str) -> Result<JobStatus, AppError> {
-        let _ = attempt;
+    fn fail_claim(
+        &self,
+        id: Uuid,
+        attempt: u32,
+        owner: &str,
+        error: &str,
+    ) -> Result<JobStatus, AppError> {
+        let _ = (attempt, owner);
         self.fail(id, error)
     }
 }
@@ -536,8 +547,14 @@ pub trait TenantJobStore: Send + Sync {
     fn fail_for(&self, tenant: TenantId, id: Uuid, error: &str) -> Result<JobStatus, AppError>;
 
     /// Fenced completion, tenant-scoped — see [`JobStore::complete_claim`].
-    fn complete_claim_for(&self, tenant: TenantId, id: Uuid, attempt: u32) -> Result<(), AppError> {
-        let _ = attempt;
+    fn complete_claim_for(
+        &self,
+        tenant: TenantId,
+        id: Uuid,
+        attempt: u32,
+        owner: &str,
+    ) -> Result<(), AppError> {
+        let _ = (attempt, owner);
         self.complete_for(tenant, id)
     }
 
@@ -547,9 +564,10 @@ pub trait TenantJobStore: Send + Sync {
         tenant: TenantId,
         id: Uuid,
         attempt: u32,
+        owner: &str,
         error: &str,
     ) -> Result<JobStatus, AppError> {
-        let _ = attempt;
+        let _ = (attempt, owner);
         self.fail_for(tenant, id, error)
     }
 }
@@ -585,22 +603,30 @@ pub trait JobStoreAdmin: Send + Sync {
     fn kill(&self, id: Uuid, error: &str) -> Result<(), AppError>;
 
     /// P0 crash recovery: fenced defer. The admission `Hold` path returns a
-    /// JUST-CLAIMED job to pending; a stale epoch means the claim was already
-    /// reclaimed, so the defer is refused rather than stealing the new
-    /// owner's claim. Default is unfenced (see [`JobStore::complete_claim`]).
+    /// JUST-CLAIMED job to pending; a stale `(attempt, owner)` means the claim
+    /// was already reclaimed, so the defer is refused rather than stealing the
+    /// new owner's claim. Default is unfenced (see
+    /// [`JobStore::complete_claim`]).
     fn defer_claim(
         &self,
         id: Uuid,
         attempt: u32,
+        owner: &str,
         available_at: OffsetDateTime,
     ) -> Result<(), AppError> {
-        let _ = attempt;
+        let _ = (attempt, owner);
         self.defer(id, available_at)
     }
 
     /// P0 crash recovery: fenced kill — see [`JobStoreAdmin::defer_claim`].
-    fn kill_claim(&self, id: Uuid, attempt: u32, error: &str) -> Result<(), AppError> {
-        let _ = attempt;
+    fn kill_claim(
+        &self,
+        id: Uuid,
+        attempt: u32,
+        owner: &str,
+        error: &str,
+    ) -> Result<(), AppError> {
+        let _ = (attempt, owner);
         self.kill(id, error)
     }
 }

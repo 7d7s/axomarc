@@ -1294,13 +1294,13 @@ async fn mysql_job_store_recovers_orphaned_running_job_after_worker_crash() {
     );
 
     // Fencing: the resurrected worker A cannot finish (or fail) a job whose
-    // claim it lost — it presents the stale epoch 1.
+    // claim it lost — it presents the stale token (epoch 1, worker A).
     let stale = store
-        .complete_claim(id, 1)
+        .complete_claim(id, 1, "mysql-worker-A")
         .expect_err("a stale claim cannot complete");
     assert_eq!(stale.code, kelson_foundation::codes::CONFLICT);
     let stale = store
-        .fail_claim(id, 1, "stale worker")
+        .fail_claim(id, 1, "mysql-worker-A", "stale worker")
         .expect_err("a stale claim cannot fail");
     assert_eq!(stale.code, kelson_foundation::codes::CONFLICT);
     let alive = store.get(id).expect("reads").expect("row");
@@ -1312,20 +1312,95 @@ async fn mysql_job_store_recovers_orphaned_running_job_after_worker_crash() {
 
     // The fence guards the admin transitions a claimed job can take too.
     let stale = store
-        .defer_claim(id, 1, now + time::Duration::seconds(30))
+        .defer_claim(id, 1, "mysql-worker-A", now + time::Duration::seconds(30))
         .expect_err("a stale claim cannot defer");
     assert_eq!(stale.code, kelson_foundation::codes::CONFLICT);
     let stale = store
-        .kill_claim(id, 1, "stale worker")
+        .kill_claim(id, 1, "mysql-worker-A", "stale worker")
         .expect_err("a stale claim cannot kill");
     assert_eq!(stale.code, kelson_foundation::codes::CONFLICT);
 
     // The real owner finishes normally.
-    store.complete_claim(id, 2).expect("current claim completes");
+    store
+        .complete_claim(id, 2, "mysql-worker-B")
+        .expect("current claim completes");
     assert_eq!(
         store.get(id).expect("reads").expect("row").status,
         JobStatus::Succeeded
     );
+
+    sqlx::query("DELETE FROM jobs_queue WHERE id = ?")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .expect("clean up the probe row");
+}
+
+/// The claim epoch alone is not a safe fence: `defer` hands an attempt back
+/// (admission `Hold` must not burn the retry budget), so a deferred job can be
+/// re-claimed at the SAME epoch. The owner half of the token closes that: the
+/// deferred worker shares the epoch with the new claim but not the ownership.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mysql_job_store_fences_a_deferred_job_reclaimed_at_the_same_epoch() {
+    use kelson_jobs::{build_from_def, JobDef, JobStatus, JobStore, JobStoreAdmin};
+
+    let Some(pool) = mysql_pool().await else { return };
+    let store = kelson_mysql::MySqlJobStore::new(pool.clone());
+
+    sqlx::query("DELETE FROM jobs_queue WHERE status IN ('pending', 'running')")
+        .execute(&pool)
+        .await
+        .expect("clean claimable queue");
+
+    let mut def = JobDef::new("mysql.defer.probe");
+    def.max_attempts = 3;
+    let now = OffsetDateTime::now_utc();
+    let mut job = build_from_def(&def, serde_json::json!({}), now);
+    job.available_at = now - time::Duration::seconds(60);
+    let id = store.enqueue(job).expect("enqueue");
+
+    let claimed = store.claim("mysql-worker-A").expect("claim").expect("row");
+    assert_eq!(claimed.id, id);
+    assert_eq!(claimed.attempt, 1);
+
+    // Worker A holds the job, then admission holds it: the attempt is given
+    // back (pending / attempt 0) and the claim is abandoned. The hold expires
+    // in the past, so the row is claimable immediately (and regardless of
+    // client-vs-server clock skew).
+    store
+        .defer_claim(
+            id,
+            claimed.attempt,
+            "mysql-worker-A",
+            now - time::Duration::seconds(60),
+        )
+        .expect("defer");
+    let deferred = store.get(id).expect("reads").expect("row");
+    assert_eq!(deferred.status, JobStatus::Pending, "defer returns it to pending");
+    assert_eq!(deferred.attempt, 0, "the attempt is given back");
+    assert!(deferred.claimed_by.is_none(), "the abandoned claim is disowned");
+
+    // Worker B claims it — and lands on the SAME epoch A held.
+    let reclaimed = store.claim("mysql-worker-B").expect("reclaim").expect("row");
+    assert_eq!(reclaimed.id, id);
+    assert_eq!(reclaimed.attempt, 1, "the deferred attempt was given back");
+    assert_eq!(reclaimed.claimed_by.as_deref(), Some("mysql-worker-B"));
+
+    // A resurrected A presenting (epoch 1, owner A) must still be refused:
+    // the row is running at epoch 1, but under worker B.
+    let stale = store
+        .complete_claim(id, 1, "mysql-worker-A")
+        .expect_err("a deferred worker cannot finish the claim that replaced its own");
+    assert_eq!(stale.code, kelson_foundation::codes::CONFLICT);
+    assert_eq!(
+        store.get(id).expect("reads").expect("row").status,
+        JobStatus::Running,
+        "the refused write left the running claim alone"
+    );
+
+    store
+        .complete_claim(id, 1, "mysql-worker-B")
+        .expect("the current owner completes");
 
     sqlx::query("DELETE FROM jobs_queue WHERE id = ?")
         .bind(id)
@@ -1502,10 +1577,12 @@ async fn pg_job_store_recovers_orphaned_running_job_after_worker_crash() {
     assert_eq!(recovered.attempt, 2);
 
     let stale = store
-        .complete_claim(id, 1)
+        .complete_claim(id, 1, "pg-worker-A")
         .expect_err("a stale claim cannot complete");
     assert_eq!(stale.code, kelson_foundation::codes::CONFLICT);
-    store.complete_claim(id, 2).expect("current claim completes");
+    store
+        .complete_claim(id, 2, "pg-worker-B")
+        .expect("current claim completes");
     assert_eq!(
         store.get(id).expect("reads").expect("row").status,
         JobStatus::Succeeded

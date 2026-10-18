@@ -462,11 +462,14 @@ impl DispatchCtx<'_> {
         };
         let id = job.id;
         let name = job.name.clone();
-        // The claim epoch, captured before `job` is consumed by migration:
+        // The claim token, captured before `job` is consumed by migration:
         // every terminal write is fenced on it (see JobStore::complete_claim),
         // so a worker whose claim was reclaimed after its lease expired cannot
-        // finish (or burn a retry on) a job another worker now owns.
+        // finish (or burn a retry on) a job another worker now owns. The token
+        // is (epoch, owner): `defer` hands an attempt back, so the epoch alone
+        // could repeat for a deferred job that is later re-claimed.
         let claim_attempt = job.attempt;
+        let claim_owner = worker_name.to_string();
         // Phase 3 §5.1 (KEEL-005): the claimed row may predate the
         // handler's schema — migrate BEFORE admission and dispatch. A
         // refusal (newer-than-known, or a migrator failure) takes the
@@ -475,7 +478,7 @@ impl DispatchCtx<'_> {
         let job = match self.defs.apply_migrations(job) {
             Ok(job) => job,
             Err(e) => {
-                let next = self.store.fail_claim(id, claim_attempt, &e.public_message)?;
+                let next = self.store.fail_claim(id, claim_attempt, &claim_owner, &e.public_message)?;
                 if next == JobStatus::Dead {
                     if let Some(run) = self.batches.finish_by_job(id, true)? {
                         tracing::warn!(batch_id = %run.id, batch = %run.name, ok = run.ok(), "batch finished with dead member");
@@ -516,7 +519,7 @@ impl DispatchCtx<'_> {
             }
             Ok(Control::Hold(delay)) => {
                 let at = OffsetDateTime::now_utc() + delay;
-                self.admin.defer_claim(id, claim_attempt, at)?;
+                self.admin.defer_claim(id, claim_attempt, &claim_owner, at)?;
                 tracing::info!(
                     job_id = %id,
                     job = %name,
@@ -526,7 +529,7 @@ impl DispatchCtx<'_> {
                 return Ok(None);
             }
             Ok(Control::Abort(reason)) => {
-                self.admin.kill_claim(id, claim_attempt, reason)?;
+                self.admin.kill_claim(id, claim_attempt, &claim_owner, reason)?;
                 // Terminal, like a dead failure: close the batch/chain books.
                 if let Some(run) = self.batches.finish_by_job(id, true)? {
                     tracing::warn!(batch_id = %run.id, batch = %run.name, "batch member killed by admission");
@@ -549,7 +552,7 @@ impl DispatchCtx<'_> {
         };
         match outcome {
             Ok(()) => {
-                self.store.complete_claim(id, claim_attempt)?;
+                self.store.complete_claim(id, claim_attempt, &claim_owner)?;
                 if let Some(run) = self.batches.finish_by_job(id, false)? {
                     tracing::info!(batch_id = %run.id, batch = %run.name, "batch finished");
                 }
@@ -566,7 +569,7 @@ impl DispatchCtx<'_> {
                 );
             }
             Err(e) => {
-                let next = self.store.fail_claim(id, claim_attempt, &e.public_message)?;
+                let next = self.store.fail_claim(id, claim_attempt, &claim_owner, &e.public_message)?;
                 if next == JobStatus::Dead {
                     if let Some(run) = self.batches.finish_by_job(id, true)? {
                         tracing::warn!(batch_id = %run.id, batch = %run.name, ok = run.ok(), "batch finished with dead member");

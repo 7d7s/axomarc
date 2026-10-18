@@ -238,16 +238,19 @@ run reports a clean green matrix with no skip text at all.
 
 - **Lease reclaim + fencing landed.** `claim` now also reclaims `running` rows whose claim is older than
   `DEFAULT_CLAIM_LEASE_SECS` (900 s) and dead-letters abandoned claims that have spent their retry budget;
-  every terminal write is fenced on the claim epoch (`attempt`), so a resurrected zombie owner cannot complete,
-  fail, defer or kill a job another worker reclaimed. Fenced calls are trait defaults, so in-memory/Redis stores
-  are unaffected. MySQL timestamps are now explicitly `UTC_TIMESTAMP(6)` instead of relying on the driver's
-  session default.
-- **Evidence.** `kelson-jobs`: 35 passed. MySQL matrix: 13 passed / 0 failed / 1 ignored, no skips. New
-  acceptance tests: reclaim+fence (in-lease claim not stolen; stale epoch refused with `KSN_CONFLICT`),
+  every terminal write is fenced on the claim token `(attempt, owner)`, so a resurrected zombie owner cannot
+  complete, fail, defer or kill a job another worker reclaimed. The owner half matters because `defer` hands an
+  attempt back, letting a deferred job carry the same epoch as the abandoned claim. Fenced calls are trait
+  defaults, so in-memory/Redis stores are unaffected. MySQL timestamps are now explicitly `UTC_TIMESTAMP(6)`
+  instead of relying on the driver's session default.
+- **Evidence.** `kelson-jobs`: 35 passed. MySQL matrix: 14 passed / 0 failed / 1 ignored, no skips. New
+  acceptance tests: reclaim+fence (in-lease claim not stolen; stale token refused with `KSN_CONFLICT`),
+  defer/epoch-collision fence (falsified: without the owner predicate the stale completion is accepted),
   dead-letter bound, PostgreSQL twin. **Live**: a planted crash-orphan
   (`running`, `attempt 1`, `claimed_by='kelson-worker-DEAD-9999'`, claim 1 h stale) was picked up by a real
   worker and completed — row went to `succeeded` / **`attempt 2`** / the new owner; before the fix the same
-  plant produced `jobs:0` and the row stayed `running` forever.
+  plant produced `jobs:0` and the row stayed `running` forever. Re-run after the owner half of the token
+  landed: same result (`kelson-worker-1684`, `attempt 2`).
 - **New finding F5 (needs approval).** The MySQL tenant-scoped job queue is unusable end-to-end:
   `jobs_queue.tenant_id` is `CHAR(36)` while the store binds raw UUID bytes and decodes `Uuid`, so every
   tenant-scoped enqueue fails with `1366 (HY000): Incorrect string value … for column 'tenant_id'`. Repro is

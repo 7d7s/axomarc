@@ -199,7 +199,13 @@ Status: implemented, tested and proven at process level on branch `p0-runtime-sa
   **dead-letter sweep** that turns an abandoned claim with no retries left into `dead` with
   `last_error = 'claim lease expired; retries exhausted'` instead of leaving it `running` forever.
 - **Fence on every terminal write** — a worker whose claim was reclaimed can no longer complete, fail,
-  defer or kill the job: those writes require `AND attempt = <epoch>` and return `KSN_CONFLICT` otherwise.
+  defer or kill the job: those writes require `AND attempt = <epoch> AND claimed_by = <worker>` and return
+  `KSN_CONFLICT` otherwise. The token carries the **owner** as well as the epoch because `defer` hands an
+  attempt back (admission `Hold` must not burn the retry budget), so a deferred job that is re-claimed later
+  can carry the same epoch as the abandoned claim — an epoch-only fence would let the deferred worker finish
+  its successor's run. Falsified: with the owner predicate removed the deferred worker's stale completion
+  *succeeds* and `mysql_job_store_fences_a_deferred_job_reclaimed_at_the_same_epoch` fails on exactly that
+  assertion.
 - **`kelson-worker`** — `DispatchCtx::once` captures the epoch at claim time and routes all four terminal
   transitions through the fenced calls.
 - **F2, made explicit** — the MySQL job store now writes/compares `UTC_TIMESTAMP(6)` rather than `NOW(6)`,
@@ -216,8 +222,9 @@ data-modifying CTE of the same statement, which always commits.
 | Check | Result | Evidence |
 |---|---|---|
 | `kelson-jobs` unit tests | **PASS** | 35 passed, 0 failed |
-| MySQL integration matrix (serial, live DB) | **PASS** | 13 passed / 0 failed / 1 ignored, 3.27 s, no skip lines |
-| Reclaim + fence acceptance | **PASS** | `mysql_job_store_recovers_orphaned_running_job_after_worker_crash`: an in-lease claim is **not** stolen; an expired one is reclaimed with `attempt` 1→2 and the owner moved to worker B; worker A's `complete`/`fail`/`defer`/`kill` at epoch 1 are all refused with `KSN_CONFLICT`; worker B's `complete` at epoch 2 succeeds |
+| MySQL integration matrix (serial, live DB) | **PASS** | 14 passed / 0 failed / 1 ignored, 2.24 s, no skip lines |
+| Reclaim + fence acceptance | **PASS** | `mysql_job_store_recovers_orphaned_running_job_after_worker_crash`: an in-lease claim is **not** stolen; an expired one is reclaimed with `attempt` 1→2 and the owner moved to worker B; worker A's `complete`/`fail`/`defer`/`kill` at (epoch 1, worker A) are all refused with `KSN_CONFLICT`; worker B's `complete` at (epoch 2, worker B) succeeds |
+| Defer/epoch-collision fence | **PASS** | `mysql_job_store_fences_a_deferred_job_reclaimed_at_the_same_epoch`: worker A defers (attempt given back), worker B re-claims at the *same* epoch 1, A's completion is refused while B's succeeds. Re-run with the owner predicate stripped: the stale completion is **accepted** and the test fails — the gate is real |
 | Poison-job bound | **PASS** | `mysql_job_store_dead_letters_an_exhausted_orphan_claim`: `max_attempts = 1` + expired claim → not reclaimable, row becomes `dead` with the lease-expired error |
 | **Live process-level reclaim** | **PASS** | Planted `running` / `attempt 1` / `claimed_by='kelson-worker-DEAD-9999'` / claim 1 h stale → real worker `kelson-worker-8072` booted `degraded:false`, logged `job succeeded {"job":"demo.job","job_id":"eeeeeeee-0000-0000-0000-000000000001","ms":3}`, stopped `{"jobs":1}`; row after: `succeeded` / **`attempt 2`** / `claimed_by='kelson-worker-8072'`. Before the fix the same plant produced `jobs:0` and the row stayed `running` forever |
 | PostgreSQL twin | **compiled, skipped here** | `pg_job_store_recovers_orphaned_running_job_after_worker_crash` mirrors the acceptance; PostgreSQL is unusable on this host (see §0) |
