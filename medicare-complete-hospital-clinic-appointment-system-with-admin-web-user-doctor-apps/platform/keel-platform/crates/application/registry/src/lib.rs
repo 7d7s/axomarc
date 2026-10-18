@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod config_cache;
 pub mod constraint;
+pub mod discovery;
 pub mod middleware_catalog;
 pub mod packages;
 pub mod route_plan;
@@ -27,7 +28,8 @@ pub use config_cache::{
 };
 pub use packages::{
     ModulePinMap, PackageEntry, PackageIndex, WasmModuleEntry, MODULE_PINS_PATH, PACKAGES_FILE,
-};pub use route_plan::{
+};pub use discovery::{discover_manifests, discover_route_files};
+pub use route_plan::{
     manifests_hash, resolve_route_plans, route_cache_path, RouteCacheArtifact, RoutePlan,
 };
 

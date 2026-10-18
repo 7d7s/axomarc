@@ -66,10 +66,11 @@ PID and SHA-256 were **identical before and after every step**: config, flag set
 with **no rebuild and no restart**. Config-hash reload is what notifies subscribers; a comment-only edit does not
 (hash unchanged) — a real value change does.
 
-- **3b limitation (BLOCKED, separate cause):** `kelson route:cache` (the pin-write path) refuses on this
-  workspace: `GRAPH-DUP-OP: operation oauth2.token declared by oauth2 and oauth2`,
-  `GRAPH-DUP-ROUTE: route GET /oauth/authorize declared by oauth2 and oauth2`, …. The artifact-probe + swap
-  path itself is proven by the clear/rebuild direction above; only the pin-write is gated.
+- **3b limitation — closed by the F3 fix:** `kelson route:cache` (the pin-write path) refused on this
+  workspace (`GRAPH-DUP-OP: operation oauth2.token declared by oauth2 and oauth2`,
+  `GRAPH-DUP-ROUTE: route GET /oauth/authorize declared by oauth2 and oauth2`, …) because of the discovery
+  defect **F3** below. With the fix it writes the artifact and the demo pins on it; §6 F3 carries the live
+  re-proof (real rewrite → bundle hot-swapped → anonymous GET 200 → 401 → 200, same PID).
 
 ---
 
@@ -167,31 +168,49 @@ stores found `NOW(6)` still in `principalstore.rs:209`, session `store.rs:94`, o
 bookkeeping `lib.rs:217`; whether those mix with UTC-bound reads the way the job store did was **not** measured,
 so it is recorded as a follow-up candidate rather than a finding.
 
-### F3 — `kelson route:cache` refuses on this workspace — **root-caused; fix pending approval**
-`kelson graph`, `kelson check`, `kelson route:cache` and `kelson optimize` all refuse because every module under
-`applications/` is discovered **twice**: `discover_manifests` walks `applications/*/module.toml` and then
+### F3 — `kelson route:cache` refused on this workspace — **fixed (shared discovery; live-verified)**
+`kelson graph`, `kelson check`, `kelson route:cache` and `kelson optimize` all refused because every module under
+`applications/` was discovered **twice** by the console's own copy: it walked `applications/*/module.toml` and then
 appends `PackageIndex::manifests(root)` — and `packages.toml` indexes those very files
-(`manifest = "applications/appointments/module.toml"`), so each is read twice and the graph's duplicate gate (a
+(`manifest = "applications/appointments/module.toml"`), so each was read twice and the graph's duplicate gate (a
 correct, fail-closed gate) reports `GRAPH-DUP-MODULE: module appointments declared more than once` plus a dup
 line for every operation, event and route — 4 modules (appointments, counter, echo, oauth2), 14 routes, 13
 operations, 3 events; deterministic across runs and identical under `kelson graph` (exit 1).
 
-The demo already hit and fixed exactly this in `26a653a` ("Stop discovery from declaring an indexed module
+The demo had already hit and fixed exactly this in `26a653a` ("Stop discovery from declaring an indexed module
 twice"): its `discover_manifests` collapses only **byte-identical** declarations (canonical-JSON compare — a
 name the index resolves to *different* content stays a duplicate, so the dedupe cannot hide drift). The console
-keeps a second, never-updated copy of the function, and the three-way divergence (console, demo, architecture
-test) is why nothing caught it: the architecture test's copy never runs the index pass at all. The demo
-therefore serves while the console refuses.
+kept a second, never-updated copy of the function, and the three-way divergence (console, demo, architecture
+test) is why nothing caught it: the architecture test's copy never ran the index pass at all. The demo
+therefore served while the console refused.
 
 Repro committed: `tools/kelson-console/src/main.rs`
-`discovery_does_not_declare_an_indexed_module_twice` (kept `#[ignore]`d until the fix is approved) — one
-manifest in `applications/alpha` indexed by `packages.toml` must discover as ONE declaration and compile, and
-an index that resolves the same name to different content must still reach the gate. Today it fails with
-`left: ["alpha", "alpha"]`.
+`discovery_does_not_declare_an_indexed_module_twice` — one manifest in `applications/alpha` indexed by
+`packages.toml` must discover as ONE declaration and compile, and an index that resolves the same name to
+different content must still reach the gate. Pre-fix it failed with `left: ["alpha", "alpha"]`; with the fix
+it is un-ignored and green.
 
-Proposed fix (needs approval): port `26a653a`'s byte-identical collapse into the console's copy — or better,
-extract one shared `discover_manifests` so the copies cannot diverge again — then un-ignore the repro and
-re-run `route:cache`/`optimize`, closing the pin-write direction of the no-rebuild proof.
+Fixed with the approved shape: ONE shared discovery in `crates/application/registry/src/discovery.rs`
+(`discover_manifests` + `discover_route_files`, carrying `26a653a`'s rule — only byte-identical declarations
+collapse; a name the index resolves to different content stays a duplicate). `kelson-console`, `kelson-demo`
+and the architecture test now delegate to it, so the three copies cannot diverge again. Evidence:
+
+- `cargo test -p kelson-registry --lib` green including 4 new discovery tests (indexed module declared once;
+  same name + different content still refused; absent manifest fails closed; route-file merge).
+- Console repro green; `kelson-demo`'s `package_discovery_merges_indexed_manifests_and_fails_closed` green;
+  `kelson-arch-validation`'s `platform_graph_compiles_from_manifests` green (it now runs the shared discovery
+  over this real workspace).
+- Live: `kelson graph` exits 0 — `platform graph: 6 module(s), 14 operation(s), 3 event(s)`;
+  `kelson route:cache` exits 0 and writes `storage/framework/routes.json` (15 routes, 12139 bytes);
+  `kelson optimize` exits 0 (route + config + view caches warm).
+- Live pin + swap on one demo process (PID 14372, `process_instance_id` `0522a79f…`, booted against artifact
+  sha `88D6FA18…`): removing the availability route's `public = true` plus a real `kelson route:cache`
+  changed the artifact (`0C9FD787…`) and flipped the anonymous GET **200 → 401 within 0.5 s** with **no
+  restart** (same PID + `process_instance_id`, zero `route reload refused`); reverting the manifest and
+  re-running `route:cache` restored the artifact byte-identical and the GET answered **200** again.
+- Log-surface note: the `logging` runtime dedupes identical messages (`tenant|category|message`) inside
+  `dedupe_window_ms` (default 10 s), so rapid repeated `route bundle hot-swapped` lines do not all surface in
+  captured stdout — the swap is evidenced by served behavior and the artifact sha, not by line counts.
 
 ---
 
@@ -199,14 +218,15 @@ re-run `route:cache`/`optimize`, closing the pin-write direction of the no-rebui
 
 | Item | Before | Now |
 |---|---|---|
-| No-rebuild proof | NOT RUN (demo DB probe failed) | **PASS** (config + flags + route bundle swapped live; PID+SHA unchanged). `route:cache` pin-write **BLOCKED** by F3 |
+| No-rebuild proof | NOT RUN (demo DB probe failed) | **PASS** (config + flags + route bundle swapped live; PID+SHA unchanged; pin-write closed — `graph`/`route:cache`/`optimize` run, and a real rewrite hot-swaps the running demo) |
 | Outbox crash recovery | NOT RUN | **PASS** (published 0→1 across a restart) |
 | Queue restart recovery | NOT VERIFIED | **graceful PASS / hard-crash FAIL** (F1 gap; repro test added) |
 | MySQL server crash recovery | NOT RUN | **PASS** (InnoDB recovered; queue+outbox intact) |
 | PostgreSQL path | "verified" | **BLOCKED** by host-level `0xC0000142`; prior greens may have been silent skips |
 
 Overall: **CONDITIONALLY READY** — the no-rebuild and outbox-durability claims are now evidence-backed; the
-hard-crash queue-recovery gap (F1) is a genuine production-safety defect and is the next fix.
+hard-crash queue-recovery gap (F1) was a genuine production-safety defect — **fixed and live-proven in §8**
+(F5 in §8.3).
 
 ---
 

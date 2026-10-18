@@ -45,21 +45,11 @@ fn every_member_belongs_to_a_topology_class() {
 #[test]
 fn platform_graph_compiles_from_manifests() {
     let root = workspace_root();
-    let mut manifests = Vec::new();
-    for base in ["applications", "modules"] {
-        let dir = root.join(base);
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let manifest_path = entry.path().join("module.toml");
-            if manifest_path.exists() {
-                let raw = std::fs::read_to_string(&manifest_path).expect("manifest read");
-                manifests
-                    .push(kelson_registry::ModuleManifest::from_toml(&raw).expect("manifest parse"));
-            }
-        }
-    }
+    // The real, shared discovery (layout walk + packages.toml index + root
+    // route files) — the same function boot and `kelson graph` use, so a
+    // divergence like F3 (the console missing 26a653a's dedupe) can no longer
+    // hide behind a private copy that never runs the index pass.
+    let manifests = kelson_registry::discover_manifests(&root).expect("discovers manifests");
     let graph = kelson_registry::PlatformGraph::compile(manifests)
         .unwrap_or_else(|v| panic!("graph violations: {v:?}"));
     // Foundation stage: graph must at least compile; modules arrive later.

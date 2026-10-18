@@ -218,10 +218,11 @@ so the three blocked items were run against **portable MySQL 8.0.44** instead. F
 
 - No-rebuild proof — **PASS**. Config reload, feature-flag swap (`/metrics` 404→200) and route-bundle hot-swap
   all landed on a running `kelson-demo` with **PID and binary SHA-256 unchanged**. A malformed config candidate
-  was refused while the last-good revision kept serving. (`kelson route:cache`'s pin-write is separately
-  BLOCKED by F3: the console's discovery copy declares every indexed `applications/` module twice — the demo's
-  copy was fixed in `26a653a`, the console's never was — so `route:cache`/`optimize` refuse; root-caused in
-  `docs/P0-MYSQL-VERIFICATION-REPORT.md` §6, fix pending approval.)
+  was refused while the last-good revision kept serving. (`kelson route:cache`'s pin-write was blocked by F3 —
+  the console's discovery copy declared every indexed `applications/` module twice; the demo's copy was fixed
+  in `26a653a`, the console's never was. **Fixed**: one shared discovery now lives in `kelson-registry`, and
+  the live demo pins on the artifact and hot-swaps the bundle when a real `kelson route:cache` rewrite lands —
+  anonymous GET 200 → 401 → 200 across rewrites, same PID; `docs/P0-MYSQL-VERIFICATION-REPORT.md` §6.)
 - Outbox crash recovery — **PASS**. A committed-but-unpublished event was published (`fetched:1`) after a
   process restart; `published` 0 → 1.
 - Queue restart recovery — **graceful PASS / hard-crash FAIL as found, PASS after the same-day fix** (see the

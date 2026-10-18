@@ -1260,60 +1260,17 @@ fn make_migration(name: &str) -> anyhow::Result<ExitCode> {
 
 // -------------------------------------------------------------------- graph
 
+/// Discovery is one shared, fail-closed implementation in `kelson-registry`
+/// (`discover_manifests`): the `applications/`+`modules/` layout walk, the
+/// root `packages.toml` index and the Wave 2 root route files, with an
+/// index declaration that reads the very file the walk read collapsed to one
+/// declaration (only byte-identical copies collapse — a name resolved to
+/// different content stays a duplicate). The console used to keep its own
+/// copy of that rule, which is exactly how it missed 26a653a and refused
+/// `graph`/`check`/`route:cache`/`optimize` on the shipped workspace
+/// (P0 finding F3). Thin wrapper so callers keep `anyhow` context.
 fn discover_manifests(root: &Path) -> anyhow::Result<Vec<kelson_registry::ModuleManifest>> {
-    let mut out = Vec::new();
-    for base in ["applications", "modules"] {
-        let dir = root.join(base);
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let manifest_path = entry.path().join("module.toml");
-            if manifest_path.exists() {
-                let raw = std::fs::read_to_string(&manifest_path)?;
-                let manifest = kelson_registry::ModuleManifest::from_toml(&raw)
-                    .map_err(|v| anyhow::anyhow!("{}: {}", manifest_path.display(), v.message))?;
-                out.push(manifest);
-            }
-        }
-    }
-    // Wave 8 B-24: indexed packages (root packages.toml) merge into the
-    // same fail-closed compile as applications/ and modules/.
-    out.extend(
-        kelson_registry::PackageIndex::load(root)
-            .map_err(anyhow::Error::msg)?
-            .manifests(root)
-            .map_err(anyhow::Error::msg)?,
-    );
-    out.extend(discover_route_files(root)?);
-    out.sort_by(|a, b| a.name().cmp(b.name()));
-    Ok(out)
-}
-
-/// Wave 2 root route files (mirroring Laravel's routes/*.php): merge
-/// `routes/web.toml` + `routes/api.toml` routes (plane forced by file),
-/// `routes/console.toml` commands and `routes/channels.toml` channels
-/// into synthetic module manifests. Absent files are fine; the graph gates
-/// (GRAPH-ROUTEFILE-OP, GRAPH-CHANNEL-CAP) validate their references.
-fn discover_route_files(root: &Path) -> anyhow::Result<Vec<kelson_registry::ModuleManifest>> {
-    let mut out = Vec::new();
-    for (file, plane, module_name) in [
-        ("web.toml", Some("web"), "routes_web"),
-        ("api.toml", Some("api"), "routes_api"),
-        ("console.toml", None, "routes_console"),
-        ("channels.toml", None, "routes_channels"),
-    ] {
-        let path = root.join("routes").join(file);
-        if !path.exists() {
-            continue;
-        }
-        let raw = std::fs::read_to_string(&path)?;
-        let manifest =
-            kelson_registry::RouteFileManifest::from_toml(&raw, &format!("routes/{file}"), plane)
-                .map_err(|v| anyhow::anyhow!("{}: {}", path.display(), v.message))?;
-        out.push(manifest.into_module(module_name));
-    }
-    Ok(out)
+    kelson_registry::discover_manifests(root).map_err(anyhow::Error::msg)
 }
 
 fn compile_graph(root: &Path) -> Result<kelson_registry::PlatformGraph, ExitCode> {
@@ -7905,23 +7862,16 @@ middleware = ["ghost"]
         dir
     }
 
-    /// P0 finding F6 (repro; the fix is NOT approved yet).
-    ///
-    /// This console's `discover_manifests` walks `applications/*/module.toml`
-    /// and then appends `PackageIndex::manifests(root)` — but `packages.toml`
-    /// indexes those very files (`manifest = "applications/appointments/module.toml"`),
-    /// so every indexed module is read twice and handed to the graph as two
-    /// declarations: `GRAPH-DUP-MODULE: module appointments declared more than
-    /// once` plus a dup line for every operation, event and route. `kelson
-    /// graph` / `kelson check` / `route:cache` / `optimize` therefore refuse on
-    /// the shipped workspace. `kelson-demo`'s copy of this function was fixed in
-    /// 26a653a ("Stop discovery from declaring an indexed module twice") with a
-    /// byte-identical collapse rule; the console's copy never got it, which is
-    /// exactly why the demo serves and the console refuses.
-    ///
-    /// Kept `#[ignore]` so the suite stays green until the fix lands.
+    /// P0 finding F3 acceptance gate (fixed by the shared discovery in
+    /// `kelson-registry`): an indexed module the layout walk already read is
+    /// ONE declaration, and the graph gate that `kelson graph` / `route:cache`
+    /// runs accepts it. This console used to keep its own copy of the
+    /// discovery loop, which is how it missed 26a653a's byte-identical
+    /// collapse and refused `graph` / `check` / `route:cache` / `optimize` on
+    /// the shipped workspace. The drift half below pins the other direction: a
+    /// name the index resolves to different content is a real second
+    /// declaration, so deduplication can never hide drift.
     #[test]
-    #[ignore = "P0 finding F6: the console's discover_manifests lacks the demo's byte-identical dedupe (26a653a), so an indexed applications/ module is declared twice"]
     fn discovery_does_not_declare_an_indexed_module_twice() {
         let root = fresh_temp("pkg-dup-discovery");
         let app = root.join("applications").join("alpha");

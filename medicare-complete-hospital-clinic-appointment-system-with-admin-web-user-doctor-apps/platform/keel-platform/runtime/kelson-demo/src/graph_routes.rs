@@ -49,87 +49,21 @@ use crate::routes::AppState;
 
 // ------------------------------------------------------------- graph compile
 
-/// Discover module manifests under applications/ and modules/ (same layout
-/// kelson graph uses in tools/kelson-console), plus every package indexed by the
-/// root `packages.toml` (Wave 8 B-24). An entry whose manifest is missing or
-/// malformed refuses discovery (fail-closed) — packages never silently
-/// disappear from the graph.
+/// Discover module manifests under `applications/` and `modules/`, plus every
+/// package indexed by the root `packages.toml` (Wave 8 B-24) and the Wave 2
+/// root route files. The implementation is shared
+/// (`kelson_registry::discover_manifests`) so boot, the console and
+/// `tests/architecture` cannot drift apart — the private copies are how the
+/// console missed the byte-identical collapse added here in 26a653a
+/// (P0 finding F3). Kept as a wrapper because existing callers and tests use
+/// `graph_routes::discover_manifests`.
 pub fn discover_manifests(root: &Path) -> Result<Vec<ModuleManifest>, String> {
-    let mut out = Vec::new();
-    for base in ["applications", "modules"] {
-        let dir = root.join(base);
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let manifest_path = entry.path().join("module.toml");
-            if manifest_path.exists() {
-                let raw = std::fs::read_to_string(&manifest_path)
-                    .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
-                let manifest = kelson_registry::ModuleManifest::from_toml(&raw)
-                    .map_err(|v| format!("{}: {}", manifest_path.display(), v.message))?;
-                out.push(manifest);
-            }
-        }
-    }
-    // An indexed package normally LIVES in the layout walked above:
-    // `packages.toml` records `manifest = "applications/appointments/module.toml"`
-    // and the `applications/` loop just read that same file. Two reads of one
-    // file are one declaration, but `out.extend` handed both to the graph, whose
-    // duplicate gate fired on the discovery order rather than on a second module
-    // -- `GRAPH-DUP-MODULE ... declared by appointments and appointments` refused
-    // boot after every wasm plugin had already loaded, so a clean checkout could
-    // not serve at all. `tests/architecture` stayed green because it keeps its
-    // own copy of this loop and never runs the index pass.
-    //
-    // Only byte-identical declarations collapse. A name the index resolves to
-    // *different* content is a real second declaration, so both survive and the
-    // gate still reports it - deduplication must not become a way to hide drift.
-    for manifest in kelson_registry::PackageIndex::load(root)?.manifests(root)? {
-        let canon = serde_json::to_string(&manifest).ok();
-        let already_declared = out.iter().any(|seen| {
-            seen.name() == manifest.name()
-                && match (&canon, serde_json::to_string(seen).ok()) {
-                    (Some(a), Some(b)) => a.as_str() == b.as_str(),
-                    _ => false,
-                }
-        });
-        if !already_declared {
-            out.push(manifest);
-        }
-    }
-    out.extend(discover_route_files(root)?);
-    out.sort_by(|a, b| a.name().cmp(b.name()));
-    Ok(out)
+    kelson_registry::discover_manifests(root)
 }
 
-/// Wave 2 root route files (mirroring Laravel's routes/*.php): merge
-/// `routes/web.toml` + `routes/api.toml` routes (plane forced by file),
-/// `routes/console.toml` commands and `routes/channels.toml` channels
-/// into synthetic module manifests. Absent files are fine. Route-file
-/// operations must reference module-registered operations
-/// (GRAPH-ROUTEFILE-OP gate); channel capabilities must be declared
-/// somewhere (GRAPH-CHANNEL-CAP).
+/// Shared Wave 2 route-file discovery (`kelson_registry::discover_route_files`).
 pub fn discover_route_files(root: &Path) -> Result<Vec<ModuleManifest>, String> {
-    let mut out = Vec::new();
-    for (file, plane, module_name) in [
-        ("web.toml", Some("web"), "routes_web"),
-        ("api.toml", Some("api"), "routes_api"),
-        ("console.toml", None, "routes_console"),
-        ("channels.toml", None, "routes_channels"),
-    ] {
-        let path = root.join("routes").join(file);
-        if !path.exists() {
-            continue;
-        }
-        let raw = std::fs::read_to_string(&path)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        let manifest =
-            kelson_registry::RouteFileManifest::from_toml(&raw, &format!("routes/{file}"), plane)
-                .map_err(|v| format!("{}: {}", path.display(), v.message))?;
-        out.push(manifest.into_module(module_name));
-    }
-    Ok(out)
+    kelson_registry::discover_route_files(root)
 }
 
 /// Compile the platform graph from a workspace root.
