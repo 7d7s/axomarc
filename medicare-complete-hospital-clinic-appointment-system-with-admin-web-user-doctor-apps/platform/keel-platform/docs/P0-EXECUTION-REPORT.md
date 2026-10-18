@@ -271,3 +271,29 @@ run reports a clean green matrix with no skip text at all.
   cannot be edited in place because sqlx validates its checksum.
 
 See `docs/P0-MYSQL-VERIFICATION-REPORT.md` §8 for the full detail.
+
+---
+
+## Backlog — open items (2026-10-19, after the LF-007 conformance batch)
+
+Standing pull list for the P0 program; the LF-scoped view remains in
+`LF-001-TO-LF-010-VERIFICATION.md` §5.
+
+| # | Item | Type | Sev | Evidence / source | Next action |
+|---|---|---|---|---|---|
+| 1 | Raw `store.update` on a trashed row: the fake veils it (`None`), pg/mysql write (`Some`; pg source-identical, NOT RUN) | contract divergence (recorded) | med | `P0-MYSQL-VERIFICATION-REPORT.md` §9 (probe executed) | Adjudicate direction (align fake vs align adapters), then add a conformance case + change |
+| 2 | `NOW(6)` audit remainder: `principalstore.rs:209`, session `store.rs:94`, outbox `tx.rs:507`, `lib.rs:217` — mixing with UTC-bound reads **not measured** | defect candidate | low | `P0-MYSQL-VERIFICATION-REPORT.md` §6 F2 | Measure; fix like F2 only if it mixes |
+| 3 | PostgreSQL execution of the conformance target (and the pg stack generally) — 13 `pg_conformance_*` self-skip on this host (`0xC0000142`) | evidence gap | med | LF doc §2.4 / §2.5 | Re-run on a working PG host; remember the §8.4 skip hazard (`--nocapture` + independently confirmed reachability) |
+| 4 | Wire `modelstore_conformance` into CI (platform-mysql job: one `--test` line) | CI gap | med | LF doc §3 LF-007; `keel.yml` frozen | Apply when `keel.yml` is unfrozen |
+| 5 | Graceful-shutdown test in `kelson-demo` (stop drains in-flight to zero, no dropped connections) | test gap | med | LF doc §5 item (2) | New integration test |
+| 6 | Long-lived worker leak soak (cross-job leak under a long-lived worker) | test gap | med | LF doc §2.4 / LF-010 | New soak test |
+| 7 | Trace/correlation not stamped into durable job rows (`build_from_def` writes `None`) | behavior decision | med | LF doc §3 LF-010 | Stamp them, or document the deliberate omission |
+| 8 | Config isolation + absent-config test | test gap | med | LF-002 | Define isolation; add test |
+| 9 | Automated no-rebuild regression (digest comparison across a route/config rewrite) | test gap | low | `REGRESSION-TEST-PLAN.md` §8; manual proof done | Automate the manual experiment |
+| 10 | Contracts-crate registry tests executed in CI | test gap | low | LF doc §3 LF-007 | Add to a CI job |
+| 11 | Semver gate (`xtask semver` unwired) | CI gap | low | LF doc §3 LF-007 | Wire it, or document the exemption |
+| 12 | Scaffold-build CI job (`kelson new` output → `cargo check`) | CI gap | low | LF doc §5 item (3) | Propose-only while `keel.yml` is frozen |
+| 13 | Request-scoped containers (`ServiceLifetime::{Request,…}` declared, 0 usage) | capability decision | low | LF doc §3 LF-005 | Build, or re-word as diagnostics-only |
+| 14 | Deferred loading + boot rollback | capability decision | low | LF-006 | Decide + disclose, or implement |
+| 15 | Package install/uninstall/upgrade (install path absent; `kelson upgrade` reports only) | capability decision | low | LF-009 | Decide + disclose, or implement |
+| 16 | Clean-machine install / Docker build (no daemon on this host) | blocked | low | LF doc §2.4 | Needs Docker |
