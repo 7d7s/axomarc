@@ -274,10 +274,10 @@ See `docs/P0-MYSQL-VERIFICATION-REPORT.md` §8 for the full detail.
 
 ---
 
-## Backlog — open items (2026-10-19, after the LF-007 conformance batch)
+## Backlog — open items (2026-10-19, refreshed after the LF-011→LF-027 HTTP batch)
 
-Standing pull list for the P0 program; the LF-scoped view remains in
-`LF-001-TO-LF-010-VERIFICATION.md` §5.
+Standing pull list for the P0 program; the LF-scoped views remain in
+`LF-001-TO-LF-010-VERIFICATION.md` §5 and `LF-011-TO-LF-027-VERIFICATION.md` §2.7/§4.
 
 | # | Item | Type | Sev | Evidence / source | Next action |
 |---|---|---|---|---|---|
@@ -297,3 +297,6 @@ Standing pull list for the P0 program; the LF-scoped view remains in
 | 14 | Deferred loading + boot rollback | capability decision | low | LF-006 | Decide + disclose, or implement |
 | 15 | Package install/uninstall/upgrade (install path absent; `kelson upgrade` reports only) | capability decision | low | LF-009 | Decide + disclose, or implement |
 | 16 | Clean-machine install / Docker build (no daemon on this host) | blocked | low | LF doc §2.4 | Needs Docker |
+| 17 | CORS hard-codes `allow_origins = ["*"]` (never overridden; no config key) and no CORS test exists anywhere | security gap | med | `LF-011-TO-LF-027-VERIFICATION.md` §4 F-1 (LF-021) | Decide: add a `[security.cors]` origin allowlist + wire tests (allow/deny, preflight, credentials×wildcard, `Vary: Origin`), or document the wildcard posture |
+| 18 | No HTTP panic boundary: a panicking handler aborts the connection instead of a stable 500 envelope (only terminating hooks are caught) | robustness gap | med | `LF-011-TO-LF-027-VERIFICATION.md` §4 F-2 (LF-024) | Add a catch layer mapping panics to a redacted 500 envelope + a panicking-route test (fix needs approval) |
+| 19 | Rate limiter: process-local buckets, first-`X-Forwarded-For`-hop trust without a trusted-proxy config, unbounded bucket map (no eviction) | robustness gap | med | `LF-011-TO-LF-027-VERIFICATION.md` §4 F-3 (LF-026) | Add trusted-proxy config + bucket eviction (optionally a shared store), or document the limits |
