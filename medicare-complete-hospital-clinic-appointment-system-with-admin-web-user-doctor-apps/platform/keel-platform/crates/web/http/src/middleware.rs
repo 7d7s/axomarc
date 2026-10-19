@@ -304,11 +304,18 @@ pub fn take_from_bucket(
     }
 }
 
-/// Rate-limit posture: burst capacity + steady refill per second.
+/// Rate-limit posture: burst capacity + steady refill per second, plus the
+/// bucket-map bounds (F-3 Phase 2).
 #[derive(Debug, Clone)]
 pub struct RateLimitConfig {
     pub capacity: u32,
     pub refill_per_sec: f64,
+    /// Idle buckets are swept after this long (F-3 Phase 2). `0` disables the
+    /// TTL sweep (the map is then bounded by `max_buckets` alone).
+    pub bucket_ttl_secs: u64,
+    /// Hard cap on tracked client buckets (F-3 Phase 2). When the map is full
+    /// the oldest bucket is evicted before a new one is inserted.
+    pub max_buckets: usize,
 }
 
 impl Default for RateLimitConfig {
@@ -316,14 +323,174 @@ impl Default for RateLimitConfig {
         Self {
             capacity: 120,
             refill_per_sec: 2.0,
+            bucket_ttl_secs: 900,
+            max_buckets: 100_000,
         }
+    }
+}
+
+/// A CIDR range of trusted proxies (F-3 Phase 1). Parsed once at boot; an
+/// unparsable range refuses the boot (fail closed) instead of silently
+/// widening the trust boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustedProxyRange {
+    addr: [u8; 16],
+    prefix: u8,
+    /// `true` for an IPv4 range (the address is stored in the first 4 bytes).
+    v4: bool,
+}
+
+impl TrustedProxyRange {
+    /// Parse `10.0.0.0/8`, `192.168.1.0/24`, `fd00::/8` or a bare address
+    /// (treated as a host route, `/32` or `/128`).
+    pub fn parse(spec: &str) -> Result<Self, String> {
+        let spec = spec.trim();
+        if spec.is_empty() {
+            return Err("empty trusted-proxy range".into());
+        }
+        let (addr_part, prefix_part) = match spec.split_once('/') {
+            Some((a, p)) => (a, Some(p)),
+            None => (spec, None),
+        };
+        let (addr, v4) = parse_ip(addr_part)?;
+        let max_prefix = if v4 { 32u8 } else { 128u8 };
+        let prefix = match prefix_part {
+            None => max_prefix,
+            Some(p) => {
+                let n: u8 = p
+                    .parse()
+                    .map_err(|_| format!("trusted-proxy prefix is not a number: {spec}"))?;
+                if n > max_prefix {
+                    return Err(format!("trusted-proxy prefix out of range: {spec}"));
+                }
+                n
+            }
+        };
+        Ok(Self { addr, prefix, v4 })
+    }
+
+    /// Does `ip` fall inside this range?
+    pub fn contains(&self, ip: &str) -> bool {
+        let Ok((other, other_v4)) = parse_ip(ip) else {
+            return false;
+        };
+        if other_v4 != self.v4 {
+            return false;
+        }
+        let full = (self.prefix / 8) as usize;
+        let rem = self.prefix % 8;
+        if full > 0 && self.addr[..full] != other[..full] {
+            return false;
+        }
+        if rem == 0 {
+            return true;
+        }
+        let mask = 0xffu8 << (8 - rem);
+        (self.addr[full] & mask) == (other[full] & mask)
+    }
+}
+
+/// Parse an IPv4 or IPv6 literal into 16 bytes (IPv4 in the first 4).
+fn parse_ip(text: &str) -> Result<([u8; 16], bool), String> {
+    let text = text.trim();
+    if text.contains(':') {
+        // IPv6: full form only (8 groups) plus the common `::` compression.
+        let (head, tail) = match text.split_once("::") {
+            Some((h, t)) => (h, Some(t)),
+            None => (text, None),
+        };
+        let head_groups: Vec<&str> = head.split(':').filter(|s| !s.is_empty()).collect();
+        let tail_groups: Vec<&str> = tail
+            .map(|t| t.split(':').filter(|s| !s.is_empty()).collect())
+            .unwrap_or_default();
+        let total = head_groups.len() + tail_groups.len();
+        if total > 8 || (tail.is_none() && total != 8) {
+            return Err(format!("not an IPv6 address: {text}"));
+        }
+        let mut groups: Vec<u16> = Vec::with_capacity(8);
+        for g in &head_groups {
+            groups.push(parse_hex_group(g)?);
+        }
+        if tail.is_some() {
+            groups.resize(8 - tail_groups.len(), 0);
+            for g in &tail_groups {
+                groups.push(parse_hex_group(g)?);
+            }
+        }
+        let mut out = [0u8; 16];
+        for (i, g) in groups.iter().enumerate() {
+            out[i * 2] = (g >> 8) as u8;
+            out[i * 2 + 1] = (g & 0xff) as u8;
+        }
+        return Ok((out, false));
+    }
+    let parts: Vec<&str> = text.split('.').collect();
+    if parts.len() != 4 {
+        return Err(format!("not an IPv4 address: {text}"));
+    }
+    let mut out = [0u8; 16];
+    for (i, p) in parts.iter().enumerate() {
+        let n: u8 = p
+            .parse()
+            .map_err(|_| format!("not an IPv4 address: {text}"))?;
+        if n > 255 {
+            return Err(format!("not an IPv4 address: {text}"));
+        }
+        out[i] = n;
+    }
+    Ok((out, true))
+}
+
+fn parse_hex_group(text: &str) -> Result<u16, String> {
+    if text.is_empty() || text.len() > 4 {
+        return Err(format!("not an IPv6 group: {text}"));
+    }
+    u16::from_str_radix(text, 16).map_err(|_| format!("not an IPv6 group: {text}"))
+}
+
+/// The set of proxy ranges whose `X-Forwarded-For` hops may be trusted
+/// (F-3 Phase 1). An empty set trusts nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TrustedProxies {
+    ranges: Vec<TrustedProxyRange>,
+}
+
+impl TrustedProxies {
+    /// Parse a configured list of CIDR ranges; an unparsable entry refuses the
+    /// boot (fail closed).
+    pub fn parse(specs: &[String]) -> Result<Self, String> {
+        let mut ranges = Vec::with_capacity(specs.len());
+        for spec in specs {
+            ranges.push(TrustedProxyRange::parse(spec)?);
+        }
+        Ok(Self { ranges })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ranges.is_empty()
+    }
+
+    /// Is `ip` inside one of the trusted ranges?
+    pub fn contains(&self, ip: &str) -> bool {
+        self.ranges.iter().any(|r| r.contains(ip))
     }
 }
 
 /// Client key: explicit header first, then bearer credential (S7 B-09
 /// per-principal keying without a store lookup at the admission edge), then
-/// forwarded-for, then one global bucket.
+/// the forwarded-for chain, then one global bucket.
+///
+/// The forwarded-for chain is only honoured when the deployment declares
+/// trusted proxies (F-3 Phase 1): the chain is walked right-to-left and the
+/// first hop that is **not** a trusted proxy is the client. With no trusted
+/// proxies configured the header is ignored entirely (a client-supplied header
+/// must never decide its own rate-limit bucket).
 pub fn client_key(headers: &HeaderMap) -> String {
+    client_key_with_proxies(headers, &TrustedProxies::default())
+}
+
+/// Client key with an explicit trusted-proxy set (F-3 Phase 1).
+pub fn client_key_with_proxies(headers: &HeaderMap, trusted: &TrustedProxies) -> String {
     if let Some(key) = headers
         .get(header::HeaderName::from_static("x-rate-key"))
         .and_then(|v| v.to_str().ok())
@@ -351,11 +518,21 @@ pub fn client_key(headers: &HeaderMap) -> String {
             return key;
         }
     }
-    if let Some(fwd) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-        if let Some(first) = fwd.split(',').next() {
-            let ip = first.trim();
-            if !ip.is_empty() {
-                return ip.to_string();
+    if !trusted.is_empty() {
+        if let Some(fwd) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+            // Walk right-to-left: skip the hops that our own proxies added, and
+            // take the first hop that is not one of them. With an untrusted
+            // chain (a client-supplied header) the right-most hop is the
+            // client, so the key stays attacker-controlled only when the whole
+            // chain is inside the trusted ranges.
+            for hop in fwd.split(',').rev() {
+                let ip = hop.trim();
+                if ip.is_empty() {
+                    continue;
+                }
+                if !trusted.contains(ip) {
+                    return ip.to_string();
+                }
             }
         }
     }
@@ -366,6 +543,45 @@ pub fn client_key(headers: &HeaderMap) -> String {
 pub(crate) struct RateLimitState {
     config: RateLimitConfig,
     buckets: Arc<Mutex<HashMap<String, BucketState>>>,
+    /// The trusted-proxy set the client key is derived against (F-3 Phase 1).
+    trusted: TrustedProxies,
+}
+
+impl RateLimitState {
+    /// Take one token for `key`, sweeping idle buckets and evicting the oldest
+    /// bucket when the map is over its cap (F-3 Phase 2).
+    fn take(&self, key: &str) -> bool {
+        let now = Instant::now();
+        let mut buckets = self.buckets.lock().unwrap();
+        // TTL sweep: a bucket nobody touched for `bucket_ttl_secs` is dropped.
+        // It would have refilled to full capacity anyway, so dropping it only
+        // resets the clock — the client keeps its (full) allowance.
+        if self.config.bucket_ttl_secs > 0 {
+            let ttl = std::time::Duration::from_secs(self.config.bucket_ttl_secs);
+            buckets.retain(|_, b| now.duration_since(b.updated_at) < ttl);
+        }
+        // Hard cap: evict the oldest bucket so the map cannot grow without
+        // bound (distinct client keys are attacker-controlled).
+        if self.config.max_buckets > 0 && buckets.len() >= self.config.max_buckets {
+            if let Some(oldest) = buckets
+                .iter()
+                .min_by_key(|(_, b)| b.updated_at)
+                .map(|(k, _)| k.clone())
+            {
+                buckets.remove(&oldest);
+            }
+        }
+        let bucket = buckets.entry(key.to_string()).or_insert_with(|| BucketState {
+            tokens: self.config.capacity as f64,
+            updated_at: now,
+        });
+        take_from_bucket(
+            bucket,
+            now,
+            self.config.capacity,
+            self.config.refill_per_sec,
+        )
+    }
 }
 
 pub(crate) async fn rate_limit_fn(
@@ -377,20 +593,8 @@ pub(crate) async fn rate_limit_fn(
     if ADMISSION_BYPASS.iter().any(|p| *p == path) {
         return next.run(req).await;
     }
-    let key = client_key(req.headers());
-    let allowed = {
-        let mut buckets = state.buckets.lock().unwrap();
-        let bucket = buckets.entry(key).or_insert_with(|| BucketState {
-            tokens: state.config.capacity as f64,
-            updated_at: Instant::now(),
-        });
-        take_from_bucket(
-            bucket,
-            Instant::now(),
-            state.config.capacity,
-            state.config.refill_per_sec,
-        )
-    };
+    let key = client_key_with_proxies(req.headers(), &state.trusted);
+    let allowed = state.take(&key);
     if !allowed {
         let err = AppError::cap_limit("rate limit exceeded; retry shortly");
         let mut res = (
@@ -492,6 +696,9 @@ pub struct Admission {
     pub cors: CorsConfig,
     pub maintenance: MaintenanceGuard,
     pub rate_limit: RateLimitConfig,
+    /// Proxy ranges whose `X-Forwarded-For` hops may be trusted when the
+    /// client key is derived (F-3 Phase 1). Empty = trust nothing.
+    pub trusted_proxies: TrustedProxies,
 }
 
 impl Default for Admission {
@@ -501,6 +708,7 @@ impl Default for Admission {
             cors: CorsConfig::default(),
             maintenance: MaintenanceGuard::off(),
             rate_limit: RateLimitConfig::default(),
+            trusted_proxies: TrustedProxies::default(),
         }
     }
 }
@@ -518,6 +726,7 @@ impl Admission {
         let rate_state = RateLimitState {
             config: self.rate_limit.clone(),
             buckets: Arc::new(Mutex::new(HashMap::new())),
+            trusted: self.trusted_proxies.clone(),
         };
         router
             // Panic boundary (innermost): catches a handler panic and answers a
@@ -681,6 +890,7 @@ mod tests {
             rate_limit: RateLimitConfig {
                 capacity: 2,
                 refill_per_sec: 0.0,
+                ..RateLimitConfig::default()
             },
             ..Admission::default()
         };
@@ -722,8 +932,11 @@ mod tests {
     fn client_key_extraction() {
         let mut headers = HeaderMap::new();
         assert_eq!(client_key(&headers), "global");
+        // Without trusted proxies the forwarded-for header is ignored (F-3
+        // Phase 1): a client-supplied header must not pick its own bucket.
         headers.insert("x-forwarded-for", "10.0.0.1, 10.0.0.2".parse().unwrap());
-        assert_eq!(client_key(&headers), "10.0.0.1");
+        assert_eq!(client_key(&headers), "global");
+        // The explicit key still wins.
         headers.insert("x-rate-key", "api-client-9".parse().unwrap());
         assert_eq!(client_key(&headers), "api-client-9");
     }
@@ -889,21 +1102,158 @@ mod tests {
         let _ = cors.layer();
     }
 
-    // ——— F-3: rate limiter gaps (recorded, fix pending) ———
+    // ——— F-3: rate limiter ———
 
-    /// Repro F-3: the client key trusts the first `X-Forwarded-For` hop with no
-    /// trusted-proxy configuration, the bucket map has no eviction, and the
-    /// buckets are process-local. Asserts the current behaviour; the fix adds
-    /// `[http.trusted_proxies]` + bucket eviction.
+    /// F-3 Phase 1+2 are fixed (trusted-proxy walk, bounded bucket map). What
+    /// remains is the **shared store**: the buckets live in the process, so a
+    /// multi-instance deployment multiplies the effective limit by the instance
+    /// count. This repro records that gap; the fix is a `RateLimitStore` trait
+    /// with a Redis backend (design in `LF-011-TO-LF-027-FINDINGS-FIXES.md` §F-3).
     #[test]
-    #[ignore = "repro F-3: first XFF hop trusted, no eviction, no shared store"]
-    fn rate_limiter_gaps_first_xff_trusted_unbounded_no_shared() {
+    #[ignore = "repro F-3: the buckets are process-local; a shared store is still missing"]
+    fn rate_limiter_buckets_are_process_local() {
+        // The state is an in-process Arc<Mutex<HashMap<..>>> — two app
+        // instances would each keep their own buckets.
+        let state = RateLimitState {
+            config: RateLimitConfig::default(),
+            buckets: Arc::new(Mutex::new(HashMap::new())),
+            trusted: TrustedProxies::default(),
+        };
+        state.take("client-a");
+        assert_eq!(state.buckets.lock().unwrap().len(), 1);
+        // A second "instance" (a second state) starts empty — the two do not
+        // share their buckets.
+        let other = RateLimitState {
+            config: RateLimitConfig::default(),
+            buckets: Arc::new(Mutex::new(HashMap::new())),
+            trusted: TrustedProxies::default(),
+        };
+        other.take("client-a");
+        assert_eq!(other.buckets.lock().unwrap().len(), 1);
+        assert_eq!(
+            state.buckets.lock().unwrap().len(),
+            1,
+            "each instance keeps its own bucket for the same client"
+        );
+    }
+
+    // ——— F-3 Phase 1: trusted proxies ———
+
+    /// With no trusted proxies configured, the `X-Forwarded-For` header is
+    /// ignored entirely — a client-supplied header must never decide its own
+    /// rate-limit bucket.
+    #[test]
+    fn client_key_ignores_forwarded_for_without_trusted_proxies() {
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-for", "192.168.1.100, 10.0.0.5".parse().unwrap());
         assert_eq!(
-            client_key(&headers),
-            "192.168.1.100",
-            "first XFF hop is trusted without a proxy-trust config"
+            client_key_with_proxies(&headers, &TrustedProxies::default()),
+            "global",
+            "an untrusted forwarded-for header decides nothing"
         );
+    }
+
+    /// With trusted proxies, the chain is walked right-to-left and the first
+    /// hop that is not a trusted proxy is the client.
+    #[test]
+    fn client_key_walks_the_chain_past_trusted_proxies() {
+        let trusted = TrustedProxies::parse(&["10.0.0.0/8".to_string()]).expect("parses");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "203.0.113.7, 10.0.0.5, 10.0.0.9".parse().unwrap(),
+        );
+        assert_eq!(
+            client_key_with_proxies(&headers, &trusted),
+            "203.0.113.7",
+            "the first untrusted hop (right-to-left) is the client"
+        );
+    }
+
+    /// An explicit key and a bearer credential still outrank the chain.
+    #[test]
+    fn client_key_explicit_and_bearer_beat_the_chain() {
+        let trusted = TrustedProxies::parse(&["10.0.0.0/8".to_string()]).expect("parses");
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "203.0.113.7, 10.0.0.5".parse().unwrap());
+        headers.insert("x-rate-key", "api-client-9".parse().unwrap());
+        assert_eq!(client_key_with_proxies(&headers, &trusted), "api-client-9");
+        headers.remove("x-rate-key");
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer pat-secret-token".parse().unwrap(),
+        );
+        assert!(client_key_with_proxies(&headers, &trusted).starts_with("bearer:"));
+    }
+
+    /// The CIDR parser handles IPv4 and IPv6 ranges and refuses garbage.
+    #[test]
+    fn trusted_proxy_ranges_parse_and_match() {
+        let v4 = TrustedProxyRange::parse("10.0.0.0/8").expect("parses");
+        assert!(v4.contains("10.1.2.3"));
+        assert!(!v4.contains("11.1.2.3"));
+        let v4_24 = TrustedProxyRange::parse("192.168.1.0/24").expect("parses");
+        assert!(v4_24.contains("192.168.1.255"));
+        assert!(!v4_24.contains("192.168.2.1"));
+        let host = TrustedProxyRange::parse("203.0.113.7").expect("parses");
+        assert!(host.contains("203.0.113.7"));
+        assert!(!host.contains("203.0.113.8"));
+        let v6 = TrustedProxyRange::parse("fd00::/8").expect("parses");
+        assert!(v6.contains("fd00::1"));
+        assert!(!v6.contains("fe80::1"));
+        assert!(TrustedProxyRange::parse("10.0.0.0/33").is_err());
+        assert!(TrustedProxyRange::parse("not-an-ip").is_err());
+        assert!(TrustedProxyRange::parse("").is_err());
+    }
+
+    // ——— F-3 Phase 2: bucket eviction ———
+
+    /// The bucket map is bounded: inserting more distinct keys than the cap
+    /// evicts the oldest instead of growing without limit.
+    #[test]
+    fn rate_limit_buckets_are_capped() {
+        let state = RateLimitState {
+            config: RateLimitConfig {
+                capacity: 10,
+                refill_per_sec: 1.0,
+                bucket_ttl_secs: 0,
+                max_buckets: 4,
+            },
+            buckets: Arc::new(Mutex::new(HashMap::new())),
+            trusted: TrustedProxies::default(),
+        };
+        for i in 0..50 {
+            state.take(&format!("client-{i}"));
+        }
+        let len = state.buckets.lock().unwrap().len();
+        assert!(len <= 4, "the bucket map stays capped: {len}");
+    }
+
+    /// Idle buckets are swept by the TTL, so a burst of one-off client keys
+    /// does not keep the map populated forever.
+    #[test]
+    fn rate_limit_buckets_are_swept_by_ttl() {
+        let state = RateLimitState {
+            config: RateLimitConfig {
+                capacity: 10,
+                refill_per_sec: 1.0,
+                bucket_ttl_secs: 1,
+                max_buckets: 0,
+            },
+            buckets: Arc::new(Mutex::new(HashMap::new())),
+            trusted: TrustedProxies::default(),
+        };
+        state.take("client-a");
+        assert_eq!(state.buckets.lock().unwrap().len(), 1);
+        // Age the bucket past the TTL, then take a different key: the sweep
+        // drops the idle one.
+        {
+            let mut buckets = state.buckets.lock().unwrap();
+            let b = buckets.get_mut("client-a").expect("bucket");
+            b.updated_at = Instant::now() - std::time::Duration::from_secs(5);
+        }
+        state.take("client-b");
+        let len = state.buckets.lock().unwrap().len();
+        assert_eq!(len, 1, "the idle bucket was swept");
     }
 }

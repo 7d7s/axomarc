@@ -395,6 +395,13 @@ pub struct HttpSection {
     /// turns it on once every cookie consumer understands the `k1.` form.
     #[serde(default)]
     pub encrypt_cookies: bool,
+    /// `[http.trusted_proxies]` (F-3 Phase 1): the proxy ranges whose
+    /// `X-Forwarded-For` hops may be trusted when the client key (and the
+    /// rate-limit bucket) is derived. Empty (the default) = trust nothing —
+    /// a client-supplied `X-Forwarded-For` never decides its own bucket.
+    /// CIDR ranges, e.g. `["10.0.0.0/8", "fd00::/8"]`.
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
 }
 
 /// Security posture section (Wave 7 P4, `[security]`): web-plane response
@@ -924,7 +931,7 @@ pub const CONFIG_SCHEMA: &[(&str, &[&str])] = &[
             "quota_bytes",
         ],
     ),
-    ("http", &["problem_json", "encrypt_cookies"]),
+    ("http", &["problem_json", "encrypt_cookies", "trusted_proxies"]),
     ("i18n", &["default", "paths"]),
     ("identity", &["memory", "time", "parallelism"]),
     ("limits", &["default_monthly_operations"]),
@@ -2518,6 +2525,38 @@ mod wave7_signed_url_ttl_config_tests {
         let typo = schema_violations("[security]\ncor = true\n");
         assert_eq!(typo.len(), 1, "{typo:?}");
         assert_eq!(typo[0].key, "security.cor");
+    }
+
+    /// F-3 Phase 1: `[http.trusted_proxies]` carries the proxy ranges whose
+    /// `X-Forwarded-For` hops may be trusted. Empty (the default) = trust
+    /// nothing. A typo is caught by the `GRAPH-CONFIG-SCHEMA` walk (the `[http]`
+    /// section is level 2, like `problem_json` — see the next test).
+    #[test]
+    fn trusted_proxies_section_parses_the_ranges() {
+        let cfg: PlatformConfig =
+            toml::from_str("[http]\ntrusted_proxies = [\"10.0.0.0/8\", \"fd00::/8\"]\n")
+                .expect("declared key parses");
+        assert_eq!(
+            cfg.http.trusted_proxies,
+            vec!["10.0.0.0/8".to_string(), "fd00::/8".to_string()]
+        );
+        assert!(
+            PlatformConfig::default().http.trusted_proxies.is_empty(),
+            "the default trusts nothing"
+        );
+    }
+
+    /// The `GRAPH-CONFIG-SCHEMA` walk declares `http` → `trusted_proxies`.
+    #[test]
+    fn trusted_proxies_keys_are_declared_in_the_config_schema() {
+        assert_eq!(
+            schema_violations("[http]\ntrusted_proxies = []\n"),
+            Vec::new(),
+            "the declared section is clean"
+        );
+        let typo = schema_violations("[http]\ntrusted_proxy = true\n");
+        assert_eq!(typo.len(), 1, "{typo:?}");
+        assert_eq!(typo[0].key, "http.trusted_proxy");
     }
 }
 

@@ -2,8 +2,10 @@
 
 > Evidence-backed from `LF-011-TO-LF-027-VERIFICATION.md` §4 and `P0-EXECUTION-REPORT.md` backlog rows 17–19.
 >
-> **Status (2026-10-19):** F-1 **implemented**, F-2 **implemented**, F-3 **open** (repro recorded, fix
-> pending approval). F-1 and F-2 shipped with executed evidence — see each section below.
+> **Status (2026-10-19):** F-1 **implemented**, F-2 **implemented**, F-3 **partially implemented**
+> (Phase 1 trusted-proxy walk + Phase 2 bucket eviction ship; Phase 3 — the shared store — is
+> proposal-only because it depends on whether the deployment scales horizontally). F-1, F-2 and
+> F-3 Phases 1–2 shipped with executed evidence — see each section below.
 
 ---
 
@@ -124,21 +126,68 @@ chain) and the outer layers keep their post-processing because the boundary sits
 
 ---
 
-## F-3 — Rate limiter: process-local, trusts first XFF, unbounded buckets (LF-026) — **OPEN**
+## F-3 — Rate limiter: process-local, trusts first XFF, unbounded buckets (LF-026) — **PARTIALLY FIXED**
 
-**Status:** the defect is recorded with an executed repro
-(`rate_limiter_gaps_first_xff_trusted_unbounded_no_shared`, `#[ignore]`d in `kelson-http`); the fix
-below is **proposal-only — not implemented** (needs approval).
+**Status:** **Phase 1 and Phase 2 are implemented** (trusted-proxy walk, bounded bucket map).
+**Phase 3 (the shared store) stays open** — it depends on a product decision (does the deployment
+scale horizontally?), so it is proposal-only below. The remaining gap is recorded with an executed
+repro (`rate_limiter_buckets_are_process_local`, `#[ignore]`d in `kelson-http`).
 
-### Current state
+### Was
 - `RateLimitState.buckets = Arc<Mutex<HashMap<String, BucketState>>>` — process-local.
 - `client_key` precedence: `x-rate-key` → bearer hash → **first X-Forwarded-For hop** → `global`.
 - No trusted-proxy config → spoofable when not behind a sanitizing proxy.
-- `HashMap` has no eviction — distinct keys grow forever (memory leak under attack/bug).
+- `HashMap` had no eviction — distinct keys grew forever (memory leak under attack/bug).
 
-### Proposed fix (phased, each independently shippable)
+### Phase 1 — Trusted-proxy config + XFF sanitisation — IMPLEMENTED
+1. **`[http.trusted_proxies]`** (`HttpSection`, `crates/application/configuration/src/lib.rs`):
+   ```toml
+   [http]
+   trusted_proxies = ["10.0.0.0/8", "172.16.0.0/12"]  # CIDR ranges (v4 + v6)
+   ```
+   - Empty (the default) = **trust nothing**: a client-supplied `X-Forwarded-For` never decides its
+     own rate-limit bucket (it falls through to the `global` bucket).
+   - Declared in the `GRAPH-CONFIG-SCHEMA` walk; a typo is reported as `http.trusted_proxy`.
 
-#### Phase 1 — Trusted-proxy config + XFF sanitisation
+2. **`TrustedProxies` / `TrustedProxyRange`** (`crates/web/http/src/middleware.rs`): a small CIDR
+   matcher (no new external dependency — the dependency budget is capped at 25, D-62). IPv4 and IPv6
+   ranges; an unparsable range **refuses the boot** (fail closed) instead of widening the trust
+   boundary.
+
+3. **`client_key_with_proxies`**: the chain is walked **right-to-left**; the first hop that is not a
+   trusted proxy is the client. `x-rate-key` and the bearer credential still outrank the chain.
+
+### Phase 2 — Bucket eviction (TTL + hard cap) — IMPLEMENTED
+- `RateLimitConfig` gained `bucket_ttl_secs` (default 900 s) and `max_buckets` (default 100 000).
+- On every request the map is swept: idle buckets (untouched for the TTL) are dropped — they would
+  have refilled to full capacity anyway, so only the clock resets — and, when the map is at its cap,
+  the **oldest** bucket is evicted before a new key is inserted. The map can no longer grow without
+  bound.
+
+### Executed evidence (kelson-http)
+- `client_key_ignores_forwarded_for_without_trusted_proxies` — no trusted proxies ⇒ the header is
+  ignored.
+- `client_key_walks_the_chain_past_trusted_proxies` — right-to-left walk, first untrusted hop wins.
+- `client_key_explicit_and_bearer_beat_the_chain` — the explicit key and the bearer still win.
+- `trusted_proxy_ranges_parse_and_match` — IPv4/IPv6 ranges, host routes, out-of-range and garbage
+  refused.
+- `rate_limit_buckets_are_capped` — 50 distinct keys against a cap of 4 ⇒ the map stays ≤ 4.
+- `rate_limit_buckets_are_swept_by_ttl` — an idle bucket is swept.
+- Config parity (kelson-config): `trusted_proxies_section_parses_the_ranges`,
+  `trusted_proxies_keys_are_declared_in_the_config_schema`.
+
+### Phase 3 — Shared store (Redis / DB) — PROPOSAL ONLY, NOT IMPLEMENTED
+The buckets are still process-local, so a horizontally scaled deployment multiplies the effective
+limit by the instance count. The remaining gap is recorded with an executed repro
+(`rate_limiter_buckets_are_process_local`, `#[ignore]`d).
+
+**This phase needs a product decision** (does the deployment scale horizontally?):
+- **No** → document the process-local semantics (one instance per deployment) and close F-3.
+- **Yes** → add a `RateLimitStore` trait to `kelson-http` with an in-memory implementation (today's
+  behaviour) and a Redis implementation (the workspace already depends on `redis`), then plumb
+  `Admission` to take `Option<Arc<dyn RateLimitStore>>`.
+
+#### Phase 1 — original proposal (implemented above, kept for the record)
 1. **Add `[http.trusted_proxies]`** (`HttpSection` in `crates/application/configuration/src/lib.rs`):
    ```toml
    [http]

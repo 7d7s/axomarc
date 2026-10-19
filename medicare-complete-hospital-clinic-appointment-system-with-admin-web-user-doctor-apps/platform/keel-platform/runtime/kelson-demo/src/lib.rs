@@ -984,6 +984,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let admission = kelson_http::Admission {
         maintenance: kelson_http::MaintenanceGuard::file(&root),
         cors: cors_cfg,
+        trusted_proxies: kelson_http::TrustedProxies::parse(
+            &platform_cfg.http.trusted_proxies,
+        )
+        .map_err(|e| format!("[http.trusted_proxies]: {e}"))?,
         ..Default::default()
     };
     let app = admission.apply(router);
