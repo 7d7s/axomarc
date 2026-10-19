@@ -969,8 +969,21 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Admission pipeline (S2 item 25): request-id -> trace -> body-limit ->
     // CORS -> maintenance -> rate-limit -> router.
+    let cors_cfg = platform_cfg
+        .security
+        .cors
+        .as_ref()
+        .map(|c| kelson_http::CorsConfig {
+            allow_origins: c.allow_origins.clone(),
+            allow_methods: c.allow_methods.clone(),
+            allow_headers: c.allow_headers.clone(),
+            max_age_secs: c.max_age_secs,
+            allow_credentials: c.allow_credentials,
+        })
+        .unwrap_or_default();
     let admission = kelson_http::Admission {
         maintenance: kelson_http::MaintenanceGuard::file(&root),
+        cors: cors_cfg,
         ..Default::default()
     };
     let app = admission.apply(router);

@@ -410,6 +410,11 @@ pub struct SecuritySection {
     /// `[security.csrf]` (Wave 7 P7): the web-plane CSRF skip paths.
     #[serde(default)]
     pub csrf: CsrfSection,
+    /// `[security.cors]` (Wave 8, F-1): CORS allowlist configuration. `None`
+    /// (section absent) keeps the framework default (permissive wildcard);
+    /// `Some` with an empty `allow_origins` disables CORS entirely.
+    #[serde(default)]
+    pub cors: Option<CorsSection>,
 }
 
 /// `[security.headers]` (Wave 7 P4, docs/19 "Security-headers middleware"):
@@ -510,6 +515,59 @@ pub struct CsrfSection {
     /// Set to true in production; false in dev for localhost HTTP.
     #[serde(default)]
     pub secure_cookie: bool,
+}
+
+/// `[security.cors]` (Wave 8, F-1): CORS allowlist configuration for the
+/// admission pipeline. Mirrors `kelson_http::CorsConfig` but with safe defaults.
+/// When absent, the admission pipeline defaults to a permissive wildcard (dev).
+/// When present with an empty `allow_origins`, CORS is effectively disabled.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CorsSection {
+    /// Allowed origins (e.g. `["https://app.example.com"]`). If `["*"]` is
+    /// present, all origins are allowed (but `allow_credentials` must be false).
+    /// Empty = CORS disabled (no `Access-Control-Allow-Origin` header).
+    #[serde(default)]
+    pub allow_origins: Vec<String>,
+    /// Allowed HTTP methods. Defaults to common REST methods.
+    #[serde(default = "default_cors_allow_methods")]
+    pub allow_methods: Vec<String>,
+    /// Allowed request headers. Defaults to common headers.
+    #[serde(default = "default_cors_allow_headers")]
+    pub allow_headers: Vec<String>,
+    /// Max age for preflight cache in seconds.
+    #[serde(default = "default_cors_max_age_secs")]
+    pub max_age_secs: u64,
+    /// Allow credentials (cookies, auth headers). Requires explicit origins
+    /// (not `*`). Default false — `*` + credentials is browser-invalid.
+    #[serde(default)]
+    pub allow_credentials: bool,
+}
+
+fn default_cors_allow_methods() -> Vec<String> {
+    vec![
+        "GET".into(),
+        "POST".into(),
+        "PUT".into(),
+        "PATCH".into(),
+        "DELETE".into(),
+        "OPTIONS".into(),
+    ]
+}
+
+fn default_cors_allow_headers() -> Vec<String> {
+    vec![
+        "content-type".into(),
+        "authorization".into(),
+        "x-request-id".into(),
+        "x-rate-key".into(),
+        "x-maintenance-secret".into(),
+        "x-tenant".into(),
+    ]
+}
+
+fn default_cors_max_age_secs() -> u64 {
+    3600
 }
 
 /// Identity section (Wave 7 P5, `[identity]`): argon2id work factors for
@@ -872,7 +930,7 @@ pub const CONFIG_SCHEMA: &[(&str, &[&str])] = &[
     ("limits", &["default_monthly_operations"]),
     ("mail", &["default", "mailers"]),
     ("otp", &["provider", "code_ttl_secs", "max_attempts"]),
-    ("security", &["headers", "signed_urls", "csrf"]),
+    ("security", &["headers", "signed_urls", "csrf", "cors"]),
     (
         "storage",
         &["endpoint", "bucket", "default", "disks"],
@@ -2407,6 +2465,59 @@ mod wave7_signed_url_ttl_config_tests {
         let typo = schema_violations("[security]\nsigned_url = true\n");
         assert_eq!(typo.len(), 1, "{typo:?}");
         assert_eq!(typo[0].key, "security.signed_url");
+    }
+
+    /// F-1: `[security.cors]` carries the CORS allowlist. The section is
+    /// optional (absent = framework default), a level-3 typo refuses the
+    /// typed parse, and the `GRAPH-CONFIG-SCHEMA` walk declares the key.
+    #[test]
+    fn cors_section_parses_allowlist_and_refuses_typos() {
+        let cfg: PlatformConfig = toml::from_str(
+            "[security.cors]\nallow_origins = [\"https://app.example.com\"]\nallow_credentials = true\n",
+        )
+        .expect("declared key parses");
+        let cors = cfg.security.cors.expect("the section is present");
+        assert_eq!(cors.allow_origins, vec!["https://app.example.com".to_string()]);
+        assert!(cors.allow_credentials);
+        assert_eq!(cors.max_age_secs, 3600, "the documented default");
+        assert_eq!(
+            cors.allow_methods,
+            vec!["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+            "the default method set"
+        );
+
+        let err = toml::from_str::<PlatformConfig>(
+            "[security.cors]\nallow_origin = [\"https://app.example.com\"]\n",
+        )
+        .expect_err("a level-3 typo refuses the typed parse");
+        assert!(
+            err.to_string().contains("unknown field"),
+            "deny_unknown_fields names the typo: {err}"
+        );
+    }
+
+    /// The CORS section is optional: an absent `[security.cors]` leaves it
+    /// `None` so the framework default (permissive wildcard) applies.
+    #[test]
+    fn cors_section_is_optional() {
+        let cfg: PlatformConfig = toml::from_str("").expect("empty config parses");
+        assert!(
+            cfg.security.cors.is_none(),
+            "an absent section keeps the framework default"
+        );
+    }
+
+    /// The `GRAPH-CONFIG-SCHEMA` walk declares `security` → `cors`.
+    #[test]
+    fn cors_keys_are_declared_in_the_config_schema() {
+        assert_eq!(
+            schema_violations("[security.cors]\nallow_origins = []\n"),
+            Vec::new(),
+            "the declared section is clean"
+        );
+        let typo = schema_violations("[security]\ncor = true\n");
+        assert_eq!(typo.len(), 1, "{typo:?}");
+        assert_eq!(typo[0].key, "security.cor");
     }
 }
 

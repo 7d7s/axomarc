@@ -195,7 +195,7 @@ kelson-mod-oauth2 = { path = "applications/oauth2" }
 axum = { version = "=0.8.6", features = ["ws", "multipart"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
 tower = "0.5"
-tower-http = { version = "0.7", features = ["trace", "cors"] }
+tower-http = { version = "0.7", features = ["trace", "cors", "catch-panic"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "mysql", "uuid", "time", "json", "macros", "migrate"] }

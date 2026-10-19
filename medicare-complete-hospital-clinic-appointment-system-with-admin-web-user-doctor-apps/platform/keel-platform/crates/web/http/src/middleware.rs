@@ -1,11 +1,13 @@
 //! Admission middleware pipeline (S2 item 25, L06 + L67).
 //!
 //! Fixed order (request flow):
-//!   request-id -> trace -> body-limit -> CORS -> maintenance -> rate-limit -> router
+//!   request-id -> trace -> body-limit -> CORS -> maintenance -> rate-limit -> catch-panic -> router
 //!
 //! axum runs the LAST-attached layer first, so Admission::apply attaches layers
 //! in reverse. Rejections keep the public Envelope shape; CORS preflight is
 //! answered before maintenance/rate-limit so preflights never get blocked.
+//! The catch-panic boundary is the INNERMOST layer: a handler panic becomes a
+//! redacted 500 envelope, and the outer layers still enrich that response.
 //! Rate limiting is a hand-rolled token bucket (no dependency, D-62).
 
 use std::collections::HashMap;
@@ -21,6 +23,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use kelson_foundation::{codes, AppError, ErrorCategory, RequestId, Retryability, Severity, TraceId};
 use serde::{Deserialize, Serialize};
+use tower_http::catch_panic::CatchPanicLayer;
 
 use crate::{Envelope, ErrorBody};
 
@@ -411,6 +414,10 @@ pub struct CorsConfig {
     pub allow_methods: Vec<String>,
     pub allow_headers: Vec<String>,
     pub max_age_secs: u64,
+    /// Allow credentials (cookies, auth headers). Requires explicit origins
+    /// (not `*`) — `*` + credentials is browser-invalid and tower-http
+    /// refuses that combination at layer construction.
+    pub allow_credentials: bool,
 }
 
 impl Default for CorsConfig {
@@ -434,6 +441,7 @@ impl Default for CorsConfig {
                 "x-tenant".into(),
             ],
             max_age_secs: 3600,
+            allow_credentials: false,
         }
     }
 }
@@ -441,6 +449,13 @@ impl Default for CorsConfig {
 impl CorsConfig {
     fn layer(&self) -> tower_http::cors::CorsLayer {
         use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, Any, CorsLayer};
+        // Fail fast at boot: `*` + credentials is browser-invalid, and
+        // tower-http would only refuse it at request time (as a panic in the
+        // request path). A deployment must learn about it at startup.
+        assert!(
+            !(self.allow_credentials && self.allow_origins.iter().any(|o| o == "*")),
+            "CORS: allow_credentials requires explicit origins, not the `*` wildcard"
+        );
         let origins: AllowOrigin = if self.allow_origins.iter().any(|o| o == "*") {
             Any.into()
         } else {
@@ -466,6 +481,7 @@ impl CorsConfig {
             .allow_methods(AllowMethods::list(methods))
             .allow_headers(AllowHeaders::list(headers))
             .max_age(std::time::Duration::from_secs(self.max_age_secs))
+            .allow_credentials(self.allow_credentials)
     }
 }
 
@@ -491,12 +507,37 @@ impl Default for Admission {
 
 impl Admission {
     /// Wrap a router with the fixed admission order (item 25).
+    ///
+    /// The panic boundary is the INNERMOST layer: a panic in a handler (or in
+    /// the router itself) is caught there and turned into a redacted 500
+    /// envelope, and the outer layers (request-id, trace, body-limit, CORS,
+    /// maintenance, rate-limit) still run their post-processing on that
+    /// response — so the caught 500 keeps its `x-request-id` / `x-trace-id`
+    /// headers and the CORS posture.
     pub fn apply(self, router: axum::Router) -> axum::Router {
         let rate_state = RateLimitState {
             config: self.rate_limit.clone(),
             buckets: Arc::new(Mutex::new(HashMap::new())),
         };
         router
+            // Panic boundary (innermost): catches a handler panic and answers a
+            // redacted 500 envelope. The panic payload never reaches the client.
+            .layer(CatchPanicLayer::custom(|err: Box<dyn std::any::Any + Send>| {
+                // Log the panic server-side (never the payload to the client).
+                let msg = err
+                    .downcast_ref::<String>()
+                    .map(|s| s.as_str())
+                    .or_else(|| err.downcast_ref::<&str>().copied())
+                    .unwrap_or("internal server error");
+                tracing::error!(panic = %msg, "handler panicked; answering 500");
+                let app_err = AppError::internal("internal server error");
+                let env = Envelope::<()>::error(&app_err);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(env),
+                )
+                    .into_response()
+            }))
             .layer(axum::middleware::from_fn_with_state(
                 rate_state,
                 rate_limit_fn,
@@ -722,5 +763,147 @@ mod tests {
         remove_down_file(&dir).unwrap();
         assert!(read_down_file(&dir).is_none());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ——— F-2: panic boundary ———
+
+    /// A panicking handler answers a redacted 500 envelope through the whole
+    /// admission chain — the request-id and trace-id headers still land on the
+    /// caught response, and the panic payload never reaches the client.
+    #[tokio::test]
+    async fn panicking_handler_answers_a_500_envelope() {
+        let router = Router::new().route("/boom", get(|| async {
+            panic!("handler exploded: super-secret-token-42");
+            "never reached"
+        }));
+        let res = Admission::default()
+            .apply(router)
+            .oneshot(req("GET", "/boom"))
+            .await
+            .expect("request serves");
+        assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            res.headers().contains_key("x-request-id"),
+            "the caught 500 still carries the admission request id"
+        );
+        assert!(
+            res.headers().contains_key("x-trace-id"),
+            "the caught 500 still carries the admission trace id"
+        );
+        let body = body_string(res.into_body()).await;
+        assert!(body.contains("KSN_INTERNAL"), "envelope: {body}");
+        assert!(
+            !body.contains("handler exploded") && !body.contains("super-secret-token-42"),
+            "the panic payload must never reach the client: {body}"
+        );
+    }
+
+    // ——— F-1: CORS allowlist ———
+
+    /// The default CORS posture is a permissive wildcard (dev default) and the
+    /// platform config can now override it with an allowlist.
+    #[test]
+    fn cors_default_is_a_permissive_wildcard() {
+        let cors = CorsConfig::default();
+        assert_eq!(cors.allow_origins, vec!["*".to_string()]);
+        assert!(!cors.allow_credentials, "wildcard + credentials is invalid");
+    }
+
+    /// An allowlist denies an origin that is not on it.
+    #[tokio::test]
+    async fn cors_allowlist_rejects_disallowed_origin() {
+        let router = Router::new().route("/", get(|| async { "ok" }));
+        let admission = Admission {
+            cors: CorsConfig {
+                allow_origins: vec!["https://app.example.com".into()],
+                ..CorsConfig::default()
+            },
+            ..Admission::default()
+        };
+        let mut r = req("GET", "/");
+        r.headers_mut()
+            .insert("origin", "https://evil.com".parse().unwrap());
+        let res = admission.apply(router).oneshot(r).await.unwrap();
+        assert!(!res
+            .headers()
+            .contains_key("access-control-allow-origin"));
+    }
+
+    /// An allowlist echoes the allowed origin.
+    #[tokio::test]
+    async fn cors_allowlist_allows_configured_origin() {
+        let router = Router::new().route("/", get(|| async { "ok" }));
+        let admission = Admission {
+            cors: CorsConfig {
+                allow_origins: vec!["https://app.example.com".into()],
+                ..CorsConfig::default()
+            },
+            ..Admission::default()
+        };
+        let mut r = req("GET", "/");
+        r.headers_mut()
+            .insert("origin", "https://app.example.com".parse().unwrap());
+        let res = admission.apply(router).oneshot(r).await.unwrap();
+        assert_eq!(
+            res.headers()
+                .get("access-control-allow-origin")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "https://app.example.com"
+        );
+        assert!(res.headers().contains_key("vary"), "Vary: Origin is set");
+    }
+
+    /// The wildcard posture still answers `*` and never sets credentials.
+    #[tokio::test]
+    async fn cors_wildcard_without_credentials() {
+        let router = Router::new().route("/", get(|| async { "ok" }));
+        let mut r = req("GET", "/");
+        r.headers_mut()
+            .insert("origin", "https://any-origin.com".parse().unwrap());
+        let res = Admission::default().apply(router).oneshot(r).await.unwrap();
+        assert_eq!(
+            res.headers()
+                .get("access-control-allow-origin")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "*"
+        );
+        assert!(!res
+            .headers()
+            .contains_key("access-control-allow-credentials"));
+    }
+
+    /// The deployment learns at boot, not at request time, that the
+    /// browser-invalid `*` + credentials combination is refused.
+    #[test]
+    #[should_panic(expected = "allow_credentials requires explicit origins")]
+    fn cors_wildcard_with_credentials_is_refused() {
+        let cors = CorsConfig {
+            allow_origins: vec!["*".into()],
+            allow_credentials: true,
+            ..CorsConfig::default()
+        };
+        let _ = cors.layer();
+    }
+
+    // ——— F-3: rate limiter gaps (recorded, fix pending) ———
+
+    /// Repro F-3: the client key trusts the first `X-Forwarded-For` hop with no
+    /// trusted-proxy configuration, the bucket map has no eviction, and the
+    /// buckets are process-local. Asserts the current behaviour; the fix adds
+    /// `[http.trusted_proxies]` + bucket eviction.
+    #[test]
+    #[ignore = "repro F-3: first XFF hop trusted, no eviction, no shared store"]
+    fn rate_limiter_gaps_first_xff_trusted_unbounded_no_shared() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "192.168.1.100, 10.0.0.5".parse().unwrap());
+        assert_eq!(
+            client_key(&headers),
+            "192.168.1.100",
+            "first XFF hop is trusted without a proxy-trust config"
+        );
     }
 }
