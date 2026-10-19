@@ -114,6 +114,27 @@ async fn pg_conformance_soft_delete_restore() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pg_conformance_update_on_a_trashed_row() {
+    let Some(pool) = pool().await else { return };
+    let store = PgModelStore::new(pool.clone());
+    conformance::update_on_a_trashed_row_writes_and_stays_trashed(&store, seed_tenant(&pool).await);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pg_conformance_delete_twice() {
+    let Some(pool) = pool().await else { return };
+    let store = PgModelStore::new(pool.clone());
+    conformance::delete_twice_is_a_noop_and_does_not_restamp(&store, seed_tenant(&pool).await);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pg_conformance_reads_and_batch_writes_honour_the_trash_veil() {
+    let Some(pool) = pool().await else { return };
+    let store = PgModelStore::new(pool.clone());
+    conformance::reads_and_batch_writes_honour_the_trash_veil(&store, seed_tenant(&pool).await);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pg_conformance_find_by_and_find_for_update() {
     let Some(pool) = pool().await else { return };
     let store = PgModelStore::new(pool.clone());
@@ -210,6 +231,33 @@ async fn mysql_conformance_soft_delete_restore() {
     let Some(pool) = mysql_pool().await else { return };
     let store = kelson_mysql::MySqlModelStore::new(pool.clone());
     conformance::soft_delete_restore(&store, mysql_seed_tenant(&pool).await);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mysql_conformance_update_on_a_trashed_row() {
+    let Some(pool) = mysql_pool().await else { return };
+    let store = kelson_mysql::MySqlModelStore::new(pool.clone());
+    conformance::update_on_a_trashed_row_writes_and_stays_trashed(
+        &store,
+        mysql_seed_tenant(&pool).await,
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mysql_conformance_delete_twice() {
+    let Some(pool) = mysql_pool().await else { return };
+    let store = kelson_mysql::MySqlModelStore::new(pool.clone());
+    conformance::delete_twice_is_a_noop_and_does_not_restamp(&store, mysql_seed_tenant(&pool).await);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mysql_conformance_reads_and_batch_writes_honour_the_trash_veil() {
+    let Some(pool) = mysql_pool().await else { return };
+    let store = kelson_mysql::MySqlModelStore::new(pool.clone());
+    conformance::reads_and_batch_writes_honour_the_trash_veil(
+        &store,
+        mysql_seed_tenant(&pool).await,
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -956,7 +956,23 @@ impl ModelRuntime {
         tenant: Option<TenantId>,
         changes: &Record,
     ) -> Result<Record, AppError> {
-        self.update_inner(store, id, tenant, changes)
+        self.update_inner(store, id, tenant, changes, false)
+            .map(|(record, _)| record)
+    }
+
+    /// [`Self::update`] on a TRASHED row — Laravel's
+    /// `Model::withTrashed()->update()`. The pre-read lifts the trash veil
+    /// (like [`Self::find_trashed`]), so the row is found and written; it
+    /// stays trashed. Without this explicit opt-in a trashed row reads as
+    /// "not found" and the write is refused.
+    pub fn update_with_trashed(
+        &self,
+        store: &dyn ModelStore,
+        id: Uuid,
+        tenant: Option<TenantId>,
+        changes: &Record,
+    ) -> Result<Record, AppError> {
+        self.update_inner(store, id, tenant, changes, true)
             .map(|(record, _)| record)
     }
 
@@ -971,7 +987,18 @@ impl ModelRuntime {
         tenant: Option<TenantId>,
         changes: &Record,
     ) -> Result<(Record, RecordChanges), AppError> {
-        self.update_inner(store, id, tenant, changes)
+        self.update_inner(store, id, tenant, changes, false)
+    }
+
+    /// [`Self::update_tracked`] on a TRASHED row (the `with_trashed` write).
+    pub fn update_tracked_with_trashed(
+        &self,
+        store: &dyn ModelStore,
+        id: Uuid,
+        tenant: Option<TenantId>,
+        changes: &Record,
+    ) -> Result<(Record, RecordChanges), AppError> {
+        self.update_inner(store, id, tenant, changes, true)
     }
 
     /// Shared write path for `update`/`update_tracked`. With a
@@ -982,15 +1009,27 @@ impl ModelRuntime {
     /// and a zero-row `update_filtered` means a concurrent writer won:
     /// [`AppError::stale_record`] (`Conflict` → 409 at the HTTP edge).
     /// Without a version column this is the plain read-merge-write path.
+    ///
+    /// `include_deleted` lifts the trash veil for the pre-read only: it is
+    /// the `with_trashed` opt-in (Laravel's `Model::withTrashed()`), so a
+    /// trashed row is found and written instead of reading as "not found".
     fn update_inner(
         &self,
         store: &dyn ModelStore,
         id: Uuid,
         tenant: Option<TenantId>,
         changes: &Record,
+        include_deleted: bool,
     ) -> Result<(Record, RecordChanges), AppError> {
         // Fetch first: validates existence and gives observers the merge.
-        let original = self.get(store, id, tenant)?;
+        // `include_deleted` is the `with_trashed` opt-in: the pre-read lifts
+        // the trash veil so a trashed row is written instead of refused.
+        let original = if include_deleted {
+            self.find_trashed(store, id, tenant)?
+                .ok_or_else(|| AppError::not_found(format!("{} {id}", self.model.name)))?
+        } else {
+            self.get(store, id, tenant)?
+        };
         let mut prepared = self.prepare_update(changes)?;
         let cas = if let Some(column) = &self.model.version_column {
             let expected = original.get(column).cloned().unwrap_or(Json::Null);
@@ -1016,7 +1055,7 @@ impl ModelRuntime {
         self.fire(ModelPhase::Updating, &pending);
 
         let stored = match cas {
-            Some((id_filter, version_filter)) => {
+            Some((id_filter, version_filter)) if !include_deleted => {
                 let rows = store.update_filtered(
                     &self.model,
                     tenant,
@@ -1031,9 +1070,17 @@ impl ModelRuntime {
                     .with_meta("model", &self.model.name)
                 })?
             }
-            None => store
-                .update(&self.model, id, tenant, &prepared)?
-                .ok_or_else(|| AppError::not_found(format!("{} {id}", self.model.name)))?,
+            _ => {
+                // The `with_trashed` write (or a model without a version
+                // column) goes through the by-id port write: the batch write
+                // veils trashed rows, so its CAS filter cannot reach one. The
+                // optimistic-lock check is therefore not atomic on this path
+                // (a trashed row is not a contention target, and Laravel's
+                // `withTrashed()->update()` has no equivalent check at all).
+                store
+                    .update(&self.model, id, tenant, &prepared)?
+                    .ok_or_else(|| AppError::not_found(format!("{} {id}", self.model.name)))?
+            }
         };
         self.fire(ModelPhase::Updated, &stored);
         Ok((
@@ -5707,6 +5754,49 @@ mod tests {
         let updated = rt.update(&store, rid(&row), None, &resubmitted).unwrap();
         assert_eq!(updated.get("version").and_then(Json::as_i64), Some(3));
         assert_eq!(updated.get("note").and_then(Json::as_str), Some("b"));
+    }
+
+    /// The `with_trashed` write (backlog #1) reaches a trashed row on a
+    /// VERSIONED model too: the CAS batch write veils trashed rows, so this
+    /// path writes by id and stamps the version itself. The default write
+    /// still refuses the trashed row (its pre-read is veiled).
+    #[test]
+    fn update_with_trashed_writes_a_versioned_trashed_row() {
+        let store = InMemoryModelStore::new();
+        let model = ModelDef::new("Ledger", "ledgers")
+            .field(FieldDef::new("id", FieldType::Uuid).required())
+            .field(FieldDef::new("note", FieldType::Text))
+            .field(FieldDef::new("version", FieldType::Int64))
+            .version_column("version");
+        let rt = ModelRuntime::new(model);
+        let row = rt.insert(&store, &note("a"), None).unwrap();
+        let id = rid(&row);
+        assert_eq!(row.get("version").and_then(Json::as_i64), Some(1));
+
+        rt.delete(&store, id, None).unwrap();
+
+        let mut changes = Record::new();
+        changes.insert("note".into(), Json::String("b".into()));
+        assert!(
+            rt.update(&store, id, None, &changes).is_err(),
+            "the default write reads the trashed row as 'not found'"
+        );
+
+        let updated = rt.update_with_trashed(&store, id, None, &changes).unwrap();
+        assert_eq!(updated.get("note").and_then(Json::as_str), Some("b"));
+        assert_eq!(
+            updated.get("version").and_then(Json::as_i64),
+            Some(2),
+            "the with_trashed write stamps the version"
+        );
+        let trashed = rt
+            .find_trashed(&store, id, None)
+            .unwrap()
+            .expect("the trashed row is still there");
+        assert!(
+            !trashed["deleted_at"].is_null(),
+            "a with_trashed write leaves the row trashed"
+        );
     }
 
     #[test]

@@ -366,12 +366,39 @@ adapters). **Fix applied** (user-approved): the COUNT branch now also runs when 
 COUNT runs only for explicitly capped fetches. Regression: conformance **13/13 MySQL**, twins **5/5**, matrix
 **15/15**, models **135/135**.
 
-### Recorded (not fixed, not yet a finding): raw `update` on a trashed row
+### Fixed (2026-10-19): raw `update` on a trashed row — backlog #1
 
-`ModelStore::update` docs are silent on the trash veil. The fake veils (the `!is_deleted` guard in
-`InMemoryModelStore::update`), while both SQL adapters update without a `deleted_at` predicate
+`ModelStore::update` docs were silent on the trash veil. The fake veiled (the `!is_deleted` guard in
+`InMemoryModelStore::update`), while both SQL adapters updated without a `deleted_at` predicate
 (`crates/data/postgres/src/modelstore.rs:540`, `crates/data/mysql/src/modelstore.rs:770`; the mysql readback
-repeats the write's tenant scope "plus the soft veil only" — i.e. also no veil). Live probe executed this
-batch: in-memory `None`, MySQL `Some`; PostgreSQL is source-identical but **NOT RUN** here. The runtime's own
-`update` pre-reads with the veil, so the divergence only reaches direct port users. Adjudication
-(align fake vs align adapters) is pending; no code changed.
+repeats the write's tenant scope "plus the soft veil only" — i.e. also no veil). The live probe executed
+this batch: in-memory `None`, MySQL `Some`; PostgreSQL is source-identical but **NOT RUN** here. The
+runtime's own `update` pre-reads with the veil, so the divergence only reached direct port users.
+
+**Adjudicated** (user decision, 2026-10-19): **align the fake to the adapters** — the port-level
+`update` is the raw write primitive and carries **no trash veil** (Laravel's instance-`save()`
+semantics): a trashed row IS written and stays trashed; `None` means "no such row", never "the row is
+trashed". The veil lives one layer up: `update_filtered` and `delete` skip trashed rows, and the
+runtime's `update` pre-reads with the veil, so the domain API refuses a trashed row unless the caller
+opts in.
+
+**Fixed**:
+- `crates/data/models/src/store.rs` — the fake's `update` dropped the `!is_deleted` guard; the fake's
+  soft `delete` gained its **own** `!is_deleted` guard (it delegates to `update`), so "delete twice"
+  stays `false` and `deleted_at` is not re-stamped — mirroring the SQL adapters' `WHERE deleted_at IS
+  NULL`. The trait docs now state the trash contract (the silence was the root cause).
+- `crates/data/models/src/runtime.rs` — new `update_with_trashed` / `update_tracked_with_trashed`: the
+  explicit `withTrashed()->update()` opt-in (the pre-read lifts the veil). `update` / `update_tracked`
+  are unchanged. On a **versioned** model the write goes by id (the CAS batch write veils trashed
+  rows), so the optimistic-lock check is not atomic on that path — documented in the code.
+- `crates/module/contract/src/lib.rs` — the module "update" op keeps the raw port semantics (no ABI
+  change); `UpdateArgs` documents them.
+- `crates/data/models/src/conformance.rs` — the whole trash contract is pinned in the shared suite
+  (run by pg, mysql and the in-memory fake): `update_on_a_trashed_row_writes_and_stays_trashed`,
+  `delete_twice_is_a_noop_and_does_not_restamp`,
+  `reads_and_batch_writes_honour_the_trash_veil`.
+
+**Evidence**: MySQL conformance **16/16** (13 existing + 3 new; the pg half self-skipped — PG is
+unusable on this host, `0xC0000142`, so the pg driver remains source-identical and **NOT RUN**),
+`kelson-models` **139/139** (135 + 3 new in-memory conformance cases + 1 runtime test for the
+versioned `with_trashed` write), MySQL `pg_integration` **25/25**, `kelson-demo --lib` **115/115**.

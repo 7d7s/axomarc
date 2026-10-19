@@ -171,6 +171,14 @@ pub struct InsertArgs {
     pub record: Record,
 }
 
+/// The module-facing update call.
+///
+/// **Trash semantics (adjudicated 2026-10-19, backlog #1)**: this is the raw
+/// port write and it carries **no trash veil** — a trashed row IS written and
+/// stays trashed (Laravel's instance-`save()` semantics). The op's own
+/// `include_deleted` counterpart is on the read side (`FindArgs`): a module
+/// that wants to see a trashed row asks for it on the read, and the write
+/// lands on the row the id names.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateArgs {
     pub model: ModelDef,

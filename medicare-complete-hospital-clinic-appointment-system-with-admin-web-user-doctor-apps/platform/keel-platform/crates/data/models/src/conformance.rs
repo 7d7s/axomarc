@@ -350,6 +350,205 @@ pub fn soft_delete_restore<S: ModelStore>(store: &S, tenant: TenantId) {
     );
 }
 
+/// **Trash contract (adjudicated 2026-10-19, backlog #1).** The port-level
+/// `update` is the raw write primitive and carries **no trash veil**: a
+/// trashed row IS written and stays trashed (Laravel's instance-`save()`
+/// semantics). The veil lives in the batch write, in `delete`, and in the
+/// runtime's pre-read — where a deliberate write to a trashed row is the
+/// explicit `with_trashed` opt-in.
+pub fn update_on_a_trashed_row_writes_and_stays_trashed<S: ModelStore>(
+    store: &S,
+    tenant: TenantId,
+) {
+    let runtime = ModelRuntime::new(appointments_model());
+    let patient = marker("trash-update-patient");
+    let slot = marker("trash-update-slot");
+
+    let stored = runtime
+        .insert(store, &booking(&patient, &slot, 1), Some(tenant))
+        .expect("insert succeeds");
+    let id = record_id(&stored);
+    assert!(
+        store
+            .delete(runtime.model(), id, Some(tenant))
+            .expect("delete succeeds"),
+        "the row is trashed"
+    );
+
+    // The raw port write reaches the trashed row.
+    let mut changes = Record::new();
+    changes.insert("status".into(), json!("cancelled"));
+    let written = store
+        .update(runtime.model(), id, Some(tenant), &changes)
+        .expect("update executes")
+        .expect("the trashed row is written (the port write has no trash veil)");
+    assert_eq!(
+        written["status"],
+        json!("cancelled"),
+        "the change lands on the trashed row"
+    );
+    assert!(
+        !written["deleted_at"].is_null(),
+        "the row is still trashed after the write"
+    );
+
+    // ... and it is still invisible to the default reads.
+    assert!(
+        runtime
+            .find(store, id, Some(tenant))
+            .expect("find succeeds")
+            .is_none(),
+        "the trashed row stays out of the default reads"
+    );
+    let trashed = runtime
+        .find_trashed(store, id, Some(tenant))
+        .expect("find_trashed succeeds")
+        .expect("the trashed row is visible with the veil lifted");
+    assert_eq!(trashed["status"], json!("cancelled"));
+
+    // The domain write refuses the trashed row by default ...
+    let mut changes = Record::new();
+    changes.insert("status".into(), json!("cancelled"));
+    assert!(
+        runtime
+            .update(store, id, Some(tenant), &changes)
+            .is_err(),
+        "the runtime's update reads the trashed row as 'not found'"
+    );
+
+    // ... unless the caller opts in explicitly (`withTrashed()->update()`).
+    let written = runtime
+        .update_with_trashed(store, id, Some(tenant), &changes)
+        .expect("the with_trashed write succeeds");
+    assert_eq!(written["status"], json!("cancelled"));
+    assert!(
+        !written["deleted_at"].is_null(),
+        "a with_trashed write leaves the row trashed"
+    );
+}
+
+/// **Trash contract:** deleting twice is a no-op — the second delete reports
+/// "nothing done" and does **not** re-stamp `deleted_at`.
+pub fn delete_twice_is_a_noop_and_does_not_restamp<S: ModelStore>(
+    store: &S,
+    tenant: TenantId,
+) {
+    let runtime = ModelRuntime::new(appointments_model());
+    let patient = marker("trash-delete-patient");
+    let slot = marker("trash-delete-slot");
+
+    let stored = runtime
+        .insert(store, &booking(&patient, &slot, 1), Some(tenant))
+        .expect("insert succeeds");
+    let id = record_id(&stored);
+
+    assert!(
+        store
+            .delete(runtime.model(), id, Some(tenant))
+            .expect("first delete succeeds"),
+        "the first delete trashes the row"
+    );
+    let trashed = runtime
+        .find_trashed(store, id, Some(tenant))
+        .expect("find_trashed succeeds")
+        .expect("the trashed row is visible with the veil lifted");
+    let stamp = trashed["deleted_at"].clone();
+
+    assert!(
+        !store
+            .delete(runtime.model(), id, Some(tenant))
+            .expect("second delete executes"),
+        "deleting an already-trashed row reports 'nothing done'"
+    );
+    let after = runtime
+        .find_trashed(store, id, Some(tenant))
+        .expect("find_trashed succeeds")
+        .expect("the trashed row is still there");
+    assert_eq!(
+        after["deleted_at"], stamp,
+        "the second delete does not re-stamp deleted_at"
+    );
+}
+
+/// **Trash contract:** the read paths and the batch write honour the veil —
+/// a trashed row is invisible to a default read, visible with
+/// `include_deleted`, and skipped by the batch write.
+pub fn reads_and_batch_writes_honour_the_trash_veil<S: ModelStore>(
+    store: &S,
+    tenant: TenantId,
+) {
+    let runtime = ModelRuntime::new(appointments_model());
+    let patient = marker("trash-read-patient");
+    let slot = marker("trash-read-slot");
+
+    let live = runtime
+        .insert(store, &booking(&patient, &slot, 1), Some(tenant))
+        .expect("insert succeeds");
+    let live_id = record_id(&live);
+    let trashed = runtime
+        .insert(store, &booking(&patient, &slot, 2), Some(tenant))
+        .expect("insert succeeds");
+    let trashed_id = record_id(&trashed);
+    assert!(
+        store
+            .delete(runtime.model(), trashed_id, Some(tenant))
+            .expect("delete succeeds"),
+        "one of the two rows is trashed"
+    );
+
+    // Default read: only the live row.
+    assert!(
+        runtime
+            .find(store, trashed_id, Some(tenant))
+            .expect("find succeeds")
+            .is_none(),
+        "a trashed row is invisible to the default read"
+    );
+    assert!(
+        runtime
+            .find(store, live_id, Some(tenant))
+            .expect("find succeeds")
+            .is_some(),
+        "the live row is visible"
+    );
+
+    // Veil lifted: the trashed row resolves.
+    assert!(
+        store
+            .find(runtime.model(), trashed_id, Some(tenant), true)
+            .expect("find with the veil lifted succeeds")
+            .is_some(),
+        "include_deleted resolves the trashed row"
+    );
+
+    // The batch write skips trashed rows.
+    let mut changes = Record::new();
+    changes.insert("status".into(), json!("cancelled"));
+    let updated = store
+        .update_filtered(
+            runtime.model(),
+            Some(tenant),
+            &[FieldFilter::eq("patient", patient.clone())],
+            &changes,
+        )
+        .expect("batch update executes");
+    assert_eq!(
+        updated.len(),
+        1,
+        "the batch write touches the live row only"
+    );
+    assert_eq!(updated[0]["id"], live["id"]);
+    let still = runtime
+        .find_trashed(store, trashed_id, Some(tenant))
+        .expect("find_trashed succeeds")
+        .expect("the trashed row is still there");
+    assert_eq!(
+        still["status"],
+        json!("booked"),
+        "the batch write left the trashed row alone"
+    );
+}
+
 /// `find_by` (first match, veil-aware) and `find_for_update` (row lock)
 /// agree with `find` on ids and trash posture.
 pub fn find_by_and_find_for_update<S: ModelStore>(store: &S, tenant: TenantId) {
@@ -1086,6 +1285,24 @@ mod tests {
     fn soft_delete_restore_matches_the_contract() {
         let store = InMemoryModelStore::new();
         soft_delete_restore(&*store, TenantId::new());
+    }
+
+    #[test]
+    fn update_on_a_trashed_row_matches_the_contract() {
+        let store = InMemoryModelStore::new();
+        update_on_a_trashed_row_writes_and_stays_trashed(&*store, TenantId::new());
+    }
+
+    #[test]
+    fn delete_twice_matches_the_contract() {
+        let store = InMemoryModelStore::new();
+        delete_twice_is_a_noop_and_does_not_restamp(&*store, TenantId::new());
+    }
+
+    #[test]
+    fn reads_and_batch_writes_match_the_contract() {
+        let store = InMemoryModelStore::new();
+        reads_and_batch_writes_honour_the_trash_veil(&*store, TenantId::new());
     }
 
     #[test]

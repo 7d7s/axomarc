@@ -228,6 +228,15 @@ pub trait ModelStore: Send + Sync {
     fn insert(&self, model: &ModelDef, record: &Record) -> Result<Record, AppError>;
 
     /// Apply `changes` to the row `id`; returns the updated row.
+    ///
+    /// **Trash contract (adjudicated 2026-10-19, backlog #1)**: this is the
+    /// raw write primitive and it carries **no trash veil** — a trashed row
+    /// IS updated and stays trashed (Laravel's instance-`save()` semantics).
+    /// `None` means "no such row" (wrong id, wrong tenant), never "the row is
+    /// trashed". The veil lives one layer up: [`ModelStore::update_filtered`]
+    /// and [`ModelStore::delete`] skip trashed rows, and the runtime's
+    /// `update` pre-reads with the veil so a trashed row reads as "not found"
+    /// unless the caller opts in with `update_with_trashed`.
     fn update(
         &self,
         model: &ModelDef,
@@ -1050,11 +1059,14 @@ impl ModelStore for InMemoryModelStore {
         changes: &Record,
     ) -> Result<Option<Record>, AppError> {
         self.with_table(&model.table, |rows| {
-            let Some(row) = rows.iter_mut().find(|r| {
-                uuid_str(r, "id") == Some(id)
-                    && tenant_matches(model, r, tenant)
-                    && !is_deleted(r)
-            }) else {
+            // No trash veil (backlog #1): the raw write primitive updates a
+            // trashed row too, and the row stays trashed — Laravel's
+            // instance-`save()` semantics. The veil lives in `delete` /
+            // `update_filtered` and in the runtime's pre-read.
+            let Some(row) = rows
+                .iter_mut()
+                .find(|r| uuid_str(r, "id") == Some(id) && tenant_matches(model, r, tenant))
+            else {
                 return Ok(None);
             };
             for (key, value) in changes {
@@ -1071,12 +1083,22 @@ impl ModelStore for InMemoryModelStore {
         tenant: Option<TenantId>,
     ) -> Result<bool, AppError> {
         if model.soft_deletes {
-            let updated = self.update(model, id, tenant, &{
-                let mut changes = Record::new();
-                changes.insert("deleted_at".into(), Json::String(now_rfc3339()));
-                changes
+            // The soft delete keeps its OWN trash guard (backlog #1): the raw
+            // `update` no longer veils, so without this guard a second delete
+            // would re-stamp `deleted_at` and report `true`. Mirrors the SQL
+            // adapters' `WHERE deleted_at IS NULL`.
+            let deleted = self.with_table(&model.table, |rows| {
+                let Some(row) = rows.iter_mut().find(|r| {
+                    uuid_str(r, "id") == Some(id)
+                        && tenant_matches(model, r, tenant)
+                        && !is_deleted(r)
+                }) else {
+                    return Ok(false);
+                };
+                row.insert("deleted_at".into(), Json::String(now_rfc3339()));
+                Ok(true)
             })?;
-            return Ok(updated.is_some());
+            return Ok(deleted);
         }
         self.with_table(&model.table, |rows| {
             let before = rows.len();
