@@ -504,6 +504,29 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Err(_) => None,
     };
 
+    // F-3 Phase 3: the rate-limit buckets are shared when Redis is reachable.
+    // The documented topology scales the API to several replicas, and an
+    // in-process bucket would make every replica enforce its own limit (the
+    // effective limit multiplies by the replica count). Same REDIS_URL gate as
+    // the cache: absent or unreachable -> the buckets stay in-process.
+    let rate_limit_store: Option<Arc<dyn kelson_http::RateLimitStore>> =
+        match std::env::var("REDIS_URL") {
+            Ok(url) => match kelson_ratelimit_redis::RedisRateLimiter::connect(&url, 900) {
+                Ok(store) => {
+                    tracing::info!("rate-limit backend: redis (shared across instances)");
+                    Some(Arc::new(store))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "redis unreachable; rate-limit buckets stay in-process"
+                    );
+                    None
+                }
+            },
+            Err(_) => None,
+        };
+
     // S10 B-17: process metrics registry (recording is unconditional; the
     // /metrics route checks the `app.metrics` flag before answering).
     let metrics = Arc::new(kelson_metrics::MetricsRegistry::new(4096));
@@ -988,6 +1011,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             &platform_cfg.http.trusted_proxies,
         )
         .map_err(|e| format!("[http.trusted_proxies]: {e}"))?,
+        rate_limit_store,
         ..Default::default()
     };
     let app = admission.apply(router);

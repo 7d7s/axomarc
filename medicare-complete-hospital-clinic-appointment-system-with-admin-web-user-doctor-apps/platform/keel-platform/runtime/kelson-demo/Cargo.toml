@@ -39,6 +39,7 @@ kelson-config = { workspace = true }
 kelson-caching = { workspace = true }
 kelson-cache-memory = { workspace = true }
 kelson-cache-redis = { workspace = true }
+kelson-ratelimit-redis = { workspace = true }
 kelson-metrics = { workspace = true }
 kelson-policy = { workspace = true }
 kelson-scope = { workspace = true }

@@ -329,6 +329,76 @@ impl Default for RateLimitConfig {
     }
 }
 
+/// The rate-limit backend (F-3 Phase 3).
+///
+/// The admission edge derives a client key and then asks the store for one
+/// token. The default implementation keeps the buckets **in the process**; a
+/// deployment that runs more than one web instance (the documented topology
+/// is an HPA with `minReplicas: 3`) must supply a **shared** store (see the
+/// `kelson-ratelimit-redis` adapter), or every instance enforces its own
+/// limit and the effective limit multiplies by the instance count.
+///
+/// `capacity` and `refill_per_sec` come from the caller, so the limit itself
+/// stays configured in one place ([`RateLimitConfig`]) no matter which
+/// backend is in play.
+pub trait RateLimitStore: Send + Sync {
+    /// Take one token for `key`; `false` means the client is over its limit.
+    fn take(&self, key: &str, capacity: u32, refill_per_sec: f64) -> bool;
+}
+
+/// The in-process store: one token bucket per client key, swept by TTL and
+/// hard-capped (F-3 Phase 2). This is the default backend — correct for a
+/// single-instance deployment.
+#[derive(Clone)]
+pub struct InMemoryRateLimitStore {
+    config: RateLimitConfig,
+    buckets: Arc<Mutex<HashMap<String, BucketState>>>,
+}
+
+impl InMemoryRateLimitStore {
+    pub fn new(config: RateLimitConfig) -> Self {
+        Self {
+            config,
+            buckets: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// The number of tracked buckets (test/diagnostic seam).
+    pub fn tracked(&self) -> usize {
+        self.buckets.lock().map(|b| b.len()).unwrap_or(0)
+    }
+}
+
+impl RateLimitStore for InMemoryRateLimitStore {
+    fn take(&self, key: &str, capacity: u32, refill_per_sec: f64) -> bool {
+        let now = Instant::now();
+        let mut buckets = self.buckets.lock().unwrap();
+        // TTL sweep: a bucket nobody touched for `bucket_ttl_secs` is dropped.
+        // It would have refilled to full capacity anyway, so dropping it only
+        // resets the clock — the client keeps its (full) allowance.
+        if self.config.bucket_ttl_secs > 0 {
+            let ttl = std::time::Duration::from_secs(self.config.bucket_ttl_secs);
+            buckets.retain(|_, b| now.duration_since(b.updated_at) < ttl);
+        }
+        // Hard cap: evict the oldest bucket so the map cannot grow without
+        // bound (distinct client keys are attacker-controlled).
+        if self.config.max_buckets > 0 && buckets.len() >= self.config.max_buckets {
+            if let Some(oldest) = buckets
+                .iter()
+                .min_by_key(|(_, b)| b.updated_at)
+                .map(|(k, _)| k.clone())
+            {
+                buckets.remove(&oldest);
+            }
+        }
+        let bucket = buckets.entry(key.to_string()).or_insert_with(|| BucketState {
+            tokens: capacity as f64,
+            updated_at: now,
+        });
+        take_from_bucket(bucket, now, capacity, refill_per_sec)
+    }
+}
+
 /// A CIDR range of trusted proxies (F-3 Phase 1). Parsed once at boot; an
 /// unparsable range refuses the boot (fail closed) instead of silently
 /// widening the trust boundary.
@@ -541,47 +611,13 @@ pub fn client_key_with_proxies(headers: &HeaderMap, trusted: &TrustedProxies) ->
 
 #[derive(Clone)]
 pub(crate) struct RateLimitState {
+    /// The bucket backend: in-process by default, shared when the deployment
+    /// supplies one (F-3 Phase 3).
+    store: Arc<dyn RateLimitStore>,
+    /// The limit itself (one source of truth for every backend).
     config: RateLimitConfig,
-    buckets: Arc<Mutex<HashMap<String, BucketState>>>,
     /// The trusted-proxy set the client key is derived against (F-3 Phase 1).
     trusted: TrustedProxies,
-}
-
-impl RateLimitState {
-    /// Take one token for `key`, sweeping idle buckets and evicting the oldest
-    /// bucket when the map is over its cap (F-3 Phase 2).
-    fn take(&self, key: &str) -> bool {
-        let now = Instant::now();
-        let mut buckets = self.buckets.lock().unwrap();
-        // TTL sweep: a bucket nobody touched for `bucket_ttl_secs` is dropped.
-        // It would have refilled to full capacity anyway, so dropping it only
-        // resets the clock — the client keeps its (full) allowance.
-        if self.config.bucket_ttl_secs > 0 {
-            let ttl = std::time::Duration::from_secs(self.config.bucket_ttl_secs);
-            buckets.retain(|_, b| now.duration_since(b.updated_at) < ttl);
-        }
-        // Hard cap: evict the oldest bucket so the map cannot grow without
-        // bound (distinct client keys are attacker-controlled).
-        if self.config.max_buckets > 0 && buckets.len() >= self.config.max_buckets {
-            if let Some(oldest) = buckets
-                .iter()
-                .min_by_key(|(_, b)| b.updated_at)
-                .map(|(k, _)| k.clone())
-            {
-                buckets.remove(&oldest);
-            }
-        }
-        let bucket = buckets.entry(key.to_string()).or_insert_with(|| BucketState {
-            tokens: self.config.capacity as f64,
-            updated_at: now,
-        });
-        take_from_bucket(
-            bucket,
-            now,
-            self.config.capacity,
-            self.config.refill_per_sec,
-        )
-    }
 }
 
 pub(crate) async fn rate_limit_fn(
@@ -594,7 +630,9 @@ pub(crate) async fn rate_limit_fn(
         return next.run(req).await;
     }
     let key = client_key_with_proxies(req.headers(), &state.trusted);
-    let allowed = state.take(&key);
+    let allowed = state
+        .store
+        .take(&key, state.config.capacity, state.config.refill_per_sec);
     if !allowed {
         let err = AppError::cap_limit("rate limit exceeded; retry shortly");
         let mut res = (
@@ -699,6 +737,12 @@ pub struct Admission {
     /// Proxy ranges whose `X-Forwarded-For` hops may be trusted when the
     /// client key is derived (F-3 Phase 1). Empty = trust nothing.
     pub trusted_proxies: TrustedProxies,
+    /// A **shared** rate-limit backend (F-3 Phase 3). `None` keeps the buckets
+    /// in-process — correct for a single-instance deployment, but a
+    /// multi-instance deployment (the documented topology scales the API from 3
+    /// to 20 replicas) must pass a shared store, or every instance enforces
+    /// its own limit and the effective limit multiplies by the instance count.
+    pub rate_limit_store: Option<Arc<dyn RateLimitStore>>,
 }
 
 impl Default for Admission {
@@ -709,6 +753,7 @@ impl Default for Admission {
             maintenance: MaintenanceGuard::off(),
             rate_limit: RateLimitConfig::default(),
             trusted_proxies: TrustedProxies::default(),
+            rate_limit_store: None,
         }
     }
 }
@@ -724,8 +769,11 @@ impl Admission {
     /// headers and the CORS posture.
     pub fn apply(self, router: axum::Router) -> axum::Router {
         let rate_state = RateLimitState {
+            store: self
+                .rate_limit_store
+                .clone()
+                .unwrap_or_else(|| Arc::new(InMemoryRateLimitStore::new(self.rate_limit.clone()))),
             config: self.rate_limit.clone(),
-            buckets: Arc::new(Mutex::new(HashMap::new())),
             trusted: self.trusted_proxies.clone(),
         };
         router
@@ -1104,36 +1152,44 @@ mod tests {
 
     // ——— F-3: rate limiter ———
 
-    /// F-3 Phase 1+2 are fixed (trusted-proxy walk, bounded bucket map). What
-    /// remains is the **shared store**: the buckets live in the process, so a
-    /// multi-instance deployment multiplies the effective limit by the instance
-    /// count. This repro records that gap; the fix is a `RateLimitStore` trait
-    /// with a Redis backend (design in `LF-011-TO-LF-027-FINDINGS-FIXES.md` §F-3).
-    #[test]
-    #[ignore = "repro F-3: the buckets are process-local; a shared store is still missing"]
-    fn rate_limiter_buckets_are_process_local() {
-        // The state is an in-process Arc<Mutex<HashMap<..>>> — two app
-        // instances would each keep their own buckets.
-        let state = RateLimitState {
-            config: RateLimitConfig::default(),
-            buckets: Arc::new(Mutex::new(HashMap::new())),
-            trusted: TrustedProxies::default(),
+    /// F-3 Phase 3: a **shared** store makes the limit one limit across
+    /// instances. Two admissions that share one store both go through it; two
+    /// default admissions keep their own in-process buckets (the
+    /// single-instance posture).
+    #[tokio::test]
+    async fn shared_rate_limit_store_is_shared_across_instances() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Clone, Default)]
+        struct CountingStore {
+            taken: Arc<AtomicUsize>,
+        }
+        impl RateLimitStore for CountingStore {
+            fn take(&self, _key: &str, _capacity: u32, _refill_per_sec: f64) -> bool {
+                self.taken.fetch_add(1, Ordering::SeqCst);
+                true
+            }
+        }
+
+        let store = Arc::new(CountingStore::default());
+        let admission = Admission {
+            rate_limit_store: Some(store.clone()),
+            ..Admission::default()
         };
-        state.take("client-a");
-        assert_eq!(state.buckets.lock().unwrap().len(), 1);
-        // A second "instance" (a second state) starts empty — the two do not
-        // share their buckets.
-        let other = RateLimitState {
-            config: RateLimitConfig::default(),
-            buckets: Arc::new(Mutex::new(HashMap::new())),
-            trusted: TrustedProxies::default(),
-        };
-        other.take("client-a");
-        assert_eq!(other.buckets.lock().unwrap().len(), 1);
+        let router = Router::new().route("/", get(|| async { "ok" }));
+        let app = admission.apply(router);
+
+        for _ in 0..2 {
+            let mut r = req("GET", "/");
+            r.headers_mut()
+                .insert("x-rate-key", "client-a".parse().unwrap());
+            let res = app.clone().oneshot(r).await.unwrap();
+            assert_eq!(res.status(), StatusCode::OK);
+        }
         assert_eq!(
-            state.buckets.lock().unwrap().len(),
-            1,
-            "each instance keeps its own bucket for the same client"
+            store.taken.load(Ordering::SeqCst),
+            2,
+            "both requests went through the shared store"
         );
     }
 
@@ -1212,48 +1268,39 @@ mod tests {
     /// evicts the oldest instead of growing without limit.
     #[test]
     fn rate_limit_buckets_are_capped() {
-        let state = RateLimitState {
-            config: RateLimitConfig {
-                capacity: 10,
-                refill_per_sec: 1.0,
-                bucket_ttl_secs: 0,
-                max_buckets: 4,
-            },
-            buckets: Arc::new(Mutex::new(HashMap::new())),
-            trusted: TrustedProxies::default(),
-        };
+        let store = InMemoryRateLimitStore::new(RateLimitConfig {
+            capacity: 10,
+            refill_per_sec: 1.0,
+            bucket_ttl_secs: 0,
+            max_buckets: 4,
+        });
         for i in 0..50 {
-            state.take(&format!("client-{i}"));
+            store.take(&format!("client-{i}"), 10, 1.0);
         }
-        let len = state.buckets.lock().unwrap().len();
-        assert!(len <= 4, "the bucket map stays capped: {len}");
+        assert!(store.tracked() <= 4, "the bucket map stays capped");
     }
 
     /// Idle buckets are swept by the TTL, so a burst of one-off client keys
     /// does not keep the map populated forever.
     #[test]
     fn rate_limit_buckets_are_swept_by_ttl() {
-        let state = RateLimitState {
-            config: RateLimitConfig {
-                capacity: 10,
-                refill_per_sec: 1.0,
-                bucket_ttl_secs: 1,
-                max_buckets: 0,
-            },
-            buckets: Arc::new(Mutex::new(HashMap::new())),
-            trusted: TrustedProxies::default(),
-        };
-        state.take("client-a");
-        assert_eq!(state.buckets.lock().unwrap().len(), 1);
+        let store = InMemoryRateLimitStore::new(RateLimitConfig {
+            capacity: 10,
+            refill_per_sec: 1.0,
+            bucket_ttl_secs: 1,
+            max_buckets: 0,
+        });
+        store.take("client-a", 10, 1.0);
+        assert_eq!(store.tracked(), 1);
         // Age the bucket past the TTL, then take a different key: the sweep
         // drops the idle one.
         {
-            let mut buckets = state.buckets.lock().unwrap();
+            let mut buckets = store.buckets.lock().unwrap();
             let b = buckets.get_mut("client-a").expect("bucket");
             b.updated_at = Instant::now() - std::time::Duration::from_secs(5);
         }
-        state.take("client-b");
-        let len = state.buckets.lock().unwrap().len();
+        store.take("client-b", 10, 1.0);
+        let len = store.tracked();
         assert_eq!(len, 1, "the idle bucket was swept");
     }
 }

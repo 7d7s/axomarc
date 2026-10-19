@@ -2,10 +2,10 @@
 
 > Evidence-backed from `LF-011-TO-LF-027-VERIFICATION.md` §4 and `P0-EXECUTION-REPORT.md` backlog rows 17–19.
 >
-> **Status (2026-10-19):** F-1 **implemented**, F-2 **implemented**, F-3 **partially implemented**
-> (Phase 1 trusted-proxy walk + Phase 2 bucket eviction ship; Phase 3 — the shared store — is
-> proposal-only because it depends on whether the deployment scales horizontally). F-1, F-2 and
-> F-3 Phases 1–2 shipped with executed evidence — see each section below.
+> **Status (2026-10-19):** F-1 **implemented**, F-2 **implemented**, F-3 **implemented** (all three
+> phases: the trusted-proxy client key, the bounded bucket map, and the shared Redis store — the
+> deployment docs make multi-instance the documented target, so the shared store was warranted).
+> F-1, F-2 and F-3 ship with executed evidence — see each section below.
 
 ---
 
@@ -126,12 +126,11 @@ chain) and the outer layers keep their post-processing because the boundary sits
 
 ---
 
-## F-3 — Rate limiter: process-local, trusts first XFF, unbounded buckets (LF-026) — **PARTIALLY FIXED**
+## F-3 — Rate limiter: process-local, trusts first XFF, unbounded buckets (LF-026) — **FIXED**
 
-**Status:** **Phase 1 and Phase 2 are implemented** (trusted-proxy walk, bounded bucket map).
-**Phase 3 (the shared store) stays open** — it depends on a product decision (does the deployment
-scale horizontally?), so it is proposal-only below. The remaining gap is recorded with an executed
-repro (`rate_limiter_buckets_are_process_local`, `#[ignore]`d in `kelson-http`).
+**Status:** all three phases are implemented (trusted-proxy walk, bounded bucket map, shared Redis
+store). The live-Redis integration tests skip on this host (no Redis), so the adapter's runtime
+behaviour against a real Redis remains **NOT RUN** here.
 
 ### Was
 - `RateLimitState.buckets = Arc<Mutex<HashMap<String, BucketState>>>` — process-local.
@@ -186,6 +185,42 @@ limit by the instance count. The remaining gap is recorded with an executed repr
 - **Yes** → add a `RateLimitStore` trait to `kelson-http` with an in-memory implementation (today's
   behaviour) and a Redis implementation (the workspace already depends on `redis`), then plumb
   `Admission` to take `Option<Arc<dyn RateLimitStore>>`.
+
+### Phase 3 — Shared store (Redis) — IMPLEMENTED
+
+**The question was answered by the deployment docs, not by taste**: `docs/21-DEPLOYMENT.md` §18.3
+describes the API as a Helm deployment with `replicaCount: 3` and an HPA from `minReplicas: 3` to
+`maxReplicas: 20`, with Redis in the stack. **Multi-instance is the documented target**, so the
+in-process bucket would have made the effective limit multiply by the replica count.
+
+**Implemented**:
+- **`RateLimitStore`** (`crates/web/http/src/middleware.rs`) — the token-bucket step behind a trait:
+  `fn take(&self, key: &str, capacity: u32, refill_per_sec: f64) -> bool`. The limit parameters come
+  from the caller, so the limit stays configured in one place (`RateLimitConfig`) whatever backend
+  is in play.
+- **`InMemoryRateLimitStore`** — the default backend (today's behaviour: TTL sweep + hard cap).
+- **`Admission.rate_limit_store: Option<Arc<dyn RateLimitStore>>`** — `None` keeps the buckets
+  in-process (single-instance posture).
+- **`adapters/kelson-ratelimit-redis`** (new crate) — the shared backend: one Redis hash per client
+  key (`tokens` + `ts`), the read→refill→take→write sequence **inside a Lua script** (atomic: two
+  instances cannot both take the last token), the `{rl}` hash tag (one cluster slot), a sanitized
+  client key (a hostile key cannot escape the namespace) and a TTL (Redis cleans the keyspace up).
+- **The demo** wires it from `REDIS_URL` — the same gate the Redis cache uses: present + reachable →
+  the shared store; absent or unreachable → the buckets stay in-process.
+- **Failure posture**: a Redis outage **fails open** (the request is allowed) with a loud
+  `tracing::error!` — a limiter outage must not become an API outage, and silent fail-open is how a
+  rate limit quietly stops existing.
+
+**Executed evidence**:
+- `kelson-http`: `shared_rate_limit_store_is_shared_across_instances` (two admissions sharing one
+  store both go through it), `rate_limit_buckets_are_capped`, `rate_limit_buckets_are_swept_by_ttl`.
+- `kelson-ratelimit-redis`: `key_is_namespaced_and_cluster_safe`,
+  `hostile_client_keys_cannot_escape_the_namespace`, `long_client_keys_are_truncated`,
+  `now_is_monotonic_seconds`.
+- The live-Redis tests (`shared_store_enforces_one_limit_across_instances`,
+  `a_different_client_has_its_own_bucket`) **skip on this host** (no Redis: `REDIS_URL` unset) —
+  the same posture the pg/mysql matrices use, so the adapter's runtime behaviour against a real
+  Redis is still **NOT RUN** here.
 
 #### Phase 1 — original proposal (implemented above, kept for the record)
 1. **Add `[http.trusted_proxies]`** (`HttpSection` in `crates/application/configuration/src/lib.rs`):

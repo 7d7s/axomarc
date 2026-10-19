@@ -1,0 +1,25 @@
+[package]
+name = "kelson-ratelimit-redis"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Kelson adapter: a shared Redis rate-limit store (atomic Lua token bucket) for the HTTP admission edge."
+
+[dependencies]
+kelson-http = { workspace = true }
+redis = { workspace = true }
+tracing = { workspace = true }
+
+[features]
+# Integration tests that require a live Redis (REDIS_URL); skipped otherwise.
+redis-tests = []
+
+[dev-dependencies]
+uuid = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

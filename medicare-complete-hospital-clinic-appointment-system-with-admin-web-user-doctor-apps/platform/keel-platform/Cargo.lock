@@ -1607,6 +1607,7 @@ dependencies = [
  "kelson-policy",
  "kelson-postgres",
  "kelson-query",
+ "kelson-ratelimit-redis",
  "kelson-realtime",
  "kelson-registry",
  "kelson-scheduling",
@@ -1810,6 +1811,7 @@ dependencies = [
  "tokio",
  "tower",
  "tower-http 0.7.1",
+ "tracing",
  "uuid",
 ]
 
@@ -1920,6 +1922,8 @@ dependencies = [
  "uuid",
 ]
 
+[[package]]
+[[package]]
 [[package]]
 name = "kelson-mod-oauth2"
 version = "0.1.0"
@@ -2146,6 +2150,16 @@ dependencies = [
  "serde",
  "serde_json",
  "time",
+ "uuid",
+]
+
+[[package]]
+name = "kelson-ratelimit-redis"
+version = "0.1.0"
+dependencies = [
+ "kelson-http",
+ "redis",
+ "tracing",
  "uuid",
 ]
 
@@ -4077,8 +4091,10 @@ checksum = "08a05a66a4fdd61cbbe0a1d755ffe0ca6aba159dd4820936a0ff8a8278245b9c"
 dependencies = [
  "bitflags",
  "bytes",
+ "futures-util",
  "http",
  "http-body",
+ "http-body-util",
  "percent-encoding",
  "pin-project-lite",
  "tower-layer",

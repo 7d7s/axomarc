@@ -40,8 +40,8 @@ pub use middleware_catalog::{
 };
 pub use middleware::{
     down_file_path, read_down_file, remove_down_file, trace_id_from_traceparent, write_down_file,
-    Admission, CorsConfig, MaintenanceFile, MaintenanceGuard, RateLimitConfig, TrustedProxies,
-    TrustedProxyRange, ADMISSION_BYPASS,
+    Admission, CorsConfig, InMemoryRateLimitStore, MaintenanceFile, MaintenanceGuard,
+    RateLimitConfig, RateLimitStore, TrustedProxies, TrustedProxyRange, ADMISSION_BYPASS,
 };
 pub use pagination::{Page, PageQuery, DEFAULT_PER_PAGE, MAX_PER_PAGE};
 pub use redirect::Redirect;
