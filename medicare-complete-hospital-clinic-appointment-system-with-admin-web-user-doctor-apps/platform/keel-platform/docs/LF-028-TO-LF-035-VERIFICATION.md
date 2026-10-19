@@ -210,25 +210,34 @@ cargo test -p kelson-demo --test http_integration -- route_file
 
 ## 4. Findings (new in this pass)
 
+- **F-6 (low, P1 item) — CSP nonce support was absent; now shipped.** The atlas expects a "CSP nonce";
+  `SecurityHeadersSection.csp` was a static string and no nonce was generated per response, so a
+  strict-CSP policy could not be used with the shipped header helper. **Fixed**: the configured CSP
+  may carry the literal `{nonce}` placeholder; the security-headers middleware generates a fresh
+  16-byte nonce per response, substitutes it into the CSP and hands the same value to the route
+  through the request extensions (`kelson_http::CspNonce`), so a template can stamp it on its
+  `<script>` tags. A CSP without the placeholder is emitted verbatim (unchanged behavior).
+  Executed: `csp_nonce_placeholder_is_substituted`, `csp_without_the_placeholder_is_verbatim`,
+  `nonce_is_fresh_and_long`, `middleware_shares_the_nonce_with_the_route`.
 - **F-4 (low) — the views crate points at a doc record that does not exist.** `kelson-views/src/lib.rs`
-  states the `@php`/`@while` divergence is "recorded in docs/18 among the parity divergences". There is
+  stated the `@php`/`@while` divergence is "recorded in docs/18 among the parity divergences". There is
   no such record: `platform/docs/18-USER-FLOWS.md` is a user-flows document, and
   `platform/docs/rust/` has no 18 either. The divergence is real and tested
-  (`superseded_directives_are_refused`), but the pointer is dead — either write the record or drop the
-  claim. Next: add the divergence to a parity record (or to `docs/CLAIMS-VERIFICATION-VERDICT.md`) and
-  repoint the comment.
+  (`superseded_directives_are_refused`), but the pointer is dead. **Fixed**: the views crate's five
+  references (lib.rs, parser.rs ×3, expr.rs) now point at the record that exists —
+  `LF-028-TO-LF-035-VERIFICATION.md` §3 (LF-029 → "Recorded divergences"), which is tracked; the
+  registry's `where`-regex pointer (constraint.rs) now points at the LF-013 record.
+  **Wider observation (not fixed, same class)**: ~20 further `docs/19 L###` references across the
+  crates cite a *wave spec* document (`19-GAP-ANALYSIS-LARAVEL.md`) that is not in this tree — a
+  doc-hygiene item beyond F-4's scope, since those cite a spec line rather than a parity record.
 - **F-5 (low) — the Livewire exclusion is attributed to a blueprint section that does not list it.**
   The atlas row (LF-032), `KELSON-VS-LARAVEL-COMPARISON.md` (lines 100, 249) and
   `CLAIMS-VERIFICATION-VERDICT.md` (line 186) all attribute the exclusion to "framework blueprint
   sec.26.3". The blueprint's own sec-26.3 permanent-exclusion list
-  (`docs/rust/13-FRAMEWORK-BLUEPRINT.md:118`) names facades/global helpers, the Collection wrapper,
-  MongoDB, JWT-by-default, Cashier/Socialite/Dusk/Valet core clones and the marketplace — **Livewire is
-  not in it**. The exclusion may still be the right call, but the citation does not support it. Next:
-  either add Livewire to the blueprint's exclusion list or re-cite the actual decision.
-- **F-6 (low, P1 item) — CORS-adjacent CSP nonce support is absent.** LF-030 expects a "CSP nonce";
-  `SecurityHeadersSection.csp` is a static string and no nonce is generated per response, so a
-  strict-CSP policy cannot be used with the shipped header helper. Next: either generate a per-request
-  nonce (and thread it into the CSP header) or record the CSP-nonce expectation as out of scope.
+  (`docs/rust/13-FRAMEWORK-BLUEPRINT.md:118`) named facades/global helpers, the Collection wrapper,
+  MongoDB, JWT-by-default, Cashier/Socialite/Dusk/Valet core clones and the marketplace — **Livewire
+  was not in it**. **Fixed**: the blueprint's exclusion list now names Livewire (with the reason), so
+  the three citations hold.
 
 ## 5. Corrections to revision 1 (the previous version of this file)
 

@@ -3,7 +3,7 @@
 //! Emits the serde-serializable AST from ast.rs. Fail-closed: every parse
 //! problem is a VIEW-PARSE error carrying the offending construct. The
 //! SUPERSEDED directives (@php, @while) are refused here and documented in
-//! docs/18 among the parity divergences.
+//! docs/LF-028-TO-LF-035-VERIFICATION.md §3 (LF-029, "Recorded divergences").
 
 use crate::ast::{AttrEntry, ForSpec, LoopVars, Node, Template};
 use crate::engine::{ViewError, VIEW_PARSE};
@@ -490,10 +490,12 @@ impl Parser {
                 }))
             }
             "php" => Err(self.err(
-                "@php is deliberately SUPERSEDED: arbitrary PHP eval is not implemented (docs/18)",
+                "@php is deliberately SUPERSEDED: arbitrary PHP eval is not implemented \
+                 (docs/LF-028-TO-LF-035-VERIFICATION.md)",
             )),
             "while" => Err(self.err(
-                "@while is deliberately SUPERSEDED: use @foreach over a range (docs/18)",
+                "@while is deliberately SUPERSEDED: use @foreach over a range \
+                 (docs/LF-028-TO-LF-035-VERIFICATION.md)",
             )),
             "endsection" | "show" | "endif" | "elseif" | "else" | "endunless" | "endisset"
             | "endempty" | "endauth" | "endguest" | "endenv" | "endproduction" | "endforeach"

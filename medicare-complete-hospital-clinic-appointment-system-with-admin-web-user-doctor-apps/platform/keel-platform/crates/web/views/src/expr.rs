@@ -4,7 +4,8 @@
 //! pipe-filters: {{ user.name | upper }} and {!! raw.html !!} for raw
 //! output. Conditions power @if / @unless / @includeWhen and friends with
 //! a tiny boolean grammar (&&, ||, !, comparisons). Both are hand-parsed -
-//! no PHP eval, no regex crate (deliberately SUPERSEDED per docs/18).
+//! no PHP eval, no regex crate (deliberately SUPERSEDED; recorded in
+//! docs/LF-028-TO-LF-035-VERIFICATION.md §3, LF-029).
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

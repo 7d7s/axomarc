@@ -9,7 +9,7 @@
 //!
 //! Matching is always full-string (anchored both ends). Arbitrary regex
 //! constraints stay deliberately SUPERSEDED — documented as the `where`-regex
-//! divergence in docs/18.
+//! divergence in docs/LF-011-TO-LF-027-VERIFICATION.md §3 (LF-013).
 
 use serde::{Deserialize, Serialize};
 

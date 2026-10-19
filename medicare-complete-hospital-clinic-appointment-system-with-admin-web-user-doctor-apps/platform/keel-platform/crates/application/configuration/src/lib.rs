@@ -444,7 +444,12 @@ pub struct SecurityHeadersSection {
     #[serde(default)]
     pub hsts_include_subdomains: bool,
     /// Baseline CSP, overridable per deployment (`default-src 'self'`);
-    /// an empty string omits the header.
+    /// an empty string omits the header. The literal `{nonce}` placeholder is
+    /// replaced with a **per-response** nonce (F-6) — a strict CSP needs
+    /// `script-src 'nonce-…'`, and a static value in the header is exactly
+    /// what a strict policy forbids. The same nonce reaches the view through
+    /// the request extensions (`kelson_http::CspNonce`), so the template can
+    /// stamp it on its `<script>` tags.
     #[serde(default = "default_csp")]
     pub csp: String,
     /// `Referrer-Policy` value; an empty string omits the header.

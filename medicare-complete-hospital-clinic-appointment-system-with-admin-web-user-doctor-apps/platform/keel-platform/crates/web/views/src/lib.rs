@@ -2,7 +2,8 @@
 //! with Blade-familiar syntax over a JSON context.
 //!
 //! Deliberately SUPERSEDES Blade's arbitrary PHP eval: @php and @while are
-//! refused at parse time (recorded in docs/18 among the parity divergences).
+//! refused at parse time (recorded among the parity divergences in
+//! `docs/LF-028-TO-LF-035-VERIFICATION.md` §3, LF-029).
 //!
 //! # Surface
 //! - {{ expr }} auto-escaped output; {!! expr !!} raw output. Expressions
