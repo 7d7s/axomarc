@@ -83,9 +83,27 @@
 ### 2.4 NOT RUN in this pass
 
 - Docker image build (no Docker daemon on this host) — gates LF-001 "clean-machine install".
-- PostgreSQL-backed tests (PG backend fork fails on this host, `0xC0000142`) — gates the pg half of the LF-007 matrix and the 13 `pg_conformance_*` cases (they self-skip; §2.5).
-- A built-from-scratch scaffolded project (`cargo check` on `kelson new` output).
-- Long-lived worker leak soak (no such test exists — see LF-004 / LF-010).
+  **Still open**: no daemon, no image.
+- PostgreSQL-backed tests — the pg halves now **run**, but the host's PostgreSQL is
+  **intermittent**: a backend dies with `0xC0000142` (STATUS_DLL_INIT_FAILED) on a new connection and
+  the postmaster shuts down, so a pg evidence run can be interrupted and must be re-run after a
+  restart. One full pg matrix run went 83 passed / 0 failed with the 16 `pg_conformance_*` cases real
+  (see `LF-036-TO-LF-048-VERIFICATION.md` §2.4).
+- A built-from-scratch scaffolded project (`cargo check` on the `kelson make:module` output) —
+  **CLOSED (2026-10-20), and it found a real defect**: the scaffolded crate **did not compile**. The
+  template's `authorize` still had the pre-`AuthzRequest` signature
+  (`&ExecutionPlan` where the trait now takes `&AuthzRequest<'_>`), so **every** module scaffolded by
+  `kelson make:module` failed to build — and nothing in the suite noticed, because the template is a
+  string in the codegen crate, not a compiled artifact. **Fixed** in both copies (the inline
+  `MODULE_LIB_TEMPLATE` in `tools/kelson-codegen/src/lib.rs` and `templates/project-template/src/lib.rs`).
+  **Evidence**: `kelson make:module scaffoldprobe` → `cargo check -p kelson-mod-scaffoldprobe
+  --all-targets` **finishes clean**, and the scaffolded crate's own test
+  (`tests::ping_executes_through_engine`) **passes**. The probe crate and the workspace-member entry
+  were removed afterwards (the root `Cargo.toml`/`Cargo.lock` were restored byte-for-byte).
+- ~~Long-lived worker leak soak~~ — **CLOSED (2026-10-20)**: `kelson-worker`'s
+  `a_long_lived_worker_leaks_nothing_between_jobs` (40 jobs, each in its own tenant with its own
+  payload marker and correlation, drained through the worker's real claim+dispatch pass) and
+  `a_long_lived_worker_never_crosses_tenants`.
 
 ### 2.5 LF-007 conformance batch (same day, later run)
 
@@ -154,7 +172,7 @@ regressions green. Full record: `P0-MYSQL-VERIFICATION-REPORT.md` §9.
   - 🟡 scaffold golden — renders + parses + graph-compiles verified; the generated project is **not built** (no `cargo check`).
   - ✅ generator path tests — codegen suite executed.
   - ✅ package/autoload tests — `packages.toml` index round trips; typo/absent index fail closed; wave8 console tests executed.
-  - 🟡 clean sample app build — `examples/minimal` golden executed (workspace sample compiles + invariants hold); a generated standalone project build is not executed.
+  - ✅ clean sample app build — `examples/minimal` golden executed (workspace sample compiles + invariants hold); **and the GENERATED module now builds**: `kelson make:module` → `cargo check` on the scaffolded crate is clean and its own test passes (this found and fixed a stale `authorize` signature in the template — see §2.4).
 - **Gaps**: build a scaffolded project in an automated test/job (scaffold → graph → compile); keep structure docs (`docs/00-ARCHITECTURE.md`) in sync with the manifest-discovery rule.
 
 ### LF-004 — Request lifecycle (P0) — PARTIALLY VERIFIED

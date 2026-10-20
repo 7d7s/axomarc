@@ -166,13 +166,18 @@ mod tests {
     use kelson_context::{PrincipalContext, TenantContext};
     use kelson_foundation::{PrincipalId, TenantId};
     use kelson_execution::{
-        AuthzDecision, AuthorizationPort, Engine, InMemoryBackend, InMemoryIdempotency,
+        AuthzDecision, AuthzRequest, AuthorizationPort, Engine, InMemoryBackend,
+        InMemoryIdempotency,
     };
     use time::OffsetDateTime;
 
     struct AllowAll;
     impl AuthorizationPort for AllowAll {
-        fn authorize(&self, _ctx: &ExecutionContext, _plan: &ExecutionPlan) -> AuthzDecision {
+        fn authorize(
+            &self,
+            _ctx: &ExecutionContext,
+            _request: &AuthzRequest<'_>,
+        ) -> AuthzDecision {
             AuthzDecision::allow("test.allow-all")
         }
     }
