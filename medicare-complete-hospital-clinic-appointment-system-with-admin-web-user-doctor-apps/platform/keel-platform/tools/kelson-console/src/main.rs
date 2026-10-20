@@ -2859,8 +2859,22 @@ async fn migrate_install() -> anyhow::Result<ExitCode> {
 
 // --------------------------------------------------------------------- seed
 
+/// The seed environment gate (F-7): seeders write real rows, so they run
+/// only in dev/test. Staging and production are refused — the same posture
+/// `migrate:refresh` applies, and the same one the truncate path enforces in
+/// the store. Without it, `kelson seed` against a production `DATABASE_URL`
+/// would populate a live database.
+fn refuse_seed_outside_dev_test(env: Environment) -> anyhow::Result<()> {
+    if env.is_prod() || matches!(env, Environment::Staging) {
+        anyhow::bail!("seed refuses to run outside dev/test");
+    }
+    Ok(())
+}
+
 async fn seed(only: Option<String>) -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
+    let cfg = load_config(&root)?;
+    refuse_seed_outside_dev_test(cfg.app.env)?;
     let pool = db_pool(&root).await?;
     let only: Option<Vec<String>> = only.map(|list| {
         list.split(',')
@@ -8263,6 +8277,30 @@ middleware = ["ghost"]
             Err(e) => eprintln!("skipping symlink assertion: {e}"),
         }
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// F-7: seeders write real rows, so they run only in dev/test. Staging
+    /// and production are refused (the atlas requires seeders to be explicitly
+    /// gated for production).
+    #[test]
+    fn seed_refuses_outside_dev_test() {
+        assert!(
+            refuse_seed_outside_dev_test(Environment::Dev).is_ok(),
+            "dev may seed"
+        );
+        assert!(
+            refuse_seed_outside_dev_test(Environment::Test).is_ok(),
+            "test may seed"
+        );
+        let staging = refuse_seed_outside_dev_test(Environment::Staging)
+            .expect_err("staging refuses");
+        assert!(
+            staging.to_string().contains("outside dev/test"),
+            "{staging}"
+        );
+        let prod =
+            refuse_seed_outside_dev_test(Environment::Prod).expect_err("production refuses");
+        assert!(prod.to_string().contains("outside dev/test"), "{prod}");
     }
 
     /// Wave 5 Phase 6: a real directory at the link path is refused even
