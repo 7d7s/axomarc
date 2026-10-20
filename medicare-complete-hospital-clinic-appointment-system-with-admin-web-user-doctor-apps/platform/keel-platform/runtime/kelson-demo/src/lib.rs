@@ -331,6 +331,13 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         None => None,
     };
 
+    // Optional read replica: a SECOND pool from `[database].read_replica_url`.
+    // The model store serves the reads that opt in (`ListOpts::replica_ok`)
+    // from it; every other read and every write stays on the primary. A
+    // missing or unreachable replica is NOT fatal — the store simply has no
+    // read pool and every read stays on the primary.
+    let read_pool: Option<kelson_mysql::DbPool> = read_replica_pool(&cfg).await;
+
     // Wave 1 route cache: a present artifact must match the current
     // manifests + middleware.toml (and module ABI) or boot is refused with a
     // pointer to `kelson route:cache`; absent artifact = live compile.
@@ -574,7 +581,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         root: root.clone(),
         disks: cfg.storage().clone(),
     }));
-    host.add_provider(Box::new(PersistenceProvider { pool: pool.clone() }));
+    host.add_provider(Box::new(PersistenceProvider {
+        pool: pool.clone(),
+        read_pool: read_pool.clone(),
+    }));
     if sessions_enabled {
         host.add_provider(Box::new(SessionsProvider {
             secret: secret.clone(),
@@ -1136,6 +1146,44 @@ enum ConfigPoll {
     Unchanged,
     Reloaded,
     Refused,
+}
+
+/// Open the optional **read-replica** pool from `[database].read_replica_url`.
+///
+/// The replica serves only the reads that opt in (`ListOpts::replica_ok`); every
+/// other read and every write stays on the primary. A missing replica, or one
+/// that cannot be reached, is **not fatal**: the store simply has no read pool
+/// and every read stays on the primary.
+async fn read_replica_pool(cfg: &kelson_config::FrozenConfig) -> Option<kelson_mysql::DbPool> {
+    let url = cfg
+        .read_replica_url()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())?;
+    let max_connections = cfg.database().map(|db| db.max_connections).unwrap_or(4);
+    let probe = match cfg.database_driver() {
+        kelson_config::DatabaseDriver::Postgres => tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            kelson_postgres::create_pool(url, max_connections),
+        )
+        .await
+        .map(|r| r.map(kelson_mysql::DbPool::Postgres)),
+        kelson_config::DatabaseDriver::MySql => tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            kelson_mysql::create_pool(url, max_connections),
+        )
+        .await
+        .map(|r| r.map(kelson_mysql::DbPool::MySql)),
+    };
+    match probe {
+        Ok(Ok(pool)) => Some(pool),
+        other => {
+            tracing::warn!(
+                error = ?other,
+                "read replica unreachable; reads stay on the primary"
+            );
+            None
+        }
+    }
 }
 
 /// The config module's runtime health check (Row 16 wiring): a refused
@@ -2343,6 +2391,54 @@ mod wave6_mail_tests {
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].subject, "Rendez-vous réservé pour Ada");
         assert_eq!(sent[0].to, vec!["ada@example.com".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod read_replica_tests {
+    use super::read_replica_pool;
+
+    fn config(replica: Option<&str>) -> kelson_config::FrozenConfig {
+        let mut cfg = kelson_config::PlatformConfig::default();
+        cfg.database = Some(kelson_config::DatabaseSection {
+            driver: kelson_config::DatabaseDriver::Postgres,
+            conn: kelson_config::DatabaseConfig {
+                url: "postgres://127.0.0.1:1/keel".to_string(),
+                max_connections: 2,
+                run_migrations: false,
+                required: false,
+            },
+            read_replica_url: replica.map(str::to_string),
+        });
+        cfg.freeze()
+    }
+
+    /// F-9 (read/write split): the replica is OPTIONAL. No
+    /// `[database].read_replica_url` means no replica pool at all — the
+    /// store behaves exactly as before, on the primary.
+    #[tokio::test]
+    async fn no_configured_replica_means_no_read_pool() {
+        let frozen = config(None);
+        assert!(frozen.read_replica_url().is_none());
+        assert!(
+            read_replica_pool(&frozen).await.is_none(),
+            "no replica configured -> no read pool"
+        );
+    }
+
+    /// An UNREACHABLE replica is not fatal: boot warns and every read stays
+    /// on the primary. A replica outage must not take the app down.
+    #[tokio::test]
+    async fn an_unreachable_replica_is_not_fatal() {
+        let frozen = config(Some("postgres://127.0.0.1:1/replica"));
+        assert_eq!(
+            frozen.read_replica_url(),
+            Some("postgres://127.0.0.1:1/replica")
+        );
+        assert!(
+            read_replica_pool(&frozen).await.is_none(),
+            "an unreachable replica degrades to the primary, it does not fail boot"
+        );
     }
 }
 

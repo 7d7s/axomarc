@@ -143,6 +143,12 @@ pub struct DatabaseSection {
     /// The connection settings themselves, flattened into `[database]`.
     #[serde(flatten)]
     pub conn: DatabaseConfig,
+    /// An optional **read replica** URL. When set, boot opens a second pool
+    /// and the model store serves the reads that opt in
+    /// (`ListOpts::replica_ok`) from it; every other read and every write
+    /// stays on the primary. Absent (the default) = one pool, no replica.
+    #[serde(default)]
+    pub read_replica_url: Option<String>,
 }
 
 impl std::ops::Deref for DatabaseSection {
@@ -924,7 +930,14 @@ pub const CONFIG_SCHEMA: &[(&str, &[&str])] = &[
     ),
     (
         "database",
-        &["driver", "url", "max_connections", "run_migrations", "required"],
+        &[
+            "driver",
+            "url",
+            "max_connections",
+            "run_migrations",
+            "required",
+            "read_replica_url",
+        ],
     ),
     (
         "files",
@@ -1137,6 +1150,7 @@ impl PlatformConfig {
                             run_migrations: true,
                             required: false,
                         },
+                        read_replica_url: None,
                     });
                 }
             }
@@ -1212,6 +1226,14 @@ impl PlatformConfig {
             .unwrap_or_default()
     }
 
+    /// `[database].read_replica_url` — the optional read replica. `None` when
+    /// the section is absent or no replica is configured (the default).
+    pub fn read_replica_url(&self) -> Option<&str> {
+        self.database
+            .as_ref()
+            .and_then(|section| section.read_replica_url.as_deref())
+    }
+
     /// Wave 4 Phase 5 (docs/19 L209, closes L02): freeze into the post-load
     /// handle boot consumes. After `freeze()` configuration cannot be
     /// mutated by type — `FrozenConfig` exposes getters only (no setters,
@@ -1240,6 +1262,12 @@ impl FrozenConfig {
     /// `[database].driver` (Wave 9 B-31): `postgres` when no section is set.
     pub fn database_driver(&self) -> DatabaseDriver {
         self.0.database_driver()
+    }
+
+    /// `[database].read_replica_url` — the optional read replica. `None` when
+    /// the section is absent or no replica is configured (the default).
+    pub fn read_replica_url(&self) -> Option<&str> {
+        self.0.database.as_ref().and_then(|s| s.read_replica_url.as_deref())
     }
 
     pub fn auth(&self) -> &AuthConfig {
@@ -1834,6 +1862,47 @@ mod phase5_config_schema_tests {
                 );
             }
         }
+    }
+
+    /// F-9 (read/write split): `[database].read_replica_url` is optional and
+    /// absent by default (one pool, no replica). When present it parses, is
+    /// reachable through the config accessor, and is a declared schema key —
+    /// an undeclared key would make the loader refuse the whole file.
+    #[test]
+    fn read_replica_url_is_optional_and_declared() {
+        let cfg: PlatformConfig =
+            toml::from_str("[database]\nurl = \"postgres://localhost/keel\"\n")
+                .expect("the default section parses");
+        assert_eq!(
+            cfg.read_replica_url(),
+            None,
+            "no replica is configured unless the key is present"
+        );
+
+        let cfg: PlatformConfig = toml::from_str(
+            "[database]\nurl = \"postgres://primary/keel\"\nread_replica_url = \"postgres://replica/keel\"\n",
+        )
+        .expect("the replica section parses");
+        assert_eq!(
+            cfg.read_replica_url(),
+            Some("postgres://replica/keel"),
+            "the replica URL is readable"
+        );
+        assert_eq!(cfg.database_url(), Some("postgres://primary/keel"));
+
+        assert!(
+            schema_violations(
+                "[database]\nurl = \"postgres://x\"\nread_replica_url = \"postgres://y\"\n"
+            )
+            .is_empty(),
+            "read_replica_url must be a declared key under [database]"
+        );
+        assert!(
+            CONFIG_SCHEMA
+                .iter()
+                .any(|(section, keys)| *section == "database" && keys.contains(&"read_replica_url")),
+            "the schema declares the read replica key"
+        );
     }
 
     /// Wave 9 B-31 (docs/19): `[database].driver` defaults to `postgres`

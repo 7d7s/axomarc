@@ -668,6 +668,10 @@ impl Provider for StorageProvider {
 /// boot (D-52).
 pub struct PersistenceProvider {
     pub pool: Option<DbPool>,
+    /// An optional read replica pool. When present, the model store serves
+    /// the reads that opt in (`ListOpts::replica_ok`) from it; every other
+    /// read and every write stays on the primary.
+    pub read_pool: Option<DbPool>,
 }
 
 impl Provider for PersistenceProvider {
@@ -680,9 +684,21 @@ impl Provider for PersistenceProvider {
     fn init(&self, r: &mut ServiceRegistry) -> Result<(), BootError> {
         let store: Arc<dyn kelson_models::ModelStore> = match &self.pool {
             Some(DbPool::Postgres(pool)) => {
-                Arc::new(kelson_postgres::PgModelStore::new(pool.clone()))
+                let store = kelson_postgres::PgModelStore::new(pool.clone());
+                let store = match &self.read_pool {
+                    Some(DbPool::Postgres(read)) => store.with_read_pool(read.clone()),
+                    _ => store,
+                };
+                Arc::new(store)
             }
-            Some(DbPool::MySql(pool)) => Arc::new(kelson_mysql::MySqlModelStore::new(pool.clone())),
+            Some(DbPool::MySql(pool)) => {
+                let store = kelson_mysql::MySqlModelStore::new(pool.clone());
+                let store = match &self.read_pool {
+                    Some(DbPool::MySql(read)) => store.with_read_pool(read.clone()),
+                    _ => store,
+                };
+                Arc::new(store)
+            }
             None => Arc::new(kelson_models::InMemoryModelStore::new()),
         };
         r.insert("model.store", Arc::new(kelson_models::ModelStoreRef(store)))?;

@@ -1211,6 +1211,7 @@ impl ModelRuntime {
                 sort: Some(("id".into(), false)),
                 limit: None,
                 after: None,
+                replica_ok: false,
             };
             let page = store.list(&self.model, tenant, &filters, &opts)?;
             if page.items.is_empty() {
@@ -3066,6 +3067,7 @@ fn fetch_keyed(
         sort: constraint.sort.clone(),
         limit: constraint.limit,
         after: None,
+        replica_ok: false,
     };
     let page = target.list_with_opts(store, tenant, filters, &opts)?;
     for row in page.items {

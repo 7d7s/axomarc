@@ -265,6 +265,13 @@ pub struct ListOpts {
     /// so a concurrent insert cannot shift the window the way OFFSET does.
     #[serde(default)]
     pub after: Option<Vec<(String, serde_json::Value)>>,
+    /// May this read be served by a **read replica**? `false` (the default)
+    /// keeps the read on the primary, so a read that follows a write still
+    /// sees it. Only a browse-style list — a view where a few milliseconds of
+    /// staleness are acceptable — should set this. Stores without a replica
+    /// ignore the flag.
+    #[serde(default)]
+    pub replica_ok: bool,
 }
 
 /// Semantic CRUD port over a [`ModelDef`].

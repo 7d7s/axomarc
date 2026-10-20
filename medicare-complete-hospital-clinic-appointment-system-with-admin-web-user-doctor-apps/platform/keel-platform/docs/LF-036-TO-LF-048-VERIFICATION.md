@@ -330,10 +330,10 @@ keyset (`keyset_row_comparison_shape`), locking
   by `morph_to_many_eager_loads_and_pivots_stay_type_pinned`. *(This finding originally said pivot
   writes were absent from the port; that was wrong: the API is at the runtime level, and it is
   tested.)*
-- **F-9 (low) — the transaction port had no deadlock retry and no read/write split — FIXED (retry);
-  the read/write split stays open.** `TransactionPort` exposed begin/commit/rollback with an isolation
-  level, but no retry concept, and every database failure came back as a blanket `retryable: true`, so
-  a caller could not tell a lost race from a unique violation. **Fixed**:
+- **F-9 (low) — the transaction port had no deadlock retry and no read/write split — FIXED (both).**
+  `TransactionPort` exposed begin/commit/rollback with an isolation level, but no retry concept, and
+  every database failure came back as a blanket `retryable: true`, so a caller could not tell a lost
+  race from a unique violation. **Fixed**:
   - `kelson-transaction` gained `TransactionFailure`, `classify_app_error` and
     `retry_transaction(attempts, delay, body)` — the body is the **whole** transaction, so a retry
     re-opens it and a partially applied body is rolled back with it. A fatal failure is returned
@@ -353,8 +353,28 @@ keyset (`keyset_row_comparison_shape`), locking
   - **Wire-contract note**: a database error inside a transaction now reports `retryable: false` unless
     it is a lost race. The flag used to be `true` for every persistence error, so a client that
     trusted it could retry a unique violation forever. Nothing in the workspace asserted the old value.
-  - **Still open**: the **read/write split** — one pool per fabric, so the deployment's read replica is
-    not wired into the store. That is a deployment-topology decision, not a port gap.
+  - **The read/write split — FIXED (opt-in, per call).** A store may now carry a second pool — the
+    **read replica** — beside the primary (`PgModelStore::with_read_pool`,
+    `MySqlModelStore::with_read_pool`). The split is **opt-in per read**, not a store-wide default:
+    only a read that sets `ListOpts::replica_ok` is served from the replica; **every other read and
+    every write stays on the primary**. That is the whole point of the split — a browse list may
+    tolerate replication lag, a read that follows a write may not — so the default is the safe one:
+    a store with a replica configured but no opt-in behaves exactly as before.
+    - **Configuration**: `[database].read_replica_url` (optional, absent by default; a declared
+      `CONFIG_SCHEMA` key). Boot opens a **second pool** from it and hands it to the store. An
+      unreachable replica is **not fatal** — boot warns and every read stays on the primary.
+    - **Consistency**: the page and its `total` count are taken from the **same** pool, so the two
+      agree even when the page came from the replica.
+    - **Evidence**: `replica_routing.rs` — `pg_a_replica_eligible_list_is_served_by_the_replica` and
+      `mysql_a_replica_eligible_list_is_served_by_the_replica`. The proof is observable through the
+      **data**: the replica points at a second schema/database that does not have the row the primary
+      has, so a list without the opt-in sees the row (the primary served it) and a list with the
+      opt-in does not (the replica served it). `kelson-config`:
+      `read_replica_url_is_optional_and_declared`. The boot wiring:
+      `no_configured_replica_means_no_read_pool` and `an_unreachable_replica_is_not_fatal` (a
+      replica outage degrades to the primary; it does not fail boot).
+    - **Still open (deployment, not code)**: the split is only useful once a deployment actually has a
+      replica (the architecture doc's V2 multi-region topology); V1 single-VPS tenants keep one pool.
 - **F-10 (low) — no cursor pagination — FIXED (the framework half).** The HTTP layer paginated by
   offset only; the builder carried the keyset predicate but nothing encoded or validated a cursor.
   **Fixed**, in three layers:
@@ -459,13 +479,15 @@ this pass makes are to the **parity documents** that carried unproven or stale c
 - **466 green results, 0 failures** in this pass, **plus 85 live-MySQL matrix results** (the mysql
   halves of the pg/mysql matrix, run against MySQL 8 on 127.0.0.1:3307), **15 live-Redis results**
   (against the Redis on 127.0.0.1:6379) and one live-PostgreSQL run of 83 (§2.4).
-- **The sharpest gaps**: the transaction port's **read/write split** (F-9 — a deployment-topology
-  decision) and the **application half** of cursor pagination (F-10 — a module must pick the anchor
-  column and issue `next_cursor`). Everything else is a P1 refinement or a deliberate exclusion.
+- **The sharpest gaps**: the **application half** of cursor pagination (F-10 — a module must pick the
+  anchor column and issue `next_cursor`) and the **deployment half** of the read replica (F-9 — the
+  split is implemented and proven, but no V1 deployment has a replica to point it at). Everything
+  else is a P1 refinement or a deliberate exclusion.
 - **Findings**: F-7 (un-gated `kelson seed` — **fixed**), F-8 (N+1 bound — **fixed**, both halves),
-  F-9 (no deadlock retry — **fixed**; read/write split — open), F-10 (no cursor pagination —
-  **fixed**, the framework half), F-11 (no raw-SQL escape hatch — deliberate), F-12 (batch-level
-  rollback only — expand/contract guidance **fixed**), **F-13** (the conformance suite violated the
-  schema's double-booking guard — **fixed**), **F-14** (the job-store cases raced on one shared
-  `jobs_queue` table — **fixed**).
+  F-9 (no deadlock retry **and** no read/write split — **fixed**, both halves), F-10 (no cursor
+  pagination — **fixed**, the framework half), F-11 (no raw-SQL escape hatch — deliberate), F-12
+  (batch-level rollback only — expand/contract guidance **fixed**), **F-13** (the conformance suite
+  violated the schema's double-booking guard — **fixed**), **F-14** (the job-store cases raced on
+  one shared `jobs_queue` table — **fixed**), **F-15** (the Redis session/cache/job adapters had no
+  live coverage — **fixed**).
 

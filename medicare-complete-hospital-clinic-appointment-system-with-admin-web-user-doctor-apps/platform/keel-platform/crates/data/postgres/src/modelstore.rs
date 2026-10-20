@@ -22,12 +22,36 @@ use uuid::Uuid;
 use crate::bridge::block_on;
 
 pub struct PgModelStore {
+    /// The primary pool: every write, and every read that must be fresh.
     pool: PgPool,
+    /// An optional **read replica** pool. It serves ONLY the reads that opt in
+    /// (`ListOpts::replica_ok`); without the opt-in every read stays on the
+    /// primary, so a read that follows a write still sees it.
+    read_pool: Option<PgPool>,
 }
 
 impl PgModelStore {
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            read_pool: None,
+        }
+    }
+
+    /// Attach a read replica. Reads that opt in (`ListOpts::replica_ok`) are
+    /// served from this pool; everything else stays on the primary.
+    pub fn with_read_pool(mut self, pool: PgPool) -> Self {
+        self.read_pool = Some(pool);
+        self
+    }
+
+    /// The pool a read must use: the replica only for an explicitly
+    /// replica-eligible read, the primary otherwise.
+    fn pool_for_read(&self, opts: &ListOpts) -> &PgPool {
+        match (&self.read_pool, opts.replica_ok) {
+            (Some(read), true) => read,
+            _ => &self.pool,
+        }
     }
 }
 
@@ -494,7 +518,9 @@ impl ModelStore for PgModelStore {
             }
         };
         let compiled = select.build()?;
-        let rows = fetch_rows(&self.pool, &compiled)?;
+        // The read may be served by the replica (only when the caller opted in).
+        let read_pool = self.pool_for_read(opts);
+        let rows = fetch_rows(read_pool, &compiled)?;
         let total = if opts.page.is_some() || opts.limit.is_some() {
             // COUNT over the same shape (rebuild without limit/offset). The
             // port pins `total` to the pre-limit match count: `ListOpts::limit`
@@ -514,7 +540,9 @@ impl ModelStore for PgModelStore {
                 count_select.sql
             );
             let params = count_select.params.clone();
-            let pool = self.pool.clone();
+            // The count is taken from the SAME pool as the page, so the two
+            // agree even when the page came from the replica.
+            let pool = read_pool.clone();
             let count: i64 = block_on(async move {
                 let query = bind_params(sqlx::query(&count_sql), &params);
                 let row: PgRow = query.fetch_one(&pool).await.map_err(pg)?;

@@ -84,8 +84,8 @@
 | LF-043 | Scopes, model events and observers | MATCH | with_scope + with_global_scope + ModelEvent | the scope/event cases in `kelson-models` (139) |
 | LF-044 | Eloquent collections and base collections | EXCLUDE BY DESIGN | Rust Vec/Iterator (no Collection wrapper — blueprint sec.26.3) | — (product decision) |
 | LF-045 | API Resources and serialization | MATCH | JSON:API resource + public_record + wire | `resource::tests::*` (7) + `jsonapi::tests::*` (13) |
-| LF-046 | Pagination | MATCH (offset only) | ListOpts + Page<T> + the keyset row predicate | `pagination::tests::*` (5) + `select::tests::keyset_row_comparison_shape`. **Gap**: no cursor pagination |
-| LF-047 | Redis and cache-backed data services | MATCH (partial) | CachePort + CacheService + the memory/Redis adapters (+ session, queue, rate-limit Redis adapters) | `kelson-cache-memory` 17 cases incl. `tenant_isolation_cache_entries_do_not_cross_tenants`, `cache_lock_acquire_release_and_exclusivity`; the live-Redis cases **skip** on this host |
+| LF-046 | Pagination | MATCH (offset + cursor) | ListOpts (incl. the keyset anchor `after`) + Page<T> + the keyset row predicate + `kelson_http::Cursor` (opaque, HMAC-signed, fail-closed) | `pagination::tests::*` (10) + `select::tests::keyset_row_comparison_shape` + the shared conformance case `cursor_keyset_pagination` (fake + pg + mysql). **Gap**: an application must still pick the anchor column and issue `next_cursor` |
+| LF-047 | Redis and cache-backed data services | MATCH | CachePort + CacheService + the memory/Redis adapters (+ session, queue/job, rate-limit Redis adapters) | `kelson-cache-memory` 17 cases incl. `tenant_isolation_cache_entries_do_not_cross_tenants`, `cache_lock_acquire_release_and_exclusivity`; **15 live-Redis cases** against the Redis on this host (5 cache, 4 durable job store, 4 session, 2 rate-limit) |
 | LF-048 | MongoDB integration | EXCLUDE BY DESIGN | Postgres + MySQL only (blueprint sec.26.3) | — (product decision) |
 
 > Evidence in full: `LF-036-TO-LF-048-VERIFICATION.md` (Revision 1 — 6 VERIFIED / 5 PARTIALLY VERIFIED /
