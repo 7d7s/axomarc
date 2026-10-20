@@ -131,6 +131,28 @@ impl ConfigSource for FileConfigSource {
 ///
 /// Readers deliberately do NOT take [`ConfigRuntime::commit`]: only the
 /// mutating paths serialize, so the reader guarantee above is preserved.
+///
+/// # Config isolation
+///
+/// The semantics this type guarantees (the LF-002 "config isolation" item,
+/// previously undefined):
+///
+/// 1. **The boot config is isolated from the runtime config.** The revision a
+///    boot consumer holds (the `PlatformConfig` the boot was given, frozen
+///    into a `FrozenConfig`) never changes: a reload swaps the runtime's
+///    *own* revision and leaves the boot copy exactly as it was. A value the
+///    boot already committed to — the pool, the secrets, the app name — can
+///    therefore not change behind the boot's back.
+/// 2. **Revisions are isolated from each other.** A snapshot is immutable and
+///    shared by `Arc`: a reader that took revision *N* keeps reading revision
+///    *N* even after the runtime swaps to *N+1*. A swap is atomic — a reader
+///    sees the whole old revision or the whole new one, never a mixture.
+/// 3. **A failed load changes nothing.** An invalid file leaves the current
+///    revision in place (the runtime keeps serving the last good one), and a
+///    refused load never reaches the subscribers.
+/// 4. **Loads are isolated from each other.** Two [`PlatformConfig::load`]
+///    calls share no state: no global config cache, no cross-talk between
+///    one app's config and another's.
 pub struct ConfigRuntime {
     source: Box<dyn ConfigSource>,
     current: RwLock<Arc<ConfigSnapshot>>,

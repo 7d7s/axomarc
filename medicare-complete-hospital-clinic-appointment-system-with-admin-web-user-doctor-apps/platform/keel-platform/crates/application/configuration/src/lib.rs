@@ -1864,6 +1864,143 @@ mod phase5_config_schema_tests {
         }
     }
 
+    /// Row 8: the **absent config** path, both shapes pinned.
+    ///
+    /// - `load(None)` — no config file at all: the compiled defaults plus the
+    ///   environment overlay, with no read attempted.
+    /// - `load(Some(missing))` — a path that is not there: **refused**, naming
+    ///   the file. A typo in `KEEL_CONFIG` must never silently boot the
+    ///   defaults (that would be a production app running with, say, the dev
+    ///   secret).
+    #[test]
+    fn an_absent_config_file_is_refused_and_no_file_loads_the_defaults() {
+        let defaults = PlatformConfig::load(None).expect("no file loads the defaults");
+        assert_eq!(
+            defaults.app.env,
+            Environment::Dev,
+            "the default environment is dev"
+        );
+        assert!(
+            defaults.database.is_none(),
+            "no database section by default"
+        );
+        assert!(
+            defaults.auth.jwt_secret.is_empty(),
+            "the default carries no secret (boot asserts it in prod)"
+        );
+
+        let missing = std::env::temp_dir().join(format!(
+            "kelson-absent-config-{}-{}.toml",
+            std::process::id(),
+            rand::random::<u32>()
+        ));
+        let err = PlatformConfig::load(Some(&missing)).expect_err("a missing file is refused");
+        assert_eq!(
+            err.category,
+            kelson_foundation::ErrorCategory::Validation,
+            "a missing config file is a validation error, not a silent default"
+        );
+        assert!(
+            err.public_message.contains("config read"),
+            "the error names the read that failed: {}",
+            err.public_message
+        );
+    }
+
+    /// Row 8: **config isolation**, part 1 — two loads share no state. A
+    /// second load never mutates the first, and the environment overlay is
+    /// applied per load (not cached globally).
+    #[test]
+    fn two_loads_are_isolated_from_each_other() {
+        let dir = std::env::temp_dir().join(format!(
+            "kelson-cfg-isolation-{}-{}",
+            std::process::id(),
+            rand::random::<u32>()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+
+        let a_path = dir.join("a.toml");
+        std::fs::write(
+            &a_path,
+            "[app]\nname = \"alpha\"\n\n[limits]\ndefault_monthly_operations = 10\n",
+        )
+        .expect("write a");
+        let b_path = dir.join("b.toml");
+        std::fs::write(
+            &b_path,
+            "[app]\nname = \"beta\"\n\n[limits]\ndefault_monthly_operations = 20\n",
+        )
+        .expect("write b");
+
+        let a = PlatformConfig::load(Some(&a_path)).expect("a loads");
+        let b = PlatformConfig::load(Some(&b_path)).expect("b loads");
+
+        assert_eq!(a.app.name, "alpha", "the first load is its own config");
+        assert_eq!(b.app.name, "beta", "the second load is its own config");
+        assert_eq!(a.limits.default_monthly_operations, 10);
+        assert_eq!(b.limits.default_monthly_operations, 20);
+        // The first load is untouched by the second.
+        assert_eq!(
+            a.limits.default_monthly_operations, 10,
+            "loading b did not mutate a"
+        );
+        assert_eq!(a.app.name, "alpha", "loading b did not mutate a's name");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Row 8: **config isolation**, part 2 — the BOOT config is isolated from
+    /// the hot-reloadable RUNTIME config.
+    ///
+    /// A reload swaps the runtime's revision and leaves the boot config
+    /// exactly as it was. Without that separation a reload could quietly
+    /// change a value the boot already committed to (the pool, the secrets,
+    /// the app name) behind the boot's back.
+    #[test]
+    fn the_boot_config_is_isolated_from_a_hot_reload() {
+        let dir = std::env::temp_dir().join(format!(
+            "kelson-cfg-boot-isolation-{}-{}",
+            std::process::id(),
+            rand::random::<u32>()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            "[app]\nname = \"isolation-probe\"\n\n[limits]\ndefault_monthly_operations = 100\n",
+        )
+        .expect("write the config");
+
+        let source = crate::runtime::FileConfigSource::new(&path);
+        let boot = PlatformConfig::load(Some(&path)).expect("the config loads");
+        let runtime = crate::runtime::ConfigRuntime::boot(source, boot)
+            .expect("the runtime boots");
+
+        // The boot revision, held the way a boot consumer holds it.
+        let boot_config = runtime.get().config.clone();
+
+        // A hot reload with a different value.
+        std::fs::write(
+            &path,
+            "[app]\nname = \"isolation-probe\"\n\n[limits]\ndefault_monthly_operations = 7\n",
+        )
+        .expect("rewrite the config");
+        runtime.reload().expect("the reload lands");
+
+        assert_eq!(
+            runtime.get().config.limits.default_monthly_operations,
+            7,
+            "the runtime swapped its revision"
+        );
+        assert_eq!(
+            boot_config.limits.default_monthly_operations,
+            100,
+            "the boot config is ISOLATED from the reload — it still holds the value the boot committed to"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// F-9 (read/write split): `[database].read_replica_url` is optional and
     /// absent by default (one pool, no replica). When present it parses, is
     /// reachable through the config accessor, and is a declared schema key —
