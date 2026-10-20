@@ -101,7 +101,7 @@ impl JwtHs256 {
 // ------------------------------------------------------------- base64url
 
 /// URL-safe base64 without padding (RFC 4648 §5), matching kelson-tokens.
-fn b64url_encode(bytes: &[u8]) -> String {
+pub(crate) fn b64url_encode(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
@@ -135,7 +135,7 @@ fn b64url_val(c: u8) -> Option<u32> {
 /// Decode URL-safe base64 (no padding accepted). Per RFC 7515 any non-zero
 /// leftover bits in the final group are ignored (interop-tolerant); invalid
 /// characters or padding reject.
-fn b64url_decode(s: &str) -> Option<Vec<u8>> {
+pub(crate) fn b64url_decode(s: &str) -> Option<Vec<u8>> {
     let bytes = s.as_bytes();
     if bytes.contains(&b'=') {
         return None;

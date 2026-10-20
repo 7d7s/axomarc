@@ -24,6 +24,61 @@ use crate::{FieldType, ModelDef};
 /// One persisted row, keyed by column name.
 pub type Record = serde_json::Map<String, Json>;
 
+/// Build the keyset predicate for a **cursor** page: the `(column, value)` pairs
+/// the page starts *after*, as the query builder's row comparison
+/// (`(col1, col2) > ($1, $2)`).
+///
+/// The columns are validated against the model — an unknown column or a
+/// value that does not fit the field is a validation error, never a silently
+/// ignored anchor.
+pub fn keyset_predicate(
+    model: &ModelDef,
+    after: &[(String, Json)],
+) -> Result<(Vec<kelson_query::Ident>, Vec<kelson_query::Value>), AppError> {
+    if after.is_empty() {
+        return Err(AppError::validation(
+            "a keyset anchor needs at least one column",
+        ));
+    }
+    let mut columns = Vec::with_capacity(after.len());
+    let mut values = Vec::with_capacity(after.len());
+    for (name, value) in after {
+        let field = model.field_named(name).ok_or_else(|| {
+            AppError::validation(format!("{name} is not a field of {}", model.name))
+        })?;
+        columns.push(kelson_query::Ident::new(name.clone())?);
+        values.push(crate::runtime::json_to_bind(value, field)?);
+    }
+    Ok((columns, values))
+}
+
+/// Does `value` sort strictly **after** `anchor`?
+///
+/// Numbers compare numerically, strings lexicographically (RFC 3339 timestamps
+/// therefore sort chronologically). A null anchor or a null value is never
+/// "after" — a null-sorted column does not participate in cursor mode, and the
+/// page is expected to be driven by a non-null sort column.
+pub fn json_sorts_after(value: &Json, anchor: &Json) -> bool {
+    match (value, anchor) {
+        (Json::Number(a), Json::Number(b)) => a.as_f64().unwrap_or(f64::NEG_INFINITY)
+            > b.as_f64().unwrap_or(f64::NEG_INFINITY),
+        (Json::String(a), Json::String(b)) => a > b,
+        _ => false,
+    }
+}
+
+/// Does `value` sort strictly **before** `anchor`? The mirror of
+/// [`json_sorts_after`], used for a descending sort (where the window after
+/// the anchor is the rows with a *smaller* value).
+pub fn json_sorts_before(value: &Json, anchor: &Json) -> bool {
+    match (value, anchor) {
+        (Json::Number(a), Json::Number(b)) => a.as_f64().unwrap_or(f64::NEG_INFINITY)
+            < b.as_f64().unwrap_or(f64::NEG_INFINITY),
+        (Json::String(a), Json::String(b)) => a < b,
+        _ => false,
+    }
+}
+
 /// Comparison operators for semantic filters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FilterOp {
@@ -204,6 +259,12 @@ pub struct ListOpts {
     /// Row cap — the eager "subquery limit". Mutually exclusive with
     /// `page` (validated by [`validate_list_opts`]).
     pub limit: Option<u32>,
+    /// Keyset anchor for **cursor** pagination: the `(column, value)` pairs the
+    /// page starts *after*, in the same order as `sort`. `None` = offset
+    /// pagination. The stores render it as a row comparison (`(col) > ($1)`),
+    /// so a concurrent insert cannot shift the window the way OFFSET does.
+    #[serde(default)]
+    pub after: Option<Vec<(String, serde_json::Value)>>,
 }
 
 /// Semantic CRUD port over a [`ModelDef`].
@@ -994,10 +1055,35 @@ impl ModelStore for InMemoryModelStore {
                 .map(Self::clone_row)
                 .collect())
         })?;
-        let total = matched.len() as u64;
         if let Some((field, desc)) = &opts.sort {
             sort_records(&mut matched, field, *desc);
         }
+        // Cursor (keyset) mode: drop everything at or before the anchor, so a
+        // concurrent insert cannot shift the window the way OFFSET does. The
+        // filter runs BEFORE the count, so `total` is the size of the window
+        // that is left, not of the whole table.
+        if let Some(after) = &opts.after {
+            // Validate the anchor against the model the same way the SQL
+            // backends do: an unknown column or a value that does not fit the
+            // field is a validation error, never a silently empty page.
+            let _ = keyset_predicate(model, after)?;
+            let (column, anchor) = after.first().ok_or_else(|| {
+                AppError::validation("a keyset anchor needs at least one column")
+            })?;
+            let desc = opts.sort.as_ref().map(|(_, d)| *d).unwrap_or(false);
+            let anchor = anchor.clone();
+            matched.retain(|row| {
+                let Some(value) = row.get(column) else {
+                    return false;
+                };
+                if desc {
+                    json_sorts_before(value, &anchor)
+                } else {
+                    json_sorts_after(value, &anchor)
+                }
+            });
+        }
+        let total = matched.len() as u64;
         if let Some(n) = opts.limit {
             matched.truncate(n as usize);
         }

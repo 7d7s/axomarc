@@ -43,7 +43,7 @@ pub use middleware::{
     Admission, CorsConfig, InMemoryRateLimitStore, MaintenanceFile, MaintenanceGuard,
     RateLimitConfig, RateLimitStore, TrustedProxies, TrustedProxyRange, ADMISSION_BYPASS,
 };
-pub use pagination::{Page, PageQuery, DEFAULT_PER_PAGE, MAX_PER_PAGE};
+pub use pagination::{Cursor, Page, PageQuery, DEFAULT_PER_PAGE, MAX_PER_PAGE};
 pub use redirect::Redirect;
 pub use request::{accepts, bearer_token, client_ip, expects_json, fingerprint};
 pub use resource::{Fields, Resource, ResourceCollection};

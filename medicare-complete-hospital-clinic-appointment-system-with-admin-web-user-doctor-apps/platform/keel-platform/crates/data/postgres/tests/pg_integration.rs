@@ -20,6 +20,14 @@ use kelson_event::OutboxStore;
 use kelson_session::{SessionPolicy, SessionStore};
 use time::OffsetDateTime;
 
+/// The job-store cases share ONE `jobs_queue` table. The unscoped-claim cases
+/// wipe the pending/running rows first so their claim is deterministic — which
+/// would eat a concurrent case's job, and a global claim could steal one
+/// instead. They take this lock so the queue is only ever mutated by one case
+/// at a time. (The tenant-scoped case needs it for the same reason: its job
+/// must not be wiped or claimed by an unscoped case running beside it.)
+static JOBS_QUEUE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn pool() -> Option<PgPool> {
     let url = match std::env::var("DATABASE_URL") {
         Ok(url) if !url.is_empty() => url,
@@ -1150,6 +1158,7 @@ async fn mysql_job_store_claim_completes_and_fails_with_skip_locked() {
     use kelson_jobs::{JobStatus, JobStore, JobStoreAdmin};
 
     let Some(pool) = mysql_pool().await else { return };
+    let _guard = JOBS_QUEUE_LOCK.lock().await;
     let store = kelson_mysql::MySqlJobStore::new(pool.clone());
 
     // `claim` takes the globally first pending row (`ORDER BY priority DESC,
@@ -1246,6 +1255,7 @@ async fn mysql_job_store_recovers_orphaned_running_job_after_worker_crash() {
     use kelson_jobs::{build_from_def, JobDef, JobStatus, JobStore, JobStoreAdmin};
 
     let Some(pool) = mysql_pool().await else { return };
+    let _guard = JOBS_QUEUE_LOCK.lock().await;
     let store = kelson_mysql::MySqlJobStore::new(pool.clone());
 
     sqlx::query("DELETE FROM jobs_queue WHERE status IN ('pending', 'running')")
@@ -1345,6 +1355,7 @@ async fn mysql_job_store_fences_a_deferred_job_reclaimed_at_the_same_epoch() {
     use kelson_jobs::{build_from_def, JobDef, JobStatus, JobStore, JobStoreAdmin};
 
     let Some(pool) = mysql_pool().await else { return };
+    let _guard = JOBS_QUEUE_LOCK.lock().await;
     let store = kelson_mysql::MySqlJobStore::new(pool.clone());
 
     sqlx::query("DELETE FROM jobs_queue WHERE status IN ('pending', 'running')")
@@ -1417,6 +1428,7 @@ async fn mysql_job_store_dead_letters_an_exhausted_orphan_claim() {
     use kelson_jobs::{build_from_def, JobDef, JobStatus, JobStore, JobStoreAdmin};
 
     let Some(pool) = mysql_pool().await else { return };
+    let _guard = JOBS_QUEUE_LOCK.lock().await;
     let store = kelson_mysql::MySqlJobStore::new(pool.clone());
 
     sqlx::query("DELETE FROM jobs_queue WHERE status IN ('pending', 'running')")
@@ -1479,6 +1491,7 @@ async fn mysql_job_store_tenant_scoped_queue_is_usable_and_isolated() {
     use kelson_jobs::{build_from_def, JobDef, JobStatus, JobStoreAdmin, TenantJobStore};
 
     let Some(pool) = mysql_pool().await else { return };
+    let _guard = JOBS_QUEUE_LOCK.lock().await;
     let store = kelson_mysql::MySqlJobStore::new(pool.clone());
     let tenant_a = TenantId::from_uuid(uuid::Uuid::now_v7());
     let tenant_b = TenantId::from_uuid(uuid::Uuid::now_v7());
@@ -1564,6 +1577,7 @@ async fn pg_job_store_recovers_orphaned_running_job_after_worker_crash() {
     use kelson_jobs::{build_from_def, JobDef, JobStatus, JobStore, JobStoreAdmin};
 
     let Some(pool) = pool().await else { return };
+    let _guard = JOBS_QUEUE_LOCK.lock().await;
     let store = kelson_postgres::PgJobStore::new(pool.clone());
 
     sqlx::query("DELETE FROM jobs_queue WHERE status IN ('pending', 'running')")

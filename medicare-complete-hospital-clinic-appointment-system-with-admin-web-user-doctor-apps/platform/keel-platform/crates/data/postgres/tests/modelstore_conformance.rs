@@ -149,6 +149,13 @@ async fn pg_conformance_list_sort_pagination_and_validation() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pg_conformance_cursor_keyset_pagination() {
+    let Some(pool) = pool().await else { return };
+    let store = PgModelStore::new(pool.clone());
+    conformance::cursor_keyset_pagination(&store, seed_tenant(&pool).await);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pg_conformance_aggregate_and_exists() {
     let Some(pool) = pool().await else { return };
     let store = PgModelStore::new(pool.clone());
@@ -272,6 +279,13 @@ async fn mysql_conformance_list_sort_pagination_and_validation() {
     let Some(pool) = mysql_pool().await else { return };
     let store = kelson_mysql::MySqlModelStore::new(pool.clone());
     conformance::list_sort_pagination_and_validation(&store, mysql_seed_tenant(&pool).await);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mysql_conformance_cursor_keyset_pagination() {
+    let Some(pool) = mysql_pool().await else { return };
+    let store = kelson_mysql::MySqlModelStore::new(pool.clone());
+    conformance::cursor_keyset_pagination(&store, mysql_seed_tenant(&pool).await);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

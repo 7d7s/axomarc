@@ -32,8 +32,8 @@ pub use runtime::{
     PrunePredicate, RecordChanges,
 };
 pub use store::{
-    now_rfc3339, AggregateOp, ExistsFilter, FieldFilter, FilterOp, InMemoryModelStore,
-    ListOpts, ModelStore, Record,
+    json_sorts_after, json_sorts_before, keyset_predicate, now_rfc3339, AggregateOp, ExistsFilter,
+    FieldFilter, FilterOp, InMemoryModelStore, ListOpts, ModelStore, Record,
 };
 
 use std::sync::Arc;

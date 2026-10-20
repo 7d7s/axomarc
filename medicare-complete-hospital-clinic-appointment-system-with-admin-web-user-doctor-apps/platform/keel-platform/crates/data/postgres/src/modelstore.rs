@@ -312,6 +312,28 @@ fn base_select(
     push_filters(select, model, tenant, filters)
 }
 
+/// Apply the **cursor** (keyset) anchor of a list to a SELECT: the page
+/// starts *after* the anchor, so a concurrent insert cannot shift the window
+/// the way OFFSET does. A descending sort flips the comparison.
+///
+/// The anchor is applied to the page query AND to the COUNT query, so `total`
+/// is the size of the window that is left.
+fn apply_keyset(
+    select: Select,
+    model: &ModelDef,
+    opts: &ListOpts,
+) -> Result<Select, AppError> {
+    let Some(after) = &opts.after else {
+        return Ok(select);
+    };
+    let (columns, values) = kelson_models::keyset_predicate(model, after)?;
+    let operator = match opts.sort.as_ref().map(|(_, d)| *d) {
+        Some(true) => Operator::Lt,
+        _ => Operator::Gt,
+    };
+    Ok(select.where_row_cmp(columns, operator, values))
+}
+
 /// Append the filter list as WHERE clauses. Every filter is prepared into a
 /// clause pusher first (Ident/bind errors surface outside the group
 /// closure); a list containing an OR-tagged existence term wraps in ONE
@@ -455,6 +477,9 @@ impl ModelStore for PgModelStore {
                 if *desc { Direction::Desc } else { Direction::Asc },
             );
         }
+        // Cursor (keyset) mode: the page starts AFTER the anchor, so a
+        // concurrent insert cannot shift the window the way OFFSET does.
+        let mut select = apply_keyset(select, model, opts)?;
         let (page, per_page) = match opts.page {
             Some(req) => {
                 let req = req.validate()?;
@@ -474,8 +499,16 @@ impl ModelStore for PgModelStore {
             // COUNT over the same shape (rebuild without limit/offset). The
             // port pins `total` to the pre-limit match count: `ListOpts::limit`
             // is a row cap, so a capped eager fetch must still report how many
-            // rows matched (kelson-models `store` list contract test).
-            let count_select = base_select(model, tenant, filters, opts.include_deleted)?.build()?;
+            // rows matched (kelson-models `store` list contract test). In
+            // cursor mode the count carries the keyset too, so `total` is the
+            // size of the window that is left — the number a cursor client
+            // needs to know whether another page exists.
+            let count_select = apply_keyset(
+                base_select(model, tenant, filters, opts.include_deleted)?,
+                model,
+                opts,
+            )?
+            .build()?;
             let count_sql = format!(
                 "SELECT COUNT(*) FROM ({}) AS _kelson_count",
                 count_select.sql

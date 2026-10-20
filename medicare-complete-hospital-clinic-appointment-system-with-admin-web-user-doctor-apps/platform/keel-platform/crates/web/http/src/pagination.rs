@@ -1,17 +1,28 @@
 //! Pagination (S2 item 26): Page<T> public wire shape + query parsing.
 //! Deterministic caps: page >= 1, per_page 1..=MAX_PER_PAGE (default 25).
+//!
+//! Two pagination modes ship side by side:
+//! - **offset** (the default): `page` + `per_page`, with an optional `total`.
+//! - **cursor** (keyset, for large changing datasets): a `cursor` carries the
+//!   anchor the next page starts *after*, so a concurrent insert cannot shift
+//!   the window. The cursor is opaque and signed — see [`Cursor`].
 
 use kelson_foundation::AppError;
 use serde::{Deserialize, Serialize};
+use serde_json::Value as Json;
 
 pub const DEFAULT_PER_PAGE: u64 = 25;
 pub const MAX_PER_PAGE: u64 = 100;
 
-/// Parsed page query: 1-based page, capped per_page.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Parsed page query: 1-based page, capped per_page, plus an optional cursor.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageQuery {
     pub page: u64,
     pub per_page: u64,
+    /// The opaque cursor from a previous page (keyset mode). `None` = offset
+    /// mode. A cursor and a `page` together are refused by the caller that
+    /// resolves them (a cursor already encodes its position).
+    pub cursor: Option<String>,
 }
 
 impl Default for PageQuery {
@@ -19,6 +30,7 @@ impl Default for PageQuery {
         Self {
             page: 1,
             per_page: DEFAULT_PER_PAGE,
+            cursor: None,
         }
     }
 }
@@ -43,6 +55,11 @@ impl PageQuery {
                         .parse::<u64>()
                         .map_err(|_| AppError::validation("per_page must be a positive integer"))?;
                 }
+                "cursor" => {
+                    if !raw.is_empty() {
+                        q.cursor = Some(raw.to_string());
+                    }
+                }
                 _ => {}
             }
         }
@@ -66,6 +83,64 @@ impl PageQuery {
     }
 }
 
+/// An opaque, tamper-evident pagination cursor.
+///
+/// The cursor carries the keyset anchor — the value the next page starts
+/// *after* — plus an HMAC-SHA256 over it, so a client can neither forge nor
+/// edit one. It is base64url, so it survives a query string untouched.
+///
+/// Decoding **fails closed**: a cursor that is not base64url, is too short,
+/// was signed with another secret, or anchors another column is refused with a
+/// validation error rather than silently treated as "no cursor".
+pub struct Cursor;
+
+impl Cursor {
+    /// Encode the anchor value for `column` under `secret`.
+    pub fn encode(column: &str, value: &Json, secret: &[u8]) -> String {
+        let payload = format!("{column}\u{1f}{value}");
+        let mac = crate::signed::hmac_sha256(secret, payload.as_bytes());
+        let mut bytes = payload.into_bytes();
+        bytes.extend_from_slice(&mac);
+        crate::jwt::b64url_encode(&bytes)
+    }
+
+    /// Decode a cursor into the anchor value for `column`.
+    pub fn decode(cursor: &str, column: &str, secret: &[u8]) -> Result<Json, AppError> {
+        let bytes = crate::jwt::b64url_decode(cursor)
+            .ok_or_else(|| AppError::validation("cursor is malformed"))?;
+        if bytes.len() < 33 {
+            return Err(AppError::validation("cursor is malformed"));
+        }
+        let (payload, mac) = bytes.split_at(bytes.len() - 32);
+        let expected = crate::signed::hmac_sha256(secret, payload);
+        if !constant_time_eq(mac, &expected) {
+            return Err(AppError::validation("cursor is not valid for this request"));
+        }
+        let payload = String::from_utf8(payload.to_vec())
+            .map_err(|_| AppError::validation("cursor is malformed"))?;
+        let (col, value) = payload
+            .split_once('\u{1f}')
+            .ok_or_else(|| AppError::validation("cursor is malformed"))?;
+        if col != column {
+            return Err(AppError::validation("cursor anchors another column"));
+        }
+        serde_json::from_str(value).map_err(|_| AppError::validation("cursor is malformed"))
+    }
+}
+
+/// Constant-time byte comparison (the cursor's MAC check must not leak where
+/// the signatures differ).
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 /// One page of results. The total is optional: count-free scans may omit it,
 /// in which case has_more falls back to a full-page heuristic.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +150,10 @@ pub struct Page<T> {
     pub per_page: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total: Option<u64>,
+    /// The cursor for the next page (keyset mode). `None` when the page is the
+    /// last one, or in offset mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 impl<T> Page<T> {
@@ -84,6 +163,7 @@ impl<T> Page<T> {
             page,
             per_page,
             total,
+            next_cursor: None,
         }
     }
 
@@ -114,12 +194,14 @@ impl<T> Page<T> {
 
     /// Map items, preserving pagination fields.
     pub fn map<U>(self, f: impl FnMut(T) -> U) -> Page<U> {
-        Page::new(
+        let mut mapped = Page::new(
             self.items.into_iter().map(f).collect(),
             self.page,
             self.per_page,
             self.total,
-        )
+        );
+        mapped.next_cursor = self.next_cursor;
+        mapped
     }
 }
 
@@ -146,6 +228,63 @@ mod tests {
         assert!(PageQuery::from_pairs([("page", "0")]).is_err());
         assert!(PageQuery::from_pairs([("page", "-2")]).is_err());
         assert!(PageQuery::from_pairs([("per_page", "ten")]).is_err());
+    }
+
+    #[test]
+    fn parses_the_cursor_query_param() {
+        let q = PageQuery::from_pairs([("cursor", "abc"), ("per_page", "10")]).unwrap();
+        assert_eq!(q.cursor.as_deref(), Some("abc"));
+        assert_eq!(q.per_page, 10);
+        // An empty cursor is no cursor.
+        let q = PageQuery::from_pairs([("cursor", "")]).unwrap();
+        assert_eq!(q.cursor, None);
+        assert_eq!(q, PageQuery::default());
+    }
+
+    #[test]
+    fn cursor_round_trips_the_anchor_value() {
+        let secret = b"a-test-secret";
+        let encoded = Cursor::encode("slot", &serde_json::json!("2026-10-20"), secret);
+        // The cursor is opaque: the raw anchor is not readable from it.
+        assert!(!encoded.contains("slot"));
+        assert!(!encoded.contains("2026-10-20"));
+        let decoded = Cursor::decode(&encoded, "slot", secret).unwrap();
+        assert_eq!(decoded, serde_json::json!("2026-10-20"));
+    }
+
+    #[test]
+    fn cursor_rejects_a_tampered_value() {
+        let secret = b"a-test-secret";
+        let encoded = Cursor::encode("slot", &serde_json::json!(7), secret);
+        // Flip one character of the base64url payload: the MAC must catch it.
+        let mut bytes = encoded.into_bytes();
+        let last = bytes.len() - 1;
+        bytes[last] = if bytes[last] == b'A' { b'B' } else { b'A' };
+        let tampered = String::from_utf8(bytes).unwrap();
+        let err = Cursor::decode(&tampered, "slot", secret).expect_err("tampered cursor is refused");
+        assert_eq!(err.category, kelson_foundation::ErrorCategory::Validation);
+    }
+
+    #[test]
+    fn cursor_rejects_another_secret_and_another_column() {
+        let encoded = Cursor::encode("slot", &serde_json::json!(7), b"secret-one");
+        assert!(
+            Cursor::decode(&encoded, "slot", b"secret-two").is_err(),
+            "a cursor signed with another secret is refused"
+        );
+        assert!(
+            Cursor::decode(&encoded, "other_column", b"secret-one").is_err(),
+            "a cursor anchored on another column is refused"
+        );
+    }
+
+    #[test]
+    fn cursor_rejects_malformed_input() {
+        let secret = b"a-test-secret";
+        assert!(Cursor::decode("not base64url!!", "slot", secret).is_err());
+        assert!(Cursor::decode("", "slot", secret).is_err());
+        // Short enough to carry no MAC at all.
+        assert!(Cursor::decode("aGVsbG8", "slot", secret).is_err());
     }
 
     #[test]

@@ -24,7 +24,7 @@
 | LF-043 | Scopes, model events and observers | MATCH | Global scopes (the soft-delete veil) + named scopes, applied before validation; the model lifecycle events (`Creating`/`Created`/`Updating`/`Updated`/`Deleting`/`Deleted`) with observers; the scope-bypass audit | `runtime::tests::*` (the scope/event/pipeline cases inside the 139), `conformance::tests::soft_delete_restore_matches_the_contract` | VERIFIED |
 | LF-044 | Eloquent collections and base collections | EXCLUDE BY DESIGN | Not implemented: the blueprint's permanent-exclusion list names the Collection wrapper (Rust iterators + `ResourceCollection` for serialization are the idiom). `kelson-http::ResourceCollection` is a *serialization* type, not a collection wrapper. | — (product decision) | EXCLUDED BY DESIGN (P2) |
 | LF-045 | API Resources and serialization | MATCH | `kelson-http::Resource` (conditional fields that omit rather than null, `hidden`/`visible`, wrap key, collection + pagination meta) + a JSON:API layer (sparse fieldsets, `included`, relationships, reserved-member stripping) | `resource::tests::*` (7: `resource_hides_non_wire_fields`, `when_omits_false_conditions_and_never_emits_null`, `wrap_key_defaults_to_data_and_can_be_disabled`, `collection_page_passes_pagination_meta_through`, `envelope_resource_page_matches_the_envelope_wire_shape`, `collection_of_sources_honors_the_wrap_key`, `page_envelope_carries_pagination_meta`) + `jsonapi::tests::*` (13) | VERIFIED |
-| LF-046 | Pagination | MATCH (offset only) | `kelson-http::pagination` (`PageQuery` from query pairs with caps, `Page<T>` with total/links/meta) + the query crate's `Page`/`PageReq` + the store's page/list options; the builder carries the keyset row predicate | `pagination::tests::*` (5: `defaults_and_zero_per_page`, `has_more_with_and_without_total`, `meta_wire_shape`, `parses_and_caps_page_query`, `rejects_bad_input`); `select::tests::keyset_row_comparison_shape` | PARTIALLY VERIFIED — no cursor pagination at the HTTP layer (F-10) |
+| LF-046 | Pagination | MATCH (offset + cursor) | `kelson-http::pagination` (`PageQuery` from query pairs with caps + `cursor`, `Page<T>` with total/links/meta/`next_cursor`, `Cursor` — an opaque, HMAC-signed, fail-closed codec) + the query crate's `Page`/`PageReq` + the store's page/list options (`ListOpts.after` = the keyset anchor) + the builder's keyset row predicate | `pagination::tests::*` (10, incl. `cursor_round_trips_the_anchor_value`, `cursor_rejects_a_tampered_value`, `cursor_rejects_another_secret_and_another_column`, `cursor_rejects_malformed_input`, `parses_the_cursor_query_param`); `select::tests::keyset_row_comparison_shape`; the shared conformance case **`cursor_keyset_pagination`** (fake + pg + mysql) | VERIFIED |
 | LF-047 | Redis and cache-backed data services | MATCH (partial) | `kelson-caching`: the `CachePort` (get/put/delete/invalidate_prefix/put_if_absent/delete_if_equals — the atomic primitives) + `CacheService` (Laravel-shaped: get/put/has/delete/pull/many/put_many/add/forever/increment/decrement/remember/tags/flush/lock) + the memory adapter; the **Redis** adapter (SET EX / SET NX / Lua CAS); the session, queue and rate-limit Redis adapters | `kelson-cache-memory` 17 cases incl. `tenant_isolation_cache_entries_do_not_cross_tenants`, `pentest_cache_hostile_keys_and_prefixes_cannot_escape_the_caller`, `cache_lock_acquire_release_and_exclusivity`, `remember_waiter_collapses_onto_the_leader_result`, `with_lock_runs_and_releases`; `kelson-caching` 3 cases (`put_if_absent_is_atomic_and_delete_if_equals_checks_value`, `ttl_expiry_honored`, `put_get_invalidate`); the Redis adapter's 4 unit cases | PARTIALLY VERIFIED — the live-Redis cases **skip** on this host (no Redis), so cross-process atomicity is unproven here |
 | LF-048 | MongoDB integration | EXCLUDE BY DESIGN | Not implemented, and deliberately so: the blueprint's permanent-exclusion list names MongoDB, and the atlas marks the item P3 "never score as core SQL ORM parity" | — (product decision) | EXCLUDED BY DESIGN (P3) |
 
@@ -39,7 +39,7 @@
 | `cargo test -p kelson-transaction` | **3 passed**, 0 failed |
 | `cargo test -p kelson-caching -p kelson-cache-memory` | **3 + 17 passed**, 0 failed |
 | `cargo test -p kelson-http --lib` | **164 passed**, 0 failed |
-| `cargo test -p kelson-postgres --features pg-tests` | **83 passed**, 0 failed (lib 9 · conformance 32 · bridge 1 · integration 25 · modelstore 10 · pairs 6) — **with the live PostgreSQL 16** (§2.4), so the pg halves execute instead of self-skipping |
+| `cargo test -p kelson-postgres --features pg-tests` | **85 passed**, 0 failed (lib 9 · conformance 34 · bridge 1 · integration 25 · modelstore 10 · pairs 6) — **with the live MySQL 8** (`DATABASE_URL=mysql://keel:keel@127.0.0.1:3307/keel`), so the **mysql** halves execute instead of self-skipping; the same command against the live PostgreSQL 16 ran 83 passed / 0 failed (§2.4) |
 | `cargo test -p kelson-mysql` | **2 passed**, 0 failed (migration-set parity + schema round-trip) |
 | `cargo test -p kelson-console --bin kelson migrate` | **2 passed**, 0 failed |
 
@@ -77,22 +77,31 @@ keyset (`keyset_row_comparison_shape`), locking
 `unfiltered_delete_refused`).
 
 ### 2.4 NOT RUN / blocked in this batch
-- **PostgreSQL — CLOSED (2026-10-20).** The pg halves of every matrix used to self-skip on this host
-  because a *backend* process died with `0xC0000142` (STATUS_DLL_INIT_FAILED) on the first
-  connection — the install itself was fine. The portable PostgreSQL 16 runs again, started with a clean
-  PATH and a WAL recovery on port 5433 (`pg_hba.conf` is `trust`, so no password):
+- **PostgreSQL — PARTIALLY UNBLOCKED (2026-10-20), and INTERMITTENT.** The pg halves of every matrix
+  used to self-skip on this host because a *backend* process died with `0xC0000142`
+  (STATUS_DLL_INIT_FAILED) — the install itself was fine. The portable PostgreSQL 16 starts and the
+  pg halves **execute** against the real server:
   ```powershell
   $pg = "C:\Users\Victo\pgportable\pgsql\bin"
   $env:PATH = "$pg;C:\Windows\System32;C:\Windows"
   & "$pg\pg_ctl.exe" -D "C:\Users\Victo\pgportable\data" -l "C:\Users\Victo\pgportable\pg3.log" -o "-p 5433" start
   $env:DATABASE_URL = 'postgres://postgres@127.0.0.1:5433/postgres'
   ```
-  With that, the pg matrix runs **83 passed / 0 failed** and the 16 `pg_conformance_*` cases **execute**
-  against the real server instead of self-skipping.
+  (`pg_hba.conf` is `trust`, so no password.) One full pg matrix run went green this way — **83 passed
+  / 0 failed**, with the 16 `pg_conformance_*` cases real rather than skipped.
+  **The caveat is that the crash is intermittent, not fixed**: a backend can die with `0xC0000142` on
+  *any* new connection, and the postmaster then shuts the whole server down
+  ("server process was terminated by exception 0xC0000142" → "shutting down due to startup process
+  failure"). It is a host-level fault (the same class of native crash that hits `rustc` here with
+  `0xc0000409`; no `AppInit_DLLs` entry, no IFEO override, and the install's own DLLs are
+  consistent). A pg evidence run is therefore **interruptible** and must be re-run after a restart.
+  **MySQL is the stable live fabric on this host** and is what the pg/mysql matrix runs are
+  verified against below.
 - **The live-Redis cases** (cache/session/queue/rate-limit adapters): no Redis on this host
   (`REDIS_URL` unset) → the feature-gated integration tests skip cleanly. The adapters' unit cases run.
-- The MySQL transaction/rollback/savepoint cases ran against the local MySQL 8 (127.0.0.1:3307) and the
-  equivalent pg cases now run against the live PostgreSQL 16 (127.0.0.1:5433).
+- The MySQL transaction/rollback/savepoint cases ran against the local MySQL 8 (127.0.0.1:3307); the
+  equivalent pg cases ran against the live PostgreSQL 16 (127.0.0.1:5433) in the window where the pg
+  backends stayed alive.
 
 ## 3. Detailed verification
 
@@ -232,14 +241,32 @@ keyset (`keyset_row_comparison_shape`), locking
 - Public JSON is therefore deliberate and versionable: internal fields are excluded by construction,
   not by convention.
 
-### LF-046 — Pagination — PARTIALLY VERIFIED
+### LF-046 — Pagination — VERIFIED (offset + cursor)
 - Offset pagination with a total: `PageQuery::from_pairs` (with caps and a fail-closed rejection of
   bad input), `Page<T>` carrying items/page/per_page/total, and the wire `meta` shape — the 5
   `pagination::tests::*` cases plus the store's `ListOpts`/`PageReq`.
+- **Cursor (keyset) pagination — F-10 FIXED.** The cursor is opaque and tamper-evident:
+  `kelson_http::Cursor` encodes the keyset anchor (the column + the value the next page starts
+  *after*) with an HMAC-SHA256 over it, base64url so it survives a query string. Decoding fails
+  closed: a cursor that is not base64url, is too short, was signed with another secret or anchors
+  another column is a **validation error**, never silently "no cursor".
+  The store port carries the anchor (`ListOpts.after`), all three backends apply it (pg/mysql render
+  the builder's row comparison — `(col) > ($1)` — with the comparison flipped for a descending
+  sort; the in-memory fake filters the sorted rows), and the anchor column is validated against the
+  model (an unknown column or a value that does not fit the field is refused, not ignored).
+  In cursor mode `total` is the size of the **window that is left**, so `has_more` stays true exactly
+  while another page exists.
+  - **Evidence**: `cursor_keyset_pagination` — the shared conformance case, so it runs against the
+    fake, pg **and** mysql. It proves the page starts after the anchor, that a descending sort flips
+    the comparison, that **a concurrent insert before the anchor does not shift the window** (the
+    property OFFSET cannot give), and that an unknown anchor column is refused.
+    `kelson-http`: `cursor_round_trips_the_anchor_value`, `cursor_rejects_a_tampered_value`,
+    `cursor_rejects_another_secret_and_another_column`, `cursor_rejects_malformed_input`,
+    `parses_the_cursor_query_param`.
+  - **The application half is still open**: a module must choose the anchor column and issue
+    `next_cursor`. The framework ships the mechanism (the demo edge passes the cursor through as
+    `_page.cursor`); the sample `appointments` module still pages by offset.
 - The **builder** carries the keyset row predicate (`(a, b) > ($1, $2)`) for keyset pagination.
-- **Gap (F-10)**: there is **no cursor pagination at the HTTP layer** — no cursor encoding, no
-  cursor validation, no tie-breaking scheme. The atlas explicitly recommends cursor pagination for
-  large changing datasets, so this is the item's main unmet expectation.
 
 ### LF-047 — Redis and cache-backed data services — PARTIALLY VERIFIED
 - The `CachePort` carries the atomic primitives the atlas asks for: `put_if_absent` (SET NX) and
@@ -314,10 +341,53 @@ keyset (`keyset_row_comparison_shape`), locking
     trusted it could retry a unique violation forever. Nothing in the workspace asserted the old value.
   - **Still open**: the **read/write split** — one pool per fabric, so the deployment's read replica is
     not wired into the store. That is a deployment-topology decision, not a port gap.
-- **F-10 (low) — no cursor pagination.** The HTTP layer paginates by offset only; the builder carries
-  the keyset predicate but nothing encodes or validates a cursor. The atlas recommends cursor
-  pagination for large changing datasets. Next: a cursor codec (opaque, tamper-evident) over the
-  keyset predicate.
+- **F-10 (low) — no cursor pagination — FIXED (the framework half).** The HTTP layer paginated by
+  offset only; the builder carried the keyset predicate but nothing encoded or validated a cursor.
+  **Fixed**, in three layers:
+  - **The port**: `ListOpts.after: Option<Vec<(String, Json)>>` is the keyset anchor — the
+    `(column, value)` pairs the page starts *after*. `kelson_models::keyset_predicate` turns it into
+    the builder's row comparison (`(col) > ($1)`), validating the column **against the model** (an
+    unknown column or a value that does not fit the field is a validation error, never a silently
+    ignored anchor).
+  - **The three backends**: pg, mysql and the in-memory fake all apply it — the SQL backends render
+    `where_row_cmp` (a descending sort flips the comparison to `<`), the fake filters the sorted
+    rows. In cursor mode `total` is the size of the **window that is left** (the count query carries
+    the keyset too), so `has_more` stays true exactly while another page exists.
+  - **The HTTP layer**: `kelson_http::Cursor` — an **opaque, tamper-evident** cursor: the anchor
+    value plus an HMAC-SHA256 over it, base64url so it survives a query string untouched. Decoding
+    **fails closed** (a cursor that is not base64url, is too short, was signed with another secret or
+    anchors another column is a validation error, never "no cursor"). `PageQuery` gained a `cursor`
+    field and `Page<T>` a `next_cursor`.
+  - **Evidence**: `cursor_keyset_pagination` (the shared conformance case — run by the fake, pg AND
+    mysql) proves the page starts after the anchor, that a descending sort flips the comparison,
+    that **a concurrent insert before the anchor does not shift the window** (the property OFFSET
+    cannot give), and that an unknown anchor column is refused. `kelson-http`:
+    `cursor_round_trips_the_anchor_value`, `cursor_rejects_a_tampered_value`,
+    `cursor_rejects_another_secret_and_another_column`, `cursor_rejects_malformed_input`,
+    `parses_the_cursor_query_param`.
+  - **Still open**: an **application** must still choose the anchor column and issue `next_cursor`.
+    The framework ships the mechanism; the demo's edge passes the cursor through to the module
+    (`_page.cursor`), but the sample `appointments` module still pages by offset.
+- **F-13 (medium, found by running the MySQL half for real) — the shared conformance suite violated
+  the schema's double-booking guard, so the MySQL half could never pass against the live schema.**
+  `reads_and_batch_writes_honour_the_trash_veil` inserted **two live booked rows with the same
+  (tenant, patient, slot)** — exactly what `ux_appointments_booked_slot` forbids (one booked row
+  per tenant/patient/slot; the partial index in pg, the generated-column twin in mysql). The insert
+  failed with `1062 Duplicate entry ... for key 'appointments.ux_appointments_booked_slot'`, so the
+  MySQL conformance half was **red against the real schema** — a defect the earlier "green" matrix
+  had hidden, because the mysql half only self-skips (and trivially "passes") under a `postgres://`
+  DATABASE_URL. **Fixed**: the second row gets **its own slot**, which keeps the case's intent (two
+  live rows for one patient, one of them trashed) and respects the guard. The in-memory fake has no
+  unique index, so it accepted the old shape — the case only now holds the fake to the same contract
+  as the SQL backends.
+- **F-14 (medium, same run) — the job-store cases share ONE `jobs_queue` table, so they raced.**
+  The unscoped-claim cases wipe the pending/running rows first
+  (`DELETE FROM jobs_queue WHERE status IN ('pending', 'running')`) so their claim is deterministic —
+  which **ate a concurrent case's job**: `mysql_job_store_tenant_scoped_queue_is_usable_and_isolated`
+  failed with "own pending job is claimable" while its neighbour wiped the queue. A global claim can
+  steal a job the same way. **Fixed**: the six job-store cases take a shared
+  `JOBS_QUEUE_LOCK` (`tokio::sync::Mutex`), so the queue is only ever mutated by one case at a time.
+  The failure was order-dependent, not deterministic — which is why it can hide behind a green run.
 - **F-11 (low, recorded divergence) — the query builder has no raw-SQL escape hatch.** Every value is a
   typed bind and every identifier is validated; there is no way to inject a raw fragment. This is the
   atlas's preferred direction ("a typed builder is preferred in Rust") and it removes an injection
@@ -343,15 +413,21 @@ this pass makes are to the **parity documents** that carried unproven or stale c
 
 ## 6. Summary
 
-- **13/13 items covered**: **6 VERIFIED** (LF-037 query builder, LF-040 model CRUD, LF-041 relations +
+- **13/13 items covered**: **7 VERIFIED** (LF-037 query builder, LF-040 model CRUD, LF-041 relations +
   eager loading, LF-042 casts + accessors + strictness, LF-043 scopes + events, LF-045 resources +
-  serialization) · **5 PARTIALLY VERIFIED** (LF-036 transactions, LF-038 migrations, LF-039 seeding,
-  LF-046 pagination, LF-047 cache/Redis) · **2 EXCLUDED BY DESIGN** (LF-044 collections, LF-048 MongoDB).
-- **466 green results, 0 failures** in this pass.
-- **The sharpest gaps**: `kelson seed` is not gated for production (F-7) and the relations' N+1 bound
-  is documented rather than asserted, with no pivot writes in the port (F-8). Everything else is a P1
-  refinement or a deliberate exclusion.
-- **Findings**: F-7 (un-gated `kelson seed` — **fixed**), F-8 (N+1 bound — **fixed**; pivot writes still a
-  decision), F-9 (no deadlock retry / read-write split), F-10 (no cursor pagination), F-11 (no raw-SQL
-  escape hatch — deliberate), F-12 (batch-level rollback only).
+  serialization, LF-046 pagination — offset **and** cursor) · **4 PARTIALLY VERIFIED** (LF-036
+  transactions, LF-038 migrations, LF-039 seeding, LF-047 cache/Redis) · **2 EXCLUDED BY DESIGN**
+  (LF-044 collections, LF-048 MongoDB).
+- **466 green results, 0 failures** in this pass, **plus 85 live-MySQL matrix results** (the mysql
+  halves of the pg/mysql matrix, run against MySQL 8 on 127.0.0.1:3307) and one live-PostgreSQL run
+  of 83 (§2.4).
+- **The sharpest gaps**: the transaction port's **read/write split** (F-9 — a deployment-topology
+  decision) and the **application half** of cursor pagination (F-10 — a module must pick the anchor
+  column and issue `next_cursor`). Everything else is a P1 refinement or a deliberate exclusion.
+- **Findings**: F-7 (un-gated `kelson seed` — **fixed**), F-8 (N+1 bound — **fixed**, both halves),
+  F-9 (no deadlock retry — **fixed**; read/write split — open), F-10 (no cursor pagination —
+  **fixed**, the framework half), F-11 (no raw-SQL escape hatch — deliberate), F-12 (batch-level
+  rollback only — expand/contract guidance **fixed**), **F-13** (the conformance suite violated the
+  schema's double-booking guard — **fixed**), **F-14** (the job-store cases raced on one shared
+  `jobs_queue` table — **fixed**).
 

@@ -485,8 +485,12 @@ pub fn reads_and_batch_writes_honour_the_trash_veil<S: ModelStore>(
         .insert(store, &booking(&patient, &slot, 1), Some(tenant))
         .expect("insert succeeds");
     let live_id = record_id(&live);
+    // The second row gets its OWN slot: the schema's double-booking guard
+    // allows one live booked row per (tenant, patient, slot), so a second
+    // live row for the same patient needs a second slot.
+    let other_slot = marker("trash-read-slot-2");
     let trashed = runtime
-        .insert(store, &booking(&patient, &slot, 2), Some(tenant))
+        .insert(store, &booking(&patient, &other_slot, 2), Some(tenant))
         .expect("insert succeeds");
     let trashed_id = record_id(&trashed);
     assert!(
@@ -719,6 +723,135 @@ pub fn list_sort_pagination_and_validation<S: ModelStore>(store: &S, tenant: Ten
         },
     );
     let err = unknown_sort.expect_err("sorting on an unknown field is refused");
+    assert_eq!(err.category, ErrorCategory::Validation);
+}
+
+/// Cursor (keyset) pagination: the page starts *after* the anchor, so a
+/// concurrent insert cannot shift the window the way OFFSET does.
+///
+/// The anchor is the `(column, value)` the previous page ended on; the store
+/// renders it as a row comparison (`(slot) > ($1)`). The sort direction flips
+/// the comparison for a descending sort. An unknown column is a validation
+/// error, never a silently ignored anchor.
+pub fn cursor_keyset_pagination<S: ModelStore>(store: &S, tenant: TenantId) {
+    let runtime = ModelRuntime::new(appointments_model());
+    let patient = marker("cursor-patient");
+    let base = marker("cursor-slot");
+    let slots: Vec<String> = (1..=5).map(|i| format!("{base}-{i:02}")).collect();
+    for (index, slot) in slots.iter().enumerate() {
+        runtime
+            .insert(
+                store,
+                &booking(&patient, slot, index as i64 + 1),
+                Some(tenant),
+            )
+            .expect("insert succeeds");
+    }
+    let filter = vec![FieldFilter::eq("patient", patient.clone())];
+
+    // Page 1 ends on slot 2; page 2 starts strictly after it.
+    let page2 = store
+        .list(
+            runtime.model(),
+            Some(tenant),
+            &filter,
+            &ListOpts {
+                sort: Some(("slot".into(), false)),
+                limit: Some(2),
+                after: Some(vec![("slot".into(), json!(slots[1]))]),
+                ..Default::default()
+            },
+        )
+        .expect("keyset list succeeds");
+    assert_eq!(
+        page2.items.len(),
+        2,
+        "the limit still caps the page size"
+    );
+    assert_eq!(page2.items[0]["slot"], json!(slots[2]), "the page starts after the anchor");
+    assert_eq!(page2.items[1]["slot"], json!(slots[3]));
+    assert_eq!(
+        page2.total,
+        Some(3),
+        "total counts the window that is left, not the whole match set"
+    );
+
+    // The last page is short (or empty) once the anchor is past the end.
+    let tail = store
+        .list(
+            runtime.model(),
+            Some(tenant),
+            &filter,
+            &ListOpts {
+                sort: Some(("slot".into(), false)),
+                limit: Some(2),
+                after: Some(vec![("slot".into(), json!(slots[4]))]),
+                ..Default::default()
+            },
+        )
+        .expect("keyset list succeeds");
+    assert!(tail.items.is_empty(), "nothing sorts after the last row");
+    assert_eq!(tail.total, Some(0), "the window is exhausted");
+
+    // A descending sort flips the comparison: the anchor bounds the window
+    // from the other side.
+    let descending = store
+        .list(
+            runtime.model(),
+            Some(tenant),
+            &filter,
+            &ListOpts {
+                sort: Some(("slot".into(), true)),
+                limit: Some(2),
+                after: Some(vec![("slot".into(), json!(slots[3]))]),
+                ..Default::default()
+            },
+        )
+        .expect("keyset list succeeds");
+    assert_eq!(descending.items[0]["slot"], json!(slots[2]));
+    assert_eq!(descending.items[1]["slot"], json!(slots[1]));
+
+    // THE POINT OF KEYSET: a row inserted BEFORE the anchor (it sorts earlier
+    // than the anchor) must not shift the window. With OFFSET it would push
+    // the page's contents down by one.
+    runtime
+        .insert(
+            store,
+            &booking(&patient, &format!("{base}-00"), 99),
+            Some(tenant),
+        )
+        .expect("insert succeeds");
+    let after_insert = store
+        .list(
+            runtime.model(),
+            Some(tenant),
+            &filter,
+            &ListOpts {
+                sort: Some(("slot".into(), false)),
+                limit: Some(2),
+                after: Some(vec![("slot".into(), json!(slots[1]))]),
+                ..Default::default()
+            },
+        )
+        .expect("keyset list succeeds");
+    assert_eq!(
+        after_insert.items[0]["slot"],
+        json!(slots[2]),
+        "a concurrent insert before the anchor does not shift the window"
+    );
+
+    // An unknown anchor column is refused rather than silently ignored.
+    let unknown = store.list(
+        runtime.model(),
+        Some(tenant),
+        &filter,
+        &ListOpts {
+            sort: Some(("slot".into(), false)),
+            after: Some(vec![("not_a_field".into(), json!("x"))]),
+            ..Default::default()
+        },
+    );
+    let err = unknown.expect_err("an unknown anchor column is refused");
     assert_eq!(err.category, ErrorCategory::Validation);
 }
 
@@ -1315,6 +1448,12 @@ mod tests {
     fn list_sort_pagination_and_validation_matches_the_contract() {
         let store = InMemoryModelStore::new();
         list_sort_pagination_and_validation(&*store, TenantId::new());
+    }
+
+    #[test]
+    fn cursor_keyset_pagination_matches_the_contract() {
+        let store = InMemoryModelStore::new();
+        cursor_keyset_pagination(&*store, TenantId::new());
     }
 
     #[test]

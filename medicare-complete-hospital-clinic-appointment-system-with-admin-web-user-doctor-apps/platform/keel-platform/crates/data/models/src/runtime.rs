@@ -1210,6 +1210,7 @@ impl ModelRuntime {
                 include_deleted: true,
                 sort: Some(("id".into(), false)),
                 limit: None,
+                after: None,
             };
             let page = store.list(&self.model, tenant, &filters, &opts)?;
             if page.items.is_empty() {
@@ -3064,6 +3065,7 @@ fn fetch_keyed(
         include_deleted: false,
         sort: constraint.sort.clone(),
         limit: constraint.limit,
+        after: None,
     };
     let page = target.list_with_opts(store, tenant, filters, &opts)?;
     for row in page.items {

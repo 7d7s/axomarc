@@ -1849,9 +1849,16 @@ async fn graph_dispatch(
         match kelson_http::PageQuery::from_pairs(pairs) {
             Ok(page) => {
                 if let Some(obj) = input.as_object_mut() {
+                    // The cursor rides along with the page numbers: a module
+                    // that reads `_page.cursor` can page by keyset (the
+                    // opaque, signed anchor) instead of by offset.
                     obj.insert(
                         "_page".into(),
-                        serde_json::json!({ "page": page.page, "per_page": page.per_page }),
+                        serde_json::json!({
+                            "page": page.page,
+                            "per_page": page.per_page,
+                            "cursor": page.cursor,
+                        }),
                     );
                 }
             }
