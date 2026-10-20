@@ -808,6 +808,85 @@ async fn mysql_token_store_issue_verify_consume() {
         .is_err());
 }
 
+/// Row 2, measured: the MySQL adapter's server-side timestamps must be UTC.
+///
+/// `DATETIME` carries no timezone, so `NOW(6)` and a
+/// `DEFAULT CURRENT_TIMESTAMP(6)` land as whatever the SERVER's zone says —
+/// on this host that is **+5h30m (19800s) ahead of UTC** (measured with
+/// `TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(6), NOW(6))`), while the driver
+/// decodes the value back as UTC. The framework's own writes are safe
+/// because every connection is pinned to `time_zone='+00:00'` — and this
+/// test pins that guarantee down, so a dependency default cannot change
+/// under it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mysql_every_connection_is_pinned_to_utc() {
+    let Some(pool) = mysql_pool().await else { return };
+
+    let tz: String = sqlx::query_scalar("SELECT @@session.time_zone")
+        .fetch_one(&pool)
+        .await
+        .expect("the session timezone is readable");
+    assert_eq!(
+        tz, "+00:00",
+        "every connection is pinned to UTC, so a server-side timestamp is a correct instant"
+    );
+
+    // And the consequence, end to end: the server's own clock, read through
+    // the pinned session, equals the app's UTC clock.
+    let server_now: OffsetDateTime = sqlx::query_scalar("SELECT NOW(6)")
+        .fetch_one(&pool)
+        .await
+        .expect("the server clock is readable");
+    let drift = (server_now - OffsetDateTime::now_utc()).whole_seconds() as f64;
+    assert!(
+        drift.abs() < 60.0,
+        "the server's clock reads as UTC through the pinned session (it is {drift}s away from the app's UTC now — the raw zone offset would be 19800s here)"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mysql_server_side_timestamps_are_utc() {
+    let Some(pool) = mysql_pool().await else { return };
+    let principals = kelson_mysql::MySqlPrincipalStore::new(pool.clone());
+    let email = format!("mysql-utc-{}@it.test", uuid::Uuid::now_v7());
+
+    let before = OffsetDateTime::now_utc();
+    let created = principals.create(principal(&email)).expect("inserts");
+    let loaded = principals.by_id(created.id).unwrap().unwrap();
+    let after = OffsetDateTime::now_utc();
+
+    let delta = |stored: OffsetDateTime| -> f64 {
+        let low = (stored - before).whole_seconds() as f64;
+        let high = (stored - after).whole_seconds() as f64;
+        // Outside the window means the server wrote something else entirely.
+        if low > high {
+            f64::INFINITY
+        } else if low > 0.0 {
+            low
+        } else if high < 0.0 {
+            high
+        } else {
+            0.0
+        }
+    };
+
+    assert!(
+        delta(loaded.created_at).abs() < 60.0,
+        "created_at is UTC, not the server's local clock (the stored instant is {:?} away from the app's UTC now; the server's zone offset would show here)",
+        delta(loaded.created_at)
+    );
+
+    principals.mark_email_verified(created.id).expect("marks");
+    let loaded = principals.by_id(created.id).unwrap().unwrap();
+    let verified = loaded.email_verified_at.expect("the stamp is recorded");
+    let after = OffsetDateTime::now_utc();
+    let drift = (verified - after).whole_seconds() as f64;
+    assert!(
+        drift.abs() < 60.0,
+        "email_verified_at is UTC, not the server's local clock (the stored instant is {drift}s away from the app's UTC now)"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_email_verification_timestamp_roundtrip() {
     let Some(pool) = mysql_pool().await else { return };

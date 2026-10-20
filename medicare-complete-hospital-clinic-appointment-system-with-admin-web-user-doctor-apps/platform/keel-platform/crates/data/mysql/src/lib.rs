@@ -79,6 +79,25 @@ pub async fn create_pool(url: &str, max_connections: u32) -> Result<MySqlPool, A
     MySqlPoolOptions::new()
         .max_connections(max_connections)
         .acquire_timeout(std::time::Duration::from_secs(10))
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                // Pin EVERY connection to UTC, explicitly.
+                //
+                // MySQL's `DATETIME` carries no timezone, so a server-side
+                // `NOW(6)` (or a `DEFAULT CURRENT_TIMESTAMP(6)`) lands as
+                // whatever the SERVER's zone says. The driver decodes it back
+                // as UTC, so on a server whose zone is not UTC the stored
+                // instant is off by the zone offset — measured on this host:
+                // +5h30m (19800s). sqlx's connect options pin
+                // `time_zone='+00:00'` today; doing it HERE makes the
+                // guarantee the framework's own rather than a dependency's
+                // default that could change underneath it.
+                sqlx::query("SET time_zone = '+00:00'")
+                    .execute(conn)
+                    .await
+                    .map(|_| ())
+            })
+        })
         .connect(url)
         .await
         .map_err(|e| AppError::persistence(format!("pool connect: {e}")))
