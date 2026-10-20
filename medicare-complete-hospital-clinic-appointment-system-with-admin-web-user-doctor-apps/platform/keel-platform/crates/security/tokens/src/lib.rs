@@ -81,6 +81,18 @@ pub struct AuthToken {
     pub token_hash: String,
     #[serde(default)]
     pub label: Option<String>,
+    /// The **abilities** this token may exercise (Sanctum's `abilities`).
+    ///
+    /// A personal access token is a NARROWER credential than its principal:
+    /// it may do what its abilities allow and nothing else, so a leaked token
+    /// cannot exercise the whole account. An empty set means "no additional
+    /// ability" — the token still acts as its principal, but the abilities
+    /// that a policy asks about are not granted by it.
+    ///
+    /// `serde(default)` keeps every pre-existing row loadable ✓ (an old row
+    /// simply has no abilities ✓).
+    #[serde(default)]
+    pub abilities: Vec<String>,
     #[serde(with = "time::serde::iso8601")]
     pub expires_at: OffsetDateTime,
     #[serde(default, with = "time::serde::iso8601::option")]
@@ -218,6 +230,25 @@ impl TokenService {
         ttl: Duration,
         label: Option<String>,
     ) -> Result<IssuedToken, AppError> {
+        self.issue_with_abilities(principal, purpose, ttl, label, Vec::new())
+    }
+
+    /// Issue a token that may exercise only the given **abilities** (Sanctum's
+    /// `abilities`).
+    ///
+    /// A personal access token is a narrower credential than its principal: it
+    /// may do what its abilities allow and nothing more, so a leaked token
+    /// cannot act as the whole account. The abilities travel with the ROW ✓ —
+    /// they are part of the durable credential, not of the request ✓ — so the
+    /// guard can narrow the principal's capabilities with them ✓.
+    pub fn issue_with_abilities(
+        &self,
+        principal: PrincipalId,
+        purpose: TokenPurpose,
+        ttl: Duration,
+        label: Option<String>,
+        abilities: Vec<String>,
+    ) -> Result<IssuedToken, AppError> {
         if ttl <= Duration::ZERO {
             return Err(AppError::validation("token ttl must be positive"));
         }
@@ -229,6 +260,7 @@ impl TokenService {
             purpose,
             token_hash: sha256_hex(&plaintext),
             label,
+            abilities,
             expires_at: now + ttl,
             consumed_at: None,
             created_at: now,
@@ -427,6 +459,50 @@ mod tests {
         assert!(
             svc.consume(TokenPurpose::Api, &issued.plaintext).is_ok(),
             "api token stays valid"
+        );
+    }
+
+    /// A personal access token carries its **abilities**: the row IS the
+    /// durable credential, so the narrowing travels with it — a leaked token
+    /// can exercise only what it was granted, and the guard can narrow the
+    /// principal's capabilities with it.
+    #[test]
+    fn api_token_abilities_travel_with_the_row() {
+        let svc = service();
+        let issued = svc
+            .issue_with_abilities(
+                PrincipalId::new(),
+                TokenPurpose::Api,
+                Duration::hours(8),
+                Some("ci".to_string()),
+                vec!["appointments:read".to_string(), "inbox:read".to_string()],
+            )
+            .expect("the token issues");
+        let verified = svc
+            .verify(TokenPurpose::Api, &issued.plaintext)
+            .expect("the token verifies");
+        assert_eq!(
+            verified.abilities,
+            vec![
+                "appointments:read".to_string(),
+                "inbox:read".to_string()
+            ],
+            "the abilities survive the round trip — they are part of the row"
+        );
+
+        // A token issued without abilities carries none (it is not a widened
+        // credential by accident).
+        let plain = svc
+            .issue(
+                PrincipalId::new(),
+                TokenPurpose::Api,
+                Duration::hours(8),
+                None,
+            )
+            .expect("the token issues");
+        assert!(
+            plain.token.abilities.is_empty(),
+            "an ability-less token grants nothing extra"
         );
     }
 

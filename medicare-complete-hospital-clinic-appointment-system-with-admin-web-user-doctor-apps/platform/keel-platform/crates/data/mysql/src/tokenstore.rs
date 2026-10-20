@@ -60,12 +60,14 @@ fn token_from_row(row: sqlx::mysql::MySqlRow) -> Result<AuthToken, AppError> {
     use sqlx::Row;
     let principal_id: Uuid = row.try_get("principal_id").map_err(my)?;
     let purpose = purpose_from(&row.try_get::<String, _>("purpose").map_err(my)?)?;
+    let abilities: serde_json::Value = row.try_get("abilities").map_err(my)?;
     Ok(AuthToken {
         id: row.try_get("id").map_err(my)?,
         principal_id: PrincipalId::from_uuid(principal_id),
         purpose,
         token_hash: row.try_get("token_hash").map_err(my)?,
         label: row.try_get("label").map_err(my)?,
+        abilities: kelson_foundation::ability_list(&abilities),
         expires_at: row.try_get("expires_at").map_err(my)?,
         consumed_at: row.try_get("consumed_at").map_err(my)?,
         created_at: row.try_get("created_at").map_err(my)?,
@@ -81,14 +83,15 @@ impl TokenStore for MySqlTokenStore {
         let pool = self.pool.clone();
         block_on(async move {
             sqlx::query(
-                "INSERT INTO auth_tokens (id, principal_id, purpose, token_hash, label, expires_at, consumed_at, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO auth_tokens (id, principal_id, purpose, token_hash, label, abilities, expires_at, consumed_at, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(token.id)
             .bind(*token.principal_id.as_uuid())
             .bind(token.purpose.as_str())
             .bind(&token.token_hash)
             .bind(&token.label)
+            .bind(serde_json::to_value(&token.abilities).map_err(my)?)
             .bind(token.expires_at)
             .bind(token.consumed_at)
             .bind(token.created_at)

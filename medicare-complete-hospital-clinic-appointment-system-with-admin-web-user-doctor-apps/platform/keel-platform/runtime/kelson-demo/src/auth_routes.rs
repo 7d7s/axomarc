@@ -305,11 +305,16 @@ fn finish_login(
             cookie = Some(mw.issue_cookie(&session)?);
         }
         if want_token {
-            let issued = state.tokens.issue(
+            // LF-056: the personal access token carries the principal's
+            // GRANTED capabilities as its abilities — the narrowing travels
+            // with the durable row, so a leaked token cannot act as the whole
+            // account (the issuer chooses the abilities, never the client ✓).
+            let issued = state.tokens.issue_with_abilities(
                 principal,
                 kelson_tokens::TokenPurpose::Api,
                 PAT_TTL,
                 Some(format!("tenant:{}", tenant)),
+                state.granted_capabilities.clone(),
             )?;
             data.mode = "session+token";
             data.token = Some(issued.plaintext);
@@ -416,7 +421,21 @@ async fn login(
                 return Err(unauthenticated());
             }
         };
-        if !verify_credential(&credential, &Secret::new(&body.password))? {
+        // A corrupt verifier row is a DATA problem, but the edge must not turn
+        // it into a distinguishable answer: a 500 here would tell an attacker
+        // that the account EXISTS (an unknown account answers 401). Log it,
+        // answer the uniform 401.
+        let verified = match verify_credential(&credential, &Secret::new(&body.password)) {
+            Ok(verified) => verified,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err.public_message,
+                    "the stored verifier could not be read; refusing uniformly"
+                );
+                false
+            }
+        };
+        if !verified {
             return Err(unauthenticated());
         }
         if !principal.is_valid() {

@@ -255,6 +255,36 @@ mod tests {
         assert!(!verify_password(&Secret::new("wrong"), &hash).unwrap());
     }
 
+    /// A **malformed verifier row** (a corrupt hash in the database — a bad
+    /// encoding, a truncated PHC string, a hash of another algorithm) is
+    /// REFUSED, never treated as a match and never a panic: a corrupt row must
+    /// fail closed. The public message stays the generic one (the parse detail
+    /// is the internal context) so the caller cannot tell a corrupt row from
+    /// any other internal failure.
+    #[test]
+    fn a_malformed_verifier_row_is_refused() {
+        let pw = Secret::new("correct horse battery staple");
+        for corrupt in [
+            "",
+            "not-a-hash",
+            "$argon2id$v=19$m=19456,t=2,p=1$",
+            "$argon2id$m=19456,t=2,p=1$c29tZXNhbHQ$",
+            "$2y$10$abcdefghijklmnopqrstuv",
+            "$argon2id$v=19$m=notanumber,t=2,p=1$c29tZXNhbHQ$aaaa",
+        ] {
+            let err = verify_password(&pw, corrupt)
+                .expect_err("a malformed verifier row is refused");
+            assert_eq!(
+                err.public_message, "internal error",
+                "the public refusal is the generic one: {corrupt:?}"
+            );
+            assert!(
+                err.internal.unwrap_or_default().contains("bad hash encoding"),
+                "the detail is kept for the operator: {corrupt:?}"
+            );
+        }
+    }
+
     /// Wave 7 P5: configured factors embed in the PHC string and read back;
     /// verification honors the STORED factors, so a drifted verifier still
     /// checks out (that is what makes rehash-on-login possible) while the

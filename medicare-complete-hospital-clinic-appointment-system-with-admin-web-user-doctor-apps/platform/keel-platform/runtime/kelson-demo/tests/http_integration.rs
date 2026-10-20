@@ -6324,6 +6324,335 @@ impl kelson_notifications::MailPort for RecordingMail {
     }
 }
 
+/// LF-054 (the malformed verifier row) + the enumeration contract: a corrupt
+/// hash in the database is a DATA problem, but the edge must not turn it into a
+/// distinguishable answer — a 500 would tell an attacker the account EXISTS
+/// (an unknown account answers 401). The answer is the uniform 401, exactly
+/// like a wrong password.
+#[tokio::test]
+async fn a_corrupt_verifier_row_answers_like_a_wrong_password() {
+    let app = app();
+    let email = format!("corrupt-{}@clinic.test", uuid::Uuid::now_v7());
+    let now = time::OffsetDateTime::now_utc();
+    let principal = app
+        .state
+        .principals
+        .create(kelson_identity::Principal {
+            id: kelson_foundation::PrincipalId::new(),
+            status: kelson_identity::PrincipalStatus::Active,
+            email: Some(email.clone()),
+            phone: None,
+            email_verified_at: None,
+            created_at: now,
+        })
+        .expect("principal creates");
+    // The stored verifier is CORRUPT (not a valid PHC string).
+    app.state
+        .credentials
+        .create(kelson_identity::Credential {
+            id: uuid::Uuid::now_v7(),
+            principal_id: principal.id,
+            kind: kelson_identity::CredentialKind::PasswordArgon2,
+            secret_hash: kelson_identity::Secret::new("not-a-valid-argon2-hash"),
+            created_at: now,
+            expires_at: None,
+        })
+        .expect("credential creates");
+
+    let corrupt = login(&app, &email, "Correct-horse-99", Some("dev")).await;
+    let wrong = login(&app, &email, "also-wrong", Some("dev")).await;
+    assert_eq!(
+        corrupt.status,
+        StatusCode::UNAUTHORIZED,
+        "a corrupt verifier row is refused, not a server error"
+    );
+    assert_eq!(
+        corrupt.body, wrong.body,
+        "a corrupt row and a wrong password are the SAME answer — no oracle"
+    );
+}
+
+/// LF-052 (the tampered verification link): a verification token whose
+/// plaintext was edited does not verify, the principal stays unverified, and
+/// the answer is the uniform refusal — the same one an unknown token gets.
+#[tokio::test]
+async fn a_tampered_verification_token_does_not_verify() {
+    let app = app();
+    let email = format!("tampered-{}@clinic.test", uuid::Uuid::now_v7());
+    register(&app, &email).await;
+
+    let request = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/auth/email-verification/request",
+            serde_json::json!({ "email": email }),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(request.status, StatusCode::OK, "{}", request.body);
+    let token = request.data()["dev_token"]
+        .as_str()
+        .expect("dev token in non-prod")
+        .to_string();
+
+    // Tamper with the token: flip a character of the plaintext.
+    let mut tampered = token.clone();
+    let last = tampered.pop().expect("the token has a tail");
+    tampered.push(if last == 'a' { 'b' } else { 'a' });
+
+    let confirm = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/auth/email-verification/confirm",
+            serde_json::json!({ "token": tampered }),
+            None,
+            None,
+        ),
+    )
+    .await;
+    // Laravel's verification middleware answers an invalid signature with a
+    // 403 (the link was not accepted) — the same shape the framework uses.
+    assert_eq!(
+        confirm.status,
+        StatusCode::FORBIDDEN,
+        "a tampered verification token is refused: {}",
+        confirm.body
+    );
+    assert_eq!(
+        confirm.body["error"]["code"], "AUTH_DENIED",
+        "and the refusal is the uniform one"
+    );
+
+    // And the REAL token still works — the tampering did not burn it.
+    let good = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/auth/email-verification/confirm",
+            serde_json::json!({ "token": token }),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        good.status,
+        StatusCode::OK,
+        "the untampered token still verifies: {}",
+        good.body
+    );
+}
+
+/// LF-053 (the concurrent reset): two redemptions of the SAME reset token
+/// race — exactly one may win, because the token is single use. The loser gets
+/// the uniform refusal, and the password is changed exactly once.
+#[tokio::test]
+async fn a_concurrent_reset_of_one_token_changes_the_password_once() {
+    let app = app();
+    let email = format!("race-{}@clinic.test", uuid::Uuid::now_v7());
+    register(&app, &email).await;
+
+    let request = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/auth/password-reset/request",
+            serde_json::json!({ "email": email }),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(request.status, StatusCode::OK, "{}", request.body);
+    let token = request.data()["dev_token"]
+        .as_str()
+        .expect("dev token in non-prod")
+        .to_string();
+
+    // Two redemptions of the same token, at the same time.
+    let body = serde_json::json!({ "token": token, "password": "Raced-horse-77" });
+    let (first, second) = tokio::join!(
+        send(
+            &app,
+            json_req(
+                Method::POST,
+                "/auth/password-reset/complete",
+                body.clone(),
+                None,
+                None
+            )
+        ),
+        send(
+            &app,
+            json_req(
+                Method::POST,
+                "/auth/password-reset/complete",
+                body.clone(),
+                None,
+                None
+            )
+        )
+    );
+    let winners = [first.status, second.status]
+        .iter()
+        .filter(|status| **status == StatusCode::OK)
+        .count();
+    assert_eq!(winners, 1, "exactly one redemption of a single-use token wins");
+    let losers = [first.status, second.status]
+        .iter()
+        .filter(|status| **status != StatusCode::OK)
+        .count();
+    assert_eq!(losers, 1, "the loser is refused");
+
+    // The password that won is the one that works — the loser changed nothing.
+    let fresh = login(&app, &email, "Raced-horse-77", Some("dev")).await;
+    assert_eq!(
+        fresh.status,
+        StatusCode::OK,
+        "the winning password works: {}",
+        fresh.body
+    );
+    let stale = login(&app, &email, "Correct-horse-99", Some("dev")).await;
+    assert_eq!(
+        stale.status,
+        StatusCode::UNAUTHORIZED,
+        "the old password no longer works"
+    );
+}
+
+/// LF-049 (concurrency): two simultaneous logins for one principal both
+/// succeed, and they get **distinct** sessions — a second login never hands
+/// out the first one's session id.
+#[tokio::test]
+async fn two_concurrent_logins_get_distinct_sessions() {
+    let app = app();
+    let email = format!("concurrent-{}@clinic.test", uuid::Uuid::now_v7());
+    register(&app, &email).await;
+
+    let body = serde_json::json!({
+        "identifier": email,
+        "password": "Correct-horse-99",
+        "tenant": "dev",
+    });
+    let (first, second) = tokio::join!(
+        send(
+            &app,
+            json_req(Method::POST, "/auth/login", body.clone(), None, None)
+        ),
+        send(
+            &app,
+            json_req(Method::POST, "/auth/login", body.clone(), None, None)
+        )
+    );
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    assert_eq!(second.status, StatusCode::OK, "{}", second.body);
+
+    let first_cookie = first.session_cookie().expect("the first login issues a cookie");
+    let second_cookie = second
+        .session_cookie()
+        .expect("the second login issues a cookie");
+    assert_ne!(
+        first_cookie, second_cookie,
+        "two concurrent logins get DISTINCT sessions"
+    );
+
+    // Both sessions work — neither login invalidated the other.
+    for cookie in [&first_cookie, &second_cookie] {
+        let me = send(
+            &app,
+            json_req(Method::GET, "/auth/me", Value::Null, Some(cookie), None),
+        )
+        .await;
+        assert_eq!(me.status, StatusCode::OK, "each session resolves its principal");
+    }
+}
+
+/// LF-056: a personal access token may be carried in a **cookie** (the SPA
+/// mode — not stateless bearer auth ✓) and it carries its **abilities**: the
+/// narrowing travels with the durable row ✓.
+#[tokio::test]
+async fn a_personal_access_token_works_as_a_cookie_and_carries_its_abilities() {
+    let app = app();
+    let email = format!("spa-{}@clinic.test", uuid::Uuid::now_v7());
+    register(&app, &email).await;
+
+    let login = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/auth/login",
+            serde_json::json!({
+                "identifier": email,
+                "password": "Correct-horse-99",
+                "tenant": "dev",
+                "mode": "token",
+            }),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(login.status, StatusCode::OK, "{}", login.body);
+    let token = login.data()["token"]
+        .as_str()
+        .expect("a personal access token is issued")
+        .to_string();
+
+    // The token works as a BEARER (the stateless API-client mode).
+    let bearer = send(
+        &app,
+        json_req(Method::GET, "/auth/me", Value::Null, None, Some(&token)),
+    )
+    .await;
+    assert_eq!(bearer.status, StatusCode::OK, "the PAT works as a bearer");
+
+    // ...and as a COOKIE (the SPA mode): a cookie is sent cross-site by a
+    // browser, so this mode is NOT stateless bearer auth — the CSRF
+    // double-submit still applies ✓.
+    let cookie = format!("kelson_token={token}");
+    let via_cookie = send(
+        &app,
+        json_req(Method::GET, "/auth/me", Value::Null, Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(
+        via_cookie.status,
+        StatusCode::OK,
+        "the PAT works as a cookie too: {}",
+        via_cookie.body
+    );
+
+    // The abilities travel with the DURABLE row (not with the request).
+    let principal = login.data()["principal_id"]
+        .as_str()
+        .expect("the login reports the principal")
+        .parse::<uuid::Uuid>()
+        .expect("a uuid");
+    let rows = app
+        .state
+        .tokens
+        .list(kelson_foundation::PrincipalId::from_uuid(principal))
+        .expect("the tokens list");
+    let pat = rows
+        .iter()
+        .find(|t| t.purpose == kelson_tokens::TokenPurpose::Api)
+        .expect("the PAT row");
+    assert!(
+        !pat.abilities.is_empty(),
+        "the PAT carries the principal's granted capabilities as its abilities"
+    );
+    assert!(
+        pat.abilities
+            .iter()
+            .all(|a| app.state.granted_capabilities.contains(a)),
+        "and it grants nothing the principal does not have"
+    );
+}
+
 /// LF-053 (P0, "a successful reset invalidates relevant sessions/tokens by
 /// policy"): a password reset must **close the credentials issued under the
 /// old password** — the API token AND the session. Without it, whoever holds

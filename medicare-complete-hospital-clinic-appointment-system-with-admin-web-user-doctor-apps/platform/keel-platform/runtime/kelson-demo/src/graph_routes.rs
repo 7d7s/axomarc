@@ -1004,10 +1004,11 @@ impl kelson_http::BearerVerifier for DemoBearerVerifier {
         token: &str,
     ) -> Result<Option<kelson_http::GuardedPrincipal>, kelson_foundation::AppError> {
         match self.tokens.verify(kelson_tokens::TokenPurpose::Api, token) {
-            Ok(auth_token) => Ok(Some(kelson_http::guarded(
+            Ok(auth_token) => Ok(Some(kelson_http::guarded_with_abilities(
                 auth_token.principal_id,
                 tenant_from_label(&auth_token.label),
                 kelson_http::GuardStrategy::Token,
+                auth_token.abilities.clone(),
             ))),
             Err(_) => Ok(resolve_jwt_token(self.jwt.as_deref(), token).map(
                 |(principal, tenant)| {
@@ -1018,11 +1019,12 @@ impl kelson_http::BearerVerifier for DemoBearerVerifier {
     }
 }
 
-/// The host's **guard**: session first, then a bearer credential.
+/// The host's **guard**: the session first, then a bearer credential, then a
+/// personal access token carried in a **cookie** (Sanctum's SPA mode).
 ///
 /// LF-049's separation made concrete — the guard answers "who is this
-/// request" (and how it was proven ✓), while the provider (the identity
-/// stores) answers "what is this principal" ✓.
+/// request and how was it proven" (and with which **abilities** ✓), while the
+/// provider (the identity stores) answers "what is this principal" ✓.
 pub(crate) fn guard(
     state: &AppState,
 ) -> kelson_http::BearerGuard<DemoBearerVerifier> {
@@ -1035,19 +1037,41 @@ pub(crate) fn guard(
     )
 }
 
+/// The cookie a SPA client carries its personal access token in.
+pub(crate) const TOKEN_COOKIE: &str = "kelson_token";
+
+/// The host's **cookie guard**: a personal access token in a cookie (the SPA
+/// mode). It is NOT stateless bearer auth — a cookie is sent cross-site by a
+/// browser, so the CSRF double-submit proof still applies ✓.
+pub(crate) fn cookie_guard(
+    state: &AppState,
+) -> kelson_http::CookieTokenGuard<DemoBearerVerifier> {
+    kelson_http::CookieTokenGuard::new(
+        Arc::new(DemoBearerVerifier {
+            tokens: state.tokens.clone(),
+            jwt: state.jwt.clone(),
+        }),
+        TOKEN_COOKIE,
+    )
+}
+
 /// Shared identity resolution for non-graph endpoints (uploads, /auth/me):
-/// session first, then bearer PAT. Used by upload_routes/auth_routes.
+/// the session first, then a bearer PAT, then the SPA token cookie. Used by
+/// upload_routes/auth_routes.
 pub(crate) fn resolve_identity(
     state: &AppState,
     headers: &HeaderMap,
     session: Option<&ResolvedSession>,
 ) -> Result<(PrincipalId, Option<TenantId>), kelson_foundation::AppError> {
-    match guard(state).resolve(headers, session)? {
-        Some(resolved) => Ok((resolved.principal_id, resolved.tenant_id)),
-        // No credential at all: the route decides whether it needs an
-        // identity; the shared answer is the uniform 401 ✓.
-        None => Err(kelson_foundation::AppError::unauthenticated()),
+    if let Some(resolved) = guard(state).resolve(headers, session)? {
+        return Ok((resolved.principal_id, resolved.tenant_id));
     }
+    if let Some(resolved) = cookie_guard(state).resolve(headers, session)? {
+        return Ok((resolved.principal_id, resolved.tenant_id));
+    }
+    // No credential at all: the route decides whether it needs an identity;
+    // the shared answer is the uniform 401.
+    Err(kelson_foundation::AppError::unauthenticated())
 }
 
 /// Wave 2 request intent (the `expects_json` half of the web-plane contract):

@@ -142,6 +142,23 @@ impl Envelope {
     }
 }
 
+/// Read a **capability/ability list** out of a stored JSON column.
+///
+/// The column is a JSON array of strings; anything else (a NULL, an object, a
+/// number) yields NO abilities rather than a panic — a corrupt row must never
+/// WIDEN a credential.
+pub fn ability_list(value: &serde_json::Value) -> Vec<String> {
+    value
+        .as_array()
+        .map(|items: &Vec<serde_json::Value>| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// At-rest encryption port (L27). Foundation owns the contract; concrete
 /// ciphers live in the security class so core stays external-free.
 pub trait Sealer: Send + Sync {

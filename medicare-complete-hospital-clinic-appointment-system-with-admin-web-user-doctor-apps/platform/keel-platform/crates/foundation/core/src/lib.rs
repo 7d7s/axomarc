@@ -45,7 +45,7 @@ pub use revision::{
     AuthorizationRevision, DeltaSequence, FeatureRevision, ModuleRevision, PlatformRevision,
     SchemaRevision, TenantRevision,
 };
-pub use secret::{open_for_key, Envelope, Sealer, Secret};
+pub use secret::{ability_list, open_for_key, Envelope, Sealer, Secret};
 pub use strings::{
     excerpt, random, to_camel_case, to_kebab_case, to_slug, to_snake_case, to_studly_case,
     to_title_case, words,

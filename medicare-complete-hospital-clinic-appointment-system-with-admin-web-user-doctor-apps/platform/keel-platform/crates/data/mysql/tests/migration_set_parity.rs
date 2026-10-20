@@ -34,6 +34,7 @@ const TWIN_ONLY: &[&str] = &[
     "20261005000002_outbox_idempotency_key.sql",
     "20261005000003_jobs_queue_schema_version.sql",
     "20261005000004_jobs_queue_tenant_binary.sql",
+    "20261021000001_auth_token_abilities.sql",
 ];
 
 /// Every `*.sql` file in `dir`, sorted (BTreeSet order), by file name.

@@ -1238,9 +1238,17 @@ async fn mysql_savepoint_rollback_isolates_two_tests_sharing_a_table() {
 /// the row back, so the proof covers the whole write→read path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_a_traced_job_row_carries_the_request_correlation() {
+    let _guard = JOBS_QUEUE_LOCK.lock().await;
     use kelson_jobs::{build_from_def, JobDef, JobStore};
 
     let Some(pool) = mysql_pool().await else { return };
+    // The queue is shared and PERSISTS across runs: without this, the claim
+    // could hand back a row an earlier run left behind and the assertion
+    // below would be about someone else's job.
+    sqlx::query("DELETE FROM jobs_queue WHERE status IN ('pending', 'running')")
+        .execute(&pool)
+        .await
+        .expect("clean claimable queue");
     let store = kelson_mysql::MySqlJobStore::new(pool.clone());
 
     let correlation = kelson_foundation::CorrelationId::new();
@@ -1263,12 +1271,13 @@ async fn mysql_a_traced_job_row_carries_the_request_correlation() {
     assert_eq!(claimed.causation_id, Some(correlation));
 }
 
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_job_store_claim_completes_and_fails_with_skip_locked() {
+    let _guard = JOBS_QUEUE_LOCK.lock().await;
     use kelson_jobs::{JobStatus, JobStore, JobStoreAdmin};
 
     let Some(pool) = mysql_pool().await else { return };
-    let _guard = JOBS_QUEUE_LOCK.lock().await;
     let store = kelson_mysql::MySqlJobStore::new(pool.clone());
 
     // `claim` takes the globally first pending row (`ORDER BY priority DESC,
@@ -1362,10 +1371,10 @@ async fn mysql_job_store_claim_completes_and_fails_with_skip_locked() {
 /// they share `jobs_queue`, exactly as the pre-existing claim test does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_job_store_recovers_orphaned_running_job_after_worker_crash() {
+    let _guard = JOBS_QUEUE_LOCK.lock().await;
     use kelson_jobs::{build_from_def, JobDef, JobStatus, JobStore, JobStoreAdmin};
 
     let Some(pool) = mysql_pool().await else { return };
-    let _guard = JOBS_QUEUE_LOCK.lock().await;
     let store = kelson_mysql::MySqlJobStore::new(pool.clone());
 
     sqlx::query("DELETE FROM jobs_queue WHERE status IN ('pending', 'running')")
@@ -1462,10 +1471,10 @@ async fn mysql_job_store_recovers_orphaned_running_job_after_worker_crash() {
 /// deferred worker shares the epoch with the new claim but not the ownership.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_job_store_fences_a_deferred_job_reclaimed_at_the_same_epoch() {
+    let _guard = JOBS_QUEUE_LOCK.lock().await;
     use kelson_jobs::{build_from_def, JobDef, JobStatus, JobStore, JobStoreAdmin};
 
     let Some(pool) = mysql_pool().await else { return };
-    let _guard = JOBS_QUEUE_LOCK.lock().await;
     let store = kelson_mysql::MySqlJobStore::new(pool.clone());
 
     sqlx::query("DELETE FROM jobs_queue WHERE status IN ('pending', 'running')")
@@ -1535,10 +1544,10 @@ async fn mysql_job_store_fences_a_deferred_job_reclaimed_at_the_same_epoch() {
 /// countable instead of sitting `running` forever.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_job_store_dead_letters_an_exhausted_orphan_claim() {
+    let _guard = JOBS_QUEUE_LOCK.lock().await;
     use kelson_jobs::{build_from_def, JobDef, JobStatus, JobStore, JobStoreAdmin};
 
     let Some(pool) = mysql_pool().await else { return };
-    let _guard = JOBS_QUEUE_LOCK.lock().await;
     let store = kelson_mysql::MySqlJobStore::new(pool.clone());
 
     sqlx::query("DELETE FROM jobs_queue WHERE status IN ('pending', 'running')")
@@ -1598,10 +1607,10 @@ async fn mysql_job_store_dead_letters_an_exhausted_orphan_claim() {
 /// reclaim arm carries testable.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_job_store_tenant_scoped_queue_is_usable_and_isolated() {
+    let _guard = JOBS_QUEUE_LOCK.lock().await;
     use kelson_jobs::{build_from_def, JobDef, JobStatus, JobStoreAdmin, TenantJobStore};
 
     let Some(pool) = mysql_pool().await else { return };
-    let _guard = JOBS_QUEUE_LOCK.lock().await;
     let store = kelson_mysql::MySqlJobStore::new(pool.clone());
     let tenant_a = TenantId::from_uuid(uuid::Uuid::now_v7());
     let tenant_b = TenantId::from_uuid(uuid::Uuid::now_v7());
@@ -1684,10 +1693,10 @@ async fn mysql_job_store_tenant_scoped_queue_is_usable_and_isolated() {
 /// is not a reachable `postgres://` URL (see the module note).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pg_job_store_recovers_orphaned_running_job_after_worker_crash() {
+    let _guard = JOBS_QUEUE_LOCK.lock().await;
     use kelson_jobs::{build_from_def, JobDef, JobStatus, JobStore, JobStoreAdmin};
 
     let Some(pool) = pool().await else { return };
-    let _guard = JOBS_QUEUE_LOCK.lock().await;
     let store = kelson_postgres::PgJobStore::new(pool.clone());
 
     sqlx::query("DELETE FROM jobs_queue WHERE status IN ('pending', 'running')")

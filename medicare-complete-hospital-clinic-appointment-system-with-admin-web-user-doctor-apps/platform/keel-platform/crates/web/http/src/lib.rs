@@ -31,7 +31,8 @@ pub use cache::{etag_for, if_none_match_hits, CacheControlBuilder};
 pub use cookie::{derive_cookie_key, Cookie, CookieCipher, CookieJar, CookieQueue, SameSite};
 pub use csrf::{session_csrf_token, CsrfGuard, CSRF_COOKIE, CSRF_HEADER};
 pub use guard::{
-    guarded, BearerGuard, BearerVerifier, Guard, GuardStrategy, GuardedPrincipal,
+    guarded, guarded_with_abilities, BearerGuard, BearerVerifier, CookieTokenGuard, Guard,
+    GuardStrategy, GuardedPrincipal,
 };
 pub use error_render::{
     problem_json, wants_problem, ErrorRenderPlan, ErrorRenderRegistry, ErrorRenderer, PROBLEM_JSON,

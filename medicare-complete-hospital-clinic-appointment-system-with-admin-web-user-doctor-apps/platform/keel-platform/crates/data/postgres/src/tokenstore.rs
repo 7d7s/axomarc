@@ -38,12 +38,14 @@ fn token_from_row(row: sqlx::postgres::PgRow) -> Result<AuthToken, AppError> {
     use sqlx::Row;
     let principal_id: Uuid = row.try_get("principal_id").map_err(pg)?;
     let purpose = purpose_from(&row.try_get::<String, _>("purpose").map_err(pg)?)?;
+    let abilities: serde_json::Value = row.try_get("abilities").map_err(pg)?;
     Ok(AuthToken {
         id: row.try_get("id").map_err(pg)?,
         principal_id: PrincipalId::from_uuid(principal_id),
         purpose,
         token_hash: row.try_get("token_hash").map_err(pg)?,
         label: row.try_get("label").map_err(pg)?,
+        abilities: kelson_foundation::ability_list(&abilities),
         expires_at: row.try_get("expires_at").map_err(pg)?,
         consumed_at: row.try_get("consumed_at").map_err(pg)?,
         created_at: row.try_get("created_at").map_err(pg)?,
@@ -59,14 +61,15 @@ impl TokenStore for PgTokenStore {
         let pool = self.pool.clone();
         block_on(async move {
             sqlx::query(
-                "INSERT INTO auth_tokens (id, principal_id, purpose, token_hash, label, expires_at, consumed_at, created_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                "INSERT INTO auth_tokens (id, principal_id, purpose, token_hash, label, abilities, expires_at, consumed_at, created_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
             )
             .bind(token.id)
             .bind(*token.principal_id.as_uuid())
             .bind(token.purpose.as_str())
             .bind(&token.token_hash)
             .bind(&token.label)
+            .bind(serde_json::to_value(&token.abilities).map_err(pg)?)
             .bind(token.expires_at)
             .bind(token.consumed_at)
             .bind(token.created_at)
