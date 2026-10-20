@@ -428,6 +428,95 @@ constraints = [{ param = "id", kind = "number" }]
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Row 9: the **no-rebuild proof**.
+    ///
+    /// A CONFIG change must not invalidate the compiled route artifact: the
+    /// routes are compiled from the module manifests + `middleware.toml`, not
+    /// from the config's values, so editing the config (a limit, a flag, the
+    /// app name) must leave the artifact VALID — no rebuild, no restart.
+    ///
+    /// The converse is pinned too: a MANIFEST change DOES invalidate the
+    /// artifact (a rebuild is required), so the property is not vacuous.
+    #[test]
+    fn a_config_change_does_not_invalidate_the_compiled_routes() {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "kelson-norebuild-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        let module_dir = root.join("applications").join("alpha");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::create_dir_all(root.join("config")).unwrap();
+        let manifest_path = module_dir.join("module.toml");
+        let manifest_toml = r#"
+[module]
+name = "alpha"
+version = "0.1.0"
+api = 1
+
+[capabilities]
+"index" = { profile = "READ" }
+
+[[routes]]
+method = "GET"
+path = "/api/v1/things"
+operation = "index"
+"#;
+        std::fs::write(&manifest_path, manifest_toml).unwrap();
+        std::fs::write(
+            root.join("config").join("dev.toml"),
+            "[app]\nname = \"before\"\n",
+        )
+        .unwrap();
+
+        // The compiled artifact, pinned to the current kernel digest.
+        let digest = manifests_hash(&root).unwrap();
+        let artifact = RouteCacheArtifact {
+            module_abi: MODULE_ABI,
+            manifest_hash: digest.clone(),
+            plans: Vec::new(),
+        };
+        assert!(
+            artifact.matches(&root).unwrap(),
+            "the artifact matches the workspace it was built from"
+        );
+
+        // A CONFIG change: the app name, a limit, a feature flag…
+        std::fs::write(
+            root.join("config").join("dev.toml"),
+            "[app]\nname = \"after\"\n\n[limits]\ndefault_monthly_operations = 999\n",
+        )
+        .unwrap();
+        assert_eq!(
+            manifests_hash(&root).unwrap(),
+            digest,
+            "a CONFIG change does not touch the kernel digest"
+        );
+        assert!(
+            artifact.matches(&root).unwrap(),
+            "the compiled routes are still VALID after a config change — NO REBUILD, no restart"
+        );
+
+        // The converse: a MANIFEST change DOES require a rebuild.
+        std::fs::write(
+            &manifest_path,
+            &manifest_toml.replace("version = \"0.1.0\"", "version = \"0.2.0\""),
+        )
+        .unwrap();
+        assert_ne!(
+            manifests_hash(&root).unwrap(),
+            digest,
+            "a manifest change moves the kernel digest"
+        );
+        assert!(
+            !artifact.matches(&root).unwrap(),
+            "a manifest change invalidates the artifact — a rebuild IS required"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     #[test]
     fn packages_participate_in_the_manifest_hash() {
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
