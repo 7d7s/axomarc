@@ -292,8 +292,10 @@ the load-bearing details and divergences.
 - Live: persistence across requests, logout destroys, login rotates and invalidates the pre-login cookie,
   password-confirm window, remember-me 30-day cookie surfaced by `me`, secure flag defaults under test.
 - Stores: InMemory (suite default), MySQL (2 live tests, executed), Pg store + `pg_session_store_lifecycle`
-  (**NOT RUN**, host), Redis adapter (exists; not executed this pass). Multi-instance durability is the
-  stores' purpose and is demonstrated for MySQL.
+  (**intermittently NOT RUN**, host: the pg backend crash), Redis adapter (**now executed** — 4 live
+  cases against the Redis on this host: the round trip with the bag intact, two connections sharing the
+  store, the key carrying its TTL, and the count seeing only its own namespace). Multi-instance
+  durability is the stores' purpose and is demonstrated for MySQL and for Redis.
 
 ### LF-023 — Validation and Form Requests — VERIFIED
 - `kelson-validation` is the FormRequest equivalent: a collect-all Validator over a rule grammar with
