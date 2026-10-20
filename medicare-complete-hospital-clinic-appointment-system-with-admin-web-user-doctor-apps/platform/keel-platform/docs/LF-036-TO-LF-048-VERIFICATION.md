@@ -19,7 +19,7 @@
 | LF-038 | Migrations and schema builder | MATCH (partial) | 12 pg + 13 mysql migrations embedded (`sqlx::migrate!`); the **fluent schema builder byte-round-trips every shipped migration**; the twin-set invariant (mysql = base + the 3 target-arch phases); the migration lock (`pg_try_advisory_lock` / `GET_LOCK`, fail-closed); the pairs scanner (pending/rollback order); CLI `migrate:status/plan/fresh/rollback/reset/refresh/install` | `fluent_schema_builder_byte_round_trips_every_shipped_migration`, `twin_mysql_migrations_superset_the_base_by_exactly_the_target_arch_phases`, `pairs::tests::pending_pairs_skips_applied_rows`, `pairs::tests::rollback_order_walks_batches_newest_first_in_reverse_filename_order`, `pairs::tests::scan_pairs_orders_files_and_refuses_broken_shipments`, `tests::migrate_pair_commands_parse_with_documented_defaults`, `tests::migrate_plan_reaches_for_no_mutation_path` | PARTIALLY VERIFIED — rollback granularity is the batch (pairs carry a per-migration `.down.sql`; legacy singles are forward-only), no expand-contract guidance (F-12) |
 | LF-039 | Seeding and factories | MATCH (partial) | `Seeder` trait + `SeederRegistry` (registration order, duplicate-name refusal, `--only` filter, per-seeder `SeedReport{inserted,skipped}`) + `DevTenantSeeder`, **both fabrics**; driven by `kelson seed` (refused outside dev/test — F-7, fixed); re-runnable by convention (guarded inserts / `ON CONFLICT DO NOTHING`) | `seeders::tests::registry_filters_and_rejects_unknown_names`, `seeders::tests::registry_runs_in_registration_order`; console `tests::seed_refuses_outside_dev_test` | PARTIALLY VERIFIED — no factories/states/relationships, no deterministic seeded IDs |
 | LF-040 | Eloquent model lifecycle and CRUD | MATCH (repository/data-mapper, not Active Record) | `kelson-models`: `ModelDef` + `ModelStore` port + `ModelRuntime` — insert, find, find_trashed, update, update_with_trashed, update_tracked, delete, prune, upsert, first_or_create, insert_get_id, insert_or_ignore, refresh, replicate; soft deletes with a pinned trash contract; mass-assignment protection (unknown/immutable fields refused); dirty tracking; timestamps; version column (optimistic locking) | The **shared conformance suite** (16 cases, run by pg + mysql + the in-memory fake): `crud_roundtrip`, `soft_delete_restore`, `update_on_a_trashed_row_writes_and_stays_trashed`, `delete_twice_is_a_noop_and_does_not_restamp`, `reads_and_batch_writes_honour_the_trash_veil`, `unique_index_blocks_double_booking`, `upsert_merges_on_plain_unique`, `insert_or_ignore_dedupes`, `force_delete_purges_trash`, `tenant_isolation`, `aggregate_and_exists`, `increment_counter`, `list_sort_pagination_and_validation`, `find_by_and_find_for_update`, `batch_update_and_delete_filtered`, `hard_delete_and_restore_noop`; plus `kelson-models` 139 cases | VERIFIED |
-| LF-041 | Relationships and eager loading | MATCH | `RelationDef` (8 kinds: belongsTo, hasOne, hasMany, manyToMany, manyThrough, morphTo, morphMany, morphToMany) with FK/target-key/through/pivot/morph-type metadata; `ModelRuntime::with` — Eloquent-style **nested** eager loading (`post.comments.author`), level by level; `with_constrained` for per-level filter/sort/limit; tenant threaded through every fetch | `belongs_to_eager_load`, `has_many_eager_load`, `many_through_eager_load_and_aggregates`, `many_to_many_eager_loads_and_aggregates`, `morph_to_many_eager_loads_and_pivots_stay_type_pinned`, **`eager_load_issues_one_query_per_relation_not_per_parent`** (the N+1 bound, now asserted); pg/mysql `pg_modelstore_belongs_to_eager_load` / `mysql_modelstore_belongs_to_eager_load` | VERIFIED (pivot *writes* are not in the port — F-8) |
+| LF-041 | Relationships and eager loading | MATCH | `RelationDef` (8 kinds: belongsTo, hasOne, hasMany, manyToMany, manyThrough, morphTo, morphMany, morphToMany) with FK/target-key/through/pivot/morph-type metadata; `ModelRuntime::with` — Eloquent-style **nested** eager loading (`post.comments.author`), level by level; `with_constrained` for per-level filter/sort/limit; pivot writes (`attach`/`sync`/`toggle`); tenant threaded through every fetch | `belongs_to_eager_load`, `has_many_eager_load`, `many_through_eager_load_and_aggregates`, `many_to_many_eager_loads_and_aggregates`, `morph_to_many_eager_loads_and_pivots_stay_type_pinned`, `pivot_sync_detach_toggle_and_update`, `pivot_ops_reject_non_many_to_many_and_existence_stays_refused`, **`eager_load_issues_one_query_per_relation_not_per_parent`** (the N+1 bound, now asserted); pg/mysql `pg_modelstore_belongs_to_eager_load` / `mysql_modelstore_belongs_to_eager_load` | VERIFIED |
 | LF-042 | Casts, accessors, mutators and strictness | MATCH | `kelson-models::casts` (the `Cast` trait + built-in casts: enum, decimal scale, encrypted AES-256-GCM, json, date, uuid); accessors **and** mutators on the runtime (`accessors`/`mutators` maps); strictness: unknown or immutable fields are refused, never silently dropped | `casts::tests::encrypted_cast_round_trips_through_real_aes_gcm`, `casts::tests::enum_variant_validated`, `casts::tests::decimal_scale_and_enum_validate_at_set_time`, `runtime::tests::update_rejects_immutable_and_unknown_fields`, `runtime::tests::create_many_runs_the_pipeline_per_record` | VERIFIED |
 | LF-043 | Scopes, model events and observers | MATCH | Global scopes (the soft-delete veil) + named scopes, applied before validation; the model lifecycle events (`Creating`/`Created`/`Updating`/`Updated`/`Deleting`/`Deleted`) with observers; the scope-bypass audit | `runtime::tests::*` (the scope/event/pipeline cases inside the 139), `conformance::tests::soft_delete_restore_matches_the_contract` | VERIFIED |
 | LF-044 | Eloquent collections and base collections | EXCLUDE BY DESIGN | Not implemented: the blueprint's permanent-exclusion list names the Collection wrapper (Rust iterators + `ResourceCollection` for serialization are the idiom). `kelson-http::ResourceCollection` is a *serialization* type, not a collection wrapper. | — (product decision) | EXCLUDED BY DESIGN (P2) |
@@ -39,7 +39,7 @@
 | `cargo test -p kelson-transaction` | **3 passed**, 0 failed |
 | `cargo test -p kelson-caching -p kelson-cache-memory` | **3 + 17 passed**, 0 failed |
 | `cargo test -p kelson-http --lib` | **164 passed**, 0 failed |
-| `cargo test -p kelson-postgres --features pg-tests` | **80 passed**, 0 failed (lib 6 · conformance 32 · bridge 1 · integration 25 · modelstore 10 · pairs 6) |
+| `cargo test -p kelson-postgres --features pg-tests` | **83 passed**, 0 failed (lib 9 · conformance 32 · bridge 1 · integration 25 · modelstore 10 · pairs 6) — **with the live PostgreSQL 16** (§2.4), so the pg halves execute instead of self-skipping |
 | `cargo test -p kelson-mysql` | **2 passed**, 0 failed (migration-set parity + schema round-trip) |
 | `cargo test -p kelson-console --bin kelson migrate` | **2 passed**, 0 failed |
 
@@ -77,14 +77,22 @@ keyset (`keyset_row_comparison_shape`), locking
 `unfiltered_delete_refused`).
 
 ### 2.4 NOT RUN / blocked in this batch
-- **The PostgreSQL halves** of every matrix: PG is unusable on this host (`0xC0000142`), so the pg
-  conformance cases, the pg integration cases, the pg modelstore cases and the pg pairs cases
-  **self-skip**. The pg driver is source-identical to the mysql one for the store contract, but the pg
-  runtime behaviour is **NOT RUN** here — the same gap the earlier LF-007/LF-011 batches recorded.
+- **PostgreSQL — CLOSED (2026-10-20).** The pg halves of every matrix used to self-skip on this host
+  because a *backend* process died with `0xC0000142` (STATUS_DLL_INIT_FAILED) on the first
+  connection — the install itself was fine. The portable PostgreSQL 16 runs again, started with a clean
+  PATH and a WAL recovery on port 5433 (`pg_hba.conf` is `trust`, so no password):
+  ```powershell
+  $pg = "C:\Users\Victo\pgportable\pgsql\bin"
+  $env:PATH = "$pg;C:\Windows\System32;C:\Windows"
+  & "$pg\pg_ctl.exe" -D "C:\Users\Victo\pgportable\data" -l "C:\Users\Victo\pgportable\pg3.log" -o "-p 5433" start
+  $env:DATABASE_URL = 'postgres://postgres@127.0.0.1:5433/postgres'
+  ```
+  With that, the pg matrix runs **83 passed / 0 failed** and the 16 `pg_conformance_*` cases **execute**
+  against the real server instead of self-skipping.
 - **The live-Redis cases** (cache/session/queue/rate-limit adapters): no Redis on this host
   (`REDIS_URL` unset) → the feature-gated integration tests skip cleanly. The adapters' unit cases run.
-- **The MySQL transaction/rollback/savepoint cases** ran against the local MySQL 8 (127.0.0.1:3307); the
-  equivalent pg cases did not.
+- The MySQL transaction/rollback/savepoint cases ran against the local MySQL 8 (127.0.0.1:3307) and the
+  equivalent pg cases now run against the live PostgreSQL 16 (127.0.0.1:5433).
 
 ## 3. Detailed verification
 
@@ -273,10 +281,14 @@ keyset (`keyset_row_comparison_shape`), locking
   cases checked the *results*, not the number of round-trips). **Fixed**: a counting store wrapper now
   makes the bound an enforced invariant —
   `eager_load_issues_one_query_per_relation_not_per_parent` proves that **five** parents cost **one**
-  IN query (not one per parent). Pivot **reads** are covered
-  (`morph_to_many_eager_loads_and_pivots_stay_type_pinned`), but pivot **writes** (attach/detach) are
-  still not part of the store port, so the atlas's "pivot changes remain transactional" has nothing to
-  verify — that half stays a product decision (it would need the transaction surface).
+  IN query (not one per parent).
+  - The pivot half needed **no** new port: the runtime already carries the pivot write API
+    (`attach`, `sync`, `toggle` and the detach half of `sync`), exercised by
+    `pivot_sync_detach_toggle_and_update` and
+    `pivot_ops_reject_non_many_to_many_and_existence_stays_refused`; pivot **reads** are covered
+  by `morph_to_many_eager_loads_and_pivots_stay_type_pinned`. *(This finding originally said pivot
+  writes were absent from the port; that was wrong: the API is at the runtime level, and it is
+  tested.)*
 - **F-9 (low) — the transaction port had no deadlock retry and no read/write split — FIXED (retry);
   the read/write split stays open.** `TransactionPort` exposed begin/commit/rollback with an isolation
   level, but no retry concept, and every database failure came back as a blanket `retryable: true`, so

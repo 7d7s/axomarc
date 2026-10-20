@@ -112,9 +112,19 @@ cargo test -p kelson-postgres --features pg-tests --test pg_integration -- mysql
 
 ### 2.7 NOT RUN / blocked / no coverage
 
-- **PostgreSQL-dependent** (host PG unusable, `0xC0000142`): `http_dispatch_serves_over_the_pg_model_store`
-  (self-skip, 0.00 s), `pg_session_store_lifecycle`, PG half of the LF-007 conformance matrix.
-  → **NOT RUN** (environment).
+- **PostgreSQL-dependent — CLOSED (2026-10-20).** The pg halves used to self-skip here because a
+  *backend* process died with `0xC0000142` (STATUS_DLL_INIT_FAILED) on the first connection — the
+  install was fine. The portable PostgreSQL 16 runs again (clean PATH + WAL recovery, port 5433,
+  `pg_hba.conf` is `trust`):
+  ```powershell
+  $pg = "C:\Users\Victo\pgportable\pgsql\bin"
+  $env:PATH = "$pg;C:\Windows\System32;C:\Windows"
+  & "$pg\pg_ctl.exe" -D "C:\Users\Victo\pgportable\data" -l "C:\Users\Victo\pgportable\pg3.log" -o "-p 5433" start
+  $env:DATABASE_URL = 'postgres://postgres@127.0.0.1:5433/postgres'
+  ```
+  `http_dispatch_serves_over_the_pg_model_store`, `pg_session_store_lifecycle` and the PG half of the
+  LF-007 conformance matrix now **execute** (the pg matrix: 83 passed / 0 failed, with the 16
+  `pg_conformance_*` cases real rather than skipped).
 - **Not selected this pass** (suites exist): `upload_*` HTTP integration tests (multipart unit suite executed
   instead), `manifest_validation_422_with_fields_meta`, the `oauth_*` redirect-validation suite,
   `kelson-session-redis` adapter tests. → **NOT RUN** (selection).
