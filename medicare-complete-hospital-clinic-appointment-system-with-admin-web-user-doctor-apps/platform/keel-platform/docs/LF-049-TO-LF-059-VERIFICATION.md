@@ -242,11 +242,12 @@ checkout. The Playwright specs (`e2e/auth.spec.ts`, `e2e/notes.spec.ts`) are **n
   **`a_personal_access_token_works_as_a_cookie_and_carries_its_abilities`** (the PAT works as a
   bearer ✓ and as a cookie ✓, and its abilities are the principal's granted capabilities ✓ — nothing
   more ✓).
-- **Gap**: the abilities are carried and reported ✓, but the **policy engine does not yet narrow by
-  them** — the PAT path keeps its `pat_bypasses_snapshot` contract (the access snapshot is installed
-  at login ✓, not per request ✓), so the narrowing is not yet enforced at the authorization
-  boundary ✓. A PAT also carries no tenant scope of its own (the tenancy comes from the request's
-  tenant ✓).
+- **Gap**: the abilities are carried, stored and **reported** ✓ — the framework's half is done ✓.
+  The **enforcement** is the host's policy choice, exactly as in Sanctum (`tokenCan` is an
+  application-level check ✓): the demo does not yet narrow the access snapshot with them ✓, and the
+  PAT path keeps its `pat_bypasses_snapshot` contract ✓ (the snapshot is installed at login ✓, not
+  per request ✓). A PAT also carries no tenant scope of its own (the tenancy comes from the
+  request's tenant ✓).
 
 ### LF-057 — OAuth2 authorization server (Passport-class) — **VERIFIED**
 
