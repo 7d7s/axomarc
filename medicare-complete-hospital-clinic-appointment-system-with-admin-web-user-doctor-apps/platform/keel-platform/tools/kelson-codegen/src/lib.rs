@@ -297,6 +297,38 @@ mod tests {
         assert!(cargo.1.contains("name = \"kelson-mod-inventory\""));
     }
 
+    /// The generated module must implement the **current**
+    /// `AuthorizationPort` signature.
+    ///
+    /// The template is a string, so nothing but this guard notices when the
+    /// trait changes under it: the scaffolded crate then fails to compile,
+    /// and every module `kelson make:module` writes is broken. That happened
+    /// once (the `&ExecutionPlan` → `&AuthzRequest<'_>` change) and nothing
+    /// in the suite caught it — this test does.
+    #[test]
+    fn the_generated_authorize_matches_the_current_port_signature() {
+        let files = module_files(&spec());
+        let lib = files
+            .iter()
+            .find(|(p, _)| p.ends_with("lib.rs"))
+            .expect("the module's lib.rs")
+            .1
+            .clone();
+        assert!(
+            lib.contains("AuthzRequest"),
+            "the generated module must implement the CURRENT AuthorizationPort \
+             signature (it imports AuthzRequest and takes &AuthzRequest<'_>)"
+        );
+        assert!(
+            !lib.contains("_plan: &ExecutionPlan"),
+            "the generated module must not carry a stale authorize signature"
+        );
+        assert!(
+            lib.contains("&AuthzRequest<'_>"),
+            "the generated authorize takes &AuthzRequest<'_>"
+        );
+    }
+
     #[test]
     fn writes_module_and_refuses_overwrite() {
         let dir = std::env::temp_dir().join(format!("kelson-codegen-test-{}", std::process::id()));

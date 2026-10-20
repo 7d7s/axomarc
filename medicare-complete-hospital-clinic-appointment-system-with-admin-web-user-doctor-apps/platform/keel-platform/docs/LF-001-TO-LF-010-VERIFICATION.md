@@ -100,6 +100,10 @@
   --all-targets` **finishes clean**, and the scaffolded crate's own test
   (`tests::ping_executes_through_engine`) **passes**. The probe crate and the workspace-member entry
   were removed afterwards (the root `Cargo.toml`/`Cargo.lock` were restored byte-for-byte).
+  **A guard now sits in the suite**: `kelson-codegen`'s
+  `the_generated_authorize_matches_the_current_port_signature` fails if the template's `authorize`
+  drifts from the trait again — verified by re-injecting the stale signature, which turned the guard
+  red.
 - ~~Long-lived worker leak soak~~ — **CLOSED (2026-10-20)**: `kelson-worker`'s
   `a_long_lived_worker_leaks_nothing_between_jobs` (40 jobs, each in its own tenant with its own
   payload marker and correlation, drained through the worker's real claim+dispatch pass) and
