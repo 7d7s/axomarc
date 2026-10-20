@@ -3168,6 +3168,169 @@ mod tests {
     use super::*;
     use crate::store::InMemoryModelStore;
     use crate::{FieldDef, RelationDef};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A store wrapper that counts the read queries (F-8). The eager-load
+    /// path must not degrade into N+1, so the bound is **asserted** here, not
+    /// just documented on the method.
+    #[derive(Clone)]
+    struct CountingStore {
+        inner: Arc<InMemoryModelStore>,
+        lists: Arc<AtomicUsize>,
+    }
+
+    impl CountingStore {
+        fn new() -> Self {
+            Self {
+                inner: InMemoryModelStore::new(),
+                lists: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        /// How many list (read) queries this store has served.
+        fn list_calls(&self) -> usize {
+            self.lists.load(Ordering::SeqCst)
+        }
+    }
+
+    impl ModelStore for CountingStore {
+        fn list(
+            &self,
+            model: &ModelDef,
+            tenant: Option<TenantId>,
+            filters: &[FieldFilter],
+            opts: &ListOpts,
+        ) -> Result<kelson_query::Page<Record>, AppError> {
+            self.lists.fetch_add(1, Ordering::SeqCst);
+            self.inner.list(model, tenant, filters, opts)
+        }
+        fn find(
+            &self,
+            model: &ModelDef,
+            id: Uuid,
+            tenant: Option<TenantId>,
+            include_deleted: bool,
+        ) -> Result<Option<Record>, AppError> {
+            self.inner.find(model, id, tenant, include_deleted)
+        }
+        fn insert(&self, model: &ModelDef, record: &Record) -> Result<Record, AppError> {
+            self.inner.insert(model, record)
+        }
+        fn update(
+            &self,
+            model: &ModelDef,
+            id: Uuid,
+            tenant: Option<TenantId>,
+            changes: &Record,
+        ) -> Result<Option<Record>, AppError> {
+            self.inner.update(model, id, tenant, changes)
+        }
+        fn delete(
+            &self,
+            model: &ModelDef,
+            id: Uuid,
+            tenant: Option<TenantId>,
+        ) -> Result<bool, AppError> {
+            self.inner.delete(model, id, tenant)
+        }
+        fn upsert(
+            &self,
+            model: &ModelDef,
+            record: &Record,
+            conflict: &[String],
+        ) -> Result<Record, AppError> {
+            self.inner.upsert(model, record, conflict)
+        }
+        fn aggregate(
+            &self,
+            model: &ModelDef,
+            tenant: Option<TenantId>,
+            filters: &[FieldFilter],
+            op: AggregateOp,
+        ) -> Result<Json, AppError> {
+            self.inner.aggregate(model, tenant, filters, op)
+        }
+        fn exists(
+            &self,
+            model: &ModelDef,
+            tenant: Option<TenantId>,
+            filters: &[FieldFilter],
+        ) -> Result<bool, AppError> {
+            self.inner.exists(model, tenant, filters)
+        }
+        fn find_by(
+            &self,
+            model: &ModelDef,
+            tenant: Option<TenantId>,
+            filters: &[FieldFilter],
+            include_deleted: bool,
+        ) -> Result<Option<Record>, AppError> {
+            self.inner.find_by(model, tenant, filters, include_deleted)
+        }
+        fn find_for_update(
+            &self,
+            model: &ModelDef,
+            id: Uuid,
+            tenant: Option<TenantId>,
+            include_deleted: bool,
+        ) -> Result<Option<Record>, AppError> {
+            self.inner.find_for_update(model, id, tenant, include_deleted)
+        }
+        fn insert_or_ignore(
+            &self,
+            model: &ModelDef,
+            record: &Record,
+        ) -> Result<Option<Record>, AppError> {
+            self.inner.insert_or_ignore(model, record)
+        }
+        fn update_filtered(
+            &self,
+            model: &ModelDef,
+            tenant: Option<TenantId>,
+            filters: &[FieldFilter],
+            changes: &Record,
+        ) -> Result<Vec<Record>, AppError> {
+            self.inner.update_filtered(model, tenant, filters, changes)
+        }
+        fn delete_filtered(
+            &self,
+            model: &ModelDef,
+            tenant: Option<TenantId>,
+            filters: &[FieldFilter],
+        ) -> Result<Vec<Record>, AppError> {
+            self.inner.delete_filtered(model, tenant, filters)
+        }
+        fn force_delete(
+            &self,
+            model: &ModelDef,
+            id: Uuid,
+            tenant: Option<TenantId>,
+        ) -> Result<bool, AppError> {
+            self.inner.force_delete(model, id, tenant)
+        }
+        fn truncate(&self, model: &ModelDef, env: &str) -> Result<(), AppError> {
+            self.inner.truncate(model, env)
+        }
+        fn increment(
+            &self,
+            model: &ModelDef,
+            id: Uuid,
+            tenant: Option<TenantId>,
+            field: &str,
+            by: i64,
+            extra: &Record,
+        ) -> Result<Option<Record>, AppError> {
+            self.inner.increment(model, id, tenant, field, by, extra)
+        }
+        fn restore(
+            &self,
+            model: &ModelDef,
+            id: Uuid,
+            tenant: Option<TenantId>,
+        ) -> Result<Option<Record>, AppError> {
+            self.inner.restore(model, id, tenant)
+        }
+    }
 
     fn appointment_model() -> ModelDef {
         ModelDef::new("Appointment", "appointments")
@@ -3495,6 +3658,59 @@ mod tests {
             .load_relation(&store, "patient", &mut children, None)
             .unwrap();
         assert_eq!(children[0]["patient"]["name"], Json::String("P1".into()));
+    }
+
+    /// F-8: the eager load must not degrade into N+1. The bound ("at most 2
+    /// store queries per relation") was documented; here it is **asserted** —
+    /// N parents cost ONE query per relation level, not one per parent.
+    #[test]
+    fn eager_load_issues_one_query_per_relation_not_per_parent() {
+        let mut registry = ModelRegistry::new();
+        let patient = ModelDef::new("Patient", "patients")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("name", FieldType::Text).required());
+        let appointment = ModelDef::new("Appointment", "appointments")
+            .field(FieldDef::new("id", FieldType::Uuid).required().unique())
+            .field(FieldDef::new("patient_id", FieldType::Uuid))
+            .relation(RelationDef::belongs_to("patient", "Patient", "patient_id"));
+        registry.register(patient.clone()).unwrap();
+        registry.register(appointment.clone()).unwrap();
+        registry.validate_graph().unwrap();
+        let registry = Arc::new(registry);
+
+        let store = CountingStore::new();
+        let patient_rt = ModelRuntime::new(patient).with_registry(registry.clone());
+        let appointment_rt = ModelRuntime::new(appointment).with_registry(registry);
+
+        // Five patients, five appointments — the shape that would go N+1.
+        // The PARENTS are the appointments (they carry the relation's FK).
+        let mut parents = Vec::new();
+        for i in 0..5 {
+            let mut name = Record::new();
+            name.insert("name".into(), Json::String(format!("P{i}")));
+            let p = patient_rt.insert(&store, &name, None).unwrap();
+            let mut a = Record::new();
+            a.insert("patient_id".into(), p["id"].clone());
+            let appt = appointment_rt.insert(&store, &a, None).unwrap();
+            parents.push(appt);
+        }
+
+        let before = store.list_calls();
+        appointment_rt
+            .load_relation(&store, "patient", &mut parents, None)
+            .unwrap();
+        let used = store.list_calls() - before;
+        assert_eq!(
+            used, 1,
+            "one IN query for the whole relation set — not one per parent"
+        );
+        for (i, parent) in parents.iter().enumerate() {
+            assert_eq!(
+                parent["patient"]["name"],
+                Json::String(format!("P{i}")),
+                "every parent got its relation row"
+            );
+        }
     }
 
     // ------------------------------------------ Wave 4 (phase 4): relations

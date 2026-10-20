@@ -32,3 +32,29 @@ Rules (fail-closed):
 Documented divergence: within a run, legacy singles apply before pairs
 (interleaving the two formats by timestamp is not supported), and rollback
 applies only to pairs — legacy single-file migrations are forward-only.
+
+## Rollback granularity, and no-downtime changes
+
+`kelson migrate:rollback` reverts whole **batches** (one batch number per
+`kelson migrate` run that applied at least one pair — Laravel's granularity).
+A single migration inside a batch cannot be reverted on its own; ship it in
+its own run if it may need reverting alone.
+
+Destructive rollback cannot be promised universally: a `.down.sql` that drops
+a column destroys the data in it. For a **no-downtime** change, use the
+expand/contract sequence and keep every step reversible on its own:
+
+1. **Expand** — add the new column/table/index. Nothing reads it yet, so the
+   old code is unaffected. A pair's `.down.sql` drops it again.
+2. **Backfill** — copy the old data into the new shape, in batches. A
+   forward-only single is fine here (it is additive and idempotent); make the
+   backfill re-runnable so a retry is safe.
+3. **Switch** — read from the new shape, write to both. Deploys are now
+   compatible with the previous release *and* the next one, so a rollback of
+   the application does not need a schema rollback.
+4. **Contract** — drop the old column/table, in a later release, once no
+   running version reads it.
+
+Rule of thumb: a change that must be rolled back with the application belongs
+in a **pair** (it has a `.down.sql`); a change that only ever moves forward
+belongs in the forward-only singles.

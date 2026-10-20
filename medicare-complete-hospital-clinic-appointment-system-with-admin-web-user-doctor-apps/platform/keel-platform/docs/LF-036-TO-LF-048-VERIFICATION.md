@@ -16,10 +16,10 @@
 |---|---|---|---|---|---|
 | LF-036 | Database connections and transactions | MATCH (partial) | `kelson-transaction` (`TransactionPort`/`TxHandle`, isolation levels, advisory + row locks) implemented for both fabrics (`txport.rs`); savepoint isolation; one pool per fabric, reused across runtimes; tenant scoping on every write | `mysql_transaction_rollback_isolates_two_tests_sharing_a_table`, `mysql_savepoint_rollback_isolates_two_tests_sharing_a_table`, `pg_bridged_queries_reuse_pool_across_runtimes`, `tests::plan_driven_options`, `tests::advisory_key_is_deterministic_and_positive`, `tests::row_lock_builders_validate_identifiers`; conformance `mysql_conformance_tenant_isolation` | PARTIALLY VERIFIED — no deadlock retry, no read/write split, no pool-exhaustion/leak evidence (F-9) |
 | LF-037 | Query Builder | MATCH (typed, no raw escape hatch) | `kelson-query`: `Select`/`Insert`/`Update`/`Delete`/`Truncate` builders — filters, joins, group/having, distinct, unions, subqueries, aggregates, keyset row predicates, ordering, locking, tenant scoping; typed bind values; validated identifiers | 56 builder cases incl. `identifier_validation_rejects_injection_shapes`, `empty_in_list_rejected`, `flat_mixture_follows_sql_precedence`, `or_where_exists_joins_the_preceding_clause`, `nested_group_renders_parenthesized`, `exists_wrappers_and_correlated_subquery`, `keyset_row_comparison_shape`, `group_by_and_having_shapes`, `lock_clauses_render_after_limit_offset`, `tenant_scope_guard`, `unfiltered_delete_refused` | VERIFIED (no raw-SQL escape hatch — F-11) |
-| LF-038 | Migrations and schema builder | MATCH (partial) | 12 pg + 13 mysql migrations embedded (`sqlx::migrate!`); the **fluent schema builder byte-round-trips every shipped migration**; the twin-set invariant (mysql = base + the 3 target-arch phases); the migration lock (`pg_try_advisory_lock` / `GET_LOCK`, fail-closed); the pairs scanner (pending/rollback order); CLI `migrate:status/plan/fresh/rollback/reset/refresh/install` | `fluent_schema_builder_byte_round_trips_every_shipped_migration`, `twin_mysql_migrations_superset_the_base_by_exactly_the_target_arch_phases`, `pairs::tests::pending_pairs_skips_applied_rows`, `pairs::tests::rollback_order_walks_batches_newest_first_in_reverse_filename_order`, `pairs::tests::scan_pairs_orders_files_and_refuses_broken_shipments`, `tests::migrate_pair_commands_parse_with_documented_defaults`, `tests::migrate_plan_reaches_for_no_mutation_path` | PARTIALLY VERIFIED — rollback is batch-level (no per-migration `down`), no expand-contract guidance (F-12) |
+| LF-038 | Migrations and schema builder | MATCH (partial) | 12 pg + 13 mysql migrations embedded (`sqlx::migrate!`); the **fluent schema builder byte-round-trips every shipped migration**; the twin-set invariant (mysql = base + the 3 target-arch phases); the migration lock (`pg_try_advisory_lock` / `GET_LOCK`, fail-closed); the pairs scanner (pending/rollback order); CLI `migrate:status/plan/fresh/rollback/reset/refresh/install` | `fluent_schema_builder_byte_round_trips_every_shipped_migration`, `twin_mysql_migrations_superset_the_base_by_exactly_the_target_arch_phases`, `pairs::tests::pending_pairs_skips_applied_rows`, `pairs::tests::rollback_order_walks_batches_newest_first_in_reverse_filename_order`, `pairs::tests::scan_pairs_orders_files_and_refuses_broken_shipments`, `tests::migrate_pair_commands_parse_with_documented_defaults`, `tests::migrate_plan_reaches_for_no_mutation_path` | PARTIALLY VERIFIED — rollback granularity is the batch (pairs carry a per-migration `.down.sql`; legacy singles are forward-only), no expand-contract guidance (F-12) |
 | LF-039 | Seeding and factories | MATCH (partial) | `Seeder` trait + `SeederRegistry` (registration order, duplicate-name refusal, `--only` filter, per-seeder `SeedReport{inserted,skipped}`) + `DevTenantSeeder`, **both fabrics**; driven by `kelson seed` (refused outside dev/test — F-7, fixed); re-runnable by convention (guarded inserts / `ON CONFLICT DO NOTHING`) | `seeders::tests::registry_filters_and_rejects_unknown_names`, `seeders::tests::registry_runs_in_registration_order`; console `tests::seed_refuses_outside_dev_test` | PARTIALLY VERIFIED — no factories/states/relationships, no deterministic seeded IDs |
 | LF-040 | Eloquent model lifecycle and CRUD | MATCH (repository/data-mapper, not Active Record) | `kelson-models`: `ModelDef` + `ModelStore` port + `ModelRuntime` — insert, find, find_trashed, update, update_with_trashed, update_tracked, delete, prune, upsert, first_or_create, insert_get_id, insert_or_ignore, refresh, replicate; soft deletes with a pinned trash contract; mass-assignment protection (unknown/immutable fields refused); dirty tracking; timestamps; version column (optimistic locking) | The **shared conformance suite** (16 cases, run by pg + mysql + the in-memory fake): `crud_roundtrip`, `soft_delete_restore`, `update_on_a_trashed_row_writes_and_stays_trashed`, `delete_twice_is_a_noop_and_does_not_restamp`, `reads_and_batch_writes_honour_the_trash_veil`, `unique_index_blocks_double_booking`, `upsert_merges_on_plain_unique`, `insert_or_ignore_dedupes`, `force_delete_purges_trash`, `tenant_isolation`, `aggregate_and_exists`, `increment_counter`, `list_sort_pagination_and_validation`, `find_by_and_find_for_update`, `batch_update_and_delete_filtered`, `hard_delete_and_restore_noop`; plus `kelson-models` 139 cases | VERIFIED |
-| LF-041 | Relationships and eager loading | MATCH | `RelationDef` (8 kinds: belongsTo, hasOne, hasMany, manyToMany, manyThrough, morphTo, morphMany, morphToMany) with FK/target-key/through/pivot/morph-type metadata; `ModelRuntime::with` — Eloquent-style **nested** eager loading (`post.comments.author`), level by level, at most 2 store queries per relation; `with_constrained` for per-level filter/sort/limit; tenant threaded through every fetch | `belongs_to_eager_load`, `has_many_eager_load`, `many_through_eager_load_and_aggregates`, `many_to_many_eager_loads_and_aggregates`, `morph_to_many_eager_loads_and_pivots_stay_type_pinned`; pg/mysql `pg_modelstore_belongs_to_eager_load` / `mysql_modelstore_belongs_to_eager_load` | VERIFIED (the N+1 bound and pivot *writes* are not proven — F-8) |
+| LF-041 | Relationships and eager loading | MATCH | `RelationDef` (8 kinds: belongsTo, hasOne, hasMany, manyToMany, manyThrough, morphTo, morphMany, morphToMany) with FK/target-key/through/pivot/morph-type metadata; `ModelRuntime::with` — Eloquent-style **nested** eager loading (`post.comments.author`), level by level; `with_constrained` for per-level filter/sort/limit; tenant threaded through every fetch | `belongs_to_eager_load`, `has_many_eager_load`, `many_through_eager_load_and_aggregates`, `many_to_many_eager_loads_and_aggregates`, `morph_to_many_eager_loads_and_pivots_stay_type_pinned`, **`eager_load_issues_one_query_per_relation_not_per_parent`** (the N+1 bound, now asserted); pg/mysql `pg_modelstore_belongs_to_eager_load` / `mysql_modelstore_belongs_to_eager_load` | VERIFIED (pivot *writes* are not in the port — F-8) |
 | LF-042 | Casts, accessors, mutators and strictness | MATCH | `kelson-models::casts` (the `Cast` trait + built-in casts: enum, decimal scale, encrypted AES-256-GCM, json, date, uuid); accessors **and** mutators on the runtime (`accessors`/`mutators` maps); strictness: unknown or immutable fields are refused, never silently dropped | `casts::tests::encrypted_cast_round_trips_through_real_aes_gcm`, `casts::tests::enum_variant_validated`, `casts::tests::decimal_scale_and_enum_validate_at_set_time`, `runtime::tests::update_rejects_immutable_and_unknown_fields`, `runtime::tests::create_many_runs_the_pipeline_per_record` | VERIFIED |
 | LF-043 | Scopes, model events and observers | MATCH | Global scopes (the soft-delete veil) + named scopes, applied before validation; the model lifecycle events (`Creating`/`Created`/`Updating`/`Updated`/`Deleting`/`Deleted`) with observers; the scope-bypass audit | `runtime::tests::*` (the scope/event/pipeline cases inside the 139), `conformance::tests::soft_delete_restore_matches_the_contract` | VERIFIED |
 | LF-044 | Eloquent collections and base collections | EXCLUDE BY DESIGN | Not implemented: the blueprint's permanent-exclusion list names the Collection wrapper (Rust iterators + `ResourceCollection` for serialization are the idiom). `kelson-http::ResourceCollection` is a *serialization* type, not a collection wrapper. | — (product decision) | EXCLUDED BY DESIGN (P2) |
@@ -137,7 +137,7 @@ keyset (`keyset_row_comparison_shape`), locking
 - **The twin invariant.** `twin_mysql_migrations_superset_the_base_by_exactly_the_target_arch_phases`
   pins that the mysql set is the base set plus exactly the three target-architecture phases.
 - **Gaps (F-12).** Rollback is **batch-level** (newest batch first, in reverse filename order) — there
-  are no per-migration `down` scripts, and no expand-contract guidance for no-downtime deployments.
+  granularity is the batch (a single migration inside a batch cannot be reverted alone), and the expand-contract guidance for no-downtime deployments is missing.
 
 ### LF-039 — Seeding and factories — PARTIALLY VERIFIED
 - A real seeding framework exists: the `Seeder` trait, the `SeederRegistry` (registration order,
@@ -266,14 +266,16 @@ keyset (`keyset_row_comparison_shape`), locking
   `refuse_seed_outside_dev_test` so it is unit-testable). Executed:
   `tests::seed_refuses_outside_dev_test` (dev/test allowed; staging/production refused with
   "outside dev/test").
-- **F-8 (low) — the relation layer's N+1 bound is documented, not asserted, and pivot writes are
-  absent.** `ModelRuntime::with` loads a relation level by level with a documented "at most 2 store
-  queries per relation" bound, but no query-counting test asserts it (the eager-load cases check the
-  *results*, not the number of round-trips). Pivot **reads** are covered (`morph_to_many_eager_loads_
-  and_pivots_stay_type_pinned`), but pivot **writes** (attach/detach) are not part of the store port,
-  so the atlas's "pivot changes remain transactional" has nothing to verify. Next: add a counting store
-  to the eager-load cases so the bound is enforced, and decide whether pivot writes belong in the
-  port (they would need the transaction surface).
+- **F-8 (low) — the relation layer's N+1 bound was documented, not asserted — FIXED (the bound); pivot
+  writes remain a decision.** `ModelRuntime::with` loads a relation level by level with a documented "at
+  most 2 store queries per relation" bound, but no query-counting test asserted it (the eager-load
+  cases checked the *results*, not the number of round-trips). **Fixed**: a counting store wrapper now
+  makes the bound an enforced invariant —
+  `eager_load_issues_one_query_per_relation_not_per_parent` proves that **five** parents cost **one**
+  IN query (not one per parent). Pivot **reads** are covered
+  (`morph_to_many_eager_loads_and_pivots_stay_type_pinned`), but pivot **writes** (attach/detach) are
+  still not part of the store port, so the atlas's "pivot changes remain transactional" has nothing to
+  verify — that half stays a product decision (it would need the transaction surface).
 - **F-9 (low) — the transaction port has no retry or read/write split.** `TransactionPort` exposes
   begin/commit/rollback with an isolation level; there is no deadlock/serialization-failure retry, and
   the stores use one pool (the deployment's read replica is not wired in). The atlas expects "deadlock
@@ -287,11 +289,14 @@ keyset (`keyset_row_comparison_shape`), locking
   typed bind and every identifier is validated; there is no way to inject a raw fragment. This is the
   atlas's preferred direction ("a typed builder is preferred in Rust") and it removes an injection
   surface — recorded so the absence is read as a decision, not an omission.
-- **F-12 (low) — migration rollback is batch-level, and there is no expand-contract guidance.** The
-  pairs scanner rolls back whole batches (newest first, reverse filename order); there are no
-  per-migration `down` scripts. The atlas asks for "up/down" and "expand-contract guidance for
-  no-downtime deployments" and warns that destructive rollback cannot be promised universally — the
-  current posture is safe (no destructive down) but undocumented as such.
+- **F-12 (low) — rollback granularity is the batch, and there is no expand-contract guidance.** The
+  pairs scanner rolls back whole **batches** (newest first, reverse filename order inside a batch) —
+  Laravel's granularity, so one migration inside a batch cannot be reverted on its own. Pairs *do* carry
+  a required per-migration `.down.sql` (a pair that cannot roll back never applies — the scan refuses
+  before any DDL), and the legacy single-file migrations are forward-only by documented divergence.
+  The missing piece against the atlas was the **expand-contract guidance for no-downtime deployments**
+  — now written next to the pair convention (`database/migrations-pairs/README.md`: expand → backfill →
+  switch → contract, plus which format a no-downtime change must use).
 
 ## 5. Corrections to the previous claims
 
@@ -313,6 +318,7 @@ this pass makes are to the **parity documents** that carried unproven or stale c
 - **The sharpest gaps**: `kelson seed` is not gated for production (F-7) and the relations' N+1 bound
   is documented rather than asserted, with no pivot writes in the port (F-8). Everything else is a P1
   refinement or a deliberate exclusion.
-- **Findings**: F-7 (un-gated `kelson seed` — **fixed**), F-8 (N+1 bound unasserted, no pivot writes),
-  F-9 (no deadlock retry / read-write split), F-10 (no cursor pagination), F-11 (no raw-SQL escape
-  hatch — deliberate), F-12 (batch-level rollback only).
+- **Findings**: F-7 (un-gated `kelson seed` — **fixed**), F-8 (N+1 bound — **fixed**; pivot writes still a
+  decision), F-9 (no deadlock retry / read-write split), F-10 (no cursor pagination), F-11 (no raw-SQL
+  escape hatch — deliberate), F-12 (batch-level rollback only).
+
