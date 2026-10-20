@@ -39,9 +39,36 @@
 //!   requests CLIENT_FOUND_ROWS, so UPDATE counts matched rows (rule 16).
 
 use kelson_foundation::AppError;
+use kelson_foundation::Retryability;
 use kelson_transaction::{BoxFuture, IsolationLevel, TransactionPort, TxHandle, TxOptions};
 use sqlx::mysql::MySqlPool;
 use sqlx::Executor;
+
+/// MySQL SQLSTATEs that mean "this transaction lost a race; run it again":
+/// `40001` is `ER_LOCK_DEADLOCK` (1213). MySQL's lock-wait timeout (1205) reports the
+/// generic `HY000`, so it is NOT distinguishable through the SQLSTATE and is treated
+/// as fatal (fail fast) — the lock wait is a symptom the caller should see, not hide
+/// behind a silent retry.
+pub fn is_retryable_transaction_error(e: &sqlx::Error) -> bool {
+    match e {
+        sqlx::Error::Database(db) => matches!(db.code().as_deref(), Some("40001")),
+        _ => false,
+    }
+}
+
+/// Map a driver error to an [`AppError`], marking a lost race **retryable** so
+/// the caller can re-run the whole transaction
+/// ([`kelson_transaction::retry_transaction`]). Every other database failure is
+/// marked not-retryable: re-running it cannot help.
+fn tx_error(op: &str, e: &sqlx::Error) -> AppError {
+    let mut err = AppError::persistence(format!("{op}: {e}"));
+    err.retryable = if is_retryable_transaction_error(e) {
+        Retryability::Retryable
+    } else {
+        Retryability::NotRetryable
+    };
+    err
+}
 
 pub struct MySqlTransactions {
     pool: MySqlPool,
@@ -73,7 +100,7 @@ async fn raw_exec(
     let result = conn
         .execute(sqlx::raw_sql(sql))
         .await
-        .map_err(|e| AppError::persistence(format!("exec: {e}")))?;
+        .map_err(|e| tx_error("exec", &e))?;
     Ok(result.rows_affected())
 }
 
@@ -101,7 +128,7 @@ impl TxHandle for MySqlTxHandle {
                 .ok_or_else(|| AppError::internal("tx already completed"))?;
             tx.commit()
                 .await
-                .map_err(|e| AppError::persistence(format!("commit: {e}")))
+                .map_err(|e| tx_error("commit", &e))
         })
     }
 
@@ -113,7 +140,7 @@ impl TxHandle for MySqlTxHandle {
                 .ok_or_else(|| AppError::internal("tx already completed"))?;
             tx.rollback()
                 .await
-                .map_err(|e| AppError::persistence(format!("rollback: {e}")))
+                .map_err(|e| tx_error("rollback", &e))
         })
     }
 }
@@ -131,7 +158,7 @@ async fn begin_tx(
     let mut conn = pool
         .acquire()
         .await
-        .map_err(|e| AppError::persistence(format!("begin: {e}")))?;
+        .map_err(|e| tx_error("begin", &e))?;
 
     // Isolation must be set before the first statement of the transaction -
     // on MySQL before BEGIN itself, on the same connection the transaction
@@ -157,12 +184,12 @@ async fn begin_tx(
     (&mut *conn)
         .execute(sqlx::raw_sql(&set))
         .await
-        .map_err(|e| AppError::persistence(format!("isolation: {e}")))?;
+        .map_err(|e| tx_error("isolation", &e))?;
 
     let tx: sqlx::Transaction<'static, sqlx::MySql> =
         sqlx::Transaction::begin(conn, None)
             .await
-            .map_err(|e| AppError::persistence(format!("begin: {e}")))?;
+            .map_err(|e| tx_error("begin", &e))?;
     Ok(tx)
 }
 
@@ -183,5 +210,75 @@ impl TransactionPort for MySqlTransactions {
         options: &'a TxOptions,
     ) -> BoxFuture<'a, Result<Box<dyn TxHandle>, AppError>> {
         Box::pin(begin_impl(&self.pool, options))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::borrow::Cow;
+    use std::error::Error as StdError;
+
+    /// A database error double with a chosen SQLSTATE.
+    #[derive(Debug)]
+    struct FakeDbError {
+        code: &'static str,
+    }
+
+    impl std::fmt::Display for FakeDbError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "fake database error ({})", self.code)
+        }
+    }
+
+    impl StdError for FakeDbError {}
+
+    impl sqlx::error::DatabaseError for FakeDbError {
+        fn message(&self) -> &str {
+            "fake database error"
+        }
+        fn code(&self) -> Option<Cow<'_, str>> {
+            Some(Cow::Borrowed(self.code))
+        }
+        fn as_error(&self) -> &(dyn StdError + Send + Sync + 'static) {
+            self
+        }
+        fn as_error_mut(&mut self) -> &mut (dyn StdError + Send + Sync + 'static) {
+            self
+        }
+        fn into_error(self: Box<Self>) -> Box<dyn StdError + Send + Sync + 'static> {
+            self
+        }
+        fn kind(&self) -> sqlx::error::ErrorKind {
+            sqlx::error::ErrorKind::Other
+        }
+    }
+
+    fn db_error(code: &'static str) -> sqlx::Error {
+        sqlx::Error::Database(Box::new(FakeDbError { code }))
+    }
+
+    /// A deadlock is a lost race: the whole transaction can be run again.
+    #[test]
+    fn deadlock_is_retryable() {
+        assert!(is_retryable_transaction_error(&db_error("40001")));
+    }
+
+    /// Everything else is fatal — re-running it cannot help.
+    #[test]
+    fn other_database_failures_are_fatal() {
+        assert!(!is_retryable_transaction_error(&db_error("23000")));
+        assert!(!is_retryable_transaction_error(&db_error("HY000")));
+        assert!(!is_retryable_transaction_error(&sqlx::Error::RowNotFound));
+    }
+
+    /// The mapping carries the classification into the AppError, so the retry
+    /// helper can act on it.
+    #[test]
+    fn a_lost_race_maps_to_a_retryable_app_error() {
+        let lost = tx_error("exec", &db_error("40001"));
+        assert_eq!(lost.retryable, Retryability::Retryable);
+        let fatal = tx_error("exec", &db_error("23000"));
+        assert_eq!(fatal.retryable, Retryability::NotRetryable);
     }
 }

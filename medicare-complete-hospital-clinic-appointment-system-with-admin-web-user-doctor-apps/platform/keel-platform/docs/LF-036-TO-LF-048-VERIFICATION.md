@@ -14,7 +14,7 @@
 
 | ID | Feature | Disposition | Kelson equivalent | Executed evidence (2026-10-19) | Status |
 |---|---|---|---|---|---|
-| LF-036 | Database connections and transactions | MATCH (partial) | `kelson-transaction` (`TransactionPort`/`TxHandle`, isolation levels, advisory + row locks) implemented for both fabrics (`txport.rs`); savepoint isolation; one pool per fabric, reused across runtimes; tenant scoping on every write | `mysql_transaction_rollback_isolates_two_tests_sharing_a_table`, `mysql_savepoint_rollback_isolates_two_tests_sharing_a_table`, `pg_bridged_queries_reuse_pool_across_runtimes`, `tests::plan_driven_options`, `tests::advisory_key_is_deterministic_and_positive`, `tests::row_lock_builders_validate_identifiers`; conformance `mysql_conformance_tenant_isolation` | PARTIALLY VERIFIED — no deadlock retry, no read/write split, no pool-exhaustion/leak evidence (F-9) |
+| LF-036 | Database connections and transactions | MATCH (partial) | `kelson-transaction` (`TransactionPort`/`TxHandle`, isolation levels, advisory + row locks) implemented for both fabrics (`txport.rs`); savepoint isolation; **bounded whole-transaction retry** (`retry_transaction`) with per-driver lost-race classification; one pool per fabric, reused across runtimes; tenant scoping on every write | `mysql_transaction_rollback_isolates_two_tests_sharing_a_table`, `mysql_savepoint_rollback_isolates_two_tests_sharing_a_table`, `pg_bridged_queries_reuse_pool_across_runtimes`, `tests::plan_driven_options`, `tests::advisory_key_is_deterministic_and_positive`, `tests::row_lock_builders_validate_identifiers`, `tests::retry_reruns_a_lost_race_until_it_succeeds`, `tests::retry_does_not_rerun_a_fatal_failure`, pg `txport::tests::deadlock_and_serialization_failures_are_retryable`, mysql `txport::tests::deadlock_is_retryable`; conformance `mysql_conformance_tenant_isolation` | PARTIALLY VERIFIED — the read/write split is not wired (F-9) |
 | LF-037 | Query Builder | MATCH (typed, no raw escape hatch) | `kelson-query`: `Select`/`Insert`/`Update`/`Delete`/`Truncate` builders — filters, joins, group/having, distinct, unions, subqueries, aggregates, keyset row predicates, ordering, locking, tenant scoping; typed bind values; validated identifiers | 56 builder cases incl. `identifier_validation_rejects_injection_shapes`, `empty_in_list_rejected`, `flat_mixture_follows_sql_precedence`, `or_where_exists_joins_the_preceding_clause`, `nested_group_renders_parenthesized`, `exists_wrappers_and_correlated_subquery`, `keyset_row_comparison_shape`, `group_by_and_having_shapes`, `lock_clauses_render_after_limit_offset`, `tenant_scope_guard`, `unfiltered_delete_refused` | VERIFIED (no raw-SQL escape hatch — F-11) |
 | LF-038 | Migrations and schema builder | MATCH (partial) | 12 pg + 13 mysql migrations embedded (`sqlx::migrate!`); the **fluent schema builder byte-round-trips every shipped migration**; the twin-set invariant (mysql = base + the 3 target-arch phases); the migration lock (`pg_try_advisory_lock` / `GET_LOCK`, fail-closed); the pairs scanner (pending/rollback order); CLI `migrate:status/plan/fresh/rollback/reset/refresh/install` | `fluent_schema_builder_byte_round_trips_every_shipped_migration`, `twin_mysql_migrations_superset_the_base_by_exactly_the_target_arch_phases`, `pairs::tests::pending_pairs_skips_applied_rows`, `pairs::tests::rollback_order_walks_batches_newest_first_in_reverse_filename_order`, `pairs::tests::scan_pairs_orders_files_and_refuses_broken_shipments`, `tests::migrate_pair_commands_parse_with_documented_defaults`, `tests::migrate_plan_reaches_for_no_mutation_path` | PARTIALLY VERIFIED — rollback granularity is the batch (pairs carry a per-migration `.down.sql`; legacy singles are forward-only), no expand-contract guidance (F-12) |
 | LF-039 | Seeding and factories | MATCH (partial) | `Seeder` trait + `SeederRegistry` (registration order, duplicate-name refusal, `--only` filter, per-seeder `SeedReport{inserted,skipped}`) + `DevTenantSeeder`, **both fabrics**; driven by `kelson seed` (refused outside dev/test — F-7, fixed); re-runnable by convention (guarded inserts / `ON CONFLICT DO NOTHING`) | `seeders::tests::registry_filters_and_rejects_unknown_names`, `seeders::tests::registry_runs_in_registration_order`; console `tests::seed_refuses_outside_dev_test` | PARTIALLY VERIFIED — no factories/states/relationships, no deterministic seeded IDs |
@@ -101,10 +101,11 @@ keyset (`keyset_row_comparison_shape`), locking
   and injection-safe row-lock builders (`tests::row_lock_builders_validate_identifiers`).
 - **Scoping.** Every write is tenant-scoped and the store refuses a cross-tenant match
   (`mysql_conformance_tenant_isolation`).
-- **Gaps (F-9).** There is **no deadlock-retry policy** (the port has no retry concept — a serialization
-  failure or a deadlock surfaces as an error), **no read/write split** (one pool per fabric; the
-  deployment's read replica is not wired into the store), and no pool-exhaustion or connection-leak
-  evidence.
+- **Gaps (F-9).** The **read/write split** is not wired: one pool per fabric, so the deployment's read
+  replica is not used by the store (a topology decision, not a port gap). There is also no
+  pool-exhaustion or connection-leak evidence. The **deadlock retry** that was missing is now
+  shipped: `kelson_transaction::retry_transaction` re-runs the whole transaction while the failure is a
+  lost race, and both drivers classify the race where the driver error is still typed.
 
 ### LF-037 — Query Builder — VERIFIED
 - A **typed** builder (not a PHP-chain clone): `Select`/`Insert`/`Update`/`Delete`/`Truncate` compile
@@ -276,11 +277,31 @@ keyset (`keyset_row_comparison_shape`), locking
   (`morph_to_many_eager_loads_and_pivots_stay_type_pinned`), but pivot **writes** (attach/detach) are
   still not part of the store port, so the atlas's "pivot changes remain transactional" has nothing to
   verify — that half stays a product decision (it would need the transaction surface).
-- **F-9 (low) — the transaction port has no retry or read/write split.** `TransactionPort` exposes
-  begin/commit/rollback with an isolation level; there is no deadlock/serialization-failure retry, and
-  the stores use one pool (the deployment's read replica is not wired in). The atlas expects "deadlock
-  retry" and "read/write lag" to be defined. Next: document the posture (fail fast, the caller
-  retries) and add a bounded retry helper, or wire the read replica.
+- **F-9 (low) — the transaction port had no deadlock retry and no read/write split — FIXED (retry);
+  the read/write split stays open.** `TransactionPort` exposed begin/commit/rollback with an isolation
+  level, but no retry concept, and every database failure came back as a blanket `retryable: true`, so
+  a caller could not tell a lost race from a unique violation. **Fixed**:
+  - `kelson-transaction` gained `TransactionFailure`, `classify_app_error` and
+    `retry_transaction(attempts, delay, body)` — the body is the **whole** transaction, so a retry
+    re-opens it and a partially applied body is rolled back with it. A fatal failure is returned
+    immediately; the attempt cap is respected.
+  - Both drivers classify the lost race **where the driver error is still typed** (the SQLSTATE does not
+    survive the trip into an `AppError`): pg `40P01` (deadlock_detected) and `40001`
+    (serialization_failure); MySQL `40001` (`ER_LOCK_DEADLOCK`; the lock-wait timeout 1205 reports the
+    generic `HY000` and is therefore fatal). The transaction ports now map a lost race to a
+    **retryable** error and every other database failure to a **not-retryable** one.
+  - Executed: `kelson-transaction` — `classification_separates_lost_races_from_fatal_failures`,
+    `retry_reruns_a_lost_race_until_it_succeeds`,
+    `retry_stops_at_the_attempt_cap_and_returns_the_last_failure`,
+    `retry_does_not_rerun_a_fatal_failure`, `retry_runs_the_body_once_when_it_succeeds`; pg —
+    `deadlock_and_serialization_failures_are_retryable`, `other_database_failures_are_fatal`,
+    `a_lost_race_maps_to_a_retryable_app_error`; mysql — `deadlock_is_retryable`,
+    `other_database_failures_are_fatal`, `a_lost_race_maps_to_a_retryable_app_error`.
+  - **Wire-contract note**: a database error inside a transaction now reports `retryable: false` unless
+    it is a lost race. The flag used to be `true` for every persistence error, so a client that
+    trusted it could retry a unique violation forever. Nothing in the workspace asserted the old value.
+  - **Still open**: the **read/write split** — one pool per fabric, so the deployment's read replica is
+    not wired into the store. That is a deployment-topology decision, not a port gap.
 - **F-10 (low) — no cursor pagination.** The HTTP layer paginates by offset only; the builder carries
   the keyset predicate but nothing encodes or validates a cursor. The atlas recommends cursor
   pagination for large changing datasets. Next: a cursor codec (opaque, tamper-evident) over the

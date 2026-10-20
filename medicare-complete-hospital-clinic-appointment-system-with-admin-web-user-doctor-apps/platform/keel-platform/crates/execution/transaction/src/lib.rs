@@ -75,6 +75,63 @@ pub trait TransactionPort: Send + Sync {
     ) -> BoxFuture<'a, Result<Box<dyn TxHandle>, AppError>>;
 }
 
+/// Whether a failed transaction attempt may be run again (F-9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransactionFailure {
+    /// The attempt lost a race — a deadlock or a serialization failure. The
+    /// whole transaction can be run again and may succeed.
+    Retryable,
+    /// The attempt failed fatally; running it again cannot help.
+    Fatal,
+}
+
+/// Classify an [`AppError`] for [`retry_transaction`].
+///
+/// A **persistence** error that the driver marked retryable is a lost race
+/// (the SQL adapters mark a deadlock or a serialization failure that way);
+/// everything else — a validation error, a denied call, a fatal database
+/// error — is fatal.
+pub fn classify_app_error(err: &AppError) -> TransactionFailure {
+    use kelson_foundation::{ErrorCategory, Retryability};
+    if err.category == ErrorCategory::Persistence && err.retryable == Retryability::Retryable {
+        TransactionFailure::Retryable
+    } else {
+        TransactionFailure::Fatal
+    }
+}
+
+/// Run a transaction body, re-running it while the failure is retryable.
+///
+/// The body must be **the whole transaction** (open, work, commit) — a retry
+/// re-opens the transaction, so a partially applied body is rolled back with
+/// it. `attempts` is the total number of tries (at least 1), and `delay` is
+/// the backoff between them.
+///
+/// A failure that is not retryable is returned immediately, and the last
+/// failure is returned when the attempts run out.
+pub fn retry_transaction<T, F>(attempts: u32, delay: std::time::Duration, mut body: F) -> Result<T, AppError>
+where
+    F: FnMut() -> Result<T, AppError>,
+{
+    let attempts = attempts.max(1);
+    let mut last: Option<AppError> = None;
+    for attempt in 0..attempts {
+        match body() {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                if classify_app_error(&err) == TransactionFailure::Fatal {
+                    return Err(err);
+                }
+                last = Some(err);
+                if attempt + 1 < attempts && !delay.is_zero() {
+                    std::thread::sleep(delay);
+                }
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| AppError::internal("transaction retry failed")))
+}
+
 // ---------------------------------------------------------------------------
 // Lock helpers (S1): deterministic, injection-safe builders shared by all data
 // layer implementations.
@@ -176,4 +233,88 @@ mod tests {
         assert_eq!(opts.isolation, IsolationLevel::ReadCommitted);
         assert!(opts.readonly);
     }
+
+    /// A persistence error the driver marked retryable is a lost race.
+    fn lost_race() -> AppError {
+        AppError::persistence("deadlock detected")
+    }
+
+    /// A fatal database error (the driver marked it not retryable).
+    fn fatal_db() -> AppError {
+        let mut err = AppError::persistence("duplicate key");
+        err.retryable = kelson_foundation::Retryability::NotRetryable;
+        err
+    }
+
+    #[test]
+    fn classification_separates_lost_races_from_fatal_failures() {
+        assert_eq!(
+            classify_app_error(&lost_race()),
+            TransactionFailure::Retryable
+        );
+        assert_eq!(classify_app_error(&fatal_db()), TransactionFailure::Fatal);
+        // A validation error is never a lost race, even if it claims to be.
+        let mut validation = AppError::validation("bad input");
+        validation.retryable = kelson_foundation::Retryability::Retryable;
+        assert_eq!(classify_app_error(&validation), TransactionFailure::Fatal);
+    }
+
+    #[test]
+    fn retry_reruns_a_lost_race_until_it_succeeds() {
+        let mut calls = 0u32;
+        let out = retry_transaction(5, std::time::Duration::ZERO, || {
+            calls += 1;
+            if calls < 3 {
+                Err::<&str, _>(lost_race())
+            } else {
+                Ok("committed")
+            }
+        })
+        .expect("the third attempt wins");
+        assert_eq!(out, "committed");
+        assert_eq!(calls, 3, "the body was re-run until it succeeded");
+    }
+
+    #[test]
+    fn retry_stops_at_the_attempt_cap_and_returns_the_last_failure() {
+        let mut calls = 0u32;
+        let err = retry_transaction(3, std::time::Duration::ZERO, || {
+            calls += 1;
+            Err::<(), _>(lost_race())
+        })
+        .expect_err("every attempt lost the race");
+        assert_eq!(calls, 3, "the attempt cap is respected");
+        assert!(
+            err.internal.as_deref().unwrap_or_default().contains("deadlock"),
+            "the last failure is returned: {err:?}"
+        );
+    }
+
+    #[test]
+    fn retry_does_not_rerun_a_fatal_failure() {
+        let mut calls = 0u32;
+        let err = retry_transaction(5, std::time::Duration::ZERO, || {
+            calls += 1;
+            Err::<(), _>(fatal_db())
+        })
+        .expect_err("a fatal failure is returned as-is");
+        assert_eq!(calls, 1, "a fatal failure is not re-run");
+        assert!(
+            err.internal.as_deref().unwrap_or_default().contains("duplicate key"),
+            "the fatal failure is returned as-is: {err:?}"
+        );
+    }
+
+    #[test]
+    fn retry_runs_the_body_once_when_it_succeeds() {
+        let mut calls = 0u32;
+        let out = retry_transaction(5, std::time::Duration::ZERO, || {
+            calls += 1;
+            Ok(7u32)
+        })
+        .expect("the first attempt wins");
+        assert_eq!(out, 7);
+        assert_eq!(calls, 1);
+    }
 }
+
