@@ -20,3 +20,14 @@ Multi-node Redis Cluster is out of scope (cross-slot key concatenation).
 
 Integration tests run behind `--features redis-tests` with `REDIS_URL` set;
 without it they skip.
+
+```text
+REDIS_URL=redis://127.0.0.1:6379 cargo test -p kelson-cache-redis --features redis-tests
+```
+
+`tests/live_redis.rs` covers the cache port against a real server (round
+trip, SET NX admitting exactly one writer, the Lua compare-and-delete not
+freeing another holder's slot, TTL expiry, prefix invalidation scoped to its
+own keys). `tests/live_jobs.rs` covers the durable job store (enqueue → claim
+→ complete, two workers never claiming the same job, tenant scoping, a
+failure re-queueing and an exhausted job being dead-lettered).

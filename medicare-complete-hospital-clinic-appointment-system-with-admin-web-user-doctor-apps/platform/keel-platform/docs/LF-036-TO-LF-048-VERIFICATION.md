@@ -25,7 +25,7 @@
 | LF-044 | Eloquent collections and base collections | EXCLUDE BY DESIGN | Not implemented: the blueprint's permanent-exclusion list names the Collection wrapper (Rust iterators + `ResourceCollection` for serialization are the idiom). `kelson-http::ResourceCollection` is a *serialization* type, not a collection wrapper. | — (product decision) | EXCLUDED BY DESIGN (P2) |
 | LF-045 | API Resources and serialization | MATCH | `kelson-http::Resource` (conditional fields that omit rather than null, `hidden`/`visible`, wrap key, collection + pagination meta) + a JSON:API layer (sparse fieldsets, `included`, relationships, reserved-member stripping) | `resource::tests::*` (7: `resource_hides_non_wire_fields`, `when_omits_false_conditions_and_never_emits_null`, `wrap_key_defaults_to_data_and_can_be_disabled`, `collection_page_passes_pagination_meta_through`, `envelope_resource_page_matches_the_envelope_wire_shape`, `collection_of_sources_honors_the_wrap_key`, `page_envelope_carries_pagination_meta`) + `jsonapi::tests::*` (13) | VERIFIED |
 | LF-046 | Pagination | MATCH (offset + cursor) | `kelson-http::pagination` (`PageQuery` from query pairs with caps + `cursor`, `Page<T>` with total/links/meta/`next_cursor`, `Cursor` — an opaque, HMAC-signed, fail-closed codec) + the query crate's `Page`/`PageReq` + the store's page/list options (`ListOpts.after` = the keyset anchor) + the builder's keyset row predicate | `pagination::tests::*` (10, incl. `cursor_round_trips_the_anchor_value`, `cursor_rejects_a_tampered_value`, `cursor_rejects_another_secret_and_another_column`, `cursor_rejects_malformed_input`, `parses_the_cursor_query_param`); `select::tests::keyset_row_comparison_shape`; the shared conformance case **`cursor_keyset_pagination`** (fake + pg + mysql) | VERIFIED |
-| LF-047 | Redis and cache-backed data services | MATCH (partial) | `kelson-caching`: the `CachePort` (get/put/delete/invalidate_prefix/put_if_absent/delete_if_equals — the atomic primitives) + `CacheService` (Laravel-shaped: get/put/has/delete/pull/many/put_many/add/forever/increment/decrement/remember/tags/flush/lock) + the memory adapter; the **Redis** adapter (SET EX / SET NX / Lua CAS); the session, queue and rate-limit Redis adapters | `kelson-cache-memory` 17 cases incl. `tenant_isolation_cache_entries_do_not_cross_tenants`, `pentest_cache_hostile_keys_and_prefixes_cannot_escape_the_caller`, `cache_lock_acquire_release_and_exclusivity`, `remember_waiter_collapses_onto_the_leader_result`, `with_lock_runs_and_releases`; `kelson-caching` 3 cases (`put_if_absent_is_atomic_and_delete_if_equals_checks_value`, `ttl_expiry_honored`, `put_get_invalidate`); the Redis adapter's 4 unit cases | PARTIALLY VERIFIED — the live-Redis cases **skip** on this host (no Redis), so cross-process atomicity is unproven here |
+| LF-047 | Redis and cache-backed data services | MATCH (partial) | `kelson-caching`: the `CachePort` (get/put/delete/invalidate_prefix/put_if_absent/delete_if_equals — the atomic primitives) + `CacheService` (Laravel-shaped: get/put/has/delete/pull/many/put_many/add/forever/increment/decrement/remember/tags/flush/lock) + the memory adapter; the **Redis** adapter (SET EX / SET NX / Lua CAS); the session, queue and rate-limit Redis adapters | `kelson-cache-memory` 17 cases incl. `tenant_isolation_cache_entries_do_not_cross_tenants`, `pentest_cache_hostile_keys_and_prefixes_cannot_escape_the_caller`, `cache_lock_acquire_release_and_exclusivity`, `remember_waiter_collapses_onto_the_leader_result`, `with_lock_runs_and_releases`; `kelson-caching` 3 cases (`put_if_absent_is_atomic_and_delete_if_equals_checks_value`, `ttl_expiry_honored`, `put_get_invalidate`); the Redis adapter's 4 unit cases; **15 live-Redis cases** (§2.4): `kelson-cache-redis` 5 + 4 (durable job store), `kelson-session-redis` 4, `kelson-ratelimit-redis` 2 | VERIFIED — the live Redis **runs** (the cross-instance limit, the SET NX lock, the Lua compare-and-delete and the Lua claim exclusivity are proven against a real server) |
 | LF-048 | MongoDB integration | EXCLUDE BY DESIGN | Not implemented, and deliberately so: the blueprint's permanent-exclusion list names MongoDB, and the atlas marks the item P3 "never score as core SQL ORM parity" | — (product decision) | EXCLUDED BY DESIGN (P3) |
 
 ## 2. Method and executed evidence
@@ -97,8 +97,16 @@ keyset (`keyset_row_comparison_shape`), locking
   consistent). A pg evidence run is therefore **interruptible** and must be re-run after a restart.
   **MySQL is the stable live fabric on this host** and is what the pg/mysql matrix runs are
   verified against below.
-- **The live-Redis cases** (cache/session/queue/rate-limit adapters): no Redis on this host
-  (`REDIS_URL` unset) → the feature-gated integration tests skip cleanly. The adapters' unit cases run.
+- **The live-Redis cases — CLOSED (2026-10-20).** A Redis server is on this host
+  (`C:\Redis\redis-server.exe`), so the feature-gated live cases now **execute** instead of skipping:
+  ```powershell
+  Start-Process "C:\Redis\redis-server.exe" -ArgumentList '--port 6379','--bind 127.0.0.1','--appendonly no' -WindowStyle Hidden
+  $env:REDIS_URL = 'redis://127.0.0.1:6379'
+  cargo test -p kelson-cache-redis -p kelson-session-redis -p kelson-ratelimit-redis `
+      --features kelson-cache-redis/redis-tests,kelson-session-redis/redis-tests,kelson-ratelimit-redis/redis-tests
+  ```
+  **15 live cases, all passing against the real server** (5 cache, 4 session, 4 durable job store,
+  2 rate-limit). Three of those suites are **new** — see F-15.
 - The MySQL transaction/rollback/savepoint cases ran against the local MySQL 8 (127.0.0.1:3307); the
   equivalent pg cases ran against the live PostgreSQL 16 (127.0.0.1:5433) in the window where the pg
   backends stayed alive.
@@ -268,7 +276,7 @@ keyset (`keyset_row_comparison_shape`), locking
     `_page.cursor`); the sample `appointments` module still pages by offset.
 - The **builder** carries the keyset row predicate (`(a, b) > ($1, $2)`) for keyset pagination.
 
-### LF-047 — Redis and cache-backed data services — PARTIALLY VERIFIED
+### LF-047 — Redis and cache-backed data services — VERIFIED
 - The `CachePort` carries the atomic primitives the atlas asks for: `put_if_absent` (SET NX) and
   `delete_if_equals` (Lua compare-and-delete, so only the lock holder frees the slot) — the memory
   adapter proves both (`put_if_absent_is_atomic_and_delete_if_equals_checks_value`).
@@ -283,9 +291,15 @@ keyset (`keyset_row_comparison_shape`), locking
 - **Redis adapters** ship for the cache, the session store, the job store and (new this session) the
   rate-limit store — the cache one uses `SET EX`/`SET NX`/Lua CAS with cache-failure degradation to a
   miss.
-- **Gaps.** The live-Redis cases **skip on this host** (no Redis), so cross-process atomicity,
-  reconnect behaviour and timeout behaviour are **unproven here**; and the atlas's "timeout" and
-  "connection failure behavior are defined" is asserted only at the unit level.
+- **The live Redis now RUNS** (§2.4) — **15 cases against the real server**: the cache's SET NX and
+  Lua compare-and-delete, the session's round trip / TTL / shared store, the durable job store's Lua
+  claim exclusivity / tenant scoping / dead-lettering, and the rate limit's cross-instance bucket.
+  Before this pass only 2 of those cases existed (the rate-limit ones) and the rest of the Redis
+  surface was proven only against the in-memory adapter — see F-15.
+- **Still open (low)**: the atlas's "timeout" and "connection failure behavior are defined" is
+  asserted only at the unit level; there is no live case for a Redis that is unreachable **mid-test**
+  (the adapters' degradation to a miss / a failure-open rate limit is unit-tested, not exercised
+  against a server that goes away).
 
 ### LF-048 — MongoDB integration — EXCLUDED BY DESIGN
 - Not implemented, and deliberately so: the blueprint's permanent-exclusion list names MongoDB, and the
@@ -388,6 +402,30 @@ keyset (`keyset_row_comparison_shape`), locking
   steal a job the same way. **Fixed**: the six job-store cases take a shared
   `JOBS_QUEUE_LOCK` (`tokio::sync::Mutex`), so the queue is only ever mutated by one case at a time.
   The failure was order-dependent, not deterministic — which is why it can hide behind a green run.
+- **F-15 (medium, found by finding the Redis that was already on this host) — the Redis session and
+  cache adapters shipped NO live-Redis coverage at all.** Only the rate-limit adapter had a
+  `tests/live_redis.rs`; the session and cache adapters had the `redis-tests` feature but **no live
+  test file**, so their primitives were proven against the in-memory adapter and against the key
+  layout — never against a real server. The gap was invisible because "the live-Redis cases skip on
+  this host" reads like coverage. **Fixed**: both adapters now have a live suite, run against the
+  Redis on this host:
+  - `kelson-session-redis` (4): `a_session_round_trips_through_redis` (save → load → delete, with the
+    bag intact), `two_connections_share_the_session` (two connections are the same store — the
+    property a multi-instance deployment depends on), `the_stored_session_carries_a_ttl` (Redis
+    expires the key, not the app), `count_sees_only_its_own_namespace`.
+  - `kelson-cache-redis` (5): `a_value_round_trips_through_redis`,
+    `put_if_absent_admits_exactly_one_writer` (SET NX admits exactly one writer — the cache lock's
+    foundation), `delete_if_equals_only_frees_the_slot_for_the_holder` (the Lua compare-and-delete
+    does not free another holder's slot), `a_ttl_value_expires_on_its_own`,
+    `prefix_invalidation_only_drops_its_own_keys`.
+  - The **durable Redis job store** (4, in the same crate): `a_job_round_trips_through_redis`
+    (enqueue → claim → complete, and a claimed job is never handed out twice),
+    `two_workers_never_claim_the_same_job` (the Lua `CLAIM_SCRIPT`'s exclusivity against a real
+    server), `a_tenant_job_is_invisible_to_another_tenant`,
+    `a_failure_requeues_and_an_exhausted_job_is_dead_lettered` (a failure below the ceiling
+    re-queues and records the error; an exhausted job is dead-lettered).
+  - All of them keep the "skip cleanly without a service" posture (`REDIS_URL` unset or unreachable
+    → skip, not fail), so a run without Redis stays green.
 - **F-11 (low, recorded divergence) — the query builder has no raw-SQL escape hatch.** Every value is a
   typed bind and every identifier is validated; there is no way to inject a raw fragment. This is the
   atlas's preferred direction ("a typed builder is preferred in Rust") and it removes an injection
@@ -413,14 +451,14 @@ this pass makes are to the **parity documents** that carried unproven or stale c
 
 ## 6. Summary
 
-- **13/13 items covered**: **7 VERIFIED** (LF-037 query builder, LF-040 model CRUD, LF-041 relations +
+- **13/13 items covered**: **8 VERIFIED** (LF-037 query builder, LF-040 model CRUD, LF-041 relations +
   eager loading, LF-042 casts + accessors + strictness, LF-043 scopes + events, LF-045 resources +
-  serialization, LF-046 pagination — offset **and** cursor) · **4 PARTIALLY VERIFIED** (LF-036
-  transactions, LF-038 migrations, LF-039 seeding, LF-047 cache/Redis) · **2 EXCLUDED BY DESIGN**
+  serialization, LF-046 pagination — offset **and** cursor, LF-047 Redis/cache) · **3 PARTIALLY
+  VERIFIED** (LF-036 transactions, LF-038 migrations, LF-039 seeding) · **2 EXCLUDED BY DESIGN**
   (LF-044 collections, LF-048 MongoDB).
 - **466 green results, 0 failures** in this pass, **plus 85 live-MySQL matrix results** (the mysql
-  halves of the pg/mysql matrix, run against MySQL 8 on 127.0.0.1:3307) and one live-PostgreSQL run
-  of 83 (§2.4).
+  halves of the pg/mysql matrix, run against MySQL 8 on 127.0.0.1:3307), **15 live-Redis results**
+  (against the Redis on 127.0.0.1:6379) and one live-PostgreSQL run of 83 (§2.4).
 - **The sharpest gaps**: the transaction port's **read/write split** (F-9 — a deployment-topology
   decision) and the **application half** of cursor pagination (F-10 — a module must pick the anchor
   column and issue `next_cursor`). Everything else is a P1 refinement or a deliberate exclusion.

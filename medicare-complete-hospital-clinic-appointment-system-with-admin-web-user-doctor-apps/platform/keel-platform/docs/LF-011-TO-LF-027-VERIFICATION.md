@@ -129,13 +129,20 @@ cargo test -p kelson-postgres --features pg-tests --test pg_integration -- mysql
   down, so a pg evidence run can be interrupted and must be re-run after a restart. MySQL
   (127.0.0.1:3307) is the stable live fabric here.
 - **Not selected this pass** (suites exist): `upload_*` HTTP integration tests (multipart unit suite executed
-  instead), `manifest_validation_422_with_fields_meta`, the `oauth_*` redirect-validation suite,
-  `kelson-session-redis` adapter tests. → **NOT RUN** (selection).
-- **Redis-dependent** (no Redis on this host — `REDIS_URL` unset): the shared rate-limit store's live
-  cases `shared_store_enforces_one_limit_across_instances` and `a_different_client_has_its_own_bucket`
-  (feature `redis-tests`) **skip cleanly** — the same posture the pg/mysql matrices use. The adapter's
-  unit tests (key layout, sanitizing, clock) and the in-process store's behaviour are executed; the
-  adapter's runtime behaviour against a real Redis is **NOT RUN** here. → **NOT RUN** (environment).
+  instead), `manifest_validation_422_with_fields_meta`, the `oauth_*` redirect-validation suite.
+  → **NOT RUN** (selection). *(The `kelson-session-redis` adapter's live suite was not selected here
+  either — it did not exist yet; it was added later, see the Redis bullet below and F-15.)*
+- **Redis-dependent — CLOSED (2026-10-20).** A Redis server is on this host (`C:\Redis\redis-server.exe`),
+  so the shared rate-limit store's live cases now **execute** against a real Redis instead of skipping:
+  ```powershell
+  Start-Process "C:\Redis\redis-server.exe" -ArgumentList '--port 6379','--bind 127.0.0.1','--appendonly no' -WindowStyle Hidden
+  $env:REDIS_URL = 'redis://127.0.0.1:6379'
+  cargo test -p kelson-ratelimit-redis --features redis-tests
+  ```
+  **Evidence**: `shared_store_enforces_one_limit_across_instances` and `a_different_client_has_its_own_bucket`
+  both **pass against the live server** (2 passed / 0 failed) — the cross-instance limit is now proven
+  against a real Redis, not just in process. (The adapter's unit cases — key layout, sanitizing, clock —
+  run as well.)
 - **No test exists**: flash integration in `tests/`; percent-encoded route params;
   streaming cancellation; scheme/host (absolute) URL generation; nested route groups.
 
