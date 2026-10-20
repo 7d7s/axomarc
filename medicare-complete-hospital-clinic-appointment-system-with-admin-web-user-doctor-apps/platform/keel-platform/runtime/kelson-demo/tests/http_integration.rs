@@ -325,8 +325,84 @@ async fn login_bad_password_is_uniform_401() {
     );
 }
 
-// ------------------------------------------------ argon2 rehash-on-login (P5)
+/// LF-049 (the disabled-user case): a **suspended** principal's correct
+/// password does NOT log in. The credential is valid and the password is
+/// right — the account is simply not in a serving state, so the guard refuses
+/// it and no session is minted.
+#[tokio::test]
+async fn login_refuses_a_suspended_principal() {
+    let app = app();
+    let email = format!("suspended-{}@clinic.test", uuid::Uuid::now_v7());
+    let now = time::OffsetDateTime::now_utc();
+    let principal = app
+        .state
+        .principals
+        .create(kelson_identity::Principal {
+            id: kelson_foundation::PrincipalId::new(),
+            status: kelson_identity::PrincipalStatus::Suspended,
+            email: Some(email.clone()),
+            phone: None,
+            email_verified_at: None,
+            created_at: now,
+        })
+        .expect("principal creates");
+    let hash = kelson_identity::hash_password(&kelson_identity::Secret::new("Valid-pass-1234"))
+        .expect("argon2 works");
+    app.state
+        .credentials
+        .create(kelson_identity::Credential {
+            id: uuid::Uuid::now_v7(),
+            principal_id: principal.id,
+            kind: kelson_identity::CredentialKind::PasswordArgon2,
+            secret_hash: kelson_identity::Secret::new(hash),
+            created_at: now,
+            expires_at: None,
+        })
+        .expect("credential creates");
 
+    let res = login(&app, &email, "Valid-pass-1234", Some("dev")).await;
+    assert_eq!(
+        res.status,
+        StatusCode::FORBIDDEN,
+        "a suspended principal is refused even with the right password"
+    );
+    assert!(
+        res.set_cookies.is_empty(),
+        "no session cookie is minted for a suspended principal"
+    );
+    assert_eq!(
+        res.body["ok"], false,
+        "the refusal is a normal error envelope, not a 200"
+    );
+}
+
+/// LF-049 (the enumeration case): an unknown principal and a wrong password
+/// are **indistinguishable** — the same status AND the same error body — so a
+/// caller cannot tell "no such account" from "wrong password".
+#[tokio::test]
+async fn an_unknown_principal_and_a_wrong_password_are_indistinguishable() {
+    let app = app();
+    let email = format!("shape-{}@clinic.test", uuid::Uuid::now_v7());
+    register(&app, &email).await;
+
+    let wrong_password = login(&app, &email, "wrong-password-1", Some("dev")).await;
+    let unknown_principal = login(
+        &app,
+        &format!("ghost-{}@clinic.test", uuid::Uuid::now_v7()),
+        "wrong-password-1",
+        Some("dev"),
+    )
+    .await;
+
+    assert_eq!(wrong_password.status, unknown_principal.status);
+    assert_eq!(
+        wrong_password.body, unknown_principal.body,
+        "the two failures are the same envelope — no account enumeration"
+    );
+    assert_eq!(wrong_password.body["error"]["code"], "AUTH_UNAUTHENTICATED");
+}
+
+// ------------------------------------------------ argon2 rehash-on-login (P5)
 /// Seed a principal whose stored verifier was hashed with EXPLICIT factors
 /// (the pre-upgrade era), bypassing HTTP register — the fixture a drifted
 /// deployment carries after `[identity]` was tuned.
@@ -6246,6 +6322,122 @@ impl kelson_notifications::MailPort for RecordingMail {
         self.0.lock().unwrap().push(mail.clone());
         Ok(())
     }
+}
+
+/// LF-053 (P0, "a successful reset invalidates relevant sessions/tokens by
+/// policy"): a password reset must **close the credentials issued under the
+/// old password** — the API token AND the session. Without it, whoever holds
+/// a stolen cookie or PAT stays signed in after the owner recovers the
+/// account: the password changed, the takeover did not end.
+#[tokio::test]
+async fn a_password_reset_revokes_the_old_session_and_api_token() {
+    let app = app();
+    let email = format!("reset-revoke-{}@clinic.test", uuid::Uuid::now_v7());
+    register(&app, &email).await;
+
+    // Log in for a session cookie AND an API token (mode = token).
+    let login_reply = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/auth/login",
+            serde_json::json!({
+                "identifier": email,
+                "password": "Correct-horse-99",
+                "tenant": "dev",
+                "mode": "token",
+            }),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(login_reply.status, StatusCode::OK, "{}", login_reply.body);
+    let cookie = login_reply
+        .session_cookie()
+        .expect("the login issued a session cookie");
+    let token = login_reply.data()["token"]
+        .as_str()
+        .expect("the login issued an API token")
+        .to_string();
+
+    // Both credentials work BEFORE the reset: the session cookie on
+    // /auth/me, and the API token as a bearer on the same route.
+    let me = send(
+        &app,
+        json_req(Method::GET, "/auth/me", Value::Null, Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(me.status, StatusCode::OK, "the session works before the reset");
+    let pat = send(
+        &app,
+        json_req(Method::GET, "/auth/me", Value::Null, None, Some(&token)),
+    )
+    .await;
+    assert_eq!(pat.status, StatusCode::OK, "the API token works before the reset");
+
+    // Reset the password.
+    let request = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/auth/password-reset/request",
+            serde_json::json!({ "email": email }),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(request.status, StatusCode::OK, "{}", request.body);
+    let reset_token = request.data()["dev_token"]
+        .as_str()
+        .expect("dev token in non-prod")
+        .to_string();
+    let complete = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/auth/password-reset/complete",
+            serde_json::json!({ "token": reset_token, "password": "Fresh-horse-42" }),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(complete.status, StatusCode::OK, "{}", complete.body);
+
+    // The SESSION issued under the old password is dead.
+    let after = send(
+        &app,
+        json_req(Method::GET, "/auth/me", Value::Null, Some(&cookie), None),
+    )
+    .await;
+    assert_eq!(
+        after.status,
+        StatusCode::UNAUTHORIZED,
+        "the session issued under the OLD password does not survive the reset"
+    );
+
+    // The API TOKEN issued under the old password is dead.
+    let after_pat = send(
+        &app,
+        json_req(Method::GET, "/auth/me", Value::Null, None, Some(&token)),
+    )
+    .await;
+    assert_eq!(
+        after_pat.status,
+        StatusCode::UNAUTHORIZED,
+        "the API token issued under the OLD password does not survive the reset"
+    );
+
+    // And the new password works.
+    let fresh = login(&app, &email, "Fresh-horse-42", Some("dev")).await;
+    assert_eq!(
+        fresh.status,
+        StatusCode::OK,
+        "the new password logs in: {}",
+        fresh.body
+    );
 }
 
 /// Row 19 (auth mail): both token flows deliver through the configured port —

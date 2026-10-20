@@ -110,12 +110,163 @@ impl Sealer for AesGcmSealer {
     }
 }
 
+/// A **key ring**: the current master key seals, every retired key can still
+/// open.
+///
+/// The rotation contract the [`Envelope`] documents ("master key identity that
+/// sealed this envelope") only holds with a ring: rotating the key without
+/// retiring the old one makes every previously sealed value unreadable. This
+/// sealer closes that:
+///
+/// - `seal` always uses the **current** key and records **its** id, so a new
+///   envelope is never written under a retired key;
+/// - `open` picks the key by the envelope's own `key_id` — the current key, or
+///   a retired one — so **an envelope sealed before the rotation still opens**;
+/// - an envelope whose `key_id` is in no ring entry is **refused** (fail
+///   closed), never opened with the wrong key.
+pub struct RotatingSealer {
+    current_id: String,
+    current: AesGcmSealer,
+    /// Retired keys, oldest first. A retired key can OPEN, never seal.
+    retired: Vec<(String, AesGcmSealer)>,
+}
+
+impl RotatingSealer {
+    /// A ring whose current key is `current_id`.
+    pub fn new(current_id: impl Into<String>, current: AesGcmSealer) -> Self {
+        Self {
+            current_id: current_id.into(),
+            current,
+            retired: Vec::new(),
+        }
+    }
+
+    /// Build from a [`Secret`] holding exactly 32 bytes.
+    pub fn from_secret(current_id: impl Into<String>, key: &Secret) -> Result<Self, AppError> {
+        Ok(Self::new(current_id, AesGcmSealer::from_secret(key)?))
+    }
+
+    /// Retire a key: it keeps opening its own envelopes, and stops sealing.
+    pub fn with_retired(mut self, key_id: impl Into<String>, key: AesGcmSealer) -> Self {
+        self.retired.push((key_id.into(), key));
+        self
+    }
+
+    /// The key identity new envelopes are sealed under.
+    pub fn current_key_id(&self) -> &str {
+        &self.current_id
+    }
+
+    /// The retired key identities (for diagnostics).
+    pub fn retired_key_ids(&self) -> Vec<&str> {
+        self.retired.iter().map(|(id, _)| id.as_str()).collect()
+    }
+}
+
+impl Sealer for RotatingSealer {
+    /// Seal under the **current** key. The `key_id` argument is ignored on
+    /// purpose: the ring decides which key writes, so a caller cannot seal
+    /// under a retired key by mistake.
+    fn seal(&self, _key_id: &str, secret: &Secret) -> Result<Envelope, AppError> {
+        self.current.seal(&self.current_id, secret)
+    }
+
+    /// Open with the key the envelope names — the current one, or a retired
+    /// one. An envelope whose key id is in no ring entry is refused.
+    fn open(&self, envelope: &Envelope) -> Result<Secret, AppError> {
+        if envelope.key_id == self.current_id {
+            return self.current.open(envelope);
+        }
+        match self
+            .retired
+            .iter()
+            .find(|(id, _)| *id == envelope.key_id)
+        {
+            Some((_, sealer)) => sealer.open(envelope),
+            None => Err(AppError::new(
+                codes::ELEVATION,
+                ErrorCategory::Authorization,
+                Severity::High,
+                Retryability::NotRetryable,
+                "no key in the ring for this envelope's key identity",
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn sealer() -> AesGcmSealer {
         AesGcmSealer::new([7u8; KEY_LEN])
+    }
+
+    /// **Rotation**: an envelope sealed under the OLD key still opens after
+    /// the ring rotates, and new envelopes are written under the new key.
+    #[test]
+    fn a_rotated_key_still_opens_older_envelopes() {
+        let old = AesGcmSealer::new([1u8; KEY_LEN]);
+        let new = AesGcmSealer::new([2u8; KEY_LEN]);
+        let secret = Secret::new("sealed-before-the-rotation");
+
+        // Sealed while `old` was current.
+        let legacy = old.seal("master-2025", &secret).unwrap();
+        assert_eq!(legacy.key_id, "master-2025");
+
+        // The ring rotates: `new` is current, `old` is retired.
+        let ring = RotatingSealer::new("master-2026", new).with_retired("master-2025", old);
+
+        assert_eq!(
+            ring.open(&legacy).unwrap(),
+            secret,
+            "an envelope sealed BEFORE the rotation still opens"
+        );
+
+        // New envelopes are written under the new key.
+        let fresh = ring.seal("ignored", &secret).unwrap();
+        assert_eq!(
+            fresh.key_id, "master-2026",
+            "the ring decides which key seals"
+        );
+        assert_eq!(ring.open(&fresh).unwrap(), secret);
+        assert_eq!(ring.current_key_id(), "master-2026");
+        assert_eq!(ring.retired_key_ids(), vec!["master-2025"]);
+    }
+
+    /// Fail closed: an envelope whose key identity is in no ring entry is
+    /// REFUSED — never opened with some other key.
+    #[test]
+    fn an_unknown_key_identity_is_refused() {
+        let ring = RotatingSealer::new("master-2026", AesGcmSealer::new([2u8; KEY_LEN]));
+        let foreign = AesGcmSealer::new([9u8; KEY_LEN])
+            .seal("master-2024", &Secret::new("x"))
+            .unwrap();
+        let err = ring.open(&foreign).unwrap_err();
+        assert_eq!(err.code, codes::ELEVATION);
+        assert!(
+            err.public_message.contains("no key in the ring"),
+            "{}",
+            err.public_message
+        );
+    }
+
+    /// A retired key still authenticates its own envelopes (the ciphertext
+    /// check is the sealer's, not the ring's) — and a TAMPERED envelope under a
+    /// retired key is still refused.
+    #[test]
+    fn a_retired_key_still_authenticates_its_own_envelopes() {
+        let old = AesGcmSealer::new([1u8; KEY_LEN]);
+        let mut env = old.seal("master-2025", &Secret::new("v")).unwrap();
+        let ring = RotatingSealer::new("master-2026", AesGcmSealer::new([2u8; KEY_LEN]))
+            .with_retired("master-2025", old);
+        env.ciphertext[0] ^= 0x01;
+        let err = ring.open(&env).unwrap_err();
+        assert_eq!(
+            err.code,
+            codes::ELEVATION,
+            "a tampered envelope under a retired key is still refused"
+        );
     }
 
     #[test]

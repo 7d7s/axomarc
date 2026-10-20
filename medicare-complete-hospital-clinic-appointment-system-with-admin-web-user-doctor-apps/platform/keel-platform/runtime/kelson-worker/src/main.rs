@@ -1795,6 +1795,81 @@ mod tests {
         assert!(dead[0].finished_at.is_some(), "kill stamps finished_at");
     }
 
+    /// LF-051 (background-job authorization): a job whose capability has **no
+    /// registered handler** is REFUSED at the worker boundary. The attempt
+    /// fails — so the retry budget applies and the job can dead-letter — and it
+    /// never "succeeds" silently. Authorization is enforced where the work
+    /// runs, not only at the route middleware that enqueued it.
+    #[tokio::test]
+    async fn dispatch_refuses_a_job_with_no_registered_handler() {
+        use kelson_jobs::{JobStore, JobStoreAdmin};
+
+        let store = Arc::new(InMemoryJobStore::new());
+        let mut defs = JobRegistry::new();
+        defs.register(JobDef::new("known.job")).expect("def registers");
+        let mut handlers = WorkerRegistry::new();
+        handlers
+            .register(Arc::new(DemoJobHandler))
+            .expect("handler registers");
+
+        let memory: Arc<dyn kelson_caching::CachePort> =
+            kelson_cache_memory::MemoryCache::shared(64);
+        let stacks = JobMiddlewareStacks::new(Arc::new(CacheUniqueLock {
+            cache: kelson_caching::CacheService::new(memory),
+        }));
+        let batches = Arc::new(BatchRuntime::with_ledger(
+            store.clone(),
+            Arc::new(kelson_jobs::MemoryBatchLedger::new()),
+        ));
+        let chains = Arc::new(ChainRuntime::new(store.clone()));
+
+        // A job for a capability nobody registered a handler for.
+        let now = OffsetDateTime::now_utc();
+        let mut job = kelson_jobs::build_from_def(
+            &JobDef::new("unknown.capability"),
+            serde_json::json!({}),
+            now,
+        );
+        job.available_at = now - time::Duration::seconds(60);
+        let id = store.enqueue(job).expect("the job enqueues");
+
+        let ctx = DispatchCtx {
+            handlers: &handlers,
+            defs: &defs,
+            stacks: &stacks,
+            store: &*store,
+            admin: &*store,
+            batches: &batches,
+            chains: &chains,
+        };
+        ctx.once("soak-worker").await.expect("the dispatch pass runs");
+
+        let row = store.get(id).expect("the store reads").expect("the row");
+        assert_ne!(
+            row.status,
+            JobStatus::Succeeded,
+            "an unauthorized job never succeeds silently"
+        );
+        assert_eq!(
+            row.status,
+            JobStatus::Pending,
+            "the refusal re-queues the attempt (the retry budget governs it now)"
+        );
+        assert_eq!(
+            row.attempt, 1,
+            "the attempt was consumed by the refusal — the budget shrinks"
+        );
+        let error = row.last_error.expect("the failure is recorded");
+        assert!(
+            error.contains("no handler registered"),
+            "the failure names the refusal: {error}"
+        );
+
+        // It is visible to the admin as a failed attempt, not as work done.
+        let listed = store.list(Some(JobStatus::Pending), 10).expect("the admin list runs");
+        assert_eq!(listed.len(), 1, "the re-queued job is visible to the admin");
+    }
+
     // ------------------------------------------- long-lived worker: no leak
 
     /// The handler records what it was given, so the soak can prove that each

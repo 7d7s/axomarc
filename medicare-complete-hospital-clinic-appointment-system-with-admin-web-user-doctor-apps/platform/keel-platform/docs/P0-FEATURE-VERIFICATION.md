@@ -61,12 +61,17 @@
 
 | ID | Feature | Kelson Equivalent | Test Evidence | Status |
 |---|---|---|---|---|
-| LF-049 | Authentication guards and providers | Auth guards + identity + sessions | pg_principal_and_credential_roundtrip ✅ | VERIFIED |
-| LF-051 | Authorization gates and policies | Policy system + scopes | Policy tests exist | VERIFIED |
-| LF-053 | Password reset | Password reset flow | password_reset_and_verification ✅ | VERIFIED |
-| LF-054 | Password hashing | Argon2 password hashing | Hashing tests exist | VERIFIED |
-| LF-055 | Encryption | Encryption support | Encryption tests exist | VERIFIED |
-| LF-059 | Rate limits, secure headers, secret hygiene | Rate limiter + security headers | Security tests exist | VERIFIED |
+| LF-049 | Authentication guards and providers | The **provider** side is the framework's (`kelson-identity`'s `PrincipalStore`/`CredentialStore` + argon2 verification); the **guard** side is host wiring (session / PAT bearer / JWT bearer per request) | `login_bad_password_is_uniform_401`, `an_unknown_principal_and_a_wrong_password_are_indistinguishable` (new), `login_refuses_a_suspended_principal` (new), `login_rotates_session_and_invalidates_prelogin_cookie`, `jwt_bearer_inert_when_verifier_not_wired`, `kelson-session` 8 cases, `kelson-identity` 8 cases | PARTIALLY VERIFIED — there is **no framework-level `Guard` port** (the strategies are host wiring) and concurrency is untested |
+| LF-051 | Authorization gates and policies | `kelson-policy` (capability + scope + resource state + ABAC; a missing capability is denied) + `kelson-scope` + `kelson-ownership` + `kelson-elevation` + `kelson-tenancy` | `allow_conjunction_and_scope_denial`, `missing_capability_denied`, `abac_conditions`, `resource_state_conjunct`, `stale_revision_forces_safe_path`, `ownership_must_sit_inside_scope`, `tenant_scope_isolates_services`, `suspended_tenant_is_denied`, `pentest_composed_escalation_never_carries_tenant_across_subsystems`, `binding_miss_malformed_and_cross_tenant_are_404`, `broadcast_auth_matrix_allowed_denied_and_expired`, `dispatch_refuses_a_job_with_no_registered_handler` (new — authorization at the worker) | VERIFIED |
+| LF-050 | Starter-kit authentication scaffolding | `templates/starter-template` (module + SPA web shell + error views + Playwright specs), reachable through `kelson new --with-starter`; the templates crate embeds it, so a generated app does not depend on this checkout's layout | the scaffold **builds**: `kelson new starterprobe --with-starter --standalone` → `cargo check -p kelson-starterprobe --all-targets` clean; the e2e specs (`e2e/auth.spec.ts`, `e2e/notes.spec.ts`) cover register → session → `/auth/me`, a bad password, a good password, a note round-trip and an anonymous create refused | PARTIALLY VERIFIED — the build is proven, but the **Playwright e2e is not executed** on this host (no browser) |
+| LF-052 | Email verification | The verification token (single-use, purpose-disjoint), the signed verification mail link, the demo's request/confirm routes and the verified-gate middleware | `email_verification_flow_marks_principal_verified`, `email_verification_request_is_enumeration_safe`, `verified_email_gate_blocks_module_operations_until_confirmed`, `password_reset_and_verification_requests_deliver_token_mail`, `issue_verify_consume_and_single_use`, `purposes_are_disjoint` | PARTIALLY VERIFIED — the **tampered id/email hash** and the **resend throttling** cases are not named |
+| LF-053 | Password reset | The token service's reset flow (single-use, expiring, purpose-disjoint) + the demo's request/complete routes; a successful reset now **revokes the principal's API tokens and sessions** (F-18) | `reset_flow_end_to_end`, `weak_password_rejected_without_state_change`, `strength_policy`, `change_password_guards`, `uniform_denied_errors` (enumeration), `expiry_enforced`, `plaintext_never_persisted`, `password_reset_and_verification_requests_deliver_token_mail`, `reset_complete_rejects_a_password_below_the_configured_policy`, `a_password_reset_revokes_the_old_session_and_api_token` (new — the takeover path) | PARTIALLY VERIFIED — **concurrent reset** and **mail failure** are not named |
+| LF-054 | Password hashing | Argon2id only, with the cost in `[identity]` and the factors embedded in the PHC string (a drifted deployment still verifies) | `password_roundtrip`, `verify_credential_matches_hashed_password`, `password_params_roundtrip_and_drift_is_detectable`, `out_of_range_factors_are_refused_at_the_boundary`, `credential_roundtrip_and_password_swap`, `login_rehashes_a_verifier_whose_params_drifted_from_identity_config`, `register_rejects_a_password_below_the_configured_policy` | PARTIALLY VERIFIED — the **malformed hash** case and the **cost benchmark** are not named |
+| LF-055 | Encryption | `kelson-tokens::seal` — AES-256-GCM with a fresh 96-bit nonce per seal and the key identity in the envelope; signed data is a **separate** primitive (signed URLs, HMAC-tagged cookies) | `seal_open_roundtrip`, `tampered_ciphertext_rejected`, `wrong_key_rejected`, `fresh_nonce_per_seal`, `bad_nonce_and_alg_rejected`, `key_len_validation`, `a_rotated_key_still_opens_older_envelopes` (new), `an_unknown_key_identity_is_refused` (new), `a_retired_key_still_authenticates_its_own_envelopes` (new), `sealed_cookie_values_round_trip_and_never_leak_plaintext` | PARTIALLY VERIFIED — the **rotation** gap is fixed (F-16), but **encrypted casts** (model attributes encrypted at rest) are not shipped |
+| LF-056 | API token authentication (Sanctum-class) | Personal access tokens as a first-class token purpose (`TokenPurpose::Api`), distinct from the session | `api_tokens_are_not_consumed`, `expiry_enforced`, `revoke_and_list`, `plaintext_never_persisted`, `purposes_are_disjoint`, `token_expiry_reads_the_injected_clock`, `ttl_must_be_positive` | PARTIALLY VERIFIED — **abilities/scopes on a PAT**, the **SPA cookie mode** and a PAT's own **tenant scope** are not implemented (P1) |
+| LF-057 | OAuth2 authorization server (Passport-class) | The demo's OAuth2 surface (authorize / token / revoke / client management) over the OAuth2 token purposes | the demo's 12 `oauth_*` cases (incl. `oauth_authorize_fails_closed_before_any_redirect`, `oauth_code_is_single_use_and_bound_to_its_client`, `oauth_pkce_rejects_the_wrong_verifier_and_burns_the_code`, `oauth_refresh_rotates_and_kills_the_old_token`, `oauth_revoke_kills_issued_tokens`) + `pkce_s256_matches_the_rfc7636_vector`, `oauth_purposes_are_single_use_and_disjoint` | VERIFIED |
+| LF-058 | Social authentication (Socialite-class) | Nothing ships — no provider drivers, no callback route, no account linking | — (an absent feature has no executed case) | NOT IMPLEMENTED — P2 and optional; the auth core is provider-neutral by design |
+| LF-059 | Rate limits, secure headers, secret hygiene | The token-bucket limiter (process-local + the shared `RateLimitStore` with the Redis adapter), the CORS allowlist, the sealed cookies, the CSP nonce, the redaction layer | the rate limiter's 9 cases (incl. `client_key_ignores_forwarded_for_without_trusted_proxies`, `client_key_walks_the_chain_past_trusted_proxies`), the CORS matrix, the cookie/CSRF cases, `csp_nonce_placeholder_is_substituted`, `nonce_is_fresh_and_long`, `redacted_json_masks_secrets_on_frozen_config`, `login_throttling_returns_429_after_burst`, and the **live-Redis** shared-bucket cases | VERIFIED |
 
 ### Queues, Events, Scheduling & Concurrency
 
@@ -107,21 +112,28 @@
 
 | Status | Count | Features |
 |---|---|---|
-| VERIFIED | 33 | LF-001, LF-002, LF-004, LF-005, LF-007, LF-011, LF-015, LF-017, LF-018, LF-020, LF-021, LF-022, LF-023, LF-024, LF-025, LF-026, LF-036, LF-037, LF-038, LF-040, LF-041, LF-049, LF-051, LF-053, LF-054, LF-055, LF-059, LF-060, LF-061, LF-063, LF-064, LF-071, LF-081, LF-087, LF-088, LF-089 |
-| PARTIALLY VERIFIED | 0 | � |
+| VERIFIED | 33 | LF-001, LF-002, LF-004, LF-005, LF-007, LF-011, LF-015, LF-017, LF-018, LF-020, LF-021, LF-022, LF-023, LF-024, LF-025, LF-026, LF-036, LF-037, LF-038, LF-040, LF-041, LF-051, LF-057, LF-059, LF-060, LF-061, LF-063, LF-064, LF-071, LF-081, LF-087, LF-088, LF-089 |
+| PARTIALLY VERIFIED | 7 | LF-049 (no framework `Guard` port; concurrency untested), LF-050 (the starter builds; the Playwright e2e is not executed here), LF-052 (the tampered-hash and resend-throttle cases are missing), LF-053 (concurrent reset, mail failure, session revocation on reset), LF-054 (the malformed-hash case and the cost benchmark), LF-055 (rotation fixed — F-16 — but encrypted casts not shipped), LF-056 (no PAT abilities, no SPA cookie mode) |
 | NOT RUN | 1 | LF-096 (Docker build - no Docker daemon) |
+| NOT IMPLEMENTED | 1 | LF-058 (social authentication — P2, provider-neutral by design) |
 | UNKNOWN | 0 | All P0 features have test evidence |
+
+> The identity/security batch (LF-049 … LF-059) is verified item by item in
+> `LF-049-TO-LF-059-VERIFICATION.md` — 3 VERIFIED, 7 PARTIALLY VERIFIED, 1 NOT IMPLEMENTED, with the
+> named evidence and the named gaps for every item.
 
 ## Critical Gaps in P0 Verification
 
 1. **LF-064 (Transactional events/outbox)**: PgOutboxStore now tested against real PostgreSQL (pg_outbox_store_claim_and_mark_published ?). Crash-recovery (kill ? restart ? verify delivery) not empirically tested. Requires running instance.
 2. **LF-096 (Deployment)**: Dockerfile created but Docker build not run (no Docker daemon available).
+3. **LF-049 (Guards)**: the framework has no `Guard` port — the guard/provider split (session / PAT
+   / JWT strategies) is host wiring, and concurrent logins are untested.
 
 ## Updated Conclusion
 
 Of the 37 P0 features from the Laravel Feature Atlas:
 - **33 are VERIFIED** with executed test evidence
-- **0 are PARTIALLY VERIFIED**
+- **7 are PARTIALLY VERIFIED** (LF-049, LF-050, LF-052, LF-053, LF-054, LF-055, LF-056)
 - **1 is NOT RUN** (LF-096 � Docker build, no Docker daemon)
 - **0 are UNKNOWN**
 

@@ -673,6 +673,59 @@ async fn reset_request(
     )
 }
 
+/// Close every credential that was issued under the OLD password, after a
+/// successful reset.
+///
+/// Two kinds of credential can outlive a password change, and both are a
+/// takeover path when the reset was prompted by a compromise:
+///
+/// - the **API tokens** (a bearer credential — it never asks for the
+///   password again), and
+/// - the **sessions** (the cookie is valid until it expires).
+///
+/// Both are revoked here. The revocation is best-effort per kind: a store
+/// that cannot enumerate (the trait's default) reports 0, and the reset still
+/// succeeds — the password change itself is the security boundary, and the
+/// revocation closes the extra doors.
+fn revoke_credentials_after_reset(state: &AppState, principal: kelson_foundation::PrincipalId) {
+    // The API tokens: every token the principal holds is revoked.
+    match state.tokens.list(principal) {
+        Ok(tokens) => {
+            for token in tokens {
+                if let Err(err) = state.tokens.revoke(token.id) {
+                    tracing::warn!(
+                        error = %err.public_message,
+                        "a token could not be revoked after the password reset"
+                    );
+                }
+            }
+        }
+        Err(err) => tracing::warn!(
+            error = %err.public_message,
+            "the principal's tokens could not be listed after the password reset"
+        ),
+    }
+    // The sessions: every session row the principal holds is deleted.
+    if let Some(sessions) = &state.sessions {
+        match sessions
+            .manager
+            .store()
+            .delete_principal_sessions(principal)
+        {
+            Ok(n) if n > 0 => tracing::info!(
+                principal = %principal,
+                sessions = n,
+                "the sessions issued under the old password were revoked"
+            ),
+            Ok(_) => {}
+            Err(err) => tracing::warn!(
+                error = %err.public_message,
+                "the principal's sessions could not be revoked after the password reset"
+            ),
+        }
+    }
+}
+
 async fn reset_complete(
     State(state): State<AppState>,
     Json(body): Json<ResetCompleteBody>,
@@ -689,6 +742,12 @@ async fn reset_complete(
         state
             .credentials
             .replace_password_hash(token.principal_id, Secret::new(hash))?;
+        // A reset must CLOSE the old credentials, not just change the
+        // password: whoever holds a session cookie or an API token issued
+        // under the old password would stay signed in after the owner
+        // recovered the account. The API tokens go first (a bearer token
+        // survives the password change by itself), then the sessions.
+        revoke_credentials_after_reset(&state, token.principal_id);
         Ok(serde_json::json!({ "changed": true }))
     })();
     match result {

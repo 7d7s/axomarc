@@ -106,6 +106,21 @@ impl SessionStore for PgSessionStore {
         })
     }
 
+    fn delete_principal_sessions(
+        &self,
+        principal: PrincipalId,
+    ) -> Result<usize, AppError> {
+        let pool = self.pool.clone();
+        block_on(async move {
+            let deleted = sqlx::query("DELETE FROM http_sessions WHERE principal_id = $1")
+                .bind(*principal.as_uuid())
+                .execute(&pool)
+                .await
+                .map_err(pg)?;
+            Ok(deleted.rows_affected() as usize)
+        })
+    }
+
     fn sweep(&self, now: OffsetDateTime, policy: &SessionPolicy) -> Result<usize, AppError> {
         // Sessions die idle OR absolute-expired (Session::expired semantics).
         // Zero disables that bound, so only attach live conditions.

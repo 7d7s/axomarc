@@ -168,6 +168,20 @@ pub trait SessionStore: Send + Sync {
     fn sweep(&self, _now: OffsetDateTime, _policy: &SessionPolicy) -> Result<usize, AppError> {
         Ok(0)
     }
+    /// Delete every session belonging to `principal`; returns how many went.
+    ///
+    /// This is what makes a **credential change** close the old sessions: when
+    /// a password is reset, the sessions issued under the old password must
+    /// not survive it — otherwise whoever holds a stolen cookie stays signed
+    /// in after the owner recovers the account.
+    ///
+    /// Stores without enumeration return 0 (the same posture as `sweep`).
+    fn delete_principal_sessions(
+        &self,
+        _principal: PrincipalId,
+    ) -> Result<usize, AppError> {
+        Ok(0)
+    }
 }
 
 /// Default in-memory store (single-node dev/test).
@@ -206,6 +220,22 @@ impl SessionStore for InMemorySessionStore {
 
     fn count(&self) -> usize {
         self.inner.read().unwrap().len()
+    }
+
+    fn delete_principal_sessions(
+        &self,
+        principal: PrincipalId,
+    ) -> Result<usize, AppError> {
+        let mut map = self.inner.write().unwrap();
+        let doomed: Vec<SessionId> = map
+            .iter()
+            .filter(|(_, session)| session.principal == principal)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &doomed {
+            map.remove(id);
+        }
+        Ok(doomed.len())
     }
 
     fn sweep(&self, now: OffsetDateTime, policy: &SessionPolicy) -> Result<usize, AppError> {
