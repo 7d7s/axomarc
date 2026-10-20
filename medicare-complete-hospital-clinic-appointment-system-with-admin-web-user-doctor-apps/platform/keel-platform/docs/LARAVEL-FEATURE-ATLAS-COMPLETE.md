@@ -74,19 +74,22 @@
 ### Database, Query Builder & Eloquent (LF-036 to LF-048)
 | ID | Feature | Disposition | Kelson Equivalent | Test Evidence |
 |---|---|---|---|---|
-| LF-036 | Database connections and transactions | MATCH | PgModelStore + MySQL store | pg_integration 18 tests ✅ |
-| LF-037 | Query Builder | MATCH | Select builder (joins, aggregates, group-by, unions) | pg_modelstore 10 tests ✅ |
-| LF-038 | Migrations and schema builder | MATCH | Migration system + rollback | Migration tests ✅ |
-| LF-039 | Seeding and factories | MATCH | Seeders + factories (Phase 1) | Codegen tests ✅ |
-| LF-040 | Eloquent model lifecycle and CRUD | MATCH | ModelDef + ModelStore (17 methods) | pg_modelstore_crud_roundtrip ✅ |
-| LF-041 | Relationships and eager loading | MATCH | RelationDef (8 kinds) + with() | pg_modelstore_belongs_to_eager_load ✅ |
-| LF-042 | Casts, accessors, mutators and strictness | MATCH | with_cast + with_accessor + with_mutator | Cast tests ✅ |
-| LF-043 | Scopes, model events and observers | MATCH | with_scope + with_global_scope + ModelEvent | Scope tests ✅ |
-| LF-044 | Eloquent collections and base collections | FUNCTIONAL EQUIVALENT | Rust Vec/Iterator (no Collection wrapper) | — |
-| LF-045 | API Resources and serialization | MATCH | JSON:API resource + public_record + wire | JSON:API tests ✅ |
-| LF-046 | Pagination | MATCH | ListOpts + Page<T> | Pagination tests ✅ |
-| LF-047 | Redis and cache-backed data services | MATCH | Cache service + Redis adapter | Cache tests ✅ |
-| LF-048 | MongoDB integration | EXCLUDE BY DESIGN | Postgres + MySQL only | — |
+| LF-036 | Database connections and transactions | MATCH (partial) | `TransactionPort`/`TxHandle` (pg + mysql), savepoints, advisory + row locks, one pool per fabric | `mysql_transaction_rollback_isolates_two_tests_sharing_a_table`, `mysql_savepoint_rollback_isolates_two_tests_sharing_a_table`, `pg_bridged_queries_reuse_pool_across_runtimes`. **Gap**: no deadlock retry, no read/write split |
+| LF-037 | Query Builder | MATCH (typed, no raw escape hatch) | Select/Insert/Update/Delete/Truncate builders (joins, aggregates, group-by, unions, subqueries, keyset) | 56 builder cases incl. `identifier_validation_rejects_injection_shapes`, `empty_in_list_rejected`, `flat_mixture_follows_sql_precedence`, `keyset_row_comparison_shape` |
+| LF-038 | Migrations and schema builder | MATCH (partial) | Embedded migrations + fluent schema builder + migration lock (pg advisory / MySQL GET_LOCK) + `migrate:plan` | `fluent_schema_builder_byte_round_trips_every_shipped_migration`, `twin_mysql_migrations_superset_the_base_by_exactly_the_target_arch_phases`, `tests::migrate_plan_reaches_for_no_mutation_path`. **Gap**: batch-level rollback, no per-migration `down` |
+| LF-039 | Seeding and factories | MATCH (partial) | `Seeder`/`SeederRegistry`/`SeedReport` (pg + mysql) + `kelson seed` | `seeders::tests::registry_filters_and_rejects_unknown_names`, `seeders::tests::registry_runs_in_registration_order`. **Gap**: no factories; **no production gate** |
+| LF-040 | Eloquent model lifecycle and CRUD | MATCH (repository/data-mapper) | ModelDef + ModelStore + ModelRuntime (17 methods) | 16 shared conformance cases on pg + mysql + the in-memory fake (`crud_roundtrip`, `soft_delete_restore`, `update_on_a_trashed_row_writes_and_stays_trashed`, …) |
+| LF-041 | Relationships and eager loading | MATCH | RelationDef (8 kinds) + `with()` nested eager loading + `with_constrained` | `belongs_to_eager_load`, `has_many_eager_load`, `many_to_many_eager_loads_and_aggregates`, `morph_to_many_eager_loads_and_pivots_stay_type_pinned`, `mysql_modelstore_belongs_to_eager_load`. **Gap**: the ≤2-queries bound is documented, not asserted; no pivot writes |
+| LF-042 | Casts, accessors, mutators and strictness | MATCH | with_cast + with_accessor + with_mutator + strict field validation | `casts::tests::encrypted_cast_round_trips_through_real_aes_gcm`, `runtime::tests::update_rejects_immutable_and_unknown_fields` |
+| LF-043 | Scopes, model events and observers | MATCH | with_scope + with_global_scope + ModelEvent | the scope/event cases in `kelson-models` (139) |
+| LF-044 | Eloquent collections and base collections | EXCLUDE BY DESIGN | Rust Vec/Iterator (no Collection wrapper — blueprint sec.26.3) | — (product decision) |
+| LF-045 | API Resources and serialization | MATCH | JSON:API resource + public_record + wire | `resource::tests::*` (7) + `jsonapi::tests::*` (13) |
+| LF-046 | Pagination | MATCH (offset only) | ListOpts + Page<T> + the keyset row predicate | `pagination::tests::*` (5) + `select::tests::keyset_row_comparison_shape`. **Gap**: no cursor pagination |
+| LF-047 | Redis and cache-backed data services | MATCH (partial) | CachePort + CacheService + the memory/Redis adapters (+ session, queue, rate-limit Redis adapters) | `kelson-cache-memory` 17 cases incl. `tenant_isolation_cache_entries_do_not_cross_tenants`, `cache_lock_acquire_release_and_exclusivity`; the live-Redis cases **skip** on this host |
+| LF-048 | MongoDB integration | EXCLUDE BY DESIGN | Postgres + MySQL only (blueprint sec.26.3) | — (product decision) |
+
+> Evidence in full: `LF-036-TO-LF-048-VERIFICATION.md` (Revision 1 — 6 VERIFIED / 5 PARTIALLY VERIFIED /
+> 2 EXCLUDED BY DESIGN; 466 green results, 0 failures). Findings F-7..F-12.
 
 ### Identity & Application Security (LF-049 to LF-059)
 | ID | Feature | Disposition | Kelson Equivalent | Test Evidence |

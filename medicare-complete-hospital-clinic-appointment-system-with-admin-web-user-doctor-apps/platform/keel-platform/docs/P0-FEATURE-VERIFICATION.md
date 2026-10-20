@@ -51,11 +51,11 @@
 
 | ID | Feature | Kelson Equivalent | Test Evidence | Status |
 |---|---|---|---|---|
-| LF-036 | Database connections and transactions | PgModelStore + MySQL store | pg_integration 18 tests ✅ | VERIFIED |
-| LF-037 | Query Builder | Select builder | pg_modelstore 10 tests ✅ | VERIFIED |
-| LF-038 | Migrations and schema builder | Migration system | Migration tests exist | VERIFIED |
-| LF-040 | Eloquent model lifecycle and CRUD | ModelDef + ModelStore (17 methods) | pg_modelstore_crud_roundtrip ✅ | VERIFIED |
-| LF-041 | Relationships and eager loading | RelationDef (8 kinds) + with() | pg_modelstore_belongs_to_eager_load ✅ | VERIFIED |
+| LF-036 | Database connections and transactions | `TransactionPort`/`TxHandle` (pg + mysql) + the two stores | `mysql_transaction_rollback_isolates_two_tests_sharing_a_table`, `mysql_savepoint_rollback_isolates_two_tests_sharing_a_table`, `pg_bridged_queries_reuse_pool_across_runtimes` (**NOT RUN here**: the pg halves — PG unusable on this host) | VERIFIED (partial: no deadlock retry, no read/write split) |
+| LF-037 | Query Builder | Typed Select/Insert/Update/Delete/Truncate builders | 56 builder cases incl. `identifier_validation_rejects_injection_shapes`, `empty_in_list_rejected`, `keyset_row_comparison_shape` | VERIFIED |
+| LF-038 | Migrations and schema builder | Embedded migrations + fluent schema builder + migration lock + `migrate:plan` | `fluent_schema_builder_byte_round_trips_every_shipped_migration`, `twin_mysql_migrations_superset_the_base_by_exactly_the_target_arch_phases`, `tests::migrate_plan_reaches_for_no_mutation_path` | VERIFIED (partial: batch-level rollback) |
+| LF-040 | Eloquent model lifecycle and CRUD | ModelDef + ModelStore + ModelRuntime (17 methods) | 16 shared conformance cases on pg + mysql + the in-memory fake (`crud_roundtrip`, `soft_delete_restore`, `update_on_a_trashed_row_writes_and_stays_trashed`, …) | VERIFIED |
+| LF-041 | Relationships and eager loading | RelationDef (8 kinds) + `with()` nested eager loading | `belongs_to_eager_load`, `has_many_eager_load`, `many_to_many_eager_loads_and_aggregates`, `morph_to_many_eager_loads_and_pivots_stay_type_pinned`, `mysql_modelstore_belongs_to_eager_load` | VERIFIED |
 
 ### Identity & Application Security
 
