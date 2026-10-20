@@ -37,7 +37,7 @@ use kelson_foundation::{
 };
 use kelson_execution::IdempotencyKey;
 use kelson_http::{
-    AuthVia, ChainRuntime, EdgeAuthPort, Envelope, ResolvedPrincipal, ResolvedSession,
+    AuthVia, ChainRuntime, EdgeAuthPort, Envelope, Guard, ResolvedPrincipal, ResolvedSession,
 };
 use kelson_registry::{
     BindingSpec, CachePolicy, CacheSpec, ModuleManifest, PlatformGraph, RoutePlan, RouteSpec,
@@ -988,6 +988,53 @@ pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     kelson_http::bearer_token(headers)
 }
 
+/// The host's **bearer verifier** for the framework's guard port: the PAT
+/// first (the default model), then the opt-in stateless HS256 JWT fallback.
+///
+/// The *order* is the host's policy; the framework owns the plumbing (a
+/// credential that does not verify is one uniform refusal ✓).
+pub(crate) struct DemoBearerVerifier {
+    tokens: Arc<kelson_tokens::TokenService>,
+    jwt: Option<Arc<kelson_http::JwtHs256>>,
+}
+
+impl kelson_http::BearerVerifier for DemoBearerVerifier {
+    fn verify_bearer(
+        &self,
+        token: &str,
+    ) -> Result<Option<kelson_http::GuardedPrincipal>, kelson_foundation::AppError> {
+        match self.tokens.verify(kelson_tokens::TokenPurpose::Api, token) {
+            Ok(auth_token) => Ok(Some(kelson_http::guarded(
+                auth_token.principal_id,
+                tenant_from_label(&auth_token.label),
+                kelson_http::GuardStrategy::Token,
+            ))),
+            Err(_) => Ok(resolve_jwt_token(self.jwt.as_deref(), token).map(
+                |(principal, tenant)| {
+                    kelson_http::guarded(principal, tenant, kelson_http::GuardStrategy::Jwt)
+                },
+            )),
+        }
+    }
+}
+
+/// The host's **guard**: session first, then a bearer credential.
+///
+/// LF-049's separation made concrete — the guard answers "who is this
+/// request" (and how it was proven ✓), while the provider (the identity
+/// stores) answers "what is this principal" ✓.
+pub(crate) fn guard(
+    state: &AppState,
+) -> kelson_http::BearerGuard<DemoBearerVerifier> {
+    kelson_http::BearerGuard::new(
+        Arc::new(DemoBearerVerifier {
+            tokens: state.tokens.clone(),
+            jwt: state.jwt.clone(),
+        }),
+        kelson_http::GuardStrategy::Token,
+    )
+}
+
 /// Shared identity resolution for non-graph endpoints (uploads, /auth/me):
 /// session first, then bearer PAT. Used by upload_routes/auth_routes.
 pub(crate) fn resolve_identity(
@@ -995,23 +1042,11 @@ pub(crate) fn resolve_identity(
     headers: &HeaderMap,
     session: Option<&ResolvedSession>,
 ) -> Result<(PrincipalId, Option<TenantId>), kelson_foundation::AppError> {
-    if let Some(resolved) = session {
-        return Ok((resolved.session.principal, resolved.session.tenant));
-    }
-    let Some(token) = bearer_token(headers) else {
-        return Err(kelson_foundation::AppError::unauthenticated());
-    };
-    // Invalid/revoked bearer credentials are an authentication failure (401)
-    // at the transport edge, regardless of the domain error category.
-    // B-22: PAT is tried first (default model); the opt-in stateless HS256
-    // JWT interop verifier is the fallback when one is wired (app.jwt).
-    match state.tokens.verify(kelson_tokens::TokenPurpose::Api, token) {
-        Ok(auth_token) => Ok((
-            auth_token.principal_id,
-            tenant_from_label(&auth_token.label),
-        )),
-        Err(_) => resolve_jwt_token(state.jwt.as_deref(), token)
-            .ok_or_else(kelson_foundation::AppError::unauthenticated),
+    match guard(state).resolve(headers, session)? {
+        Some(resolved) => Ok((resolved.principal_id, resolved.tenant_id)),
+        // No credential at all: the route decides whether it needs an
+        // identity; the shared answer is the uniform 401 ✓.
+        None => Err(kelson_foundation::AppError::unauthenticated()),
     }
 }
 

@@ -10,6 +10,7 @@ pub mod cookie;
 pub mod csrf;
 pub mod error_render;
 pub mod flash;
+pub mod guard;
 pub mod jsonapi;
 pub mod jwt;
 pub mod middleware;
@@ -29,6 +30,9 @@ pub use assets::{asset_url, AssetEntry, AssetManifest};
 pub use cache::{etag_for, if_none_match_hits, CacheControlBuilder};
 pub use cookie::{derive_cookie_key, Cookie, CookieCipher, CookieJar, CookieQueue, SameSite};
 pub use csrf::{session_csrf_token, CsrfGuard, CSRF_COOKIE, CSRF_HEADER};
+pub use guard::{
+    guarded, BearerGuard, BearerVerifier, Guard, GuardStrategy, GuardedPrincipal,
+};
 pub use error_render::{
     problem_json, wants_problem, ErrorRenderPlan, ErrorRenderRegistry, ErrorRenderer, PROBLEM_JSON,
 };

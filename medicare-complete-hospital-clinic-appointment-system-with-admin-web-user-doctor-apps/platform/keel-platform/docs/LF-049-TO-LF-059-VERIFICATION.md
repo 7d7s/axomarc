@@ -58,9 +58,13 @@ checkout. The Playwright specs (`e2e/auth.spec.ts`, `e2e/notes.spec.ts`) are **n
   methods into one monolithic handler.
 - **Implementation**: the **provider** side is the framework's — `kelson_identity::PrincipalStore` +
   `CredentialStore` (user retrieval, credential storage, argon2 verification ✓). The **guard** side is
-  the host's: the demo resolves a session, a PAT bearer or a JWT bearer per request
-  (`jwt_bearer_inert_when_verifier_not_wired` proves the JWT path is inert unless a verifier is
-  wired ✓).
+  now a framework **port** too (`kelson_http::guard` ✓, added this pass): a `Guard` resolves "who is
+  this request and how was it proven" (`GuardStrategy` — `Session` / `Token` / `Jwt` ✓) and is
+  deliberately **separate from the provider** ✓ — the provider answers "what is this principal", the
+  guard answers "which credential is this" ✓. The bearer check is delegated to a host-supplied
+  `BearerVerifier` ✓ so the framework does not depend on the token crate ✓, and the demo's guard
+  keeps its policy (the PAT first, the opt-in HS256 JWT fallback ✓). The demo's own resolution path
+  goes through the port ✓ (`resolve_identity` → the guard ✓).
 - **Evidence**: `login_bad_password_is_uniform_401` (invalid login ✓),
   **`an_unknown_principal_and_a_wrong_password_are_indistinguishable`** (provider-not-found: the two
   failures are the **same envelope** — same status, same body ✓, and an unknown principal still pays
@@ -69,15 +73,14 @@ checkout. The Playwright specs (`e2e/auth.spec.ts`, `e2e/notes.spec.ts`) are **n
   cookie ✓), `login_rotates_session_and_invalidates_prelogin_cookie` (session fixation ✓),
   `login_throttling_returns_429_after_burst` ✓, `password_confirm_stamps_the_session_and_fails_closed`
   ✓, `kelson-session`'s `regenerate_rotates_id_and_keeps_data` + `idle_and_absolute_expiry` +
-  `sweep_reaps_expired_sessions` (rotation and revocation ✓).
-- **Gaps** (why not VERIFIED):
-  1. **No framework-level `Guard` port.** The strategies exist and the host wires them, but the
-     guard/provider split the atlas asks for is **host wiring**, not a framework contract — a second
-     host would have to re-implement it.
-  2. **Concurrency is untested**: two simultaneous logins for one principal (or a login racing a
-     logout) have no case.
-  3. The login methods are separate handlers ✓ (not one monolithic handler ✓ — the atlas's
-     constraint is met ✓).
+  `sweep_reaps_expired_sessions` (rotation and revocation ✓); the guard port's own contract —
+  `a_request_without_a_credential_is_anonymous_not_an_error` ✓,
+  `a_valid_bearer_resolves_with_its_strategy` ✓,
+  `a_credential_that_does_not_verify_is_one_uniform_refusal` ✓,
+  `a_malformed_authorization_header_is_not_a_credential` ✓.
+- **Gaps** (why not VERIFIED): **concurrency is untested** — two simultaneous logins for one principal
+  (or a login racing a logout) have no case. The login methods are separate handlers ✓ (not one
+  monolithic handler ✓ — the atlas's constraint is met ✓).
 
 ### LF-050 — Starter-kit authentication scaffolding — **PARTIALLY VERIFIED**
 
@@ -310,10 +313,10 @@ checkout. The Playwright specs (`e2e/auth.spec.ts`, `e2e/notes.spec.ts`) are **n
   **7 PARTIALLY VERIFIED** (LF-049 guards, LF-050 starter kit, LF-052 email verification, LF-053
   password reset, LF-054 password hashing, LF-055 encryption, LF-056 API tokens), **1 NOT
   IMPLEMENTED** (LF-058 social auth — P2, and the core is provider-neutral by design).
-- **The sharpest gaps**: the **framework has no `Guard` port** (the guard/provider split lives in the
-  host — LF-049); **encrypted casts** are not shipped (LF-055); a PAT has **no abilities** and there
-  is **no SPA cookie mode** (LF-056, P1); and three cases are named-but-missing: the **tampered
-  verification hash**, the **concurrent reset**, and the **malformed verifier row**.
+- **The sharpest gaps**: **encrypted casts** are not shipped (LF-055 ✓); a PAT has **no abilities** and
+  there is **no SPA cookie mode** (LF-056, P1 ✓); **concurrency** in the login path is untested
+  (LF-049 ✓); and three cases are named-but-missing: the **tampered verification hash**, the
+  **concurrent reset**, and the **malformed verifier row** ✓.
 - **Findings**: F-16 (the documented-but-absent key rotation — **fixed**), F-17 (the parity rows'
   claim-shaped evidence — **corrected**), **F-18 (a password reset did not revoke the old sessions or
   tokens — fixed; a P0 takeover path)**.
