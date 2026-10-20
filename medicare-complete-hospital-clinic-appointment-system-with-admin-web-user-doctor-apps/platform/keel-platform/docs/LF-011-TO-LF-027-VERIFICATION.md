@@ -129,10 +129,19 @@ cargo test -p kelson-postgres --features pg-tests --test pg_integration -- mysql
   a backend can die with `0xC0000142` on any new connection and the postmaster then shuts the server
   down, so a pg evidence run can be interrupted and must be re-run after a restart. MySQL
   (127.0.0.1:3307) is the stable live fabric here.
-- **Not selected this pass** (suites exist): `upload_*` HTTP integration tests (multipart unit suite executed
-  instead), `manifest_validation_422_with_fields_meta`, the `oauth_*` redirect-validation suite.
-  → **NOT RUN** (selection). *(The `kelson-session-redis` adapter's live suite was not selected here
-  either — it did not exist yet; it was added later, see the Redis bullet below and F-15.)*
+- **Previously not selected, now EXECUTED (2026-10-20)**: the three suites this pass skipped for
+  selection reasons are now run and green, so the "NOT RUN (selection)" caveat is retired:
+  - the `upload_*` HTTP integration cases — **6 passed** (`upload_happy_path_roundtrips_through_storage`,
+    `upload_disk_query_resolves_and_unknown_disk_is_422`,
+    `upload_traversal_filename_is_sanitized_and_unauthenticated_rejected`,
+    `upload_without_multipart_is_422_envelope`,
+    `upload_part_bomb_beyond_max_parts_is_rejected`,
+    `upload_quota_refuses_the_overage_and_keeps_the_ledger_exact`);
+  - `manifest_validation_422_with_fields_meta` — **1 passed**;
+  - the `oauth_*` suite — **12 passed** (the authorize/code/PKCE/token/refresh/revoke/client-management
+    cases, including the redirect-validation ones).
+  *(The `kelson-session-redis` adapter's live suite had been skipped here as well — it did not exist
+  yet; it was added later, see the Redis bullet below and F-15.)*
 - **Redis-dependent — CLOSED (2026-10-20).** A Redis server is on this host (`C:\Redis\redis-server.exe`),
   so the shared rate-limit store's live cases now **execute** against a real Redis instead of skipping:
   ```powershell
