@@ -159,6 +159,26 @@ pub fn ability_list(value: &serde_json::Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The rate-limit backend port (F-3 Phase 3).
+///
+/// The admission edge derives a client key and then asks the store for one
+/// token. The default implementation keeps the buckets **in the process**; a
+/// deployment that runs more than one web instance (the documented topology
+/// is an HPA with `minReplicas: 3`) must supply a **shared** store (see the
+/// `kelson-ratelimit-redis` adapter), or every instance enforces its own
+/// limit and the effective limit multiplies by the instance count.
+///
+/// `capacity` and `refill_per_sec` come from the caller, so the limit itself
+/// stays configured in one place no matter which backend is in play.
+///
+/// The port lives in the **foundation** (not in the web crate ✓) because the
+/// shared-store adapter sits in the adapters layer ✓, which may not depend on
+/// the web layer ✓ — the layer gate refuses that edge ✓.
+pub trait RateLimitStore: Send + Sync {
+    /// Take one token for `key`; `false` means the client is over its limit.
+    fn take(&self, key: &str, capacity: u32, refill_per_sec: f64) -> bool;
+}
+
 /// At-rest encryption port (L27). Foundation owns the contract; concrete
 /// ciphers live in the security class so core stays external-free.
 pub trait Sealer: Send + Sync {

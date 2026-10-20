@@ -1,0 +1,19 @@
+[package]
+name = "kelson-process"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Kelson service: a safe child-process port (argv, never a shell), with a timeout, an isolated environment and a fake for tests."
+
+[dependencies]
+kelson-foundation = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

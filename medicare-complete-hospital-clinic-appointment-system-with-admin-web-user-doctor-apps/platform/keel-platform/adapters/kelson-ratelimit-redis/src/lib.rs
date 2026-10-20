@@ -3,7 +3,7 @@
 //! A **shared** rate-limit store for the HTTP admission edge (F-3 Phase 3).
 //!
 //! The framework's default store keeps the token buckets in the process
-//! ([`kelson_http::InMemoryRateLimitStore`]). That is correct for a
+//! (`kelson-http`'s `InMemoryRateLimitStore`). That is correct for a
 //! single-instance deployment, but the documented topology scales the API
 //! horizontally (`docs/21-DEPLOYMENT.md`: an HPA from `minReplicas: 3` to
 //! `maxReplicas: 20`), and an in-process bucket means **every instance
@@ -17,7 +17,7 @@
 //! read-refill-take-write sequence is atomic: two instances hitting the same
 //! client at the same time cannot both take the last token.
 //!
-//! - `capacity` / `refill_per_sec` come from the caller ([`kelson_http`]'
+//! - `capacity` / `refill_per_sec` come from the caller (`kelson-http`'s
 //!   `RateLimitConfig`), so the limit stays configured in one place.
 //! - The key expires after `ttl_secs` (default: the capacity/refill window
 //!   plus a margin) — a bucket that nobody touches is cleaned up by Redis
@@ -37,7 +37,7 @@
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use kelson_http::RateLimitStore;
+use kelson_foundation::RateLimitStore;
 
 /// The atomic token-bucket step.
 ///

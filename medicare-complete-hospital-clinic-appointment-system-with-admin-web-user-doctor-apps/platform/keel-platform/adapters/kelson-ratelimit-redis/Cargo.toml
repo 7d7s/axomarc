@@ -10,7 +10,7 @@ keywords.workspace = true
 description = "Kelson adapter: a shared Redis rate-limit store (atomic Lua token bucket) for the HTTP admission edge."
 
 [dependencies]
-kelson-http = { workspace = true }
+kelson-foundation = { workspace = true }
 redis = { workspace = true }
 tracing = { workspace = true }
 

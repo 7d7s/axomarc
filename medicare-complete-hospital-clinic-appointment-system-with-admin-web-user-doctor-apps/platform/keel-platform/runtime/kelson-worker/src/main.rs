@@ -224,17 +224,26 @@ impl JobHandler for DemoJobHandler {
 
 /// Enforce the job execution deadline; an overrun counts as a failed attempt
 /// so the store applies backoff and the retry budget.
+///
+/// A deadline that has **already passed** fails the attempt immediately: the
+/// job must not run at all. (The guard used to hand an expired job a
+/// one-second grace, so a job whose deadline was long gone still executed.)
 async fn deadline_guard(
     job: &DurableJob,
     fut: BoxFuture<'_, Result<(), AppError>>,
 ) -> Result<(), AppError> {
     let remaining = job.deadline - OffsetDateTime::now_utc();
-    let wait = std::time::Duration::try_from(if remaining.is_positive() {
-        remaining
-    } else {
-        time::Duration::seconds(1)
-    })
-    .unwrap_or_else(|_| std::time::Duration::from_secs(1));
+    if !remaining.is_positive() {
+        return Err(AppError::new(
+            codes::DEADLINE,
+            ErrorCategory::Workflow,
+            Severity::Medium,
+            Retryability::Retryable,
+            "job exceeded its execution deadline",
+        ));
+    }
+    let wait = std::time::Duration::try_from(remaining)
+        .unwrap_or_else(|_| std::time::Duration::from_secs(1));
     match tokio::time::timeout(wait, fut).await {
         Ok(result) => result,
         Err(_) => Err(AppError::new(
@@ -1868,6 +1877,32 @@ mod tests {
         // It is visible to the admin as a failed attempt, not as work done.
         let listed = store.list(Some(JobStatus::Pending), 10).expect("the admin list runs");
         assert_eq!(listed.len(), 1, "the re-queued job is visible to the admin");
+    }
+
+    /// LF-061 (the **timeout** case): the job deadline is enforced. A job that
+    /// runs past its deadline is a FAILED attempt (so the retry budget and the
+    /// backoff apply ✓) — never a job that hangs the worker ✓.
+    #[tokio::test]
+    async fn a_job_that_passes_its_deadline_fails_the_attempt() {
+        let now = OffsetDateTime::now_utc();
+        let mut job = kelson_jobs::build_from_def(
+            &JobDef::new("deadline.probe"),
+            serde_json::json!({}),
+            now,
+        );
+        // A deadline already in the past: the guard must refuse the run.
+        job.deadline = now - time::Duration::seconds(1);
+        let slow: BoxFuture<'static, Result<(), kelson_foundation::AppError>> = Box::pin(async {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            Ok(())
+        });
+        let err = deadline_guard(&job, slow)
+            .await
+            .expect_err("a job past its deadline fails");
+        assert_eq!(
+            err.public_message, "job exceeded its execution deadline",
+            "the failure names the deadline"
+        );
     }
 
     // ------------------------------------------- long-lived worker: no leak

@@ -37,6 +37,7 @@ members = [
   "crates/services/http-client",
   "crates/services/realtime",
   "crates/services/search",
+  "crates/services/kelson-process",
   "crates/ai/client",
   "crates/ai/tools",
   "crates/ai/agents",
@@ -137,6 +138,7 @@ kelson-storage = { version = "0.1.0", path = "crates/services/storage" }
 kelson-notifications = { version = "0.1.0", path = "crates/services/notifications" }
 kelson-http-client = { version = "0.1.0", path = "crates/services/http-client" }
 kelson-search = { version = "0.1.0", path = "crates/services/search" }
+kelson-process = { version = "0.1.0", path = "crates/services/kelson-process" }
 kelson-ai = { version = "0.1.0", path = "crates/ai/client" }
 kelson-ai-tools = { version = "0.1.0", path = "crates/ai/tools" }
 kelson-ai-agents = { version = "0.1.0", path = "crates/ai/agents" }

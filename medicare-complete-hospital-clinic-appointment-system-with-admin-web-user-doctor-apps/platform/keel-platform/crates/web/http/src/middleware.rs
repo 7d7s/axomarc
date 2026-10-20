@@ -329,22 +329,11 @@ impl Default for RateLimitConfig {
     }
 }
 
-/// The rate-limit backend (F-3 Phase 3).
-///
-/// The admission edge derives a client key and then asks the store for one
-/// token. The default implementation keeps the buckets **in the process**; a
-/// deployment that runs more than one web instance (the documented topology
-/// is an HPA with `minReplicas: 3`) must supply a **shared** store (see the
-/// `kelson-ratelimit-redis` adapter), or every instance enforces its own
-/// limit and the effective limit multiplies by the instance count.
-///
-/// `capacity` and `refill_per_sec` come from the caller, so the limit itself
-/// stays configured in one place ([`RateLimitConfig`]) no matter which
-/// backend is in play.
-pub trait RateLimitStore: Send + Sync {
-    /// Take one token for `key`; `false` means the client is over its limit.
-    fn take(&self, key: &str, capacity: u32, refill_per_sec: f64) -> bool;
-}
+/// The rate-limit backend (F-3 Phase 3) — the PORT lives in the foundation ✓
+/// (the shared-store adapter sits in the adapters layer ✓, which may not
+/// depend on the web layer ✓ — the layer gate refuses that edge ✓), and is
+/// re-exported here ✓ so the web crate's users keep the same path ✓.
+pub use kelson_foundation::RateLimitStore;
 
 /// The in-process store: one token bucket per client key, swept by TTL and
 /// hard-capped (F-3 Phase 2). This is the default backend — correct for a
