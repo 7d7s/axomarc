@@ -217,12 +217,17 @@ impl kelson_notifications::NotificationQueuePort for JobQueuePort {
         &self,
         job_type: &str,
         delivery: &kelson_notifications::QueuedNotificationDelivery,
+        origin: &kelson_notifications::DeliveryOrigin,
     ) -> Result<(), AppError> {
         let payload = serde_json::to_value(delivery)
             .map_err(|e| AppError::validation(format!("notification.send payload: {e}")))?;
         let job = self
             .registry
             .build(job_type, payload, time::OffsetDateTime::now_utc())?;
+        // Stamp the origin: the durable row carries the correlation of the
+        // request that caused the work, so a worker can be traced back to it.
+        // A dispatch with no inbound request keeps the empty origin.
+        let job = job.with_origin(origin.correlation_id, origin.causation_id);
         self.store.enqueue(job).map(|_| ())
     }
 }

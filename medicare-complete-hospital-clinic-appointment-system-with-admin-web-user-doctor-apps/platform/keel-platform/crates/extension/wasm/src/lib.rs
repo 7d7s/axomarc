@@ -1743,6 +1743,11 @@ impl OperationHandler for WasmHandler {
                 principal_id: ctx.principal.id,
                 tenant_id: ctx.tenant.as_ref().map(|t| t.id),
                 locale: Some(ctx.locale.lang.clone()),
+                // The correlation of the request behind the call, so a queued
+                // delivery's durable job can be traced back to it. Platform
+                // work (no inbound request) carries none.
+                correlation_id: Some(ctx.correlation_id),
+                causation_id: ctx.causation_id,
             };
             for (i, request) in notifications.into_iter().enumerate() {
                 let Some(sink) = sink.as_deref() else {

@@ -3,7 +3,7 @@
 //! Adapters implement; hub dispatches; failures follow the external dependency
 //! behavior matrix (timeout, 429, duplicate risk...).
 
-use kelson_foundation::{AppError, PrincipalId, TenantId};
+use kelson_foundation::{AppError, CorrelationId, PrincipalId, TenantId};
 use kelson_storage::{ObjectRef, StoragePort};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -229,6 +229,40 @@ pub struct NotificationContext {
     pub principal_id: PrincipalId,
     pub tenant_id: Option<TenantId>,
     pub locale: Option<String>,
+    /// The **origin** of this dispatch: the correlation of the interaction it
+    /// belongs to and of the thing that directly caused it (the request).
+    ///
+    /// A queued delivery stamps this onto the durable job row, so the worker
+    /// can be traced back to the request that caused the work. A dispatch with
+    /// no inbound request (a scheduled sweep, an admin action) leaves it
+    /// empty — that is the correct value there, not a gap.
+    pub origin: DeliveryOrigin,
+}
+
+/// The correlation ids a dispatch (and the durable job it enqueues) carries.
+/// `Default` = no inbound request.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveryOrigin {
+    /// The correlation of the business interaction this work belongs to.
+    pub correlation_id: Option<CorrelationId>,
+    /// The correlation of the direct cause — normally the request.
+    pub causation_id: Option<CorrelationId>,
+}
+
+impl DeliveryOrigin {
+    /// An origin built from a request's correlation: the interaction and the
+    /// cause are the same id (the request started the interaction).
+    pub fn from_request(correlation_id: CorrelationId) -> Self {
+        Self {
+            correlation_id: Some(correlation_id),
+            causation_id: Some(correlation_id),
+        }
+    }
+
+    /// Is there an inbound request behind this dispatch at all?
+    pub fn is_empty(&self) -> bool {
+        self.correlation_id.is_none() && self.causation_id.is_none()
+    }
 }
 
 // --------------------------------------------------- Wave 6 P6: on-demand + queued delivery
@@ -244,6 +278,10 @@ pub struct OnDemandContext {
     /// Catalog locale for the render (`None` = the catalog default).
     #[serde(default)]
     pub locale: Option<String>,
+    /// The origin of the dispatch (the request behind it), stamped onto a
+    /// queued delivery's durable job like any other dispatch.
+    #[serde(default)]
+    pub origin: DeliveryOrigin,
 }
 
 /// Wave 6 P6: audit evidence for one on-demand dispatch (19-PARITY
@@ -336,6 +374,7 @@ pub trait NotificationQueuePort: Send + Sync {
         &self,
         job_type: &str,
         delivery: &QueuedNotificationDelivery,
+        origin: &DeliveryOrigin,
     ) -> Result<(), AppError>;
 }
 
@@ -713,6 +752,7 @@ impl NotifyHub {
                         at,
                         payload,
                     ),
+                    &ctx.origin,
                 )
             }
             None => self.deliver_payload(payload).await,
@@ -772,6 +812,7 @@ impl NotifyHub {
                         at,
                         payload,
                     ),
+                    &ctx.origin,
                 )?;
             }
             None => self.deliver_payload(payload).await?,
@@ -1345,6 +1386,7 @@ mod tests {
             principal_id: principal,
             tenant_id: None,
             locale: None,
+            origin: DeliveryOrigin::default(),
         }
     }
 
@@ -1687,7 +1729,7 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingQueue {
-        enqueued: std::sync::Arc<Mutex<Vec<(String, QueuedNotificationDelivery)>>>,
+        enqueued: std::sync::Arc<Mutex<Vec<(String, QueuedNotificationDelivery, DeliveryOrigin)>>>,
     }
 
     impl NotificationQueuePort for RecordingQueue {
@@ -1695,13 +1737,81 @@ mod tests {
             &self,
             job_type: &str,
             delivery: &QueuedNotificationDelivery,
+            origin: &DeliveryOrigin,
         ) -> Result<(), AppError> {
             self.enqueued
                 .lock()
                 .unwrap()
-                .push((job_type.to_string(), delivery.clone()));
+                .push((job_type.to_string(), delivery.clone(), *origin));
             Ok(())
         }
+    }
+
+    /// F-7 (row 7): a queued delivery carries the ORIGIN of the dispatch — the
+    /// correlation of the request behind it — so the host can stamp it onto the
+    /// durable job row. Without it, a worker cannot be traced back to the
+    /// request that caused the work.
+    #[tokio::test]
+    async fn a_queued_delivery_carries_the_dispatch_origin() {
+        let enqueued = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let hub = NotifyHub::empty().with_queue(Box::new(RecordingQueue {
+            enqueued: enqueued.clone(),
+        }));
+        let correlation = kelson_foundation::CorrelationId::new();
+        let mut ctx = ctx_for(PrincipalId::new());
+        ctx.origin = DeliveryOrigin::from_request(correlation);
+
+        hub.dispatch_notification(
+            &QueuedBookNotification,
+            Channel::Email,
+            Some("ada@example.com"),
+            &ctx,
+        )
+        .await
+        .expect("mail enqueued");
+
+        let captured = enqueued.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        let (_, _, origin) = &captured[0];
+        assert_eq!(
+            origin.correlation_id,
+            Some(correlation),
+            "the queued delivery carries the request's correlation"
+        );
+        assert_eq!(
+            origin.causation_id,
+            Some(correlation),
+            "and the request is also the direct cause"
+        );
+        assert!(!origin.is_empty());
+    }
+
+    /// The other half of the decision: a dispatch with NO inbound request
+    /// (a scheduled sweep, an admin action) carries an EMPTY origin — that is
+    /// the correct value there, not a missing stamp.
+    #[tokio::test]
+    async fn a_dispatch_without_a_request_carries_an_empty_origin() {
+        let enqueued = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let hub = NotifyHub::empty().with_queue(Box::new(RecordingQueue {
+            enqueued: enqueued.clone(),
+        }));
+        let ctx = ctx_for(PrincipalId::new());
+
+        hub.dispatch_notification(
+            &QueuedBookNotification,
+            Channel::Email,
+            Some("ada@example.com"),
+            &ctx,
+        )
+        .await
+        .expect("mail enqueued");
+
+        let captured = enqueued.lock().unwrap();
+        let (_, _, origin) = &captured[0];
+        assert!(
+            origin.is_empty(),
+            "platform work carries no request correlation"
+        );
     }
 
     /// Captures the context the HTML renderer was invoked with.
@@ -1741,8 +1851,9 @@ mod tests {
 
         let captured = enqueued.lock().unwrap();
         assert_eq!(captured.len(), 2);
-        let (job, mail_delivery) = &captured[0];
+        let (job, mail_delivery, origin) = &captured[0];
         assert_eq!(job, "notification.send");
+        assert_eq!(origin, &DeliveryOrigin::default());
         assert_eq!(mail_delivery.v, QueuedNotificationDelivery::VERSION);
         assert_eq!(mail_delivery.type_key, "appointment.queued");
         assert_eq!(mail_delivery.principal_id, Some(ctx.principal_id));
@@ -1815,6 +1926,7 @@ mod tests {
                 &OnDemandContext {
                     tenant_id: None,
                     locale: Some("fr".into()),
+                    origin: DeliveryOrigin::default(),
                 },
             )
             .await
@@ -1895,6 +2007,7 @@ mod tests {
             principal_id: PrincipalId::new(),
             tenant_id: None,
             locale: Some("fr".into()),
+            origin: DeliveryOrigin::default(),
         };
         hub.dispatch_notification(&note, Channel::Email, Some("ada@example.com"), &ctx_fr)
             .await
@@ -1941,7 +2054,6 @@ mod tests {
             .await
             .expect("enqueued");
         let envelope = enqueued.lock().unwrap()[0].1.clone();
-
         let json = serde_json::to_value(&envelope).expect("serializes");
         let back: QueuedNotificationDelivery = serde_json::from_value(json).expect("deserializes");
         assert_eq!(back, envelope);
@@ -1983,6 +2095,7 @@ mod tests {
             principal_id: PrincipalId::new(),
             tenant_id: None,
             locale: Some("fr".into()),
+            origin: DeliveryOrigin::default(),
         };
         hub.dispatch_notification(
             &KeyedNotification { patient: "Ada" },

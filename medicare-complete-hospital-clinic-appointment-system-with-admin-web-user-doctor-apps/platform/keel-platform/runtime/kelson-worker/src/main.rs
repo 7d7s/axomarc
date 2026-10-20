@@ -1794,4 +1794,227 @@ mod tests {
         assert_eq!(dead[0].last_error.as_deref(), Some(RETRY_LIMIT_ABORT));
         assert!(dead[0].finished_at.is_some(), "kill stamps finished_at");
     }
+
+    // ------------------------------------------- long-lived worker: no leak
+
+    /// The handler records what it was given, so the soak can prove that each
+    /// dispatch saw ONLY its own job.
+    struct RecordingHandler {
+        seen: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    }
+
+    impl JobHandler for RecordingHandler {
+        fn name(&self) -> &str {
+            "soak.job"
+        }
+        fn handle<'a>(&'a self, job: &'a DurableJob) -> BoxFuture<'a, Result<(), AppError>> {
+            let seen = self.seen.clone();
+            Box::pin(async move {
+                let marker = job
+                    .payload
+                    .get("marker")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                seen.lock().unwrap().push((job.id.to_string(), marker));
+                Ok(())
+            })
+        }
+    }
+
+    /// Row 6: a **long-lived worker** that processes many jobs must not leak
+    /// state from one job into the next.
+    ///
+    /// The soak enqueues many jobs, each in its OWN tenant with its OWN
+    /// payload marker and its OWN correlation, and drains them through the
+    /// worker's real claim+dispatch pass (`DispatchCtx::once`). It then
+    /// asserts:
+    ///
+    /// 1. every dispatch saw its OWN job (the payload marker matches the job
+    ///    id) — a cross-job leak would show a marker from another job;
+    /// 2. every job ended **Succeeded** — the fencing is per claim, so a
+    ///    leaked claim token from the previous job would make the completion
+    ///    a CONFLICT and the job would not be Succeeded;
+    /// 3. the queue is empty afterwards (nothing was double-dispatched);
+    /// 4. every row kept its own correlation (the origin does not bleed).
+    #[tokio::test]
+    async fn a_long_lived_worker_leaks_nothing_between_jobs() {
+        use kelson_jobs::{JobStore, JobStoreAdmin, TenantJobStore};
+
+        const JOBS: usize = 40;
+
+        let store = Arc::new(InMemoryJobStore::new());
+        let mut defs = JobRegistry::new();
+        defs.register(JobDef::new("soak.job")).expect("def registers");
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut handlers = WorkerRegistry::new();
+        handlers
+            .register(Arc::new(RecordingHandler { seen: seen.clone() }))
+            .expect("handler registers");
+
+        let memory: Arc<dyn kelson_caching::CachePort> =
+            kelson_cache_memory::MemoryCache::shared(64);
+        let stacks = JobMiddlewareStacks::new(Arc::new(CacheUniqueLock {
+            cache: kelson_caching::CacheService::new(memory),
+        }));
+
+        let batches = Arc::new(BatchRuntime::with_ledger(
+            store.clone(),
+            Arc::new(kelson_jobs::MemoryBatchLedger::new()),
+        ));
+        let chains = Arc::new(ChainRuntime::new(store.clone()));
+
+        // Each job: its own tenant, its own payload marker, its own
+        // correlation.
+        let now = OffsetDateTime::now_utc();
+        let mut expected = std::collections::HashMap::new();
+        for i in 0..JOBS {
+            let tenant = kelson_foundation::TenantId::new();
+            let correlation = kelson_foundation::CorrelationId::new();
+            let mut job = kelson_jobs::build_from_def(
+                &JobDef::new("soak.job"),
+                serde_json::json!({ "marker": format!("job-{i}") }),
+                now,
+            );
+            job.available_at = now - time::Duration::seconds(60);
+            let job = job.with_origin(Some(correlation), Some(correlation));
+            let id = store.enqueue_for(tenant, job).expect("the job enqueues");
+            expected.insert(id.to_string(), (format!("job-{i}"), correlation, tenant));
+        }
+
+        let ctx = DispatchCtx {
+            handlers: &handlers,
+            defs: &defs,
+            stacks: &stacks,
+            store: &*store,
+            admin: &*store,
+            batches: &batches,
+            chains: &chains,
+        };
+
+        for _ in 0..JOBS {
+            let claimed = ctx
+                .once("soak-worker")
+                .await
+                .expect("the dispatch pass runs")
+                .expect("a job was claimable");
+            assert!(
+                expected.contains_key(&claimed.id.to_string()),
+                "the worker claimed a job it never enqueued"
+            );
+        }
+
+        // 1. Every dispatch saw its OWN job.
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), JOBS, "every job was dispatched exactly once");
+        for (id, marker) in seen.iter() {
+            let (want_marker, _, _) = expected.get(id).expect("the dispatched job is one of ours");
+            assert_eq!(
+                marker, want_marker,
+                "job {id} saw another job's payload — state leaked between jobs"
+            );
+        }
+        drop(seen);
+
+        // 2. Every job ended Succeeded — the per-claim fencing held (a leaked
+        // token would have made the completion a CONFLICT).
+        let rows = store.list(None, JOBS * 2).expect("the admin list runs");
+        assert_eq!(rows.len(), JOBS, "no job was dispatched twice");
+        for row in &rows {
+            assert_eq!(
+                row.status,
+                JobStatus::Succeeded,
+                "job {} did not succeed (a leaked claim token would show here)",
+                row.id
+            );
+        }
+
+        // 3. The queue is empty afterwards.
+        assert!(
+            store.claim("soak-worker").expect("the claim runs").is_none(),
+            "the queue is drained — nothing was left behind"
+        );
+
+        // 4. Every row kept its OWN correlation.
+        for row in &rows {
+            let (_, correlation, _) = expected
+                .get(&row.id.to_string())
+                .expect("the row is one of ours");
+            assert_eq!(
+                row.correlation_id,
+                Some(*correlation),
+                "job {} carries another job's correlation",
+                row.id
+            );
+        }
+    }
+
+    /// The same soak, tenant-scoped: a worker that claims for tenant A must
+    /// never see tenant B's job, no matter how many jobs it has already run.
+    #[tokio::test]
+    async fn a_long_lived_worker_never_crosses_tenants() {
+        use kelson_jobs::{JobStore, TenantJobStore};
+
+        const JOBS: usize = 20;
+
+        let store = Arc::new(InMemoryJobStore::new());
+        let tenant = kelson_foundation::TenantId::new();
+        let other = kelson_foundation::TenantId::new();
+        let now = OffsetDateTime::now_utc();
+
+        // The other tenant's job is enqueued FIRST, so a worker that ignored
+        // the tenant scope would take it before the tenant's own.
+        let mut foreign = kelson_jobs::build_from_def(
+            &JobDef::new("soak.job"),
+            serde_json::json!({ "marker": "foreign" }),
+            now,
+        );
+        foreign.available_at = now - time::Duration::seconds(60);
+        store
+            .enqueue_for(other, foreign)
+            .expect("the foreign job enqueues");
+
+        for i in 0..JOBS {
+            let mut job = kelson_jobs::build_from_def(
+                &JobDef::new("soak.job"),
+                serde_json::json!({ "marker": format!("job-{i}") }),
+                now,
+            );
+            job.available_at = now - time::Duration::seconds(60);
+            store.enqueue_for(tenant, job).expect("the job enqueues");
+        }
+
+        for i in 0..JOBS {
+            let claimed = store
+                .claim_for(tenant, "soak-worker")
+                .expect("the claim runs")
+                .expect("the tenant's job is claimable");
+            assert_eq!(
+                claimed.tenant_id,
+                Some(tenant),
+                "the worker claimed another tenant's job"
+            );
+            let marker = claimed
+                .payload
+                .get("marker")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            assert_eq!(
+                marker,
+                format!("job-{i}"),
+                "the tenant's job came back with another job's payload"
+            );
+        }
+
+        // The foreign job is untouched: the tenant-scoped claim never saw it.
+        assert!(
+            store
+                .claim_for(other, "other-worker")
+                .expect("the foreign claim runs")
+                .is_some(),
+            "the other tenant's job is still there, unclaimed"
+        );
+    }
 }

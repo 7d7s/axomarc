@@ -92,6 +92,26 @@ impl DurableJob {
         }
     }
 
+    /// Stamp the job's **origin**: the correlation of the interaction that
+    /// caused it and the correlation of the thing that directly triggered it
+    /// (the request, usually).
+    ///
+    /// A job enqueued by PLATFORM work (the scheduler, an admin sweep) has no
+    /// inbound request, so it stays `None` — that is the correct value there,
+    /// not a gap. A job enqueued **because of a request** carries that
+    /// request's correlation, so a worker can be traced back to the request
+    /// that caused the work (and a support question — "which request enqueued
+    /// this?" — has an answer in the row itself).
+    pub fn with_origin(
+        mut self,
+        correlation_id: Option<CorrelationId>,
+        causation_id: Option<CorrelationId>,
+    ) -> Self {
+        self.correlation_id = correlation_id;
+        self.causation_id = causation_id;
+        self
+    }
+
     pub fn exhausted(&self) -> bool {
         self.status == JobStatus::Dead
     }
@@ -1945,6 +1965,55 @@ mod tests {
             finished_at: None,
             tenant_id: None,
         }
+    }
+
+    /// F-7 (row 7): a durable job can carry the ORIGIN of the work — the
+    /// correlation of the request that caused it. A platform job (a scheduler
+    /// tick, an admin sweep) has no inbound request, so it carries none:
+    /// that is the correct value there, not a missing stamp.
+    #[test]
+    fn a_job_carries_its_origin() {
+        let def = JobDef::new("probe.job");
+        let now = OffsetDateTime::now_utc();
+        let correlation = CorrelationId::new();
+
+        let platform_job = build_from_def(&def, json!({}), now);
+        assert_eq!(
+            platform_job.correlation_id, None,
+            "platform work carries no request correlation"
+        );
+        assert_eq!(platform_job.causation_id, None);
+
+        let request_job = build_from_def(&def, json!({}), now)
+            .with_origin(Some(correlation), Some(correlation));
+        assert_eq!(
+            request_job.correlation_id,
+            Some(correlation),
+            "the job carries the correlation of the request that caused it"
+        );
+        assert_eq!(request_job.causation_id, Some(correlation));
+    }
+
+    /// The origin SURVIVES the store round trip — the row is the evidence, so
+    /// the correlation has to be in the persisted payload, not only in memory.
+    #[test]
+    fn the_origin_survives_the_store_round_trip() {
+        let correlation = CorrelationId::new();
+        let def = JobDef::new("probe.job");
+        let job = build_from_def(&def, json!({}), OffsetDateTime::now_utc())
+            .with_origin(Some(correlation), None);
+        let store = InMemoryJobStore::new();
+        let id = store.enqueue(job).expect("the job enqueues");
+        let claimed = store
+            .claim("worker")
+            .expect("the claim runs")
+            .expect("the job is claimable");
+        assert_eq!(claimed.id, id);
+        assert_eq!(
+            claimed.correlation_id,
+            Some(correlation),
+            "the claimed row still carries the origin"
+        );
     }
 
     /// Wave 5 Phase 5: the queue:clear / queue:flush / queue:forget /

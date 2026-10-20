@@ -1154,6 +1154,7 @@ mod tests {
             principal_id: principal,
             tenant_id: None,
             locale: None,
+            origin: kelson_notifications::DeliveryOrigin::default(),
         };
 
         // A failed dispatch (no target for the email channel) records nothing.
@@ -1184,6 +1185,7 @@ mod tests {
             principal_id: PrincipalId::new(),
             tenant_id: None,
             locale: None,
+            origin: kelson_notifications::DeliveryOrigin::default(),
         };
         // Only successful dispatches record; this one has no target.
         assert!(

@@ -1153,6 +1153,37 @@ async fn mysql_savepoint_rollback_isolates_two_tests_sharing_a_table() {
 /// separate connections take distinct rows (never a double-claim, never a
 /// block), `complete` lands Succeeded, and `fail` requeues with the error
 /// recorded — the claim/complete/fail cycle the worker lives on.
+/// F-7 (row 7): a durable job enqueued BECAUSE of a request carries that
+/// request's correlation — and the row in the DATABASE carries it, so a worker
+/// can be traced back to the request that caused the work. The claim reads
+/// the row back, so the proof covers the whole write→read path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mysql_a_traced_job_row_carries_the_request_correlation() {
+    use kelson_jobs::{build_from_def, JobDef, JobStore};
+
+    let Some(pool) = mysql_pool().await else { return };
+    let store = kelson_mysql::MySqlJobStore::new(pool.clone());
+
+    let correlation = kelson_foundation::CorrelationId::new();
+    let now = OffsetDateTime::now_utc();
+    let mut job = build_from_def(&JobDef::new("mysql.trace.probe"), serde_json::json!({}), now);
+    job.available_at = now - time::Duration::seconds(60);
+    let job = job.with_origin(Some(correlation), Some(correlation));
+    let id = store.enqueue(job).expect("the job enqueues");
+
+    let claimed = store
+        .claim("mysql-trace-worker")
+        .expect("the claim runs")
+        .expect("the job is claimable");
+    assert_eq!(claimed.id, id);
+    assert_eq!(
+        claimed.correlation_id,
+        Some(correlation),
+        "the row in the database carries the request's correlation"
+    );
+    assert_eq!(claimed.causation_id, Some(correlation));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_job_store_claim_completes_and_fails_with_skip_locked() {
     use kelson_jobs::{JobStatus, JobStore, JobStoreAdmin};

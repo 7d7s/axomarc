@@ -34,7 +34,7 @@
 //! names and argument shapes as much as it likes; it gets an error, never a
 //! host crash.
 
-use kelson_foundation::{AppError, PrincipalId, TenantId};
+use kelson_foundation::{AppError, CorrelationId, PrincipalId, TenantId};
 use kelson_models::{AggregateOp, FieldFilter, ListOpts, ModelDef, Record};
 use kelson_tokens::{AuthToken, TokenPurpose};
 use serde::de::DeserializeOwned;
@@ -609,6 +609,17 @@ pub struct NotificationEnvelope {
     pub tenant_id: Option<TenantId>,
     /// Catalog locale for every rendered string (`None` = catalog default).
     pub locale: Option<String>,
+    /// The correlation of the request behind the call (`None` = platform
+    /// work with no inbound request). The host fills it from the executing
+    /// context — never from the guest — and a **queued** delivery stamps it
+    /// onto the durable job row, so the worker can be traced back to the
+    /// request that caused the work.
+    #[serde(default)]
+    pub correlation_id: Option<CorrelationId>,
+    /// The correlation of the direct cause of this call (normally the same
+    /// request; a nested call carries its parent's).
+    #[serde(default)]
+    pub causation_id: Option<CorrelationId>,
 }
 
 /// The notification half of the seam: what the host offers a module.

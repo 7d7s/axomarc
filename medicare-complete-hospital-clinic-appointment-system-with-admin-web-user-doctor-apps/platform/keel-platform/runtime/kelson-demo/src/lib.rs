@@ -1104,30 +1104,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(&listen).await?;
     tracing::info!(%listen, "listening");
 
-    let serve = axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            // Wait for either SIGINT (Ctrl+C) or SIGTERM (production orchestrator).
-            #[cfg(unix)]
-            {
-                use tokio::signal::unix::{signal, SignalKind};
-                let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler");
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {
-                        tracing::info!("SIGINT received");
-                    }
-                    _ = sigterm.recv() => {
-                        tracing::info!("SIGTERM received");
-                    }
-                }
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = tokio::signal::ctrl_c().await;
-                tracing::info!("shutdown signal received");
-            }
-            tracing::info!("shutdown signal received, draining");
-        })
-        .await;
+    let serve = serve_with_shutdown(app, listener, shutdown_signal()).await;
     // Stop the config/artifact poller (Phase 3) before draining telemetry.
     poller.abort();
     // Drain telemetry before exit (S5 graceful shutdown: flush buffers + WAL
@@ -1135,6 +1112,45 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     telemetry_runtime.shutdown(std::time::Duration::from_secs(5));
     serve?;
     Ok(())
+}
+
+/// Serve `app` on `listener` until `shutdown` resolves, then **drain**: the
+/// listener closes and every in-flight request is awaited to completion, so
+/// a stop never drops a connection mid-response.
+///
+/// Extracted from [`run`] so the drain is testable **without a real signal**
+/// — the test fires a oneshot instead of SIGTERM — and so the drain contract
+/// has exactly one implementation.
+pub async fn serve_with_shutdown(
+    app: axum::Router,
+    listener: tokio::net::TcpListener,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> std::io::Result<()> {
+    axum::serve(listener, app).with_graceful_shutdown(shutdown).await
+}
+
+/// The production stop trigger: SIGINT (Ctrl+C) or SIGTERM (the production
+/// orchestrator). Unix gets both; elsewhere only Ctrl+C exists.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("SIGINT received");
+            }
+            _ = sigterm.recv() => {
+                tracing::info!("SIGTERM received");
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        tracing::info!("shutdown signal received");
+    }
+    tracing::info!("shutdown signal received, draining");
 }
 
 /// Outcome of one config poll, for the module-lifecycle reaction (Row 16).
@@ -2063,6 +2079,7 @@ mod wave6_mail_tests {
             principal_id: kelson_foundation::PrincipalId::new(),
             tenant_id: None,
             locale: None,
+            origin: kelson_notifications::DeliveryOrigin::default(),
         };
 
         struct Booked {
@@ -2242,6 +2259,7 @@ mod wave6_mail_tests {
                 principal_id: kelson_foundation::PrincipalId::new(),
                 tenant_id: None,
                 locale: Some(locale),
+                origin: kelson_notifications::DeliveryOrigin::default(),
             },
         )
         .await
@@ -2323,6 +2341,8 @@ mod wave6_mail_tests {
                 .expect("shipped lang files load"),
         );
         let producer_hub = NotifyHub::with_catalog(catalog).with_queue(Box::new(port));
+        // The dispatch's origin: the correlation of the request behind it.
+        let correlation = kelson_foundation::CorrelationId::new();
         producer_hub
             .dispatch_notification(
                 &QueuedNotice,
@@ -2332,6 +2352,7 @@ mod wave6_mail_tests {
                     principal_id: kelson_foundation::PrincipalId::new(),
                     tenant_id: None,
                     locale: Some("fr".into()),
+                    origin: kelson_notifications::DeliveryOrigin::from_request(correlation),
                 },
             )
             .await
@@ -2343,6 +2364,18 @@ mod wave6_mail_tests {
             .expect("store claims")
             .expect("one job enqueued");
         assert_eq!(job.name, kelson_notifications::NOTIFICATION_SEND_JOB);
+        // …and the row carries the correlation of the request that caused it,
+        // so a worker is traceable back to the request (row 7).
+        assert_eq!(
+            job.correlation_id,
+            Some(correlation),
+            "the durable job row carries the request's correlation"
+        );
+        assert_eq!(
+            job.causation_id,
+            Some(correlation),
+            "and the request is the direct cause"
+        );
         let envelope: kelson_notifications::QueuedNotificationDelivery =
             serde_json::from_value(job.payload).expect("envelope payload");
         assert_eq!(
@@ -2838,6 +2871,12 @@ impl kelson_module_contract::NotificationSink for HubSink {
                 principal_id: envelope.principal_id,
                 tenant_id: envelope.tenant_id,
                 locale: envelope.locale.clone(),
+                // The envelope's correlation rides along: a queued delivery
+                // stamps it onto the durable job row.
+                origin: kelson_notifications::DeliveryOrigin {
+                    correlation_id: envelope.correlation_id,
+                    causation_id: envelope.causation_id,
+                },
             };
             let def = notification_def_for(&request.event, &request.payload, envelope.locale)?;
             hub.dispatch_notification(
