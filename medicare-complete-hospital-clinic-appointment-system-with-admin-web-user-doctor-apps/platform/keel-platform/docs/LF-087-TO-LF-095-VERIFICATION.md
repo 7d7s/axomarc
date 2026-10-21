@@ -16,7 +16,7 @@ documentation claim is never proof. Where an item is only partly covered, the mi
 |---|---|
 | `cargo test -p kelson-testkit` | **63 lib + 21 harness + 1 doc** — the TestApp HTTP harness ✓, the assertion matrix ✓, the port fakes ✓, the deterministic clock ✓, the factories ✓ and the query-budget assertions ✓ |
 | `cargo test -p kelson-console --bin kelson` | **63 passed** — the CLI parsing ✓, the destructive gates ✓, the non-interactive posture ✓ and the args quoting ✓ |
-| `cargo test -p kelson-demo --test http_integration` | **100 passed** — the in-process HTTP journeys ✓ (the uploads ✓, the diagnostics ✓, the auth ✓) |
+| `cargo test -p kelson-demo --test http_integration` | **101 passed** — the in-process HTTP journeys ✓ (the uploads ✓, the diagnostics ✓, the auth ✓) and the **real transport** ✓ (`the_production_wiring_answers_over_a_real_socket` ✓ — the production wiring over a bound port ✓) |
 | `cargo test -p kelson-postgres --features pg-tests --test modelstore_conformance` (live MySQL) | **34 passed** — the shared store contract ✓ (the fake ✓ + the pg ✓ + the mysql ✓ halves) |
 | `cargo test -p kelson-contracts --lib` | **3 passed** — the API registry ✓ |
 | `cargo xtask dep-rules` / `cargo xtask lint` | **clean / clean** — the architecture and lint gates ✓ |
@@ -81,9 +81,18 @@ documentation claim is never proof. Where an item is only partly covered, the mi
   `safe_methods_issue_the_bootstrap_cookie` ✓,
   `the_double_submit_roundtrip_bootstraps_from_a_get` ✓,
   `apply_route_attaches_the_guard_to_a_single_route` ✓, `tokens_are_256bit_and_unique` ✓).
+- **The real server path** ✓ — **`the_production_wiring_answers_over_a_real_socket`** ✓ (added
+  2026-10-21 ✓). The atlas asks for it explicitly ✓ — "the real server path must also have
+  integration tests ✓ ... so transport/server wiring is not missed" ✓ — and the framework had a gap
+  there ✗: every HTTP case drove the router through `tower::ServiceExt::oneshot` ✓ (**no socket is
+  ever bound** ✓) ✗, and the graceful-shutdown suite proved the drain over a raw socket ✓ but
+  against a **toy** router ✓ ✗. The case now binds a port ✓, serves the **same production wiring**
+  ✓ (the routers the boot merges ✓, with the session middleware applied ✓) and speaks HTTP/1.1 over a
+  raw socket ✓ — the liveness probe is a real `200` ✓ with the expected JSON ✓ and an unknown
+  route is a real `404` ✓ ✓.
 - **Every case the item names is covered by an executed case** ✓ ✓ — the route/middleware ✓, the
   headers ✓, the JSON schema ✓, the auth ✓, the CSRF ✓, the validation ✓, the redirects ✓, the
-  uploads ✓, the exception response ✓ and the request lifecycle ✓.
+  uploads ✓, the exception response ✓ and the request lifecycle ✓ — plus the real transport ✓ ✓.
 
 ### LF-089 — Database testing and assertions — **PARTIALLY VERIFIED**
 

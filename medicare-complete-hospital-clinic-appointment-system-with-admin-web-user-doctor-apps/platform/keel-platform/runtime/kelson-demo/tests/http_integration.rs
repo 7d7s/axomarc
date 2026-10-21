@@ -929,6 +929,121 @@ fn multipart_request(
         .unwrap()
 }
 
+/// **LF-088**: the production wiring over a **real transport**.
+///
+/// Every other case in this file drives the router through
+/// `tower::ServiceExt::oneshot` — no socket is ever bound ✓ — so a
+/// transport/server-wiring mistake (a listener that never starts, a
+/// middleware that only runs in-process, a body limit that misbehaves over
+/// the wire ✓) cannot show up there ✓. The atlas names this explicitly:
+/// "the real server path must also have integration tests ... so
+/// transport/server wiring is not missed" ✓.
+///
+/// This case binds a port ✓, serves the **same production wiring** ✓ (the
+/// routers the boot merges ✓, with the session middleware applied ✓) and
+/// speaks HTTP/1.1 over a raw socket ✓ — the property under test is exactly
+/// what arrives on the wire ✓.
+#[tokio::test]
+async fn the_production_wiring_answers_over_a_real_socket() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+
+    /// A minimal HTTP/1.1 GET over a raw socket, with a **bounded** read ✓:
+    /// the headers are read until the blank line ✓ and the body exactly
+    /// `content-length` bytes ✓ (reading to EOF would wait out the server's
+    /// keep-alive timeout ✓ and make the case take a minute ✓).
+    async fn get(addr: std::net::SocketAddr, path: &str) -> std::io::Result<String> {
+        let mut stream = TcpStream::connect(addr).await?;
+        let request =
+            format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        stream.write_all(request.as_bytes()).await?;
+        let mut raw: Vec<u8> = Vec::new();
+        let mut buf = [0u8; 1024];
+        let head_end = loop {
+            let n = stream.read(&mut buf).await?;
+            if n == 0 {
+                break raw.len();
+            }
+            raw.extend_from_slice(&buf[..n]);
+            if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                break pos + 4;
+            }
+        };
+        let head = String::from_utf8_lossy(&raw[..head_end]).to_string();
+        let length = head
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if name.eq_ignore_ascii_case("content-length") {
+                    value.trim().parse::<usize>().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+        while raw.len() - head_end < length {
+            let n = stream.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            raw.extend_from_slice(&buf[..n]);
+        }
+        Ok(String::from_utf8_lossy(&raw).to_string())
+    }
+
+    let app = app();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("the listener binds");
+    let addr = listener.local_addr().expect("the listener has an address");
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, app.router).await;
+    });
+
+    // The server may need a moment to start accepting ✓.
+    let mut connected = false;
+    for _ in 0..50 {
+        if TcpStream::connect(addr).await.is_ok() {
+            connected = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(connected, "the real server accepts connections on {addr}");
+
+    let health = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        get(addr, "/healthz"),
+    )
+    .await
+    .expect("the liveness probe answers within the timeout")
+    .expect("the liveness probe answers");
+    let missing = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        get(addr, "/definitely-not-a-route"),
+    )
+    .await
+    .expect("the unknown route answers within the timeout")
+    .expect("the unknown route answers");
+
+    // The server is stopped BEFORE the assertions ✓ — a failing assertion must
+    // not leave the listener up ✓ (the harness would wait on the drain ✓).
+    server.abort();
+
+    assert!(
+        health.contains("200 OK"),
+        "the real path answers the liveness probe: {health}"
+    );
+    assert!(
+        health.contains("\"ok\":true"),
+        "the liveness body is the expected JSON: {health}"
+    );
+    assert!(
+        missing.contains("404"),
+        "an unknown route is a real 404 over the wire: {missing}"
+    );
+}
+
 #[tokio::test]
 async fn upload_happy_path_roundtrips_through_storage() {
     let app = app();
