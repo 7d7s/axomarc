@@ -14,8 +14,8 @@
 //!    **refused**, not silently dropped.
 
 use kelson_query::{
-    ConflictPolicy, Delete, DialectId, Ident, Insert, Operator, Select, Truncate, Update, Value,
-    MYSQL, POSTGRES,
+    ConflictPolicy, Delete, DialectId, Direction, Ident, Insert, Operator, Select, Truncate, Update,
+    Value, MYSQL, POSTGRES,
 };
 
 fn id(raw: &str) -> Ident {
@@ -253,6 +253,71 @@ fn catalogue(dialect: &dyn kelson_query::Dialect) -> Vec<(String, String)> {
             .sql,
     );
     push(
+        "select_with_cte",
+        Select::from_table(id("recent"))
+            .with_cte("recent", |cte| {
+                cte.table(id("orders"))
+                    .select(vec![id("user_id")])
+                    .where_eq(id("status"), v("paid"))
+            })
+            .select(vec![id("user_id")])
+            .build(dialect)
+            .unwrap()
+            .sql,
+    );
+    push(
+        "select_with_recursive_cte",
+        Select::from_table(id("tree"))
+            .with_recursive_cte(
+                "tree",
+                vec![id("id"), id("parent_id")],
+                |cte| {
+                    cte.table(id("nodes"))
+                        .select(vec![id("id"), id("parent_id")])
+                        .where_null(id("parent_id"))
+                        .union_all(
+                            Select::from_table(id("nodes"))
+                                .select(vec![id("id"), id("parent_id")])
+                                .join_inner(id("tree"), id("nodes.parent_id"), id("tree.id")),
+                        )
+                },
+            )
+            .select(vec![id("id")])
+            .build(dialect)
+            .unwrap()
+            .sql,
+    );
+    push(
+        "select_with_window",
+        Select::from_table(id("orders"))
+            .select(vec![id("label")])
+            .window(
+                kelson_query::WindowSpec::new(kelson_query::WindowFunction::Sum(id("amount")))
+                    .partition_by(vec![id("tenant_id")])
+                    .order_by(vec![(id("created_at"), Direction::Asc)])
+                    .cast(kelson_query::CastTarget::BigInt),
+            )
+            .build(dialect)
+            .unwrap()
+            .sql,
+    );
+    push(
+        "select_lock_skip_locked",
+        Select::from_table(id("jobs"))
+            .lock_for_update_skip_locked()
+            .build(dialect)
+            .unwrap()
+            .sql,
+    );
+    push(
+        "select_lock_nowait",
+        Select::from_table(id("jobs"))
+            .lock_for_update_nowait()
+            .build(dialect)
+            .unwrap()
+            .sql,
+    );
+    push(
         "truncate",
         Truncate::table(id("users")).build(dialect).unwrap().sql,
     );
@@ -303,28 +368,25 @@ fn the_two_dialects_differ_where_they_must() {
     assert_eq!(pg.len(), my.len(), "the catalogues must be the same shape");
 
     // A statement that BINDS a value must differ: the placeholder text is
-    // the difference (`$1` vs `?`). A statement with no binds and no
-    // dialect-specific construct (a plain `SELECT * FROM users`) renders
-    // identically in both engines — that is correct, not a leak.
+    // the difference (`$1` vs `?`). A statement with no binds renders
+    // identically in both engines UNLESS it uses a dialect-specific
+    // construct (the UNION form, the row lock, the cast, the date part).
     let mut with_binds = 0;
     let mut differing_with_binds = 0;
-    for (index, ((pg_name, pg_sql), (my_name, my_sql))) in pg.iter().zip(my.iter()).enumerate() {
+    for ((pg_name, pg_sql), (my_name, my_sql)) in pg.iter().zip(my.iter()) {
         assert_eq!(pg_name, my_name);
-        let binds = bind_count(&pg_sql);
+        let binds = bind_count(pg_sql);
         if binds > 0 {
             with_binds += 1;
             if pg_sql != my_sql {
                 differing_with_binds += 1;
             }
-        } else {
-            // No binds: the two may only differ if the statement uses a
-            // dialect-specific construct.
-            assert_eq!(
-                pg_sql, my_sql,
-                "{pg_name} has no binds and no dialect-specific construct, yet it differs"
+        } else if pg_sql != my_sql {
+            assert!(
+                DIALECT_SPECIFIC.iter().any(|m| pg_sql.contains(m)),
+                "{pg_name} has no binds and no dialect-specific construct, yet it differs:\n  pg:   {pg_sql}\n  mysql: {my_sql}"
             );
         }
-        let _ = index;
     }
     assert!(with_binds > 0, "the catalogue must contain binding statements");
     assert_eq!(
@@ -332,6 +394,25 @@ fn the_two_dialects_differ_where_they_must() {
         "every binding statement must differ by dialect"
     );
 }
+
+/// The constructs whose spelling differs between the engines. A statement
+/// that uses none of them must render identically for both.
+const DIALECT_SPECIFIC: &[&str] = &[
+    "UNION",
+    "FOR UPDATE",
+    "FOR SHARE",
+    "NOWAIT",
+    "SKIP LOCKED",
+    "AS new",
+    "ON DUPLICATE KEY",
+    "DATE(",
+    "DATE_FORMAT",
+    "EXTRACT",
+    "TO_CHAR",
+    "::",
+    "ILIKE",
+    "CAST",
+];
 
 /// How many bind placeholders a rendered statement carries.
 fn bind_count(sql: &str) -> usize {

@@ -63,6 +63,22 @@ pub struct UpsertRendering {
     pub clause: Option<String>,
 }
 
+/// The type an expression is cast to.
+///
+/// The spelling is engine-specific: Postgres has `BIGINT` and
+/// `DOUBLE PRECISION`, MySQL has `SIGNED` and `DOUBLE`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CastTarget {
+    /// A signed 64-bit integer.
+    BigInt,
+    /// Text.
+    Text,
+    /// An exact decimal.
+    Decimal,
+    /// A floating-point number.
+    Double,
+}
+
 /// A SQL dialect.
 ///
 /// Implementations are zero-sized and cheap to clone; the crate ships
@@ -103,6 +119,16 @@ pub trait Dialect: Send + Sync {
 
     /// Render the row-lock clause.
     fn render_lock(&self, lock: Lock) -> String;
+
+    /// Render a UNION with its operand.
+    ///
+    /// Postgres accepts the parenthesised form (`UNION ALL (SELECT ...)`);
+    /// MySQL accepts the bare form and **rejects** the parenthesised one
+    /// inside a recursive CTE. The operand is already rendered.
+    fn render_union(&self, all: bool, operand: &str) -> String;
+
+    /// Render a cast of an expression to a target type.
+    fn render_cast(&self, expression: &str, target: CastTarget) -> String;
 
     /// Render the conflict clause for an upsert.
     ///
@@ -152,7 +178,29 @@ impl Dialect for PostgresDialect {
         match lock {
             Lock::Update => "FOR UPDATE".to_string(),
             Lock::Share => "FOR SHARE".to_string(),
+            Lock::UpdateNoWait => "FOR UPDATE NOWAIT".to_string(),
+            Lock::UpdateSkipLocked => "FOR UPDATE SKIP LOCKED".to_string(),
+            Lock::ShareNoWait => "FOR SHARE NOWAIT".to_string(),
+            Lock::ShareSkipLocked => "FOR SHARE SKIP LOCKED".to_string(),
         }
+    }
+
+    fn render_union(&self, all: bool, operand: &str) -> String {
+        if all {
+            format!("UNION ALL ({operand})")
+        } else {
+            format!("UNION ({operand})")
+        }
+    }
+
+    fn render_cast(&self, expression: &str, target: CastTarget) -> String {
+        let name = match target {
+            CastTarget::BigInt => "BIGINT",
+            CastTarget::Text => "TEXT",
+            CastTarget::Decimal => "NUMERIC",
+            CastTarget::Double => "DOUBLE PRECISION",
+        };
+        format!("CAST({expression} AS {name})")
     }
 
     fn render_upsert(
@@ -237,7 +285,30 @@ impl Dialect for MySqlDialect {
             // MySQL spells the shared lock `LOCK IN SHARE MODE`; `FOR SHARE`
             // landed in 8.0 and is the modern spelling.
             Lock::Share => "FOR SHARE".to_string(),
+            Lock::UpdateNoWait => "FOR UPDATE NOWAIT".to_string(),
+            Lock::UpdateSkipLocked => "FOR UPDATE SKIP LOCKED".to_string(),
+            Lock::ShareNoWait => "FOR SHARE NOWAIT".to_string(),
+            Lock::ShareSkipLocked => "FOR SHARE SKIP LOCKED".to_string(),
         }
+    }
+
+    fn render_union(&self, all: bool, operand: &str) -> String {
+        // MySQL rejects the parenthesised form inside a recursive CTE.
+        if all {
+            format!("UNION ALL {operand}")
+        } else {
+            format!("UNION {operand}")
+        }
+    }
+
+    fn render_cast(&self, expression: &str, target: CastTarget) -> String {
+        let name = match target {
+            CastTarget::BigInt => "SIGNED",
+            CastTarget::Text => "CHAR",
+            CastTarget::Decimal => "DECIMAL",
+            CastTarget::Double => "DOUBLE",
+        };
+        format!("CAST({expression} AS {name})")
     }
 
     fn render_upsert(
@@ -363,6 +434,30 @@ mod tests {
         let my = MYSQL.render_upsert(ConflictPolicy::DoNothing, &[], &[]);
         assert_eq!(my.clause, None);
         assert_eq!(my.alias, None);
+    }
+
+    #[test]
+    fn the_union_renders_per_engine() {
+        assert_eq!(POSTGRES.render_union(true, "SELECT 1"), "UNION ALL (SELECT 1)");
+        assert_eq!(POSTGRES.render_union(false, "SELECT 1"), "UNION (SELECT 1)");
+        assert_eq!(MYSQL.render_union(true, "SELECT 1"), "UNION ALL SELECT 1");
+        assert_eq!(MYSQL.render_union(false, "SELECT 1"), "UNION SELECT 1");
+    }
+
+    #[test]
+    fn the_cast_renders_per_engine() {
+        assert_eq!(
+            POSTGRES.render_cast("SUM(amount)", CastTarget::BigInt),
+            "CAST(SUM(amount) AS BIGINT)"
+        );
+        assert_eq!(
+            MYSQL.render_cast("SUM(amount)", CastTarget::BigInt),
+            "CAST(SUM(amount) AS SIGNED)"
+        );
+        assert_eq!(
+            MYSQL.render_cast("x", CastTarget::Text),
+            "CAST(x AS CHAR)"
+        );
     }
 
     #[test]

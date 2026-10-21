@@ -286,6 +286,20 @@ pub enum Lock {
     Update,
     /// `FOR SHARE`
     Share,
+    /// `FOR UPDATE NOWAIT` — fail immediately if the row is locked.
+    ///
+    /// The "don't queue behind a lock" mode: a contended row is an error,
+    /// not a wait. Both MySQL 8 and Postgres 13+ support it.
+    UpdateNoWait,
+    /// `FOR UPDATE SKIP LOCKED` — skip the locked rows and lock the rest.
+    ///
+    /// The queue-worker's mode: N workers drain a queue without blocking
+    /// each other. Laravel's builder has `lockForUpdate` but **not** this.
+    UpdateSkipLocked,
+    /// `FOR SHARE NOWAIT`
+    ShareNoWait,
+    /// `FOR SHARE SKIP LOCKED`
+    ShareSkipLocked,
 }
 
 /// One WHERE predicate leaf. `IsNull`/`NotNull` ignore `values`.
@@ -384,6 +398,10 @@ pub struct Select {
     aggregate_alias: Option<Ident>,
     exists: Option<bool>,
     unions: Vec<(bool, Select)>,
+    /// The common table expressions the statement selects from.
+    ctes: Vec<crate::window::Cte>,
+    /// The windowed projections (rendered after the column list).
+    windows: Vec<crate::window::WindowProjection>,
     /// Validation deferred from infallible builder methods to `build`.
     deferred_error: Option<String>,
 }
@@ -407,9 +425,92 @@ impl Select {
         self
     }
 
+    /// Set (or replace) the table the statement selects from.
+    ///
+    /// [`Select::from_table`] builds a fresh statement; this is the
+    /// setter form, for the places that receive a builder and need to
+    /// point it at a table — a CTE body, most of all.
+    pub fn table(mut self, table: Ident) -> Self {
+        self.table = Some(table);
+        self
+    }
+
     /// Batch projection: `SELECT a, b, ...` (empty iterator leaves `*`).
     pub fn select(mut self, columns: impl IntoIterator<Item = Ident>) -> Self {
         self.columns.extend(columns);
+        self
+    }
+
+    /// Add a common table expression the statement selects from.
+    ///
+    /// The CTE body is built with the same builder, so it carries the same
+    /// guarantees (validated identifiers, bound values, no raw SQL). The
+    /// CTE's binds are numbered **before** the outer statement's binds —
+    /// the CTE renders first, so the appearance order is the bind order.
+    pub fn with_cte(
+        mut self,
+        name: impl Into<String>,
+        build: impl FnOnce(Select) -> Select,
+    ) -> Self {
+        let name = match Ident::new(name) {
+            Ok(n) => n,
+            Err(e) => {
+                self.deferred_error = Some(e.public_message);
+                return self;
+            }
+        };
+        let body = build(Select::default());
+        self.ctes.push(crate::window::Cte {
+            name,
+            columns: Vec::new(),
+            query: body,
+            recursive: false,
+        });
+        self
+    }
+
+    /// Add a **recursive** common table expression (the `WITH RECURSIVE`
+    /// form). The body may select from the CTE's own name.
+    pub fn with_recursive_cte(
+        mut self,
+        name: impl Into<String>,
+        columns: Vec<Ident>,
+        build: impl FnOnce(Select) -> Select,
+    ) -> Self {
+        let name = match Ident::new(name) {
+            Ok(n) => n,
+            Err(e) => {
+                self.deferred_error = Some(e.public_message);
+                return self;
+            }
+        };
+        let body = build(Select::default());
+        self.ctes.push(crate::window::Cte {
+            name,
+            columns,
+            query: body,
+            recursive: true,
+        });
+        self
+    }
+
+    /// Project a window function.
+    ///
+    /// The window-function surface is the "more than Laravel" part:
+    /// Laravel's query builder has **no** window function API, so a
+    /// windowed aggregate there is a `DB::raw` string - untyped and
+    /// untestable. Here the function, the partition and the ordering are
+    /// all validated identifiers, and the result type can be pinned with a
+    /// dialect-aware cast.
+    pub fn window(mut self, spec: crate::window::WindowSpec) -> Self {
+        self.windows.push(crate::window::WindowProjection {
+            function: spec.function,
+            partition_by: spec.partition_by,
+            order_by: spec.order_by,
+            frame: spec.frame,
+            alias: spec.alias,
+            cast: spec.cast,
+        });
         self
     }
 
@@ -901,6 +1002,38 @@ impl Select {
         self
     }
 
+    /// Locking clause: `SELECT ... FOR UPDATE NOWAIT` — a contended row is
+    /// an error, not a wait.
+    ///
+    /// The queue-worker's "fail fast" mode. Laravel's builder cannot
+    /// express it (`lockForUpdate` has no NOWAIT sibling).
+    pub fn lock_for_update_nowait(mut self) -> Self {
+        self.lock = Some(Lock::UpdateNoWait);
+        self
+    }
+
+    /// Locking clause: `SELECT ... FOR UPDATE SKIP LOCKED` — skip the rows
+    /// another worker holds and lock the rest.
+    ///
+    /// The queue-worker's "no head-of-line blocking" mode: N workers drain
+    /// the same queue without serialising on the head row.
+    pub fn lock_for_update_skip_locked(mut self) -> Self {
+        self.lock = Some(Lock::UpdateSkipLocked);
+        self
+    }
+
+    /// Locking clause: `SELECT ... FOR SHARE NOWAIT`.
+    pub fn shared_lock_nowait(mut self) -> Self {
+        self.lock = Some(Lock::ShareNoWait);
+        self
+    }
+
+    /// Locking clause: `SELECT ... FOR SHARE SKIP LOCKED`.
+    pub fn shared_lock_skip_locked(mut self) -> Self {
+        self.lock = Some(Lock::ShareSkipLocked);
+        self
+    }
+
     // ------------------------------------------------------------- ORDERING
 
     pub fn order_by(mut self, column: Ident, direction: Direction) -> Self {
@@ -1119,6 +1252,34 @@ impl Select {
     ) -> Result<String, AppError> {
         let mut sql = String::with_capacity(128);
 
+        // The CTE preamble renders FIRST, so the CTE bodies' binds are
+        // numbered before the outer statement's binds.
+        if !self.ctes.is_empty() {
+            let recursive = self.ctes.iter().any(|c| c.recursive);
+            if recursive {
+                sql.push_str("WITH RECURSIVE ");
+            } else {
+                sql.push_str("WITH ");
+            }
+            let mut parts: Vec<String> = Vec::with_capacity(self.ctes.len());
+            for cte in &self.ctes {
+                let body = cte.query.render(params, dialect)?;
+                let mut part = cte.name.as_str().to_string();
+                if !cte.columns.is_empty() {
+                    let cols: Vec<&str> = cte.columns.iter().map(|c| c.as_str()).collect();
+                    part.push_str(" (");
+                    part.push_str(&cols.join(", "));
+                    part.push(')');
+                }
+                part.push_str(" AS (");
+                part.push_str(&body);
+                part.push(')');
+                parts.push(part);
+            }
+            sql.push_str(&parts.join(", "));
+            sql.push(' ');
+        }
+
         sql.push_str("SELECT ");
         if self.distinct {
             sql.push_str("DISTINCT ");
@@ -1131,10 +1292,19 @@ impl Select {
                     sql.push_str(alias.as_str());
                 }
             }
-            None if self.columns.is_empty() => sql.push('*'),
+            None if self.columns.is_empty() && self.windows.is_empty() => sql.push('*'),
             None => {
                 let cols: Vec<&str> = self.columns.iter().map(|c| c.as_str()).collect();
-                sql.push_str(&cols.join(", "));
+                if !cols.is_empty() {
+                    sql.push_str(&cols.join(", "));
+                }
+                // The windowed projections render after the column list.
+                for window in &self.windows {
+                    if !cols.is_empty() {
+                        sql.push_str(", ");
+                    }
+                    sql.push_str(&window.render(dialect));
+                }
             }
         }
         sql.push_str(" FROM ");
@@ -1179,9 +1349,9 @@ impl Select {
             self.render_tail(&mut sql, params, dialect);
         } else {
             for (all, branch) in &self.unions {
-                sql.push_str(if *all { " UNION ALL (" } else { " UNION (" });
-                sql.push_str(&branch.render(params, dialect)?);
-                sql.push(')');
+                let operand = branch.render(params, dialect)?;
+                sql.push(' ');
+                sql.push_str(&dialect.render_union(*all, &operand));
             }
             self.render_tail(&mut sql, params, dialect);
         }

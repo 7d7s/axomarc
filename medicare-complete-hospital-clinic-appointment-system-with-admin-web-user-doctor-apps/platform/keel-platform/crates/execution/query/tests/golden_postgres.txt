@@ -109,6 +109,21 @@ select_shared_lock
 select_joins
   sql: SELECT * FROM users JOIN orders ON users.id = orders.user_id LEFT JOIN plans ON users.plan_id = plans.id
   params: []
+select_with_cte
+  sql: WITH recent AS (SELECT user_id FROM orders WHERE status = $1) SELECT user_id FROM recent
+  params: [Text("paid")]
+select_with_recursive_cte
+  sql: WITH RECURSIVE tree (id, parent_id) AS (SELECT id, parent_id FROM nodes WHERE parent_id IS NULL UNION ALL (SELECT id, parent_id FROM nodes JOIN tree ON nodes.parent_id = tree.id)) SELECT id FROM tree
+  params: []
+select_with_window
+  sql: SELECT label, CAST(SUM(amount) OVER (PARTITION BY tenant_id ORDER BY created_at ASC) AS BIGINT) FROM orders
+  params: []
+select_lock_skip_locked
+  sql: SELECT * FROM jobs FOR UPDATE SKIP LOCKED
+  params: []
+select_lock_nowait
+  sql: SELECT * FROM jobs FOR UPDATE NOWAIT
+  params: []
 insert_plain
   sql: INSERT INTO users (id, email) VALUES ($1, $2)
   params: [Text("u1"), Text("a@b.test")]

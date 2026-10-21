@@ -258,6 +258,61 @@ fn the_postgres_rendering_matches_the_golden_catalogue() {
         .unwrap();
     out.push(entry("select_joins", &q.sql, &q.params));
 
+    let q = Select::from_table(id("recent"))
+        .with_cte("recent", |cte| {
+            cte.table(id("orders"))
+                .select(vec![id("user_id")])
+                .where_eq(id("status"), v("paid"))
+        })
+        .select(vec![id("user_id")])
+        .build(&POSTGRES)
+        .unwrap();
+    out.push(entry("select_with_cte", &q.sql, &q.params));
+
+    let q = Select::from_table(id("tree"))
+        .with_recursive_cte(
+            "tree",
+            vec![id("id"), id("parent_id")],
+            |cte| {
+                cte.table(id("nodes"))
+                    .select(vec![id("id"), id("parent_id")])
+                    .where_null(id("parent_id"))
+                    .union_all(
+                        Select::from_table(id("nodes"))
+                            .select(vec![id("id"), id("parent_id")])
+                            .join_inner(id("tree"), id("nodes.parent_id"), id("tree.id")),
+                    )
+            },
+        )
+        .select(vec![id("id")])
+        .build(&POSTGRES)
+        .unwrap();
+    out.push(entry("select_with_recursive_cte", &q.sql, &q.params));
+
+    let q = Select::from_table(id("orders"))
+        .select(vec![id("label")])
+        .window(
+            kelson_query::WindowSpec::new(kelson_query::WindowFunction::Sum(id("amount")))
+                .partition_by(vec![id("tenant_id")])
+                .order_by(vec![(id("created_at"), kelson_query::Direction::Asc)])
+                .cast(kelson_query::CastTarget::BigInt),
+        )
+        .build(&POSTGRES)
+        .unwrap();
+    out.push(entry("select_with_window", &q.sql, &q.params));
+
+    let q = Select::from_table(id("jobs"))
+        .lock_for_update_skip_locked()
+        .build(&POSTGRES)
+        .unwrap();
+    out.push(entry("select_lock_skip_locked", &q.sql, &q.params));
+
+    let q = Select::from_table(id("jobs"))
+        .lock_for_update_nowait()
+        .build(&POSTGRES)
+        .unwrap();
+    out.push(entry("select_lock_nowait", &q.sql, &q.params));
+
     // ---- INSERT ----------------------------------------------------------
     let q = Insert::into_table(id("users"))
         .columns(vec![id("id"), id("email")])

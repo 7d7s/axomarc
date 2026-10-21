@@ -12,9 +12,10 @@ pub mod insert;
 pub mod select;
 pub mod truncate;
 pub mod update;
+pub mod window;
 
 pub use delete::Delete;
-pub use dialect::{Dialect, DialectId, MySqlDialect, PostgresDialect, POSTGRES, MYSQL};
+pub use dialect::{CastTarget, Dialect, DialectId, MySqlDialect, PostgresDialect, POSTGRES, MYSQL};
 pub use insert::{ConflictPolicy, Insert};
 pub use select::{
     Aggregate, Clause, CompiledSelect, Condition, DatePart, Direction, Ident, Junction, Lock,
@@ -22,6 +23,7 @@ pub use select::{
 };
 pub use truncate::Truncate;
 pub use update::Update;
+pub use window::{Cte, WindowFrame, WindowFunction, WindowProjection, WindowSpec};
 
 /// Compiled WRITE statement (INSERT/UPDATE/DELETE): SQL text with the
 /// dialect's placeholders and bind values in matching order. Execution is

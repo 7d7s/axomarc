@@ -258,6 +258,13 @@ jobs:
       # CI noticing.
       - name: shared modelstore conformance (the contract every backend runs)
         run: cargo test -p kelson-postgres --features pg-tests --test modelstore_conformance --locked
+      # The MySQL 8 native capability matrix: CTEs, the recursive CTE, the
+      # window functions and the NOWAIT / SKIP LOCKED lock modes, executed
+      # against the live MySQL 8 service. These are the features Laravel's
+      # query builder has no API for - without a service container they
+      # would skip, and a skip is not a proof.
+      - name: mysql native capability matrix (CTEs, window functions, lock modes)
+        run: cargo test -p kelson-postgres --features pg-tests --test mysql_native --locked
       # The claim race only reproduces when two workers overlap, so one green
       # run would not be evidence. Repeat it: a regression here means a worker
       # fleet idles while jobs are queued.
