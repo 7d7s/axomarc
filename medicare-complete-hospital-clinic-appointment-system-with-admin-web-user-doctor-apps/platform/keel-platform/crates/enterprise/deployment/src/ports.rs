@@ -134,3 +134,55 @@ pub trait HealthCheck: Send + Sync {
     fn name(&self) -> &str;
     fn run(&self) -> BoxFuture<'_, Result<bool, AppError>>;
 }
+
+/// **F-10**: the promotion's concurrency lock.
+///
+/// Two promotions must not interleave: the second's artifacts can overwrite
+/// the first's, and the rollback checkpoint becomes ambiguous (whose
+/// pre-promotion state is the restore target?). The lock is a **port** ✓ —
+/// like the five rollback dimensions ✓ — because the substrate decides where
+/// it lives ✓ (a file on the release volume ✓, a database row ✓, a Redis
+/// key ✓) ✓.
+pub trait PromotionLock: Send + Sync {
+    /// Take the lock for `owner` ✓ — **fail fast** ✓ (never block ✓): a
+    /// second promotion must be told, not queued ✓ ✓.
+    ///
+    /// A lock left behind by a crashed promotion is the holder's problem ✓ —
+    /// the implementation decides whether it expires ✓ (a lease ✓) or must be
+    /// broken by hand ✓ ✓.
+    fn try_acquire(&self, owner: &str) -> BoxFuture<'_, Result<PromotionLease, AppError>>;
+}
+
+/// The held lock. Dropping it releases the lock ✓ (the release is tied to
+/// the guard's lifetime ✓, so an aborted promotion still unlocks ✓).
+pub struct PromotionLease {
+    holder: Option<Box<dyn PromotionLockHolder + Send + Sync>>,
+}
+
+impl PromotionLease {
+    pub fn new(holder: Box<dyn PromotionLockHolder + Send + Sync>) -> Self {
+        Self {
+            holder: Some(holder),
+        }
+    }
+
+    /// Release the lock now ✓ (dropping it does the same ✓).
+    pub fn release(mut self) {
+        if let Some(holder) = self.holder.take() {
+            holder.release();
+        }
+    }
+}
+
+impl Drop for PromotionLease {
+    fn drop(&mut self) {
+        if let Some(holder) = self.holder.take() {
+            holder.release();
+        }
+    }
+}
+
+/// The lock's release side ✓ (the port's implementation hands one over ✓).
+pub trait PromotionLockHolder: Send + Sync {
+    fn release(&self);
+}

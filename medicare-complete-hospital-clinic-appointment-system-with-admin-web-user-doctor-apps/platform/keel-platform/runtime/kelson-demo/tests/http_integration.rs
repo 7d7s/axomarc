@@ -6686,6 +6686,97 @@ async fn two_concurrent_logins_get_distinct_sessions() {
     }
 }
 
+/// **F-7 (the deep audit)**: a personal access token's **abilities** are a
+/// CEILING, not a decoration. A token issued with only
+/// `appointments.list` may list — and is refused the `appointments.book`
+/// capability the principal itself holds, so a leaked, narrowly-scoped token
+/// is not as powerful as the account.
+#[tokio::test]
+async fn a_personal_access_token_is_confined_to_its_abilities() {
+    let app = app();
+    let email = format!("narrow-{}@clinic.test", uuid::Uuid::now_v7());
+    register(&app, &email).await;
+
+    let login = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/auth/login",
+            serde_json::json!({
+                "identifier": email,
+                "password": "Correct-horse-99",
+                "tenant": "dev",
+                "mode": "token",
+            }),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(login.status, StatusCode::OK, "{}", login.body);
+    let principal = kelson_foundation::PrincipalId::from_uuid(
+        uuid::Uuid::parse_str(
+            login.data()["principal_id"]
+                .as_str()
+                .expect("the principal id"),
+        )
+        .expect("a principal uuid"),
+    );
+    let tenant = app.state.default_tenant_id.expect("the dev tenant");
+
+    // A NARROW token: it may only list.
+    let narrow = app
+        .state
+        .tokens
+        .issue_with_abilities(
+            principal,
+            kelson_tokens::TokenPurpose::Api,
+            time::Duration::days(30),
+            Some(format!("tenant:{}", tenant.as_uuid())),
+            vec!["appointments.list".to_string()],
+        )
+        .expect("the narrow PAT issues");
+
+    // The capability it CARRIES: allowed.
+    let listed = send(
+        &app,
+        json_req(
+            Method::GET,
+            "/api/v1/appointments",
+            Value::Null,
+            None,
+            Some(&narrow.plaintext),
+        ),
+    )
+    .await;
+    assert_eq!(
+        listed.status,
+        StatusCode::OK,
+        "the capability the token carries works: {}",
+        listed.body
+    );
+
+    // The capability it does NOT carry: refused, even though the principal
+    // holds it.
+    let booked = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/api/v1/appointments",
+            serde_json::json!({ "patient": "A. Patient", "slot": "2026-09-01T10:00Z" }),
+            None,
+            Some(&narrow.plaintext),
+        ),
+    )
+    .await;
+    assert_eq!(
+        booked.status,
+        StatusCode::FORBIDDEN,
+        "a token may not act outside its abilities: {}",
+        booked.body
+    );
+}
+
 /// LF-056: a personal access token may be carried in a **cookie** (the SPA
 /// mode — not stateless bearer auth ✓) and it carries its **abilities**: the
 /// narrowing travels with the durable row ✓.

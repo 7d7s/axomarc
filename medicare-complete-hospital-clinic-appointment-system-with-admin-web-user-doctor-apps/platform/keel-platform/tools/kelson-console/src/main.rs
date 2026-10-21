@@ -2626,7 +2626,15 @@ async fn promote(plan: Option<String>, dry_run: bool) -> anyhow::Result<ExitCode
         wiring.events.clone(),
     );
     let pipeline =
-        kelson_deployment::promote::PromotionPipeline::new(wiring.executor.clone(), probes)
+        kelson_deployment::promote::PromotionPipeline::new(
+            wiring.executor.clone(),
+            probes,
+            // **F-10**: the promotion's concurrency lock — a file on the
+            // release volume ✓, so a second operator (or a second host that
+            // can see the release ✓) is told the promotion is running ✓
+            // instead of interleaving with it ✓.
+            std::sync::Arc::new(kelson_deployment::lock::FilePromotionLock::new(&root)),
+        )
             .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     if dry_run {
@@ -5798,6 +5806,8 @@ fn benchmark(save_baseline: bool, budget: f64, iterations: usize) -> anyhow::Res
         module_enabled: true,
         attributes: None,
         conditions: &[],
+        // The console acts as the principal (no credential narrowing) ✓.
+        credential_abilities: None,
     };
     phases.insert(
         "authorization".into(),

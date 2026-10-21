@@ -61,6 +61,15 @@ pub struct ResolvedPrincipal {
     pub principal: PrincipalId,
     pub tenant: Option<TenantId>,
     pub via: AuthVia,
+    /// The **credential's** narrowing (Sanctum's `abilities`): the
+    /// capabilities this credential may exercise.
+    ///
+    /// `None` = the credential carries no narrowing (a session, a JWT ✓ —
+    /// it acts as the whole principal ✓). `Some(list)` = the decision is
+    /// confined to the list ✓ — the authorization boundary intersects the
+    /// granted capabilities with it ✓, so a narrowly-scoped token cannot
+    /// act as the whole account ✓.
+    pub abilities: Option<Vec<String>>,
 }
 
 /// Transport-port for bearer resolution + B-23 verification checks. The API
@@ -145,6 +154,9 @@ pub async fn chain_middleware(
                         principal: session.session.principal,
                         tenant: session.session.tenant,
                         via: AuthVia::Session,
+                        // A session carries no narrowing: it acts as the whole
+                        // principal (the abilities are a CREDENTIAL's property).
+                        abilities: None,
                     })
                 } else {
                     bearer_token(req.headers())
@@ -258,6 +270,7 @@ mod tests {
                 principal: PrincipalId::new(),
                 tenant: Some(TenantId::new()),
                 via: AuthVia::Bearer,
+                abilities: None,
             })
         }
         fn email_verified(&self, _principal: PrincipalId) -> bool {

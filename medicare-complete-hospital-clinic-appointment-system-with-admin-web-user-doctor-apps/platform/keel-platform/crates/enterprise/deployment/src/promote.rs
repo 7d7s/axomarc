@@ -22,6 +22,8 @@ use kelson_foundation::AppError;
 use serde::{Deserialize, Serialize};
 
 use crate::ports::HealthCheck;
+#[cfg(test)]
+use crate::ports::PromotionLock;
 use crate::rollback::{PromotionTarget, RollbackExecutor};
 use crate::PromotionState;
 
@@ -56,6 +58,9 @@ impl ReleaseArtifact {
 pub struct PromotionPipeline {
     executor: Arc<RollbackExecutor>,
     checks: HashMap<String, Arc<dyn HealthCheck>>,
+    /// **F-10**: the concurrency lock ✓ — a second promotion is told, not
+    /// queued ✓.
+    lock: Arc<dyn crate::ports::PromotionLock>,
 }
 
 impl PromotionPipeline {
@@ -66,6 +71,7 @@ impl PromotionPipeline {
     pub fn new(
         executor: Arc<RollbackExecutor>,
         checks: Vec<Arc<dyn HealthCheck>>,
+        lock: Arc<dyn crate::ports::PromotionLock>,
     ) -> Result<Self, AppError> {
         let mut map: HashMap<String, Arc<dyn HealthCheck>> = HashMap::new();
         for check in checks {
@@ -100,6 +106,7 @@ impl PromotionPipeline {
         Ok(Self {
             executor,
             checks: map,
+            lock,
         })
     }
 
@@ -112,6 +119,20 @@ impl PromotionPipeline {
     ///
     /// Returns [`PromotionState::Deployed`] only once every gate passed.
     pub async fn promote(&self, release: ReleaseArtifact) -> Result<PromotionState, AppError> {
+        // **F-10**: take the concurrency lock FIRST — before the checkpoint,
+        // because the checkpoint is the restore target and two promotions
+        // would disagree about what "before" means. Fail fast: a second
+        // promotion is told the lock is held, it is never queued.
+        let _lease = self
+            .lock
+            .try_acquire(&release.release)
+            .await
+            .map_err(|e| {
+                AppError::conflict(format!(
+                    "the promotion lock was not taken: {}",
+                    e.public_message
+                ))
+            })?;
         let mut state = PromotionState::Built;
 
         // §7.2 `create_checkpoint` — taken BEFORE anything moves, so the
@@ -291,7 +312,53 @@ mod tests {
                 }) as Arc<dyn HealthCheck>
             })
             .collect();
-        PromotionPipeline::new(h.executor().into(), checks).unwrap()
+        PromotionPipeline::new(h.executor().into(), checks, lock()).unwrap()
+    }
+
+    /// A fresh in-memory lock ✓ (each pipeline gets its own ✓ — the
+    /// concurrency case builds a shared one ✓).
+    fn lock() -> Arc<dyn crate::ports::PromotionLock> {
+        Arc::new(crate::fakes::FakePromotionLock::default())
+    }
+
+    /// **F-10 (the deep audit)**: two promotions must not interleave. The
+    /// second is **told** the lock is held (fail fast ✓), and it is refused
+    /// BEFORE the checkpoint is taken ✓ — the checkpoint is the restore
+    /// target ✓, and two promotions would disagree about what "before"
+    /// means ✓.
+    #[tokio::test]
+    async fn a_second_promotion_is_refused_while_the_lock_is_held() {
+        let h = Harness::new();
+        let shared = Arc::new(crate::fakes::FakePromotionLock::default());
+        let p = PromotionPipeline::new(
+            h.executor().into(),
+            healthy_probes(&h.trace),
+            shared.clone(),
+        )
+        .unwrap();
+
+        // Take the lock by hand, as a running promotion would hold it.
+        let held = shared.try_acquire("release-a").await.unwrap();
+        assert_eq!(shared.holder().as_deref(), Some("release-a"));
+
+        // The promotion is refused, and NOTHING ran (the trace is empty ✓).
+        let err = p.promote(release()).await.expect_err("the lock is held");
+        assert!(
+            err.public_message.contains("lock"),
+            "the refusal names the lock: {}",
+            err.public_message
+        );
+        assert!(
+            h.trace.calls().is_empty(),
+            "a refused promotion touches nothing: {:?}",
+            h.trace.calls()
+        );
+
+        // Releasing the lock lets the next promotion through ✓.
+        held.release();
+        assert_eq!(shared.holder(), None);
+        let state = p.promote(release()).await.expect("the promotion runs once the lock is free");
+        assert_eq!(state, PromotionState::Deployed);
     }
 
     /// Every stage runs, in order, and the system lands on the release.
@@ -434,11 +501,11 @@ mod tests {
         let h = Harness::new();
 
         let missing = healthy_probes(&h.trace).into_iter().take(3).collect();
-        assert!(PromotionPipeline::new(h.executor().into(), missing).is_err());
+        assert!(PromotionPipeline::new(h.executor().into(), missing, lock()).is_err());
 
         let mut duplicate = healthy_probes(&h.trace);
         duplicate.push(healthy_probes(&h.trace).remove(0));
-        assert!(PromotionPipeline::new(h.executor().into(), duplicate).is_err());
+        assert!(PromotionPipeline::new(h.executor().into(), duplicate, lock()).is_err());
 
         let mut unknown = healthy_probes(&h.trace);
         unknown.push(Arc::new(crate::fakes::FakeHealth {
@@ -446,7 +513,7 @@ mod tests {
             outcome: Outcome::Healthy,
             trace: h.trace.clone(),
         }));
-        assert!(PromotionPipeline::new(h.executor().into(), unknown).is_err());
+        assert!(PromotionPipeline::new(h.executor().into(), unknown, lock()).is_err());
     }
 
     /// A release carrying no schema change skips stage 2's DB work entirely
@@ -478,7 +545,7 @@ mod tests {
             .collect();
         names.sort();
         assert_eq!(names, vec!["canary", "post-deploy", "post-migrate", "post-traffic"]);
-        assert!(PromotionPipeline::new(h.executor().into(), healthy_probes(&h.trace)).is_ok());
+        assert!(PromotionPipeline::new(h.executor().into(), healthy_probes(&h.trace), lock()).is_ok());
     }
 
     /// Chaos (Phase 5, §9 "rollback mid-promotion"): the full failure

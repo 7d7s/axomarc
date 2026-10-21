@@ -15,8 +15,61 @@ use std::sync::{Arc, Mutex};
 
 use kelson_foundation::AppError;
 
-use crate::ports::{BoxFuture, ConfigPort, EventPort, HealthCheck, JobPort, MigrationPort, ModulePort};
+use crate::ports::{
+    BoxFuture, ConfigPort, EventPort, HealthCheck, JobPort, MigrationPort, ModulePort, PromotionLease,
+    PromotionLock, PromotionLockHolder,
+};
 use crate::rollback::{PromotionTarget, RollbackExecutor};
+
+/// **F-10**: an in-memory promotion lock ✓ — it records who holds it ✓ and
+/// refuses a second holder ✓ (the same fail-fast posture the file lock
+/// takes ✓ ✓).
+pub(crate) struct FakePromotionLock {
+    holder: Arc<Mutex<Option<String>>>,
+}
+
+impl Default for FakePromotionLock {
+    fn default() -> Self {
+        Self {
+            holder: Arc::new(Mutex::new(None)),
+        }
+    }
+}
+
+impl FakePromotionLock {
+    pub(crate) fn holder(&self) -> Option<String> {
+        self.holder.lock().unwrap().clone()
+    }
+}
+
+struct FakeHolder {
+    holder: Arc<Mutex<Option<String>>>,
+}
+
+impl PromotionLockHolder for FakeHolder {
+    fn release(&self) {
+        *self.holder.lock().unwrap() = None;
+    }
+}
+
+impl PromotionLock for FakePromotionLock {
+    fn try_acquire(&self, owner: &str) -> BoxFuture<'_, Result<PromotionLease, AppError>> {
+        let owner = owner.to_string();
+        let holder = self.holder.clone();
+        Box::pin(async move {
+            {
+                let mut held = holder.lock().unwrap();
+                if let Some(current) = held.as_ref() {
+                    return Err(AppError::conflict(format!(
+                        "a promotion is already running (held by {current})"
+                    )));
+                }
+                *held = Some(owner);
+            }
+            Ok(PromotionLease::new(Box::new(FakeHolder { holder })))
+        })
+    }
+}
 
 /// Ordered log of everything the doubles were asked to do.
 #[derive(Clone, Default)]

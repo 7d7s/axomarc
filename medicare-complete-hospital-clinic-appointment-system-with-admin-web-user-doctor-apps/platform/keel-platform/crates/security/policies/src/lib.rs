@@ -85,6 +85,14 @@ pub struct DecisionInput<'a> {
     pub attributes: Option<&'a serde_json::Value>,
     /// Per-capability conditions attached to the grant.
     pub conditions: &'a [Condition],
+    /// The **credential's** narrowing (Sanctum's `abilities`): the
+    /// capabilities this credential may exercise.
+    ///
+    /// `None` = the credential carries no narrowing (a session acts as the
+    /// whole principal ✓). `Some(list)` = the decision is confined to the
+    /// list ✓ — a capability the credential does not carry is denied ✓ even
+    /// when the principal holds it ✓ ✓.
+    pub credential_abilities: Option<&'a [String]>,
 }
 
 #[derive(Debug, Default)]
@@ -157,6 +165,24 @@ impl PolicyEngine {
                 "policy.capability",
                 format!("capability {} not granted", input.capability),
             );
+        }
+
+        // **F-27 (the deep audit's F-7)**: the credential's narrowing. A
+        // personal access token may carry only a subset of the principal's
+        // capabilities (Sanctum's `abilities`), and that subset is a
+        // CEILING: a capability the credential does not carry is refused even
+        // when the principal holds it. Without this the narrowing is
+        // decorative - the token travels with the row and nobody reads it.
+        if let Some(abilities) = input.credential_abilities {
+            if !abilities.iter().any(|a| a == input.capability) {
+                return AuthzDecision::deny(
+                    "policy.credential-ability",
+                    format!(
+                        "capability {} is outside the credential's abilities",
+                        input.capability
+                    ),
+                );
+            }
         }
 
         if let Some(owner_path) = input.resource_owner_path {
@@ -254,6 +280,9 @@ impl AuthorizationPort for PolicyAuthz {
             module_enabled: true,
             attributes: None,
             conditions: &[],
+            // The credential's narrowing rides the execution context (F-7) —
+            // a personal access token may exercise only what it was granted.
+            credential_abilities: ctx.credential_abilities.as_deref(),
         };
         self.engine.decide(&input)
     }
@@ -326,6 +355,7 @@ mod tests {
             module_enabled: true,
             attributes: None,
             conditions: &[],
+            credential_abilities: None,
         }
     }
 
@@ -350,6 +380,46 @@ mod tests {
         let denied = engine.decide(&input(principal, tenant, "invoice.post", Some("LE1|LOC5")));
         assert!(!denied.allowed);
         assert_eq!(denied.via, "policy.scope");
+    }
+
+    /// **F-7 (the deep audit)**: the credential's narrowing is a CEILING.
+    /// A personal access token may carry only a subset of the principal's
+    /// capabilities (Sanctum's `abilities`), and a capability outside that
+    /// subset is refused even though the principal holds it — so a leaked,
+    /// narrowly-scoped token is not as powerful as the account.
+    #[test]
+    fn the_credential_abilities_narrow_the_decision() {
+        let (principal, tenant) = ids();
+        // The principal holds BOTH capabilities.
+        let engine = engine_with(
+            principal,
+            tenant,
+            0,
+            &["invoice.post", "invoice.read"],
+            &["LE1"],
+        );
+        // Without a narrowing, both are allowed ✓.
+        assert!(
+            engine
+                .decide(&input(principal, tenant, "invoice.post", None))
+                .allowed
+        );
+
+        // The credential carries only `invoice.read` ✓.
+        let abilities = vec!["invoice.read".to_string()];
+        let mut narrowed = input(principal, tenant, "invoice.post", None);
+        narrowed.credential_abilities = Some(abilities.as_slice());
+        let denied = engine.decide(&narrowed);
+        assert!(
+            !denied.allowed,
+            "a capability outside the credential's abilities is refused"
+        );
+        assert_eq!(denied.via, "policy.credential-ability");
+
+        // The capability it DOES carry still passes ✓.
+        let mut allowed = input(principal, tenant, "invoice.read", None);
+        allowed.credential_abilities = Some(abilities.as_slice());
+        assert!(engine.decide(&allowed).allowed);
     }
 
     #[test]

@@ -850,6 +850,12 @@ impl EdgeAuthPort for EdgeAuth {
                 principal: auth_token.principal_id,
                 tenant: tenant_from_label(&auth_token.label),
                 via: AuthVia::Bearer,
+                // The PAT's narrowing: the abilities it was issued with
+                // (F-7). An empty list means no narrowing was granted,
+                // so the credential acts as the principal (the old
+                // behaviour) rather than as nothing.
+                abilities: (!auth_token.abilities.is_empty())
+                    .then(|| auth_token.abilities.clone()),
             }),
             Err(_) => {
                 let (principal, tenant) = resolve_jwt_token(self.jwt.as_deref(), token)?;
@@ -866,6 +872,7 @@ impl EdgeAuthPort for EdgeAuth {
                     principal,
                     tenant,
                     via: AuthVia::Jwt,
+                    abilities: None,
                 })
             }
         }
@@ -1691,6 +1698,14 @@ async fn graph_dispatch(
         .copied()
         .unwrap_or_else(kelson_foundation::TraceId::new);
     let resolved = req.extensions().get::<ResolvedPrincipal>().cloned();
+    // **F-7**: the credential's narrowing, captured before the principal is
+    // moved out of `resolved` ✓. An empty list means no narrowing was
+    // granted ✓ — the credential then acts as the principal ✓ (the old
+    // behaviour ✓), rather than as nothing ✓.
+    let credential_abilities = resolved
+        .as_ref()
+        .and_then(|r| r.abilities.clone())
+        .filter(|list| !list.is_empty());
     // Wave 2: the host gate resolves a route's `subdomain` into a tenant
     // record before auth; it feeds resolution below the principal's own
     // tenant (identity wins, so a session can never be promoted into
@@ -2085,6 +2100,12 @@ async fn graph_dispatch(
             lang: locale.clone(),
             timezone: kelson_foundation::Locale::default().timezone,
         });
+    // **F-7**: the credential's narrowing rides the context, so the
+    // authorization boundary can confine a personal access token to the
+    // abilities it was issued with.
+    if let Some(abilities) = credential_abilities.clone() {
+        builder = builder.with_credential_abilities(abilities);
+    }
     if let Some(request_id) = request_id {
         builder = builder.request_id(request_id);
     }

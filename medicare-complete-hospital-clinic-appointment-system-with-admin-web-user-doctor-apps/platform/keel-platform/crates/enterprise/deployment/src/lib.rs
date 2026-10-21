@@ -5,6 +5,7 @@
 //! The build matrix (which binaries, which profile) is documented in
 //! RELEASE.md at the workspace root and encoded here for `kelson build`.
 
+pub mod lock;
 pub mod ports;
 pub mod promote;
 pub mod rollback;

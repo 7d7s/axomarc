@@ -124,6 +124,16 @@ pub struct ExecutionContext {
     pub locale: Locale,
     /// IANA timezone for display/business-day semantics; instants stay UTC (S1).
     pub timezone: TimeZone,
+    /// The **credential's** narrowing (Sanctum's `abilities`): the
+    /// capabilities this credential may exercise, and nothing else.
+    ///
+    /// `None` = the credential carries no narrowing (a session acts as the
+    /// whole principal ✓). `Some(list)` = the decision is confined to that
+    /// list ✓ — the authorization boundary intersects the granted
+    /// capabilities with it ✓, so a narrowly-scoped token cannot act as the
+    /// whole account ✓.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_abilities: Option<Vec<String>>,
 }
 
 impl ExecutionContext {
@@ -146,6 +156,7 @@ impl ExecutionContext {
             deadline: Deadline::from_timeout(now, ExecutionProfile::resolve(kind).timeout_secs),
             locale: Locale::default(),
             timezone: None,
+            credential_abilities: None,
         }
     }
 
@@ -174,6 +185,7 @@ pub struct ContextBuilder {
     deadline: Deadline,
     locale: Locale,
     timezone: Option<TimeZone>,
+    credential_abilities: Option<Vec<String>>,
 }
 
 macro_rules! setter {
@@ -210,6 +222,17 @@ impl ContextBuilder {
     setter!(deadline, deadline, Deadline);
     setter!(locale, locale, Locale);
     setter_opt!(timezone, timezone, TimeZone);
+    /// Confine this execution to the credential's **abilities** (Sanctum's
+    /// narrowing ✓). The authorization boundary intersects the granted
+    /// capabilities with the list ✓ — a narrowly-scoped token can then only
+    /// exercise what it was granted ✓.
+    pub fn with_credential_abilities(
+        mut self,
+        abilities: impl Into<Vec<String>>,
+    ) -> Self {
+        self.credential_abilities = Some(abilities.into());
+        self
+    }
 
     pub fn build(self) -> Result<std::sync::Arc<ExecutionContext>, AppError> {
         let principal = self
@@ -254,6 +277,7 @@ impl ContextBuilder {
             deadline: self.deadline,
             locale: self.locale,
             timezone,
+            credential_abilities: self.credential_abilities,
         }))
     }
 }
