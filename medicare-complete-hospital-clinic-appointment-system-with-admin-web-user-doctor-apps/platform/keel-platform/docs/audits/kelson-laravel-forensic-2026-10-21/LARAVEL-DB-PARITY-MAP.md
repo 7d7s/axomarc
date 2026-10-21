@@ -15,13 +15,13 @@ against a live MySQL 8.0.44.
 
 | Status | Rows | Meaning |
 |---|---:|---|
-| VERIFIED | 75 | the behaviour is implemented and an executed case proves it |
+| VERIFIED | 78 | the behaviour is implemented and an executed case proves it |
 | PARTIAL | 18 | the core is proven; a named sub-feature is missing or diverges |
 | EXCLUDED_BY_DESIGN | 5 | a deliberate exclusion with the alternative stated |
 | OPEN | 2 | a Laravel capability with no Kelson equivalent yet |
-| **Total** | **100** | |
+| **Total** | **103** | |
 
-Of the 100 rows, **98 carry an executed case**
+Of the 103 rows, **101 carry an executed case**
 and 2 do not (the OPEN rows).
 
 | Category | Rows |
@@ -30,7 +30,7 @@ and 2 do not (the OPEN rows).
 | eloquent | 30 |
 | migrations | 12 |
 | mysql-8-native | 4 |
-| production | 5 |
+| production | 8 |
 | query-builder | 32 |
 | schema | 9 |
 | transactions | 3 |
@@ -99,6 +99,9 @@ competitive claim. Each one is an executed case, not a claim.
 | LDB-098 | A schema change on a live table without a long lock | the lock is held for the rename, not for the copy; the engine's INSTANT path is used when the change qualifies | `mysql_migration_the_online_change_copies_the_rows_and_swaps_atomically; mysql_migration_the_online_change_adds_a_column_without_rebuilding` |
 | LDB-099 | A rolling deploy where every instance boots at once | the loser waits for the holder and re-checks the state instead of failing the boot | `mysql_migration_a_runner_that_loses_the_lock_waits_and_re_checks` |
 | LDB-100 | A per-tenant cost ceiling | the refusal happens BEFORE the write, and the cost is an observable per-tenant fact | `mysql_cost_the_budget_refuses_a_runaway_write_before_it_runs; mysql_cost_the_ledger_aggregates_per_tenant` |
+| LDB-101 | A schema version the deployment can compare | the version is a digest of what is actually applied, not a hand-maintained number, so two hosts can be compared exactly | `mysql_upgrade_the_schema_state_names_the_pending_migrations` |
+| LDB-102 | A refusal when the schema is behind | a deployment that does not migrate at boot refuses to serve against a schema the framework does not recognise | `mysql_upgrade_a_stale_schema_is_refused` |
+| LDB-103 | A zero-downtime schema change during an upgrade | the upgrade itself is zero-downtime - the shadow table, the copy, the atomic swap | `mysql_upgrade_a_change_to_an_existing_table_goes_through_the_online_path` |
 
 ## 6. The divergences a Laravel developer must know about
 

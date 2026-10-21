@@ -277,6 +277,11 @@ jobs:
       # tenant's runaway batch write, not a crash.
       - name: mysql cost axis (the budget refuses a runaway write)
         run: cargo test -p kelson-postgres --features pg-tests --test mysql_cost --locked
+      # The upgrade contract: the schema has a version (a digest over the
+      # applied set), a stale schema is REFUSED rather than served against,
+      # and a change to an existing table goes through the online path.
+      - name: mysql upgrade contract (the schema version, the refusal, the online change)
+        run: cargo test -p kelson-postgres --features pg-tests --test mysql_upgrade --locked
       # The claim race only reproduces when two workers overlap, so one green
       # run would not be evidence. Repeat it: a regression here means a worker
       # fleet idles while jobs are queued.

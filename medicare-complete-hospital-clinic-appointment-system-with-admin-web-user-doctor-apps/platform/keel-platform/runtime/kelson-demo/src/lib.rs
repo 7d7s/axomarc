@@ -285,6 +285,24 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 kelson_mysql::run_migrations(p, &root).await?;
                             }
                         }
+                    } else {
+                        // The schema-version contract: a deployment that does
+                        // not migrate at boot (the production posture) must
+                        // REFUSE to serve against a schema the framework
+                        // does not recognise. A stale schema is a refusal,
+                        // not a warning: the traffic stops instead of
+                        // corrupting the data.
+                        match &pool {
+                            kelson_mysql::DbPool::MySql(p) => {
+                                kelson_mysql::assert_current(p, &root).await?;
+                            }
+                            kelson_mysql::DbPool::Postgres(p) => {
+                                // The Postgres twin has no schema-version
+                                // check yet; the MySQL blade carries the
+                                // contract for now.
+                                let _ = p;
+                            }
+                        }
                     }
                     // Dev bootstrap: register/login assign the fixed dev tenant, so a fresh
                     // database needs its tenants row to exist (FK target for domain writes).

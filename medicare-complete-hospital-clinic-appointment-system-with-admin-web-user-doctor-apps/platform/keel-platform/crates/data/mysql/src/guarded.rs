@@ -234,6 +234,37 @@ impl PairVerdict {
     }
 }
 
+/// The table an `ALTER TABLE` statement changes, and the rest of the
+/// statement (the part after the table name).
+///
+/// `ALTER TABLE users ADD COLUMN x INT` -> `Some(("users", "ADD COLUMN x INT"))`.
+///
+/// The upgrade runner uses this to route a schema change through the
+/// **online** path (the shadow table, the copy, the atomic swap) instead of
+/// an `ALTER` that rebuilds the table under a lock.
+pub fn alter_target(statement: &str) -> Option<(String, String)> {
+    let trimmed = statement.trim();
+    // SQL keywords are case-insensitive, so the prefix is matched that way.
+    const PREFIX: &str = "ALTER TABLE ";
+    if !trimmed.to_ascii_uppercase().starts_with(PREFIX) {
+        return None;
+    }
+    let rest = trimmed[PREFIX.len()..].trim_start();
+    // The table name runs to the first whitespace (a backquoted name may
+    // contain spaces, so the quotes are handled).
+    let (name, tail) = if let Some(stripped) = rest.strip_prefix('`') {
+        let end = stripped.find('`')?;
+        (&stripped[..end], &stripped[end + 1..])
+    } else {
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        (&rest[..end], &rest[end..])
+    };
+    if name.is_empty() {
+        return None;
+    }
+    Some((name.to_string(), tail.trim().to_string()))
+}
+
 /// The per-step state of one pair, read from [`STEPS_TABLE`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepRecord {
@@ -298,6 +329,30 @@ where
     .execute(&mut *conn)
     .await
     .map_err(|e| AppError::persistence(format!("migration steps: install: {e}")))?;
+    Ok(())
+}
+
+/// Record that a step of a migration was applied.
+pub async fn record_step(
+    conn: &mut sqlx::MySqlConnection,
+    migration: &str,
+    step: usize,
+    checksum: &str,
+) -> Result<(), AppError> {
+    sqlx::query(&format!(
+        "INSERT INTO {STEPS_TABLE} (migration, step, checksum) VALUES (?, ?, ?)"
+    ))
+    .bind(migration)
+    .bind(step as i32)
+    .bind(checksum)
+    .execute(conn)
+    .await
+    .map_err(|e| {
+        AppError::persistence(format!(
+            "{migration}: step {step} applied but its state could not be recorded: {e} \
+             (the next run will re-apply this step)"
+        ))
+    })?;
     Ok(())
 }
 
@@ -486,6 +541,19 @@ mod tests {
         assert_eq!(checksum("SELECT 1"), checksum("SELECT 1"));
         assert_ne!(checksum("SELECT 1"), checksum("SELECT 2"));
         assert_eq!(checksum("SELECT 1").len(), 16);
+    }
+
+    #[test]
+    fn the_alter_target_is_found() {
+        let (table, rest) = alter_target("ALTER TABLE users ADD COLUMN x INT").expect("the target");
+        assert_eq!(table, "users");
+        assert_eq!(rest, "ADD COLUMN x INT");
+        let (table, rest) =
+            alter_target("  alter table `my table` drop column x  ").expect("the target");
+        assert_eq!(table, "my table");
+        assert_eq!(rest, "drop column x");
+        assert!(alter_target("CREATE TABLE t (x INT)").is_none());
+        assert!(alter_target("INSERT INTO t VALUES (1)").is_none());
     }
 
     #[test]

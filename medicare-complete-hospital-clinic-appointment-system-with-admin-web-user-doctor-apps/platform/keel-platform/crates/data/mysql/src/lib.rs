@@ -40,6 +40,7 @@ pub mod test_support;
 pub mod tokenstore;
 pub mod tx;
 pub mod txport;
+pub mod upgrade;
 
 pub use batchledger::MySqlBatchLedger;
 pub use cost::{CostBudget, CostGuard, CostLedger, StatementCost, StatementKind, TenantCost};
@@ -60,6 +61,7 @@ pub use sqlx::mysql::{MySqlPool, MySqlPoolOptions};
 pub use store::MySqlIdempotency;
 pub use tokenstore::MySqlTokenStore;
 pub use tx::MySqlBackend;
+pub use upgrade::{assert_current, schema_state, upgrade_pairs, SchemaState};
 pub use txport::{MySqlTxHandle, MySqlTransactions};
 
 use kelson_foundation::AppError;
@@ -299,7 +301,11 @@ pub async fn run_migrations_held(
         .run(&mut *conn)
         .await
         .map_err(|e| AppError::persistence(format!("migrate: {e}")))?;
-    pairs::apply_pending(&mut *conn, root).await
+    // The pairs go through the upgrade runner: a pair that changes an
+    // existing table takes the ONLINE path (the shadow table, the copy, the
+    // atomic swap) instead of an ALTER that rebuilds the table under a
+    // lock. The bookkeeping and the step recording are unchanged.
+    upgrade::upgrade_pairs(&mut *conn, root).await
 }
 
 /// Dev seeder: tenant row (platform plane writes — run with a platform

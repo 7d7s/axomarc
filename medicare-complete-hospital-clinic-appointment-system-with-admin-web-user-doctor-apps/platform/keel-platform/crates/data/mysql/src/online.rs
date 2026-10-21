@@ -315,6 +315,41 @@ async fn column_names(
     Ok(out)
 }
 
+/// The primary key of a table (the column the copy orders by).
+///
+/// The copy needs a unique, indexed column to resume from; the primary key
+/// is that column. A table without one cannot be copied safely (the copy
+/// would not be resumable), so it is refused.
+pub async fn primary_key_of(
+    conn: &mut sqlx::MySqlConnection,
+    table: &str,
+) -> Result<String, AppError> {
+    let rows = sqlx::query(
+        "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY'
+         ORDER BY ORDINAL_POSITION LIMIT 1",
+    )
+    .bind(table)
+    .fetch_all(conn)
+    .await
+    .map_err(|e| AppError::persistence(format!("online change: read the primary key: {e}")))?;
+    let key: String = rows
+        .first()
+        .map(|row| {
+            row.try_get::<String, _>(0)
+                .map_err(|e| AppError::persistence(format!("online change: decode the key: {e}")))
+        })
+        .transpose()?
+        .unwrap_or_default();
+    if key.is_empty() {
+        return Err(AppError::persistence(format!(
+            "online change: the table {table} has no primary key, so the copy cannot be resumed \
+             safely; refusing"
+        )));
+    }
+    Ok(key)
+}
+
 /// How many rows a table holds.
 async fn count_rows(
     conn: &mut sqlx::MySqlConnection,
