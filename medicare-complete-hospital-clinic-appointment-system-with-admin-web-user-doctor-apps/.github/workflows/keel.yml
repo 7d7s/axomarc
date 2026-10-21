@@ -118,9 +118,13 @@ jobs:
       - name: cargo test
         run: cargo test --workspace --locked
       - name: coverage (llvm-cov)
+        # The tool is a CI dependency, not an optional extra: if the install
+        # or the run fails, the job fails. A step that cannot fail proves
+        # nothing - LF-094's "coverage smoke" only means something when the
+        # step can go red. The numeric threshold is a separate, open item.
         run: |
-          cargo install cargo-llvm-cov --locked 2>/dev/null || true
-          cargo llvm-cov --workspace --locked --lcov --output-path lcov.info || true
+          cargo install cargo-llvm-cov --locked
+          cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
       - name: architecture analyzer (xtask dep-rules)
         run: cargo run -p xtask -- dep-rules
 

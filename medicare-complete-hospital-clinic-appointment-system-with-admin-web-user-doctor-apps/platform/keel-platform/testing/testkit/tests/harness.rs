@@ -11,8 +11,8 @@ use time::{Duration, OffsetDateTime};
 use kelson_testkit::{
     assert_delta, assert_event, sample_event, sample_job, AuditRecorder, CacheFake, CachePort,
     EventFactory, EventFake, Factory, FakeMail, FakeQueue, FakeStorage, HttpFake, HttpClientPort,
-    HttpRequest, HttpResponse, InMemoryBackend, InMemoryOutbox, JobFactory, NotificationFake,
-    QueueFake, StorageFake, StoragePort, TestApp,
+    HttpRequest, HttpResponse, InMemoryBackend, InMemoryOutbox, JobFactory, JobStore,
+    NotificationFake, QueueFake, StorageFake, StoragePort, TestApp,
 };
 
 async fn ping() -> Json<serde_json::Value> {
@@ -72,6 +72,88 @@ fn fake_queue_records_and_asserts_jobs() {
     let claimed = queue.assert_enqueued("mail.send");
     assert_eq!(claimed.name, "mail.send");
     assert_eq!(queue.count("mail.send"), 2);
+}
+
+/// **LF-095**: the fakes record their side effects **in order** — a test can
+/// assert what happened *and* in which order it happened, and it can assert
+/// that something did **not** happen (the "not called" half) without the
+/// fake reaching the outside world.
+#[test]
+fn the_fakes_record_their_side_effects_in_order() {
+    // The queue: the listing is newest-first (the admin convention) and the
+    // CLAIM order is the enqueue order (FIFO) ✓.
+    let queue = FakeQueue::new();
+    queue.enqueue(sample_job("first.job"));
+    queue.enqueue(sample_job("second.job"));
+    queue.enqueue(sample_job("third.job"));
+    let listed: Vec<String> = queue.jobs().into_iter().map(|j| j.name).collect();
+    assert_eq!(
+        listed,
+        vec!["third.job", "second.job", "first.job"],
+        "the listing is newest-first, like the admin queue view"
+    );
+    let mut claimed = Vec::new();
+    while let Some(job) = queue.store().claim("w1").unwrap() {
+        claimed.push(job.name);
+    }
+    assert_eq!(
+        claimed,
+        vec!["first.job", "second.job", "third.job"],
+        "the claim order is the enqueue order (FIFO)"
+    );
+    // The mail: the messages keep their send order ✓.
+    let mail = FakeMail::new();
+    mail.send("a@b.c", "First", "1");
+    mail.send("d@e.f", "Second", "2");
+    let subjects: Vec<String> = mail.messages().into_iter().map(|m| m.subject).collect();
+    assert_eq!(subjects, vec!["First", "Second"]);
+    // The events: the outbox keeps its dispatch order ✓.
+    let events = EventFake::new();
+    events.dispatch(sample_event("one.event"));
+    events.dispatch(sample_event("two.event"));
+    let names: Vec<String> = events.events().into_iter().map(|e| e.event).collect();
+    assert_eq!(names, vec!["one.event", "two.event"]);
+    // The "not called" half: an assertion that nothing was dispatched fails
+    // loudly when something WAS dispatched ✓ — that is the point of it ✓.
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            events.assert_not_dispatched("one.event")
+        }))
+        .is_err(),
+        "asserting a dispatched event was NOT dispatched must fail"
+    );
+    // A duplicate attempt is visible as a count, not a silent overwrite ✓.
+    assert_eq!(queue.count("first.job"), 1);
+    queue.enqueue(sample_job("first.job"));
+    assert_eq!(queue.count("first.job"), 2, "a duplicate attempt is counted");
+}
+
+/// **LF-093**: the parallel result equals the serial one. The same work, run
+/// serially and then concurrently against isolated fakes, produces the same
+/// recorded outcome — so a test suite's order does not change its result.
+#[test]
+fn the_parallel_result_equals_the_serial_one() {
+    /// The work a "test" does: three side effects, in order.
+    fn run() -> Vec<String> {
+        let queue = FakeQueue::new();
+        for name in ["a.job", "b.job", "c.job"] {
+            queue.enqueue(sample_job(name));
+        }
+        queue.jobs().into_iter().map(|j| j.name).collect()
+    }
+
+    let serial = run();
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        handles.push(std::thread::spawn(run));
+    }
+    let parallel: Vec<Vec<String>> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    for outcome in &parallel {
+        assert_eq!(
+            *outcome, serial,
+            "a concurrent run must record exactly what a serial run records"
+        );
+    }
 }
 
 #[test]

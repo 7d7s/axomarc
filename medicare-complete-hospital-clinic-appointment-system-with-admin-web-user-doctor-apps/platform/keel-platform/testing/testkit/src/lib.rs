@@ -34,7 +34,7 @@ pub use kelson_caching::CachePort;
 pub use kelson_event::{InMemoryOutbox, OutboxEvent};
 pub use kelson_execution::{AuditRecord, InMemoryBackend, QueryTap};
 pub use kelson_http_client::{HttpClientPort, HttpFake, HttpRequest, HttpResponse};
-pub use kelson_jobs::{DurableJob, InMemoryJobStore, JobStatus};
+pub use kelson_jobs::{DurableJob, InMemoryJobStore, JobStatus, JobStore};
 pub use kelson_notifications::{
     Channel, DispatchRecord, MailPort, Mailable, NotificationContext, NotificationDef, NotifyHub,
     NotifyMessage,

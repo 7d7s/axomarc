@@ -148,15 +148,15 @@
 ### Testing and Quality Gates (LF-087 to LF-095)
 | ID | Feature | Disposition | Kelson Equivalent | Test Evidence |
 |---|---|---|---|---|
-| LF-087 | Unit and feature testing | MATCH | cargo test + integration tests | cargo test --workspace ✅ |
-| LF-088 | HTTP tests and assertion helpers | MATCH | HTTP integration tests | 18 pg_integration tests ✅ |
-| LF-089 | Database testing and assertions | MATCH | Test DB support + savepoint isolation | pg_modelstore 10 tests ✅ |
-| LF-090 | Console command testing | MATCH | Console command tests | Console tests ✅ |
-| LF-091 | Browser testing - Dusk | EXCLUDE BY DESIGN | Playwright/Selenium (out-of-process) | — |
-| LF-092 | Mocking, fakes and time control | MATCH | TestApp fakes (queue, mail, event, socket) | Fake tests ✅ |
-| LF-093 | Parallel tests | FUNCTIONAL EQUIVALENT | cargo test runs tests in parallel by default (--test-threads) | cargo test -- --test-threads=N ✅ | VERIFIED |
-| LF-094 | Coverage and test profiling | MATCH | cargo-llvm-cov in CI | CI coverage step ✅ |
-| LF-095 | Queue/event/mail/notification/storage fakes | MATCH | Fake queue/mail/event/socket/storage | Fake tests ✅ |
+| LF-087 | Unit and feature testing | MATCH (partly) | The crates' unit modules + the integration targets; the testkit's own suite is the harness self-test | the testkit's 63 lib + 21 harness cases, the demo's 100, `database_probe_is_scoped_to_each_test_tenant`, `sequences_are_counter_seeded_per_test`. **Gap**: the random order and the repeated run are not named |
+| LF-088 | HTTP tests and assertion helpers | MATCH | `kelson-testkit`'s `TestApp` (no port bound) with the assertion matrix, plus the demo's `http_integration` over the production wiring | `test_app_applies_actor_and_tenant_headers`, `json_path_walks_objects_and_arrays`, `session_login_issues_cookie_and_authenticates`, `redirect_asserts_exact_and_prefix`, the six upload cases, the nine CSRF cases, the demo's 100. Every case the atlas names is covered |
+| LF-089 | Database testing and assertions | MATCH (partly) | The live pg/MySQL matrix, the shared `modelstore_conformance` contract, the savepoint isolation, the factories and the tenant-scoped database asserts | the conformance's 34 against the live MySQL, `mysql_pair_migrations_apply_rollback_and_reset_with_batches`, `database_asserts_run_under_the_test_tenant`. **Gap**: the RLS assertion is not named |
+| LF-090 | Console command testing | MATCH (partly) | The console's in-process cases + the `refuse_destructive_outside_dev_test` seam | `the_destructive_commands_refuse_outside_dev_and_test` (new), `the_noninteractive_path_never_waits_on_a_prompt` (new), `migrate_plan_reaches_for_no_mutation_path`, `config_show_renders_one_redacted_section`. **Gap**: the interruption and the invalid-args half are not named |
+| LF-091 | Browser testing - Dusk | NOT IMPLEMENTED (EXCLUDE BY DESIGN) | Nothing of the framework's own: the Playwright config and the specs live in the starter template (what a scaffolded app gets), and no browser exists on this host | - (an absent framework suite has no executed case) |
+| LF-092 | Mocking, fakes and time control | MATCH (partly) | The port fakes + the deterministic clock (`freeze_time`/`travel_to`/`advance`/`travel`) | the fake-assert matrix, `cache_fake_ttl_expires_under_fixed_clock`, `fake_scheduler_fires_due_items_into_the_fake_queue_under_a_frozen_clock`, the cache's shared contract suite. **Gap**: the no-unintended-network and the over-mocking audit are not named |
+| LF-093 | Parallel tests | MATCH (partly) | cargo's parallel execution over an isolated substrate | `the_parallel_result_equals_the_serial_one` (new), `database_probe_is_scoped_to_each_test_tenant`, the CI's 5x claim-race repeat, `a_batch_completes_exactly_once_when_members_finish_concurrently`. **Gap**: the repeated parallel runs, the teardown after failure and the resource caps are not named |
+| LF-094 | Coverage and test profiling | MATCH (partly) | The CI's `cargo llvm-cov` step (now a real smoke - F-29) and the optional `profile` command | the coverage step in `keel.yml`, `profile_cli_parses_and_missing_samply_fails_closed`. **Gap**: the threshold, the generated-code exclusions, the stable profile and the duration budget are not named |
+| LF-095 | Queue/event/mail/notification/storage fakes | MATCH (partly) | The five fakes (queue, event, mail, notification, storage) plus the cache, search and HTTP fakes - each implementing the real port | `the_fakes_record_their_side_effects_in_order` (new), `queue_fake_asserts_pushed_jobs`, `event_fake_records_and_asserts`, `mail_fake_records_mailables_and_messages`, `fake_storage_round_trips_objects`. **Gap**: the fake-vs-real drift guard covers the cache and the model store only |
 
 ### Operations, Deployment and Official Packages (LF-096 to LF-111)
 | ID | Feature | Disposition | Kelson Equivalent | Test Evidence |
