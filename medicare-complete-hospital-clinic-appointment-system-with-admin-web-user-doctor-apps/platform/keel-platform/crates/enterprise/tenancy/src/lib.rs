@@ -60,6 +60,11 @@ pub struct TenantRecord {
     pub region: String,
     /// Explicit capability grants independent of plan (feature-flag dimension).
     pub capabilities: BTreeSet<String>,
+    /// The tenant's **default locale** (LF-078): a request that names no
+    /// locale still renders in the tenant's language. `None` = the host's
+    /// default applies.
+    #[serde(default)]
+    pub locale: Option<String>,
     #[serde(with = "time::serde::iso8601")]
     pub created_at: OffsetDateTime,
     /// Bumped on every control-plane mutation; caches key on it.
@@ -377,6 +382,7 @@ mod tests {
                 status: TenantStatus::Active,
                 region: "in".into(),
                 capabilities: BTreeSet::new(),
+                locale: None,
                 created_at: OffsetDateTime::now_utc(),
                 revision: TenantRevision(0),
             })
@@ -427,6 +433,7 @@ mod tests {
             status: TenantStatus::Trial,
             region: "in".into(),
             capabilities: BTreeSet::new(),
+            locale: None,
             created_at: OffsetDateTime::now_utc(),
             revision: TenantRevision(0),
         };
@@ -440,6 +447,7 @@ mod tests {
             status: TenantStatus::Active,
             region: "in".into(),
             capabilities: BTreeSet::new(),
+            locale: None,
             created_at: OffsetDateTime::now_utc(),
             revision: TenantRevision(0),
         };
@@ -449,6 +457,36 @@ mod tests {
         assert!(store.upsert(b).is_err(), "slug collision rejected");
         let updated = store.upsert(a.clone()).unwrap();
         assert_eq!(updated.revision, TenantRevision(2), "upsert bumps revision");
+    }
+
+    /// **LF-078**: the tenant's locale is part of the tenant record — a
+    /// per-tenant default that a request with no locale of its own inherits
+    /// (a French clinic renders in French). The record round-trips it.
+    #[test]
+    fn the_tenant_record_carries_its_locale() {
+        let store = InMemoryTenantStore::new();
+        let mut record = TenantRecord {
+            id: TenantId::new(),
+            slug: "clinique".into(),
+            name: "Clinique Francaise".into(),
+            plan: "standard".into(),
+            status: TenantStatus::Active,
+            region: "eu".into(),
+            capabilities: BTreeSet::new(),
+            locale: Some("fr".into()),
+            created_at: OffsetDateTime::now_utc(),
+            revision: TenantRevision(0),
+        };
+        let id = record.id;
+        let stored = store.upsert(record.clone()).unwrap();
+        assert_eq!(stored.locale.as_deref(), Some("fr"));
+        let fetched = store.by_id(id).unwrap().expect("the tenant is there");
+        assert_eq!(fetched.locale.as_deref(), Some("fr"));
+
+        // The locale is optional ✓ — a tenant without one is fine ✓.
+        record.locale = None;
+        let plain = store.upsert(record).unwrap();
+        assert_eq!(plain.locale, None);
     }
 
     #[test]

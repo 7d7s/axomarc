@@ -1,8 +1,8 @@
-# ci-parity-check.ps1 — run the proposed CI steps locally.
+# ci-parity-check.ps1 — run the CI steps locally.
 #
-# `.github/workflows/keel.yml` is frozen, so `docs/CI-WIRING-PROPOSAL.md` carries the patch
-# instead of applying it. This script runs the DB-backed and tool steps of that patch against a
-# live MySQL, so the proposal can be PROVEN without unfreezing the workflow.
+# `.github/workflows/keel.yml` was unfrozen on 2026-10-21, so this script is the LOCAL MIRROR of
+# the applied hunks (see `docs/CI-WIRING-PROPOSAL.md` for the reasoning and the proof): it runs
+# the DB-backed and tool steps against a live MySQL, exactly as the workflow does.
 #
 #   pwsh tools/ci-parity-check.ps1 -DatabaseUrl 'mysql://keel:keel@127.0.0.1:3307/keel'
 #

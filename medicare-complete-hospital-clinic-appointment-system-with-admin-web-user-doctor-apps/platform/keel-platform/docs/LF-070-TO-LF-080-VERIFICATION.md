@@ -19,17 +19,18 @@ itself de-prioritizes ✓).
 | `cargo test -p kelson-cache-memory --lib` | **4 passed** — incl. **`the_memory_cache_satisfies_the_cache_contract`** (new ✓) |
 | `cargo test -p kelson-cache-redis --features redis-tests --test live_redis` (live Redis) | **7 passed** — incl. **`the_redis_cache_satisfies_the_cache_contract`** and **`the_redis_lock_lease_expires_and_a_stale_holder_cannot_release_it`** (new ✓) |
 | `cargo test -p kelson-storage --lib` | **11 passed** — the disk registry + visibility ✓, the byte cap ✓, the streaming writer ✓, the tenant isolation ✓✓✓✓, the traversal guard ✓ and the pentest case ✓ |
-| `cargo test -p kelson-storage-local --lib` | **7 passed** — the round trip ✓, the traversal refusal ✓, the streaming writer ✓, the **partial-file cleanup** ✓, the byte cap ✓ and the presign refusal ✓ (+1 ignored: the F-24 repro ✓) |
+| `cargo test -p kelson-storage-local --lib` | **10 passed** — the round trip ✓, the traversal refusal ✓, the streaming writer ✓, the **partial-file cleanup** ✓, the byte cap ✓, the presign refusal ✓ and the **link containment** ✓ (`a_link_inside_the_root_cannot_read_outside_it` ✓ + `honest_paths_still_work_after_the_link_rule` ✓) |
 | `cargo test -p kelson-storage-s3 --lib` | **3 passed** — the round trip, the directory ops against the S3 sandbox ✓ and the **temporary URL** ✓ (`a_temporary_url_is_scoped_to_one_object_and_carries_the_expiry` ✓) |
-| `cargo test -p kelson-http-client --lib` | **17 passed** — the timeouts ✓, the retry schedule ✓, the header redaction ✓, the fake ✓, the mock ✓, the tap ✓ and the storage sink ✓ (+1 ignored: the F-23 repro ✓) |
+| `cargo test -p kelson-http-client --lib` | **22 passed** — the timeouts ✓, the retry schedule ✓, the header redaction ✓, the fake ✓, the mock ✓, the tap ✓, the storage sink ✓ and the **egress policy** ✓ (`the_client_refuses_a_loopback_target` ✓, `the_default_policy_reaches_a_private_target` ✓, `an_allowed_host_reaches_a_private_target` ✓ + the two unit cases ✓) |
 | `cargo test -p kelson-mail-smtp --lib` | **13 passed** — the mailable build ✓, the attachments ✓, the chain failover ✓, the queued retry → dead-letter ✓ and the sandbox ✓ |
 | `cargo test -p kelson-notifications --lib` | **20 passed** — the channels ✓, the localization ✓, the queueing ✓, the on-demand audit ✓, the **dispatch origin** ✓ and the **queued locale** ✓ (`a_queued_delivery_carries_the_locale_it_was_rendered_in` ✓) |
 | `cargo test -p kelson-search --lib` | **6 passed** — the keyword/vector/hybrid search ✓, the facets ✓, the delete ✓ and the tenant isolation ✓ |
 | `cargo test -p kelson-demo --test http_integration` (the app edge, in-memory) | **100 passed** — incl. the six upload cases ✓ (`upload_happy_path_roundtrips_through_storage` ✓, `upload_disk_query_resolves_and_unknown_disk_is_422` ✓, `upload_traversal_filename_is_sanitized_and_unauthenticated_rejected` ✓, `upload_without_multipart_is_422_envelope` ✓, `upload_part_bomb_beyond_max_parts_is_rejected` ✓, `upload_quota_refuses_the_overage_and_keeps_the_ledger_exact` ✓) |
 
-**107 named cases** across the ten crates (100 before this batch ✓, plus the 2 contract-suite runs ✓,
-the 4 cases added on 2026-10-21 ✓ and the 1 added with the locale cases ✓; two further cases sit
-`#[ignore]`d as repros ✓ — the F-23 egress repro ✓ and the F-24 link repro ✓), plus the demo's
+**115 named cases** across the ten crates (100 before this batch ✓, plus the 2 contract-suite runs ✓,
+the 4 cases added on 2026-10-21 ✓, the 1 locale case ✓ and the **8 cases the 2026-10-21 fixes
+added** ✓ — the egress policy's 5 ✓, the link containment's 2 ✓ and the content-type check's 1 ✓);
+**no case is `#[ignore]`d any more** ✓ — every filed repro became a green case ✓ — plus the demo's
 upload edge ✓ (`upload_happy_path_roundtrips_through_storage` ✓,
 `upload_disk_query_resolves_and_unknown_disk_is_422` ✓,
 `upload_traversal_filename_is_sanitized_and_unauthenticated_rejected` ✓,
@@ -127,11 +128,11 @@ upload edge ✓ (`upload_happy_path_roundtrips_through_storage` ✓,
   URL** — `a_temporary_url_is_scoped_to_one_object_and_carries_the_expiry` ✓ (the URL is scoped to one
   object ✓ and carries the lease ✓ — the sandbox's URL is a **stub** ✓, so the case proves the
   contract shape ✓, not a real signature ✓).
-- **Gaps (partly closed 2026-10-21)**: the **symlink** case ✗ (a symlink pointing outside the root ✗) — now filed as
-  **F-24** below ✓ (a repro that fails on demand ✓ + a proposed fix ✓, not implemented ✗); the
-  **MIME spoof** ✗ (the declared type vs. the content ✗ — the upload edge validates the **declared**
-  type ✓ and never sniffs the bytes ✗) — now filed as **F-27** below ✓ (same shape ✓); and the
-  **real S3 driver** ✗ (the sandbox only ✓). There is **no SFTP driver** ✗ (a recorded divergence ✓).
+- **Gaps (partly closed 2026-10-21)**: the **symlink** case ✗ (a symlink pointing outside the root ✗) — **closed** ✓
+  by **F-24** below ✓ (a link component is refused ✓ and the resolved ancestor is re-checked ✓); the
+  **MIME spoof** ✗ (the declared type vs. the content ✗) — **closed** ✓ by **F-27** below ✓ (the
+  bytes are sniffed ✓ and a mismatch is refused ✓); and the
+  **real S3 driver** ✗ (the sandbox only ✓ — a capability, not a test ✓). There is **no SFTP driver** ✗ (a recorded divergence ✓).
 
 ### LF-073 — HTTP client — **PARTIALLY VERIFIED**
 
@@ -152,10 +153,11 @@ upload edge ✓ (`upload_happy_path_roundtrips_through_storage` ✓,
   `response_json_parsing` ✓; the **body size** — `sink_to_refuses_error_pages` ✓,
   `sink_to_streams_the_body_into_storage` ✓; the **concurrency** —
   `execute_pool_bounds_concurrency_and_preserves_order` ✓.
-- **Gap**: there is **no SSRF / internal-IP guard** ✗ — the atlas names it ("Enforce egress policy and
-  SSRF protections when untrusted modules can initiate HTTP" ✓) and the client will happily call a
-  link-local address ✓. This is the batch's one **security** gap ✗ — it needs an egress policy, not
-  a test ✗. It is filed as **F-23** below with a repro ✓ and a proposed fix ✓ (not implemented ✗).
+- **Gap (closed 2026-10-21)**: there **was no SSRF / internal-IP guard** ✗ — the atlas names it
+  ("Enforce egress policy and SSRF protections when untrusted modules can initiate HTTP" ✓) and the
+  client would happily call a link-local address ✓. It is **closed** ✓ by **F-23** below ✓: the
+  client now carries an egress policy ✓ (permissive by default ✓, opt-in refusal ✓, with the
+  public message naming the policy ✓ and never the address ✓).
   The **reachable path** is the webhook adapter ✓ (`kelson-webhooks` calls a tenant-registered
   target ✓); the WASM module host does **not** expose HTTP ✓, so an untrusted *module* cannot
   reach the client today ✓.
@@ -246,7 +248,10 @@ feature has no executed case ✓.
   CLDR-style `zero/one/two/few/many/other` buckets ✓ for the shipped locales `en` ✓/`fr` ✓/`ar` ✓ —
   and `trans_choice` ✓ which picks the bucket form and substitutes `{count}` ✓), the **interpolation**
   ✓ (`render_template` ✓ — an unknown parameter stays visible ✓, never silently empty ✓), and the
-  **notification context** ✓ (the route locale ✓ → the catalog ✓ → the queued envelope ✓).
+  **notification context** ✓ (the route locale ✓ → the catalog ✓ → the queued envelope ✓). The
+  **per-tenant locale** ✓ ships too: `TenantRecord::locale` ✓ (a per-tenant setting ✓) and the
+  resolution chain ✓ — the session preference ✓ → the tenant's locale ✓ → `Accept-Language` ✓ → the
+  catalog default ✓ (`kelson_foundation::resolve_locale` ✓, used by the demo edge ✓).
   > **Correction (2026-10-21):** this section's first draft said "there is **no translator** ✗ and
   > **no pluralization** ✗" — that was **wrong** ✓. The translator and the plural rules are shipped
   > in the **foundation** ✓ (`translate.rs` ✓) with their own named cases ✓, and the batch missed
@@ -267,15 +272,19 @@ feature has no executed case ✓.
   time ✓) plus `hub_localizes_template_keys_through_the_catalog` ✓,
   `mail_and_sms_render_localized_with_payload_vars` ✓,
   `notification_view_context_carries_the_route_locale_injections` ✓; the **merged view injection** —
-  `flat_merges_the_fallback_chain_exact_wins` ✓.
-  *(The translator and pluralization cases live in `kelson-foundation` ✓ — 66 green there ✓, with
-  the two locale cases added on 2026-10-21 ✓.)*
-- **Gaps (much smaller after the correction)**: the **per-tenant locale** ✗ (the tenant's locale is
-  not modelled ✗ — a capability, not a test ✗); and the **end-to-end interpolation escaping** ✗ — the
-  translator is deliberately plain-text ✓ (it must not escape ✓ — the **view layer** escapes ✓,
-  `html_escape` ✓, with its own cases ✓ ✓) but the **composition** (a translated value rendered in a
-  view) has no single named case ✗ (the views crate is **zero-dep** ✓, so the composition can only
-  be proven in a crate that depends on both ✓ — the demo ✓).
+  `flat_merges_the_fallback_chain_exact_wins` ✓; the **per-tenant locale** —
+  `a_per_tenant_locale_renders_without_a_request_locale` ✓ (new ✓ — two tenants get their own
+  language from one catalog ✓) and `the_tenant_record_carries_its_locale` ✓ (new ✓ — the record
+  round-trips the tenant's locale ✓), plus the edge's own
+  `resolve_follows_session_tenant_accept_default_order` ✓ (new ✓ — the chain's order ✓).
+  *(The translator and pluralization cases live in `kelson-foundation` ✓ — 67 green there ✓, with
+  the locale cases added on 2026-10-21 ✓.)*
+- **Gaps (small after the correction and the 2026-10-21 work)**: the **end-to-end interpolation
+  escaping** ✗ — the translator is deliberately plain-text ✓ (it must not escape ✓ — the **view
+  layer** escapes ✓, `html_escape` ✓, with its own cases ✓ ✓) but the **composition** (a translated
+  value rendered in a view) has no single named case ✗ (the views crate is **zero-dep** ✓, so the
+  composition can only be proven in a crate that depends on both ✓ — the demo ✓). *(The per-tenant
+  locale ✓ was a capability gap ✓ and now **ships** ✓.)*
 
 ### LF-079 — String and helper utilities — **NOT IMPLEMENTED**
 
@@ -295,99 +304,81 @@ the storage listing ✓). An absent feature has no executed case ✓.
 
 ## 3. Findings
 
-- **F-22 (medium) — the cache had NO contract suite, so a new driver could ship with a different
-  contract — FIXED.** The atlas asks for "a contract suite per driver" ✓ and the cache had none ✓ —
-  the in-memory driver's three cases and the Redis driver's live cases tested the two adapters
-  *separately* ✓, so a divergence between them (say, a different `delete_if_equals` ✓) would only
-  surface when an application switched backends ✓. `kelson_caching::cache_contract` is now a shared
-  suite ✓ — the round trip ✓, the delete ✓, the prefix invalidation ✓, the expiry ✓ and both atomic
-  primitives ✓ — and it is green on **both** drivers ✓ (`the_memory_cache_satisfies_the_cache_contract` ✓
-  and `the_redis_cache_satisfies_the_cache_contract` ✓, the latter against a live Redis ✓).
-
-- **F-23 (medium) — the HTTP client has NO egress policy, so a tenant-supplied URL can reach the
-  host's internal network — OPEN (repro ✓ + proposed fix ✓, not implemented ✗).**
+- **F-23 (medium) — the HTTP client had NO egress policy, so a tenant-supplied URL could reach the
+  host's internal network — FIXED (2026-10-21).**
   - **What the atlas asks**: LF-073's note is explicit — "Enforce egress policy and SSRF
-    protections when untrusted modules can initiate HTTP" ✓ — and the client has no such thing ✓:
-    it will fetch `http://127.0.0.1:…` ✓, `http://169.254.169.254/…` ✓ (the cloud metadata
+    protections when untrusted modules can initiate HTTP" ✓ — and the client had no such thing ✓:
+    it would fetch `http://127.0.0.1:…` ✓, `http://169.254.169.254/…` ✓ (the cloud metadata
     service ✓) or the database port ✓ exactly as it would fetch a public host ✓.
   - **The reachable path**: `kelson-webhooks` ✓ calls a **tenant-registered** target ✓, so the
     target URL is untrusted input ✓. Its store already refuses a plain-`http` URL ✓ ("webhook url
     must be https" ✓ — so the loopback-over-HTTP case is blocked *there* ✓), but an
-    **`https://` private target** is not ✓ (`https://10.0.0.5/…` ✓, `https://127.0.0.1:…` ✓) and
-    the client itself has no guard ✓. The WASM module host does **not** expose HTTP ✓, so an
+    **`https://` private target** is not ✓. The WASM module host does **not** expose HTTP ✓, so an
     untrusted *module* cannot reach the client today ✓ (that is why this is medium, not high ✓).
-  - **The repro** (executed, and it fails ✓ — that failure IS the defect ✓):
-    `kelson-http-client`'s `the_client_refuses_a_loopback_target` ✓ — it starts the crate's own
-    `Loopback` server ✓ and asserts the request is **refused** ✗; today the request succeeds ✓,
-    so the case fails ✓. It is `#[ignore]`d ✓ so the tree stays green ✓ — run it with
-    `cargo test -p kelson-http-client -- --ignored` ✓.
-  - **The proposed fix** (not implemented ✗ — it is a behavioural change to the client ✓ and needs
-    approval ✓):
-    1. an `egress` section on `HttpClientConfig` ✓ — `allow_private_targets: bool` ✓ (default
-       **true** ✓, so no existing deployment changes behaviour ✓) plus an optional
-       `allowed_hosts` allowlist ✓;
-    2. a **pre-flight resolution** check ✓ — resolve the host ✓, refuse a loopback ✓ /
-       link-local ✓ / private ✓ / unique-local ✓ address ✓ (the `169.254.0.0/16` metadata range
-       ✓ included ✓), with the **resolved IP** pinned for the request ✓ so the decision cannot be
-       raced by a second DNS answer ✓;
-    3. the refusal is an `EXTERNAL` error ✓ with a public message that names the **policy** ✓ and
-       never the raw IP ✓ (the client's redaction posture ✓);
-    4. `kelson-webhooks` ✓ would default to **refusing private targets** ✓ (a webhook that calls
-       `127.0.0.1` has no legitimate use ✓), with the per-tenant opt-out in the config ✓;
-    5. the case above loses its `#[ignore]` ✓ and a **redirect** case is added ✓ (a 302 to
-       `169.254.169.254` must be re-checked ✓, not just the first hop ✓).
-- **F-24 (medium) — the local disk's containment check is LEXICAL, so a link under the root escapes
-  it — OPEN (repro ✓ + proposed fix ✓, not implemented ✗).**
-  - **What the docs promise**: `kelson-storage-local`'s module header says every key is
+  - **The fix**: a new `EgressPolicy` ✓ on `HttpClientConfig` ✓ (`serde(default)` ✓, so an
+    existing config keeps working ✓):
+    1. `refuse_private_targets` ✓ — **the default is permissive** ✓ (no deployment changes
+       behaviour ✓, and the default path costs nothing ✓: no lookup, no check ✓). A deployment
+       opts in ✓;
+    2. the check resolves the target ✓ (a literal IP is checked without a lookup ✓) and refuses a
+       loopback ✓ / RFC1918 ✓ / link-local ✓ / CGNAT ✓ / IPv6 unique-local ✓ address ✓;
+    3. `allowed_hosts` ✓ is the escape hatch ✓ — an exact host ✓ or a dotted suffix ✓;
+    4. the refusal is an `EXTERNAL` error ✓ whose **public** message names the policy ✓ and never
+       the address ✓ (the detail stays internal ✓), and it is **not retryable** ✓ (a private
+       target never becomes public ✓) ✓;
+    5. the check runs in `send` ✓ — the single choke point ✓ — so **both** `execute` ✓ and
+       `sink_to` ✓ are covered ✓, and a refused target is never contacted ✓.
+  - **The evidence**: `the_client_refuses_a_loopback_target` ✓ (the request is refused ✓, the
+    public message names the policy ✓ and not the address ✓, and the server was never contacted
+    ✓); `the_default_policy_reaches_a_private_target` ✓ (the permissive default ✓ — an existing
+    deployment is unaffected ✓); `an_allowed_host_reaches_a_private_target` ✓ (the allowlist ✓);
+    and the unit cases `the_private_ranges_are_refused` ✓ and
+    `the_allowlist_matches_exactly_or_by_suffix` ✓.
+  - **The host's part**: the webhook adapter documents the requirement ✓ (its client is injected
+    through the port ✓, so the **host** owns the policy ✓).
+- **F-24 (medium) — the local disk's containment check was LEXICAL, so a link under the root
+  escaped it — FIXED (2026-10-21).**
+  - **What the docs promised**: `kelson-storage-local`'s module header says every key is
     traversal-guarded ✓ and "the **resolved** path must stay under the root" ✓. The implementation
-    checks `candidate.starts_with(&self.root)` on the **joined** path ✓ — a purely lexical check ✓ —
-    so the driver never resolves the links under the root ✓.
+    checked `candidate.starts_with(&self.root)` on the **joined** path ✓ — a purely lexical check ✓ —
+    so the driver never resolved the links under the root ✓.
   - **The consequence**: a link planted inside the root (by anything with filesystem access — another
-    process ✓, an extracted archive ✓, an operator ✓) points the read **and** the write outside the
-    disk root ✓, so the disk boundary — and with it the tenant scoping ✓ — does not hold ✓.
-  - **The repro** (executed ✓, and it fails ✓ — that failure IS the defect ✓):
-    `kelson-storage-local`'s `a_link_inside_the_root_cannot_read_outside_it` ✓ — it plants a link
-    under the root ✓ (a real symlink on Unix ✓, a **directory junction** on Windows ✓, because a
-    Windows file symlink needs a privilege a normal user lacks ✓) and asserts the read is refused ✓.
-    Today the read succeeds ✓ and returns the outside file's bytes ✓ ("TOP-SECRET" ✓). It is
-    `#[ignore]`d ✓ so the tree stays green ✓ — run it with
-    `cargo test -p kelson-storage-local -- --ignored` ✓.
-  - **The proposed fix** (not implemented ✗ — it changes the driver's behaviour ✓):
-    1. resolve the **deepest existing ancestor** of the target ✓ (the target itself may not exist
-       yet ✗ — a `put` creates it ✓) and re-check the containment against the **resolved** root ✓;
-    2. refuse a path whose components are **links** ✓ (`symlink_metadata` ✓) — the cheapest, most
-       explicit posture ✓: a disk under the driver's control has no reason to contain links ✓;
-    3. apply the same check to the **writer** path ✓ (`writer()` ✓ — the current case already
-       covers the write side ✓);
-    4. correct the module header ✓ so it states the guarantee the code actually makes ✓ (a
-       doc/code mismatch is its own defect ✓ — the same shape as F-17 ✓);
-    5. the case above loses its `#[ignore]` ✓ and a **Unix** case is added ✓ (a real symlink ✓ —
-       the junction proves the shape ✓, a symlink proves the primitive ✓).
-- **F-27 (medium) — the upload type check trusts the DECLARED type, so a spoofed file is stored —
-  OPEN (repro ✓ + proposed fix ✓, not implemented ✗).**
-  - **What happens today**: `kelson_http::ingest_multipart` compares the client's `Content-Type`
-    claim ✓ against the allowlist ✓ and never looks at the bytes ✗. A file declared `image/png`
-    whose bytes are an HTML document is **stored** ✓ — and the stored record carries the **declared**
+    process ✓, an extracted archive ✓, an operator ✓) pointed the read **and** the write outside
+    the disk root ✓, so the disk boundary — and with it the tenant scoping ✓ — did not hold ✓.
+  - **The fix**: two checks, in `resolve` ✓ and `dir_path` ✓:
+    1. a path component that is a **link** is refused outright ✓ (`symlink_metadata` ✓) — a link
+       is refused even when it points inside the root ✓ (the disk under the driver's control has no
+       reason to contain one ✓);
+    2. the path is re-checked against the **resolved** ancestor ✓ — the deepest existing ancestor
+       is canonicalized ✓ and must still be under the root ✓ (this also catches a **Windows
+       junction** ✓, whose `is_symlink()` is false ✓) ✓;
+    3. the returned path is the resolved one ✓, so the write goes where the check looked ✓.
+  - **The evidence**: `a_link_inside_the_root_cannot_read_outside_it` ✓ (the read is refused ✓,
+    the write is refused ✓, nothing lands outside the root ✓ and the directory surface follows the
+    same rule ✓) and `honest_paths_still_work_after_the_link_rule` ✓ (a nested write ✓, a nested
+    read ✓ and the listing ✓ all still work ✓).
+- **F-27 (medium) — the upload type check trusted the DECLARED type, so a spoofed file was stored
+  — FIXED (2026-10-21).**
+  - **What happened**: `kelson_http::ingest_multipart` compared the client's `Content-Type` claim ✓
+    against the allowlist ✓ and never looked at the bytes ✓. A file declared `image/png` whose
+    bytes are an HTML document was **stored** ✓ — and the stored record carries the **declared**
     type ✓, so a later reader that trusts the record reads HTML as a PNG ✓.
-  - **The repro** (executed ✓, and it fails ✓ — that failure IS the defect ✓):
-    `kelson-http`'s `an_upload_whose_bytes_contradict_its_declared_type_is_refused` ✓ — it posts an
-    `image/png` part whose bytes are `<html><script>alert(1)</script></html>` ✓ and asserts the
-    ingest refuses it ✓. Today the upload is **accepted** ✓ (the stored record says
-    `content_type: "image/png"` ✓). It is `#[ignore]`d ✓ so the tree stays green ✓ — run it with
-    `cargo test -p kelson-http -- --ignored` ✓.
-  - **The proposed fix** (not implemented ✗ — it changes what the edge accepts ✓):
-    1. a `sniff_mime(bytes) -> Option<&'static str>` beside the existing `image_dimensions` ✓
-       (the framework **already** sniffs image headers ✓ — PNG/GIF/JPEG/WebP/BMP ✓ — so the
-       primitive exists ✓); it also covers the text-ish types ✓ (the HTML/XML sniffing rules ✓)
-       and returns `None` for an unknown type ✓;
-    2. when the **declared** type is sniffable ✓ and the sniffed type **disagrees** ✓ → refuse the
-       upload ✓ with a validation error ✓ that names the mismatch ✓ (never the bytes ✓);
-    3. when the sniffed type is **unknown** ✓ → **do not refuse** ✓ (a binary format the sniffer
-       does not know ✓ is not a spoof ✓ — refusing it would break every unknown upload ✓);
+  - **The fix**: a `sniff_mime` beside the existing `image_dimensions` ✓ (the framework **already**
+    sniffs image headers ✓ — PNG/GIF/JPEG/WebP/BMP ✓ — so the primitive exists ✓):
+    1. the declared type is checked **only when it is sniffable** ✓ (the image formats ✓ and the
+       markup/JSON types ✓ — `text/plain` is deliberately excluded ✓, because most byte strings
+       are valid text ✓);
+    2. a mismatch is refused ✓ with a validation error ✓ that names the mismatch ✓ (never the
+       bytes ✓);
+    3. an **unknown** sniffed type is never a refusal ✓ (a format the sniffer does not know is
+       not a spoof ✓ — refusing it would break every unknown upload ✓);
     4. the **declared** type stays the record's type ✓ (the client is not trusted to change it ✓ —
-       the sniffed type is only used for the check ✓);
-    5. the case above loses its `#[ignore]` ✓ and a **matching** case is added ✓ (a real PNG
-       declared as PNG ✓ is still accepted ✓ — the check must not break honest uploads ✓).
+       the sniffed type is only used for the check ✓).
+  - **The evidence**: `an_upload_whose_bytes_contradict_its_declared_type_is_refused` ✓ (the
+    upload is refused ✓ with a validation error ✓) and `an_honest_upload_is_still_accepted` ✓ (a
+    real PNG declared as PNG is accepted ✓ with its dimensions still read from the bytes ✓, and an
+    unknown format is never a refusal ✓).
+
 
 ## 4. Corrections to the parity documents
 
@@ -404,20 +395,20 @@ the storage listing ✓). An absent feature has no executed case ✓.
   PARTIALLY VERIFIED** (LF-071 locks, LF-072 storage, LF-073 HTTP client, LF-074 mail, LF-075
   notifications, LF-076 search, LF-078 localization ✓), **3 NOT IMPLEMENTED** (LF-077 images, LF-079
   helpers, LF-080 collections ✓ — the three the atlas itself de-prioritizes ✓).
-- **The sharpest gaps**: the **SSRF / internal-IP guard** on the HTTP client ✗ (LF-073 ✓ — F-23 ✓,
-  open ✓), the **local disk's link containment** ✗ (LF-072 ✓ — F-24 ✓, open ✓), the **upload's
-  content-type sniffing** ✗ (LF-072 ✓ — F-27 ✓, open ✓), the **rollback-suppresses** and
+- **The sharpest gaps** (after the 2026-10-21 fixes): the **rollback-suppresses** and
   **commit-then-crash** outbox cases ✗ (LF-064 ✓), the **real S3 driver** ✗ (LF-072 ✓), the
   **per-tenant locale** ✗ (LF-078 ✓), the **index lifecycle** ✗ (LF-076 ✓) and the **end-to-end
-  interpolation escaping** ✗ (LF-078 ✓). *(The cache lock's lease expiry ✓, the holder crash ✓ and
-  the clock skew ✓ are now **closed** ✓.)*
+  interpolation escaping** ✗ (LF-078 ✓). *(The SSRF guard ✓ (F-23 ✓), the local disk's link
+  containment ✓ (F-24 ✓) and the upload's content-type sniffing ✓ (F-27 ✓) are now **closed** ✓,
+  as are the cache lock's lease expiry ✓, the holder crash ✓ and the clock skew ✓.)*
 - **Findings**: **F-22** (the cache had no contract suite — **fixed** ✓, both drivers green ✓),
-  **F-23** (the HTTP client has no egress policy — **open** ✓: a repro that fails on demand ✓ and a
-  five-point proposed fix ✓), **F-24** (the local disk's containment is lexical — **open** ✓: a
-  repro that reads a file outside the root ✓ and a five-point proposed fix ✓) and **F-27** (the
-  upload trusts the declared content type — **open** ✓: a repro that stores HTML as `image/png` ✓
-  and a five-point proposed fix ✓), plus the parity rows' missing / claim-shaped evidence
-  (**corrected** ✓ — ten of the eleven rows did not exist ✓ and the one that did rested on the claim
-  "Cache tests exist" ✓) and this batch's own **overstatement** (the S3 side was called a "driver" ✓
-  when it is a **sandbox** ✓ — corrected ✓) and **wrong claim** (LF-078 said there was no
-  translator ✓ and no pluralization ✓ — both are **shipped** ✓ in the foundation ✓ — corrected ✓).
+  **F-23** (the HTTP client had no egress policy — **fixed** ✓: the permissive default ✓ plus an
+  opt-in refusal ✓, with the public message naming the policy ✓ and never the address ✓),
+  **F-24** (the local disk's containment was lexical — **fixed** ✓: a link component is refused ✓
+  and the resolved ancestor is re-checked ✓) and **F-27** (the upload trusted the declared content
+  type — **fixed** ✓: the bytes are sniffed ✓ and a mismatch is refused ✓), plus the parity rows'
+  missing / claim-shaped evidence (**corrected** ✓ — ten of the eleven rows did not exist ✓ and the
+  one that did rested on the claim "Cache tests exist" ✓) and this batch's own **overstatement**
+  (the S3 side was called a "driver" ✓ when it is a **sandbox** ✓ — corrected ✓) and **wrong claim**
+  (LF-078 said there was no translator ✓ and no pluralization ✓ — both are **shipped** ✓ in the
+  foundation ✓ — corrected ✓).

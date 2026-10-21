@@ -135,6 +135,31 @@ impl MessageCatalog {
     }
 }
 
+/// Resolve the **effective locale** for a request.
+///
+/// The chain: the **request's** explicit locale wins ✓, then the **tenant's**
+/// locale ✓ (a per-tenant setting ✓ — a French clinic renders in French even
+/// when the request names no locale ✓), then the catalog's default ✓.
+///
+/// An empty value never wins ✓ — the chain falls through ✓ — and the result
+/// is not validated here ✓ (an unknown locale is handled by the fallback
+/// chain in [`translate`] ✓, which falls back to the default ✓).
+pub fn resolve_locale(
+    request_locale: Option<&str>,
+    tenant_locale: Option<&str>,
+    default_locale: &str,
+) -> String {
+    for candidate in [request_locale, tenant_locale, Some(default_locale)] {
+        if let Some(locale) = candidate {
+            let trimmed = locale.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
+    default_locale.to_string()
+}
+
 /// Substitute `{name}` placeholders; unknown names are left verbatim so a
 /// missing parameter is visible rather than silently empty.
 pub fn render_template(template: &str, params: &[(&str, &str)]) -> String {
@@ -594,5 +619,32 @@ mod tests {
         );
         assert!(outs[0].text.contains("21 Aug") || outs[0].text.contains("Asha"));
         assert!(outs[1].text.contains("Please wait"));
+    }
+
+    /// **LF-078**: the **per-tenant** locale — a request that names no locale
+    /// still renders in the tenant's language, and two tenants get their own
+    /// language from the same catalog.
+    #[test]
+    fn a_per_tenant_locale_renders_without_a_request_locale() {
+        let mut c = MessageCatalog::new("en");
+        c.define("en", "greet", "Hello").unwrap();
+        c.define("fr", "greet", "Bonjour").unwrap();
+
+        // The request names nothing: the tenant's locale decides.
+        let tenant_fr = resolve_locale(None, Some("fr"), c.default_locale());
+        assert_eq!(tenant_fr, "fr");
+        let out = translate(&c, &tenant_fr, "greet", &[]);
+        assert_eq!(out.text, "Bonjour");
+        assert_eq!(out.locale_used.as_deref(), Some("fr"));
+
+        // Another tenant, another language — the same catalog ✓.
+        let tenant_en = resolve_locale(None, Some("en"), c.default_locale());
+        assert_eq!(translate(&c, &tenant_en, "greet", &[]).text, "Hello");
+
+        // An explicit request locale still wins over the tenant's ✓.
+        assert_eq!(resolve_locale(Some("fr"), Some("en"), "en"), "fr");
+        // An empty value falls through ✓.
+        assert_eq!(resolve_locale(Some("  "), Some("fr"), "en"), "fr");
+        assert_eq!(resolve_locale(None, None, "en"), "en");
     }
 }

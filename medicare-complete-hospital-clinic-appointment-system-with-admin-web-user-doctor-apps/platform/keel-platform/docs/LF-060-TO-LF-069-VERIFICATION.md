@@ -109,8 +109,9 @@ worker's 16 and the process crate's 8.
   enqueued **once** ✓); and the **tenant isolation** —
   `tenant_isolation_batch_members_are_pinned_to_their_tenant` ✓ (another tenant can neither see ✓,
   complete ✓ nor fail ✓ a member ✓, while the owning tenant runs the batch ✓).
-  **Still open**: a batch that **mixes** tenants is **not refused** ✗ (F-26 ✓ — the repro fails on
-  demand ✓ and the proposed fix is filed ✓, not implemented ✓).
+  **Also fixed (2026-10-21)**: a batch that **mixes** tenants is now **refused** ✓ (F-26 ✓ —
+  `BatchSpec::validate` ✓ and `ChainSpec::validate` ✓ refuse members that disagree on their tenant ✓,
+  before any side effect ✓).
 
 ### LF-063 — Events, listeners and subscribers — **PARTIALLY VERIFIED**
 
@@ -278,55 +279,37 @@ worker's 16 and the process crate's 8.
   duplicated.** `P0-FEATURE-VERIFICATION.md` carried LF-064 **twice** with contradictory statuses
   (VERIFIED and PARTIALLY VERIFIED ✓) and seven of the ten items had no row at all ✓. The rows now
   name the executed cases ✓, the duplicate is gone ✓ and the missing rows are added ✓.
-- **F-25 (medium) — the job worker has NO panic boundary: a panicking handler takes the worker
-  down — OPEN (repro ✓ + proposed fix ✓, not implemented ✗).** The HTTP edge got a panic boundary
-  in F-2 ✓ (a panicking handler answers a stable 500 envelope ✓), but the job worker has none ✓:
-  `handler.handle(&job)` is awaited directly ✓, so a panic inside a handler **unwinds the claim
-  loop** ✓ — the worker dies mid-flight ✓, every other claimed job stays `Running` until its lease
-  is reclaimed ✓, and what the operator sees is a **panic**, not a job failure ✓ (so the retry
-  budget and the backoff never apply ✓).
-  - **The repro** (executed ✓, and it fails ✓ — that failure IS the defect ✓):
-    `kelson-worker`'s `a_panicking_job_handler_does_not_take_the_worker_down` ✓ — it registers a
-    handler that explodes ✓, dispatches the job ✓ and asserts the worker survives ✓. Today the
-    spawned task dies ✓ ("the worker task died: task 1 panicked with message 'the handler
-    exploded'" ✓). It is `#[ignore]`d ✓ so the tree stays green ✓ — run it with
-    `cargo test -p kelson-worker -- --ignored` ✓.
-  - **The proposed fix** (not implemented ✗ — it changes the worker's behaviour ✓):
-    1. catch the unwind around the handler future ✓ (`catch_unwind` over the `BoxFuture` ✓) and
-       map it to a job **FAILURE** ✓ — the same shape the HTTP edge takes ✓;
-    2. record the panic as the job's `last_error` ✓ (a **redacted** message ✓ — a panic can carry
-       a payload ✓ — never the raw text ✓) so the operator sees a job failure ✓, not a stack
-       trace ✓;
-    3. the retry budget and the backoff then apply ✓ (the attempt is consumed ✓, the job is
-       re-queued ✓) — the worker keeps claiming ✓;
-    4. the panic is **counted** as a worker metric ✓ (a rising panic rate is an alarm ✓) and
-       logged at ERROR ✓ with the job id ✓;
-    5. the case above loses its `#[ignore]` ✓ and a **second** case asserts that a panicking
-       handler does not consume the **next** job's attempt ✓ (the worker's state stays clean ✓).
-- **F-26 (low) — a batch can MIX tenants — OPEN (repro ✓ + proposed fix ✓, not implemented ✗).**
-  - **What the framework already guarantees**: the batch's **members are pinned to their tenant** ✓
-    — proven by `tenant_isolation_batch_members_are_pinned_to_their_tenant` ✓ (new ✓): another
-    tenant can neither **see** ✓, **complete** ✓ nor **fail** ✓ a member (the id is `NOT_FOUND` ✓,
-    invisible rather than refused ✓), while the owning tenant runs and completes the batch ✓.
-  - **The gap**: `BatchSpec::validate` refuses an empty batch ✓, duplicate ids ✓ and members that
-    do not start pending ✓ — but it does **not** check that the members agree on their tenant ✓.
-    A batch that spans two tenants puts one tenant's job under another tenant's batch record ✓,
-    and the completion callback fires for the mixed set ✓.
-  - **The repro** (executed ✓, and it fails ✓ — that failure IS the defect ✓):
-    `kelson-jobs`'s `a_batch_that_mixes_tenants_is_refused` ✓ — it dispatches a batch with one
-    member per tenant ✓ and asserts the dispatch is refused ✓. Today the dispatch **succeeds** ✓.
-    It is `#[ignore]`d ✓ so the tree stays green ✓ — run it with
-    `cargo test -p kelson-jobs -- --ignored` ✓.
-  - **The proposed fix** (not implemented ✗ — it refuses a spec that used to be accepted ✓):
-    1. `BatchSpec::validate` refuses a spec whose members disagree on `tenant_id` ✓ — the same
-       shape as the existing "ids must be unique" rule ✓ (a `None` tenant is a platform job ✓ and
-       must not be mixed with a tenant's job ✓ either ✓);
-    2. the refusal happens **before** the side effects ✓ (the ledger write ✓ and the enqueue ✓ —
-       the ledger is written first ✓, so the refusal must come even earlier ✓);
-    3. the demo/console refuse to build such a batch ✓ (they build the spec ✓ — the validation
-       catches it ✓);
-    4. the case above loses its `#[ignore]` ✓ and a **single-tenant** case is added ✓ (a batch of
-       one tenant's members is accepted ✓ — the check must not break honest batches ✓).
+- **F-25 (medium) — the job worker had NO panic boundary: a panicking handler took the worker
+  down — FIXED (2026-10-21).** The HTTP edge got a panic boundary
+  in F-2 ✓ (a panicking handler answers a stable 500 envelope ✓), but the job worker had none ✓:
+  `handler.handle(&job)` was awaited directly ✓, so a panic inside a handler **unwound the claim
+  loop** ✓ — the worker died mid-flight ✓, every other claimed job stayed `Running` until its
+  lease was reclaimed ✓, and what the operator saw was a **panic**, not a job failure ✓ (so the
+  retry budget and the backoff never applied ✓).
+  - **The fix**: a hand-rolled panic boundary around the handler future ✓ (no `futures`
+    dependency ✓ — the inner future is polled inside `catch_unwind` ✓, so the panic is caught at
+    the innermost poll ✓). A panic becomes an ordinary **failed attempt** ✓: the backoff and the
+    retry budget apply ✓ and the worker keeps claiming ✓. The panic payload is logged at ERROR
+    with the job id ✓ (the same posture as the HTTP edge ✓), and the job's durable `last_error`
+    gets a **redacted** message ✓ ("job handler panicked" ✓ — a panic payload can carry a secret
+    ✓ and that row is admin-visible ✓).
+  - **The evidence**: `a_panicking_job_handler_does_not_take_the_worker_down` ✓ (the worker
+    survives ✓, the job is a failed attempt ✓, and the durable error never carries the payload ✓)
+    and `a_panicking_handler_does_not_consume_the_next_jobs_attempt` ✓ (the next job still runs ✓
+    with its own attempt ✓).
+- **F-26 (low) — a batch could MIX tenants — FIXED (2026-10-21).** `BatchSpec::validate` refused
+  an empty batch ✓, duplicate ids ✓ and members that do not start pending ✓ — but it did **not**
+  check that the members agree on their tenant ✓, so a batch could span two tenants ✓ (one
+  tenant's job under another tenant's batch record ✓, with the completion callback firing for the
+  mixed set ✓).
+  - **The fix**: `BatchSpec::validate` (and `ChainSpec::validate` ✓ — the same rule ✓) refuses a
+    spec whose members disagree on `tenant_id` ✓ — the same shape as the existing "ids must be
+    unique" rule ✓, and it happens **before** the ledger write and the enqueue ✓ (so a refused
+    batch leaves nothing behind ✓). A `None` tenant is a platform job ✓ and is not mixed with a
+    tenant's job ✓ either ✓.
+  - **The evidence**: `a_batch_that_mixes_tenants_is_refused` ✓ (the refusal names the reason ✓
+    and nothing is enqueued ✓) and `a_single_tenant_batch_is_still_accepted` ✓ (one tenant's
+    members ✓ and a platform batch ✓ are still accepted ✓).
 
 ## 4. Corrections to the parity documents
 
@@ -356,8 +339,8 @@ worker's 16 and the process crate's 8.
   capability gate** for the new process port (LF-068 ✗); the **maintenance mode** and the **lock
   expiry** (LF-066 ✗); and the **context cleanup on panic** (LF-069 ✗ — now with a sibling finding:
   **F-25** ✓, the job worker has no panic boundary ✓).
-- **Findings**: F-20 (the layer gate was red — **fixed** ✓), **F-25** (the job worker has no panic
-  boundary — **open** ✓: a repro that fails on demand ✓ and a five-point proposed fix ✓),
-  **F-26** (a batch can mix tenants — **open** ✓: a repro that dispatches a mixed batch ✓ and a
-  four-point proposed fix ✓), and the parity rows' claim-shaped evidence + the duplicated LF-064 row
-  (**corrected** ✓).
+- **Findings**: F-20 (the layer gate was red — **fixed** ✓), **F-25** (the job worker had no panic
+  boundary — **fixed** ✓: the handler is awaited inside a hand-rolled panic boundary ✓ and a panic
+  becomes an ordinary failed attempt ✓) and **F-26** (a batch could mix tenants — **fixed** ✓:
+  `validate` refuses members that disagree on their tenant ✓), and the parity rows' claim-shaped
+  evidence + the duplicated LF-064 row (**corrected** ✓).

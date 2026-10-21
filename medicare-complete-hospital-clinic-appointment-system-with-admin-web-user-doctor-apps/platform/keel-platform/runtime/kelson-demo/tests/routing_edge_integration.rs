@@ -382,6 +382,7 @@ async fn subdomain_gate_404s_the_wrong_host_and_feeds_the_tenant() {
             status: TenantStatus::Active,
             region: "in".into(),
             capabilities: std::collections::BTreeSet::new(),
+            locale: None,
             created_at: time::OffsetDateTime::now_utc(),
             revision: TenantRevision(1),
         })

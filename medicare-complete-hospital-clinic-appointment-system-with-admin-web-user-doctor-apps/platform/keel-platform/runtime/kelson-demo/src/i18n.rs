@@ -80,9 +80,27 @@ pub fn negotiate(accept: &str, supported: &[&str]) -> Option<String> {
 /// candidate; then the catalog default. An unknown session tag is not
 /// rejected here — the catalog fallback chain degrades it to the
 /// default's messages while `_locale` keeps reporting what was chosen.
-pub fn resolve(catalog: &MessageCatalog, session: Option<&str>, accept: Option<&str>) -> String {
+/// Resolve the request's locale.
+///
+/// The chain: the **session preference** wins ✓, then the **tenant's** locale
+/// ✓ (LF-078 — a per-tenant default: a French clinic renders in French even
+/// when the request names no locale ✓), then `Accept-Language` ✓ (first
+/// supported locale, quality-ordered ✓), then the configured default ✓ (the
+/// catalog's default locale ✓). The parser/matcher are pure so the order is
+/// unit testable. "Supported" = the locales the boot loader actually shipped
+/// plus the configured default, so an app with no `lang/` files still
+/// resolves to its default and every key degrades to itself.
+pub fn resolve(
+    catalog: &MessageCatalog,
+    session: Option<&str>,
+    tenant: Option<&str>,
+    accept: Option<&str>,
+) -> String {
     if let Some(preference) = session.map(str::trim).filter(|value| !value.is_empty()) {
         return preference.to_string();
+    }
+    if let Some(tenant_locale) = tenant.map(str::trim).filter(|value| !value.is_empty()) {
+        return tenant_locale.to_string();
     }
     let mut supported: Vec<&str> = catalog.locales();
     let default = catalog.default_locale();
@@ -155,26 +173,31 @@ mod tests {
         assert_eq!(negotiate("fr-FR", &["fr"]).as_deref(), Some("fr"));
     }
 
-    /// Wave 6 P3: the full resolution order — session > Accept-Language
+    /// Wave 6 P3: the full resolution order — session > tenant > Accept-Language
     /// (quality-ordered, supported only) > configured default.
     #[test]
-    fn resolve_follows_session_accept_default_order() {
+    fn resolve_follows_session_tenant_accept_default_order() {
         let catalog = catalog();
         // Session preference wins even over a matching header.
-        assert_eq!(resolve(&catalog, Some("fr"), Some("en")), "fr");
+        assert_eq!(resolve(&catalog, Some("fr"), None, Some("en")), "fr");
         // Empty/whitespace preference falls through.
-        assert_eq!(resolve(&catalog, Some("  "), Some("en")), "en");
+        assert_eq!(resolve(&catalog, Some("  "), None, Some("en")), "en");
+        // The tenant's locale wins over the header (LF-078): a per-tenant
+        // default beats a browser's Accept-Language.
+        assert_eq!(resolve(&catalog, None, Some("fr"), Some("en")), "fr");
+        // An empty tenant locale falls through to the header.
+        assert_eq!(resolve(&catalog, None, Some("  "), Some("en")), "en");
         // First supported candidate, quality-ordered; `de` is skipped.
         assert_eq!(
-            resolve(&catalog, None, Some("de, fr;q=0.9, en;q=0.8")),
+            resolve(&catalog, None, None, Some("de, fr;q=0.9, en;q=0.8")),
             "fr"
         );
         // Nothing supported → configured default.
-        assert_eq!(resolve(&catalog, None, Some("de")), "en");
-        assert_eq!(resolve(&catalog, None, None), "en");
+        assert_eq!(resolve(&catalog, None, None, Some("de")), "en");
+        assert_eq!(resolve(&catalog, None, None, None), "en");
         // The default is always supported, even with no shipped files.
         let empty = MessageCatalog::new("en");
-        assert_eq!(resolve(&empty, None, Some("fr")), "en");
+        assert_eq!(resolve(&empty, None, None, Some("fr")), "en");
     }
 
     /// Wave 6 P3: the session preference reads the documented `locale`

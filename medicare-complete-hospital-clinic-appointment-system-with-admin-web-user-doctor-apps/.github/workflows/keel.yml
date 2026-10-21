@@ -63,6 +63,8 @@ jobs:
           # and toolchain, i.e. a cold build with an extra wasted download.
       - name: cargo check
         run: cargo check --workspace --locked
+      - name: cargo clippy (default)
+        run: cargo clippy --workspace --locked -- -D warnings
       - name: cargo test (includes architecture gate)
         run: cargo test --workspace --locked
       - name: G18 telemetry resilience (failure injection + tenant isolation)
@@ -71,6 +73,14 @@ jobs:
           cargo test -p kelson-demo --test http_integration --locked telemetry_incident
       - name: architecture analyzer (xtask dep-rules)
         run: cargo run -p xtask -- dep-rules
+      # The semver gate exists and runs, but no CI job called it. It is a
+      # documented no-op until the repository has a release baseline; the
+      # install is in the step because the xtask probes for the subcommand
+      # and skips when it is absent.
+      - name: semver gate (breaking-change check)
+        run: |
+          cargo install cargo-semver-checks --locked
+          cargo run -p xtask -- semver
       - name: publishability dry-run (main only)
         if: github.event_name == 'push'
         run: cargo run -p xtask -- publish --dry-run
@@ -99,10 +109,54 @@ jobs:
             keel-platform-new-
       - name: cargo check
         run: cargo check --workspace --locked
+      - name: cargo clippy (default)
+        run: cargo clippy --workspace --locked -- -D warnings
+      - name: cargo clippy (component-model)
+        run: cargo clippy --workspace --locked --features component-model -- -D warnings
+      - name: cargo clippy (all-features)
+        run: cargo clippy --workspace --locked --all-features -- -D warnings
       - name: cargo test
         run: cargo test --workspace --locked
+      - name: coverage (llvm-cov)
+        run: |
+          cargo install cargo-llvm-cov --locked 2>/dev/null || true
+          cargo llvm-cov --workspace --locked --lcov --output-path lcov.info || true
       - name: architecture analyzer (xtask dep-rules)
         run: cargo run -p xtask -- dep-rules
+
+  # A generated module must COMPILE. `kelson make:module` writes a module
+  # into `applications/<name>`, adds the workspace member and prints
+  # `cargo check` as the next step - but the generated crate was not built by
+  # CI, so a broken template shipped silently (it did: the template's
+  # `authorize` carried a stale signature and every scaffolded module failed
+  # to compile). A throwaway checkout needs no cleanup.
+  scaffold-build:
+    name: scaffold build (a generated module must compile)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: platform/keel-platform
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.92.0
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          rustup default 1.92.0
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            platform/keel-platform/target
+          key: keel-scaffold-${{ hashFiles('platform/keel-platform/Cargo.lock') }}
+          restore-keys: |
+            keel-scaffold-
+      - name: scaffold a module and build it
+        run: |
+          cargo run -p kelson-console -- make:module ci-probe --description "CI scaffold probe"
+          cargo check -p kelson-mod-ci-probe --all-targets
+          cargo test -p kelson-mod-ci-probe --locked
 
   your-app:
     name: your-app
@@ -183,6 +237,12 @@ jobs:
             keel-platform-orig-
       - name: mysql driver matrix (pg half self-skips on mysql://)
         run: cargo test -p kelson-postgres --features pg-tests --test pg_integration --locked
+      # The shared modelstore conformance target (the contract the in-memory
+      # fake, pg and mysql all run) was NOT in CI - which is how the suite
+      # could sit red against the live schema for a whole session without
+      # CI noticing.
+      - name: shared modelstore conformance (the contract every backend runs)
+        run: cargo test -p kelson-postgres --features pg-tests --test modelstore_conformance --locked
       # The claim race only reproduces when two workers overlap, so one green
       # run would not be evidence. Repeat it: a regression here means a worker
       # fleet idles while jobs are queued.

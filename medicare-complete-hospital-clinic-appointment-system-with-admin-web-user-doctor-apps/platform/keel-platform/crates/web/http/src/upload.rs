@@ -155,6 +155,109 @@ fn bmp_dimensions(b: &[u8]) -> Option<(u32, u32)> {
     Some((w.unsigned_abs(), h.unsigned_abs()))
 }
 
+/// The content types a client can **spoof** into another one: the image
+/// formats (whose headers this module already reads for the dimensions ✓)
+/// and the markup/JSON types (whose first bytes are distinctive ✓).
+///
+/// `text/plain` is deliberately absent ✓ — most byte strings are valid
+/// text ✓, so sniffing it would refuse honest uploads ✓.
+pub const SNIFFABLE_TYPES: [&str; 10] = [
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
+    "text/html",
+    "application/xhtml+xml",
+    "application/xml",
+    "text/xml",
+    "application/json",
+];
+
+/// Sniff a content type from the bytes (magic numbers), or `None` when the
+/// bytes are not a type this module recognises.
+///
+/// Only the types in [`SNIFFABLE_TYPES`] are recognised ✓ — an unknown type
+/// is never a refusal ✓ (a format the sniffer does not know is not a
+/// spoof ✓).
+pub fn sniff_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.is_empty() {
+        return None;
+    }
+    // The image magics — the same ones the dimensions reader uses ✓.
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some("image/png");
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    if bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF {
+        return Some("image/jpeg");
+    }
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    if bytes.starts_with(b"BM") {
+        return Some("image/bmp");
+    }
+    // The markup/data magics: the first non-space bytes ✓.
+    let head = &bytes[..bytes.len().min(64)];
+    let trimmed: &[u8] = {
+        let mut i = 0;
+        while i < head.len() && head[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        &head[i..]
+    };
+    let lower = String::from_utf8_lossy(trimmed).to_ascii_lowercase();
+    if lower.starts_with("<!doctype html")
+        || lower.starts_with("<html")
+        || lower.starts_with("<head")
+        || lower.starts_with("<body")
+        || lower.starts_with("<script")
+        || lower.starts_with("<iframe")
+    {
+        return Some("text/html");
+    }
+    if lower.starts_with("<?xml") {
+        return Some("application/xml");
+    }
+    if trimmed.starts_with(b"{") || trimmed.starts_with(b"[") {
+        return Some("application/json");
+    }
+    None
+}
+
+/// The essence of a content type: the type without its parameters
+/// (`text/plain; charset=utf-8` -> `text/plain`).
+fn mime_essence(content_type: &str) -> &str {
+    content_type
+        .split(';')
+        .next()
+        .unwrap_or(content_type)
+        .trim()
+}
+
+/// **F-27**: the declared type is a CLAIM, so the bytes must agree with it.
+///
+/// The rule is deliberately narrow ✓: only a **sniffable declared** type is
+/// checked ✓, and only when the sniffer recognises the bytes ✓ — an
+/// unknown format is never a refusal ✓ (a format the sniffer does not know
+/// is not a spoof ✓).
+pub fn mime_claim_agrees(content_type: &str, bytes: &[u8]) -> bool {
+    let declared = mime_essence(content_type);
+    if !SNIFFABLE_TYPES
+        .iter()
+        .any(|t| t.eq_ignore_ascii_case(declared))
+    {
+        return true;
+    }
+    match sniff_mime(bytes) {
+        Some(sniffed) => sniffed.eq_ignore_ascii_case(declared),
+        None => true,
+    }
+}
+
 /// Sanitize an untrusted upload filename down to a safe basename:
 /// last path segment only, ASCII alnum + space + `._-`, no leading dot,
 /// max 128 chars.
@@ -302,6 +405,14 @@ async fn ingest_parts(
                     bytes.extend_from_slice(&chunk);
                 }
                 let size = bytes.len();
+                // **F-27**: the declared content type is the client's CLAIM —
+                // the bytes must agree with it, or the upload is refused
+                // before anything is stored ✓.
+                if !mime_claim_agrees(&content_type, &bytes) {
+                    return Err(AppError::validation(format!(
+                        "content type {content_type} does not match the uploaded bytes"
+                    )));
+                }
                 let (width, height) = image_dimensions(&bytes).unzip();
                 let key = format!("{key_prefix}{}-{filename}", Uuid::now_v7());
                 let object = storage.put(bucket, &key, bytes)?;
@@ -375,7 +486,7 @@ mod tests {
         assert!(limits.allowed_mime.is_empty());
     }
 
-    fn png_header(w: u32, h: u32) -> Vec<u8> {
+    pub(super) fn png_header(w: u32, h: u32) -> Vec<u8> {
         let mut b = Vec::new();
         b.extend_from_slice(b"\x89PNG\r\n\x1a\n");
         b.extend_from_slice(&13u32.to_be_bytes()); // IHDR length
@@ -611,24 +722,16 @@ mod multipart_tests {
             .is_ok());
     }
 
-    /// **F-27 (repro) — the upload type check trusts the DECLARED type.**
+    /// **F-27 — the upload type check trusts the DECLARED type, so a spoofed
+    /// file is stored.**
     ///
-    /// The allowlist compares the client's `Content-Type` claim ✓ and the
-    /// bytes are never sniffed ✗, so a file declared `image/png` whose bytes
-    /// are an HTML document is stored ✓ — and the stored record carries the
-    /// **declared** type ✓, so a later reader that trusts the record reads
-    /// HTML as a PNG ✓.
+    /// The allowlist compares the client's `Content-Type` claim and the bytes
+    /// are now sniffed too ✓: a file declared `image/png` whose bytes are an
+    /// HTML document is refused before anything is stored ✓.
     ///
-    /// The framework already sniffs image headers ✓ (`image_dimensions` ✓ —
-    /// PNG/GIF/JPEG/WebP/BMP ✓), so the fix is small (see the batch doc
-    /// §3 F-27): a `sniff_mime` beside it ✓, compared with the declared
-    /// type ✓.
-    ///
-    /// `#[ignore]`d so the tree stays green; run it with
-    /// `cargo test -p kelson-http -- --ignored` to watch it fail (that
-    /// failure IS the defect).
+    /// The framework already sniffs image headers (`image_dimensions` — PNG /
+    /// GIF / JPEG / WebP / BMP), so the sniffer sits beside it ✓.
     #[tokio::test]
-    #[ignore = "F-27: the content-type sniffing is proposed, not implemented"]
     async fn an_upload_whose_bytes_contradict_its_declared_type_is_refused() {
         let req = multipart(vec![(
             "file",
@@ -639,11 +742,41 @@ mod multipart_tests {
         let err = run(req, &UploadLimits::default(), vec!["image/png".into()])
             .await
             .expect_err("a spoofed content type must be refused");
+        assert_eq!(err.category, kelson_foundation::ErrorCategory::Validation);
         assert!(
-            err.public_message.contains("content type")
-                || err.public_message.contains("sniff"),
+            err.public_message.contains("does not match"),
             "the refusal names the reason: {}",
             err.public_message
+        );
+    }
+
+    /// **F-27** — the check must not break honest uploads: a real PNG
+    /// declared as PNG is accepted, and a type the sniffer does not know is
+    /// never a refusal.
+    #[tokio::test]
+    async fn an_honest_upload_is_still_accepted() {
+        let png = super::tests::png_header(300, 200);
+        let req = multipart(vec![("file", Some("real.png"), "image/png", png.clone())]);
+        let stored = run(req, &UploadLimits::default(), vec!["image/png".into()])
+            .await
+            .expect("an honest PNG is accepted");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].content_type, "image/png");
+        assert_eq!(stored[0].width, Some(300), "the dimensions still come from the bytes");
+        assert_eq!(stored[0].height, Some(200));
+
+        // A type the sniffer does not know is never a refusal.
+        let req = multipart(vec![(
+            "file",
+            Some("data.bin"),
+            "application/octet-stream",
+            vec![0x00, 0xFF, 0x10, 0x42],
+        )]);
+        assert!(
+            run(req, &UploadLimits::default(), vec!["application/octet-stream".into()])
+                .await
+                .is_ok(),
+            "an unknown format is not a spoof"
         );
     }
 

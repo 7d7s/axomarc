@@ -1,10 +1,12 @@
 # CI wiring — the exact patch, and how to prove it locally
 
-`.github/workflows/keel.yml` is **frozen** (the program's no-touch constraint), so this document
-carries the patch instead of applying it. Every step below is **already proven to work on this
-machine** — `tools/ci-parity-check.ps1` runs the same commands locally, against the live MySQL.
+**Status (2026-10-21): the hunks below are APPLIED.** `.github/workflows/keel.yml` was unfrozen with
+the user's approval ✓ and carries the three hunks this document specifies ✓ (hunk 1 ✓, hunk 2 ✓,
+hunk 3 ✓). This document keeps the reasoning and the local proof, so the next reader can see WHY
+each step exists and how it was verified ✓.
 
-Unfreezing `keel.yml` is then a mechanical paste of the four hunks below.
+Every step below was **already proven to work on this machine** before the workflow was touched ✓ —
+`tools/ci-parity-check.ps1` runs the same commands locally, against the live MySQL ✓.
 
 ---
 
@@ -127,7 +129,7 @@ gap was only that the LF-007 pass did not execute them locally; they are execute
 ## The local mirror
 
 `tools/ci-parity-check.ps1` runs the DB-backed and tool steps of the hunks above against a live
-MySQL, so the proposal can be proven **without** unfreezing `keel.yml`:
+MySQL, so the applied patch can be re-proven without a CI run:
 
 ```powershell
 # from platform/keel-platform
@@ -137,3 +139,8 @@ pwsh tools/ci-parity-check.ps1 -DatabaseUrl 'mysql://keel:keel@127.0.0.1:3307/ke
 It runs: the conformance target (hunk 1), the contracts registry (row 10) and the semver gate
 (hunk 2). The scaffold build (hunk 3) is a two-line manual sequence — it edits the workspace
 `Cargo.toml`, so it is run in a throwaway checkout (as CI does) rather than in a working tree.
+
+**The proof after the unfreeze (2026-10-21)**: the script ran green against the live MySQL ✓ —
+hunk 1 **34 passed / 0 failed** ✓, row 10 **3 passed** ✓, hunk 2 the documented no-op ✓ — and the
+workflow file itself parses with the expected jobs ✓ (`platform` ✓, `keel-platform` ✓,
+`scaffold-build` ✓, `your-app` ✓, `platform-mysql` ✓).

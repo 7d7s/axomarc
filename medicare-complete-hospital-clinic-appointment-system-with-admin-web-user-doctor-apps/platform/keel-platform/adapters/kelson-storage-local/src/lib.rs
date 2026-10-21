@@ -42,6 +42,13 @@ impl LocalDisk {
 
     /// Validate + resolve an object path. The resolved path must stay inside
     /// the disk root (defense in depth on top of the component checks).
+    ///
+    /// **F-24**: the containment check above is **lexical** — it inspects the
+    /// joined path, so a LINK under the root would point the read or the
+    /// write outside the disk root. Two checks close that: a component that
+    /// is a link is refused outright, and the path is re-checked against the
+    /// **resolved** ancestor (which also catches a Windows junction, whose
+    /// `is_symlink()` is false).
     fn resolve(&self, bucket: &str, key: &str) -> Result<PathBuf, AppError> {
         validate_segment("bucket", bucket)?;
         validate_key(key)?;
@@ -54,7 +61,85 @@ impl LocalDisk {
         if !candidate.starts_with(&self.root) {
             return Err(AppError::validation("storage key escapes the disk root"));
         }
-        Ok(candidate)
+        self.refuse_link_components(&candidate)?;
+        self.resolve_under_root(&candidate)
+    }
+
+    /// Refuse a path whose components under the root are LINKS. A link is
+    /// refused even when it points inside the root: the disk under the
+    /// driver's control has no reason to contain one, and "resolve the
+    /// target" is never the driver's decision.
+    fn refuse_link_components(&self, candidate: &Path) -> Result<(), AppError> {
+        let relative = candidate.strip_prefix(&self.root).map_err(|_| {
+            AppError::validation("storage key escapes the disk root")
+        })?;
+        let mut current = self.root.clone();
+        for component in relative.components() {
+            current.push(component);
+            match std::fs::symlink_metadata(&current) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    return Err(AppError::validation(
+                        "storage path must not traverse a link",
+                    ));
+                }
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // The rest of the path does not exist yet (a write) - there
+                    // is nothing left to inspect.
+                    return Ok(());
+                }
+                Err(e) => {
+                    return Err(AppError::persistence(format!(
+                        "cannot inspect {}: {e}",
+                        current.display()
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The resolved path: the deepest EXISTING ancestor is canonicalized and
+    /// must still be under the root, and the missing tail is appended. The
+    /// target of a write does not exist yet, so the ancestor is what can be
+    /// resolved.
+    fn resolve_under_root(&self, candidate: &Path) -> Result<PathBuf, AppError> {
+        let mut ancestor = candidate.to_path_buf();
+        let mut tail: Vec<std::ffi::OsString> = Vec::new();
+        loop {
+            match std::fs::canonicalize(&ancestor) {
+                Ok(real) => {
+                    if !real.starts_with(&self.root) {
+                        return Err(AppError::validation(
+                            "storage path escapes the disk root",
+                        ));
+                    }
+                    let mut out = real;
+                    for part in tail.iter().rev() {
+                        out.push(part);
+                    }
+                    return Ok(out);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    let Some(name) = ancestor.file_name().map(|n| n.to_os_string()) else {
+                        // Nothing left to strip: the root itself does not
+                        // exist, which cannot happen (it was created).
+                        return Err(AppError::persistence(format!(
+                            "cannot resolve {}: {e}",
+                            candidate.display()
+                        )));
+                    };
+                    tail.push(name);
+                    ancestor.pop();
+                }
+                Err(e) => {
+                    return Err(AppError::persistence(format!(
+                        "cannot resolve {}: {e}",
+                        candidate.display()
+                    )));
+                }
+            }
+        }
     }
 
     /// Wave 6 P2: resolve a directory prefix under the root (shared guard +
@@ -67,7 +152,9 @@ impl LocalDisk {
                 "storage prefix escapes the disk root",
             ));
         }
-        Ok(path)
+        // **F-24**: the same link rule as an object path ✓.
+        self.refuse_link_components(&path)?;
+        self.resolve_under_root(&path)
     }
 }
 
@@ -382,26 +469,18 @@ mod tests {
         }
     }
 
-    /// **F-24 (repro) — the containment check is LEXICAL, so a link under the
-    /// root escapes it.**
+    /// **F-24 — a link under the root cannot read or write outside it.**
     ///
-    /// `resolve` checks `candidate.starts_with(&self.root)` on the *joined*
-    /// path, so the driver never resolves the links under the root. A link
-    /// planted inside the root (by anything with filesystem access — another
-    /// process, an extracted archive, an operator) points the read or the
-    /// write outside the disk root, so the module's promise ("the resolved
-    /// path must stay under the root") does not hold.
+    /// The containment check is lexical, so a link planted under the root
+    /// (by anything with filesystem access — another process, an extracted
+    /// archive, an operator) used to point the read and the write outside
+    /// the disk root. A link component is now refused outright, and the
+    /// path is re-checked against the **resolved** ancestor (which also
+    /// catches a Windows junction, whose `is_symlink()` is false).
     ///
-    /// The fix is **proposed, not implemented** (see
-    /// `docs/LF-070-TO-LF-080-VERIFICATION.md` §3 F-24): resolve the
-    /// deepest existing ancestor of the target and re-check containment, and
-    /// refuse a path whose components are links.
-    ///
-    /// The case is `#[ignore]`d so the tree stays green; run it with
-    /// `cargo test -p kelson-storage-local -- --ignored` to watch it fail
-    /// (that failure IS the defect).
+    /// The case plants a directory junction on Windows (a file symlink needs
+    /// a privilege a normal user lacks) and a real symlink on Unix.
     #[test]
-    #[ignore = "F-24: the link-containment fix is proposed, not implemented"]
     fn a_link_inside_the_root_cannot_read_outside_it() {
         let base = std::env::temp_dir().join(format!("kelson-localdisk-{}", uuid_like()));
         let root = base.join("root");
@@ -437,7 +516,41 @@ mod tests {
             !outside.join("planted.txt").exists(),
             "nothing may be written outside the disk root"
         );
+        // The directory surface follows the same rule.
+        assert!(
+            disk.list("links/").is_err(),
+            "a linked directory prefix is refused too"
+        );
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// **F-24** — the ordinary path still works: the link rule must not break
+    /// honest reads and writes (including a nested key whose parent does not
+    /// exist yet).
+    #[test]
+    fn honest_paths_still_work_after_the_link_rule() {
+        let (disk, dir) = disk();
+        let r = disk
+            .put("exports", "reports/2026/q3.csv", b"a,b,c".to_vec())
+            .unwrap();
+        assert_eq!(disk.get(&r).unwrap(), b"a,b,c");
+        // A nested key whose parent is created by the write ✓.
+        let nested = disk
+            .put("exports", "deep/nested/file.txt", b"x".to_vec())
+            .unwrap();
+        assert_eq!(disk.get(&nested).unwrap(), b"x");
+        // The directory surface ✓.
+        disk.make_dir("exports/abc/").unwrap();
+        let listed = disk.list("exports/").unwrap();
+        assert!(
+            listed.iter().any(|o| o.key == "reports/2026/q3.csv"),
+            "the nested object is listed: {listed:?}"
+        );
+        assert!(
+            listed.iter().any(|o| o.key == "deep/nested/file.txt"),
+            "the deep object is listed: {listed:?}"
+        );
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

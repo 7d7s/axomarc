@@ -463,6 +463,17 @@ impl BatchSpec {
         if self.jobs.iter().any(|j| j.status != JobStatus::Pending) {
             return Err(AppError::validation("batch members must start pending"));
         }
+        // **F-26**: the members must agree on their tenant. A batch that
+        // spans two tenants would put one tenant's job under another
+        // tenant's batch record, and the completion callback would fire for
+        // the mixed set. A `None` tenant is a platform job and must not be
+        // mixed with a tenant's job either.
+        let tenant = self.jobs[0].tenant_id;
+        if self.jobs.iter().any(|j| j.tenant_id != tenant) {
+            return Err(AppError::validation(
+                "batch members must belong to the same tenant",
+            ));
+        }
         Ok(())
     }
 
@@ -485,6 +496,14 @@ impl ChainSpec {
         }
         if self.jobs.iter().any(|j| j.status != JobStatus::Pending) {
             return Err(AppError::validation("chain members must start pending"));
+        }
+        // **F-26**: the same tenant rule as a batch ✓ — a chain that spans
+        // two tenants would step one tenant's job after another tenant's ✓.
+        let tenant = self.jobs[0].tenant_id;
+        if self.jobs.iter().any(|j| j.tenant_id != tenant) {
+            return Err(AppError::validation(
+                "chain members must belong to the same tenant",
+            ));
         }
         Ok(())
     }
@@ -3241,25 +3260,14 @@ mod tests {
         assert!(done.ok(), "no member died, so the batch is ok");
     }
 
-    /// **F-26 (repro) — a batch can MIX tenants.**
+    /// **F-26 — a batch that mixes tenants is refused.**
     ///
-    /// `BatchSpec::validate` refuses an empty batch ✓, duplicate ids ✓ and
-    /// members that do not start pending ✓ — but it does not check that the
-    /// members agree on their tenant ✓. A batch that spans two tenants puts
-    /// one tenant's job under another tenant's batch record ✓, and the
-    /// batch's completion callback fires for the mixed set ✓.
-    ///
-    /// The fix is **proposed, not implemented** (see
-    /// `docs/LF-060-TO-LF-069-VERIFICATION.md` §3 F-26): `validate` refuses a
-    /// spec whose members disagree on `tenant_id` — the same shape as the
-    /// existing "ids must be unique" rule ✓ — and the demo/console refuse to
-    /// build one ✓.
-    ///
-    /// `#[ignore]`d so the tree stays green; run it with
-    /// `cargo test -p kelson-jobs -- --ignored` to watch it fail (that
-    /// failure IS the defect).
+    /// `BatchSpec::validate` refuses an empty batch, duplicate ids and members
+    /// that do not start pending — and now a spec whose members disagree on
+    /// their tenant. A batch that spans two tenants would put one tenant's
+    /// job under another tenant's batch record, and the completion callback
+    /// would fire for the mixed set.
     #[test]
-    #[ignore = "F-26: the mixed-tenant batch refusal is proposed, not implemented"]
     fn a_batch_that_mixes_tenants_is_refused() {
         let store = Arc::new(InMemoryJobStore::new());
         let runtime = BatchRuntime::new(store.clone());
@@ -3290,6 +3298,44 @@ mod tests {
             store.list(Some(JobStatus::Pending), 10).unwrap().is_empty(),
             "a refused batch enqueues nothing"
         );
+    }
+
+    /// **F-26** — the rule must not break honest batches: one tenant's
+    /// members are accepted, and so is a platform batch (no tenant at all).
+    #[test]
+    fn a_single_tenant_batch_is_still_accepted() {
+        let store = Arc::new(InMemoryJobStore::new());
+        let runtime = BatchRuntime::new(store.clone());
+        let a = TenantId::new();
+        let mut m1 = job(0, 3);
+        m1.status = JobStatus::Pending;
+        m1.tenant_id = Some(a);
+        let mut m2 = job(0, 3);
+        m2.status = JobStatus::Pending;
+        m2.tenant_id = Some(a);
+        let id = runtime
+            .dispatch(BatchSpec {
+                id: Uuid::now_v7(),
+                name: "nightly".into(),
+                jobs: vec![m1.clone(), m2.clone()],
+                on_complete: None,
+            })
+            .expect("one tenant's batch is accepted");
+        assert!(runtime.run(id).is_some(), "the batch is running");
+
+        // A platform batch (no tenant) is accepted too ✓.
+        let mut p1 = job(0, 3);
+        p1.status = JobStatus::Pending;
+        let mut p2 = job(0, 3);
+        p2.status = JobStatus::Pending;
+        runtime
+            .dispatch(BatchSpec {
+                id: Uuid::now_v7(),
+                name: "platform".into(),
+                jobs: vec![p1, p2],
+                on_complete: None,
+            })
+            .expect("a platform batch is accepted");
     }
 
     /// A cross-tenant job id is INVISIBLE to complete/fail: `NOT_FOUND`,

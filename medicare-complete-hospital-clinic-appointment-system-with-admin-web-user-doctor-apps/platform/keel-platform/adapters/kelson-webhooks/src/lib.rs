@@ -6,6 +6,15 @@
 //! Security: every delivery is signed with HMAC-SHA256 over the exact body
 //! bytes using the subscription secret; receivers verify before trusting
 //! anything. The signature header carries `sha256=<hex>` (GitHub-style).
+//!
+//! **Egress (F-23):** the subscribed URL is **tenant-supplied**, so the
+//! client this adapter is given MUST carry the egress policy
+//! (`HttpClientConfig::egress.refuse_private_targets = true`) — otherwise a
+//! subscription can point the delivery at the host's own network (the
+//! metadata service, the database, the admin edge). The subscription store
+//! already refuses a plain-`http` URL, but an `https://` private target is
+//! not refused there. The adapter cannot decide this itself: the client is
+//! injected through the port, so the **host** owns the policy.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};

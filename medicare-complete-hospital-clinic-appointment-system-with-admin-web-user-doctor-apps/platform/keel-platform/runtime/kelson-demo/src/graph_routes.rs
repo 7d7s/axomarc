@@ -1172,6 +1172,7 @@ fn dispatch_error(
         let locale = crate::i18n::resolve(
             &state.messages,
             None,
+            None,
             headers
                 .get(header::ACCEPT_LANGUAGE)
                 .and_then(|v| v.to_str().ok()),
@@ -1285,6 +1286,7 @@ fn render_success(
     headers: &HeaderMap,
     request_target: &str,
     session: Option<ResolvedSession>,
+    tenant: Option<TenantId>,
     view_auth: Option<String>,
     result: serde_json::Value,
 ) -> Result<(axum::response::Response, Option<Vec<u8>>), kelson_foundation::AppError> {
@@ -1298,15 +1300,15 @@ fn render_success(
                 None => request_target,
             };
             // Wave 6 P3: same pure resolution the dispatcher ran for
-            // validation/context (session + headers ⇒ identical outcome).
+            // validation/context (session + tenant + headers ⇒ identical outcome).
             let locale = crate::i18n::resolve(
                 &state.messages,
                 crate::i18n::session_locale(session.as_ref()),
+                state.tenant_locale(tenant).as_deref(),
                 headers
                     .get(header::ACCEPT_LANGUAGE)
                     .and_then(|v| v.to_str().ok()),
-            );
-            Ok(html_response(
+            );            Ok(html_response(
                 state, dispatch, headers, path, &locale, view_auth, result,
             ))
         }
@@ -2001,12 +2003,14 @@ async fn graph_dispatch(
     // `exists`, probe failure → 503 via the fatal channel) and the
     // process-global custom-rule registry (`custom = "<name>"`).
     // Wave 6 P3: resolve the request locale once — session preference ->
-    // Accept-Language (first supported, quality-ordered) -> configured
-    // default — and carry it through validation wording, the execution
-    // context, and the view `_locale`/`_lang` injections below.
+    // the tenant's locale (LF-078) -> Accept-Language (first supported,
+    // quality-ordered) -> configured default — and carry it through
+    // validation wording, the execution context, and the view
+    // `_locale`/`_lang` injections below.
     let locale = crate::i18n::resolve(
         &state.messages,
         crate::i18n::session_locale(resolved_session.as_ref()),
+        state.tenant_locale(Some(tenant)).as_deref(),
         headers
             .get(header::ACCEPT_LANGUAGE)
             .and_then(|v| v.to_str().ok()),
@@ -2121,6 +2125,7 @@ async fn graph_dispatch(
                 &headers,
                 &request_target,
                 resolved_session,
+                Some(tenant),
                 view_auth,
                 outcome.result,
             ) {

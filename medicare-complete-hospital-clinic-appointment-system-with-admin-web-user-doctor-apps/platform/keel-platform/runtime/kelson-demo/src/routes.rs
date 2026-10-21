@@ -231,6 +231,19 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// The **tenant's** default locale (LF-078): a per-tenant setting, so a
+    /// request that names no locale still renders in the tenant's language.
+    ///
+    /// The tenant registry is optional (degraded boot ✓) and a tenant
+    /// without a locale has none ✓ — the resolution chain then falls through
+    /// to `Accept-Language` ✓ and the configured default ✓.
+    pub fn tenant_locale(&self, tenant: Option<kelson_foundation::TenantId>) -> Option<String> {
+        let tenants = self.tenants.as_ref()?;
+        let tenant = tenant?;
+        let record = tenants.store().by_id(tenant).ok().flatten()?;
+        record.locale
+    }
+
     /// Edge-layer configuration (queued cookies + terminating hooks) for
     /// `crate::edge::edge_mw`, applied last in `run()` so it wraps every
     /// route including the merged module/auth surfaces.

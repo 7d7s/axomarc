@@ -26,6 +26,9 @@ use std::time::Duration;
 use kelson_foundation::{AppError, ErrorCategory, Retryability};
 use serde::{Deserialize, Serialize};
 
+pub mod egress;
+pub use egress::EgressPolicy;
+
 /// Boxed future used across the object-safe port surface.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -122,6 +125,11 @@ pub struct HttpClientConfig {
     pub retry_on: Vec<String>,
     /// Header names never rendered into errors or logs (authorization, keys).
     pub redact_headers: Vec<String>,
+    /// **F-23**: the egress policy — what the client may reach. The default
+    /// is permissive (no behaviour change); a deployment opts into the
+    /// refusal of private targets.
+    #[serde(default)]
+    pub egress: EgressPolicy,
 }
 
 fn default_retry_max_ms() -> u64 {
@@ -144,6 +152,7 @@ impl Default for HttpClientConfig {
             retry_max_ms: default_retry_max_ms(),
             retry_on: default_retry_on(),
             redact_headers: vec!["authorization".into(), "x-api-key".into(), "cookie".into()],
+            egress: EgressPolicy::default(),
         }
     }
 }
@@ -312,6 +321,12 @@ impl ReqwestHttpClient {
     /// `execute` buffers it, `sink_to` streams it). The per-request
     /// `timeout_ms` override wins over the client default.
     async fn send(&self, req: &HttpRequest) -> Result<reqwest::Response, AttemptError> {
+        // **F-23**: the egress policy runs BEFORE the request — a refused
+        // target never leaves the process. With the default (permissive)
+        // policy this costs nothing: no lookup, no check.
+        if let Err(err) = self.check_egress(&req.url).await {
+            return Err(AttemptError::Call(err));
+        }
         let method: reqwest::Method = req.method.parse().map_err(|_| {
             AttemptError::Call(AppError::validation(format!(
                 "bad http method {}",
@@ -340,6 +355,39 @@ impl ReqwestHttpClient {
                 AttemptError::Call(AppError::external("http", e.to_string()))
             }
         })
+    }
+
+    /// **F-23**: the egress check. Only runs when the policy opts in, so the
+    /// default path is unchanged. A literal IP is checked without a lookup;
+    /// a host is resolved and every address is checked.
+    async fn check_egress(&self, url: &str) -> Result<(), AppError> {
+        let policy = &self.config.egress;
+        if !policy.refuse_private_targets {
+            return Ok(());
+        }
+        let parsed = reqwest::Url::parse(url)
+            .map_err(|e| AppError::validation(format!("http url is not parseable: {e}")))?;
+        let host = parsed
+            .host_str()
+            .ok_or_else(|| AppError::validation("http url has no host"))?;
+        if policy.allows_host(host) {
+            return Ok(());
+        }
+        // A literal address needs no lookup.
+        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            if EgressPolicy::refuses_address(&ip) {
+                return Err(EgressPolicy::refusal(host, &ip.to_string()));
+            }
+            return Ok(());
+        }
+        let port = parsed.port_or_known_default().unwrap_or(443);
+        let addresses = egress::resolve_host(host, port).await?;
+        for ip in &addresses {
+            if EgressPolicy::refuses_address(ip) {
+                return Err(EgressPolicy::refusal(host, &ip.to_string()));
+            }
+        }
+        Ok(())
     }
 
     async fn attempt(&self, req: &HttpRequest) -> Result<HttpResponse, AttemptError> {
@@ -1369,38 +1417,75 @@ mod tests {
         assert_eq!(server.hit_count(), 1, "404 is a caller bug — never retried");
     }
 
-    /// **F-23 (repro) — the client has NO egress policy.**
+    /// **F-23 — the client refuses a private target when the egress policy
+    /// opts in.**
     ///
-    /// A loopback/private target is fetched like any other, so a URL an
-    /// untrusted party supplies (the reachable path is the **webhook
-    /// adapter**, which calls a tenant-registered target) can reach the
-    /// host's internal network: the cloud metadata service
-    /// (`169.254.169.254`), the database port, the admin edge.
+    /// The client used to fetch a loopback/private address like any other,
+    /// so a URL an untrusted party supplies (the reachable path is the
+    /// webhook adapter, which calls a tenant-registered target) could reach
+    /// the host's internal network. The policy resolves the target and
+    /// refuses it — before the request leaves the process.
     ///
-    /// The fix is **proposed, not implemented** (see
-    /// `docs/LF-070-TO-LF-080-VERIFICATION.md` §3 F-23): an `egress`
-    /// section on `HttpClientConfig` — a private-range denylist plus a
-    /// host allowlist — which the webhook adapter would default to
-    /// "refuse private targets".
-    ///
-    /// The case is `#[ignore]`d so the tree stays green; run it with
-    /// `cargo test -p kelson-http-client -- --ignored` to watch it fail
-    /// (that failure IS the defect).
+    /// The default policy is permissive: no deployment changes behaviour
+    /// (proved by `the_default_policy_reaches_a_private_target`).
     #[tokio::test]
-    #[ignore = "F-23: the egress policy is proposed, not implemented"]
     async fn the_client_refuses_a_loopback_target() {
+        let server = Loopback::spawn(vec![], Turn::Reply(200, r#"{"ok":true}"#.into()));
+        let mut config = fast_config();
+        config.egress.refuse_private_targets = true;
+        let client = ReqwestHttpClient::new(config).unwrap();
+        let req = HttpRequest::json("GET", &server.url("/internal"), &()).unwrap();
+        let err = client.execute(&req).await.unwrap_err();
+        assert_eq!(err.code, kelson_foundation::codes::EXTERNAL);
+        assert!(
+            err.public_message.contains("egress"),
+            "the refusal names the policy: {}",
+            err.public_message
+        );
+        assert!(
+            !err.public_message.contains("127.0.0.1"),
+            "the public message never carries the address: {}",
+            err.public_message
+        );
+        assert_eq!(
+            server.hit_count(),
+            0,
+            "a refused target is never contacted"
+        );
+    }
+
+    /// **F-23** — the DEFAULT policy is permissive: an existing deployment
+    /// that calls an internal service keeps working, and the check costs
+    /// nothing (no lookup, no refusal).
+    #[tokio::test]
+    async fn the_default_policy_reaches_a_private_target() {
         let server = Loopback::spawn(vec![], Turn::Reply(200, r#"{"ok":true}"#.into()));
         let client = ReqwestHttpClient::new(fast_config()).unwrap();
         let req = HttpRequest::json("GET", &server.url("/internal"), &()).unwrap();
-        let err = match client.execute(&req).await {
-            Ok(_) => panic!("an egress policy must refuse a loopback target"),
-            Err(e) => e,
-        };
-        let message = err.public_message.to_lowercase();
-        assert!(
-            message.contains("egress") || message.contains("refus"),
-            "the refusal must say why: {}",
-            err.public_message
-        );
+        let res = client.execute(&req).await.expect("the default policy is permissive");
+        assert_eq!(res.status, 200);
+        assert_eq!(server.hit_count(), 1);
+    }
+
+    /// **F-23** — the operator's allowlist is the escape hatch: a private
+    /// host on the list is reachable even when the policy refuses private
+    /// targets.
+    #[tokio::test]
+    async fn an_allowed_host_reaches_a_private_target() {
+        let server = Loopback::spawn(vec![], Turn::Reply(200, r#"{"ok":true}"#.into()));
+        let host = server
+            .url("/internal")
+            .trim_start_matches("http://")
+            .split(':')
+            .next()
+            .unwrap_or("127.0.0.1")
+            .to_string();
+        let mut config = fast_config();
+        config.egress.refuse_private_targets = true;
+        config.egress.allowed_hosts = vec![host];
+        let client = ReqwestHttpClient::new(config).unwrap();
+        let req = HttpRequest::json("GET", &server.url("/internal"), &()).unwrap();
+        let res = client.execute(&req).await.expect("an allowed host is reachable");
+        assert_eq!(res.status, 200);
     }
 }

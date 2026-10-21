@@ -222,6 +222,60 @@ impl JobHandler for DemoJobHandler {
     }
 }
 
+/// **F-25**: the worker's panic boundary — a panic inside a job handler
+/// becomes a job FAILURE instead of unwinding the claim loop.
+///
+/// The HTTP edge has the same boundary (F-2, `CatchPanicLayer`): the panic
+/// payload is logged server-side and never reaches the caller. Here the
+/// payload is logged at ERROR with the job id, and the job's durable
+/// `last_error` gets a **redacted** message — a panic payload can carry a
+/// secret, and that row is admin-visible.
+///
+/// With the boundary in place the failed attempt is an ordinary failure:
+/// the backoff and the retry budget apply, and the worker keeps claiming.
+fn panic_boundary(
+    fut: BoxFuture<'_, Result<(), AppError>>,
+) -> BoxFuture<'_, Result<(), AppError>> {
+    Box::pin(PanicBoundary { inner: fut })
+}
+
+/// A future that turns a panic into an error. Hand-rolled (no `futures`
+/// dependency): the inner future is polled inside `catch_unwind`, so a
+/// panic in it is caught at the innermost poll.
+struct PanicBoundary<'a> {
+    inner: BoxFuture<'a, Result<(), AppError>>,
+}
+
+impl std::future::Future for PanicBoundary<'_> {
+    type Output = Result<(), AppError>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        // `PanicBoundary` is Unpin (it holds a `Pin<Box<..>>`), so the inner
+        // future can be projected without `unsafe`.
+        let inner = self.get_mut().inner.as_mut();
+        let polled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            std::future::Future::poll(inner, cx)
+        }));
+        match polled {
+            Ok(std::task::Poll::Pending) => std::task::Poll::Pending,
+            Ok(std::task::Poll::Ready(result)) => std::task::Poll::Ready(result),
+            Err(payload) => {
+                // The payload is logged server-side, never stored on the job.
+                let msg = payload
+                    .downcast_ref::<String>()
+                    .map(|s| s.as_str())
+                    .or_else(|| payload.downcast_ref::<&str>().copied())
+                    .unwrap_or("internal error");
+                tracing::error!(panic = %msg, "job handler panicked; failing the attempt");
+                std::task::Poll::Ready(Err(AppError::internal("job handler panicked")))
+            }
+        }
+    }
+}
+
 /// Enforce the job execution deadline; an overrun counts as a failed attempt
 /// so the store applies backoff and the retry budget.
 ///
@@ -514,7 +568,7 @@ impl DispatchCtx<'_> {
                     None => Err(AppError::not_found(format!(
                         "no handler registered for {name}"
                     ))),
-                    Some(handler) => deadline_guard(&job, handler.handle(&job)).await,
+                    Some(handler) => deadline_guard(&job, panic_boundary(handler.handle(&job))).await,
                 };
                 if let Some(err) = stack.after(&job, &ran).await {
                     tracing::warn!(
@@ -1921,26 +1975,13 @@ mod tests {
         );
     }
 
-    /// **F-25 (repro) — a PANICKING job handler takes the worker down.**
+    /// **F-25 — a PANICKING job handler does not take the worker down.**
     ///
     /// The HTTP edge has a panic boundary (F-2: a panicking handler answers a
-    /// stable 500 envelope), but the job worker has none: `handler.handle(&job)`
-    /// is awaited directly, so a panic inside a handler unwinds the claim loop
-    /// — the worker dies mid-flight, every other claimed job stays `Running`
-    /// until its lease is reclaimed, and the panic (not a job failure) is what
-    /// the operator sees.
-    ///
-    /// The fix is **proposed, not implemented** (see
-    /// `docs/LF-060-TO-LF-069-VERIFICATION.md` §3 F-25): catch the unwind
-    /// around the handler future, map it to a job FAILURE (so the retry budget
-    /// and the backoff apply), record it as the job's `last_error`, and keep
-    /// the worker alive — the posture the HTTP edge already takes.
-    ///
-    /// `#[ignore]`d so the tree stays green; run it with
-    /// `cargo test -p kelson-worker -- --ignored` to watch it fail (that
-    /// failure IS the defect).
+    /// stable 500 envelope), and the job worker now has the same posture: a
+    /// panic inside a handler becomes a job FAILURE, so the retry budget and
+    /// the backoff apply and the worker keeps claiming.
     #[tokio::test]
-    #[ignore = "F-25: the job worker's panic boundary is proposed, not implemented"]
     async fn a_panicking_job_handler_does_not_take_the_worker_down() {
         let dispatched = tokio::spawn(async move {
             let def = JobDef::new("p8.panicking");
@@ -1980,6 +2021,67 @@ mod tests {
         assert!(
             row.last_error.is_some(),
             "the panic is recorded as the job's failure, not lost"
+        );
+        assert!(
+            !row
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("exploded"),
+            "the durable error never carries the panic payload: {:?}",
+            row.last_error
+        );
+    }
+
+    /// **F-25** — a panicking handler fails ITS OWN job and nothing else: the
+    /// next job in the queue still runs with its own attempt budget.
+    #[tokio::test]
+    async fn a_panicking_handler_does_not_consume_the_next_jobs_attempt() {
+        let store = Arc::new(InMemoryJobStore::new());
+        let mut defs = JobRegistry::new();
+        defs.register(JobDef::new("p8.panicking")).expect("the def registers");
+        defs.register(JobDef::new("p8.after")).expect("the def registers");
+        let mut handlers = WorkerRegistry::new();
+        handlers
+            .register(Arc::new(PanickingHandler))
+            .expect("the handler registers");
+        handlers.register(Arc::new(TraceHandler {
+            name: "p8.after".into(),
+            trace: Arc::new(Mutex::new(Vec::new())),
+        }))
+        .expect("the handler registers");
+        let stacks = JobMiddlewareStacks::new(Arc::new(MemoryUniqueLock::new()));
+        let batches = BatchRuntime::new(store.clone());
+        let chains = ChainRuntime::new(store.clone());
+
+        let now = OffsetDateTime::now_utc();
+        for name in ["p8.panicking", "p8.after"] {
+            let mut job = build_from_def(&JobDef::new(name), serde_json::json!({}), now);
+            job.available_at = now - time::Duration::seconds(60);
+            store.enqueue(job).expect("the job enqueues");
+        }
+
+        // The panicking job is claimed first (equal priority, FIFO).
+        let first = p8_dispatch(&handlers, &defs, &stacks, &store, &batches, &chains)
+            .await
+            .expect("the dispatch pass runs")
+            .expect("a job was claimed");
+        assert_eq!(first.name, "p8.panicking");
+        let panicking = store.get(first.id).expect("the store reads").expect("the row");
+        assert!(
+            panicking.last_error.is_some(),
+            "the panicking job is a failed attempt"
+        );
+
+        // The next job still runs, with its own attempt.
+        let second = p8_dispatch(&handlers, &defs, &stacks, &store, &batches, &chains)
+            .await
+            .expect("the dispatch pass runs")
+            .expect("a job was claimed");
+        assert_eq!(second.name, "p8.after", "the next job is not blocked");
+        assert_eq!(
+            second.attempt, 1,
+            "the panicking job consumed only its OWN attempt"
         );
     }
 

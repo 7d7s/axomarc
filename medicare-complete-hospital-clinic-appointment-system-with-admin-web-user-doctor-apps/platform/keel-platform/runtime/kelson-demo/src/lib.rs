@@ -797,6 +797,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 status: kelson_tenancy::TenantStatus::Active,
                 region: "in".into(),
                 capabilities: std::collections::BTreeSet::new(),
+                locale: None,
                 created_at: time::OffsetDateTime::now_utc(),
                 revision: kelson_foundation::TenantRevision(1),
             });
@@ -2217,7 +2218,7 @@ mod wave6_mail_tests {
             kelson_config::load_messages(&root, &kelson_config::I18nSection::default())
                 .expect("shipped lang files load"),
         );
-        let locale = crate::i18n::resolve(&catalog, None, Some("fr"));
+        let locale = crate::i18n::resolve(&catalog, None, None, Some("fr"));
         assert_eq!(locale, "fr");
 
         struct RecordingMail {
