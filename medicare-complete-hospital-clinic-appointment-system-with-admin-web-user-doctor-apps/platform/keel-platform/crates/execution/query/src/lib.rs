@@ -7,12 +7,14 @@ use kelson_foundation::AppError;
 use serde::{Deserialize, Serialize};
 
 pub mod delete;
+pub mod dialect;
 pub mod insert;
 pub mod select;
 pub mod truncate;
 pub mod update;
 
 pub use delete::Delete;
+pub use dialect::{Dialect, DialectId, MySqlDialect, PostgresDialect, POSTGRES, MYSQL};
 pub use insert::{ConflictPolicy, Insert};
 pub use select::{
     Aggregate, Clause, CompiledSelect, Condition, DatePart, Direction, Ident, Junction, Lock,
@@ -21,13 +23,18 @@ pub use select::{
 pub use truncate::Truncate;
 pub use update::Update;
 
-/// Compiled WRITE statement (INSERT/UPDATE/DELETE): SQL text with `$N`
-/// placeholders and bind values in matching order. Execution is owned by the
-/// data class, exactly like [`CompiledSelect`].
+/// Compiled WRITE statement (INSERT/UPDATE/DELETE): SQL text with the
+/// dialect's placeholders and bind values in matching order. Execution is
+/// owned by the data class, exactly like [`CompiledSelect`].
+///
+/// `dialect` records the engine the statement was rendered for, so an
+/// adapter can fail closed on a statement built for the wrong engine
+/// instead of sending it and reading the server's error.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CompiledWrite {
     pub sql: String,
     pub params: Vec<Value>,
+    pub dialect: DialectId,
 }
 
 /// Rendering context for a clause list: aggregate comparisons
@@ -49,6 +56,7 @@ pub(crate) fn render_conditions(
     items: &[(select::Junction, select::Clause)],
     params: &mut Vec<Value>,
     context: ClauseContext,
+    dialect: &dyn Dialect,
 ) -> Result<String, AppError> {
     let mut out = String::new();
     for (index, (junction, clause)) in items.iter().enumerate() {
@@ -58,7 +66,7 @@ pub(crate) fn render_conditions(
                 select::Junction::Or => " OR ",
             });
         }
-        out.push_str(&render_clause(clause, params, context)?);
+        out.push_str(&render_clause(clause, params, context, dialect)?);
     }
     Ok(out)
 }
@@ -69,10 +77,11 @@ fn render_clause(
     clause: &select::Clause,
     params: &mut Vec<Value>,
     context: ClauseContext,
+    dialect: &dyn Dialect,
 ) -> Result<String, AppError> {
     use select::{Clause, Operator};
     match clause {
-        Clause::Pred(cond) => render_predicate(cond, params),
+        Clause::Pred(cond) => render_predicate(cond, params, dialect),
         Clause::Column { left, operator, right } => {
             if !operator.is_scalar() {
                 return Err(AppError::validation(format!(
@@ -83,7 +92,7 @@ fn render_clause(
             Ok(format!(
                 "{} {} {}",
                 left.as_str(),
-                operator.sql(),
+                operator.sql_for(dialect),
                 right.as_str()
             ))
         }
@@ -118,7 +127,7 @@ fn render_clause(
             let mut marks = Vec::with_capacity(values.len());
             for value in values {
                 params.push(value.clone());
-                marks.push(format!("${}", params.len()));
+                marks.push(dialect.placeholder(params.len()));
             }
             Ok(format!(
                 "({}) {} ({})",
@@ -133,11 +142,11 @@ fn render_clause(
             value,
         } => {
             params.push(value.clone());
-            let placeholder = format!("${}", params.len());
-            Ok(part.render_sql(column.as_str(), &placeholder))
+            let placeholder = dialect.placeholder(params.len());
+            Ok(dialect.render_date_part(*part, column.as_str(), &placeholder))
         }
         Clause::Exists { negated, subquery } => {
-            let inner = subquery.render(params)?;
+            let inner = subquery.render(params, dialect)?;
             Ok(format!(
                 "{}EXISTS ({inner})",
                 if *negated { "NOT " } else { "" }
@@ -147,7 +156,10 @@ fn render_clause(
             if items.is_empty() {
                 return Err(AppError::validation("empty boolean group refused"));
             }
-            Ok(format!("({})", render_conditions(items, params, context)?))
+            Ok(format!(
+                "({})",
+                render_conditions(items, params, context, dialect)?
+            ))
         }
         Clause::AggregateCmp {
             aggregate,
@@ -167,10 +179,10 @@ fn render_clause(
             }
             params.push(value.clone());
             Ok(format!(
-                "{} {} ${}",
+                "{} {} {}",
                 aggregate.render(),
-                operator.sql(),
-                params.len()
+                operator.sql_for(dialect),
+                dialect.placeholder(params.len())
             ))
         }
     }
@@ -182,6 +194,7 @@ fn render_clause(
 fn render_predicate(
     cond: &select::Condition,
     params: &mut Vec<Value>,
+    dialect: &dyn Dialect,
 ) -> Result<String, AppError> {
     use select::Operator;
     let column = cond.column.as_str();
@@ -198,7 +211,7 @@ fn render_predicate(
             let mut marks = Vec::with_capacity(cond.values.len());
             for value in &cond.values {
                 params.push(value.clone());
-                marks.push(format!("${}", params.len()));
+                marks.push(dialect.placeholder(params.len()));
             }
             Ok(format!(
                 "{} {} ({})",
@@ -218,7 +231,7 @@ fn render_predicate(
             let mut marks = Vec::with_capacity(2);
             for value in &cond.values {
                 params.push(value.clone());
-                marks.push(format!("${}", params.len()));
+                marks.push(dialect.placeholder(params.len()));
             }
             Ok(format!(
                 "{} {} {} AND {}",
@@ -236,7 +249,12 @@ fn render_predicate(
                 )));
             }
             params.push(cond.values[0].clone());
-            Ok(format!("{} {} ${}", column, other.sql(), params.len()))
+            Ok(format!(
+                "{} {} {}",
+                column,
+                other.sql_for(dialect),
+                dialect.placeholder(params.len())
+            ))
         }
     }
 }

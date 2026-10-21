@@ -99,7 +99,10 @@ impl Delete {
         self
     }
 
-    pub fn build(&self) -> Result<CompiledWrite, AppError> {
+    pub fn build(
+        &self,
+        dialect: &dyn crate::dialect::Dialect,
+    ) -> Result<CompiledWrite, AppError> {
         if self.conditions.is_empty() && !self.allow_unfiltered {
             return Err(AppError::validation(
                 "DELETE without WHERE refused (call allow_unfiltered to override)",
@@ -113,9 +116,16 @@ impl Delete {
                 &self.conditions,
                 &mut params,
                 ClauseContext::Where,
+                dialect,
             )?);
         }
         if !self.returning.is_empty() {
+            if !dialect.supports_returning() {
+                return Err(AppError::validation(format!(
+                    "the {} dialect cannot RETURNING: read the row back by key instead",
+                    dialect.id()
+                )));
+            }
             sql.push_str(" RETURNING ");
             sql.push_str(
                 &self
@@ -126,7 +136,11 @@ impl Delete {
                     .join(", "),
             );
         }
-        Ok(CompiledWrite { sql, params })
+        Ok(CompiledWrite {
+            sql,
+            params,
+            dialect: dialect.id(),
+        })
     }
 }
 
@@ -143,7 +157,7 @@ mod tests {
         let q = Delete::from_table(id("appointments"))
             .where_eq(id("id"), Value::Uuid(uuid::Uuid::now_v7()))
             .returning(vec![id("id")])
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(q.sql, "DELETE FROM appointments WHERE id = $1 RETURNING id");
         assert_eq!(q.params.len(), 1);
@@ -155,15 +169,15 @@ mod tests {
         let q = Delete::from_table(id("records"))
             .where_eq(id("id"), Value::Uuid(uuid::Uuid::now_v7()))
             .tenant_scope(id("tenant_id"), tenant)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert!(q.sql.ends_with("AND tenant_id = $2"));
     }
 
     #[test]
     fn unfiltered_delete_refused() {
-        let err = Delete::from_table(id("t")).build().unwrap_err();
+        let err = Delete::from_table(id("t")).build(&crate::dialect::POSTGRES).unwrap_err();
         assert!(err.public_message.contains("WHERE"));
-        assert!(Delete::from_table(id("t")).allow_unfiltered().build().is_ok());
+        assert!(Delete::from_table(id("t")).allow_unfiltered().build(&crate::dialect::POSTGRES).is_ok());
     }
 }

@@ -148,7 +148,10 @@ impl Update {
         self
     }
 
-    pub fn build(&self) -> Result<CompiledWrite, AppError> {
+    pub fn build(
+        &self,
+        dialect: &dyn crate::dialect::Dialect,
+    ) -> Result<CompiledWrite, AppError> {
         if self.sets.is_empty() {
             return Err(AppError::validation("UPDATE needs at least one SET"));
         }
@@ -175,7 +178,11 @@ impl Update {
             .map(|item| match item {
                 SetItem::Assign(col, v) => {
                     params.push(v.clone());
-                    format!("{} = ${}", col.as_str(), params.len())
+                    format!(
+                        "{} = {}",
+                        col.as_str(),
+                        dialect.placeholder(params.len())
+                    )
                 }
                 SetItem::Adjust {
                     column,
@@ -184,11 +191,11 @@ impl Update {
                 } => {
                     params.push(value.clone());
                     format!(
-                        "{} = {} {} ${}",
+                        "{} = {} {} {}",
                         column.as_str(),
                         column.as_str(),
                         sign,
-                        params.len()
+                        dialect.placeholder(params.len())
                     )
                 }
             })
@@ -201,10 +208,17 @@ impl Update {
                 &self.conditions,
                 &mut params,
                 ClauseContext::Where,
+                dialect,
             )?);
         }
 
         if !self.returning.is_empty() {
+            if !dialect.supports_returning() {
+                return Err(AppError::validation(format!(
+                    "the {} dialect cannot RETURNING: read the row back by key instead",
+                    dialect.id()
+                )));
+            }
             sql.push_str(" RETURNING ");
             sql.push_str(
                 &self
@@ -216,7 +230,11 @@ impl Update {
             );
         }
 
-        Ok(CompiledWrite { sql, params })
+        Ok(CompiledWrite {
+            sql,
+            params,
+            dialect: dialect.id(),
+        })
     }
 }
 
@@ -235,7 +253,7 @@ mod tests {
             .set(id("version"), 2i64)
             .where_eq(id("id"), Value::Uuid(uuid::Uuid::now_v7()))
             .returning(vec![id("id"), id("status")])
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
@@ -251,7 +269,7 @@ mod tests {
             .set(id("x"), 1i64)
             .where_eq(id("id"), Value::Uuid(uuid::Uuid::now_v7()))
             .tenant_scope(id("tenant_id"), tenant)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert!(q.sql.ends_with("AND tenant_id = $3"));
     }
@@ -260,13 +278,13 @@ mod tests {
     fn unfiltered_update_refused() {
         let err = Update::table(id("t"))
             .set(id("a"), 1i64)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap_err();
         assert!(err.public_message.contains("WHERE"));
         assert!(Update::table(id("t"))
             .set(id("a"), 1i64)
             .allow_unfiltered()
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .is_ok());
     }
 
@@ -276,7 +294,7 @@ mod tests {
             .set(id("a"), 1i64)
             .set(id("a"), 2i64)
             .where_eq(id("id"), 1i64)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .is_err());
     }
 
@@ -284,7 +302,7 @@ mod tests {
     fn empty_set_refused() {
         assert!(Update::table(id("t"))
             .where_eq(id("id"), 1i64)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .is_err());
     }
 
@@ -295,7 +313,7 @@ mod tests {
         let q = Update::table(id("t"))
             .increment(id("views"), 1)
             .where_eq(id("id"), 1i64)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(q.sql, "UPDATE t SET views = views + $1 WHERE id = $2");
         assert_eq!(q.params, vec![Value::Int(1), Value::Int(1)]);
@@ -303,7 +321,7 @@ mod tests {
         let q = Update::table(id("t"))
             .decrement(id("balance"), 25)
             .where_eq(id("id"), 1i64)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
@@ -318,7 +336,7 @@ mod tests {
             .increment(id("b"), 2)
             .set(id("c"), 3i64)
             .where_eq(id("id"), 9i64)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
@@ -336,7 +354,7 @@ mod tests {
             .set(id("views"), 5i64)
             .increment(id("views"), 1)
             .where_eq(id("id"), 1i64)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap_err();
         assert!(err.public_message.contains("twice"));
     }

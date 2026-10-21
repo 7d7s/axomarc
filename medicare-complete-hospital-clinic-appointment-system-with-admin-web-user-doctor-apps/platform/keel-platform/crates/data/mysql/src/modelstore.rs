@@ -6,11 +6,14 @@
 //!
 //! MySQL port notes (divergences from `kelson_postgres::modelstore`):
 //!
-//! - Placeholders (rule 1): compiled `$N` SQL is rewritten to ordered `?` in
-//!   one pass (`qmarks`); kelson-query appends binds in SQL-text order, so
+//! - Placeholders (rule 1): the builder renders **for this engine** through
+//!   `kelson_query::MYSQL`, so the compiled SQL already carries ordered `?`
+//!   placeholders. kelson-query appends binds in SQL-text order, so
 //!   appearance order == bind order across WHERE / ORDER BY / LIMIT /
 //!   OFFSET (the same positional trust the pg twin places on its binds).
-//!   Nothing formats a literal number into SQL.
+//!   Nothing formats a literal number into SQL. **No SQL is rewritten after
+//!   the fact**: the earlier `qmarks` / `to_mysql_upsert` textual rewrites
+//!   are gone, replaced by the dialect layer in `kelson-query`.
 //! - No RETURNING (rule 10): every write executes, then the row(s) come
 //!   from a follow-up SELECT on the same pool under the SAME scope
 //!   predicates, projecting `all_columns(model)` -- byte-equivalent to the
@@ -41,14 +44,15 @@
 //!   it would also swallow the not-null/range errors pg raises. Plain
 //!   `insert` does NOT swallow 1062, so the appointments partial-unique
 //!   double-booking guard surfaces as a persistence error, like pg.
-//! - `upsert` (rule 7): `ON CONFLICT (target) DO UPDATE SET x = EXCLUDED.x`
-//!   becomes the MySQL 8.0.19+ row-alias form `VALUES (...) AS new ON
-//!   DUPLICATE KEY UPDATE x = new.x`. The conflict target is NOT
-//!   expressible: ANY unique key of the table fires the merge, so a
-//!   collision on a *different* unique key merges where pg errors (flagged;
-//!   the readback then finds no row and fails closed as a persistence
-//!   error). `id` stays out of the update list, so the surviving row keeps
-//!   its primary key -- the readback therefore matches `id OR (every
+//! - `upsert` (rule 7): the builder's conflict intent (`ON CONFLICT (target)
+//!   DO UPDATE SET x = EXCLUDED.x`) is rendered by the MySQL dialect as the
+//!   8.0.19+ row-alias form `VALUES (...) AS new ON DUPLICATE KEY UPDATE
+//!   x = new.x`. The conflict target is NOT expressible: ANY unique key of
+//!   the table fires the merge, so a collision on a *different* unique key
+//!   merges where pg errors (flagged; the readback then finds no row and
+//!   fails closed as a persistence error). `id` stays out of the update
+//!   list, so the surviving row keeps its primary key -- the readback
+//!   therefore matches `id OR (every
 //!   conflict column)` under the record's tenant scope (pg's RETURNING
 //!   carries no tenant predicate; scoping it can only turn a cross-tenant
 //!   conflict-target collision into an error, never leak a foreign row).
@@ -138,32 +142,6 @@ fn ident(name: &str) -> Result<Ident, AppError> {
     Ident::new(name.to_string())
 }
 
-/// `$N` placeholders -> ordered `?` (rule 1). MySQL binds positionally by
-/// appearance, and kelson-query numbers `$N` in SQL-text order (binds are
-/// appended while the statement renders), so appearance order == bind
-/// order across WHERE / ORDER BY / LIMIT / OFFSET. Identifiers are
-/// Ident-validated (no `$`), values travel only as binds, and the fixed
-/// literals the builders emit contain no `$` digits, so a `$` followed by
-/// digits is always a placeholder.
-fn qmarks(sql: &str) -> String {
-    let mut out = String::with_capacity(sql.len());
-    let mut rest = sql;
-    while let Some(dollar) = rest.find('$') {
-        let (head, tail) = rest.split_at(dollar);
-        out.push_str(head);
-        let after = &tail[1..];
-        let digits = after.len() - after.trim_start_matches(|c: char| c.is_ascii_digit()).len();
-        if digits == 0 {
-            out.push('$');
-            rest = after;
-        } else {
-            out.push('?');
-            rest = &after[digits..];
-        }
-    }
-    out.push_str(rest);
-    out
-}
 
 fn bind_params<'q>(
     mut query: sqlx::query::Query<'q, sqlx::MySql, MySqlArguments>,
@@ -647,7 +625,7 @@ fn exists_select(tenant: Option<TenantId>, ex: &ExistsFilter) -> Result<Select, 
 
 
 fn fetch_rows(pool: &MySqlPool, compiled: &CompiledSelect) -> Result<Vec<MySqlRow>, AppError> {
-    let sql = qmarks(&compiled.sql);
+    let sql = compiled.sql.clone();
     let params = compiled.params.clone();
     let pool = pool.clone();
     block_on(async move {
@@ -662,7 +640,7 @@ fn fetch_rows(pool: &MySqlPool, compiled: &CompiledSelect) -> Result<Vec<MySqlRo
 /// `restore` consult it (rule 16); every other write re-selects its row(s)
 /// with a follow-up SELECT under the same scope predicates.
 fn exec_write(pool: &MySqlPool, compiled: &CompiledWrite) -> Result<u64, AppError> {
-    let sql = qmarks(&compiled.sql);
+    let sql = compiled.sql.clone();
     let params = compiled.params.clone();
     let pool = pool.clone();
     block_on(async move {
@@ -672,25 +650,6 @@ fn exec_write(pool: &MySqlPool, compiled: &CompiledWrite) -> Result<u64, AppErro
     })
 }
 
-/// pg's `ON CONFLICT (target) DO UPDATE SET x = EXCLUDED.x` -> the MySQL
-/// 8.0.19+ row-alias form `VALUES (...) AS new ON DUPLICATE KEY UPDATE
-/// x = new.x` (rule 7). The conflict target is dropped (not expressible:
-/// ANY unique key of the table fires the merge), which is why the readback
-/// matches `id OR (every conflict column)` and takes `LIMIT 1`.
-fn to_mysql_upsert(sql: &str) -> Result<String, AppError> {
-    const CONFLICT: &str = " ON CONFLICT (";
-    const SETTER: &str = ") DO UPDATE SET ";
-    let at = sql
-        .find(CONFLICT)
-        .ok_or_else(|| AppError::validation("upsert SQL lost its conflict clause"))?;
-    let head = &sql[..at];
-    let rest = &sql[at + CONFLICT.len()..];
-    let set_at = rest
-        .find(SETTER)
-        .ok_or_else(|| AppError::validation("upsert SQL lost its DO UPDATE list"))?;
-    let updates = rest[set_at + SETTER.len()..].replace("EXCLUDED.", "new.");
-    Ok(format!("{head} AS new ON DUPLICATE KEY UPDATE {updates}"))
-}
 
 fn map_rows(rows: Vec<MySqlRow>, model: &ModelDef) -> Result<Vec<Record>, AppError> {
     rows.iter().map(|r| row_to_record(r, model)).collect()
@@ -728,7 +687,7 @@ impl ModelStore for MySqlModelStore {
                 (1, 0)
             }
         };
-        let compiled = select.build()?;
+        let compiled = select.build(&kelson_query::MYSQL)?;
         // The read may be served by the replica (only when the caller opted in).
         let read_pool = self.pool_for_read(opts);
         let rows = fetch_rows(read_pool, &compiled)?;
@@ -742,12 +701,11 @@ impl ModelStore for MySqlModelStore {
                 model,
                 opts,
             )?
-            .build()?;
+            .build(&kelson_query::MYSQL)?;
             let count_sql = format!(
                 "SELECT COUNT(*) FROM ({}) AS _kelson_count",
                 count_select.sql
             );
-            let count_sql = qmarks(&count_sql);
             let params = count_select.params.clone();
             // The count is taken from the SAME pool as the page, so the two
             // agree even when the page came from the replica.
@@ -785,7 +743,7 @@ impl ModelStore for MySqlModelStore {
         if model.soft_deletes && !include_deleted {
             select = select.where_null(ident("deleted_at")?);
         }
-        let rows = fetch_rows(&self.pool, &select.build()?)?;
+        let rows = fetch_rows(&self.pool, &select.build(&kelson_query::MYSQL)?)?;
         Ok(map_rows(rows, model)?.into_iter().next())
     }
 
@@ -803,7 +761,7 @@ impl ModelStore for MySqlModelStore {
                 kelson_foundation::TenantId::from_uuid(record_uuid(record, "tenant_id")?),
             );
         }
-        let compiled = insert.build()?;
+        let compiled = insert.build(&kelson_query::MYSQL)?;
         // Readback under the write's scope: the record's own tenant is
         // pinned in as defense in depth (the write guard already bound that
         // value into the row); the insert carried no soft veil.
@@ -816,7 +774,7 @@ impl ModelStore for MySqlModelStore {
                 kelson_foundation::TenantId::from_uuid(record_uuid(record, "tenant_id")?),
             );
         }
-        let readback = select.build()?;
+        let readback = select.build(&kelson_query::MYSQL)?;
         exec_write(&self.pool, &compiled)?;
         let rows = fetch_rows(&self.pool, &readback)?;
         map_rows(rows, model)?
@@ -849,7 +807,7 @@ impl ModelStore for MySqlModelStore {
             };
             update = update.set(ident(key)?, bind);
         }
-        let compiled = update.build()?;
+        let compiled = update.build(&kelson_query::MYSQL)?;
         // Rule 10: readback repeats the write's scope (the update carried no
         // soft veil), so changes to `tenant_id` re-select nothing -- exactly
         // like a foreign-tenant write's empty pg RETURNING.
@@ -862,7 +820,7 @@ impl ModelStore for MySqlModelStore {
                 None => select = select.where_eq(ident("tenant_id")?, Bind::Null),
             }
         }
-        let readback = select.build()?;
+        let readback = select.build(&kelson_query::MYSQL)?;
         exec_write(&self.pool, &compiled)?;
         let rows = fetch_rows(&self.pool, &readback)?;
         Ok(map_rows(rows, model)?.into_iter().next())
@@ -885,7 +843,7 @@ impl ModelStore for MySqlModelStore {
                     None => update = update.where_eq(ident("tenant_id")?, Bind::Null),
                 }
             }
-            let compiled = update.build()?;
+            let compiled = update.build(&kelson_query::MYSQL)?;
             // Rule 16: a matched soft delete always stamps `deleted_at`, so
             // rows_affected equals pg's RETURNING-presence.
             let affected = exec_write(&self.pool, &compiled)?;
@@ -898,7 +856,7 @@ impl ModelStore for MySqlModelStore {
                 None => delete = delete.where_eq(ident("tenant_id")?, Bind::Null),
             }
         }
-        let compiled = delete.build()?;
+        let compiled = delete.build(&kelson_query::MYSQL)?;
         // Rule 16: DELETE counts the removed rows.
         let affected = exec_write(&self.pool, &compiled)?;
         Ok(affected > 0)
@@ -933,12 +891,11 @@ impl ModelStore for MySqlModelStore {
                 kelson_foundation::TenantId::from_uuid(record_uuid(record, "tenant_id")?),
             );
         }
-        let compiled = insert.build()?;
-        // Rule 7: rewrite the pg conflict clause to the row-alias form
-        // (flagged: MySQL fires it for ANY unique key of the table).
-        let sql = to_mysql_upsert(&compiled.sql)?;
-        // Rule 1: every built statement is rewritten to `?` before execution.
-        let sql = qmarks(&sql);
+        // The MySQL dialect renders the conflict clause natively (the
+        // 8.0.19+ row-alias form `AS new ON DUPLICATE KEY UPDATE c =
+        // new.c`), so no SQL is rewritten here any more. Flagged: MySQL
+        // fires the merge for ANY unique key of the table.
+        let compiled = insert.build(&kelson_query::MYSQL)?;
         // Prepare the readback BEFORE the write, so a malformed record fails
         // closed without inserting.
         let id_column = ident("id")?;
@@ -976,8 +933,9 @@ impl ModelStore for MySqlModelStore {
             }
             grouped
         });
-        let readback = select.limit(1).build()?;
+        let readback = select.limit(1).build(&kelson_query::MYSQL)?;
         let params = compiled.params.clone();
+        let sql = compiled.sql.clone();
         let pool = self.pool.clone();
         block_on(async move {
             let query = bind_params(sqlx::query(&sql), &params);
@@ -1007,7 +965,7 @@ impl ModelStore for MySqlModelStore {
             kelson_models::AggregateOp::Min(f) => select.min(ident(f)?),
             kelson_models::AggregateOp::Max(f) => select.max(ident(f)?),
         };
-        let compiled = select.build()?;
+        let compiled = select.build(&kelson_query::MYSQL)?;
         let rows = fetch_rows(&self.pool, &compiled)?;
         let row = rows
             .into_iter()
@@ -1023,7 +981,7 @@ impl ModelStore for MySqlModelStore {
         filters: &[FieldFilter],
     ) -> Result<bool, AppError> {
         let select = base_select(model, tenant, filters, false)?.exists();
-        let compiled = select.build()?;
+        let compiled = select.build(&kelson_query::MYSQL)?;
         let rows = fetch_rows(&self.pool, &compiled)?;
         let row = rows
             .into_iter()
@@ -1040,7 +998,7 @@ impl ModelStore for MySqlModelStore {
         include_deleted: bool,
     ) -> Result<Option<Record>, AppError> {
         let select = base_select(model, tenant, filters, include_deleted)?.limit(1);
-        let compiled = select.build()?;
+        let compiled = select.build(&kelson_query::MYSQL)?;
         let rows = fetch_rows(&self.pool, &compiled)?;
         Ok(map_rows(rows, model)?.into_iter().next())
     }
@@ -1064,7 +1022,7 @@ impl ModelStore for MySqlModelStore {
         if model.soft_deletes && !include_deleted {
             select = select.where_null(ident("deleted_at")?);
         }
-        let compiled = select.build()?;
+        let compiled = select.build(&kelson_query::MYSQL)?;
         let rows = fetch_rows(&self.pool, &compiled)?;
         Ok(map_rows(rows, model)?.into_iter().next())
     }
@@ -1083,7 +1041,7 @@ impl ModelStore for MySqlModelStore {
                 kelson_foundation::TenantId::from_uuid(record_uuid(record, "tenant_id")?),
             );
         }
-        let compiled = insert.build()?;
+        let compiled = insert.build(&kelson_query::MYSQL)?;
         // Rule 17: pg's target-less `ON CONFLICT DO NOTHING` has no MySQL
         // form -- a plain INSERT runs, and ONLY a duplicate-key error maps
         // to `Ok(None)` below; every other error still surfaces.
@@ -1096,8 +1054,8 @@ impl ModelStore for MySqlModelStore {
                 kelson_foundation::TenantId::from_uuid(record_uuid(record, "tenant_id")?),
             );
         }
-        let readback = select.build()?;
-        let sql = qmarks(&compiled.sql);
+        let readback = select.build(&kelson_query::MYSQL)?;
+        let sql = compiled.sql.clone();
         let params = compiled.params.clone();
         let pool = self.pool.clone();
         match block_on(async move {
@@ -1154,13 +1112,13 @@ impl ModelStore for MySqlModelStore {
             };
             update = update.set(ident(field)?, bind);
         }
-        let compiled = update.build()?;
+        let compiled = update.build(&kelson_query::MYSQL)?;
         // Rule 10: capture the matched keys BEFORE the write -- changes may
         // stop rows from matching their own filters, which pg's RETURNING
         // would still return.
         let key_select = base_select(model, tenant, filters, false)?
             .column(ident("id")?)
-            .build()?;
+            .build(&kelson_query::MYSQL)?;
         let key_rows = fetch_rows(&self.pool, &key_select)?;
         let mut keys: Vec<Uuid> = Vec::with_capacity(key_rows.len());
         for row in &key_rows {
@@ -1183,7 +1141,7 @@ impl ModelStore for MySqlModelStore {
                 None => select = select.where_eq(ident("tenant_id")?, Bind::Null),
             }
         }
-        let readback = select.build()?;
+        let readback = select.build(&kelson_query::MYSQL)?;
         let rows = fetch_rows(&self.pool, &readback)?;
         map_rows(rows, model)
     }
@@ -1220,12 +1178,12 @@ impl ModelStore for MySqlModelStore {
                 ),
             };
         }
-        let compiled = delete.build()?;
+        let compiled = delete.build(&kelson_query::MYSQL)?;
         // Rule 10: read the pre-image FIRST (pg's `DELETE ... RETURNING`
         // yields the rows as they were), then delete.
         let pre_select = base_select(model, tenant, filters, false)?
             .select(all_columns(model)?)
-            .build()?;
+            .build(&kelson_query::MYSQL)?;
         let rows = fetch_rows(&self.pool, &pre_select)?;
         exec_write(&self.pool, &compiled)?;
         map_rows(rows, model)
@@ -1245,15 +1203,16 @@ impl ModelStore for MySqlModelStore {
                 None => delete = delete.where_eq(ident("tenant_id")?, Bind::Null),
             }
         }
-        let compiled = delete.build()?;
+        let compiled = delete.build(&kelson_query::MYSQL)?;
         // Rule 16: DELETE counts the removed rows.
         let affected = exec_write(&self.pool, &compiled)?;
         Ok(affected > 0)
     }
 
     fn truncate(&self, model: &ModelDef, env: &str) -> Result<(), AppError> {
-        let compiled = kelson_query::Truncate::table(ident(&model.table)?).build_gated(env)?;
-        let sql = qmarks(&compiled.sql);
+        let compiled =
+            kelson_query::Truncate::table(ident(&model.table)?).build_gated(env, &kelson_query::MYSQL)?;
+        let sql = compiled.sql.clone();
         let params = compiled.params;
         let pool = self.pool.clone();
         block_on(async move {
@@ -1293,7 +1252,7 @@ impl ModelStore for MySqlModelStore {
             };
             update = update.set(ident(key)?, bind);
         }
-        let compiled = update.build()?;
+        let compiled = update.build(&kelson_query::MYSQL)?;
         // Rule 10: readback repeats the write's scope -- tenant posture AND
         // the soft-delete veil the write carried (rule 11).
         let mut select = Select::from_table(ident(&model.table)?)
@@ -1308,7 +1267,7 @@ impl ModelStore for MySqlModelStore {
         if model.soft_deletes {
             select = select.where_null(ident("deleted_at")?);
         }
-        let readback = select.build()?;
+        let readback = select.build(&kelson_query::MYSQL)?;
         exec_write(&self.pool, &compiled)?;
         let rows = fetch_rows(&self.pool, &readback)?;
         Ok(map_rows(rows, model)?.into_iter().next())
@@ -1337,7 +1296,7 @@ impl ModelStore for MySqlModelStore {
                 None => update = update.where_eq(ident("tenant_id")?, Bind::Null),
             }
         }
-        let compiled = update.build()?;
+        let compiled = update.build(&kelson_query::MYSQL)?;
         // Rule 16: a matched restore always clears the stamp.
         let affected = exec_write(&self.pool, &compiled)?;
         if affected == 0 {
@@ -1355,7 +1314,7 @@ impl ModelStore for MySqlModelStore {
                 None => select = select.where_eq(ident("tenant_id")?, Bind::Null),
             }
         }
-        let readback = select.build()?;
+        let readback = select.build(&kelson_query::MYSQL)?;
         let rows = fetch_rows(&self.pool, &readback)?;
         Ok(map_rows(rows, model)?.into_iter().next())
     }

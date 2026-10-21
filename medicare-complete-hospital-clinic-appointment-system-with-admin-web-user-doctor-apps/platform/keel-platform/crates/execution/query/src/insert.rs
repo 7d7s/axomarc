@@ -96,7 +96,10 @@ impl Insert {
         self
     }
 
-    pub fn build(&self) -> Result<CompiledWrite, AppError> {
+    pub fn build(
+        &self,
+        dialect: &dyn crate::dialect::Dialect,
+    ) -> Result<CompiledWrite, AppError> {
         if self.columns.is_empty() {
             return Err(AppError::validation("INSERT needs at least one column"));
         }
@@ -153,7 +156,7 @@ impl Insert {
                     .iter()
                     .map(|v| {
                         params.push(v.clone());
-                        format!("${}", params.len())
+                        dialect.placeholder(params.len())
                     })
                     .collect();
                 format!("({})", marks.join(", "))
@@ -162,6 +165,19 @@ impl Insert {
         sql.push_str(&row_sqls.join(", "));
 
         if let Some(policy) = self.conflict {
+            // The columns the DO UPDATE assigns: every inserted column that
+            // is neither part of the conflict target nor explicitly
+            // excluded from the update.
+            let set_columns: Vec<Ident> = self
+                .columns
+                .iter()
+                .filter(|c| {
+                    !self.conflict_target.iter().any(|t| t == *c)
+                        && !self.conflict_update_exclude.iter().any(|x| x == *c)
+                })
+                .cloned()
+                .collect();
+
             if self.conflict_target.is_empty() {
                 // Target-less DO NOTHING ignores ANY unique-constraint
                 // violation (Postgres-legal; backs ModelStore::insert_or_ignore).
@@ -171,7 +187,6 @@ impl Insert {
                         "ON CONFLICT DO UPDATE needs at least one target column",
                     ));
                 }
-                sql.push_str(" ON CONFLICT DO NOTHING");
             } else {
                 for t in &self.conflict_target {
                     if !self.columns.iter().any(|c| c == t) {
@@ -181,41 +196,37 @@ impl Insert {
                         )));
                     }
                 }
-                sql.push_str(" ON CONFLICT (");
-                sql.push_str(
-                    &self
-                        .conflict_target
-                        .iter()
-                        .map(|c| c.as_str().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                );
-                sql.push(')');
-                match policy {
-                    ConflictPolicy::DoNothing => sql.push_str(" DO NOTHING"),
-                    ConflictPolicy::DoUpdate => {
-                        let updates: Vec<String> = self
-                            .columns
-                            .iter()
-                            .filter(|c| {
-                                !self.conflict_target.iter().any(|t| t == *c)
-                                    && !self.conflict_update_exclude.iter().any(|x| x == *c)
-                            })
-                            .map(|c| format!("{} = EXCLUDED.{}", c.as_str(), c.as_str()))
-                            .collect();
-                        if updates.is_empty() {
-                            return Err(AppError::validation(
-                                "ON CONFLICT DO UPDATE needs at least one non-target column",
-                            ));
-                        }
-                        sql.push_str(" DO UPDATE SET ");
-                        sql.push_str(&updates.join(", "));
-                    }
+                if policy == ConflictPolicy::DoUpdate && set_columns.is_empty() {
+                    return Err(AppError::validation(
+                        "ON CONFLICT DO UPDATE needs at least one non-target column",
+                    ));
                 }
+            }
+
+            // The dialect owns the conflict form: Postgres renders
+            // `ON CONFLICT (t) DO UPDATE SET c = EXCLUDED.c`; MySQL 8.0.19+
+            // renders the row-alias form `AS new ON DUPLICATE KEY UPDATE
+            // c = new.c` (the alias sits right after the VALUES list).
+            let rendered = dialect.render_upsert(policy, &self.conflict_target, &set_columns);
+            if let Some(alias) = rendered.alias {
+                sql.push_str(&alias);
+            }
+            if let Some(clause) = rendered.clause {
+                sql.push(' ');
+                sql.push_str(&clause);
             }
         }
 
         if !self.returning.is_empty() {
+            // MySQL has no RETURNING: the adapter reads the row back by key.
+            // Silently dropping the clause would make the caller believe it
+            // got the rows back — refuse instead.
+            if !dialect.supports_returning() {
+                return Err(AppError::validation(format!(
+                    "the {} dialect cannot RETURNING: read the row back by key instead",
+                    dialect.id()
+                )));
+            }
             sql.push_str(" RETURNING ");
             sql.push_str(
                 &self
@@ -227,7 +238,11 @@ impl Insert {
             );
         }
 
-        Ok(CompiledWrite { sql, params })
+        Ok(CompiledWrite {
+            sql,
+            params,
+            dialect: dialect.id(),
+        })
     }
 }
 
@@ -247,7 +262,7 @@ mod tests {
                 Value::Uuid(uuid::Uuid::now_v7()),
                 Value::Text("Jane".into()),
             ])
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(q.sql, "INSERT INTO appointments (id, patient) VALUES ($1, $2)");
         assert_eq!(q.params.len(), 2);
@@ -259,7 +274,7 @@ mod tests {
             .columns(vec![id("name")])
             .row(vec![Value::Text("a".into())])
             .row(vec![Value::Text("b".into())])
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(q.sql, "INSERT INTO tags (name) VALUES ($1), ($2)");
         assert_eq!(q.params[1], Value::Text("b".into()));
@@ -276,7 +291,7 @@ mod tests {
             ])
             .on_conflict(vec![id("id")], ConflictPolicy::DoUpdate)
             .returning(vec![id("id")])
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
@@ -296,7 +311,7 @@ mod tests {
             ])
             .on_conflict(vec![id("tenant_id"), id("name")], ConflictPolicy::DoUpdate)
             .exclude_from_conflict_update(vec![id("id")])
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert!(
             q.sql.ends_with("ON CONFLICT (tenant_id, name) DO UPDATE SET value = EXCLUDED.value"),
@@ -311,7 +326,7 @@ mod tests {
             .columns(vec![id("key"), id("response")])
             .row(vec![Value::Text("k".into()), Value::Null])
             .on_conflict(vec![id("key")], ConflictPolicy::DoNothing)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert!(q.sql.ends_with("ON CONFLICT (key) DO NOTHING"));
     }
@@ -324,7 +339,7 @@ mod tests {
             .columns(vec![id("a")])
             .row(vec![Value::Null])
             .on_conflict(vec![], ConflictPolicy::DoNothing)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert!(q.sql.ends_with(" ON CONFLICT DO NOTHING"), "{}", q.sql);
 
@@ -333,36 +348,36 @@ mod tests {
             .columns(vec![id("a")])
             .row(vec![Value::Null])
             .on_conflict(vec![], ConflictPolicy::DoUpdate)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap_err();
         assert!(err.public_message.contains("target column"));
     }
 
     #[test]
     fn build_errors() {
-        assert!(Insert::into_table(id("t")).build().is_err());
+        assert!(Insert::into_table(id("t")).build(&crate::dialect::POSTGRES).is_err());
         assert!(Insert::into_table(id("t"))
             .columns(vec![id("a")])
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .is_err());
         assert!(Insert::into_table(id("t"))
             .columns(vec![id("a")])
             .row(vec![Value::Null, Value::Null])
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .is_err());
         // conflict target not among columns
         assert!(Insert::into_table(id("t"))
             .columns(vec![id("a")])
             .row(vec![Value::Null])
             .on_conflict(vec![id("zz")], ConflictPolicy::DoNothing)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .is_err());
         // DO UPDATE with only target columns
         assert!(Insert::into_table(id("t"))
             .columns(vec![id("a")])
             .row(vec![Value::Null])
             .on_conflict(vec![id("a")], ConflictPolicy::DoUpdate)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .is_err());
     }
 
@@ -373,7 +388,7 @@ mod tests {
             .columns(vec![id("tenant_id"), id("x")])
             .row(vec![Value::Uuid(*tenant.as_uuid()), Value::Int(1)])
             .tenant_scope(id("tenant_id"), tenant)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(ok.params.len(), 2);
 
@@ -382,7 +397,7 @@ mod tests {
             .columns(vec![id("tenant_id"), id("x")])
             .row(vec![Value::Uuid(uuid::Uuid::now_v7()), Value::Int(1)])
             .tenant_scope(id("tenant_id"), tenant)
-            .build();
+            .build(&crate::dialect::POSTGRES);
         assert!(bad.is_err());
 
         // tenant column missing from the insert -> build refuses.
@@ -390,7 +405,7 @@ mod tests {
             .columns(vec![id("x")])
             .row(vec![Value::Int(1)])
             .tenant_scope(id("tenant_id"), tenant)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .is_err());
     }
 }

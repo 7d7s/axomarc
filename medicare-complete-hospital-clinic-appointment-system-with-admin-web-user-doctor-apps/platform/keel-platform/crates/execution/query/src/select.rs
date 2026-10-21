@@ -179,7 +179,19 @@ impl Operator {
         }
     }
 
-    /// Scalar comparison operators — usable between two COLUMNS or an
+    /// The operator rendered for a specific dialect.
+    ///
+    /// Every operator is engine-neutral except the case-insensitive match:
+    /// Postgres spells it `ILIKE`, MySQL has no `ILIKE` and its `LIKE` is
+    /// already case-insensitive under the default collation.
+    pub(crate) fn sql_for(self, dialect: &dyn crate::dialect::Dialect) -> String {
+        match self {
+            Operator::Ilike => dialect.ilike_operator().to_string(),
+            other => other.sql().to_string(),
+        }
+    }
+
+    /// Scalar comparison operators - usable between two COLUMNS or an
     /// aggregate and a bind. List/range/null operators are excluded: they
     /// either need bind lists or render as bare predicates.
     pub(crate) fn is_scalar(self) -> bool {
@@ -253,10 +265,10 @@ pub enum DatePart {
 }
 
 impl DatePart {
-    /// Rendered predicate for `part(column) = <placeholder>`; the placeholder
-    /// carries the bind (date gets a `::date` cast so text/timestamp binds
-    /// both coerce).
-    pub(crate) fn render_sql(self, column: &str, placeholder: &str) -> String {
+    /// The Postgres rendering (`::date`, `TO_CHAR`). The dialect layer
+    /// calls this for the Postgres dialect; MySQL renders its own form
+    /// (`DATE()`, `DATE_FORMAT`).
+    pub(crate) fn render_postgres(self, column: &str, placeholder: &str) -> String {
         match self {
             DatePart::Date => format!("{column}::date = {placeholder}::date"),
             DatePart::Year => format!("EXTRACT(YEAR FROM {column}) = {placeholder}"),
@@ -340,12 +352,17 @@ pub enum Clause {
     },
 }
 
-/// Compiled SELECT statement: SQL text with `$N` placeholders and the bind
-/// values in matching order.
+/// Compiled SELECT statement: SQL text with the dialect's placeholders and
+/// the bind values in matching order.
+///
+/// `dialect` records the engine the statement was rendered for, so an
+/// adapter can fail closed on a statement built for the wrong engine
+/// instead of sending it and reading the server's error.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompiledSelect {
     pub sql: String,
     pub params: Vec<Value>,
+    pub dialect: crate::dialect::DialectId,
 }
 
 /// Typed SELECT builder. SQL is generated only by [`Select::build`]; every
@@ -1051,16 +1068,24 @@ impl Select {
     // -------------------------------------------------------------- RENDER
 
     /// Validate shape and generate SQL + ordered binds.
-    pub fn build(self) -> Result<CompiledSelect, AppError> {
+    pub fn build(&self, dialect: &dyn crate::dialect::Dialect) -> Result<CompiledSelect, AppError> {
         let mut params: Vec<Value> = Vec::new();
-        let sql = self.render(&mut params)?;
-        Ok(CompiledSelect { sql, params })
+        let sql = self.render(&mut params, dialect)?;
+        Ok(CompiledSelect {
+            sql,
+            params,
+            dialect: dialect.id(),
+        })
     }
 
     /// Render the full statement, appending binds to the CALLER's sequence —
-    /// this is how subqueries and union operands keep `$N` continuous with
-    /// the outer query.
-    pub(crate) fn render(&self, params: &mut Vec<Value>) -> Result<String, AppError> {
+    /// this is how subqueries and union operands keep the placeholder
+    /// numbering continuous with the outer query.
+    pub(crate) fn render(
+        &self,
+        params: &mut Vec<Value>,
+        dialect: &dyn crate::dialect::Dialect,
+    ) -> Result<String, AppError> {
         if let Some(message) = &self.deferred_error {
             return Err(AppError::validation(message.clone()));
         }
@@ -1078,7 +1103,7 @@ impl Select {
                 "aggregate projection conflicts with explicit column list",
             ));
         }
-        let composite = self.render_composite(table, params)?;
+        let composite = self.render_composite(table, params, dialect)?;
         Ok(match self.exists {
             None => composite,
             Some(true) => format!("SELECT EXISTS ({composite})"),
@@ -1090,6 +1115,7 @@ impl Select {
         &self,
         table: &Ident,
         params: &mut Vec<Value>,
+        dialect: &dyn crate::dialect::Dialect,
     ) -> Result<String, AppError> {
         let mut sql = String::with_capacity(128);
 
@@ -1129,6 +1155,7 @@ impl Select {
                 &self.clauses,
                 params,
                 crate::ClauseContext::Where,
+                dialect,
             )?);
         }
 
@@ -1144,24 +1171,30 @@ impl Select {
                 &self.having,
                 params,
                 crate::ClauseContext::Having,
+                dialect,
             )?);
         }
 
         if self.unions.is_empty() {
-            self.render_tail(&mut sql, params);
+            self.render_tail(&mut sql, params, dialect);
         } else {
             for (all, branch) in &self.unions {
                 sql.push_str(if *all { " UNION ALL (" } else { " UNION (" });
-                sql.push_str(&branch.render(params)?);
+                sql.push_str(&branch.render(params, dialect)?);
                 sql.push(')');
             }
-            self.render_tail(&mut sql, params);
+            self.render_tail(&mut sql, params, dialect);
         }
         Ok(sql)
     }
 
     /// ORDER BY / LIMIT / OFFSET / locking — always the statement tail.
-    fn render_tail(&self, sql: &mut String, params: &mut Vec<Value>) {
+    fn render_tail(
+        &self,
+        sql: &mut String,
+        params: &mut Vec<Value>,
+        dialect: &dyn crate::dialect::Dialect,
+    ) {
         if !self.order.is_empty() {
             let parts: Vec<String> = self
                 .order
@@ -1183,17 +1216,15 @@ impl Select {
 
         if let Some(n) = self.limit {
             params.push(Value::Int(n as i64));
-            sql.push_str(&format!(" LIMIT ${}", params.len()));
+            sql.push_str(&format!(" LIMIT {}", dialect.placeholder(params.len())));
         }
         if let Some(n) = self.offset {
             params.push(Value::Int(n as i64));
-            sql.push_str(&format!(" OFFSET ${}", params.len()));
+            sql.push_str(&format!(" OFFSET {}", dialect.placeholder(params.len())));
         }
         if let Some(lock) = self.lock {
-            sql.push_str(match lock {
-                Lock::Update => " FOR UPDATE",
-                Lock::Share => " FOR SHARE",
-            });
+            sql.push(' ');
+            sql.push_str(&dialect.render_lock(lock));
         }
     }
 }
@@ -1222,7 +1253,7 @@ mod tests {
 
     #[test]
     fn simple_select_star() {
-        let q = Select::from_table(id("users")).build().unwrap();
+        let q = Select::from_table(id("users")).build(&crate::dialect::POSTGRES).unwrap();
         assert_eq!(q.sql, "SELECT * FROM users");
         assert!(q.params.is_empty());
     }
@@ -1237,7 +1268,7 @@ mod tests {
                 Value::Uuid(uuid::Uuid::now_v7()),
             )
             .where_op(id("status"), Operator::Eq, "confirmed")
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
@@ -1258,7 +1289,7 @@ mod tests {
             .order_by(id("created_at"), Direction::Desc)
             .limit(20)
             .offset(40)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
@@ -1273,7 +1304,7 @@ mod tests {
     fn empty_in_list_rejected() {
         let err = Select::from_table(id("t"))
             .where_in(id("c"), vec![])
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap_err();
         assert!(err.public_message.contains("IN"));
     }
@@ -1283,7 +1314,7 @@ mod tests {
         let tenant = kelson_foundation::TenantId::new();
         let q = Select::from_table(id("records"))
             .tenant_scope(id("tenant_id"), tenant)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(q.sql, "SELECT * FROM records WHERE tenant_id = $1");
         assert_eq!(q.params[0], Value::Uuid(*tenant.as_uuid()));
@@ -1305,7 +1336,7 @@ mod tests {
         let q = Select::from_table(id("t"))
             .where_eq(id("a"), 1i64)
             .or_where(id("b"), Operator::Eq, 2i64)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(q.sql, "SELECT * FROM t WHERE a = $1 OR b = $2");
         assert_eq!(q.params.len(), 2);
@@ -1316,7 +1347,7 @@ mod tests {
         let q = Select::from_table(id("t"))
             .or_where_null(id("a"))
             .where_eq(id("b"), 1i64)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(q.sql, "SELECT * FROM t WHERE a IS NULL AND b = $1");
     }
@@ -1330,7 +1361,7 @@ mod tests {
             .where_eq(id("b"), 2i64)
             .or_where(id("c"), Operator::Eq, 3i64)
             .where_eq(id("d"), 4i64)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
@@ -1343,7 +1374,7 @@ mod tests {
         let q = Select::from_table(id("t"))
             .where_eq(id("tenant_id"), 1i64)
             .group(|g| g.where_eq(id("a"), 2i64).or_where(id("b"), Operator::Eq, 3i64))
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
@@ -1356,14 +1387,14 @@ mod tests {
     fn group_rejects_non_condition_builder() {
         let err = Select::from_table(id("t"))
             .group(|g| g.where_eq(id("a"), 1i64).limit(5))
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap_err();
         assert!(err.public_message.contains("conditions only"));
 
         // An empty group is a build error, not a silent `()`.
         let err = Select::from_table(id("t"))
             .group(|g| g)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap_err();
         assert!(err.public_message.contains("group"));
     }
@@ -1372,13 +1403,13 @@ mod tests {
     fn where_not_in_shape_and_empty_rejected() {
         let q = Select::from_table(id("t"))
             .where_not_in(id("status"), vec!["a".into(), "b".into()])
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(q.sql, "SELECT * FROM t WHERE status NOT IN ($1, $2)");
 
         let err = Select::from_table(id("t"))
             .where_not_in(id("status"), vec![])
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap_err();
         assert!(err.public_message.contains("IN"));
     }
@@ -1387,13 +1418,13 @@ mod tests {
     fn where_between_shapes() {
         let q = Select::from_table(id("t"))
             .where_between(id("n"), 1i64, 5i64)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(q.sql, "SELECT * FROM t WHERE n BETWEEN $1 AND $2");
 
         let q = Select::from_table(id("t"))
             .where_not_between(id("n"), 1i64, 5i64)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(q.sql, "SELECT * FROM t WHERE n NOT BETWEEN $1 AND $2");
     }
@@ -1403,7 +1434,7 @@ mod tests {
         let q = Select::from_table(id("schedules"))
             .where_column(id("starts_at"), id("ends_at"))
             .where_column_op(id("a"), Operator::Gt, id("b"))
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
@@ -1413,7 +1444,7 @@ mod tests {
 
         let err = Select::from_table(id("t"))
             .where_column_op(id("a"), Operator::In, id("b"))
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap_err();
         assert!(err.public_message.contains("operator"));
     }
@@ -1422,7 +1453,7 @@ mod tests {
     fn where_like_renders_ilike() {
         let q = Select::from_table(id("doctors"))
             .where_like(id("name"), "%jo%")
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(q.sql, "SELECT * FROM doctors WHERE name ILIKE $1");
         assert_eq!(q.params[0], Value::Text("%jo%".into()));
@@ -1432,19 +1463,19 @@ mod tests {
     fn date_family_shapes() {
         let q = Select::from_table(id("t"))
             .where_date(id("created_at"), "2026-01-01")
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(q.sql, "SELECT * FROM t WHERE created_at::date = $1::date");
 
         let q = Select::from_table(id("t"))
             .where_year(id("created_at"), 2026i64)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(q.sql, "SELECT * FROM t WHERE EXTRACT(YEAR FROM created_at) = $1");
 
         let q = Select::from_table(id("t"))
             .where_month(id("created_at"), 9i64)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
@@ -1453,13 +1484,13 @@ mod tests {
 
         let q = Select::from_table(id("t"))
             .where_day(id("created_at"), 29i64)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(q.sql, "SELECT * FROM t WHERE EXTRACT(DAY FROM created_at) = $1");
 
         let q = Select::from_table(id("t"))
             .where_time(id("starts_at"), "09:30:00")
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
@@ -1472,28 +1503,28 @@ mod tests {
         let q = Select::from_table(id("t"))
             .distinct()
             .select(vec![id("a"), id("b")])
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(q.sql, "SELECT DISTINCT a, b FROM t");
     }
 
     #[test]
     fn latest_oldest_default_and_overridden_columns() {
-        let q = Select::from_table(id("posts")).latest().build().unwrap();
+        let q = Select::from_table(id("posts")).latest().build(&crate::dialect::POSTGRES).unwrap();
         assert_eq!(q.sql, "SELECT * FROM posts ORDER BY created_at DESC");
 
-        let q = Select::from_table(id("posts")).oldest().build().unwrap();
+        let q = Select::from_table(id("posts")).oldest().build(&crate::dialect::POSTGRES).unwrap();
         assert_eq!(q.sql, "SELECT * FROM posts ORDER BY created_at ASC");
 
         let q = Select::from_table(id("posts"))
             .latest_by(id("published_at"))
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(q.sql, "SELECT * FROM posts ORDER BY published_at DESC");
 
         let q = Select::from_table(id("posts"))
             .oldest_by(id("published_at"))
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(q.sql, "SELECT * FROM posts ORDER BY published_at ASC");
     }
@@ -1503,7 +1534,7 @@ mod tests {
         let q = Select::from_table(id("jobs"))
             .lock_for_update()
             .limit(10)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(q.sql, "SELECT * FROM jobs LIMIT $1 FOR UPDATE");
 
@@ -1511,7 +1542,7 @@ mod tests {
             .shared_lock()
             .limit(5)
             .offset(10)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(q.sql, "SELECT * FROM jobs LIMIT $1 OFFSET $2 FOR SHARE");
     }
@@ -1521,7 +1552,7 @@ mod tests {
         let q = Select::from_table(id("bookings"))
             .group_by(id("clinic_id"))
             .having_op(id("clinic_id"), Operator::Eq, "x")
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
@@ -1531,7 +1562,7 @@ mod tests {
         let q = Select::from_table(id("bookings"))
             .group_by(id("clinic_id"))
             .having_aggregate(Aggregate::Count, Operator::Gt, 5i64)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
@@ -1542,7 +1573,7 @@ mod tests {
             .group_by(id("clinic_id"))
             .having_in(id("status"), vec!["open".into()])
             .having_between(id("n"), 1i64, 3i64)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
@@ -1556,7 +1587,7 @@ mod tests {
         let q = Select::from_table(id("a"))
             .where_eq(id("x"), 1i64)
             .union(branch)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
@@ -1566,7 +1597,7 @@ mod tests {
 
         let q = Select::from_table(id("a"))
             .union_all(Select::from_table(id("b")))
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(q.sql, "SELECT * FROM a UNION ALL (SELECT * FROM b)");
     }
@@ -1578,7 +1609,7 @@ mod tests {
             .order_by(id("id"), Direction::Desc)
             .limit(5)
             .union(Select::from_table(id("b")))
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
@@ -1594,7 +1625,7 @@ mod tests {
             .limit(3);
         let q = Select::from_table(id("a"))
             .union(branch)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
@@ -1607,30 +1638,30 @@ mod tests {
         let q = Select::from_table(id("appointments"))
             .count()
             .where_eq(id("status"), "done")
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(q.sql, "SELECT COUNT(*) FROM appointments WHERE status = $1");
 
         let q = Select::from_table(id("invoices"))
             .sum(id("total"))
             .alias(id("total_sum"))
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(q.sql, "SELECT SUM(total) AS total_sum FROM invoices");
 
-        let q = Select::from_table(id("invoices")).avg(id("total")).build().unwrap();
+        let q = Select::from_table(id("invoices")).avg(id("total")).build(&crate::dialect::POSTGRES).unwrap();
         assert_eq!(q.sql, "SELECT AVG(total) FROM invoices");
 
-        let q = Select::from_table(id("invoices")).min(id("total")).build().unwrap();
+        let q = Select::from_table(id("invoices")).min(id("total")).build(&crate::dialect::POSTGRES).unwrap();
         assert_eq!(q.sql, "SELECT MIN(total) FROM invoices");
 
-        let q = Select::from_table(id("invoices")).max(id("total")).build().unwrap();
+        let q = Select::from_table(id("invoices")).max(id("total")).build(&crate::dialect::POSTGRES).unwrap();
         assert_eq!(q.sql, "SELECT MAX(total) FROM invoices");
 
         let q = Select::from_table(id("bookings"))
             .aggregate(Aggregate::CountColumn(id("doctor_id")))
             .alias(id("doctor_count"))
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
@@ -1643,13 +1674,13 @@ mod tests {
         let err = Select::from_table(id("t"))
             .count()
             .column(id("a"))
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap_err();
         assert!(err.public_message.contains("aggregate"));
 
         let err = Select::from_table(id("t"))
             .alias(id("x"))
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap_err();
         assert!(err.public_message.contains("alias"));
     }
@@ -1662,7 +1693,7 @@ mod tests {
         let q = Select::from_table(id("appointments"))
             .where_exists(subquery)
             .where_eq(id("status"), "booked")
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
@@ -1676,7 +1707,7 @@ mod tests {
 
         let q = Select::from_table(id("t"))
             .where_not_exists(Select::from_table(id("u")).where_eq(id("u.t_id"), 1i64))
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
@@ -1692,7 +1723,7 @@ mod tests {
                 Select::from_table(id("appointments"))
                     .where_column(id("appointments.patient_id"), id("patients.id")),
             )
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
@@ -1706,7 +1737,7 @@ mod tests {
                     .where_column(id("appointments.patient_id"), id("patients.id"))
                     .where_eq(id("appointments.status"), "booked"),
             )
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
@@ -1716,7 +1747,7 @@ mod tests {
         // renders without a dangling OR.
         let q = Select::from_table(id("patients"))
             .or_where_exists(Select::from_table(id("appointments")))
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
@@ -1729,14 +1760,14 @@ mod tests {
         let q = Select::from_table(id("doctors"))
             .where_eq(id("specialty"), "cardio")
             .exists()
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
             "SELECT EXISTS (SELECT * FROM doctors WHERE specialty = $1)"
         );
 
-        let q = Select::from_table(id("doctors")).doesnt_exist().build().unwrap();
+        let q = Select::from_table(id("doctors")).doesnt_exist().build(&crate::dialect::POSTGRES).unwrap();
         assert_eq!(q.sql, "SELECT NOT EXISTS (SELECT * FROM doctors)");
     }
 
@@ -1751,7 +1782,7 @@ mod tests {
             .order_by(id("created_at"), Direction::Desc)
             .order_by(id("id"), Direction::Desc)
             .limit(50)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
             q.sql,
@@ -1764,19 +1795,19 @@ mod tests {
     fn row_comparison_validates_shape() {
         let err = Select::from_table(id("t"))
             .where_row_cmp(vec![], Operator::Gt, vec![Value::Int(1)])
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap_err();
         assert!(err.public_message.contains("at least one column"));
 
         let err = Select::from_table(id("t"))
             .where_row_cmp(vec![id("a"), id("b")], Operator::Gt, vec![Value::Int(1)])
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap_err();
         assert!(err.public_message.contains("values for"));
 
         let err = Select::from_table(id("t"))
             .where_row_cmp(vec![id("a")], Operator::In, vec![Value::Int(1)])
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap_err();
         assert!(err.public_message.contains("operator"));
     }
@@ -1786,7 +1817,7 @@ mod tests {
         let payload = "%'; DROP TABLE doctors; --";
         let q = Select::from_table(id("doctors"))
             .where_like(id("name"), payload)
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert!(!q.sql.contains("DROP"));
         assert!(!q.sql.contains("'"));
@@ -1797,14 +1828,14 @@ mod tests {
     fn when_and_tap_conditionals() {
         let q = Select::from_table(id("t"))
             .when(false, |s| s.where_eq(id("a"), 1i64))
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(q.sql, "SELECT * FROM t");
 
         let q = Select::from_table(id("t"))
             .when(true, |s| s.where_eq(id("a"), 1i64))
             .tap(|s| s.limit = Some(7))
-            .build()
+            .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(q.sql, "SELECT * FROM t WHERE a = $1 LIMIT $2");
         assert_eq!(q.params, vec![Value::Int(1), Value::Int(7)]);

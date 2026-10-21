@@ -517,7 +517,7 @@ impl ModelStore for PgModelStore {
                 (1, 0)
             }
         };
-        let compiled = select.build()?;
+        let compiled = select.build(&kelson_query::POSTGRES)?;
         // The read may be served by the replica (only when the caller opted in).
         let read_pool = self.pool_for_read(opts);
         let rows = fetch_rows(read_pool, &compiled)?;
@@ -534,7 +534,7 @@ impl ModelStore for PgModelStore {
                 model,
                 opts,
             )?
-            .build()?;
+            .build(&kelson_query::POSTGRES)?;
             let count_sql = format!(
                 "SELECT COUNT(*) FROM ({}) AS _kelson_count",
                 count_select.sql
@@ -576,7 +576,7 @@ impl ModelStore for PgModelStore {
         if model.soft_deletes && !include_deleted {
             select = select.where_null(ident("deleted_at")?);
         }
-        let rows = fetch_rows(&self.pool, &select.build()?)?;
+        let rows = fetch_rows(&self.pool, &select.build(&kelson_query::POSTGRES)?)?;
         Ok(map_rows(rows, model)?.into_iter().next())
     }
 
@@ -590,7 +590,7 @@ impl ModelStore for PgModelStore {
                 kelson_foundation::TenantId::from_uuid(record_uuid(record, "tenant_id")?),
             );
         }
-        let compiled = insert.returning(all_columns(model)?).build()?;
+        let compiled = insert.returning(all_columns(model)?).build(&kelson_query::POSTGRES)?;
         let rows = write_rows(&self.pool, &compiled)?;
         map_rows(rows, model)?
             .into_iter()
@@ -622,7 +622,7 @@ impl ModelStore for PgModelStore {
             };
             update = update.set(ident(key)?, bind);
         }
-        let compiled = update.returning(all_columns(model)?).build()?;
+        let compiled = update.returning(all_columns(model)?).build(&kelson_query::POSTGRES)?;
         let rows = write_rows(&self.pool, &compiled)?;
         Ok(map_rows(rows, model)?.into_iter().next())
     }
@@ -644,7 +644,7 @@ impl ModelStore for PgModelStore {
                     None => update = update.where_eq(ident("tenant_id")?, Bind::Null),
                 }
             }
-            let compiled = update.returning(vec![ident("id")?]).build()?;
+            let compiled = update.returning(vec![ident("id")?]).build(&kelson_query::POSTGRES)?;
             let rows = write_rows(&self.pool, &compiled)?;
             return Ok(!rows.is_empty());
         }
@@ -655,7 +655,7 @@ impl ModelStore for PgModelStore {
                 None => delete = delete.where_eq(ident("tenant_id")?, Bind::Null),
             }
         }
-        let compiled = delete.returning(vec![ident("id")?]).build()?;
+        let compiled = delete.returning(vec![ident("id")?]).build(&kelson_query::POSTGRES)?;
         let rows = write_rows(&self.pool, &compiled)?;
         Ok(!rows.is_empty())
     }
@@ -687,7 +687,7 @@ impl ModelStore for PgModelStore {
                 kelson_foundation::TenantId::from_uuid(record_uuid(record, "tenant_id")?),
             );
         }
-        let compiled = insert.returning(all_columns(model)?).build()?;
+        let compiled = insert.returning(all_columns(model)?).build(&kelson_query::POSTGRES)?;
         let rows = write_rows(&self.pool, &compiled)?;
         map_rows(rows, model)?
             .into_iter()
@@ -711,7 +711,7 @@ impl ModelStore for PgModelStore {
             kelson_models::AggregateOp::Min(f) => select.min(ident(f)?),
             kelson_models::AggregateOp::Max(f) => select.max(ident(f)?),
         };
-        let compiled = select.build()?;
+        let compiled = select.build(&kelson_query::POSTGRES)?;
         let rows = fetch_rows(&self.pool, &compiled)?;
         let row = rows
             .into_iter()
@@ -727,7 +727,7 @@ impl ModelStore for PgModelStore {
         filters: &[FieldFilter],
     ) -> Result<bool, AppError> {
         let select = base_select(model, tenant, filters, false)?.exists();
-        let compiled = select.build()?;
+        let compiled = select.build(&kelson_query::POSTGRES)?;
         let rows = fetch_rows(&self.pool, &compiled)?;
         let row = rows
             .into_iter()
@@ -744,7 +744,7 @@ impl ModelStore for PgModelStore {
         include_deleted: bool,
     ) -> Result<Option<Record>, AppError> {
         let select = base_select(model, tenant, filters, include_deleted)?.limit(1);
-        let compiled = select.build()?;
+        let compiled = select.build(&kelson_query::POSTGRES)?;
         let rows = fetch_rows(&self.pool, &compiled)?;
         Ok(map_rows(rows, model)?.into_iter().next())
     }
@@ -768,7 +768,7 @@ impl ModelStore for PgModelStore {
         if model.soft_deletes && !include_deleted {
             select = select.where_null(ident("deleted_at")?);
         }
-        let compiled = select.build()?;
+        let compiled = select.build(&kelson_query::POSTGRES)?;
         let rows = fetch_rows(&self.pool, &compiled)?;
         Ok(map_rows(rows, model)?.into_iter().next())
     }
@@ -786,7 +786,7 @@ impl ModelStore for PgModelStore {
                 kelson_foundation::TenantId::from_uuid(record_uuid(record, "tenant_id")?),
             );
         }
-        let compiled = insert.returning(all_columns(model)?).build()?;
+        let compiled = insert.returning(all_columns(model)?).build(&kelson_query::POSTGRES)?;
         let rows = write_rows(&self.pool, &compiled)?;
         Ok(map_rows(rows, model)?.into_iter().next())
     }
@@ -833,7 +833,7 @@ impl ModelStore for PgModelStore {
             };
             update = update.set(ident(field)?, bind);
         }
-        let compiled = update.returning(all_columns(model)?).build()?;
+        let compiled = update.returning(all_columns(model)?).build(&kelson_query::POSTGRES)?;
         let rows = write_rows(&self.pool, &compiled)?;
         map_rows(rows, model)
     }
@@ -870,7 +870,7 @@ impl ModelStore for PgModelStore {
                 ),
             };
         }
-        let compiled = delete.returning(all_columns(model)?).build()?;
+        let compiled = delete.returning(all_columns(model)?).build(&kelson_query::POSTGRES)?;
         let rows = write_rows(&self.pool, &compiled)?;
         map_rows(rows, model)
     }
@@ -889,13 +889,14 @@ impl ModelStore for PgModelStore {
                 None => delete = delete.where_eq(ident("tenant_id")?, Bind::Null),
             }
         }
-        let compiled = delete.build()?;
+        let compiled = delete.build(&kelson_query::POSTGRES)?;
         let rows = write_rows(&self.pool, &compiled)?;
         Ok(!rows.is_empty())
     }
 
     fn truncate(&self, model: &ModelDef, env: &str) -> Result<(), AppError> {
-        let compiled = kelson_query::Truncate::table(ident(&model.table)?).build_gated(env)?;
+        let compiled = kelson_query::Truncate::table(ident(&model.table)?)
+            .build_gated(env, &kelson_query::POSTGRES)?;
         let sql = compiled.sql;
         let params = compiled.params;
         let pool = self.pool.clone();
@@ -936,7 +937,7 @@ impl ModelStore for PgModelStore {
             };
             update = update.set(ident(key)?, bind);
         }
-        let compiled = update.returning(all_columns(model)?).build()?;
+        let compiled = update.returning(all_columns(model)?).build(&kelson_query::POSTGRES)?;
         let rows = write_rows(&self.pool, &compiled)?;
         Ok(map_rows(rows, model)?.into_iter().next())
     }
@@ -964,7 +965,7 @@ impl ModelStore for PgModelStore {
                 None => update = update.where_eq(ident("tenant_id")?, Bind::Null),
             }
         }
-        let compiled = update.returning(all_columns(model)?).build()?;
+        let compiled = update.returning(all_columns(model)?).build(&kelson_query::POSTGRES)?;
         let rows = write_rows(&self.pool, &compiled)?;
         Ok(map_rows(rows, model)?.into_iter().next())
     }

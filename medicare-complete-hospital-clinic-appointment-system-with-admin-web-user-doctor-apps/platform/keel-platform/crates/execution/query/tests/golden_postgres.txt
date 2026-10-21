@@ -1,0 +1,141 @@
+select_star
+  sql: SELECT * FROM users
+  params: []
+select_columns
+  sql: SELECT id, email FROM users
+  params: []
+select_distinct
+  sql: SELECT DISTINCT * FROM users
+  params: []
+select_where_eq
+  sql: SELECT * FROM users WHERE tenant_id = $1
+  params: [Text("t1")]
+select_where_op
+  sql: SELECT * FROM users WHERE age > $1
+  params: [Int(30)]
+select_where_in
+  sql: SELECT * FROM users WHERE id IN ($1, $2)
+  params: [Text("a"), Text("b")]
+select_where_not_in
+  sql: SELECT * FROM users WHERE id NOT IN ($1, $2)
+  params: [Text("a"), Text("b")]
+select_where_between
+  sql: SELECT * FROM users WHERE age BETWEEN $1 AND $2
+  params: [Int(10), Int(20)]
+select_where_not_between
+  sql: SELECT * FROM users WHERE age NOT BETWEEN $1 AND $2
+  params: [Int(10), Int(20)]
+select_where_null
+  sql: SELECT * FROM users WHERE deleted_at IS NULL
+  params: []
+select_where_not_null
+  sql: SELECT * FROM users WHERE deleted_at IS NOT NULL
+  params: []
+select_where_column
+  sql: SELECT * FROM users WHERE users.id = orders.user_id
+  params: []
+select_where_column_op
+  sql: SELECT * FROM users WHERE users.id = orders.user_id
+  params: []
+select_where_like
+  sql: SELECT * FROM users WHERE email ILIKE $1
+  params: [Text("%@x.test")]
+select_where_ilike
+  sql: SELECT * FROM users WHERE email ILIKE $1
+  params: [Text("%@x.test")]
+select_where_date
+  sql: SELECT * FROM users WHERE created_at::date = $1::date
+  params: [Text("2026-01-01")]
+select_where_year
+  sql: SELECT * FROM users WHERE EXTRACT(YEAR FROM created_at) = $1
+  params: [Int(2026)]
+select_where_month
+  sql: SELECT * FROM users WHERE EXTRACT(MONTH FROM created_at) = $1
+  params: [Int(3)]
+select_where_day
+  sql: SELECT * FROM users WHERE EXTRACT(DAY FROM created_at) = $1
+  params: [Int(7)]
+select_where_time
+  sql: SELECT * FROM users WHERE TO_CHAR(created_at, 'HH24:MI:SS') = $1
+  params: [Text("10:30:00")]
+select_where_exists
+  sql: SELECT * FROM users WHERE EXISTS (SELECT user_id FROM orders WHERE status = $1)
+  params: [Text("paid")]
+select_where_not_exists
+  sql: SELECT * FROM users WHERE NOT EXISTS (SELECT user_id FROM orders WHERE status = $1)
+  params: [Text("paid")]
+select_where_row_cmp
+  sql: SELECT * FROM users WHERE (a, b) = ($1, $2)
+  params: [Text("1"), Text("2")]
+select_or_where
+  sql: SELECT * FROM users WHERE a = $1 OR b = $2
+  params: [Text("1"), Text("2")]
+select_where_group
+  sql: SELECT * FROM users WHERE (a = $1 OR b = $2)
+  params: [Text("1"), Text("2")]
+select_having_aggregate
+  sql: SELECT * FROM users HAVING COUNT(*) > $1
+  params: [Int(5)]
+select_having_eq
+  sql: SELECT * FROM users HAVING status = $1
+  params: [Text("paid")]
+select_group_by
+  sql: SELECT * FROM users GROUP BY tenant_id
+  params: []
+select_order_by
+  sql: SELECT * FROM users ORDER BY created_at DESC
+  params: []
+select_count
+  sql: SELECT COUNT(*) FROM users
+  params: []
+select_sum
+  sql: SELECT SUM(amount) FROM users
+  params: []
+select_limit_offset
+  sql: SELECT * FROM users LIMIT $1 OFFSET $2
+  params: [Int(25), Int(50)]
+select_union
+  sql: SELECT * FROM users UNION (SELECT id FROM admins)
+  params: []
+select_union_all
+  sql: SELECT * FROM users UNION ALL (SELECT id FROM admins)
+  params: []
+select_lock_for_update
+  sql: SELECT * FROM users FOR UPDATE
+  params: []
+select_shared_lock
+  sql: SELECT * FROM users FOR SHARE
+  params: []
+select_joins
+  sql: SELECT * FROM users JOIN orders ON users.id = orders.user_id LEFT JOIN plans ON users.plan_id = plans.id
+  params: []
+insert_plain
+  sql: INSERT INTO users (id, email) VALUES ($1, $2)
+  params: [Text("u1"), Text("a@b.test")]
+insert_on_conflict_do_nothing
+  sql: INSERT INTO users (id, email) VALUES ($1, $2) ON CONFLICT (email) DO NOTHING
+  params: [Text("u1"), Text("a@b.test")]
+insert_on_conflict_do_update
+  sql: INSERT INTO users (id, email) VALUES ($1, $2) ON CONFLICT (email) DO UPDATE SET id = EXCLUDED.id
+  params: [Text("u1"), Text("a@b.test")]
+insert_returning
+  sql: INSERT INTO users (id, email) VALUES ($1, $2) ON CONFLICT (email) DO NOTHING RETURNING id
+  params: [Text("u1"), Text("a@b.test")]
+update_set_where
+  sql: UPDATE users SET email = $1 WHERE id = $2
+  params: [Text("new@b.test"), Text("u1")]
+update_increment
+  sql: UPDATE users SET hits = hits + $1 WHERE id = $2
+  params: [Int(1), Text("u1")]
+update_returning
+  sql: UPDATE users SET email = $1 WHERE id = $2 RETURNING id
+  params: [Text("new@b.test"), Text("u1")]
+delete_where
+  sql: DELETE FROM users WHERE id = $1
+  params: [Text("u1")]
+delete_returning
+  sql: DELETE FROM users WHERE id = $1 RETURNING id
+  params: [Text("u1")]
+truncate
+  sql: TRUNCATE TABLE users
+  params: []
