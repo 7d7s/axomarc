@@ -34,6 +34,12 @@ struct Cli {
 enum Cmd {
     /// Environment doctor: toolchain, config, database assets, compose file.
     Doctor,
+    /// Capture the diagnostics bundle: the effective configuration, the
+    /// schema's version and what is behind it, the route artifact, the
+    /// modules and the dead jobs - the state a support ticket needs, in one
+    /// command. Best effort: it is produced even when the database is down.
+    #[command(name = "diagnose")]
+    Diagnose,
     /// Architecture gate G07: dependency matrix + budget analyzer.
     Check,
     /// Laravel-style environment report (docs/19 L222): framework/app
@@ -732,6 +738,7 @@ fn main() -> ExitCode {
         Cmd::Capabilities => capabilities_list(),
         Cmd::McpTools { format } => mcp_tools(&format),
         Cmd::SdkOpenapi { output } => sdk_openapi(output),
+        Cmd::Diagnose => rt(diagnose()),
         Cmd::Migrate => rt(migrate()),
         Cmd::MigrateStatus => rt(migrate_status()),
         Cmd::MigratePlan => rt(migrate_plan()),
@@ -2113,6 +2120,199 @@ fn mysql_migrator() -> &'static sqlx::migrate::Migrator {
     // the `_sqlx_migrations` table per database).
     static MIGRATOR: std::sync::OnceLock<sqlx::migrate::Migrator> = std::sync::OnceLock::new();
     MIGRATOR.get_or_init(|| sqlx::migrate!("../../database/migrations-mysql"))
+}
+
+/// The diagnostics bundle: the state a support ticket needs.
+///
+/// One command captures what an operator would otherwise spend an afternoon
+/// collecting by hand: the effective configuration, the schema's version and
+/// what is behind it, the route artifact, the modules and the dead jobs.
+///
+/// Everything is **best effort**: the bundle is still produced when the
+/// database is down - that is exactly the moment it is needed - so a failed
+/// probe is reported as a line, not as a failed command.
+fn diagnose_text(root: &Path) -> anyhow::Result<String> {
+    let mut out = String::new();
+    out.push_str("kelson diagnostics bundle\n");
+    out.push_str("==========================\n");
+    out.push_str(&format!("the workspace: {}\n", root.display()));
+
+    out.push_str("\nTHE ENVIRONMENT\n");
+    match env_summary_text(root) {
+        Ok(text) => out.push_str(&text),
+        Err(e) => out.push_str(&format!("the environment could not be read: {e}\n")),
+    }
+
+    out.push_str("\nTHE ROUTES\n");
+    let artifact = root.join("storage").join("framework").join("routes.json");
+    match std::fs::read_to_string(&artifact) {
+        Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
+            Ok(value) => {
+                let hash = value
+                    .get("manifest_hash")
+                    .and_then(|h| h.as_str())
+                    .unwrap_or("(none)");
+                let plans = value
+                    .get("plans")
+                    .and_then(|p| p.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                out.push_str(&format!("the artifact: {}\n", artifact.display()));
+                out.push_str(&format!("the manifest hash: {hash}\n"));
+                out.push_str(&format!("the routes: {plans}\n"));
+                let mut modules: Vec<String> = value
+                    .get("plans")
+                    .and_then(|p| p.as_array())
+                    .map(|plans| {
+                        plans
+                            .iter()
+                            .filter_map(|p| p.get("module").and_then(|m| m.as_str()))
+                            .map(|m| m.to_string())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                modules.sort();
+                modules.dedup();
+                out.push_str(&format!(
+                    "the modules: {}\n",
+                    if modules.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        modules.join(", ")
+                    }
+                ));
+            }
+            Err(e) => out.push_str(&format!("the artifact could not be parsed: {e}\n")),
+        },
+        Err(e) => out.push_str(&format!("the artifact could not be read: {e}\n")),
+    }
+    Ok(out)
+}
+
+/// The database half of the bundle (best effort).
+async fn diagnose_database_text(root: &Path) -> String {
+    let mut out = String::new();
+    out.push_str("\nTHE SCHEMA\n");
+    let pool = match db_pool(root).await {
+        Ok(pool) => pool,
+        Err(e) => {
+            out.push_str(&format!("the database could not be reached: {e}\n"));
+            return out;
+        }
+    };
+    match &pool {
+        DbPool::MySql(p) => {
+            match kelson_mysql::upgrade::schema_state(p, root).await {
+                Ok(state) => {
+                    out.push_str(&format!("the version: {}\n", state.version));
+                    out.push_str(&format!("the required: {}\n", state.required_version));
+                    out.push_str(&format!("the applied: {} migrations\n", state.applied.len()));
+                    out.push_str(&format!(
+                        "the pending: {}\n",
+                        if state.pending.is_empty() {
+                            "none (the schema is current)".to_string()
+                        } else {
+                            state.pending.join(", ")
+                        }
+                    ));
+                }
+                Err(e) => out.push_str(&format!("the schema state could not be read: {e}\n")),
+            }
+            match kelson_mysql::pairs::applied(p).await {
+                Ok(applied) => out.push_str(&format!(
+                    "the applied pairs: {}\n",
+                    if applied.is_empty() {
+                        "none".to_string()
+                    } else {
+                        applied
+                            .iter()
+                            .map(|(name, _)| name.clone())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    }
+                )),
+                Err(e) => out.push_str(&format!("the applied pairs could not be read: {e}\n")),
+            }
+        }
+        DbPool::Postgres(p) => {
+            // The Postgres twin has no schema version yet; the applied set is
+            // still worth reporting.
+            match applied_versions(&DbPool::Postgres(p.clone())).await {
+                versions if versions.is_empty() => out.push_str("the applied: none\n"),
+                versions => {
+                    out.push_str(&format!("the applied: {} migrations\n", versions.len()))
+                }
+            }
+        }
+    }
+
+    out.push_str("\nTHE QUEUE\n");
+    match job_store_admin(&pool).list(Some(kelson_jobs::JobStatus::Dead), 200) {
+        Ok(jobs) => out.push_str(&format!(
+            "the dead jobs awaiting a manual retry: {}\n",
+            jobs.len()
+        )),
+        Err(e) => out.push_str(&format!("the queue could not be read: {e}\n")),
+    }
+    out
+}
+
+#[cfg(test)]
+mod diagnose_tests {
+    use super::*;
+
+    #[test]
+    fn the_diagnostics_bundle_reports_the_state() {
+        // A TEMP root, not the real workspace: loading the real config
+        // pulls the repository's .env into the process environment, which
+        // would leak into the other tests in this binary.
+        let dir = std::env::temp_dir().join(format!(
+            "kelson-console-diagnose-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(dir.join("config")).unwrap();
+        std::fs::write(
+            dir.join("config").join("dev.toml"),
+            r#"[app]
+name = "kelson"
+env = "dev"
+
+[auth]
+jwt_secret = "unit-test-secret-value"
+
+[database]
+url = "postgres://user:db-password@localhost:5432/keel"
+"#,
+        )
+        .unwrap();
+
+        let text = diagnose_text(&dir).expect("the bundle is built");
+        assert!(text.contains("kelson diagnostics bundle"));
+        assert!(text.contains("THE ENVIRONMENT"), "{text}");
+        assert!(text.contains("THE ROUTES"), "{text}");
+        // The environment section carries the effective config, with the
+        // database password masked (a bundle goes into a ticket).
+        assert!(text.contains("database:"), "{text}");
+        assert!(!text.contains("db-password"), "the password must be masked: {text}");
+        // The route artifact is absent in the temp root: the bundle says so
+        // rather than failing.
+        assert!(text.contains("the artifact could not be read"), "{text}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// The `kelson diagnose` command.
+async fn diagnose() -> anyhow::Result<ExitCode> {
+    let root = workspace_root()?;
+    let mut text = diagnose_text(&root)?;
+    text.push_str(&diagnose_database_text(&root).await);
+    print!("{text}");
+    Ok(ExitCode::SUCCESS)
 }
 
 async fn migrate() -> anyhow::Result<ExitCode> {

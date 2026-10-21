@@ -1115,6 +1115,20 @@ impl PlatformConfig {
             dotenv::load_dotenv_for_env(&dotenv::config_dir_of(p), cfg.app.env.as_str())?;
             cfg.apply_env();
         }
+        // An unknown KEEL_DATABASE_DRIVER is refused (fail-closed): a typo
+        // must not silently leave the driver on its default and open the
+        // wrong engine.
+        if let Some(raw) = std::env::var("KEEL_DATABASE_DRIVER").ok() {
+            let normalized = raw.to_ascii_lowercase();
+            if !matches!(
+                normalized.as_str(),
+                "postgres" | "postgresql" | "pg" | "mysql" | "mariadb"
+            ) {
+                return Err(AppError::validation(format!(
+                    "KEEL_DATABASE_DRIVER={raw:?} is not a known driver (postgres, mysql)"
+                )));
+            }
+        }
         cfg.assert_secrets()?;
         Ok(cfg)
     }
@@ -1146,6 +1160,41 @@ impl PlatformConfig {
                         driver: DatabaseDriver::default(),
                         conn: DatabaseConfig {
                             url: v,
+                            max_connections: default_max_conn(),
+                            run_migrations: true,
+                            required: false,
+                        },
+                        read_replica_url: None,
+                    });
+                }
+            }
+        }
+        if let Some(v) = get("KEEL_DATABASE_DRIVER") {
+            // The driver must be overridable by the environment like the URL
+            // is: without it, a deployment that points `KEEL_DATABASE_URL` at
+            // MySQL still opens a Postgres pool and fails with an opaque
+            // database error. An unknown driver refuses the load
+            // (fail-closed), like the typed driver itself.
+            let driver = match v.to_ascii_lowercase().as_str() {
+                "postgres" | "postgresql" | "pg" => Some(DatabaseDriver::Postgres),
+                "mysql" | "mariadb" => Some(DatabaseDriver::MySql),
+                // An unknown driver is refused by `load` (which returns a
+                // Result); `apply_env` is infallible, so the value is left
+                // alone here and the refusal happens one layer up.
+                _ => None,
+            };
+            let Some(driver) = driver else {
+                // An unknown driver: `apply_env` is infallible, so the value
+                // is left alone here and `load` refuses it.
+                return;
+            };
+            match self.database.as_mut() {
+                Some(db) => db.driver = driver,
+                None => {
+                    self.database = Some(DatabaseSection {
+                        driver,
+                        conn: DatabaseConfig {
+                            url: String::new(),
                             max_connections: default_max_conn(),
                             run_migrations: true,
                             required: false,

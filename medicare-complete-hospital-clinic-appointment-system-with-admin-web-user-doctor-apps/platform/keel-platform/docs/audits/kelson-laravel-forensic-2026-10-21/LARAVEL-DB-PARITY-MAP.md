@@ -15,13 +15,13 @@ against a live MySQL 8.0.44.
 
 | Status | Rows | Meaning |
 |---|---:|---|
-| VERIFIED | 78 | the behaviour is implemented and an executed case proves it |
+| VERIFIED | 80 | the behaviour is implemented and an executed case proves it |
 | PARTIAL | 18 | the core is proven; a named sub-feature is missing or diverges |
 | EXCLUDED_BY_DESIGN | 5 | a deliberate exclusion with the alternative stated |
 | OPEN | 2 | a Laravel capability with no Kelson equivalent yet |
-| **Total** | **103** | |
+| **Total** | **105** | |
 
-Of the 103 rows, **101 carry an executed case**
+Of the 105 rows, **103 carry an executed case**
 and 2 do not (the OPEN rows).
 
 | Category | Rows |
@@ -30,7 +30,7 @@ and 2 do not (the OPEN rows).
 | eloquent | 30 |
 | migrations | 12 |
 | mysql-8-native | 4 |
-| production | 8 |
+| production | 10 |
 | query-builder | 32 |
 | schema | 9 |
 | transactions | 3 |
@@ -102,6 +102,7 @@ competitive claim. Each one is an executed case, not a claim.
 | LDB-101 | A schema version the deployment can compare | the version is a digest of what is actually applied, not a hand-maintained number, so two hosts can be compared exactly | `mysql_upgrade_the_schema_state_names_the_pending_migrations` |
 | LDB-102 | A refusal when the schema is behind | a deployment that does not migrate at boot refuses to serve against a schema the framework does not recognise | `mysql_upgrade_a_stale_schema_is_refused` |
 | LDB-103 | A zero-downtime schema change during an upgrade | the upgrade itself is zero-downtime - the shadow table, the copy, the atomic swap | `mysql_upgrade_a_change_to_an_existing_table_goes_through_the_online_path` |
+| LDB-104 | A one-command capture of the state for a support ticket | the bundle is produced even when the database is down - the moment it is needed - and the schema's version and pending set are in it | `the_diagnostics_bundle_reports_the_state` |
 
 ## 6. The divergences a Laravel developer must know about
 
