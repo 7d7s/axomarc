@@ -161,22 +161,22 @@
 ### Operations, Deployment and Official Packages (LF-096 to LF-111)
 | ID | Feature | Disposition | Kelson Equivalent | Test Evidence |
 |---|---|---|---|---|
-| LF-096 | Deployment optimization and caching | MATCH | Dockerfile + deployment docs | Dockerfile created; build NOT RUN |
-| LF-097 | Octane | NOT APPLICABLE | Tokio async runtime (no separate server) | — |
-| LF-098 | Reverb | FUNCTIONAL EQUIVALENT | Real-time service (WebSocket + Redis) | Realtime tests ✅ |
-| LF-099 | Horizon | FUNCTIONAL EQUIVALENT | Observability metrics + queue monitoring | Observability tests ✅ |
-| LF-100 | Pulse | FUNCTIONAL EQUIVALENT | Telemetry + metrics + health checks | Telemetry tests ✅ |
-| LF-101 | Telescope | FUNCTIONAL EQUIVALENT | Diagnostics + tracing + debug endpoints | Diagnostics tests ✅ |
-| LF-102 | Pennant feature flags | FUNCTIONAL EQUIVALENT | Feature flags crate | Feature flags tests ✅ |
-| LF-103 | Cashier Stripe billing | EXCLUDE BY DESIGN | Billing module handles this | — |
-| LF-104 | Cashier Paddle billing | EXCLUDE BY DESIGN | Billing module handles this | — |
-| LF-105 | Envoy | EXTERNAL/ECOSYSTEM | External deployment tooling | — |
-| LF-106 | Fortify | FUNCTIONAL EQUIVALENT | Auth scaffolding (make:auth) | Auth tests ✅ |
-| LF-107 | Sail | FUNCTIONAL EQUIVALENT | docker-compose.test.yml | docker-compose created ✅ |
-| LF-108 | Valet and Homestead | EXCLUDE BY DESIGN | Standard cargo run | — |
-| LF-109 | Pint | EXTERNAL/ECOSYSTEM | rustfmt (built-in) | — |
-| LF-110 | Laravel Mix (legacy) | NOT APPLICABLE | Modern bundler (Vite/npm) | — |
-| LF-111 | AI/observability and API reference docs | FUNCTIONAL EQUIVALENT | OpenAPI + MCP + docs | Docs tests ✅ |
+| LF-096 | Deployment optimization and caching | MATCH (partly) | The release pipeline (`kelson-deployment`), the console's optimize/cache cycle, the health endpoints and the debug posture | `healthz_is_liveness_and_readyz_reflects_degraded_state`, `promotion_state_machine`, `verify_artifacts_catches_a_swapped_binary_and_never_skips_one`, `drift_is_empty_when_the_release_matches_the_tree`, `optimize_cycle_warms_and_clears_all_three_artifacts`. **Gap**: the clean CI image, the cached-vs-uncached parity and the stale cache after a deploy are not named |
+| LF-097 | Octane | MATCH (partly) | The long-lived `kelson-worker` claim loop with the per-tenant scope and the restart signal - the 'NOT APPLICABLE' disposition is corrected: the framework does have a long-lived process | `a_long_lived_worker_leaks_nothing_between_jobs`, `a_long_lived_worker_never_crosses_tenants`, `tenant_scope_isolates_services`, `restart_signal_is_ignored_when_older_than_the_worker_start`. **Gap**: the drain, the memory growth, the parallel request isolation and the graceful termination are not named |
+| LF-098 | Reverb | MATCH (partly) | `kelson-realtime`: the hub, the channels, the SSE endpoint, the WebSocket route, the presence roster and the authorized transport | `hub_publish_reaches_subscribers_only_on_that_channel`, `ws_route_without_upgrade_handshake_is_rejected`, `ws_roundtrip_over_real_socket`, `authorized_transport_enforces_the_token_and_tracks_presence`, `presence_roster_join_leave_is_idempotent`. **Gap**: the revoked authorization, the origin validation, the reconnect/backpressure, the resource limit and the multi-node pub/sub are not named |
+| LF-099 | Horizon | MATCH (partly) | The console's queue admin over the real store (pg/MySQL plus the Redis job store) and the observability metrics | the live-Redis job-store cases, `queue_monitor_renders_depth_and_oldest_age`, `batch_status_counts_members_from_the_store`, `restart_signal_is_ignored_when_older_than_the_worker_start`. **Gap**: the stale metrics, the supervisor scaling and the failed-job access redaction are not named |
+| LF-100 | Pulse | MATCH (partly) | `kelson-observability` (the metrics, the exporters, the incidents) and the health endpoints | the observability's 26 cases, the G18 resilience, the tenant-scoped metrics, `dashboard_served_in_test_env_and_flag_gated_when_off`. **Gap**: the sampling, the cardinality limits, the sensitive labels and the storage retention are not named |
+| LF-101 | Telescope | MATCH (partly) | The observability's audit records and incident control plane, the console's introspect and the redaction posture | `config_show_renders_one_redacted_section`, `env_summary_reports_environment_secrets_and_cache_state`, `dashboard_served_in_test_env_and_flag_gated_when_off`. **Gap**: the sampling, the volume/backpressure, the query-bindings privacy and the retention are not named |
+| LF-102 | Pennant feature flags | MATCH (partly) | `kelson-feature-flags` plus the console's `flag:list`/`flag:set` | `tenant_stage_override_beats_global_stage`, `percentage_rollout_is_stable_and_bounded`, `dimension_rules_take_precedence_over_stage`, `file_store_persists_across_instances`. **Gap**: the stale cache, the fail-open/fail-closed posture and an explicit no-cross-tenant-leak case are not named |
+| LF-103 | Cashier Stripe billing | NOT IMPLEMENTED (P3) | Nothing ships - the framework has no billing module, provider client or webhook handling | - (an absent feature has no executed case) |
+| LF-104 | Cashier Paddle billing | NOT IMPLEMENTED (P3) | Nothing ships - as LF-103 | - (an absent feature has no executed case) |
+| LF-105 | Envoy | MATCH (partly) | The promotion pipeline driven by the console's `promote`/`rollback` and the `release:verify` opt-in | `promotion_plan_and_checkpoint_round_trip_on_disk`, `promote_and_rollback_parse_with_documented_flags`, `migrate_plan_reaches_for_no_mutation_path`, `release_verify_is_an_opt_in_flag`. **Gap**: the partial host failure, the command injection and the concurrency lock are not named |
+| LF-106 | Fortify | MATCH (partly) | `kelson-identity` + `kelson-tokens` + the web plane's CSRF and rate limiting | the nine CSRF cases, the demo's verification and reset flows, the token crate's reset/rotation cases, the OTP attempt budget. **Gap**: the endpoint matrix and a shared rate-limit/lockout contract across the paths are not named |
+| LF-107 | Sail | NOT IMPLEMENTED | Nothing of the framework's own - the tree's Dockerfile and compose file are untracked and no Docker daemon exists here, so no image was ever built or started | - (an absent feature has no executed case) |
+| LF-108 | Valet and Homestead | NOT IMPLEMENTED (by design, P3) | Nothing ships - the framework's answer is `cargo run` | - (an absent feature has no executed case) |
+| LF-109 | Pint | MATCH (partly) | `rustfmt` and the pinned toolchain; the CI's three clippy legs and the architecture gate | the CI's clippy steps, the architecture gate, the toolchain pin. **Gap**: the formatting check is not enforced (no `cargo fmt --check`; 1606 files are not rustfmt-normalised) |
+| LF-110 | Laravel Mix (legacy) | NOT IMPLEMENTED (NOT APPLICABLE, P3) | Nothing ships and nothing should - the asset story is the zero-dep views engine plus the static-file serving | - (an absent feature has no executed case) |
+| LF-111 | AI/observability and API reference docs | MATCH (partly) | The API registry, the OpenAPI 3.1 generation from the platform graph (`sdk:openapi`), the MCP manifest and the CI's scaffold-build job | `openapi_follows_the_platform_graph`, `registry_is_valid`, `deprecated_entries_carry_migration_data`, the scaffold-build job. **Gap**: the doc link checker and a public-symbol-vs-registry check are not named |
 
 ## Coverage Summary
 
