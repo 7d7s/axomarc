@@ -1875,6 +1875,38 @@ mod tests {
         }
     }
 
+    /// **LF-078**: a QUEUED delivery carries the locale it was rendered in —
+    /// the worker's request-time locale is request-time knowledge ✓, so it
+    /// travels with the envelope ✓ instead of being guessed at delivery
+    /// time ✓.
+    #[tokio::test]
+    async fn a_queued_delivery_carries_the_locale_it_was_rendered_in() {
+        let enqueued = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let hub = NotifyHub::empty().with_queue(Box::new(RecordingQueue {
+            enqueued: enqueued.clone(),
+        }));
+        let mut ctx = ctx_for(PrincipalId::new());
+        ctx.locale = Some("fr".to_string());
+
+        hub.dispatch_notification(
+            &QueuedBookNotification,
+            Channel::Email,
+            Some("ada@example.com"),
+            &ctx,
+        )
+        .await
+        .expect("mail enqueued");
+
+        let captured = enqueued.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        let delivery = &captured[0].1;
+        assert_eq!(
+            delivery.locale.as_deref(),
+            Some("fr"),
+            "the envelope keeps the request-time locale"
+        );
+    }
+
     /// Wave 6 P6: a def opting into `queue_via` while the host wired no
     /// port fails closed as `not_implemented` — nothing is delivered
     /// inline, ever.

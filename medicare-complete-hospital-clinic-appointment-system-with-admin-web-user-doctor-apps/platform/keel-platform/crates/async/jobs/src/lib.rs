@@ -3177,6 +3177,121 @@ mod tests {
         assert!(store.claim_for(b, "w1").unwrap().is_none());
     }
 
+    /// **LF-062**: a batch's MEMBERS are pinned to a tenant — another tenant
+    /// can neither see, complete nor fail them, and the owning tenant can
+    /// still run and complete the batch.
+    #[test]
+    fn tenant_isolation_batch_members_are_pinned_to_their_tenant() {
+        let store = Arc::new(InMemoryJobStore::new());
+        let runtime = BatchRuntime::new(store.clone());
+        let a = TenantId::new();
+        let b = TenantId::new();
+
+        let mut m1 = job(0, 3);
+        m1.status = JobStatus::Pending;
+        m1.tenant_id = Some(a);
+        let mut m2 = job(0, 3);
+        m2.status = JobStatus::Pending;
+        m2.tenant_id = Some(a);
+        let spec = BatchSpec {
+            id: Uuid::now_v7(),
+            name: "nightly".into(),
+            jobs: vec![m1.clone(), m2.clone()],
+            on_complete: None,
+        };
+        let id = runtime.dispatch(spec).unwrap();
+
+        // Another tenant's view sees NOTHING of this batch.
+        assert!(
+            store.claim_for(b, "w-b").unwrap().is_none(),
+            "another tenant never sees a batch member"
+        );
+        // And cannot touch one: the id is INVISIBLE, not refused.
+        let err = store.complete_for(b, m1.id).unwrap_err();
+        assert_eq!(
+            err.code,
+            kelson_foundation::codes::NOT_FOUND,
+            "a cross-tenant member is invisible, not refused"
+        );
+        let err = store.fail_for(b, m1.id, "sabotage").unwrap_err();
+        assert_eq!(
+            err.code,
+            kelson_foundation::codes::NOT_FOUND,
+            "a cross-tenant member cannot be failed either"
+        );
+
+        // The owning tenant runs its own batch.
+        let claimed = store
+            .claim_for(a, "w-a")
+            .unwrap()
+            .expect("the owning tenant claims its member");
+        assert_eq!(claimed.tenant_id, Some(a));
+        store.complete_for(a, claimed.id).unwrap();
+
+        // And the batch still completes through the runtime.
+        assert!(
+            runtime.member_finished(id, claimed.id, false).unwrap().is_none(),
+            "the batch is not finished while a member is outstanding"
+        );
+        let done = runtime
+            .member_finished(id, m2.id, false)
+            .unwrap()
+            .expect("the batch completes");
+        assert!(done.finished());
+        assert!(done.ok(), "no member died, so the batch is ok");
+    }
+
+    /// **F-26 (repro) — a batch can MIX tenants.**
+    ///
+    /// `BatchSpec::validate` refuses an empty batch ✓, duplicate ids ✓ and
+    /// members that do not start pending ✓ — but it does not check that the
+    /// members agree on their tenant ✓. A batch that spans two tenants puts
+    /// one tenant's job under another tenant's batch record ✓, and the
+    /// batch's completion callback fires for the mixed set ✓.
+    ///
+    /// The fix is **proposed, not implemented** (see
+    /// `docs/LF-060-TO-LF-069-VERIFICATION.md` §3 F-26): `validate` refuses a
+    /// spec whose members disagree on `tenant_id` — the same shape as the
+    /// existing "ids must be unique" rule ✓ — and the demo/console refuse to
+    /// build one ✓.
+    ///
+    /// `#[ignore]`d so the tree stays green; run it with
+    /// `cargo test -p kelson-jobs -- --ignored` to watch it fail (that
+    /// failure IS the defect).
+    #[test]
+    #[ignore = "F-26: the mixed-tenant batch refusal is proposed, not implemented"]
+    fn a_batch_that_mixes_tenants_is_refused() {
+        let store = Arc::new(InMemoryJobStore::new());
+        let runtime = BatchRuntime::new(store.clone());
+        let a = TenantId::new();
+        let b = TenantId::new();
+        let mut m1 = job(0, 3);
+        m1.status = JobStatus::Pending;
+        m1.tenant_id = Some(a);
+        let mut m2 = job(0, 3);
+        m2.status = JobStatus::Pending;
+        m2.tenant_id = Some(b);
+        let spec = BatchSpec {
+            id: Uuid::now_v7(),
+            name: "mixed".into(),
+            jobs: vec![m1.clone(), m2.clone()],
+            on_complete: None,
+        };
+        let err = runtime
+            .dispatch(spec)
+            .expect_err("a batch must not span two tenants");
+        assert!(
+            err.public_message.contains("tenant"),
+            "the refusal names the reason: {}",
+            err.public_message
+        );
+        // Nothing was enqueued: the refusal happens before the side effects.
+        assert!(
+            store.list(Some(JobStatus::Pending), 10).unwrap().is_empty(),
+            "a refused batch enqueues nothing"
+        );
+    }
+
     /// A cross-tenant job id is INVISIBLE to complete/fail: `NOT_FOUND`,
     /// never a mutation and never a conflict oracle leaking existence.
     #[test]

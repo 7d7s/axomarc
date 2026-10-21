@@ -532,4 +532,67 @@ mod tests {
         let flat = c.flat("de");
         assert_eq!(flat.get("greet").map(String::as_str), Some("Hello"));
     }
+
+    /// **LF-078**: the locale is a VALUE, never ambient state — switching the
+    /// locale and switching back returns the original text, and a
+    /// translation never leaves the catalog in another language.
+    #[test]
+    fn a_locale_switch_never_leaks_into_the_next_translation() {
+        let c = catalog();
+        // Switch to another locale ...
+        let hi = translate(
+            &c,
+            "hi",
+            "appointment.booked",
+            &[("patient", "Asha"), ("date", "21 Aug")],
+        );
+        assert_eq!(hi.locale_used.as_deref(), Some("hi"));
+        // ... and back: the original locale is intact.
+        let en = translate(
+            &c,
+            "en",
+            "appointment.booked",
+            &[("patient", "Asha"), ("date", "21 Aug")],
+        );
+        assert_eq!(en.locale_used.as_deref(), Some("en"));
+        assert!(
+            en.text.starts_with("Appointment booked"),
+            "the original locale is intact: {}",
+            en.text
+        );
+        // A regional tag still resolves through its language part.
+        let regional = translate(&c, "en-IN", "appointment.cancelled", &[]);
+        assert_eq!(regional.locale_used.as_deref(), Some("en"));
+    }
+
+    /// **LF-078**: two concurrent translations in different locales never
+    /// cross — the catalog is immutable, so one request's locale cannot leak
+    /// into another's message.
+    #[test]
+    fn concurrent_locales_never_cross() {
+        let c = std::sync::Arc::new(catalog());
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let mut handles = Vec::new();
+        for (locale, key) in [("hi", "appointment.booked"), ("en-IN", "appointment.patience")] {
+            let c = c.clone();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                translate(&c, locale, key, &[("patient", "Asha")])
+            }));
+        }
+        let outs: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(
+            outs[0].locale_used.as_deref(),
+            Some("hi"),
+            "the first thread kept its locale"
+        );
+        assert_eq!(
+            outs[1].locale_used.as_deref(),
+            Some("en-IN"),
+            "the second thread kept its locale"
+        );
+        assert!(outs[0].text.contains("21 Aug") || outs[0].text.contains("Asha"));
+        assert!(outs[1].text.contains("Please wait"));
+    }
 }

@@ -98,15 +98,19 @@ worker's 16 and the process crate's 8.
   (the ledger is durable ✓) and `mysql_batch_ledger_roundtrip` ✓ (against the live database ✓); the
   **status counts** — `batch_status_counts_members_from_the_store` ✓; the **validation** —
   `batch_and_chain_validation` ✓.
-- **Gaps (partly closed 2026-10-21)**: **the batch callback exception** and the **concurrent completion** of one batch have no
+- **Gaps (all closed 2026-10-21)**: **the batch callback exception** and the **concurrent completion** of one batch have no
   named case ✓; the batch's **tenant isolation** is not covered by a named case ✓ (the QUEUE's tenant
   isolation is ✓ — `tenant_isolation_queue_*` ✓ — but a batch's members are not pinned to a tenant by
   a named case ✓).
   **Now covered**: the **callback exception** — `a_batch_completion_callback_failure_is_observable_and_enqueues_nothing` ✓
   (the callback's job name is not registered ✓ → the failure reaches the caller ✓ and **nothing is
-  half-enqueued** ✓); and the **concurrent completion** — `a_batch_completes_exactly_once_when_members_finish_concurrently` ✓
+  half-enqueued** ✓); the **concurrent completion** — `a_batch_completes_exactly_once_when_members_finish_concurrently` ✓
   (two members finishing at the same time complete the batch **exactly once** ✓ and the callback is
-  enqueued **once** ✓). **Still open**: the batch's own **tenant isolation** ✗.
+  enqueued **once** ✓); and the **tenant isolation** —
+  `tenant_isolation_batch_members_are_pinned_to_their_tenant` ✓ (another tenant can neither see ✓,
+  complete ✓ nor fail ✓ a member ✓, while the owning tenant runs the batch ✓).
+  **Still open**: a batch that **mixes** tenants is **not refused** ✗ (F-26 ✓ — the repro fails on
+  demand ✓ and the proposed fix is filed ✓, not implemented ✓).
 
 ### LF-063 — Events, listeners and subscribers — **PARTIALLY VERIFIED**
 
@@ -299,6 +303,30 @@ worker's 16 and the process crate's 8.
        logged at ERROR ✓ with the job id ✓;
     5. the case above loses its `#[ignore]` ✓ and a **second** case asserts that a panicking
        handler does not consume the **next** job's attempt ✓ (the worker's state stays clean ✓).
+- **F-26 (low) — a batch can MIX tenants — OPEN (repro ✓ + proposed fix ✓, not implemented ✗).**
+  - **What the framework already guarantees**: the batch's **members are pinned to their tenant** ✓
+    — proven by `tenant_isolation_batch_members_are_pinned_to_their_tenant` ✓ (new ✓): another
+    tenant can neither **see** ✓, **complete** ✓ nor **fail** ✓ a member (the id is `NOT_FOUND` ✓,
+    invisible rather than refused ✓), while the owning tenant runs and completes the batch ✓.
+  - **The gap**: `BatchSpec::validate` refuses an empty batch ✓, duplicate ids ✓ and members that
+    do not start pending ✓ — but it does **not** check that the members agree on their tenant ✓.
+    A batch that spans two tenants puts one tenant's job under another tenant's batch record ✓,
+    and the completion callback fires for the mixed set ✓.
+  - **The repro** (executed ✓, and it fails ✓ — that failure IS the defect ✓):
+    `kelson-jobs`'s `a_batch_that_mixes_tenants_is_refused` ✓ — it dispatches a batch with one
+    member per tenant ✓ and asserts the dispatch is refused ✓. Today the dispatch **succeeds** ✓.
+    It is `#[ignore]`d ✓ so the tree stays green ✓ — run it with
+    `cargo test -p kelson-jobs -- --ignored` ✓.
+  - **The proposed fix** (not implemented ✗ — it refuses a spec that used to be accepted ✓):
+    1. `BatchSpec::validate` refuses a spec whose members disagree on `tenant_id` ✓ — the same
+       shape as the existing "ids must be unique" rule ✓ (a `None` tenant is a platform job ✓ and
+       must not be mixed with a tenant's job ✓ either ✓);
+    2. the refusal happens **before** the side effects ✓ (the ledger write ✓ and the enqueue ✓ —
+       the ledger is written first ✓, so the refusal must come even earlier ✓);
+    3. the demo/console refuse to build such a batch ✓ (they build the spec ✓ — the validation
+       catches it ✓);
+    4. the case above loses its `#[ignore]` ✓ and a **single-tenant** case is added ✓ (a batch of
+       one tenant's members is accepted ✓ — the check must not break honest batches ✓).
 
 ## 4. Corrections to the parity documents
 
@@ -328,6 +356,8 @@ worker's 16 and the process crate's 8.
   capability gate** for the new process port (LF-068 ✗); the **maintenance mode** and the **lock
   expiry** (LF-066 ✗); and the **context cleanup on panic** (LF-069 ✗ — now with a sibling finding:
   **F-25** ✓, the job worker has no panic boundary ✓).
-- **Findings**: F-20 (the layer gate was red — **fixed** ✓), **F-25** (the job worker's missing
-  panic boundary — **open** ✓: a repro that fails on demand ✓ and a five-point proposed fix ✓),
-  and the parity rows' claim-shaped evidence + the duplicated LF-064 row (**corrected** ✓).
+- **Findings**: F-20 (the layer gate was red — **fixed** ✓), **F-25** (the job worker has no panic
+  boundary — **open** ✓: a repro that fails on demand ✓ and a five-point proposed fix ✓),
+  **F-26** (a batch can mix tenants — **open** ✓: a repro that dispatches a mixed batch ✓ and a
+  four-point proposed fix ✓), and the parity rows' claim-shaped evidence + the duplicated LF-064 row
+  (**corrected** ✓).

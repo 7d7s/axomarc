@@ -19,16 +19,18 @@ itself de-prioritizes ✓).
 | `cargo test -p kelson-cache-memory --lib` | **4 passed** — incl. **`the_memory_cache_satisfies_the_cache_contract`** (new ✓) |
 | `cargo test -p kelson-cache-redis --features redis-tests --test live_redis` (live Redis) | **7 passed** — incl. **`the_redis_cache_satisfies_the_cache_contract`** and **`the_redis_lock_lease_expires_and_a_stale_holder_cannot_release_it`** (new ✓) |
 | `cargo test -p kelson-storage --lib` | **11 passed** — the disk registry + visibility ✓, the byte cap ✓, the streaming writer ✓, the tenant isolation ✓✓✓✓, the traversal guard ✓ and the pentest case ✓ |
-| `cargo test -p kelson-storage-local --lib` | **8 passed** — the round trip ✓, the traversal refusal ✓, the streaming writer ✓, the **partial-file cleanup** ✓, the byte cap ✓ and the presign refusal ✓ (+1 ignored: the F-24 repro ✓) |
+| `cargo test -p kelson-storage-local --lib` | **7 passed** — the round trip ✓, the traversal refusal ✓, the streaming writer ✓, the **partial-file cleanup** ✓, the byte cap ✓ and the presign refusal ✓ (+1 ignored: the F-24 repro ✓) |
 | `cargo test -p kelson-storage-s3 --lib` | **3 passed** — the round trip, the directory ops against the S3 sandbox ✓ and the **temporary URL** ✓ (`a_temporary_url_is_scoped_to_one_object_and_carries_the_expiry` ✓) |
-| `cargo test -p kelson-http-client --lib` | **17 passed** — the timeouts ✓, the retry schedule ✓, the header redaction ✓, the fake ✓, the mock ✓, the tap ✓ and the storage sink ✓ |
+| `cargo test -p kelson-http-client --lib` | **17 passed** — the timeouts ✓, the retry schedule ✓, the header redaction ✓, the fake ✓, the mock ✓, the tap ✓ and the storage sink ✓ (+1 ignored: the F-23 repro ✓) |
 | `cargo test -p kelson-mail-smtp --lib` | **13 passed** — the mailable build ✓, the attachments ✓, the chain failover ✓, the queued retry → dead-letter ✓ and the sandbox ✓ |
-| `cargo test -p kelson-notifications --lib` | **20 passed** — the channels ✓, the localization ✓, the queueing ✓, the on-demand audit ✓ and the **dispatch origin** ✓ |
+| `cargo test -p kelson-notifications --lib` | **20 passed** — the channels ✓, the localization ✓, the queueing ✓, the on-demand audit ✓, the **dispatch origin** ✓ and the **queued locale** ✓ (`a_queued_delivery_carries_the_locale_it_was_rendered_in` ✓) |
 | `cargo test -p kelson-search --lib` | **6 passed** — the keyword/vector/hybrid search ✓, the facets ✓, the delete ✓ and the tenant isolation ✓ |
 | `cargo test -p kelson-demo --test http_integration` (the app edge, in-memory) | **100 passed** — incl. the six upload cases ✓ (`upload_happy_path_roundtrips_through_storage` ✓, `upload_disk_query_resolves_and_unknown_disk_is_422` ✓, `upload_traversal_filename_is_sanitized_and_unauthenticated_rejected` ✓, `upload_without_multipart_is_422_envelope` ✓, `upload_part_bomb_beyond_max_parts_is_rejected` ✓, `upload_quota_refuses_the_overage_and_keeps_the_ledger_exact` ✓) |
 
-**110 named cases** across the ten crates (100 before this batch, plus the 3 contract-suite runs and
-the 7 cases added on 2026-10-21 ✓), plus the demo's upload edge ✓ (`upload_happy_path_roundtrips_through_storage` ✓,
+**107 named cases** across the ten crates (100 before this batch ✓, plus the 2 contract-suite runs ✓,
+the 4 cases added on 2026-10-21 ✓ and the 1 added with the locale cases ✓; two further cases sit
+`#[ignore]`d as repros ✓ — the F-23 egress repro ✓ and the F-24 link repro ✓), plus the demo's
+upload edge ✓ (`upload_happy_path_roundtrips_through_storage` ✓,
 `upload_disk_query_resolves_and_unknown_disk_is_422` ✓,
 `upload_traversal_filename_is_sanitized_and_unauthenticated_rejected` ✓,
 `upload_without_multipart_is_422_envelope` ✓,
@@ -127,9 +129,9 @@ the 7 cases added on 2026-10-21 ✓), plus the demo's upload edge ✓ (`upload_h
   contract shape ✓, not a real signature ✓).
 - **Gaps (partly closed 2026-10-21)**: the **symlink** case ✗ (a symlink pointing outside the root ✗) — now filed as
   **F-24** below ✓ (a repro that fails on demand ✓ + a proposed fix ✓, not implemented ✗); the
-  **MIME spoof** ✗ (the declared type vs. the content ✗ — the storage layer does not sniff content
-  types ✗, the upload edge validates the **declared** type ✓); and the **real S3 driver** ✗ (the
-  sandbox only ✓). There is **no SFTP driver** ✗ (a recorded divergence ✓).
+  **MIME spoof** ✗ (the declared type vs. the content ✗ — the upload edge validates the **declared**
+  type ✓ and never sniffs the bytes ✗) — now filed as **F-27** below ✓ (same shape ✓); and the
+  **real S3 driver** ✗ (the sandbox only ✓). There is **no SFTP driver** ✗ (a recorded divergence ✓).
 
 ### LF-073 — HTTP client — **PARTIALLY VERIFIED**
 
@@ -238,15 +240,42 @@ feature has no executed case ✓.
   deterministic, the escaping is safe, the plural forms work and the locale state does not leak
   across concurrent requests/jobs.
 - **Implementation**: the **lang files** ✓ (the `i18n` section ✓ + the message catalog ✓ loaded by
-  `kelson-config::load_messages` ✓) and the **notification context** ✓ (the route locale ✓). There is
-  **no translator** ✗ (no catalog lookup with a fallback chain ✗) and **no pluralization** ✗.
-- **Evidence**: the **localized rendering** — `hub_localizes_template_keys_through_the_catalog` ✓,
+  `kelson-config::load_messages` ✓), the **translator** ✓ (`kelson_foundation::translate` ✓ in
+  `crates/foundation/core/src/translate.rs` ✓ — the **fallback chain** ✓: the exact tag ✓, then its
+  language part ✓, then the catalog default ✓), the **pluralization** ✓ (`plural_bucket` ✓ — the
+  CLDR-style `zero/one/two/few/many/other` buckets ✓ for the shipped locales `en` ✓/`fr` ✓/`ar` ✓ —
+  and `trans_choice` ✓ which picks the bucket form and substitutes `{count}` ✓), the **interpolation**
+  ✓ (`render_template` ✓ — an unknown parameter stays visible ✓, never silently empty ✓), and the
+  **notification context** ✓ (the route locale ✓ → the catalog ✓ → the queued envelope ✓).
+  > **Correction (2026-10-21):** this section's first draft said "there is **no translator** ✗ and
+  > **no pluralization** ✗" — that was **wrong** ✓. The translator and the plural rules are shipped
+  > in the **foundation** ✓ (`translate.rs` ✓) with their own named cases ✓, and the batch missed
+  > them ✓. The verdict below is built on the code, not on the earlier draft ✓.
+- **Evidence**: the **fallback** — `regional_falls_back_to_language` ✓, `unknown_locale_uses_default` ✓,
+  `fallback_chain_order` ✓, `regional_key_found_before_fallback` ✓; the **missing key** —
+  `unresolved_key_returns_key` ✓ (the key itself comes back ✓, with no locale claim ✓); the
+  **plural rules** — `plural_bucket_matrix` ✓ (the whole `ar` six-bucket matrix ✓, `fr`'s explicit
+  `zero` ✓, an unsupported locale collapsing to `other` ✓) and
+  `trans_choice_picks_buckets_and_substitutes_count` ✓; the **interpolation** —
+  `unknown_placeholder_stays_visible` ✓, `repeated_placeholder_substituted_everywhere` ✓,
+  `unclosed_brace_passes_through` ✓; the **locale switch/restore** —
+  `a_locale_switch_never_leaks_into_the_next_translation` ✓ (new ✓ — the locale is a **value** ✓,
+  never ambient state ✓, so switching and switching back returns the original ✓); the **concurrency
+  leak** — `concurrent_locales_never_cross` ✓ (new ✓ — two threads translating in different locales
+  never cross ✓); the **queue locale** — `a_queued_delivery_carries_the_locale_it_was_rendered_in` ✓
+  (new ✓ — the request-time locale travels with the envelope ✓ instead of being guessed at delivery
+  time ✓) plus `hub_localizes_template_keys_through_the_catalog` ✓,
   `mail_and_sms_render_localized_with_payload_vars` ✓,
-  `notification_view_context_carries_the_route_locale_injections` ✓; the **locale selection** — the
-  routing/tenant cases ✓ (`tenant_isolation_scheduler_*` ✓).
-- **Gaps**: the **fallback** chain (a missing key falling back to the default locale ✗), the **plural
-  rules** ✗, the **locale switch/restore** ✗, the **queue locale** ✗ (a job that renders in the
-  requester's locale ✗) and the **concurrency leak** ✗ are not covered.
+  `notification_view_context_carries_the_route_locale_injections` ✓; the **merged view injection** —
+  `flat_merges_the_fallback_chain_exact_wins` ✓.
+  *(The translator and pluralization cases live in `kelson-foundation` ✓ — 66 green there ✓, with
+  the two locale cases added on 2026-10-21 ✓.)*
+- **Gaps (much smaller after the correction)**: the **per-tenant locale** ✗ (the tenant's locale is
+  not modelled ✗ — a capability, not a test ✗); and the **end-to-end interpolation escaping** ✗ — the
+  translator is deliberately plain-text ✓ (it must not escape ✓ — the **view layer** escapes ✓,
+  `html_escape` ✓, with its own cases ✓ ✓) but the **composition** (a translated value rendered in a
+  view) has no single named case ✗ (the views crate is **zero-dep** ✓, so the composition can only
+  be proven in a crate that depends on both ✓ — the demo ✓).
 
 ### LF-079 — String and helper utilities — **NOT IMPLEMENTED**
 
@@ -334,6 +363,31 @@ the storage listing ✓). An absent feature has no executed case ✓.
        doc/code mismatch is its own defect ✓ — the same shape as F-17 ✓);
     5. the case above loses its `#[ignore]` ✓ and a **Unix** case is added ✓ (a real symlink ✓ —
        the junction proves the shape ✓, a symlink proves the primitive ✓).
+- **F-27 (medium) — the upload type check trusts the DECLARED type, so a spoofed file is stored —
+  OPEN (repro ✓ + proposed fix ✓, not implemented ✗).**
+  - **What happens today**: `kelson_http::ingest_multipart` compares the client's `Content-Type`
+    claim ✓ against the allowlist ✓ and never looks at the bytes ✗. A file declared `image/png`
+    whose bytes are an HTML document is **stored** ✓ — and the stored record carries the **declared**
+    type ✓, so a later reader that trusts the record reads HTML as a PNG ✓.
+  - **The repro** (executed ✓, and it fails ✓ — that failure IS the defect ✓):
+    `kelson-http`'s `an_upload_whose_bytes_contradict_its_declared_type_is_refused` ✓ — it posts an
+    `image/png` part whose bytes are `<html><script>alert(1)</script></html>` ✓ and asserts the
+    ingest refuses it ✓. Today the upload is **accepted** ✓ (the stored record says
+    `content_type: "image/png"` ✓). It is `#[ignore]`d ✓ so the tree stays green ✓ — run it with
+    `cargo test -p kelson-http -- --ignored` ✓.
+  - **The proposed fix** (not implemented ✗ — it changes what the edge accepts ✓):
+    1. a `sniff_mime(bytes) -> Option<&'static str>` beside the existing `image_dimensions` ✓
+       (the framework **already** sniffs image headers ✓ — PNG/GIF/JPEG/WebP/BMP ✓ — so the
+       primitive exists ✓); it also covers the text-ish types ✓ (the HTML/XML sniffing rules ✓)
+       and returns `None` for an unknown type ✓;
+    2. when the **declared** type is sniffable ✓ and the sniffed type **disagrees** ✓ → refuse the
+       upload ✓ with a validation error ✓ that names the mismatch ✓ (never the bytes ✓);
+    3. when the sniffed type is **unknown** ✓ → **do not refuse** ✓ (a binary format the sniffer
+       does not know ✓ is not a spoof ✓ — refusing it would break every unknown upload ✓);
+    4. the **declared** type stays the record's type ✓ (the client is not trusted to change it ✓ —
+       the sniffed type is only used for the check ✓);
+    5. the case above loses its `#[ignore]` ✓ and a **matching** case is added ✓ (a real PNG
+       declared as PNG ✓ is still accepted ✓ — the check must not break honest uploads ✓).
 
 ## 4. Corrections to the parity documents
 
@@ -351,15 +405,19 @@ the storage listing ✓). An absent feature has no executed case ✓.
   notifications, LF-076 search, LF-078 localization ✓), **3 NOT IMPLEMENTED** (LF-077 images, LF-079
   helpers, LF-080 collections ✓ — the three the atlas itself de-prioritizes ✓).
 - **The sharpest gaps**: the **SSRF / internal-IP guard** on the HTTP client ✗ (LF-073 ✓ — F-23 ✓,
-  open ✓) and the **local disk's link containment** ✗ (LF-072 ✓ — F-24 ✓, open ✓), the
-  **rollback-suppresses** and **commit-then-crash** outbox cases ✗ (LF-064 ✓), the **MIME spoof**
-  storage case ✗ (LF-072 ✓), the **index lifecycle** ✗ (LF-076 ✓) and the **locale fallback /
-  pluralization** ✗ (LF-078 ✓). *(The cache lock's lease expiry ✓, the holder crash ✓ and the clock
-  skew ✓ are now **closed** ✓.)*
+  open ✓), the **local disk's link containment** ✗ (LF-072 ✓ — F-24 ✓, open ✓), the **upload's
+  content-type sniffing** ✗ (LF-072 ✓ — F-27 ✓, open ✓), the **rollback-suppresses** and
+  **commit-then-crash** outbox cases ✗ (LF-064 ✓), the **real S3 driver** ✗ (LF-072 ✓), the
+  **per-tenant locale** ✗ (LF-078 ✓), the **index lifecycle** ✗ (LF-076 ✓) and the **end-to-end
+  interpolation escaping** ✗ (LF-078 ✓). *(The cache lock's lease expiry ✓, the holder crash ✓ and
+  the clock skew ✓ are now **closed** ✓.)*
 - **Findings**: **F-22** (the cache had no contract suite — **fixed** ✓, both drivers green ✓),
   **F-23** (the HTTP client has no egress policy — **open** ✓: a repro that fails on demand ✓ and a
-  five-point proposed fix ✓) and **F-24** (the local disk's containment is lexical — **open** ✓: a
-  repro that reads a file outside the root ✓ and a five-point proposed fix ✓), plus the parity
-  rows' missing / claim-shaped evidence (**corrected** ✓ — ten of the eleven rows did not exist ✓
-  and the one that did rested on the claim "Cache tests exist" ✓) and this batch's own
-  **overstatement** (the S3 side was called a "driver" ✓ when it is a **sandbox** ✓ — corrected ✓).
+  five-point proposed fix ✓), **F-24** (the local disk's containment is lexical — **open** ✓: a
+  repro that reads a file outside the root ✓ and a five-point proposed fix ✓) and **F-27** (the
+  upload trusts the declared content type — **open** ✓: a repro that stores HTML as `image/png` ✓
+  and a five-point proposed fix ✓), plus the parity rows' missing / claim-shaped evidence
+  (**corrected** ✓ — ten of the eleven rows did not exist ✓ and the one that did rested on the claim
+  "Cache tests exist" ✓) and this batch's own **overstatement** (the S3 side was called a "driver" ✓
+  when it is a **sandbox** ✓ — corrected ✓) and **wrong claim** (LF-078 said there was no
+  translator ✓ and no pluralization ✓ — both are **shipped** ✓ in the foundation ✓ — corrected ✓).

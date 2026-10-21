@@ -611,6 +611,42 @@ mod multipart_tests {
             .is_ok());
     }
 
+    /// **F-27 (repro) — the upload type check trusts the DECLARED type.**
+    ///
+    /// The allowlist compares the client's `Content-Type` claim ✓ and the
+    /// bytes are never sniffed ✗, so a file declared `image/png` whose bytes
+    /// are an HTML document is stored ✓ — and the stored record carries the
+    /// **declared** type ✓, so a later reader that trusts the record reads
+    /// HTML as a PNG ✓.
+    ///
+    /// The framework already sniffs image headers ✓ (`image_dimensions` ✓ —
+    /// PNG/GIF/JPEG/WebP/BMP ✓), so the fix is small (see the batch doc
+    /// §3 F-27): a `sniff_mime` beside it ✓, compared with the declared
+    /// type ✓.
+    ///
+    /// `#[ignore]`d so the tree stays green; run it with
+    /// `cargo test -p kelson-http -- --ignored` to watch it fail (that
+    /// failure IS the defect).
+    #[tokio::test]
+    #[ignore = "F-27: the content-type sniffing is proposed, not implemented"]
+    async fn an_upload_whose_bytes_contradict_its_declared_type_is_refused() {
+        let req = multipart(vec![(
+            "file",
+            Some("payload.png"),
+            "image/png",
+            b"<html><script>alert(1)</script></html>".to_vec(),
+        )]);
+        let err = run(req, &UploadLimits::default(), vec!["image/png".into()])
+            .await
+            .expect_err("a spoofed content type must be refused");
+        assert!(
+            err.public_message.contains("content type")
+                || err.public_message.contains("sniff"),
+            "the refusal names the reason: {}",
+            err.public_message
+        );
+    }
+
     #[tokio::test]
     async fn max_parts_enforced() {
         let limits = UploadLimits {
