@@ -353,6 +353,93 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    /// Plant a directory link that points OUTSIDE the disk root.
+    ///
+    /// On Unix this is a real symlink. On Windows a file symlink needs the
+    /// SeCreateSymbolicLinkPrivilege (absent for a normal user), so the case
+    /// uses a **directory junction** (`mklink /J`) — the same shape (a link
+    /// under the root that resolves elsewhere) and the same escape.
+    ///
+    /// Returns false when the host refuses to create any link, so the case
+    /// can skip instead of lying.
+    fn plant_outside_link(link: &Path, target: &Path) -> bool {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link).is_ok()
+        }
+        #[cfg(windows)]
+        {
+            if link.exists() {
+                return true;
+            }
+            std::process::Command::new("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .map(|out| out.status.success())
+                .unwrap_or(false)
+        }
+    }
+
+    /// **F-24 (repro) — the containment check is LEXICAL, so a link under the
+    /// root escapes it.**
+    ///
+    /// `resolve` checks `candidate.starts_with(&self.root)` on the *joined*
+    /// path, so the driver never resolves the links under the root. A link
+    /// planted inside the root (by anything with filesystem access — another
+    /// process, an extracted archive, an operator) points the read or the
+    /// write outside the disk root, so the module's promise ("the resolved
+    /// path must stay under the root") does not hold.
+    ///
+    /// The fix is **proposed, not implemented** (see
+    /// `docs/LF-070-TO-LF-080-VERIFICATION.md` §3 F-24): resolve the
+    /// deepest existing ancestor of the target and re-check containment, and
+    /// refuse a path whose components are links.
+    ///
+    /// The case is `#[ignore]`d so the tree stays green; run it with
+    /// `cargo test -p kelson-storage-local -- --ignored` to watch it fail
+    /// (that failure IS the defect).
+    #[test]
+    #[ignore = "F-24: the link-containment fix is proposed, not implemented"]
+    fn a_link_inside_the_root_cannot_read_outside_it() {
+        let base = std::env::temp_dir().join(format!("kelson-localdisk-{}", uuid_like()));
+        let root = base.join("root");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), b"TOP-SECRET").unwrap();
+
+        let disk = LocalDisk::new(&root).unwrap();
+        let link = root.join("links");
+        if !plant_outside_link(&link, &outside) {
+            eprintln!("storage-local: the host refuses to create a link; skipping");
+            std::fs::remove_dir_all(&base).ok();
+            return;
+        }
+
+        let obj = ObjectRef {
+            bucket: "links".to_string(),
+            key: "secret.txt".to_string(),
+        };
+        let read = disk.get(&obj);
+        assert!(
+            read.is_err(),
+            "a link under the root must not expose a file outside it (read: {read:?})"
+        );
+        // And the write side must not escape either.
+        let put = disk.put("links", "planted.txt", b"x".to_vec());
+        assert!(
+            put.is_err(),
+            "a link under the root must not receive a write from outside it"
+        );
+        assert!(
+            !outside.join("planted.txt").exists(),
+            "nothing may be written outside the disk root"
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
     #[test]
     fn traversal_is_rejected() {
         let (disk, dir) = disk();

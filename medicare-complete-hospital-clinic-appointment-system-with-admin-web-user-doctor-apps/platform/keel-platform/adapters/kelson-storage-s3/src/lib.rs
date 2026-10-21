@@ -138,6 +138,37 @@ mod tests {
         assert!(s.get(&r).is_err());
     }
 
+    /// **LF-072**: a temporary URL is scoped to ONE object and carries the
+    /// requested expiry — two different objects never share a URL, and the
+    /// TTL is in the URL.
+    ///
+    /// Scope note: this sandbox's URL is a **stub** (no signature — the real
+    /// signed-HTTP client is not written yet), so the case proves the
+    /// *contract shape* the port promises, not a real signature.
+    #[test]
+    fn a_temporary_url_is_scoped_to_one_object_and_carries_the_expiry() {
+        let s = S3Sandbox::new();
+        let one = s.put("docs", "a/one.pdf", vec![1]).unwrap();
+        let two = s.put("docs", "a/two.pdf", vec![2]).unwrap();
+
+        let url_one = s.presigned_url(&one, 60).unwrap();
+        let url_two = s.presigned_url(&two, 60).unwrap();
+        assert_ne!(url_one, url_two, "two objects never share a URL");
+        assert!(
+            url_one.contains("one.pdf") && url_one.contains("docs"),
+            "the URL is scoped to its bucket and key: {url_one}"
+        );
+        assert!(
+            url_one.contains("60"),
+            "the URL carries the requested expiry: {url_one}"
+        );
+        let short = s.presigned_url(&one, 30).unwrap();
+        assert_ne!(
+            short, url_one,
+            "a shorter lease is a different URL — the expiry is not ignored"
+        );
+    }
+
     /// Wave 6 P2: virtual directory semantics — boundary-matched sorted
     /// listings, marker directories, scoped idempotent deletes.
     #[test]

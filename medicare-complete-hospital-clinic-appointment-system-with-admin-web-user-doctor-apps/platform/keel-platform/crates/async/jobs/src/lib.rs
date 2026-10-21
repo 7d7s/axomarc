@@ -2186,6 +2186,70 @@ mod tests {
         assert_eq!(done.len(), 1);
     }
 
+    /// **LF-060**: a FAILED job is retried — the SAME job comes back, the
+    /// attempt counter advances, the backoff delays the retry (it is not an
+    /// immediate re-run), and only an exhausted budget dead-letters it.
+    ///
+    /// The backoff is simulated by moving the store's own clock (the test
+    /// does not sleep): the store's clock is the only authority over when a
+    /// retry becomes claimable.
+    #[test]
+    fn a_failed_job_is_retried_and_only_the_exhausted_budget_dies() {
+        let store = InMemoryJobStore::new();
+        let mut j = job(0, 2); // two attempts in the budget
+        j.status = JobStatus::Pending;
+        let id = store.enqueue(j).unwrap();
+
+        // First run.
+        let first = store.claim("w1").unwrap().unwrap();
+        assert_eq!(first.attempt, 1, "the claim consumes an attempt");
+        assert_eq!(
+            store.fail(id, "boom").unwrap(),
+            JobStatus::Pending,
+            "a failure inside the budget is a RETRY, not a death"
+        );
+
+        // The retry waits for its backoff — it is not an immediate re-run.
+        assert!(
+            store.claim("w2").unwrap().is_none(),
+            "the retry is delayed by the backoff"
+        );
+
+        // Simulate the backoff elapsing.
+        {
+            let mut jobs = store.jobs.lock().unwrap();
+            let job = jobs.iter_mut().find(|j| j.id == id).expect("the job is there");
+            job.available_at = OffsetDateTime::now_utc();
+        }
+
+        // Second run: the SAME job, with the attempt advanced.
+        let second = store.claim("w2").unwrap().expect("the retry is claimable");
+        assert_eq!(second.id, id, "the retry is the same job, not a new one");
+        assert_eq!(second.attempt, 2, "the attempt counter advances");
+
+        // The budget is spent: the job dies for good.
+        assert_eq!(
+            store.fail(id, "boom again").unwrap(),
+            JobStatus::Dead,
+            "the exhausted budget dead-letters the job"
+        );
+        assert!(
+            store.claim("w3").unwrap().is_none(),
+            "a dead job is never re-claimed"
+        );
+        let dead = store.list(Some(JobStatus::Dead), 10).unwrap();
+        assert_eq!(dead.len(), 1, "exactly one dead job");
+        assert_eq!(
+            dead[0].last_error.as_deref(),
+            Some("boom again"),
+            "the last failure is kept on the dead job"
+        );
+        assert!(
+            dead[0].finished_at.is_some(),
+            "a dead job is stamped finished"
+        );
+    }
+
     #[test]
     fn delayed_jobs_wait_and_dead_jobs_requeue() {
         let store = InMemoryJobStore::new();
@@ -2353,6 +2417,108 @@ mod tests {
             .maybe_run_completion(&registry, &done, OffsetDateTime::now_utc())
             .unwrap()
             .is_none());
+    }
+
+    /// **LF-062**: the batch's completion CALLBACK can fail — the callback's
+    /// job name is not registered, so it cannot be built. The failure must be
+    /// **observable** (the caller gets the error) and it must not leave a
+    /// half-enqueued job behind.
+    #[test]
+    fn a_batch_completion_callback_failure_is_observable_and_enqueues_nothing() {
+        let store = Arc::new(InMemoryJobStore::new());
+        let runtime = BatchRuntime::new(store.clone());
+        let mut j1 = job(0, 3);
+        j1.status = JobStatus::Pending;
+        let spec = BatchSpec {
+            id: Uuid::now_v7(),
+            name: "nightly".into(),
+            jobs: vec![j1.clone()],
+            on_complete: Some("batch.callback.that.does.not.exist".into()),
+        };
+        let id = runtime.dispatch(spec).unwrap();
+        let done = runtime.member_finished(id, j1.id, false).unwrap().unwrap();
+        assert!(done.finished(), "the batch itself finished");
+
+        // The registry does not know the callback's job name.
+        let registry = JobRegistry::new();
+        let err = runtime
+            .maybe_run_completion(&registry, &done, OffsetDateTime::now_utc())
+            .expect_err("the callback failure must reach the caller");
+        assert!(
+            err.public_message.contains("batch.callback.that.does.not.exist")
+                || err.public_message.contains("not registered"),
+            "the error names the missing callback: {}",
+            err.public_message
+        );
+        let pending = store.list(Some(JobStatus::Pending), 10).unwrap();
+        assert!(
+            pending
+                .iter()
+                .all(|j| j.name != "batch.callback.that.does.not.exist"),
+            "a failed callback leaves nothing half-enqueued: {pending:?}"
+        );
+        assert_eq!(
+            pending.len(),
+            1,
+            "only the batch's own member is still queued — the callback added nothing"
+        );
+    }
+
+    /// **LF-062**: two members finishing CONCURRENTLY complete the batch
+    /// exactly ONCE — the completion (and its callback) must not run twice.
+    #[test]
+    fn a_batch_completes_exactly_once_when_members_finish_concurrently() {
+        let store = Arc::new(InMemoryJobStore::new());
+        let runtime = Arc::new(BatchRuntime::new(store.clone()));
+        let mut j1 = job(0, 3);
+        j1.status = JobStatus::Pending;
+        let mut j2 = job(0, 3);
+        j2.status = JobStatus::Pending;
+        let spec = BatchSpec {
+            id: Uuid::now_v7(),
+            name: "nightly".into(),
+            jobs: vec![j1.clone(), j2.clone()],
+            on_complete: Some("batch.done".into()),
+        };
+        let id = runtime.dispatch(spec).unwrap();
+
+        // Both workers report at the same time.
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let mut handles = Vec::new();
+        for member in [j1.id, j2.id] {
+            let runtime = runtime.clone();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                runtime.member_finished(id, member, false).unwrap()
+            }));
+        }
+        let completions: Vec<_> = handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .filter(|out| out.is_some())
+            .collect();
+        assert_eq!(
+            completions.len(),
+            1,
+            "exactly one worker sees the batch complete — the completion never runs twice"
+        );
+        let done = completions[0].clone().unwrap();
+        assert!(done.finished());
+
+        // And the callback is enqueued once.
+        let mut registry = JobRegistry::new();
+        registry.register(JobDef::new("batch.done")).unwrap();
+        runtime
+            .maybe_run_completion(&registry, &done, OffsetDateTime::now_utc())
+            .unwrap();
+        let callbacks = store
+            .list(Some(JobStatus::Pending), 10)
+            .unwrap()
+            .into_iter()
+            .filter(|j| j.name == "batch.done")
+            .count();
+        assert_eq!(callbacks, 1, "the completion callback is enqueued once");
     }
 
     // ------------------------------------- Wave 6 P9: durable batch ledger

@@ -17,7 +17,10 @@
 
 #![cfg(feature = "redis-tests")]
 
-use kelson_caching::CachePort;
+use std::sync::Arc;
+use std::time::Duration;
+
+use kelson_caching::{CacheLock, CachePort};
 use kelson_cache_redis::RedisCache;
 
 /// The **shared cache contract** (LF-070): the Redis driver must satisfy
@@ -156,5 +159,36 @@ fn prefix_invalidation_only_drops_its_own_keys() {
         cache.get("b/1"),
         Some(b"3".to_vec()),
         "a key outside the prefix survives"
+    );
+}
+
+/// **LF-071 (live)**: the lock's LEASE is enforced by Redis itself, not by the
+/// holder. The key carries a TTL, so a holder that CRASHES (never releases)
+/// frees the slot when the lease elapses — and the stale holder's late
+/// release is REFUSED, because it must not free the lock the new holder now
+/// owns.
+#[test]
+fn the_redis_lock_lease_expires_and_a_stale_holder_cannot_release_it() {
+    let Some(cache) = cache(&format!("keel:test:cache:{}:", uuid::Uuid::now_v7())) else {
+        return;
+    };
+    let lock = CacheLock::new(Arc::new(cache));
+    let crashed = lock.try_acquire("billing.close", 1).unwrap();
+    assert!(
+        lock.try_acquire("billing.close", 1).is_none(),
+        "the live lease excludes a second holder"
+    );
+    std::thread::sleep(Duration::from_millis(1_200));
+    assert!(
+        lock.try_acquire("billing.close", 1).is_some(),
+        "the expired lease frees the slot even though the holder never released"
+    );
+    assert!(
+        !lock.release(&crashed),
+        "a stale holder's late release is refused"
+    );
+    assert!(
+        lock.try_acquire("billing.close", 1).is_none(),
+        "the stale release did NOT free the new holder's lock"
     );
 }

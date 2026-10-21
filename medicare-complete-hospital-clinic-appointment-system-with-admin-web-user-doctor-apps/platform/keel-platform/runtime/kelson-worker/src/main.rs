@@ -1424,6 +1424,22 @@ mod tests {
         }
     }
 
+    /// A handler that explodes: the job worker's counterpart of a panicking
+    /// HTTP handler.
+    struct PanickingHandler;
+
+    impl JobHandler for PanickingHandler {
+        fn name(&self) -> &str {
+            "p8.panicking"
+        }
+
+        fn handle<'a>(&'a self, _job: &'a DurableJob) -> BoxFuture<'a, Result<(), AppError>> {
+            Box::pin(async move {
+                panic!("the handler exploded");
+            })
+        }
+    }
+
     struct TraceMiddleware {
         trace: Arc<Mutex<Vec<String>>>,
     }
@@ -1902,6 +1918,68 @@ mod tests {
         assert_eq!(
             err.public_message, "job exceeded its execution deadline",
             "the failure names the deadline"
+        );
+    }
+
+    /// **F-25 (repro) — a PANICKING job handler takes the worker down.**
+    ///
+    /// The HTTP edge has a panic boundary (F-2: a panicking handler answers a
+    /// stable 500 envelope), but the job worker has none: `handler.handle(&job)`
+    /// is awaited directly, so a panic inside a handler unwinds the claim loop
+    /// — the worker dies mid-flight, every other claimed job stays `Running`
+    /// until its lease is reclaimed, and the panic (not a job failure) is what
+    /// the operator sees.
+    ///
+    /// The fix is **proposed, not implemented** (see
+    /// `docs/LF-060-TO-LF-069-VERIFICATION.md` §3 F-25): catch the unwind
+    /// around the handler future, map it to a job FAILURE (so the retry budget
+    /// and the backoff apply), record it as the job's `last_error`, and keep
+    /// the worker alive — the posture the HTTP edge already takes.
+    ///
+    /// `#[ignore]`d so the tree stays green; run it with
+    /// `cargo test -p kelson-worker -- --ignored` to watch it fail (that
+    /// failure IS the defect).
+    #[tokio::test]
+    #[ignore = "F-25: the job worker's panic boundary is proposed, not implemented"]
+    async fn a_panicking_job_handler_does_not_take_the_worker_down() {
+        let dispatched = tokio::spawn(async move {
+            let def = JobDef::new("p8.panicking");
+            let mut defs = JobRegistry::new();
+            defs.register(def.clone()).expect("the def registers");
+            let mut handlers = WorkerRegistry::new();
+            handlers
+                .register(Arc::new(PanickingHandler))
+                .expect("the handler registers");
+            let stacks = JobMiddlewareStacks::new(Arc::new(MemoryUniqueLock::new()));
+            let store = Arc::new(InMemoryJobStore::new());
+            let batches = BatchRuntime::new(store.clone());
+            let chains = ChainRuntime::new(store.clone());
+            let now = OffsetDateTime::now_utc();
+            let mut job = build_from_def(&def, serde_json::json!({}), now);
+            job.available_at = now - time::Duration::seconds(60);
+            let id = store.enqueue(job).expect("the job enqueues");
+            let outcome = p8_dispatch(&handlers, &defs, &stacks, &store, &batches, &chains).await;
+            (id, store, outcome)
+        })
+        .await;
+
+        let (id, store, outcome) = match dispatched {
+            Ok(out) => out,
+            Err(join) => panic!("the worker task died: {join}"),
+        };
+        assert!(
+            outcome.is_ok(),
+            "a panicking handler must not unwind the worker's dispatch pass"
+        );
+        let row = store.get(id).expect("the store reads").expect("the row");
+        assert_ne!(
+            row.status,
+            JobStatus::Running,
+            "the panicking job must not stay claimed — it must be a FAILED attempt"
+        );
+        assert!(
+            row.last_error.is_some(),
+            "the panic is recorded as the job's failure, not lost"
         );
     }
 

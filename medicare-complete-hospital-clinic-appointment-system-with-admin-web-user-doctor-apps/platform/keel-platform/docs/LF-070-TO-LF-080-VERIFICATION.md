@@ -15,20 +15,20 @@ itself de-prioritizes ✓).
 
 | Suite | Result |
 |---|---|
-| `cargo test -p kelson-caching --lib` | **17 passed** — the cache service (get/put/remember/tags/flush/increment ✓), the **cache lock** (`cache_lock_acquire_release_and_exclusivity` ✓, `guard_acquire_closure_release_and_force_release` ✓, `with_lock_runs_and_releases` ✓), the tenant isolation ✓✓✓ and the pentest case ✓ |
+| `cargo test -p kelson-caching --lib` | **19 passed** — the cache service (get/put/remember/tags/flush/increment ✓), the **cache lock** (`cache_lock_acquire_release_and_exclusivity` ✓, `guard_acquire_closure_release_and_force_release` ✓, `with_lock_runs_and_releases` ✓), the **lock lease** (`a_lock_lease_expires_so_a_crashed_holder_never_blocks_the_slot` ✓, `the_lease_is_enforced_by_the_store_not_by_the_holders_clock` ✓), the tenant isolation ✓✓✓ and the pentest case ✓ |
 | `cargo test -p kelson-cache-memory --lib` | **4 passed** — incl. **`the_memory_cache_satisfies_the_cache_contract`** (new ✓) |
-| `cargo test -p kelson-cache-redis --features redis-tests --test live_redis` (live Redis) | **6 passed** — incl. **`the_redis_cache_satisfies_the_cache_contract`** (new ✓) |
+| `cargo test -p kelson-cache-redis --features redis-tests --test live_redis` (live Redis) | **7 passed** — incl. **`the_redis_cache_satisfies_the_cache_contract`** and **`the_redis_lock_lease_expires_and_a_stale_holder_cannot_release_it`** (new ✓) |
 | `cargo test -p kelson-storage --lib` | **11 passed** — the disk registry + visibility ✓, the byte cap ✓, the streaming writer ✓, the tenant isolation ✓✓✓✓, the traversal guard ✓ and the pentest case ✓ |
-| `cargo test -p kelson-storage-local --lib` | **7 passed** — the round trip ✓, the traversal refusal ✓, the streaming writer ✓, the **partial-file cleanup** ✓, the byte cap ✓ and the presign refusal ✓ |
-| `cargo test -p kelson-storage-s3 --lib` | **2 passed** — the round trip and the directory ops against the S3 sandbox ✓ |
+| `cargo test -p kelson-storage-local --lib` | **8 passed** — the round trip ✓, the traversal refusal ✓, the streaming writer ✓, the **partial-file cleanup** ✓, the byte cap ✓ and the presign refusal ✓ (+1 ignored: the F-24 repro ✓) |
+| `cargo test -p kelson-storage-s3 --lib` | **3 passed** — the round trip, the directory ops against the S3 sandbox ✓ and the **temporary URL** ✓ (`a_temporary_url_is_scoped_to_one_object_and_carries_the_expiry` ✓) |
 | `cargo test -p kelson-http-client --lib` | **17 passed** — the timeouts ✓, the retry schedule ✓, the header redaction ✓, the fake ✓, the mock ✓, the tap ✓ and the storage sink ✓ |
 | `cargo test -p kelson-mail-smtp --lib` | **13 passed** — the mailable build ✓, the attachments ✓, the chain failover ✓, the queued retry → dead-letter ✓ and the sandbox ✓ |
 | `cargo test -p kelson-notifications --lib` | **20 passed** — the channels ✓, the localization ✓, the queueing ✓, the on-demand audit ✓ and the **dispatch origin** ✓ |
 | `cargo test -p kelson-search --lib` | **6 passed** — the keyword/vector/hybrid search ✓, the facets ✓, the delete ✓ and the tenant isolation ✓ |
 | `cargo test -p kelson-demo --test http_integration` (the app edge, in-memory) | **100 passed** — incl. the six upload cases ✓ (`upload_happy_path_roundtrips_through_storage` ✓, `upload_disk_query_resolves_and_unknown_disk_is_422` ✓, `upload_traversal_filename_is_sanitized_and_unauthenticated_rejected` ✓, `upload_without_multipart_is_422_envelope` ✓, `upload_part_bomb_beyond_max_parts_is_rejected` ✓, `upload_quota_refuses_the_overage_and_keeps_the_ledger_exact` ✓) |
 
-**103 named cases** across the ten crates (100 before this batch, plus the 3 contract-suite runs),
-plus the demo's upload edge ✓ (`upload_happy_path_roundtrips_through_storage` ✓,
+**110 named cases** across the ten crates (100 before this batch, plus the 3 contract-suite runs and
+the 7 cases added on 2026-10-21 ✓), plus the demo's upload edge ✓ (`upload_happy_path_roundtrips_through_storage` ✓,
 `upload_disk_query_resolves_and_unknown_disk_is_422` ✓,
 `upload_traversal_filename_is_sanitized_and_unauthenticated_rejected` ✓,
 `upload_without_multipart_is_422_envelope` ✓,
@@ -85,10 +85,20 @@ plus the demo's upload edge ✓ (`upload_happy_path_roundtrips_through_storage` 
   `tenant_isolation_cache_atomic_slots_are_per_tenant` ✓,
   `tenant_isolation_scheduler_guard_locks_do_not_collide_across_tenants` ✓; the **hostile keys** —
   `pentest_cache_hostile_keys_and_prefixes_cannot_escape_the_caller` ✓.
-- **Gaps**: the **lease expiry** of the cache lock (a lock whose holder dies ✗) has no named case ✓; the
+- **Gaps (partly closed 2026-10-21)**: the **lease expiry** of the cache lock (a lock whose holder dies ✗) has no named case ✓; the
   **holder crash** ✗; the **clock skew** between the holder and the lease ✗; and the **Redis failover**
   ✗. *(The atlas's own warning is respected: the cache lock's atomicity is only as good as the
   backend's ✓ — the in-memory driver fakes it with a process mutex ✓ and says so ✓.)*
+  **Now covered**: the **lease expiry** ✓ and the **holder crash** ✓ —
+  `a_lock_lease_expires_so_a_crashed_holder_never_blocks_the_slot` ✓ (the store's TTL frees the slot
+  after the holder disappears ✓, and the **stale holder's late release is refused** ✓ — it cannot
+  free the lock the new holder now owns ✓); the **clock skew** ✓ —
+  `the_lease_is_enforced_by_the_store_not_by_the_holders_clock` ✓ (the lease is the **store's**
+  clock ✓, so a skewed holder can neither extend nor shorten it ✓); and the **real backend** ✓ —
+  `the_redis_lock_lease_expires_and_a_stale_holder_cannot_release_it` ✓ (a live Redis ✓: the key
+  carries a TTL ✓, the expired lease frees the slot ✓ and the stale release is refused ✓).
+  **Still open**: the **Redis failover** ✗ (it needs a replicated Redis to fail over ✗ — an
+  infrastructure gap ✓, not a code gap ✓).
 
 ### LF-072 — Filesystem and upload storage — **PARTIALLY VERIFIED**
 
@@ -96,22 +106,30 @@ plus the demo's upload edge ✓ (`upload_happy_path_roundtrips_through_storage` 
   streaming; uploads/downloads; visibility; temporary URLs. The backend can change without changing
   application logic; paths are scoped; uploads are size/type validated; private files stay private.
 - **Implementation**: the **disk abstraction** ✓ (`kelson-storage`'s `StoragePort` ✓ + the disk registry ✓
-  with the visibility policy ✓), the **local** driver ✓, the **S3-compatible** driver ✓ (the sandbox ✓),
-  and the host's upload edge ✓ (the multipart limit ✓, the disk query ✓, the traversal guard ✓).
-- **Evidence**: the **fake** — the S3 sandbox ✓ (`sandbox_stores_rendered_mail`-style recording ✓);
+  with the visibility policy ✓), the **local** driver ✓, the **S3-compatible** side is an **in-memory
+  sandbox** ✓ (`kelson-storage-s3`'s `S3Sandbox` ✓ — the crate says so itself ✓: "the real
+  signed-HTTP client lands with the document/export milestone" ✓ — so there is **no real S3 driver**
+  ✗, a recorded divergence ✓), and the host's upload edge ✓ (the multipart limit ✓, the disk query ✓,
+  the traversal guard ✓).
+- **Evidence**: the **fake** — the S3 sandbox ✓ (`roundtrip` ✓, `directory_ops_use_boundary_matching_and_markers` ✓);
   the **local** adapter — `roundtrip_put_get_delete` ✓, `nested_key_layout` ✓; the **real adapter** —
-  the S3 sandbox's round trip ✓; the **path traversal** — `traversal_is_rejected` ✓,
+  ✗ **there is none** ✓ (the S3 side is a sandbox ✓ — corrected from this batch's first draft ✓, which
+  called it a driver ✓); the **path traversal** — `traversal_is_rejected` ✓,
   `validate_dir_prefix_guards_traversal` ✓,
   `pentest_storage_hostile_prefixes_and_delete_dir_stay_inside_the_tenant` ✓,
   `tenant_isolation_storage_traversal_keys_are_refused` ✓; the **oversized streaming upload** —
   `get_capped_enforces_the_byte_cap` ✓ (the read is capped ✓) and the writer's cap ✓; the **partial
   failure cleanup** — `aborted_writer_session_removes_the_partial_file` ✓,
   `aborted_writer_session_commits_nothing` ✓; the **visibility** —
-  `registry_resolves_disks_and_enforces_visibility` ✓; the **tenant scoping** ✓✓✓✓.
-- **Gaps**: the **symlink** case ✗ (a symlink pointing outside the root ✗), the **MIME spoof** ✗ (the
-  declared type vs. the content ✗) and the **temporary URL** ✗ (the local driver refuses presigning ✓
-  and the S3 driver's presign is not covered by a named case ✗). There is **no SFTP driver** ✗ (a
-  recorded divergence ✓).
+  `registry_resolves_disks_and_enforces_visibility` ✓; the **tenant scoping** ✓✓✓✓; the **temporary
+  URL** — `a_temporary_url_is_scoped_to_one_object_and_carries_the_expiry` ✓ (the URL is scoped to one
+  object ✓ and carries the lease ✓ — the sandbox's URL is a **stub** ✓, so the case proves the
+  contract shape ✓, not a real signature ✓).
+- **Gaps (partly closed 2026-10-21)**: the **symlink** case ✗ (a symlink pointing outside the root ✗) — now filed as
+  **F-24** below ✓ (a repro that fails on demand ✓ + a proposed fix ✓, not implemented ✗); the
+  **MIME spoof** ✗ (the declared type vs. the content ✗ — the storage layer does not sniff content
+  types ✗, the upload edge validates the **declared** type ✓); and the **real S3 driver** ✗ (the
+  sandbox only ✓). There is **no SFTP driver** ✗ (a recorded divergence ✓).
 
 ### LF-073 — HTTP client — **PARTIALLY VERIFIED**
 
@@ -289,6 +307,33 @@ the storage listing ✓). An absent feature has no executed case ✓.
        `127.0.0.1` has no legitimate use ✓), with the per-tenant opt-out in the config ✓;
     5. the case above loses its `#[ignore]` ✓ and a **redirect** case is added ✓ (a 302 to
        `169.254.169.254` must be re-checked ✓, not just the first hop ✓).
+- **F-24 (medium) — the local disk's containment check is LEXICAL, so a link under the root escapes
+  it — OPEN (repro ✓ + proposed fix ✓, not implemented ✗).**
+  - **What the docs promise**: `kelson-storage-local`'s module header says every key is
+    traversal-guarded ✓ and "the **resolved** path must stay under the root" ✓. The implementation
+    checks `candidate.starts_with(&self.root)` on the **joined** path ✓ — a purely lexical check ✓ —
+    so the driver never resolves the links under the root ✓.
+  - **The consequence**: a link planted inside the root (by anything with filesystem access — another
+    process ✓, an extracted archive ✓, an operator ✓) points the read **and** the write outside the
+    disk root ✓, so the disk boundary — and with it the tenant scoping ✓ — does not hold ✓.
+  - **The repro** (executed ✓, and it fails ✓ — that failure IS the defect ✓):
+    `kelson-storage-local`'s `a_link_inside_the_root_cannot_read_outside_it` ✓ — it plants a link
+    under the root ✓ (a real symlink on Unix ✓, a **directory junction** on Windows ✓, because a
+    Windows file symlink needs a privilege a normal user lacks ✓) and asserts the read is refused ✓.
+    Today the read succeeds ✓ and returns the outside file's bytes ✓ ("TOP-SECRET" ✓). It is
+    `#[ignore]`d ✓ so the tree stays green ✓ — run it with
+    `cargo test -p kelson-storage-local -- --ignored` ✓.
+  - **The proposed fix** (not implemented ✗ — it changes the driver's behaviour ✓):
+    1. resolve the **deepest existing ancestor** of the target ✓ (the target itself may not exist
+       yet ✗ — a `put` creates it ✓) and re-check the containment against the **resolved** root ✓;
+    2. refuse a path whose components are **links** ✓ (`symlink_metadata` ✓) — the cheapest, most
+       explicit posture ✓: a disk under the driver's control has no reason to contain links ✓;
+    3. apply the same check to the **writer** path ✓ (`writer()` ✓ — the current case already
+       covers the write side ✓);
+    4. correct the module header ✓ so it states the guarantee the code actually makes ✓ (a
+       doc/code mismatch is its own defect ✓ — the same shape as F-17 ✓);
+    5. the case above loses its `#[ignore]` ✓ and a **Unix** case is added ✓ (a real symlink ✓ —
+       the junction proves the shape ✓, a symlink proves the primitive ✓).
 
 ## 4. Corrections to the parity documents
 
@@ -305,13 +350,16 @@ the storage listing ✓). An absent feature has no executed case ✓.
   PARTIALLY VERIFIED** (LF-071 locks, LF-072 storage, LF-073 HTTP client, LF-074 mail, LF-075
   notifications, LF-076 search, LF-078 localization ✓), **3 NOT IMPLEMENTED** (LF-077 images, LF-079
   helpers, LF-080 collections ✓ — the three the atlas itself de-prioritizes ✓).
-- **The sharpest gaps**: the **SSRF / internal-IP guard** on the HTTP client ✗ (LF-073 ✓ — the one
-  security gap in the batch ✓), the **lease expiry / holder crash** of the cache lock ✗ (LF-071 ✓),
-  the **rollback-suppresses** and **commit-then-crash** outbox cases ✗ (LF-064 ✓), the **symlink /
-  MIME-spoof** storage cases ✗ (LF-072 ✓), the **index lifecycle** ✗ (LF-076 ✓) and the
-  **locale fallback / pluralization** ✗ (LF-078 ✓).
-- **Findings**: **F-22** (the cache had no contract suite — **fixed** ✓, both drivers green ✓) and
-  **F-23** (the HTTP client has no egress policy — **open** ✓: a repro that fails on demand ✓ and
-  a five-point proposed fix ✓, awaiting approval ✓), plus the parity rows' missing / claim-shaped
-  evidence (**corrected** ✓ — ten of the eleven rows did not exist ✓ and the one that did rested
-  on the claim "Cache tests exist" ✓).
+- **The sharpest gaps**: the **SSRF / internal-IP guard** on the HTTP client ✗ (LF-073 ✓ — F-23 ✓,
+  open ✓) and the **local disk's link containment** ✗ (LF-072 ✓ — F-24 ✓, open ✓), the
+  **rollback-suppresses** and **commit-then-crash** outbox cases ✗ (LF-064 ✓), the **MIME spoof**
+  storage case ✗ (LF-072 ✓), the **index lifecycle** ✗ (LF-076 ✓) and the **locale fallback /
+  pluralization** ✗ (LF-078 ✓). *(The cache lock's lease expiry ✓, the holder crash ✓ and the clock
+  skew ✓ are now **closed** ✓.)*
+- **Findings**: **F-22** (the cache had no contract suite — **fixed** ✓, both drivers green ✓),
+  **F-23** (the HTTP client has no egress policy — **open** ✓: a repro that fails on demand ✓ and a
+  five-point proposed fix ✓) and **F-24** (the local disk's containment is lexical — **open** ✓: a
+  repro that reads a file outside the root ✓ and a five-point proposed fix ✓), plus the parity
+  rows' missing / claim-shaped evidence (**corrected** ✓ — ten of the eleven rows did not exist ✓
+  and the one that did rested on the claim "Cache tests exist" ✓) and this batch's own
+  **overstatement** (the S3 side was called a "driver" ✓ when it is a **sandbox** ✓ — corrected ✓).

@@ -77,8 +77,13 @@ worker's 16 and the process crate's 8.
   `rate_limited_admission_holds_until_the_bucket_refills` ✓; the **defer/kill** admission —
   `admission_defer_returns_the_attempt_and_kill_is_terminal` ✓; the **failed-job storage** —
   `admin_maintenance_purges_prunes_and_snapshots` ✓ (the admin surface ✓).
-- **Gap**: the **failed-job retry** (re-queueing a dead job) has **no named case** ✓ — the admin
+- **Gap (closed 2026-10-21)**: the **failed-job retry** (re-queueing a dead job) has **no named case** ✓ — the admin
   surface exists (`queue:retry` ✓) but the case is not named ✓.
+  **Now covered** by **`a_failed_job_is_retried_and_only_the_exhausted_budget_dies`** ✓ — the same job
+  comes back after a failure ✓, the attempt counter advances ✓, the retry is **delayed by the backoff**
+  ✓ (it is not an immediate re-run ✓), and only the exhausted budget dead-letters it ✓ (the last error
+  is kept ✓ and a dead job is never re-claimed ✓). *(The store's `requeue` — the manual
+  `queue:retry` path — was already covered by `delayed_jobs_wait_and_dead_jobs_requeue` ✓.)*
 
 ### LF-062 — Job chains and batches — **PARTIALLY VERIFIED**
 
@@ -93,10 +98,15 @@ worker's 16 and the process crate's 8.
   (the ledger is durable ✓) and `mysql_batch_ledger_roundtrip` ✓ (against the live database ✓); the
   **status counts** — `batch_status_counts_members_from_the_store` ✓; the **validation** —
   `batch_and_chain_validation` ✓.
-- **Gaps**: **the batch callback exception** and the **concurrent completion** of one batch have no
+- **Gaps (partly closed 2026-10-21)**: **the batch callback exception** and the **concurrent completion** of one batch have no
   named case ✓; the batch's **tenant isolation** is not covered by a named case ✓ (the QUEUE's tenant
   isolation is ✓ — `tenant_isolation_queue_*` ✓ — but a batch's members are not pinned to a tenant by
   a named case ✓).
+  **Now covered**: the **callback exception** — `a_batch_completion_callback_failure_is_observable_and_enqueues_nothing` ✓
+  (the callback's job name is not registered ✓ → the failure reaches the caller ✓ and **nothing is
+  half-enqueued** ✓); and the **concurrent completion** — `a_batch_completes_exactly_once_when_members_finish_concurrently` ✓
+  (two members finishing at the same time complete the batch **exactly once** ✓ and the callback is
+  enqueued **once** ✓). **Still open**: the batch's own **tenant isolation** ✗.
 
 ### LF-063 — Events, listeners and subscribers — **PARTIALLY VERIFIED**
 
@@ -264,6 +274,31 @@ worker's 16 and the process crate's 8.
   duplicated.** `P0-FEATURE-VERIFICATION.md` carried LF-064 **twice** with contradictory statuses
   (VERIFIED and PARTIALLY VERIFIED ✓) and seven of the ten items had no row at all ✓. The rows now
   name the executed cases ✓, the duplicate is gone ✓ and the missing rows are added ✓.
+- **F-25 (medium) — the job worker has NO panic boundary: a panicking handler takes the worker
+  down — OPEN (repro ✓ + proposed fix ✓, not implemented ✗).** The HTTP edge got a panic boundary
+  in F-2 ✓ (a panicking handler answers a stable 500 envelope ✓), but the job worker has none ✓:
+  `handler.handle(&job)` is awaited directly ✓, so a panic inside a handler **unwinds the claim
+  loop** ✓ — the worker dies mid-flight ✓, every other claimed job stays `Running` until its lease
+  is reclaimed ✓, and what the operator sees is a **panic**, not a job failure ✓ (so the retry
+  budget and the backoff never apply ✓).
+  - **The repro** (executed ✓, and it fails ✓ — that failure IS the defect ✓):
+    `kelson-worker`'s `a_panicking_job_handler_does_not_take_the_worker_down` ✓ — it registers a
+    handler that explodes ✓, dispatches the job ✓ and asserts the worker survives ✓. Today the
+    spawned task dies ✓ ("the worker task died: task 1 panicked with message 'the handler
+    exploded'" ✓). It is `#[ignore]`d ✓ so the tree stays green ✓ — run it with
+    `cargo test -p kelson-worker -- --ignored` ✓.
+  - **The proposed fix** (not implemented ✗ — it changes the worker's behaviour ✓):
+    1. catch the unwind around the handler future ✓ (`catch_unwind` over the `BoxFuture` ✓) and
+       map it to a job **FAILURE** ✓ — the same shape the HTTP edge takes ✓;
+    2. record the panic as the job's `last_error` ✓ (a **redacted** message ✓ — a panic can carry
+       a payload ✓ — never the raw text ✓) so the operator sees a job failure ✓, not a stack
+       trace ✓;
+    3. the retry budget and the backoff then apply ✓ (the attempt is consumed ✓, the job is
+       re-queued ✓) — the worker keeps claiming ✓;
+    4. the panic is **counted** as a worker metric ✓ (a rising panic rate is an alarm ✓) and
+       logged at ERROR ✓ with the job id ✓;
+    5. the case above loses its `#[ignore]` ✓ and a **second** case asserts that a panicking
+       handler does not consume the **next** job's attempt ✓ (the worker's state stays clean ✓).
 
 ## 4. Corrections to the parity documents
 
@@ -282,12 +317,17 @@ worker's 16 and the process crate's 8.
   section ✓. The implementation is nonetheless substantial and exercised: **90 framework-level cases**
   across the five crates ✓, plus the live database matrix ✓, the worker's 16 ✓ and the new process
   crate's 8 ✓.
-- **The sharpest gaps**: the **after-commit / rollback-suppresses** cases (LF-063/LF-064 ✗ — the
-  outbox's contract is right ✓, but the two scenarios the atlas names are not pinned by tests ✓);
-  the **failed-job retry** case (LF-061 ✗); the **batch callback exception** and the **concurrent
-  batch completion** (LF-062 ✗); the **SQS/Beanstalkd** connectors (LF-060 ✗ — a recorded
-  divergence ✓); the **process pipelines** and the **host's capability gate** for the new process
-  port (LF-068 ✗); the **maintenance mode** and the **lock expiry** (LF-066 ✗); and the
-  **context cleanup on panic** (LF-069 ✗).
-- **Findings**: F-20 (the layer gate was red — **fixed** ✓), and the parity rows' claim-shaped
-  evidence + the duplicated LF-064 row (**corrected** ✓).
+- **The sharpest gaps** (as of 2026-10-21 — three are now closed ✓): the **after-commit /
+  rollback-suppresses** cases (LF-063/LF-064 ✗ — the outbox's contract is right ✓, but the two
+  scenarios the atlas names are not pinned by tests ✓); the **failed-job retry** case (LF-061 ✓
+  **closed** — `a_failed_job_is_retried_and_only_the_exhausted_budget_dies` ✓); the **batch callback
+  exception** and the **concurrent batch completion** (LF-062 ✓ **closed** —
+  `a_batch_completion_callback_failure_is_observable_and_enqueues_nothing` ✓ and
+  `a_batch_completes_exactly_once_when_members_finish_concurrently` ✓); the **SQS/Beanstalkd**
+  connectors (LF-060 ✗ — a recorded divergence ✓); the **process pipelines** and the **host's
+  capability gate** for the new process port (LF-068 ✗); the **maintenance mode** and the **lock
+  expiry** (LF-066 ✗); and the **context cleanup on panic** (LF-069 ✗ — now with a sibling finding:
+  **F-25** ✓, the job worker has no panic boundary ✓).
+- **Findings**: F-20 (the layer gate was red — **fixed** ✓), **F-25** (the job worker's missing
+  panic boundary — **open** ✓: a repro that fails on demand ✓ and a five-point proposed fix ✓),
+  and the parity rows' claim-shaped evidence + the duplicated LF-064 row (**corrected** ✓).

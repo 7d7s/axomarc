@@ -272,6 +272,151 @@ mod tests {
         );
     }
 
+    /// Port with a **fake clock** (the atlas's "TTL/fake clock"): the TTL is
+    /// honoured against a test-controlled clock, so the lease cases are
+    /// deterministic instead of sleeping. A real driver's expiry is proven
+    /// separately against a live Redis.
+    #[derive(Default)]
+    struct FakeClockPort {
+        map: std::sync::Mutex<std::collections::BTreeMap<String, (Vec<u8>, Option<u64>)>>,
+        now: std::sync::Mutex<u64>,
+    }
+
+    impl FakeClockPort {
+        /// Move the store's clock forward.
+        fn advance(&self, secs: u64) {
+            let mut now = self.now.lock().unwrap();
+            *now += secs;
+        }
+
+        /// The expiry the store recorded for a key (`None` = no expiry).
+        fn expiry_of(&self, key: &str) -> Option<Option<u64>> {
+            let map = self.map.lock().unwrap();
+            map.get(key).map(|(_, expiry)| *expiry)
+        }
+
+        fn live(&self, key: &str) -> bool {
+            let now = *self.now.lock().unwrap();
+            let mut map = self.map.lock().unwrap();
+            match map.get(key) {
+                Some((_, Some(expiry))) if *expiry <= now => {
+                    map.remove(key);
+                    false
+                }
+                Some(_) => true,
+                None => false,
+            }
+        }
+    }
+
+    impl CachePort for FakeClockPort {
+        fn get(&self, key: &str) -> Option<Vec<u8>> {
+            if !self.live(key) {
+                return None;
+            }
+            let map = self.map.lock().unwrap();
+            map.get(key).map(|(value, _)| value.clone())
+        }
+        fn put(&self, key: &str, value: Vec<u8>, ttl: Option<u64>) {
+            let now = *self.now.lock().unwrap();
+            let expiry = ttl.map(|secs| now + secs);
+            let mut map = self.map.lock().unwrap();
+            map.insert(key.to_string(), (value, expiry));
+        }
+        fn delete(&self, key: &str) {
+            self.map.lock().unwrap().remove(key);
+        }
+        fn invalidate_prefix(&self, prefix: &str) {
+            let mut map = self.map.lock().unwrap();
+            let dead: Vec<String> = map
+                .keys()
+                .filter(|k| k.starts_with(prefix))
+                .cloned()
+                .collect();
+            for k in dead {
+                map.remove(&k);
+            }
+        }
+        fn put_if_absent(&self, key: &str, value: Vec<u8>, ttl: Option<u64>) -> bool {
+            let now = *self.now.lock().unwrap();
+            let expiry = ttl.map(|secs| now + secs);
+            let mut map = self.map.lock().unwrap();
+            let live = match map.get(key) {
+                Some((_, Some(expiry))) => *expiry > now,
+                Some((_, None)) => true,
+                None => false,
+            };
+            if live {
+                return false;
+            }
+            map.insert(key.to_string(), (value, expiry));
+            true
+        }
+        fn delete_if_equals(&self, key: &str, expected: &[u8]) -> bool {
+            if !self.live(key) {
+                return false;
+            }
+            let mut map = self.map.lock().unwrap();
+            if map.get(key).map(|(v, _)| v.as_slice()) == Some(expected) {
+                map.remove(key);
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    /// **LF-071**: every lock carries a lease, so a holder that CRASHES
+    /// cannot hold the slot forever — the store's TTL frees it.
+    #[test]
+    fn a_lock_lease_expires_so_a_crashed_holder_never_blocks_the_slot() {
+        let port = std::sync::Arc::new(FakeClockPort::default());
+        let lock = CacheLock::new(port.clone());
+        let crashed = lock.try_acquire("billing.close", 30).unwrap();
+        assert!(
+            lock.try_acquire("billing.close", 30).is_none(),
+            "the live lease excludes a second holder"
+        );
+        port.advance(31);
+        assert!(
+            lock.try_acquire("billing.close", 30).is_some(),
+            "the expired lease frees the slot even though the holder never released"
+        );
+        assert!(
+            !lock.release(&crashed),
+            "a stale holder's late release is refused"
+        );
+        assert!(
+            lock.try_acquire("billing.close", 30).is_none(),
+            "the stale release did NOT free the new holder's lock"
+        );
+    }
+
+    /// **LF-071**: the lease is enforced by the STORE, not by the holder's
+    /// clock — a holder with a skewed clock can neither extend nor shorten
+    /// it (the store's TTL is the only authority).
+    #[test]
+    fn the_lease_is_enforced_by_the_store_not_by_the_holders_clock() {
+        let port = std::sync::Arc::new(FakeClockPort::default());
+        let lock = CacheLock::new(port.clone());
+        lock.try_acquire("report.build", 30).unwrap();
+        assert_eq!(
+            port.expiry_of(&lock_key("report.build")),
+            Some(Some(30)),
+            "the lock asks the store for a bounded lease — never 'no expiry'"
+        );
+        port.advance(29);
+        assert!(
+            lock.try_acquire("report.build", 30).is_none(),
+            "the lease has not elapsed yet"
+        );
+        port.advance(2);
+        assert!(
+            lock.try_acquire("report.build", 30).is_some(),
+            "the store's clock decides — the holder cannot hold the slot past its lease"
+        );
+    }
+
     #[test]
     fn with_lock_runs_and_releases() {
         let lock = CacheLock::new(std::sync::Arc::new(FakePort::default()));
