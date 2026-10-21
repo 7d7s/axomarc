@@ -138,12 +138,12 @@
 ### CLI, Diagnostics, AI and Framework DX (LF-081 to LF-086)
 | ID | Feature | Disposition | Kelson Equivalent | Test Evidence |
 |---|---|---|---|---|
-| LF-081 | Artisan console and scaffolding | MATCH | kelson-console with make:* commands | Console tests ✅ |
-| LF-082 | Prompts | DEFER | Not implemented | — |
-| LF-083 | AI SDK | EXTERNAL/ECOSYSTEM | AI crates (separate) | — |
-| LF-084 | MCP server and tools | MATCH | MCP support in kelson-console | MCP tests ✅ |
-| LF-085 | Boost and agentic development | EXTERNAL/ECOSYSTEM | External tooling | — |
-| LF-086 | Introspection, route list and diagnostics | MATCH | route:list + diagnostics + xtask | Diagnostics tests ✅ |
+| LF-081 | Artisan console and scaffolding | MATCH (partly) | `kelson-console` (65 commands) plus the `make:*` generators in `kelson-codegen` | `the_destructive_commands_refuse_outside_dev_and_test` (new), `the_noninteractive_path_never_waits_on_a_prompt` (new), `the_args_quoting_keeps_a_value_intact` (new), `schedule_commands_exit_cleanly_when_nothing_is_registered`, `profile_cli_parses_and_missing_samply_fails_closed`, `the_generated_authorize_matches_the_current_port_signature`. **Gap**: the CLI snapshot and the interrupt are not named |
+| LF-082 | Prompts | MATCH (partly) | The console's text prompt + confirmation with the non-interactive discipline; the rich interactive set does not ship (the atlas's own note asks for the automation-friendly half) | `the_noninteractive_path_never_waits_on_a_prompt`. **Gap**: the TTY behaviour, the cancellation, the invalid input, the unicode and the width are not named |
+| LF-083 | AI SDK | MATCH (partly) | The framework **ships four AI crates** (not an external ecosystem): `kelson-ai` (the client + the stub provider), `kelson-ai-tools`, `kelson-ai-agents`, `kelson-ai-mcp` | `stub_plays_scripted_turns_then_echoes`, `agent_cannot_exceed_its_capabilities`, `runaway_agent_hits_step_budget`, `agent_tool_call_executes_through_engine`. **Gap**: the structured output, the timeout/retry, the injection and the streaming are not named (P3) |
+| LF-084 | MCP server and tools | MATCH (partly) | `kelson-ai-mcp`: the manifest generated from the platform graph (the console's `mcp:tools` shows it); an MCP tool call enters the same engine path, so capability and policy apply unchanged | `manifest_has_the_mcp_shape`, `manifest_round_trips_tool_names`, `tools_follow_the_platform_graph`. **Gap**: no wire transport, and the invalid-schema, cross-tenant, replay, budget and exfiltration cases are not named |
+| LF-085 | Boost and agentic development | NOT IMPLEMENTED (by design, P3) | Nothing ships - the atlas itself excludes it from runtime parity | — (an absent feature has no executed case) |
+| LF-086 | Introspection, route list and diagnostics | MATCH (partly) | The console's `route:list`/`config:show`/`env`/`event:list`/`job:list`/`migrate:status`/`schedule:list`/`db:show`/`queue:monitor`/`about`/`doctor` plus the edge's `/healthz`, `/readyz`, `/meta/boot`, `/meta/routes` | `about_report_carries_the_golden_fields`, `config_show_renders_one_redacted_section`, `mysql_schema_dump_renders_normalized_sorted_ddl`, `dashboard_served_in_test_env_and_flag_gated_when_off`. **Gap**: the invalid-module diagnostics, the large-registry performance and the artifact digest/provenance are not named |
 
 ### Testing and Quality Gates (LF-087 to LF-095)
 | ID | Feature | Disposition | Kelson Equivalent | Test Evidence |

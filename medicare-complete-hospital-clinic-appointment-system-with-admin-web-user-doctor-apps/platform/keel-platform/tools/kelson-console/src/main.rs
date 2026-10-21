@@ -2434,9 +2434,7 @@ async fn migrate_plan() -> anyhow::Result<ExitCode> {
 async fn migrate_fresh() -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
     let cfg = load_config(&root)?;
-    if cfg.app.env.is_prod() || matches!(cfg.app.env, Environment::Staging) {
-        anyhow::bail!("migrate:fresh refuses to run outside dev/test");
-    }
+    refuse_destructive_outside_dev_test("migrate:fresh", cfg.app.env)?;
     if std::env::var_os("KEEL_FORCE").is_none()
         && !confirm("migrate:fresh DROPS the public schema and re-runs every migration. Continue?")
     {
@@ -2716,9 +2714,7 @@ async fn rollback(checkpoint: Option<String>, dry_run: bool) -> anyhow::Result<E
 async fn migrate_reset() -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
     let cfg = load_config(&root)?;
-    if cfg.app.env.is_prod() || matches!(cfg.app.env, Environment::Staging) {
-        anyhow::bail!("migrate:reset refuses to run outside dev/test");
-    }
+    refuse_destructive_outside_dev_test("migrate:reset", cfg.app.env)?;
     if std::env::var_os("KEEL_FORCE").is_none()
         && !confirm("migrate:reset reverts EVERY applied pair migration (schema objects drop). Continue?")
     {
@@ -2770,9 +2766,7 @@ async fn migrate_reset() -> anyhow::Result<ExitCode> {
 async fn migrate_refresh(steps: u32) -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
     let cfg = load_config(&root)?;
-    if cfg.app.env.is_prod() || matches!(cfg.app.env, Environment::Staging) {
-        anyhow::bail!("migrate:refresh refuses to run outside dev/test");
-    }
+    refuse_destructive_outside_dev_test("migrate:refresh", cfg.app.env)?;
     if std::env::var_os("KEEL_FORCE").is_none()
         && !confirm(&format!(
             "migrate:refresh rolls back {steps} batch(es) (schema objects drop) and re-applies. Continue?"
@@ -2867,6 +2861,20 @@ async fn migrate_install() -> anyhow::Result<ExitCode> {
 fn refuse_seed_outside_dev_test(env: Environment) -> anyhow::Result<()> {
     if env.is_prod() || matches!(env, Environment::Staging) {
         anyhow::bail!("seed refuses to run outside dev/test");
+    }
+    Ok(())
+}
+
+/// The **destructive** commands refuse outside dev/test — the same posture
+/// as `kelson seed` ✓, extracted so every gate is unit-testable ✓ (the
+/// destructive migrations drop the schema ✓, the queue purge drops the
+/// jobs ✓, and neither may run in staging or production ✓).
+fn refuse_destructive_outside_dev_test(
+    command: &str,
+    env: Environment,
+) -> anyhow::Result<()> {
+    if env.is_prod() || matches!(env, Environment::Staging) {
+        anyhow::bail!("{command} refuses to run outside dev/test");
     }
     Ok(())
 }
@@ -3507,9 +3515,7 @@ fn queue_work(once: bool) -> anyhow::Result<ExitCode> {
 async fn queue_clear() -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
     let cfg = load_config(&root)?;
-    if cfg.app.env.is_prod() || matches!(cfg.app.env, Environment::Staging) {
-        anyhow::bail!("queue:clear refuses to run outside dev/test");
-    }
+    refuse_destructive_outside_dev_test("queue:clear", cfg.app.env)?;
     if std::env::var_os("KEEL_FORCE").is_none()
         && !confirm("queue:clear deletes EVERY pending job (queued work is lost). Continue?")
     {
@@ -6838,6 +6844,81 @@ fn model_prune(chunk: u32, tenant: Option<String>) -> anyhow::Result<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **LF-081**: the **destructive** commands refuse outside dev/test — the
+    /// schema-dropping migrations and the queue purge, each naming itself in
+    /// the refusal. This is the atlas's "destructive commands require
+    /// safeguards" case; the gate is unit-testable because it is a pure
+    /// function of the environment.
+    #[test]
+    fn the_destructive_commands_refuse_outside_dev_and_test() {
+        for command in ["migrate:fresh", "migrate:reset", "migrate:refresh", "queue:clear"] {
+            assert!(
+                refuse_destructive_outside_dev_test(command, Environment::Dev).is_ok(),
+                "{command} runs in dev"
+            );
+            assert!(
+                refuse_destructive_outside_dev_test(command, Environment::Test).is_ok(),
+                "{command} runs in test"
+            );
+            for env in [Environment::Staging, Environment::Prod] {
+                let err = refuse_destructive_outside_dev_test(command, env)
+                    .expect_err("{command} refuses outside dev/test");
+                let message = err.to_string();
+                assert!(
+                    message.contains(command) && message.contains("outside dev/test"),
+                    "the refusal names the command and the rule: {message}"
+                );
+            }
+        }
+    }
+
+    /// **LF-081**: the **non-interactive** posture — a name given on the
+    /// command line is used as-is (no prompt), and with no name and no
+    /// terminal the console refuses with an actionable message instead of
+    /// hanging on a prompt nobody can answer.
+    #[test]
+    fn the_noninteractive_path_never_waits_on_a_prompt() {
+        assert_eq!(
+            resolve_name_or_prompt("module", Some("acme".into())).expect("the name is used"),
+            "acme"
+        );
+        if stdin_interactive() {
+            eprintln!("console: stdin is a terminal; skipping the non-interactive assertion");
+            return;
+        }
+        let err = resolve_name_or_prompt("module", None)
+            .expect_err("no terminal and no name is an explicit refusal");
+        let message = err.to_string();
+        assert!(
+            message.contains("name required"),
+            "the refusal says what to do: {message}"
+        );
+    }
+
+    /// **LF-081**: the **args quoting** — a value with spaces, quotes and
+    /// braces survives the shell and reaches the command intact, and the
+    /// JSON payload of `call` is not re-split.
+    #[test]
+    fn the_args_quoting_keeps_a_value_intact() {
+        let payload = r#"{"note":"a b \"c\" {d}"}"#;
+        let cli = Cli::try_parse_from(["kelson", "call", "demo.command", payload])
+            .expect("a quoted payload parses");
+        match cli.cmd {
+            Cmd::Call { name, input, .. } => {
+                assert_eq!(name, "demo.command");
+                assert_eq!(input.as_deref(), Some(payload), "the payload is not re-split");
+            }
+            _ => panic!("expected call"),
+        }
+        // A value with spaces survives as one argument ✓.
+        let cli = Cli::try_parse_from(["kelson", "config:show", "app settings"])
+            .expect("a spaced value parses");
+        match cli.cmd {
+            Cmd::ConfigShow { key, .. } => assert_eq!(key, "app settings"),
+            _ => panic!("expected config:show"),
+        }
+    }
 
     /// Wave 3 Phase 6: `kelson model:prune` parses with the default chunk
     /// cap and honors `--chunk`/`--tenant`.
