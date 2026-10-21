@@ -15,13 +15,13 @@ against a live MySQL 8.0.44.
 
 | Status | Rows | Meaning |
 |---|---:|---|
-| VERIFIED | 80 | the behaviour is implemented and an executed case proves it |
+| VERIFIED | 81 | the behaviour is implemented and an executed case proves it |
 | PARTIAL | 18 | the core is proven; a named sub-feature is missing or diverges |
 | EXCLUDED_BY_DESIGN | 5 | a deliberate exclusion with the alternative stated |
 | OPEN | 2 | a Laravel capability with no Kelson equivalent yet |
-| **Total** | **105** | |
+| **Total** | **106** | |
 
-Of the 105 rows, **103 carry an executed case**
+Of the 106 rows, **104 carry an executed case**
 and 2 do not (the OPEN rows).
 
 | Category | Rows |
@@ -30,7 +30,7 @@ and 2 do not (the OPEN rows).
 | eloquent | 30 |
 | migrations | 12 |
 | mysql-8-native | 4 |
-| production | 10 |
+| production | 11 |
 | query-builder | 32 |
 | schema | 9 |
 | transactions | 3 |
@@ -103,6 +103,7 @@ competitive claim. Each one is an executed case, not a claim.
 | LDB-102 | A refusal when the schema is behind | a deployment that does not migrate at boot refuses to serve against a schema the framework does not recognise | `mysql_upgrade_a_stale_schema_is_refused` |
 | LDB-103 | A zero-downtime schema change during an upgrade | the upgrade itself is zero-downtime - the shadow table, the copy, the atomic swap | `mysql_upgrade_a_change_to_an_existing_table_goes_through_the_online_path` |
 | LDB-104 | A one-command capture of the state for a support ticket | the bundle is produced even when the database is down - the moment it is needed - and the schema's version and pending set are in it | `the_diagnostics_bundle_reports_the_state` |
+| LDB-106 | The framework declares its own objectives | the objectives are the framework's, published on /meta/slo and as Prometheus gauges, and the status is COMPUTED from the telemetry, never asserted | `the_slo_surface_declares_the_objectives_and_their_status; every_objective_names_a_metric_the_framework_records` |
 
 ## 6. The divergences a Laravel developer must know about
 

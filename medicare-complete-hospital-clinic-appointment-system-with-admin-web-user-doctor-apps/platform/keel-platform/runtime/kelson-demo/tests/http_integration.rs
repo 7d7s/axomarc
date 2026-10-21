@@ -1667,6 +1667,59 @@ async fn upload_part_bomb_beyond_max_parts_is_rejected() {
 
 // ------------------------------------------- deployment gate: health/readiness
 
+/// The SLO contract: the framework declares its own objectives, publishes
+/// their targets and their current status, and the status is COMPUTED from
+/// the metrics the telemetry plane really records.
+#[tokio::test]
+async fn the_slo_surface_declares_the_objectives_and_their_status() {
+    let app = app();
+
+    let (status, _, body) = raw_text(
+        app.router.clone(),
+        Request::builder()
+            .uri("/meta/slo")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value = serde_json::from_str(&body).expect("the SLO report is JSON");
+    let slos = json["data"]["slos"]
+        .as_array()
+        .expect("the report carries the objectives");
+    assert!(!slos.is_empty(), "the framework declares objectives: {body}");
+
+    // Every objective names a metric, a target, a window and a status.
+    for slo in slos {
+        for field in ["name", "metric", "target", "window", "status", "description"] {
+            assert!(
+                slo.get(field).is_some(),
+                "the objective is missing {field}: {body}"
+            );
+        }
+        let status = slo["status"].as_str().expect("the status is a string");
+        assert!(
+            matches!(status, "met" | "at_risk" | "breached"),
+            "an unknown status {status}: {body}"
+        );
+    }
+
+    // The declared objectives are the framework's own (the telemetry
+    // plane's), so a platform team can hold the framework to a number.
+    let names: Vec<String> = slos
+        .iter()
+        .map(|s| s["name"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert!(
+        names.iter().any(|n| n.starts_with("telemetry.")),
+        "the telemetry objectives are declared: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n.starts_with("operability.")),
+        "the operability objectives are declared: {names:?}"
+    );
+}
+
 #[tokio::test]
 async fn healthz_is_liveness_and_readyz_reflects_degraded_state() {
     let app = app();

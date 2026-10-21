@@ -411,6 +411,7 @@ pub fn router(state: AppState) -> Router {
         .route("/meta/boot", get(boot_meta))
         .route("/meta/flags", get(flags_meta))
         .route("/meta/routes", get(routes_meta))
+    .route("/meta/slo", get(slo_meta))
         .route("/__runtime/status", get(crate::runtime_status::status_meta))
         .route("/metrics", get(metrics_text))
         .route("/_dashboard", get(dashboard))
@@ -426,6 +427,20 @@ pub fn router(state: AppState) -> Router {
 /// Prometheus text exposition (S10 B-17). Recording runs always; the route
 /// only answers when the `app.metrics` flag is enabled, so the endpoint is
 /// provable in tests without flipping global state.
+/// The SLO report: the framework's declared objectives, their targets and
+/// their current status.
+///
+/// The objectives name metrics the framework really records, so the status
+/// is computed from the telemetry, never asserted.
+async fn slo_meta(
+    State(s): State<AppState>,
+) -> Json<Envelope<serde_json::Value>> {
+    let report = kelson_metrics::render_slo_report(&s.metrics.snapshot());
+    let parsed: serde_json::Value =
+        serde_json::from_str(&report).unwrap_or(serde_json::Value::Null);
+    Json(Envelope::ok(parsed))
+}
+
 async fn metrics_text(State(s): State<AppState>) -> axum::response::Response {
     if !s.flags.read().unwrap().iter().any(|f| f == "app.metrics") {
         let err = kelson_foundation::AppError::not_found("metrics exposition disabled (enable flag app.metrics)");
@@ -446,6 +461,10 @@ async fn metrics_text(State(s): State<AppState>) -> axum::response::Response {
         std::collections::BTreeMap::new(),
         s.route_inventory.len() as f64,
     );
+    // The SLO contract: the framework's declared objectives, their targets
+    // and whether each one is currently missed. A platform team can hold
+    // the framework to a number instead of to a vibe.
+    let slo_gauges = kelson_metrics::render_slo_gauges(&s.metrics.snapshot());
     // Wave 6 P8: the queue census (docs/19: queue depth/age/throughput
     // counters on /metrics) — snapshotted at scrape from the pool-gated
     // store. No durable store = the series stays absent rather than
@@ -488,7 +507,8 @@ async fn metrics_text(State(s): State<AppState>) -> axum::response::Response {
             }
         }
     }
-    let body = kelson_metrics::render_prometheus(&s.metrics.snapshot());
+    let body = kelson_metrics::render_prometheus(&s.metrics.snapshot())
+        + &slo_gauges;
     (
         [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
         body,
