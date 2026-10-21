@@ -344,3 +344,81 @@ async fn mysql_native_nowait_fails_fast_instead_of_waiting() {
 
     tx.rollback().await.expect("the transaction rolls back");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mysql_native_intersect_and_except_combine_two_queries() {
+    let Some(pool) = pool().await else { return };
+    let tenant = Uuid::now_v7().to_string();
+    let other = Uuid::now_v7().to_string();
+    seed(&pool, &tenant, None, "shared", 1, 1).await;
+    seed(&pool, &tenant, None, "only-a", 2, 2).await;
+    seed(&pool, &other, None, "shared", 3, 3).await;
+
+    // The rows both tenants have.
+    let q = Select::from_table(id("kelson_native_probe"))
+        .select(vec![id("label")])
+        .where_eq(id("tenant_id"), text(&tenant))
+        .intersect(
+            Select::from_table(id("kelson_native_probe"))
+                .select(vec![id("label")])
+                .where_eq(id("tenant_id"), text(&other)),
+        )
+        .build(&MYSQL)
+        .expect("the intersect statement compiles");
+
+    assert!(q.sql.contains("INTERSECT"), "{}", q.sql);
+    let rows = fetch(&pool, &q).await.expect("the intersect query runs");
+    assert_eq!(rows.len(), 1, "only the shared label is in both sides");
+    assert_eq!(rows[0].get::<String, _>(0), "shared");
+
+    // The rows the first tenant has that the second does not.
+    let q = Select::from_table(id("kelson_native_probe"))
+        .select(vec![id("label")])
+        .where_eq(id("tenant_id"), text(&tenant))
+        .except(
+            Select::from_table(id("kelson_native_probe"))
+                .select(vec![id("label")])
+                .where_eq(id("tenant_id"), text(&other)),
+        )
+        .build(&MYSQL)
+        .expect("the except statement compiles");
+
+    assert!(q.sql.contains("EXCEPT"), "{}", q.sql);
+    let rows = fetch(&pool, &q).await.expect("the except query runs");
+    assert_eq!(rows.len(), 1, "only the tenant's own label remains");
+    assert_eq!(rows[0].get::<String, _>(0), "only-a");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mysql_native_explain_analyze_proves_the_index_is_used() {
+    let Some(pool) = pool().await else { return };
+    let tenant = Uuid::now_v7().to_string();
+    for i in 0..8 {
+        seed(&pool, &tenant, None, &format!("row-{i}"), i, i + 1).await;
+    }
+
+    // The same shape the model store issues: the tenant filter plus the
+    // created_at ordering, which the (tenant_id, created_at) index covers.
+    let q = Select::from_table(id("kelson_native_probe"))
+        .select(vec![id("id"), id("amount")])
+        .where_eq(id("tenant_id"), text(&tenant))
+        .order_by(id("created_at"), Direction::Asc)
+        .limit(5)
+        .build(&MYSQL)
+        .expect("the statement compiles");
+
+    let plan = kelson_mysql::explain_analyze(&pool, &q.sql, &q.params)
+        .await
+        .expect("EXPLAIN ANALYZE runs");
+
+    assert!(
+        plan.uses_index("idx_native_tenant_created"),
+        "the executed plan must use the index:\n{}",
+        plan.text()
+    );
+    assert!(
+        !plan.is_table_scan(),
+        "the executed plan must not be a full table scan:\n{}",
+        plan.text()
+    );
+}

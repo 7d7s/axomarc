@@ -318,6 +318,22 @@ fn catalogue(dialect: &dyn kelson_query::Dialect) -> Vec<(String, String)> {
             .sql,
     );
     push(
+        "select_intersect",
+        Select::from_table(id("users"))
+            .intersect(Select::from_table(id("admins")).select(vec![id("id")]))
+            .build(dialect)
+            .unwrap()
+            .sql,
+    );
+    push(
+        "select_except",
+        Select::from_table(id("users"))
+            .except(Select::from_table(id("admins")).select(vec![id("id")]))
+            .build(dialect)
+            .unwrap()
+            .sql,
+    );
+    push(
         "truncate",
         Truncate::table(id("users")).build(dialect).unwrap().sql,
     );
@@ -412,6 +428,8 @@ const DIALECT_SPECIFIC: &[&str] = &[
     "::",
     "ILIKE",
     "CAST",
+    "INTERSECT",
+    "EXCEPT",
 ];
 
 /// How many bind placeholders a rendered statement carries.

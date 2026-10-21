@@ -22,6 +22,7 @@
 
 pub mod batchledger;
 pub mod bridge;
+pub mod explain;
 pub mod jobstore;
 pub mod modelstore;
 pub mod notificationstore;
@@ -38,6 +39,7 @@ pub mod tx;
 pub mod txport;
 
 pub use batchledger::MySqlBatchLedger;
+pub use explain::{explain_analyze, ExplainPlan};
 pub use jobstore::MySqlJobStore;
 pub use modelstore::MySqlModelStore;
 pub use notificationstore::MySqlNotificationStore;

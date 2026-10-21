@@ -124,6 +124,12 @@ select_lock_skip_locked
 select_lock_nowait
   sql: SELECT * FROM jobs FOR UPDATE NOWAIT
   params: []
+select_intersect
+  sql: SELECT * FROM users INTERSECT (SELECT id FROM admins)
+  params: []
+select_except
+  sql: SELECT * FROM users EXCEPT (SELECT id FROM admins)
+  params: []
 insert_plain
   sql: INSERT INTO users (id, email) VALUES ($1, $2)
   params: [Text("u1"), Text("a@b.test")]

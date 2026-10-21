@@ -120,12 +120,12 @@ pub trait Dialect: Send + Sync {
     /// Render the row-lock clause.
     fn render_lock(&self, lock: Lock) -> String;
 
-    /// Render a UNION with its operand.
+    /// Render a set operation (UNION / INTERSECT / EXCEPT) with its operand.
     ///
     /// Postgres accepts the parenthesised form (`UNION ALL (SELECT ...)`);
     /// MySQL accepts the bare form and **rejects** the parenthesised one
     /// inside a recursive CTE. The operand is already rendered.
-    fn render_union(&self, all: bool, operand: &str) -> String;
+    fn render_set_op(&self, op: crate::select::SetOp, operand: &str) -> String;
 
     /// Render a cast of an expression to a target type.
     fn render_cast(&self, expression: &str, target: CastTarget) -> String;
@@ -185,12 +185,16 @@ impl Dialect for PostgresDialect {
         }
     }
 
-    fn render_union(&self, all: bool, operand: &str) -> String {
-        if all {
-            format!("UNION ALL ({operand})")
-        } else {
-            format!("UNION ({operand})")
-        }
+    fn render_set_op(&self, op: crate::select::SetOp, operand: &str) -> String {
+        let keyword = match op {
+            crate::select::SetOp::Union => "UNION",
+            crate::select::SetOp::UnionAll => "UNION ALL",
+            crate::select::SetOp::Intersect => "INTERSECT",
+            crate::select::SetOp::IntersectAll => "INTERSECT ALL",
+            crate::select::SetOp::Except => "EXCEPT",
+            crate::select::SetOp::ExceptAll => "EXCEPT ALL",
+        };
+        format!("{keyword} ({operand})")
     }
 
     fn render_cast(&self, expression: &str, target: CastTarget) -> String {
@@ -292,13 +296,17 @@ impl Dialect for MySqlDialect {
         }
     }
 
-    fn render_union(&self, all: bool, operand: &str) -> String {
+    fn render_set_op(&self, op: crate::select::SetOp, operand: &str) -> String {
+        let keyword = match op {
+            crate::select::SetOp::Union => "UNION",
+            crate::select::SetOp::UnionAll => "UNION ALL",
+            crate::select::SetOp::Intersect => "INTERSECT",
+            crate::select::SetOp::IntersectAll => "INTERSECT ALL",
+            crate::select::SetOp::Except => "EXCEPT",
+            crate::select::SetOp::ExceptAll => "EXCEPT ALL",
+        };
         // MySQL rejects the parenthesised form inside a recursive CTE.
-        if all {
-            format!("UNION ALL {operand}")
-        } else {
-            format!("UNION {operand}")
-        }
+        format!("{keyword} {operand}")
     }
 
     fn render_cast(&self, expression: &str, target: CastTarget) -> String {
@@ -437,11 +445,36 @@ mod tests {
     }
 
     #[test]
-    fn the_union_renders_per_engine() {
-        assert_eq!(POSTGRES.render_union(true, "SELECT 1"), "UNION ALL (SELECT 1)");
-        assert_eq!(POSTGRES.render_union(false, "SELECT 1"), "UNION (SELECT 1)");
-        assert_eq!(MYSQL.render_union(true, "SELECT 1"), "UNION ALL SELECT 1");
-        assert_eq!(MYSQL.render_union(false, "SELECT 1"), "UNION SELECT 1");
+    fn the_set_operations_render_per_engine() {
+        use crate::select::SetOp;
+        assert_eq!(
+            POSTGRES.render_set_op(SetOp::UnionAll, "SELECT 1"),
+            "UNION ALL (SELECT 1)"
+        );
+        assert_eq!(
+            POSTGRES.render_set_op(SetOp::Union, "SELECT 1"),
+            "UNION (SELECT 1)"
+        );
+        assert_eq!(
+            MYSQL.render_set_op(SetOp::UnionAll, "SELECT 1"),
+            "UNION ALL SELECT 1"
+        );
+        assert_eq!(
+            POSTGRES.render_set_op(SetOp::Intersect, "SELECT 1"),
+            "INTERSECT (SELECT 1)"
+        );
+        assert_eq!(
+            MYSQL.render_set_op(SetOp::Intersect, "SELECT 1"),
+            "INTERSECT SELECT 1"
+        );
+        assert_eq!(
+            POSTGRES.render_set_op(SetOp::Except, "SELECT 1"),
+            "EXCEPT (SELECT 1)"
+        );
+        assert_eq!(
+            MYSQL.render_set_op(SetOp::Except, "SELECT 1"),
+            "EXCEPT SELECT 1"
+        );
     }
 
     #[test]

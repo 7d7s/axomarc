@@ -313,6 +313,18 @@ fn the_postgres_rendering_matches_the_golden_catalogue() {
         .unwrap();
     out.push(entry("select_lock_nowait", &q.sql, &q.params));
 
+    let q = Select::from_table(id("users"))
+        .intersect(Select::from_table(id("admins")).select(vec![id("id")]))
+        .build(&POSTGRES)
+        .unwrap();
+    out.push(entry("select_intersect", &q.sql, &q.params));
+
+    let q = Select::from_table(id("users"))
+        .except(Select::from_table(id("admins")).select(vec![id("id")]))
+        .build(&POSTGRES)
+        .unwrap();
+    out.push(entry("select_except", &q.sql, &q.params));
+
     // ---- INSERT ----------------------------------------------------------
     let q = Insert::into_table(id("users"))
         .columns(vec![id("id"), id("email")])

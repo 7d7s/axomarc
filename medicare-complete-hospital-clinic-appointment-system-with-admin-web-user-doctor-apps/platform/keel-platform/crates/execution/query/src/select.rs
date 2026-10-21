@@ -279,6 +279,23 @@ impl DatePart {
     }
 }
 
+/// A set operation that combines two queries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetOp {
+    /// `UNION` - the distinct rows of both sides.
+    Union,
+    /// `UNION ALL` - every row of both sides.
+    UnionAll,
+    /// `INTERSECT` - the distinct rows present in both sides.
+    Intersect,
+    /// `INTERSECT ALL` - the rows present in both sides, with multiplicity.
+    IntersectAll,
+    /// `EXCEPT` - the distinct rows of the left side not in the right.
+    Except,
+    /// `EXCEPT ALL` - the left side's rows not in the right, with multiplicity.
+    ExceptAll,
+}
+
 /// Row-level locking clause, rendered after LIMIT/OFFSET (Postgres order).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Lock {
@@ -397,7 +414,7 @@ pub struct Select {
     aggregate: Option<Aggregate>,
     aggregate_alias: Option<Ident>,
     exists: Option<bool>,
-    unions: Vec<(bool, Select)>,
+    unions: Vec<(SetOp, Select)>,
     /// The common table expressions the statement selects from.
     ctes: Vec<crate::window::Cte>,
     /// The windowed projections (rendered after the column list).
@@ -979,14 +996,46 @@ impl Select {
     /// Set operation: `... UNION (other)`. The main branch's ORDER/LIMIT/
     /// OFFSET move to the composite end; each union operand keeps its own
     /// tail inside its parentheses.
+    /// Combine with another query: `UNION`.
     pub fn union(mut self, other: Select) -> Self {
-        self.unions.push((false, other));
+        self.unions.push((SetOp::Union, other));
         self
     }
 
-    /// `UNION ALL` (keeps duplicates).
+    /// Combine with another query: `UNION ALL`.
     pub fn union_all(mut self, other: Select) -> Self {
-        self.unions.push((true, other));
+        self.unions.push((SetOp::UnionAll, other));
+        self
+    }
+
+    /// Combine with another query: `INTERSECT` - the distinct rows present
+    /// in both sides.
+    ///
+    /// MySQL 8.0.31+ and Postgres 8.4+ support it; the dialect owns the
+    /// spelling.
+    pub fn intersect(mut self, other: Select) -> Self {
+        self.unions.push((SetOp::Intersect, other));
+        self
+    }
+
+    /// Combine with another query: `INTERSECT ALL`.
+    pub fn intersect_all(mut self, other: Select) -> Self {
+        self.unions.push((SetOp::IntersectAll, other));
+        self
+    }
+
+    /// Combine with another query: `EXCEPT` - the distinct rows of this
+    /// side that are not in the other.
+    ///
+    /// MySQL 8.0.31+ and Postgres 8.4+ support it.
+    pub fn except(mut self, other: Select) -> Self {
+        self.unions.push((SetOp::Except, other));
+        self
+    }
+
+    /// Combine with another query: `EXCEPT ALL`.
+    pub fn except_all(mut self, other: Select) -> Self {
+        self.unions.push((SetOp::ExceptAll, other));
         self
     }
 
@@ -1348,10 +1397,10 @@ impl Select {
         if self.unions.is_empty() {
             self.render_tail(&mut sql, params, dialect);
         } else {
-            for (all, branch) in &self.unions {
+            for (op, branch) in &self.unions {
                 let operand = branch.render(params, dialect)?;
                 sql.push(' ');
-                sql.push_str(&dialect.render_union(*all, &operand));
+                sql.push_str(&dialect.render_set_op(*op, &operand));
             }
             self.render_tail(&mut sql, params, dialect);
         }
