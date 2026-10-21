@@ -20,6 +20,18 @@
 use kelson_caching::CachePort;
 use kelson_cache_redis::RedisCache;
 
+/// The **shared cache contract** (LF-070): the Redis driver must satisfy
+/// exactly what the in-memory driver satisfies ✓ — one suite, two drivers ✓.
+#[test]
+fn the_redis_cache_satisfies_the_cache_contract() {
+    let Some(url) = redis_url() else { return };
+    let Ok(cache) = RedisCache::connect(&url) else {
+        eprintln!("redis-tests: redis unreachable; skipping");
+        return;
+    };
+    kelson_caching::cache_contract(&cache);
+}
+
 fn redis_url() -> Option<String> {
     match std::env::var("REDIS_URL") {
         Ok(url) if !url.is_empty() => Some(url),

@@ -7,7 +7,9 @@ use kelson_foundation::{AuthorizationRevision, FeatureRevision, PrincipalId, Ten
 
 /// Wave 4 Phase 6: value-level `CacheService` (remember/tags/locks) over the
 /// unchanged port — see the module docs.
+pub mod conformance;
 pub mod service;
+pub use conformance::cache_contract;
 pub use service::{CacheGuard, CacheService, TaggedCache};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -1368,4 +1368,39 @@ mod tests {
         );
         assert_eq!(server.hit_count(), 1, "404 is a caller bug — never retried");
     }
+
+    /// **F-23 (repro) — the client has NO egress policy.**
+    ///
+    /// A loopback/private target is fetched like any other, so a URL an
+    /// untrusted party supplies (the reachable path is the **webhook
+    /// adapter**, which calls a tenant-registered target) can reach the
+    /// host's internal network: the cloud metadata service
+    /// (`169.254.169.254`), the database port, the admin edge.
+    ///
+    /// The fix is **proposed, not implemented** (see
+    /// `docs/LF-070-TO-LF-080-VERIFICATION.md` §3 F-23): an `egress`
+    /// section on `HttpClientConfig` — a private-range denylist plus a
+    /// host allowlist — which the webhook adapter would default to
+    /// "refuse private targets".
+    ///
+    /// The case is `#[ignore]`d so the tree stays green; run it with
+    /// `cargo test -p kelson-http-client -- --ignored` to watch it fail
+    /// (that failure IS the defect).
+    #[tokio::test]
+    #[ignore = "F-23: the egress policy is proposed, not implemented"]
+    async fn the_client_refuses_a_loopback_target() {
+        let server = Loopback::spawn(vec![], Turn::Reply(200, r#"{"ok":true}"#.into()));
+        let client = ReqwestHttpClient::new(fast_config()).unwrap();
+        let req = HttpRequest::json("GET", &server.url("/internal"), &()).unwrap();
+        let err = match client.execute(&req).await {
+            Ok(_) => panic!("an egress policy must refuse a loopback target"),
+            Err(e) => e,
+        };
+        let message = err.public_message.to_lowercase();
+        assert!(
+            message.contains("egress") || message.contains("refus"),
+            "the refusal must say why: {}",
+            err.public_message
+        );
+    }
 }

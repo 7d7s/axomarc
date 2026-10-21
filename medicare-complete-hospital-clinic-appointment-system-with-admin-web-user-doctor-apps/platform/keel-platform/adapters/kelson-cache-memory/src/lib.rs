@@ -107,6 +107,15 @@ impl CachePort for MemoryCache {
 mod tests {
     use super::*;
 
+    /// The **shared cache contract** (LF-070): the in-memory driver must
+    /// satisfy exactly what the Redis driver satisfies ✓ — one suite, two
+    /// drivers ✓.
+    #[test]
+    fn the_memory_cache_satisfies_the_cache_contract() {
+        let cache = MemoryCache::new(100);
+        kelson_caching::cache_contract(&cache);
+    }
+
     #[test]
     fn put_get_invalidate() {
         let cache = MemoryCache::new(100);
