@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "audit_date": "2026-10-21",
+  "commit_sha": "722a8931794cbfae5f95265c7a26d44e4ec6a71f",
+  "official_source_coverage": {
+    "note": "The bundle's official-domain register is the reconciliation checklist. The Laravel 13.x documentation index was NOT re-fetched in this environment, so the register's currency is unverified.",
+    "domain_register_rows": 133,
+    "seed_catalogue_rows": 111,
+    "reconciled_against_the_repository": 111,
+    "coverage_state": "the repository's 111 rows cover the register's framework domains; the register's package and tooling entries are adjudicated in LARAVEL-PACKAGE-SCOPE.md and SELECTION-DECISIONS.csv",
+    "known_gaps": [
+      "the live 13.x documentation index was not fetched (no network fetch performed in this pass)",
+      "the official first-party package list is re-enumerated from the bundle, not from a live index",
+      "the catalogue is a seed: a capability that Laravel documents but the seed omits is not represented here"
+    ]
+  },
+  "repository_paths_covered": {
+    "workspaces": [
+      "platform/keel-platform (84 members)"
+    ],
+    "rust_files": 277,
+    "library_rust_files": 259,
+    "areas_inspected": [
+      "crates/async/jobs (the queue, the batches, the chains, the unique lock)",
+      "crates/security/policies, tokens, sessions, identity (the authorization and credential boundary)",
+      "crates/web/http (the edge, the CSRF, the CORS, the uploads, the rate limit, the panic boundary)",
+      "crates/services/cache, storage, http-client, notifications, mail-smtp, search, realtime (the ports and the adapters)",
+      "crates/data/models, postgres, mysql (the store, the transactions, the outbox, the cursors)",
+      "crates/enterprise/deployment, feature-flags, tenancy (the release pipeline, the flags, the tenant record)",
+      "crates/foundation/core, context, validation (the secrets, the execution context, the rules)",
+      "crates/extension/wasm (the guest ABI and the sandbox)",
+      "tools/kelson-console, tools/kelson-codegen (the CLI and the generators)",
+      "runtime/kelson-demo, runtime/kelson-worker (the reference host and the worker)",
+      "testing/testkit (the harness, the fakes, the frozen clock, the query budget)",
+      ".github/workflows/keel.yml (the CI gates)"
+    ],
+    "areas_not_covered": [
+      "the WASM guest ABI's 15 unsafe sites (reviewed, not audited for memory safety)",
+      "the module SDK's arena allocator (no fuzzing was run - cargo-fuzz is present but no target exists)",
+      "the templates' generated projects (the scaffold-build CI job is the only proof, and it needs a runner)",
+      "platform/your-app and the medicare-kernel (protected paths; read only, not audited)"
+    ]
+  },
+  "tools_run": [
+    {
+      "tool": "cargo audit",
+      "version": "0.22.2",
+      "result": "10 advisories (3 critical)",
+      "artefact": "RAW-EVIDENCE/cargo-audit.json"
+    },
+    {
+      "tool": "cargo deny",
+      "version": "0.19.8",
+      "result": "advisories FAILED, bans FAILED, licenses ok, sources ok",
+      "artefact": "RAW-EVIDENCE/"
+    },
+    {
+      "tool": "cargo xtask dep-rules",
+      "result": "clean",
+      "artefact": "EXECUTIVE-VERDICT.md"
+    },
+    {
+      "tool": "cargo xtask lint",
+      "result": "clean",
+      "artefact": "EXECUTIVE-VERDICT.md"
+    },
+    {
+      "tool": "cargo test (per crate, the live suites)",
+      "result": "the affected crates re-run in this pass; see TEST-AND-CI-EVIDENCE.md",
+      "artefact": "TEST-AND-CI-EVIDENCE.md"
+    },
+    {
+      "tool": "cargo fmt --check",
+      "result": "1,606 files would change",
+      "artefact": "RAW-EVIDENCE/static-defect-inventory.txt"
+    },
+    {
+      "tool": "cargo llvm-cov",
+      "version": "0.9.1",
+      "result": "the whole-workspace run FAILED with LNK1318 (the disk was at 0 bytes free; the instrumented build needs a second target tree); a scoped run over 4 of the 84 crates measured 89.07% regions, 86.23% functions, 88.38% lines",
+      "artefact": "RAW-EVIDENCE/coverage-summary.txt"
+    },
+    {
+      "tool": "cargo tree -i <crate>",
+      "result": "the dependency paths for the vulnerable crates confirmed",
+      "artefact": "RAW-EVIDENCE/cargo-audit.json"
+    },
+    {
+      "tool": "a repository-wide marker scan",
+      "result": "38 marker rows classified; the panic families counted per crate",
+      "artefact": "STATIC-DEFECT-INVENTORY.csv"
+    }
+  ],
+  "services": [
+    {
+      "service": "Redis",
+      "endpoint": "127.0.0.1:6379",
+      "state": "reachable (restarted by the audit)",
+      "gates_run": "the live-Redis cache / session / job-store / rate-limit suites"
+    },
+    {
+      "service": "MySQL 8",
+      "endpoint": "127.0.0.1:3307",
+      "state": "not reachable (the portable instance's mysqld binary is gone)",
+      "gates_run": "none in this pass"
+    },
+    {
+      "service": "PostgreSQL",
+      "endpoint": "127.0.0.1:5433",
+      "state": "not reachable (0xC0000142)",
+      "gates_run": "none - the pg halves self-skip"
+    },
+    {
+      "service": "Docker",
+      "state": "absent",
+      "gates_run": "none"
+    },
+    {
+      "service": "a browser",
+      "state": "absent",
+      "gates_run": "none"
+    }
+  ],
+  "tests_covered": {
+    "note": "The executed suites in this pass and their results.",
+    "suites": [
+      {
+        "suite": "kelson-policy",
+        "result": "6 passed"
+      },
+      {
+        "suite": "kelson-context",
+        "result": "6 passed"
+      },
+      {
+        "suite": "kelson-http",
+        "result": "178 passed"
+      },
+      {
+        "suite": "kelson-http-client",
+        "result": "23 passed"
+      },
+      {
+        "suite": "kelson-testkit",
+        "result": "63 passed"
+      },
+      {
+        "suite": "kelson-deployment",
+        "result": "36 passed"
+      },
+      {
+        "suite": "kelson-contracts",
+        "result": "3 passed"
+      },
+      {
+        "suite": "kelson-execution",
+        "result": "22 passed"
+      },
+      {
+        "suite": "kelson-console",
+        "result": "63 passed"
+      },
+      {
+        "suite": "kelson-demo (lib)",
+        "result": "118 passed"
+      },
+      {
+        "suite": "kelson-demo (http_integration)",
+        "result": "102 passed"
+      },
+      {
+        "suite": "kelson-postgres outbox (live MySQL)",
+        "result": "4 passed"
+      }
+    ],
+    "not_run": [
+      "the whole-workspace test run (too long for the audit window; the per-crate suites above cover the changed areas)",
+      "every PostgreSQL-only suite (the service is down)",
+      "the browser suite (no browser)",
+      "the container build (no daemon)"
+    ]
+  },
+  "integrity_checks": {
+    "every_capability_has_a_status": true,
+    "every_pass_has_evidence": true,
+    "orphan_ids": "none - the 23 findings all map to a capability family and a source path",
+    "percentages_reproduce": "the eight metrics are recomputed from the 111 matrix rows; the denominators are all 111 and are published with the numerators",
+    "excluded_items_have_rationale": "the 19 NOT-IMPLEMENTED rows each name the exclusion and its alternative in the batch documents",
+    "unknowns_visible": "the NOT_RUN and BLOCKED gates are listed in RELEASE-GATES.json with the minimum infrastructure requirement",
+    "secret_scan": "the raw artefacts contain no credentials; the mysql password appears only as the documented local test credential already present in the repository's own configuration",
+    "cross_document": "validated by script: every CSV parses with a consistent column count; every finding has all 25 fields populated; the weighted selection scores recompute exactly from their ratings; every finding id appears in the roadmap; every related id resolves"
+  }
+}

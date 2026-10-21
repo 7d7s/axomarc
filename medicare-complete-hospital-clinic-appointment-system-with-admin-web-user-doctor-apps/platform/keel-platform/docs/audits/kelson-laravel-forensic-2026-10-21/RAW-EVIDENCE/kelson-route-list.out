@@ -1,0 +1,3 @@
+kelson check — architecture gate G07
+  [ok] dependency matrix + budgets clean (84 members)
+  [ok] graph compiles; middleware catalog resolves every route

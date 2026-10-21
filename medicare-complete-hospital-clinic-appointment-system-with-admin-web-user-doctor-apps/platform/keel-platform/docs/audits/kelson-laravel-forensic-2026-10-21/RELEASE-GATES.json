@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "commit_sha": "722a8931794cbfae5f95265c7a26d44e4ec6a71f",
+  "profile": "api-backend; full-stack-web; enterprise-multi-tenant; ecosystem (reported separately)",
+  "laravel_baseline": "Laravel 13.x stable documentation (bundle catalogue: 111 seed rows; 133-row official-domain register; baseline currency NOT re-verified in this environment - no live documentation fetch)",
+  "audit_date": "2026-10-21",
+  "verdict": "NOT_PRODUCTION_READY",
+  "gates": [
+    {
+      "gate_id": "GATE-ROUTE-DISPATCH-E2E",
+      "status": "FAIL",
+      "evidence": [
+        "RAW-EVIDENCE/demo-boot.stderr: thread 'main' (7924) has overflowed its stack",
+        "RAW-EVIDENCE/demo-call.stderr: the same overflow in the one-shot --call path",
+        "RAW-EVIDENCE/kelson-graph.out: kelson graph exits 0 (6 modules, 14 operations)",
+        "RAW-EVIDENCE/kelson-route-list.out: kelson route:list exits 0"
+      ],
+      "notes": "The in-process router is proven (101 demo HTTP cases green), but the real server path cannot start: the reference host aborts during boot. The graph and the route plan are not implicated."
+    },
+    {
+      "gate_id": "GATE-AUTHN-AUTHZ",
+      "status": "PASS",
+      "evidence": [
+        "the_credential_abilities_narrow_the_decision (kelson-policy)",
+        "a_personal_access_token_is_confined_to_its_abilities (demo, live: 200 for the granted capability, 403 outside it)",
+        "the tenant_isolation_* cases across the queue, the events, the cache and the storage"
+      ],
+      "notes": "Scoped to the auth surfaces that are named. The RLS half of the database gate is separate."
+    },
+    {
+      "gate_id": "GATE-DB-RLS-TENANT",
+      "status": "BLOCKED",
+      "evidence": [
+        "PostgreSQL 5433 not reachable on this host (the known 0xC0000142 native fault)",
+        "the atlas's P0 'real PostgreSQL integration' case is a silent self-skip in every run"
+      ],
+      "notes": "Environment block, not a code defect. The RLS assertion is also unnamed (LF-089)."
+    },
+    {
+      "gate_id": "GATE-DURABLE-STORES",
+      "status": "FAIL",
+      "evidence": [
+        "MySQL: 3307 not reachable (the portable instance's mysqld binary is gone; the system instance on 3306 denies the keel user)",
+        "Redis: reachable (restarted by the audit on 6379)"
+      ],
+      "notes": "The live-MySQL matrix could not be executed in this pass; the Redis half was available."
+    },
+    {
+      "gate_id": "GATE-ATOMIC-ACTIVATION",
+      "status": "NOT_RUN",
+      "evidence": [
+        "the host does not boot (GATE-ROUTE-DISPATCH-E2E), so no activation experiment can be run"
+      ],
+      "notes": "The machinery (the 500ms config poller, the route reloader, the flag reloader) exists and is tracked; the process-level experiment has never run."
+    },
+    {
+      "gate_id": "GATE-NO-REBUILD-CONTRACT",
+      "status": "NOT_RUN",
+      "evidence": [
+        "docs/P0-EXECUTION-REPORT.md Phase 1: NOT RUN (infrastructure limitation)",
+        "the boot that would carry the experiment aborts"
+      ],
+      "notes": "The flagship promise has no evidence. See KFA-009."
+    },
+    {
+      "gate_id": "GATE-SECRETS-REDACTION",
+      "status": "PASS",
+      "evidence": [
+        "the Secret type: UTF-8 validated at construction, a redacted Debug, a wiped Drop, a constant-time eq_ct",
+        "config_show_renders_one_redacted_section; env_summary_reports_environment_secrets_and_cache_state"
+      ],
+      "notes": "Proven per surface; the coverage is per-surface rather than systematic."
+    },
+    {
+      "gate_id": "GATE-CLEAN-BUILD-PROVENANCE",
+      "status": "FAIL",
+      "evidence": [
+        "cargo deny check: advisories FAILED, bans FAILED, licenses ok, sources ok",
+        "cargo audit: 10 advisories, 3 critical (wasmtime x3, rustls x4, webpki-roots, rustls-webpki, rsa)",
+        "the SBOM/provenance generators exist in the working tree but are UNTRACKED"
+      ],
+      "notes": "The dependency policy gate fails on the advisories, and the provenance tooling is not under version control."
+    },
+    {
+      "gate_id": "GATE-CONTAINER-PROCESS-STARTUP",
+      "status": "FAIL",
+      "evidence": [
+        "docker: ABSENT in this environment",
+        "the host does not boot (GATE-ROUTE-DISPATCH-E2E)"
+      ],
+      "notes": "No container build, no clean-room start, no health/shutdown drill was possible."
+    },
+    {
+      "gate_id": "GATE-RECOVERY-ROLLBACK-MIGRATION",
+      "status": "FAIL",
+      "evidence": [
+        "the promotion lock and the rollback executor are green (a_second_promotion_is_refused_while_the_lock_is_held, the_file_lock_admits_one_holder_and_releases_on_drop, an_expired_lease_can_be_broken_but_a_live_one_may_not)",
+        "the outbox's PostgreSQL half: NOT_RUN"
+      ],
+      "notes": "The rollback machinery is proven; the durable-store half is not, and the host cannot start."
+    },
+    {
+      "gate_id": "GATE-OBSERVABILITY-DIAGNOSTICS",
+      "status": "FAIL",
+      "evidence": [
+        "the metrics, the traces and the incident plane exist (the observability suite is green)",
+        "the metric cardinality limits, the sensitive labels and the retention are unnamed (LF-100)"
+      ],
+      "notes": "The instrumentation is there; the bounds that make it safe to expose are not proven."
+    },
+    {
+      "gate_id": "GATE-NO-UNRESOLVED-S0-S1",
+      "status": "FAIL",
+      "evidence": [
+        "KFA-001 (S0), KFA-002 (S0), KFA-003 (S1), KFA-004 (S1), KFA-005 (S1), KFA-009 (S1), KFA-022 (S1)"
+      ],
+      "notes": "Seven findings at S0/S1 remain open in the release scope."
+    }
+  ],
+  "unresolved_s0_s1": [
+    "KFA-001",
+    "KFA-002",
+    "KFA-003",
+    "KFA-004",
+    "KFA-005",
+    "KFA-009",
+    "KFA-022"
+  ],
+  "limitations": [
+    "PostgreSQL unavailable (the native fault 0xC0000142): every pg-only case self-skipped",
+    "MySQL 3307 unavailable (the portable instance's binary is gone); the system instance's credentials are unknown",
+    "No Docker daemon: no container build, no clean-room deploy, no SBOM/signature artefact",
+    "No browser: the Playwright e2e specs have never been executed",
+    "The Laravel 13.x documentation baseline was NOT re-fetched in this environment: the catalogue is historical input",
+    "The whole-workspace coverage measurement FAILED with LNK1318 (the disk was at 0 bytes free; the instrumented build needs a second target tree). A scoped measurement over 4 of the 84 crates succeeded: 89.07% regions, 86.23% functions, 88.38% lines (RAW-EVIDENCE/coverage-summary.txt)"
+  ],
+  "metrics": {
+    "scope": "the 111 Laravel Feature Atlas rows (P0-FEATURE-VERIFICATION.md), frozen before scoring",
+    "surface_coverage": {
+      "numerator": 92,
+      "denominator": 111,
+      "value": 0.829,
+      "source": "the matrix status column (111 minus the 19 absent rows)"
+    },
+    "behavioral_verification": {
+      "numerator": 40,
+      "denominator": 111,
+      "value": 0.36,
+      "source": "the VERIFIED rows"
+    },
+    "integration_verified": {
+      "numerator": 23,
+      "denominator": 111,
+      "value": 0.207,
+      "source": "rows naming a live MySQL / Redis / conformance / PostgreSQL case"
+    },
+    "end_to_end_verified": {
+      "numerator": 10,
+      "denominator": 111,
+      "value": 0.09,
+      "source": "rows naming a demo / http journey"
+    },
+    "security_hardened": {
+      "numerator": 40,
+      "denominator": 111,
+      "value": 0.36,
+      "source": "rows naming a negative / isolation / redaction case"
+    },
+    "production_hardened": {
+      "numerator": 0,
+      "denominator": 111,
+      "value": 0.0,
+      "source": "no container, no clean-room deploy, and the host does not boot"
+    },
+    "selection_coverage": {
+      "numerator": 40,
+      "denominator": 111,
+      "value": 0.36,
+      "source": "the VERIFIED rows against the declared profiles"
+    },
+    "test_evidence_coverage": {
+      "numerator": 92,
+      "denominator": 111,
+      "value": 0.829,
+      "source": "every implemented row names a case"
+    }
+  }
+}
