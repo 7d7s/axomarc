@@ -140,9 +140,14 @@ mod tests {
     use super::*;
 
     fn scratch() -> std::path::PathBuf {
+        // A per-test unique directory ✓: two lock tests run concurrently ✓,
+        // and one test's cleanup must never remove the other's lock file ✓
+        // (the same class of race the storage adapter hit ✓).
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "kelson-promotion-lock-{}",
-            time::OffsetDateTime::now_utc().unix_timestamp_nanos()
+            "kelson-promotion-lock-{}-{seq}",
+            std::process::id()
         ));
         std::fs::create_dir_all(&dir).expect("the scratch dir exists");
         dir

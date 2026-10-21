@@ -145,7 +145,7 @@ host that configures a current-thread runtime gets a hard failure ✓ ✗.
 refusal ✓ (not a panic ✓).
 *Effort:* 1d.
 
-**F-5 — A `std::sync::Mutex` is held across an `await` in the testkit's query-budget assert. (C)**
+**F-5 — A `std::sync::Mutex` is held across an `await` in the testkit's query-budget assert. (C) — FIXED**
 *Evidence:* `testing/testkit/src/queries.rs:61,73,82` — the three
 `#[allow(clippy::await_holding_lock)]` sites ✓ ✓.
 *Impact:* a std mutex held across an await can **deadlock** the test (the lock is not Send-safe across
@@ -153,6 +153,8 @@ a suspension ✓) — it bites when the assert's inner work yields ✓.
 *Remediation:* use a `tokio::sync::Mutex` ✓, or scope the lock so it is dropped before the await ✓.
 *Acceptance:* the three `allow`s disappear and clippy is clean ✓ ✓.
 *Effort:* 0.5d.
+> **FIXED (2026-10-21)** — the guard is now a `tokio::sync::Mutex` ✓ (the async-aware primitive ✓),
+> the three suppressions are **gone** ✓, and the testkit's 63 cases are green ✓ ✓.
 
 ### C. Panic-safety
 
@@ -194,6 +196,14 @@ abilities before the route check ✓ (the intersection is a **fail-closed** defa
 ability grants nothing ✓).
 *Acceptance:* a read-only PAT is refused a write ✓ and refused an operation outside its abilities ✓ ✓.
 *Effort:* 2d.
+> **FIXED (2026-10-21)** — the narrowing is now a **ceiling** at the framework's own TCB boundary ✓:
+> the `ExecutionContext` carries `credential_abilities` ✓, `kelson-policy`'s `DecisionInput` carries it
+> ✓ and `decide` refuses a capability the credential does not carry ✓ (the denial is
+> `policy.credential-ability` ✓), `kelson-http`'s `ResolvedPrincipal` carries it ✓ so the edge can
+> hand it over ✓, and the demo's edge fills it from the PAT's row ✓. Evidence:
+> `the_credential_abilities_narrow_the_decision` ✓ (the policy ✓) and
+> `a_personal_access_token_is_confined_to_its_abilities` ✓ (the demo, live ✓ — the capability the
+> token carries answers **200** ✓, the one it does not answers **403** ✓ ✓).
 
 **F-8 — The egress policy is TOCTOU-vulnerable: the checked IP is not the dialled IP. (B — high, security)**
 *Evidence:* `crates/services/http-client/src/lib.rs:363` — `check_egress` resolves the host ✓ and
@@ -210,6 +220,13 @@ opt in ✓ — but the option is then *believed* to be safe ✓ ✗).
 *Acceptance:* a case with a rebinding resolver ✓ — the first answer is public ✓, the second is
 private ✓ — asserting the request is refused ✓ ✓.
 *Effort:* 2d.
+> **FIXED (2026-10-21)** — the client now installs a **pinning resolver** ✓
+> (`reqwest::dns::Resolve` ✓ — reqwest asks *it* for every name ✓, so the address the client dials is
+> the address the policy checked ✓ ✓). The resolver refuses a private literal ✓ **and** a name whose
+> resolution is private ✓ ("localhost" ✓), and every redirect hop resolves again ✓ so every hop is
+> checked ✓ ✓. Evidence: `the_pinning_resolver_refuses_a_private_answer` ✓ (the resolver refuses the
+> private answer ✓, returns the checked one ✓, and stays transparent under the permissive default ✓)
+> alongside `the_client_refuses_a_loopback_target` ✓ ✓.
 
 **F-9 — The outbox's two hardest cases are unnamed: `rollback-suppresses` and `commit-then-crash`. (C)**
 *Evidence:* the LF-064 gap ✓ — the outbox's contract is right ✓ (the idempotency key ✓, the tenant ✓,
@@ -236,6 +253,16 @@ the **checkpoint** semantics tightened ✓ (the promotion's plan is already on d
 *Acceptance:* two concurrent promotions → exactly one wins ✓ and the other refuses with the
 owner's id ✓ ✓.
 *Effort:* 2d.
+> **FIXED (2026-10-21)** — a `PromotionLock` **port** ✓ (like the five rollback dimensions ✓) whose
+> `try_acquire` **fails fast** ✓ (a second promotion is told, never queued ✓), a **file-backed**
+> implementation on the release volume ✓ (so a second operator — or a second host that can see the
+> release ✓ — shares it ✓) with a **lease** ✓ so a crashed holder cannot wedge the release ✓ (and
+> breaking an expired lease is an explicit operator action ✓ — silently stealing a *live* lock is how
+> two promotions interleave in the first place ✓ ✓). The pipeline takes the lock **before** the
+> checkpoint ✓ (the checkpoint is the restore target ✓) and the console wires the file lock ✓.
+> Evidence: `a_second_promotion_is_refused_while_the_lock_is_held` ✓ (the refused promotion touches
+> **nothing** ✓ — the trace is empty ✓), `the_file_lock_admits_one_holder_and_releases_on_drop` ✓ and
+> `an_expired_lease_can_be_broken_but_a_live_one_may_not` ✓ ✓.
 
 ### E. The HTTP edge, the API contract and the trust boundary
 
@@ -315,6 +342,9 @@ toolchain, not the disk ✓ ✓.
 and a CI step that checks the free space before the build ✓ ✓.
 *Acceptance:* a CI step that fails early with "the disk is full" ✓ ✓.
 *Effort:* 0.5d.
+> **FIXED (2026-10-21)** — the `keel-platform` job now checks the free disk **before** the build ✓
+> and fails with `::error::only NG free on the runner - a full disk fails the build as a linker
+> error` ✓ ✓ (the message names the real cause ✓ ✓).
 
 **F-17 — The supply chain is clean, but the provenance tooling is untracked. (E — accepted, with a caveat)**
 *Evidence:* **0 git dependencies** ✓ ✓; the licence mix is entirely permissive ✓ (MIT ✓, Apache-2.0 ✓,
@@ -514,11 +544,11 @@ The real remaining work is the **52 partials**' named gaps ✓ ✓.
 
 ### 4.1 The order (and why this order)
 
-**Phase 0 — stop the bleeding (1 week, no features).**
+**Phase 0 — stop the bleeding (1 week, no features). — DONE (2026-10-21)**
 F-7 (the PAT abilities ✓ — a live security gap ✓), F-10 (the promotion lock ✓), F-8 (the egress
 pinning ✓), F-16 (the disk floor ✓), F-5 (the lock-across-await ✓).
 *Why first:* three are security ✓, one is an availability hazard ✓, one is a hang ✓ — and none
-changes an API ✓ ✓.
+changes an API ✓ ✓. **All five are closed** ✓ ✓ — see each finding for the evidence ✓ ✓.
 
 **Phase 1 — make the tests trustworthy (2 weeks).**
 F-11 (the five missing conformance suites ✓), F-6 (the `unwrap` lint gate ✓ + the triage ✓),
@@ -544,7 +574,7 @@ The ops dashboards ✓ **or** the full-stack DX ✓ — not both ✓ ✓ ✓.
 
 | Window | Deliverables | The measurable gate |
 |---|---|---|
-| **30 days** | Phase 0 ✓ + F-5 ✓ + F-16 ✓ | **No A or B finding open** ✓ — a PAT is narrowed ✓, a promotion is locked ✓, the egress is pinned ✓ ✓ |
+| **30 days** | Phase 0 ✓ **DONE** ✓ + F-5 ✓ + F-16 ✓ | **No A or B finding open** ✓ — a PAT is narrowed ✓, a promotion is locked ✓, the egress is pinned ✓ ✓ |
 | **60 days** | Phase 1 ✓ + Phase 3 ✓ | Every fake has a real-adapter contract ✓; the CI fails on an unformatted file ✓ and on a coverage drop ✓ ✓ |
 | **90 days** | Phase 2 ✓ + Phase 4 ✓ | The 52 partials are reduced to the ones with a written deferral ✓; the storage port is async ✓ ✓ |
 

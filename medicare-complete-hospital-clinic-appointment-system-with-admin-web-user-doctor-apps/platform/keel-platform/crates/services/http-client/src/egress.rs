@@ -100,6 +100,67 @@ pub(crate) async fn resolve_host(host: &str, port: u16) -> Result<Vec<IpAddr>, A
     .map_err(|e| AppError::external("http", format!("egress resolve failed: {e}")))
 }
 
+/// The **pinning** resolver (F-8): reqwest asks it for every name, so the
+/// address the client connects to is the address the policy checked ✓ — a
+/// DNS answer that changes between the check and the connect (a rebind)
+/// cannot slip through ✓.
+///
+/// The check runs here, at the only place the connection's address is
+/// decided ✓ — which also means **every redirect hop** is checked ✓ (each
+/// hop resolves again ✓ ✓).
+pub struct PolicyResolver {
+    policy: EgressPolicy,
+}
+
+impl PolicyResolver {
+    pub fn new(policy: EgressPolicy) -> Self {
+        Self { policy }
+    }
+}
+
+impl reqwest::dns::Resolve for PolicyResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        let policy = self.policy.clone();
+        Box::pin(async move {
+            // A literal address needs no lookup ✓.
+            if let Ok(ip) = host.parse::<IpAddr>() {
+                if policy.refuse_private_targets && EgressPolicy::refuses_address(&ip) {
+                    return Err(Box::<dyn std::error::Error + Send + Sync>::from(
+                        format!("egress policy refused {host}"),
+                    ));
+                }
+                return Ok(Box::new(
+                    vec![std::net::SocketAddr::new(ip, 0)].into_iter(),
+                )
+                    as reqwest::dns::Addrs);
+            }
+            let addrs = resolve_host(&host, 0)
+                .await
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                    Box::new(std::io::Error::other(e.public_message))
+                })?;
+            if policy.refuse_private_targets {
+                for ip in &addrs {
+                    if EgressPolicy::refuses_address(ip) {
+                        return Err(Box::<dyn std::error::Error + Send + Sync>::from(
+                            format!("egress policy refused {host}"),
+                        ));
+                    }
+                }
+            }
+            Ok(Box::new(
+                addrs
+                    .into_iter()
+                    .map(|ip| std::net::SocketAddr::new(ip, 0))
+                    .collect::<Vec<_>>()
+                    .into_iter(),
+            )
+                as reqwest::dns::Addrs)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,5 +204,63 @@ mod tests {
         assert!(policy.allows_host("api.local"));
         assert!(!policy.allows_host("evil-internal.example"));
         assert!(!policy.allows_host("internal.example.evil.com"));
+    }
+
+    /// **F-8**: the PINNING resolver is the soundness anchor — it is the only
+    /// resolver the client has ✓, so the address it refuses is the address
+    /// the client would have dialled ✓. A literal private address is
+    /// refused ✓, and a NAME that resolves to a private address is refused
+    /// too ✓ (the rebind's payload ✓).
+    #[tokio::test]
+    async fn the_pinning_resolver_refuses_a_private_answer() {
+        use reqwest::dns::{Name, Resolve};
+
+        let refusing = PolicyResolver::new(EgressPolicy {
+            refuse_private_targets: true,
+            allowed_hosts: Vec::new(),
+        });
+
+        // A literal private address ✓.
+        let literal: Name = "127.0.0.1".parse().expect("a valid name");
+        let err = match refusing.resolve(literal).await {
+            Ok(_) => panic!("a private address must be refused"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("egress policy refused"),
+            "the refusal names the policy: {err}"
+        );
+
+        // A NAME whose resolution is private ✓ (localhost ✓) ✓.
+        let name: Name = "localhost".parse().expect("a valid name");
+        let err = match refusing.resolve(name).await {
+            Ok(_) => panic!("a private resolution must be refused"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("egress policy refused"),
+            "the refusal names the policy: {err}"
+        );
+
+        // A public address is returned ✓ — the resolver is not a blanket
+        // refusal ✓.
+        let public: Name = "93.184.216.34".parse().expect("a valid name");
+        let addrs = refusing
+            .resolve(public)
+            .await
+            .expect("a public address resolves");
+        assert_eq!(
+            addrs.count(),
+            1,
+            "the checked address is the one the client dials"
+        );
+
+        // With the policy permissive the resolver is transparent ✓.
+        let permissive = PolicyResolver::new(EgressPolicy::default());
+        let literal: Name = "127.0.0.1".parse().expect("a valid name");
+        assert!(
+            permissive.resolve(literal).await.is_ok(),
+            "the default policy does not refuse anything"
+        );
     }
 }

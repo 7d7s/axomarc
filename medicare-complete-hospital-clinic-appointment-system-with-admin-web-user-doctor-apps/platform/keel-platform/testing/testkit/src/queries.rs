@@ -47,20 +47,23 @@ macro_rules! assert_queries {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
     use std::time::Duration;
 
     // The QueryTap is process-global and take_since drains a shared buffer, so
     // concurrent tests would steal each other's probes. Serialize the tap tests
     // (mirrors the production guidance: one attributed execution at a time).
-    // The guard is intentionally held across the await — that is the point of
-    // the serialization; the test future runs on one thread.
-    static TAP_LOCK: Mutex<()> = Mutex::new(());
+    //
+    // **F-5 (the deep audit)**: the guard is held ACROSS the await, so it
+    // must be an async-aware lock — a `std::sync::Mutex` held across an
+    // await is the classic deadlock (and it needed three
+    // `clippy::await_holding_lock` suppressions to silence). The
+    // `tokio::sync::Mutex` is the correct primitive here, and the
+    // suppressions are gone.
+    static TAP_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn assert_queries_passes_within_budget() {
-        let _guard = TAP_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = TAP_LOCK.lock().await;
         let value = assert_queries!(<= 4, async {
             crate::QueryTap::record("TAPKIT-BUDGET", "select budget_probe", Duration::ZERO);
             41 + 1
@@ -70,18 +73,16 @@ mod tests {
 
     #[tokio::test]
     #[should_panic(expected = "query budget exceeded")]
-    #[allow(clippy::await_holding_lock)]
     async fn assert_queries_fails_over_budget() {
-        let _guard = TAP_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = TAP_LOCK.lock().await;
         assert_queries!(<= 0, async {
             crate::QueryTap::record("TAPKIT-OVER", "select budget_probe", Duration::ZERO);
         });
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
     async fn assert_queries_exact_match() {
-        let _guard = TAP_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = TAP_LOCK.lock().await;
         assert_queries!(== 2, async {
             crate::QueryTap::record("TAPKIT-EXACT", "select a", Duration::ZERO);
             crate::QueryTap::record("TAPKIT-EXACT", "select b", Duration::ZERO);

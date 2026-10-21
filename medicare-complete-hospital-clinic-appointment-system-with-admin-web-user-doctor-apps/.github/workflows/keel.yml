@@ -97,6 +97,17 @@ jobs:
         run: |
           rustup toolchain install 1.92.0 --profile minimal
           rustup default 1.92.0
+      # A full disk fails the build as a LINKER error (LNK1318 - a PDB write
+      # that cannot land), which points at the toolchain instead of at the
+      # disk. Fail early with the real cause.
+      - name: free disk check (a full disk breaks the build as a linker error)
+        run: |
+          avail=$(df -BG --output=avail "$PWD" | tail -1 | tr -dc '0-9')
+          if [ "${avail:-0}" -lt 10 ]; then
+            echo "::error::only ${avail}G free on the runner - a full disk fails the build as a linker error"
+            exit 1
+          fi
+          echo "disk free: ${avail}G"
       - name: Cache cargo
         uses: actions/cache@v4
         with:

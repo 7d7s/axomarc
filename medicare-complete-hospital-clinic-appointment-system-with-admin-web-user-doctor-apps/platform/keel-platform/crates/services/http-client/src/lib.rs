@@ -235,6 +235,14 @@ impl ReqwestHttpClient {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_millis(config.timeout_ms.max(1)))
             .use_rustls_tls()
+            // **F-8**: the PINNING resolver. reqwest asks it for every name,
+            // so the address the client connects to is the address the policy
+            // checked — a DNS answer that changes between the check and the
+            // connect (a rebind) cannot slip through. Every redirect hop
+            // resolves again, so every hop is checked.
+            .dns_resolver(std::sync::Arc::new(egress::PolicyResolver::new(
+                config.egress.clone(),
+            )))
             .build()
             .map_err(|e| AppError::internal(format!("http client build: {e}")))?;
         Ok(Self {
@@ -389,7 +397,6 @@ impl ReqwestHttpClient {
         }
         Ok(())
     }
-
     async fn attempt(&self, req: &HttpRequest) -> Result<HttpResponse, AttemptError> {
         let response = self.send(req).await?;
         let status = response.status().as_u16();
