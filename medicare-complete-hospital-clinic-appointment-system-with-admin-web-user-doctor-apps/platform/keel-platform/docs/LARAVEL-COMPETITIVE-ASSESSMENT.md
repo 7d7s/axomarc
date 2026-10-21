@@ -14,6 +14,14 @@ Where I could not verify something, it says so ✓.
 1)" (no factories exist ✓ — the atlas's LF-039 names that as a gap ✓). It is not part of the tracked
 surface ✓ and I did not touch it ✓; this document supersedes it ✓.
 
+> **This document is the executive abstract. The deep audit is
+> [`DEEP-AUDIT.md`](DEEP-AUDIT.md)** — the A-to-Z enterprise review with the mechanical inventories
+> (the panic-safety audit ✓, the suppressed lints ✓, the `unsafe` surface ✓, the blocking-in-async
+> audit ✓, the dependency and licence posture ✓, the verification density ✓), **21 graded findings**
+> ✓ (each with the file:line evidence ✓, the reproduction ✓, the impact ✓, the grade ✓, the
+> remediation ✓, the acceptance test ✓ and the effort ✓), the remediation programme in phases ✓, and a
+> 15-point **MNC readiness checklist** ✓ ✓.
+
 ---
 
 ## 1. The verdict
