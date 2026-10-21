@@ -558,7 +558,186 @@ async fn pg_outbox_store_claim_and_mark_published() {
 
 // ----------------------------------------------------- mysql outbox store
 // Durable outbox: claim unpublished, mark published, redelivery after failure.
+/// **F-9 (the deep audit) — the outbox's two hardest cases, named.** The
+/// store's own header claims "rows only ever exist post-commit (D-53)" ✓ —
+/// that was an ASSUMPTION ✓. These two cases prove it ✓:
+///
+/// * **rollback suppresses** ✓ — an event written in the same transaction as
+///   the business write must vanish with the rollback ✓ (otherwise the
+///   pump publishes work that never happened ✓ ✓);
+/// * **commit-then-crash** ✓ — an event committed but not yet marked
+///   published must be **redelivered** ✓ (at-least-once ✓) with the same
+///   idempotency key ✓ (so the consumer can dedupe ✓ ✓).
 #[tokio::test]
+async fn pg_outbox_rollback_suppresses_the_event_and_a_crash_redelivers_it() {
+    let pool = match pool().await {
+        Some(p) => p,
+        None => return,
+    };
+    let store = kelson_postgres::PgOutboxStore::new(pool.clone());
+
+    // --- rollback suppresses ---------------------------------------------
+    let rolled_back = uuid::Uuid::now_v7();
+    let mut tx = pool.begin().await.expect("the transaction begins");
+    sqlx::query(
+        "INSERT INTO outbox (id, tenant_id, event, topic, payload, idempotency_key, published, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, false, now())",
+    )
+    .bind(rolled_back)
+    .bind(uuid::Uuid::now_v7())
+    .bind("test.rolled_back")
+    .bind("test.topic")
+    .bind(serde_json::json!({"key": "value"}))
+    .bind("rolled-back-key")
+    .execute(&mut *tx)
+    .await
+    .expect("the row is written inside the transaction");
+    // The business write fails, the transaction rolls back.
+    tx.rollback().await.expect("the rollback succeeds");
+
+    let claimed = store.claim_unpublished(50).await.expect("claim");
+    assert!(
+        !claimed.iter().any(|e| e.id == rolled_back),
+        "a rolled-back event must never be published"
+    );
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM outbox WHERE id = $1")
+        .bind(rolled_back)
+        .fetch_one(&pool)
+        .await
+        .expect("the count reads");
+    assert_eq!(rows, 0, "the rolled-back row is gone from the table");
+
+    // --- commit-then-crash ----------------------------------------------
+    let committed = uuid::Uuid::now_v7();
+    let key = format!("crash-key-{committed}");
+    let mut tx = pool.begin().await.expect("the transaction begins");
+    sqlx::query(
+        "INSERT INTO outbox (id, tenant_id, event, topic, payload, idempotency_key, published, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, false, now())",
+    )
+    .bind(committed)
+    .bind(uuid::Uuid::now_v7())
+    .bind("test.committed")
+    .bind("test.topic")
+    .bind(serde_json::json!({"key": "value"}))
+    .bind(&key)
+    .execute(&mut *tx)
+    .await
+    .expect("the row is written inside the transaction");
+    tx.commit().await.expect("the transaction commits");
+
+    // The first pass claims it; the process "crashes" before marking it
+    // published, so the row stays unpublished.
+    let first = store.claim_unpublished(50).await.expect("claim");
+    let event = first
+        .iter()
+        .find(|e| e.id == committed)
+        .expect("the committed event is claimed");
+    assert_eq!(
+        event.idempotency_key.0,
+        key,
+        "the idempotency key is stable across the redelivery"
+    );
+    assert!(!event.published, "an un-marked event is still unpublished");
+
+    // The next pass redelivers it - at-least-once, not at-most-once.
+    let second = store.claim_unpublished(50).await.expect("reclaim");
+    let redelivered = second
+        .iter()
+        .find(|e| e.id == committed)
+        .expect("the event is redelivered after the crash");
+    assert_eq!(
+        redelivered.idempotency_key.0,
+        key,
+        "the redelivery carries the same key, so the consumer can dedupe"
+    );
+
+    // Cleanup.
+    let _ = sqlx::query("DELETE FROM outbox WHERE id = $1")
+        .bind(committed)
+        .execute(&pool)
+        .await;
+}
+
+/// The same two cases on MySQL 8 — the fabric that runs on this host.
+#[tokio::test]
+async fn mysql_outbox_rollback_suppresses_the_event_and_a_crash_redelivers_it() {
+    let pool = match mysql_pool().await {
+        Some(p) => p,
+        None => return,
+    };
+    let store = kelson_mysql::MySqlOutboxStore::new(pool.clone());
+
+    // --- rollback suppresses ---------------------------------------------
+    let rolled_back = uuid::Uuid::now_v7();
+    let mut tx = pool.begin().await.expect("the transaction begins");
+    sqlx::query(
+        "INSERT INTO outbox (id, tenant_id, event, topic, payload, idempotency_key, published, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, false, NOW(6))",
+    )
+    .bind(rolled_back.as_bytes().to_vec())
+    .bind(None::<Vec<u8>>)
+    .bind("test.rolled_back")
+    .bind("test.topic")
+    .bind(serde_json::json!({"key": "value"}).to_string())
+    .bind("rolled-back-key")
+    .execute(&mut *tx)
+    .await
+    .expect("the row is written inside the transaction");
+    tx.rollback().await.expect("the rollback succeeds");
+
+    let claimed = store.claim_unpublished(50).await.expect("claim");
+    assert!(
+        !claimed.iter().any(|e| e.id == rolled_back),
+        "a rolled-back event must never be published"
+    );
+
+    // --- commit-then-crash ----------------------------------------------
+    let committed = uuid::Uuid::now_v7();
+    let key = format!("crash-key-{committed}");
+    let mut tx = pool.begin().await.expect("the transaction begins");
+    sqlx::query(
+        "INSERT INTO outbox (id, tenant_id, event, topic, payload, idempotency_key, published, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, false, NOW(6))",
+    )
+    .bind(committed.as_bytes().to_vec())
+    .bind(None::<Vec<u8>>)
+    .bind("test.committed")
+    .bind("test.topic")
+    .bind(serde_json::json!({"key": "value"}).to_string())
+    .bind(&key)
+    .execute(&mut *tx)
+    .await
+    .expect("the row is written inside the transaction");
+    tx.commit().await.expect("the transaction commits");
+
+    let first = store.claim_unpublished(50).await.expect("claim");
+    let event = first
+        .iter()
+        .find(|e| e.id == committed)
+        .expect("the committed event is claimed");
+    assert_eq!(
+        event.idempotency_key.0,
+        key,
+        "the idempotency key is stable across the redelivery"
+    );
+
+    let second = store.claim_unpublished(50).await.expect("reclaim");
+    let redelivered = second
+        .iter()
+        .find(|e| e.id == committed)
+        .expect("the event is redelivered after the crash");
+    assert_eq!(
+        redelivered.idempotency_key.0,
+        key,
+        "the redelivery carries the same key, so the consumer can dedupe"
+    );
+
+    let _ = sqlx::query("DELETE FROM outbox WHERE id = ?")
+        .bind(committed.as_bytes().to_vec())
+        .execute(&pool)
+        .await;
+}#[tokio::test]
 async fn mysql_outbox_store_claim_and_mark_published() {
     let pool = match mysql_pool().await {
         Some(p) => p,

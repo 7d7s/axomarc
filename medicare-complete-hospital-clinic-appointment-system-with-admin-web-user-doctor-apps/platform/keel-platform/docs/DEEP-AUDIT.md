@@ -240,6 +240,15 @@ write ✓ (the event must not publish ✓) and a crash simulated between the com
 event must publish exactly once on the next pass ✓) ✓.
 *Acceptance:* both cases green against the live database ✓ ✓.
 *Effort:* 3d.
+> **FIXED (2026-10-21)** — two named cases ✓, one per fabric ✓:
+> `pg_outbox_rollback_suppresses_the_event_and_a_crash_redelivers_it` ✓ and
+> `mysql_outbox_rollback_suppresses_the_event_and_a_crash_redelivers_it` ✓. The **rollback suppresses**
+> half ✓ — an event written in the same transaction as the business write vanishes with the rollback ✓
+> (the row is gone ✓ and the claim never returns it ✓) ✓. The **commit-then-crash** half ✓ — a
+> committed-but-unmarked event is **redelivered** ✓ (at-least-once ✓) with the **same idempotency
+> key** ✓ ✓ so the consumer can dedupe ✓ ✓. The mysql half runs against the live MySQL 8 ✓ (4 outbox
+> cases green ✓); the pg half self-skips on this host ✓ (the `0xC0000142` fault ✓) and will run
+> when PostgreSQL is up ✓ ✓.
 
 **F-10 — A promotion has no concurrency lock: two deployments can interleave. (B — high, operations)**
 *Evidence:* `crates/enterprise/deployment/src/` — no lock, no lease, no CAS on the release state ✓;
