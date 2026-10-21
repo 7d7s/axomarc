@@ -6,22 +6,22 @@ states what replaces the outcome and what the divergence is.
 
 **Baseline:** Laravel 13.x (the database surface: migrations, the schema builder, the query
 builder, Eloquent, transactions and the connection layer).
-**Scored against:** commit `349f174`, branch `p0-runtime-safety`.
-**Evidence rule:** a row may only claim `executed` when the named case exists AND ran. All 106
-cited case names were verified to exist in the workspace by a script; the MySQL ones were
-executed against a live MySQL 8.0.44 in this session.
+**Scored against:** the `p0-runtime-safety` branch at the MySQL-native and production-grade slice.
+**Evidence rule:** a row may only claim `executed` when the named case exists AND ran. Every
+cited case name is verified to exist in the workspace by a script; the MySQL ones were executed
+against a live MySQL 8.0.44.
 
 ## 1. The score
 
 | Status | Rows | Meaning |
 |---|---:|---|
-| VERIFIED | 70 | the behaviour is implemented and an executed case proves it |
+| VERIFIED | 75 | the behaviour is implemented and an executed case proves it |
 | PARTIAL | 18 | the core is proven; a named sub-feature is missing or diverges |
 | EXCLUDED_BY_DESIGN | 5 | a deliberate exclusion with the alternative stated |
 | OPEN | 2 | a Laravel capability with no Kelson equivalent yet |
-| **Total** | **95** | |
+| **Total** | **100** | |
 
-Of the 95 rows, **93 carry an executed case**
+Of the 100 rows, **98 carry an executed case**
 and 2 do not (the OPEN rows).
 
 | Category | Rows |
@@ -30,20 +30,21 @@ and 2 do not (the OPEN rows).
 | eloquent | 30 |
 | migrations | 12 |
 | mysql-8-native | 4 |
+| production | 5 |
 | query-builder | 32 |
 | schema | 9 |
 | transactions | 3 |
 
 **The honest shape:** the ORM-shaped surface (Eloquent) and the query builder are strong; the
 **schema builder is the narrowest** area (the builder carries the types the framework uses, not
-Laravel's full zoo); and **four capabilities are simply absent** (listed in section 3).
+Laravel's full zoo); and **two capabilities are simply absent** (listed in section 2).
 
-## 2. The four OPEN rows - what Laravel has and Kelson does not
+## 2. The OPEN rows - what Laravel has and Kelson does not
 
-| ID | Laravel feature | Why it matters | The smallest honest next step |
-|---|---|---|---|
-| LDB-080 | Route model binding (`Route::model() / resolveRouteBinding()`) | a Laravel feature with no Kelson equivalent | a builder method + a case |
-| LDB-091 | The maintenance mode (`php artisan down`) | the framework has no database maintenance mode | a builder method + a case |
+| ID | Laravel feature | Why it matters |
+|---|---|---|
+| LDB-080 | Route model binding (`Route::model() / resolveRouteBinding()`) | a Laravel feature with no Kelson equivalent |
+| LDB-091 | The maintenance mode (`php artisan down`) | the framework has no database maintenance mode |
 
 ## 3. The PARTIAL rows - the proven core and the named gap
 
@@ -93,6 +94,11 @@ competitive claim. Each one is an executed case, not a claim.
 | LDB-092 | A dialect-native SQL rendering | one builder, two engines, a divergence proof by construction | `the_postgres_rendering_matches_the_golden_catalogue; the_mysql_rendering_carries_no_postgres_only_construct` |
 | LDB-093 | A wrong-engine statement is refused | the statement carries the engine it was rendered for | `the_compiled_statement_records_its_dialect` |
 | LDB-095 | A UTC-pinned connection | Laravel leaves the timezone to the server unless the app sets it | `mysql_every_connection_is_pinned_to_utc; mysql_server_side_timestamps_are_utc` |
+| LDB-096 | A migration that resumes after a failure | MySQL DDL auto-commits, so Laravel re-runs the whole file after a failure (and fails on the DDL that already landed); the recorded step state resumes instead | `mysql_migration_the_guarded_runner_resumes_after_a_failed_step; mysql_migration_the_guarded_runner_records_every_step` |
+| LDB-097 | A refused resume after the migration file changed | a file edited after a failed run is refused, not applied | `mysql_migration_the_guarded_runner_refuses_a_resume_after_the_file_changed` |
+| LDB-098 | A schema change on a live table without a long lock | the lock is held for the rename, not for the copy; the engine's INSTANT path is used when the change qualifies | `mysql_migration_the_online_change_copies_the_rows_and_swaps_atomically; mysql_migration_the_online_change_adds_a_column_without_rebuilding` |
+| LDB-099 | A rolling deploy where every instance boots at once | the loser waits for the holder and re-checks the state instead of failing the boot | `mysql_migration_a_runner_that_loses_the_lock_waits_and_re_checks` |
+| LDB-100 | A per-tenant cost ceiling | the refusal happens BEFORE the write, and the cost is an observable per-tenant fact | `mysql_cost_the_budget_refuses_a_runaway_write_before_it_runs; mysql_cost_the_ledger_aggregates_per_tenant` |
 
 ## 6. The divergences a Laravel developer must know about
 
@@ -116,8 +122,12 @@ DATABASE_URL=mysql://keel:keel@127.0.0.1:3307/keel \
   cargo test -p kelson-postgres --features pg-tests --test modelstore_conformance   # the shared contract
 DATABASE_URL=mysql://keel:keel@127.0.0.1:3307/keel \
   cargo test -p kelson-postgres --features pg-tests --test mysql_native            # the MySQL 8 native matrix
+DATABASE_URL=mysql://keel:keel@127.0.0.1:3307/keel \
+  cargo test -p kelson-postgres --features pg-tests --test mysql_migrations        # the migration safety
+DATABASE_URL=mysql://keel:keel@127.0.0.1:3307/keel \
+  cargo test -p kelson-postgres --features pg-tests --test mysql_cost             # the cost axis
 ```
 
 The PostgreSQL half of the matrix cannot run on this host (the client's native backends
-fault), so the Postgres rendering is proven by the golden catalogue instead - 51 constructs,
-byte for byte. The MySQL half is proven by execution.
+fault and the server binaries are gone), so the Postgres rendering is proven by the golden
+catalogue instead - byte for byte. The MySQL half is proven by execution.

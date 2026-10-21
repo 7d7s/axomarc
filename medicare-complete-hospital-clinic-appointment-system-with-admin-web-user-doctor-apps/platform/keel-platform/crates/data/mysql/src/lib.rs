@@ -22,10 +22,13 @@
 
 pub mod batchledger;
 pub mod bridge;
+pub mod cost;
 pub mod explain;
+pub mod guarded;
 pub mod jobstore;
 pub mod modelstore;
 pub mod notificationstore;
+pub mod online;
 pub mod outboxstore;
 pub mod pairs;
 pub mod principalstore;
@@ -39,10 +42,16 @@ pub mod tx;
 pub mod txport;
 
 pub use batchledger::MySqlBatchLedger;
+pub use cost::{CostBudget, CostGuard, CostLedger, StatementCost, StatementKind, TenantCost};
 pub use explain::{explain_analyze, ExplainPlan};
+pub use guarded::{
+    apply_pair_guarded, auto_commits, checksum, split_statements, PairVerdict, StepRecord,
+    STEPS_TABLE,
+};
 pub use jobstore::MySqlJobStore;
 pub use modelstore::MySqlModelStore;
 pub use notificationstore::MySqlNotificationStore;
+pub use online::{apply_online, qualifies_for_instant, OnlineChange, OnlineReport, Strategy};
 pub use outboxstore::MySqlOutboxStore;
 pub use principalstore::{MySqlCredentialStore, MySqlPrincipalStore};
 pub use seeders::{DevTenantSeeder, SeedReport, Seeder, SeederRegistry};
@@ -116,6 +125,19 @@ pub const MIGRATION_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::fro
 
 /// Poll interval while waiting for the migration lock.
 pub const MIGRATION_LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// How long a runner waits for ANOTHER runner to finish the migrations
+/// before it re-checks the state.
+///
+/// The lock's own deadline ([`MIGRATION_LOCK_TIMEOUT`]) is deliberately
+/// short: it refuses a wedged holder instead of hanging the boot. But a
+/// **cold** migration (a fresh database, a large schema) can take far longer
+/// than that, so a rolling deploy with several instances booting at once
+/// would fail every instance but the first. The loser therefore waits for
+/// the holder to finish (up to this deadline) and then re-checks whether
+/// the migrations it wanted are now applied — the standard "lock, then
+/// re-check" pattern.
+pub const MIGRATION_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// Take the session-scoped migration lock ([`MIGRATION_LOCK_NAME`]) on
 /// `conn`, polling `GET_LOCK(name, 0)` until [`MIGRATION_LOCK_TIMEOUT`] —
@@ -203,7 +225,33 @@ pub async fn run_migrations(
         .acquire()
         .await
         .map_err(|e| AppError::persistence(format!("migrate: connect: {e}")))?;
-    acquire_migration_lock(&mut conn).await?;
+    match acquire_migration_lock(&mut conn).await {
+        Ok(()) => {}
+        Err(lock_error) => {
+            // Another runner holds the lock. It may be a wedged holder (the
+            // fail-closed case: refuse) OR a runner that is simply still
+            // working (the cold-start case: wait for it and re-check).
+            // The distinction is made by RE-CHECKING THE STATE, not by
+            // guessing: if the migrations are applied by the time the holder
+            // releases the lock, this runner's work is done.
+            if !wait_for_lock_release(&mut conn, MIGRATION_LOCK_WAIT).await {
+                return Err(lock_error);
+            }
+            let outcome = run_migrations_held(&mut conn, root).await;
+            match outcome {
+                Ok(names) => return Ok(names),
+                Err(e) => {
+                    // The holder released the lock but the migrations are
+                    // NOT applied (it failed, or it applied something else).
+                    // Re-take the lock and report the original failure: the
+                    // state is unknown, so fail closed.
+                    let _ = acquire_migration_lock(&mut conn).await;
+                    let _ = release_migration_lock(&mut conn).await;
+                    return Err(e);
+                }
+            }
+        }
+    }
     // The run's outcome wins over a release failure, but the release is
     // always attempted first — a held lock would wedge every later run.
     let outcome = run_migrations_held(&mut conn, root).await;
@@ -211,6 +259,31 @@ pub async fn run_migrations(
     let names = outcome?;
     released?;
     Ok(names)
+}
+
+/// Wait until the migration lock is free (the holder released it or died).
+///
+/// Returns whether the lock became free within the deadline.
+pub async fn wait_for_lock_release(
+    conn: &mut sqlx::MySqlConnection,
+    timeout: std::time::Duration,
+) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let held: Option<i64> = sqlx::query_scalar("SELECT IS_USED_LOCK(?)")
+            .bind(MIGRATION_LOCK_NAME)
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap_or(None);
+        // IS_USED_LOCK returns NULL when the lock is free (no holder).
+        if held.is_none() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(MIGRATION_LOCK_POLL).await;
+    }
 }
 
 /// The migration run proper — sqlx singles, then pairs — on a connection

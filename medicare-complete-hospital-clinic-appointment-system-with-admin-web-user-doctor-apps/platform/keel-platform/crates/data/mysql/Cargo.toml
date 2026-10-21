@@ -34,11 +34,15 @@ tracing = { workspace = true }
 all-features = true
 
 [lib]
-# Wave 9 B-31: lib unit tests and doctests are off; the DB-backed kelson-mysql
-# matrix rides the kelson-postgres `pg-tests` integration files (which skip
-# unless DATABASE_URL points at a MySQL 8 instance). The one target this crate
-# does own is tests/schema_roundtrip.rs (Phase D): the fluent schema-builder
-# gate is pure — no database — so it runs in every workspace gate and keeps
-# the shipped migrations builder-reproducible byte for byte (suite +1).
-test = false
+# Wave 9 B-31: the DB-backed kelson-mysql matrix rides the kelson-postgres
+# `pg-tests` integration files (which skip unless DATABASE_URL points at a
+# MySQL 8 instance). The one target this crate does own is
+# tests/schema_roundtrip.rs (Phase D): the fluent schema-builder gate is
+# pure — no database — so it runs in every workspace gate and keeps the
+# shipped migrations builder-reproducible byte for byte (suite +1).
+#
+# The lib's own unit tests are ON: they are pure (the statement splitter,
+# the auto-commit verdict, the online-change rules, the cost budget) and
+# need no database. They used to be off with the whole lib; turning them on
+# costs a second and proves the rules the live matrices rely on.
 doctest = false

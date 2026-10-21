@@ -107,6 +107,13 @@ pub struct MySqlModelStore {
     /// (`ListOpts::replica_ok`); without the opt-in every read stays on the
     /// primary, so a read that follows a write still sees it.
     read_pool: Option<MySqlPool>,
+    /// The optional cost guard: the ceiling a multi-row write may touch
+    /// before it is refused (the cost axis). `None` means unbounded.
+    cost_guard: Option<crate::cost::CostGuard>,
+    /// The optional cost ledger: what every statement actually cost. Shared
+    /// behind a lock so the aggregate survives the store's concurrency (the
+    /// store is `Sync` and every call takes `&self`).
+    cost_ledger: Option<std::sync::Arc<std::sync::Mutex<crate::cost::CostLedger>>>,
 }
 
 impl MySqlModelStore {
@@ -114,6 +121,8 @@ impl MySqlModelStore {
         Self {
             pool,
             read_pool: None,
+            cost_guard: None,
+            cost_ledger: None,
         }
     }
 
@@ -121,6 +130,28 @@ impl MySqlModelStore {
     /// served from this pool; everything else stays on the primary.
     pub fn with_read_pool(mut self, pool: MySqlPool) -> Self {
         self.read_pool = Some(pool);
+        self
+    }
+
+    /// Attach a cost guard: a multi-row write that would touch more rows
+    /// than the budget allows is **refused before it runs** (fail-closed).
+    ///
+    /// This is the cost axis: one tenant's runaway batch write must not be
+    /// able to consume the cluster's IO while everyone else waits.
+    pub fn with_cost_guard(mut self, guard: crate::cost::CostGuard) -> Self {
+        self.cost_guard = Some(guard);
+        self
+    }
+
+    /// Attach a cost ledger: what every statement cost, per tenant.
+    ///
+    /// The ledger is shared: the caller keeps the handle and reads the
+    /// aggregate whenever it wants it.
+    pub fn with_cost_ledger(
+        mut self,
+        ledger: std::sync::Arc<std::sync::Mutex<crate::cost::CostLedger>>,
+    ) -> Self {
+        self.cost_ledger = Some(ledger);
         self
     }
 
@@ -1124,7 +1155,32 @@ impl ModelStore for MySqlModelStore {
         for row in &key_rows {
             keys.push(row.try_get::<Uuid, _>("id").map_err(my)?);
         }
+        // The cost guard: the write is refused BEFORE it runs, when the rows
+        // it would touch exceed the tenant's ceiling. The count comes from
+        // the SAME scope the write uses (the captured keys), so the guard
+        // and the write agree.
+        if let Some(guard) = &self.cost_guard {
+            if let Err(e) = guard.check_write(tenant, keys.len() as u64) {
+                if let Some(ledger) = &self.cost_ledger {
+                    if let Ok(mut ledger) = ledger.lock() {
+                        ledger.record_refusal(tenant);
+                    }
+                }
+                return Err(e);
+            }
+        }
+        let started = std::time::Instant::now();
         exec_write(&self.pool, &compiled)?;
+        if let Some(ledger) = &self.cost_ledger {
+            if let Ok(mut ledger) = ledger.lock() {
+                ledger.record(&crate::cost::StatementCost {
+                    tenant,
+                    kind: crate::cost::StatementKind::Write,
+                    elapsed: started.elapsed(),
+                    rows: keys.len() as u64,
+                });
+            }
+        }
         if keys.is_empty() {
             return Ok(Vec::new());
         }

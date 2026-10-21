@@ -265,6 +265,18 @@ jobs:
       # would skip, and a skip is not a proof.
       - name: mysql native capability matrix (CTEs, window functions, lock modes)
         run: cargo test -p kelson-postgres --features pg-tests --test mysql_native --locked
+      # The migration-safety matrix: the guarded runner (every statement is
+      # recorded, so a failed run RESUMES instead of re-applying the whole
+      # file) and the online change (shadow table + copy + an atomic swap).
+      # A migration that dies half-way is the classic production incident.
+      - name: mysql migration safety (the guarded runner + the online change)
+        run: cargo test -p kelson-postgres --features pg-tests --test mysql_migrations --locked
+      # The cost axis: a write that would touch more rows than the tenant's
+      # ceiling is refused BEFORE it runs, and every statement's cost is
+      # recorded per tenant. The cheapest enterprise-scale failure is one
+      # tenant's runaway batch write, not a crash.
+      - name: mysql cost axis (the budget refuses a runaway write)
+        run: cargo test -p kelson-postgres --features pg-tests --test mysql_cost --locked
       # The claim race only reproduces when two workers overlap, so one green
       # run would not be evidence. Repeat it: a regression here means a worker
       # fleet idles while jobs are queued.
