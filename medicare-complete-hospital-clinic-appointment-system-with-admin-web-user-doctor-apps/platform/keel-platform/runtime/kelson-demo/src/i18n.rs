@@ -135,6 +135,24 @@ mod tests {
         catalog
     }
 
+    /// **LF-078**: the **per-tenant** locale in the host's resolution chain —
+    /// the session preference, then the **tenant's** locale, then
+    /// `Accept-Language`, then the catalog's default. A tenant has a language
+    /// of its own, so a request that names no locale still renders in it.
+    #[test]
+    fn the_tenant_locale_wins_over_accept_language() {
+        let catalog = catalog();
+        // No session preference, no header: the tenant's locale decides.
+        assert_eq!(resolve(&catalog, None, Some("fr"), None), "fr");
+        // The tenant's locale beats the browser's Accept-Language.
+        assert_eq!(resolve(&catalog, None, Some("fr"), Some("en")), "fr");
+        // The session preference still wins over the tenant's.
+        assert_eq!(resolve(&catalog, Some("en"), Some("fr"), None), "en");
+        // An empty tenant locale falls through to the header, then the default.
+        assert_eq!(resolve(&catalog, None, Some("  "), Some("en")), "en");
+        assert_eq!(resolve(&catalog, None, None, None), "en");
+    }
+
     /// Wave 6 P3: quality ordering with q=0 refusal, malformed-q fallback
     /// and wildcard skipping.
     #[test]

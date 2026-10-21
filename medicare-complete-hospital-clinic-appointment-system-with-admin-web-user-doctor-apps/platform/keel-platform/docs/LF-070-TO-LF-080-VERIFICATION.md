@@ -276,7 +276,9 @@ feature has no executed case ✓.
   `a_per_tenant_locale_renders_without_a_request_locale` ✓ (new ✓ — two tenants get their own
   language from one catalog ✓) and `the_tenant_record_carries_its_locale` ✓ (new ✓ — the record
   round-trips the tenant's locale ✓), plus the edge's own
-  `resolve_follows_session_tenant_accept_default_order` ✓ (new ✓ — the chain's order ✓).
+  `resolve_follows_session_tenant_accept_default_order` ✓ (new ✓ - the chain's order ✓) and the
+  host's own `the_tenant_locale_wins_over_accept_language` ✓ (new ✓ - the tenant's locale beats the
+  browser's `Accept-Language` ✓).
   *(The translator and pluralization cases live in `kelson-foundation` ✓ — 67 green there ✓, with
   the locale cases added on 2026-10-21 ✓.)*
 - **Gaps (small after the correction and the 2026-10-21 work)**: the **end-to-end interpolation
@@ -397,7 +399,7 @@ the storage listing ✓). An absent feature has no executed case ✓.
   helpers, LF-080 collections ✓ — the three the atlas itself de-prioritizes ✓).
 - **The sharpest gaps** (after the 2026-10-21 fixes): the **rollback-suppresses** and
   **commit-then-crash** outbox cases ✗ (LF-064 ✓), the **real S3 driver** ✗ (LF-072 ✓), the
-  **per-tenant locale** ✗ (LF-078 ✓), the **index lifecycle** ✗ (LF-076 ✓) and the **end-to-end
+  **per-tenant locale** ✓ (LF-078 ✓ — it now ships ✓), the **index lifecycle** ✗ (LF-076 ✓) and the **end-to-end
   interpolation escaping** ✗ (LF-078 ✓). *(The SSRF guard ✓ (F-23 ✓), the local disk's link
   containment ✓ (F-24 ✓) and the upload's content-type sniffing ✓ (F-27 ✓) are now **closed** ✓,
   as are the cache lock's lease expiry ✓, the holder crash ✓ and the clock skew ✓.)*
