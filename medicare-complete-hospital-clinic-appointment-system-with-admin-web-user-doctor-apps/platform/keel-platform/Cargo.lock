@@ -1788,6 +1788,7 @@ dependencies = [
  "kelson-storage",
  "kelson-telemetry",
  "kelson-tenancy",
+ "kelson-views",
  "kelson-wasm",
 ]
 

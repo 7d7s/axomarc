@@ -633,6 +633,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // `views_config`, whose output the views tests pin exactly.
     views_cfg.paths.push(crate::dashboard::builtin_views_root());
     let views_engine = kelson_views::ViewsEngine::new(views_cfg);
+    install_view_registry(&views_engine);
     register_asset_directive(&views_engine, assets.clone());
     // Wave 8 B-25: indexed packages register their view roots (no copy —
     // the namespace resolves into the package directory).
@@ -1399,6 +1400,17 @@ fn load_asset_manifest(public: &std::path::Path) -> Option<Arc<kelson_http::Asse
 /// its hashed artifact) and otherwise emits the literal root-absolute URL —
 /// Laravel's `asset()` helper as a view directive. The handler owns
 /// escaping, so the URL always leaves the template HTML-safe.
+/// Install the framework's view registry: the built-in views, bound to
+/// the built-in view models.
+///
+/// An application registers its own bindings on top of this one, so a
+/// deployment can replace any built-in view with its own model.
+pub fn install_view_registry(engine: &kelson_views::ViewsEngine) {
+    engine.set_registry(std::sync::Arc::new(
+        kelson_views::builtins::builtin_registry(),
+    ));
+}
+
 fn register_asset_directive(
     engine: &kelson_views::ViewsEngine,
     assets: Option<Arc<kelson_http::AssetManifest>>,
@@ -1820,6 +1832,7 @@ fn build_app_state_inner(
         cache_dir: None,
         env: "test".into(),
     });
+    install_view_registry(&views_engine);
     register_asset_directive(&views_engine, assets.clone());
     // Wave 8 B-25: the harness mirrors the production posture — an index
     // under the storage root registers package view namespaces too.
@@ -2085,7 +2098,8 @@ mod wave6_mail_tests {
             cache_dir: None,
             env: "test".into(),
         });
-        crate::register_package_view_namespaces(&root, &engine);
+        crate::install_view_registry(&engine);
+    crate::register_package_view_namespaces(&root, &engine);
         assert_eq!(
             engine
                 .render("billing::welcome", serde_json::json!({}))
@@ -2128,7 +2142,8 @@ mod wave6_mail_tests {
             cache_dir: None,
             env: "test".into(),
         });
-        crate::register_package_view_namespaces(&bare, &engine);
+        crate::install_view_registry(&engine);
+    crate::register_package_view_namespaces(&bare, &engine);
         let err = engine
             .render("billing::welcome", serde_json::json!({}))
             .expect_err("no index means no namespaces");
@@ -2156,6 +2171,7 @@ mod wave6_mail_tests {
             cache_dir: None,
             env: "test".into(),
         }));
+        crate::install_view_registry(&engine);
         let mut hub = NotifyHub::empty().with_view_renderer(std::sync::Arc::new(
             crate::host::ViewsNotificationRenderer(engine),
         ));
@@ -2520,17 +2536,19 @@ mod read_replica_tests {
     use super::read_replica_pool;
 
     fn config(replica: Option<&str>) -> kelson_config::FrozenConfig {
-        let mut cfg = kelson_config::PlatformConfig::default();
-        cfg.database = Some(kelson_config::DatabaseSection {
-            driver: kelson_config::DatabaseDriver::Postgres,
-            conn: kelson_config::DatabaseConfig {
-                url: "postgres://127.0.0.1:1/keel".to_string(),
-                max_connections: 2,
-                run_migrations: false,
-                required: false,
-            },
-            read_replica_url: replica.map(str::to_string),
-        });
+        let cfg = kelson_config::PlatformConfig {
+            database: Some(kelson_config::DatabaseSection {
+                driver: kelson_config::DatabaseDriver::Postgres,
+                conn: kelson_config::DatabaseConfig {
+                    url: "postgres://127.0.0.1:1/keel".to_string(),
+                    max_connections: 2,
+                    run_migrations: false,
+                    required: false,
+                },
+                read_replica_url: replica.map(str::to_string),
+            }),
+            ..Default::default()
+        };
         cfg.freeze()
     }
 

@@ -1118,13 +1118,31 @@ fn error_view_response(
         _ if engine.exists("errors.500") => "errors.500".to_string(),
         _ => return None,
     };
-    let mut context = serde_json::json!({
-        "status": status.as_u16(),
-        "title": status.canonical_reason().unwrap_or("Error"),
-        "message": err.public_message,
-        "code": err.code,
-        "path": path,
-    });
+    // The error page's data comes from the framework's error view model:
+    // the page's data requirements are declared, and the shape the
+    // templates already read is unchanged.
+    let model = kelson_views::builtins::ErrorVm {
+        status: status.as_u16(),
+        title: status.canonical_reason().unwrap_or("Error").to_string(),
+        message: err.public_message.clone(),
+        code: err.code.clone(),
+        path: path.to_string(),
+        debug: if state.debug {
+            crate::routes::debug_detail(err)
+        } else {
+            None
+        },
+    };
+    let mut context = match kelson_views::view_model_value(&model) {
+        Ok(value) => value,
+        Err(error) => {
+            // The model always honours its declaration; a failure here
+            // would be a framework defect, and the page must not render
+            // half-built.
+            tracing::warn!(%error, "the error view model does not honour its declaration");
+            return None;
+        }
+    };
     // Wave 6 P3: the same locale injections as success views so error
     // pages can use `@lang` / the `trans` filter too.
     if let Some(obj) = context.as_object_mut() {
@@ -1136,13 +1154,6 @@ fn error_view_response(
             "_lang".into(),
             serde_json::to_value(state.messages.flat(locale)).unwrap_or_default(),
         );
-    }
-    if state.debug {
-        if let Some(debug) = crate::routes::debug_detail(err) {
-            if let Some(obj) = context.as_object_mut() {
-                obj.insert("debug".into(), debug);
-            }
-        }
     }
     let html = engine.render(&name, context).ok()?;
     Some(

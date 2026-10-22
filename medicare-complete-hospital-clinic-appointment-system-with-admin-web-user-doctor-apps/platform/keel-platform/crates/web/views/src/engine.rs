@@ -182,6 +182,10 @@ pub struct ViewsEngine {
     resolver: Mutex<Option<Arc<ResolverFn>>>,
     memo: Mutex<HashMap<String, Memo>>,
     tap: Mutex<Option<Arc<dyn ViewTap>>>,
+    /// The view registry: which view model a view binds to. Optional - a
+    /// view without a binding renders exactly as it did before the
+    /// registry existed.
+    registry: Mutex<Option<Arc<crate::registry::ViewRegistry>>>,
 }
 
 impl ViewsEngine {
@@ -194,6 +198,7 @@ impl ViewsEngine {
             resolver: Mutex::new(None),
             memo: Mutex::new(HashMap::new()),
             tap: Mutex::new(None),
+            registry: Mutex::new(None),
         }
     }
 
@@ -251,6 +256,18 @@ impl ViewsEngine {
     /// Replaces any previous tap; renders without a tap are unaffected.
     pub fn set_tap(&self, tap: Arc<dyn ViewTap>) {
         *self.tap.lock().unwrap() = Some(tap);
+    }
+
+    /// Install the view registry: the views and the view models they bind
+    /// to. Replaces any previous registry; an engine without one renders
+    /// every view unbound, exactly as before.
+    pub fn set_registry(&self, registry: Arc<crate::registry::ViewRegistry>) {
+        *self.registry.lock().unwrap() = Some(registry);
+    }
+
+    /// The view registry, if one is installed.
+    pub fn registry(&self) -> Option<Arc<crate::registry::ViewRegistry>> {
+        self.registry.lock().unwrap().clone()
     }
 
     pub(crate) fn directive(&self, name: &str) -> Option<Arc<DirectiveHandler>> {

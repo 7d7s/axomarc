@@ -401,3 +401,47 @@ async fn report_only_codes_keep_the_status_but_serve_the_generic_body() {
     assert_eq!(body["error"]["message"], json!("internal error"));
     assert!(body["error"].get("debug").is_none(), "{}", body);
 }
+
+/// The error page is bound to the framework's error view model (ADR 0021):
+/// the binding is what the framework knows the page may read, and the page
+/// renders the model's data.
+#[tokio::test]
+async fn the_error_page_renders_the_frameworks_error_model() {
+    let fx = fixture();
+    let engine = fx.state.views.as_ref().expect("the harness has views");
+    let registry = engine
+        .registry()
+        .expect("the demo installs the framework's view registry");
+    let binding = registry
+        .binding("errors.404")
+        .expect("the error page is bound");
+    assert!(
+        binding.model.contains("ErrorVm"),
+        "the error page binds to the framework's error model: {}",
+        binding.model
+    );
+    assert!(
+        binding.schema.iter().any(|field| field.path == "status"),
+        "the binding carries the page's declared data requirements"
+    );
+
+    // The page itself still renders the model's data.
+    let router = router_for(&fx);
+    let reply = get(&router, "/web/availability/not-a-uuid", None).await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+    assert!(
+        reply.content_type.starts_with("text/html"),
+        "the web plane serves the page: {}",
+        reply.content_type
+    );
+    assert!(
+        reply.body.contains("<h1>404</h1>"),
+        "the page carries the model's status: {}",
+        reply.body
+    );
+    assert!(
+        reply.body.contains("/web/availability/not-a-uuid"),
+        "the page carries the model's path: {}",
+        reply.body
+    );
+}

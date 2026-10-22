@@ -25,9 +25,11 @@
 //! (translation table). @env/@production read the engine environment.
 
 pub mod ast;
+pub mod builtins;
 pub mod engine;
 pub mod expr;
 mod parser;
+pub mod registry;
 mod render;
 pub mod viewmodel;
 
@@ -40,6 +42,7 @@ pub use expr::{
     html_escape, parse_cond, parse_echo, parse_operand_str, parse_path, to_display, CmpOp, Cond,
     Expr, Filter, Lit, Operand, Segment,
 };
+pub use registry::{ViewBinding, ViewRegistry};
 pub use viewmodel::{
     check_schema, schema_field, value_at, view_model_value, FieldKind, FieldSchema, ViewModel,
 };

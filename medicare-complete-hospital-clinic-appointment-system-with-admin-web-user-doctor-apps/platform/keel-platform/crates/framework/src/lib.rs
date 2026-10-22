@@ -40,6 +40,7 @@ pub use kelson_telemetry;
 pub use kelson_foundation;
 pub use kelson_lifecycle;
 pub use kelson_context;
+pub use kelson_views;
 
 // Re-export common types for convenience (only what actually exists)
 pub use kelson_foundation::{
@@ -67,3 +68,44 @@ pub use kelson_policy::PolicyEngine;
 pub use kelson_observability::TelemetryConfig;
 pub use kelson_lifecycle::{ApplicationHost, Phase, Provider, ServiceRegistry, BootError};
 pub use kelson_context::{ExecutionContext};
+
+// -------------------------------------------------------------- the tests
+//
+// The facade is re-exports only, so its test is one thing: the published
+// surface is reachable through it. The view layer is the one a server-side
+// application needs and could not reach before (ADR 0021, F-11).
+#[cfg(test)]
+mod tests {
+    /// The view layer is part of the published framework surface: an
+    /// application takes this one dependency and reaches the view model,
+    /// the view registry and the field schema through it.
+    #[test]
+    fn the_framework_facade_exports_the_view_layer() {
+        // the registry
+        let mut registry = crate::kelson_views::ViewRegistry::new();
+        assert!(registry.is_empty());
+        registry.register(crate::kelson_views::ViewBinding {
+            view: "example.view".to_string(),
+            model: "ExampleVm".to_string(),
+            schema: &[],
+        });
+        assert_eq!(registry.names(), vec!["example.view".to_string()]);
+        assert!(
+            registry.binding("example.view").is_some(),
+            "the view is bound"
+        );
+
+        // the declared data requirements
+        let field = crate::kelson_views::FieldSchema::required(
+            "title",
+            crate::kelson_views::FieldKind::String,
+        );
+        assert_eq!(field.path, "title");
+        assert_eq!(field.kind, crate::kelson_views::FieldKind::String);
+        assert!(field.required);
+
+        // the view model's contract is reachable too: an application
+        // implements it without depending on the internals.
+        fn _view_model_is_reachable<M: crate::kelson_views::ViewModel>() {}
+    }
+}
