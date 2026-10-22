@@ -17,6 +17,7 @@ Index of ADRs (one file each: NNNN-title.md). The decision log in
 | 0013-recursive-cte-relations.md | Recursive/CTE relations in the query builder | Wave 9 gate (advanced backlog) |
 | 0019-wasm-abi-v2-component-model.md | Wasm ABI v2: Component Model behind an opt-in feature, ABI v1 retained (amends root ADR 0016 §2/§3) | Wave A of the distribution plan |
 | 0020-module-host-import-world.md | Application modules as WASM guests: the host-import world (guests implement the contract traits; JSON over imports) | Stage C.2 / G3 layer isolation |
+| 0021-mvvc-layers.md | MVVC: the Model, the ViewModel and the View as three framework-provided layers (amends the architecture table's MVVM row) | D-78..D-81 |
 
 Numbers 0014-0018 are reserved: they exist in the root tree's
 `platform/specs/ADR/` record (owned by the 0.2a port, cited not edited), and

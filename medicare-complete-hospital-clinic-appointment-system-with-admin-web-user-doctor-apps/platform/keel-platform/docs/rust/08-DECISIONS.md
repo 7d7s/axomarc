@@ -200,3 +200,14 @@ Normative spec: `platform/specs/STAGE-SENTINEL-SPEC.md`; long-form rationale in 
 | D-74 | Crate split under `crates/observability/` (telemetry, tracing, metrics, audit, pipeline, buffer, export); `kelson-observability` keeps its published name and hosts the runtime. `TelemetryContext` carrier lives in kelson-foundation (no `kelson-context` crate — the name is owned by foundation/context). Audit hash chain lives in new security crate `kelson-integrity` (sha2): the data layer cannot depend on observability, and chain computation stays inside the engine transaction. |
 | D-75 | OTLP export = OTLP/HTTP + JSON encoding over reqwest (kelson-export). No `opentelemetry*` dependencies; protobuf encoding deferred. Dependency budget stays 23/25. |
 | D-76 | Incident control plane: the file plane under `storage/framework/telemetry/control/` (`incident.json`) is the source of truth; the kelson-api admin endpoint (`POST /admin/telemetry/incident`, capability `telemetry.incident.manage`) writes the same file; every host polls every 2 s. Base config remains frozen at boot (STAGE-0 §10) — only `TelemetryControlState` mutates at runtime, solely via this plane. |
+
+## 9. MVVC layer decisions (2026-10-22) - ADR 0021
+
+Long-form rationale: `platform/specs/ADR/0021-mvvc-layers.md`; the plan and the slice order: `platform/docs/MVVC-ARCHITECTURE-PLAN.md`. These decisions amend the architecture table's MVVM row, which said "MVVM as a backend architecture - no".
+
+| ID | Decision |
+|---|---|
+| D-78 | MVVC is adopted as the server-side presentation architecture: the Model, the ViewModel and the View are three layers the FRAMEWORK provides. A ViewModel is a typed, serialisable struct that declares its view (`const VIEW`) and the view's data requirements (`fn schema()`), with a JSON escape hatch. It is a value, not a session. |
+| D-79 | The binder is NEW TEMPLATE SYNTAX, additive: `@vm` binds the view's registered ViewModel into the `vm` namespace and turns on schema-checked paths (an unknown path or a type mismatch is a render error, fail-closed); `@command("op")` binds an element to a named operation the route declares. A template without `@vm` behaves exactly as before. |
+| D-80 | The reserved context keys (`_errors`, `_locale`, `_lang`, `_auth`, `_csrf`) are assembled ONCE, by the framework, in a typed `ViewContext` that lives in `crates/foundation/core` (the notifications service crate may not depend on the web layer). `_csrf` becomes wired and the ops dashboard becomes internationalised. |
+| D-81 | The four companion features are in scope: the head metadata store (LF-035) with request-scoped isolation, typed form objects, the read-model layer (a declared, materialised, refreshable projection - never a second source of truth) and live/stateful views over `kelson-realtime`. The framework also ships the built-in view models (pagination, table, form, error page, empty state, ops dashboard). |
