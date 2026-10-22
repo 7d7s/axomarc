@@ -1028,6 +1028,10 @@ fn payload_vars(n: &dyn NotificationDef) -> BTreeMap<String, String> {
 /// catalog, so notification views can use `@lang` / the `trans` filter
 /// the same way request-bound views do. No catalog = the P5 context,
 /// byte for byte.
+///
+/// The reserved keys are filled by the framework's ONE assembler
+/// (`kelson_foundation::ViewContext`), so a notification view reads the
+/// same context a request-bound view reads.
 fn view_context(
     n: &dyn NotificationDef,
     locale: Option<&str>,
@@ -1036,16 +1040,7 @@ fn view_context(
     let mut context = n.to_database();
     if let Some(catalog) = catalog {
         let locale = locale.unwrap_or_else(|| catalog.default_locale());
-        if let Some(object) = context.as_object_mut() {
-            object.insert(
-                "_locale".into(),
-                serde_json::Value::String(locale.to_string()),
-            );
-            object.insert(
-                "_lang".into(),
-                serde_json::to_value(catalog.flat(locale)).unwrap_or_default(),
-            );
-        }
+        kelson_foundation::ViewContext::localized(catalog, locale).apply(&mut context);
     }
     context
 }
@@ -2138,9 +2133,12 @@ mod tests {
         .await
         .expect("renders");
         let context = capture.0.lock().unwrap().clone().expect("renderer ran");
-        assert_eq!(context["_locale"], serde_json::json!("fr"));
         assert_eq!(
-            context["_lang"]["notifications.appointment_booked"],
+            context[kelson_foundation::LOCALE_KEY],
+            serde_json::json!("fr")
+        );
+        assert_eq!(
+            context[kelson_foundation::LANG_KEY]["notifications.appointment_booked"],
             serde_json::json!("Rendez-vous réservé pour {patient}")
         );
         assert_eq!(context["patient"], serde_json::json!("Ada"), "P5 payload fields intact");
@@ -2163,5 +2161,48 @@ mod tests {
             serde_json::json!({ "patient": "Ada" }),
             "no catalog -> no locale injections"
         );
+    }
+
+    /// MVVC (ADR 0021): a notification view carries the SAME reserved
+    /// keys a request-bound view carries - the framework's ONE assembler
+    /// fills them, so a template that reads `@lang` works the same way
+    /// in a notification as it does on a request.
+    #[tokio::test]
+    async fn the_notification_view_carries_the_same_reserved_keys() {
+        let capture = ContextCapture::default();
+        let mut hub = NotifyHub::with_catalog(std::sync::Arc::new(appointment_catalog()))
+            .with_view_renderer(std::sync::Arc::new(capture.clone()));
+        hub.mail = Some(Box::new(RecordingMail::default()));
+        let ctx = NotificationContext {
+            principal_id: PrincipalId::new(),
+            tenant_id: None,
+            locale: Some("fr".into()),
+            origin: DeliveryOrigin::default(),
+        };
+        hub.dispatch_notification(
+            &KeyedNotification { patient: "Ada" },
+            Channel::Email,
+            Some("ada@example.com"),
+            &ctx,
+        )
+        .await
+        .expect("renders");
+        let context = capture.0.lock().unwrap().clone().expect("renderer ran");
+        // The reserved keys are the framework's constants: the same names
+        // a request-bound view carries.
+        assert_eq!(
+            context[kelson_foundation::LOCALE_KEY],
+            serde_json::json!("fr")
+        );
+        assert!(
+            context[kelson_foundation::LANG_KEY].is_object(),
+            "the flat message map is there: {context}"
+        );
+        // The keys the framework does not fill stay absent: a
+        // notification is not a request, so it has no principal, no
+        // session and no validation errors.
+        assert!(context.get(kelson_foundation::AUTH_KEY).is_none());
+        assert!(context.get(kelson_foundation::CSRF_KEY).is_none());
+        assert!(context.get(kelson_foundation::ERRORS_KEY).is_none());
     }
 }

@@ -1144,17 +1144,10 @@ fn error_view_response(
         }
     };
     // Wave 6 P3: the same locale injections as success views so error
-    // pages can use `@lang` / the `trans` filter too.
-    if let Some(obj) = context.as_object_mut() {
-        obj.insert(
-            "_locale".into(),
-            serde_json::Value::String(locale.to_string()),
-        );
-        obj.insert(
-            "_lang".into(),
-            serde_json::to_value(state.messages.flat(locale)).unwrap_or_default(),
-        );
-    }
+    // pages can use `@lang` / the `trans` filter too - filled by the
+    // framework's ONE assembler, so an error page reads the same
+    // reserved keys a success page reads.
+    kelson_foundation::ViewContext::localized(&state.messages, locale).apply(&mut context);
     let html = engine.render(&name, context).ok()?;
     Some(
         (status, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response(),
@@ -1224,18 +1217,17 @@ fn dispatch_error(
 
 /// Wave 2 HTML route: render `route.view` with the operation result as the
 /// template context (an object result IS the context; scalars and arrays nest
-/// under `data`). Seeded with the views crate's documented edge conventions:
-/// `_errors` starts empty so `@error` renders nothing, and `_auth` carries the
-/// principal id when one is installed. A missing engine, a missing `view`, a
-/// missing template or a parse error is a 500 through the normal error path —
-/// never a half-rendered page.
+/// under `data`). The reserved context (`_errors`, `_locale`, `_lang`,
+/// `_auth`, `_csrf`) is filled by the framework's ONE assembler, so every
+/// path that renders a view hands the template the same keys. A missing
+/// engine, a missing `view`, a missing template or a parse error is a 500
+/// through the normal error path — never a half-rendered page.
 fn html_response(
     state: &AppState,
     dispatch: &RouteDispatch,
     headers: &HeaderMap,
     path: &str,
-    locale: &str,
-    authed: Option<String>,
+    reserved: kelson_foundation::ViewContext,
     result: serde_json::Value,
 ) -> (axum::response::Response, Option<Vec<u8>>) {
     let fail = |err: kelson_foundation::AppError| {
@@ -1254,24 +1246,7 @@ fn html_response(
     } else {
         serde_json::json!({ "data": result })
     };
-    if let Some(obj) = context.as_object_mut() {
-        obj.entry("_errors")
-            .or_insert_with(|| serde_json::json!({}));
-        // Wave 6 P3: resolved locale + chain-merged messages, so `@lang`
-        // and the `trans` filter resolve in-request (exact locale overlay
-        // over the language part over the configured default).
-        obj.insert(
-            "_locale".into(),
-            serde_json::Value::String(locale.to_string()),
-        );
-        obj.insert(
-            "_lang".into(),
-            serde_json::to_value(state.messages.flat(locale)).unwrap_or_default(),
-        );
-        if let Some(who) = authed {
-            obj.insert("_auth".into(), serde_json::Value::String(who));
-        }
-    }
+    reserved.apply(&mut context);
     match engine.render(name, context) {
         Ok(html) => {
             // The caching step hashes exactly these bytes, so hand them back
@@ -1293,6 +1268,21 @@ fn html_response(
 }
 
 // ---------------------------------------------------- Wave 2 response kinds
+
+/// The CSRF token for the form roundtrip.
+///
+/// The token is **session-bound**: it is derived from the session id and
+/// the server secret, so a form the view renders can be verified against
+/// the session that rendered it (and only that session). A guest - no
+/// session - has no token, and the view renders no `@csrf` field.
+fn csrf_token(state: &AppState, session: Option<&ResolvedSession>) -> Option<String> {
+    let resolved = session?;
+    let middleware = state.sessions.as_ref()?;
+    Some(kelson_http::session_csrf_token(
+        &resolved.session,
+        &middleware.secret,
+    ))
+}
 
 /// The resolved caller a route renders for: the session, the tenant and
 /// the view authorisation the middleware produced for this request.
@@ -1340,8 +1330,17 @@ fn render_success(
                 headers
                     .get(header::ACCEPT_LANGUAGE)
                     .and_then(|v| v.to_str().ok()),
-            );            Ok(html_response(
-                state, dispatch, headers, path, &locale, view_auth, result,
+            );
+            // The reserved context, assembled once by the framework: the
+            // locale and its messages, the principal, the empty error
+            // bag (the result's own errors win) and the CSRF token the
+            // form roundtrip needs.
+            let reserved = kelson_foundation::ViewContext::localized(&state.messages, &locale)
+                .with_auth(view_auth)
+                .with_errors(serde_json::json!({}))
+                .with_csrf(csrf_token(state, session.as_ref()));
+            Ok(html_response(
+                state, dispatch, headers, path, reserved, result,
             ))
         }
         ResponseKind::NoContent => Ok((StatusCode::NO_CONTENT.into_response(), None)),

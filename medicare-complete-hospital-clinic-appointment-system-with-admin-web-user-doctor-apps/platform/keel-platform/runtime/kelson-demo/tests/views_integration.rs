@@ -63,6 +63,7 @@ const AVAILABILITY_VIEW: &str = r#"<!doctype html>
   <p class="date">{{ date }}</p>
   <p class="booked">{{ appointments_booked }}</p>
   @auth<span class="who">{{ _auth }}</span>@endauth
+  @csrf
   @guest<span class="guest">guest</span>@endguest
 </body>
 </html>
@@ -265,6 +266,26 @@ async fn authenticated_html_route_carries_the_principal_as_auth_context() {
         "{}",
         anon.content_type
     );
+}
+
+/// MVVC (ADR 0021): the request's CSRF token reaches the view, so a
+/// form the view renders can carry the token the session issued. A guest
+/// renders an empty `@csrf` field.
+#[tokio::test]
+async fn the_csrf_token_reaches_the_view() {
+    let fx = fixture(true);
+    let router = router(&fx);
+    let email = format!("csrf-{}@clinic.test", uuid::Uuid::now_v7());
+    let cookie = register(&router, &email).await;
+
+    let reply = get_with_cookie(&router, "/web/appointments", &cookie).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(reply.body.contains("name=\"_token\""), "the view received the CSRF token: {}", reply.body);
+
+    // No session -> no token -> the field renders empty.
+    let anon = get(&router, "/web/availability", None).await;
+    assert_eq!(anon.status, StatusCode::OK, "{}", anon.body);
+    assert!(anon.body.contains("name=\"_token\"") && anon.body.contains("value=\"\""), "a guest carries no CSRF token: {}", anon.body);
 }
 
 // ------------------------------------------------------------- error views

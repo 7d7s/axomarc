@@ -22,6 +22,7 @@ pub mod strings;
 pub mod telemetry;
 pub mod translate;
 pub mod tz;
+pub mod viewcontext;
 
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use datetime::{
@@ -56,6 +57,9 @@ pub use translate::{
     CHOICE_BUCKETS,
 };
 pub use tz::timezone_offset_secs;
+pub use viewcontext::{
+    ViewContext, AUTH_KEY, CSRF_KEY, ERRORS_KEY, LANG_KEY, LOCALE_KEY,
+};
 
 #[cfg(test)]
 mod tests {

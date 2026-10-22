@@ -199,8 +199,22 @@ pub async fn ops_dashboard(
             query.trace.as_deref().filter(|raw| !raw.is_empty()),
         ),
     });
+    // The reserved context, assembled by the framework's ONE assembler:
+    // the dashboard is a view like any other, so it carries the same
+    // `_locale`/`_lang` a request-bound view carries (it used to carry
+    // neither, and a template that read `@lang` silently degraded here).
+    let locale = crate::i18n::resolve(
+        &state.messages,
+        crate::i18n::session_locale(session.as_ref().map(|s| &s.0)),
+        None,
+        headers
+            .get(axum::http::header::ACCEPT_LANGUAGE)
+            .and_then(|v| v.to_str().ok()),
+    );
+    let mut context = body.clone();
+    kelson_foundation::ViewContext::localized(&state.messages, &locale).apply(&mut context);
     match state.views.as_ref() {
-        Some(engine) if engine.exists(OPS_VIEW) => match engine.render(OPS_VIEW, body.clone()) {
+        Some(engine) if engine.exists(OPS_VIEW) => match engine.render(OPS_VIEW, context) {
             Ok(html) => Html(html).into_response(),
             // A render failure degrades exactly like a missing engine:
             // the page contract is "never a 500".
@@ -617,4 +631,63 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
-}
+    /// MVVC (ADR 0021): the dashboard is a view like any other - it
+    /// carries the same reserved keys (`_locale`, `_lang`) a request-bound
+    /// view carries. It used to carry neither, and a template that read
+    /// `@lang` silently degraded here.
+    #[tokio::test]
+    async fn the_dashboard_carries_the_locale_and_the_messages() {
+        let dir = std::env::temp_dir().join(format!(
+            "kelson-demo-ops-locale-{}",
+            uuid::Uuid::now_v7()
+        ));
+        let views = dir.join("views").join("dashboard");
+        std::fs::create_dir_all(&views).expect("dashboard fixture dir");
+        std::fs::write(
+            views.join("ops.html"),
+            "<p class=\"locale\">{{ _locale }}</p><p class=\"lang\">{{ _lang }}</p>",
+        )
+        .expect("view writes");
+        std::fs::create_dir_all(dir.join("lang")).expect("lang fixture dir");
+        std::fs::write(
+            dir.join("lang").join("en.toml"),
+            "[greeting]\nhello = \"hi\"\n",
+        )
+        .expect("lang writes");
+        let (mut state, _graph, _store) = crate::build_app_state(&dir, true, true);
+        state.dashboard_enabled = true;
+
+        // Create an authenticated session so the identity resolver passes.
+        let principal = kelson_foundation::PrincipalId::new();
+        let tenant = kelson_foundation::TenantId::new();
+        let session_manager = kelson_session::SessionManager::new(
+            kelson_session::InMemorySessionStore::shared(),
+            kelson_session::SessionPolicy::default(),
+            b"test-secret",
+        );
+        let now = time::OffsetDateTime::now_utc();
+        let session = session_manager.start(principal, Some(tenant), now).unwrap();
+        let resolved_session = kelson_http::ResolvedSession { session };
+
+        let response = ops_dashboard(
+            axum::extract::State(state),
+            HeaderMap::new(),
+            Some(axum::extract::Extension(resolved_session)),
+            axum::extract::Query(OpsQuery { trace: None }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK, "dashboard degraded");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body reads");
+        let html = String::from_utf8_lossy(&body);
+        assert!(html.contains("class=\"locale\""), "locale absent: {html}");
+        assert!(
+            html.contains(">en<"),
+            "the locale reaches the view: {html}"
+        );
+        assert!(
+            html.contains("class=\"lang\""),
+            "the message map reaches the view: {html}"
+        );
+    }}
