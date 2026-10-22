@@ -109,6 +109,34 @@ The application's statement does not have to mention the tenant, and the
 other tenant's rows are still hidden: the scope is applied where the
 guarantee lives, not where it can be forgotten.
 
+## 4b. Configuring a deployment: the profile layer
+
+A **profile** is a named, versioned bundle of configuration that a
+deployment selects with one variable:
+
+```bash
+KEEL_APP_PROFILE=production ./kelson-demo
+```
+
+The profile lives at `config/profiles/<name>.toml`, beside the config file
+it refines, and it is a **layer**, not an override:
+
+```text
+profile  <  package defaults  <  config file  <  .env  <  environment
+```
+
+The config file wins over the profile per key, so a profile is a *preset* the
+deployment refines - not something that can silently override what the
+application decided. Two rules keep the layer honest: every layer is
+schema-checked on its own (a profile can never smuggle an unknown key past
+the config schema gate, and the error names the profile at fault), and a
+profile that is **named but missing** refuses the boot - a deployment that
+asked for a preset and silently got the default is worse than one that
+failed to start.
+
+`kelson env` reports the active profile, so an operator can always see
+which preset an instance is running.
+
 ## 5. The guarantees your application inherits
 
 - **Tenant isolation** — every query and every write is tenant-scoped; a

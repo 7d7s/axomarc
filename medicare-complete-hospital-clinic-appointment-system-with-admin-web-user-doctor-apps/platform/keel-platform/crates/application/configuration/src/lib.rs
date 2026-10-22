@@ -10,6 +10,7 @@
 pub mod dotenv;
 pub mod keys;
 mod package_defaults;
+pub mod profile;
 
 /// §4.1/§5.4 hot-reloadable configuration: versioned snapshots, atomic
 /// swap, `ConfigReloader` subscribers, mtime polling, history ring +
@@ -75,6 +76,13 @@ pub struct AppConfig {
     /// secrets are never rendered regardless of this flag.
     #[serde(default)]
     pub debug: bool,
+    /// The active configuration profile (the `KEEL_APP_PROFILE` layer).
+    ///
+    /// Recorded so an operator can see WHICH preset the instance is
+    /// running - a deployment that asked for a profile and silently got the
+    /// default is worse than one that failed to boot.
+    #[serde(default)]
+    pub profile: String,
 }
 
 fn default_name() -> String {
@@ -88,6 +96,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             name: default_name(),
+            profile: String::new(),
             env: Environment::Dev,
             listen: default_listen(),
             key: String::new(),
@@ -920,6 +929,7 @@ pub const CONFIG_SCHEMA: &[(&str, &[&str])] = &[
             "env",
             "listen",
             "key",
+            "profile",
             "require_verified_email",
             "debug",
         ],
@@ -1086,6 +1096,10 @@ impl PlatformConfig {
                 // defaults in their manifest; they merge UNDER this file
                 // before schema validation (the file always wins).
                 let raw = package_defaults::apply(p, raw)?;
+                // The profile layer sits between the package defaults and
+                // the file: the file wins over the profile, the profile over
+                // the package defaults.
+                let raw = profile::apply(p, raw)?;
                 // Wave 4 Phase 5 (GRAPH-CONFIG-SCHEMA): unknown keys are
                 // refused here, fail-closed, before any typed accessor could
                 // silently ignore them. Every offender is reported (collect-
@@ -1129,6 +1143,9 @@ impl PlatformConfig {
                 )));
             }
         }
+        // The effective profile is RECORDED on the config: an operator can
+        // always see which preset the instance is running.
+        cfg.app.profile = profile::selected().unwrap_or_default();
         cfg.assert_secrets()?;
         Ok(cfg)
     }

@@ -133,7 +133,7 @@ fn merge_first_wins(acc: &mut toml::Value, incoming: &toml::Value) {
 
 /// The config file wins over package defaults per key, recursively; keys
 /// only packages declare fill in.
-fn merge_file_over(defaults: &toml::Value, file: toml::Value) -> toml::Value {
+pub(crate) fn merge_file_over(defaults: &toml::Value, file: toml::Value) -> toml::Value {
     match (defaults, &file) {
         (toml::Value::Table(d), toml::Value::Table(f)) => {
             let mut out = d.clone();

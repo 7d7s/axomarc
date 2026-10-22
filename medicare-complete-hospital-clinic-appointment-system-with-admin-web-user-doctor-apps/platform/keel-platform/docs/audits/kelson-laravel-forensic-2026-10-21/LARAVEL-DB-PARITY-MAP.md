@@ -15,13 +15,13 @@ against a live MySQL 8.0.44.
 
 | Status | Rows | Meaning |
 |---|---:|---|
-| VERIFIED | 84 | the behaviour is implemented and an executed case proves it |
+| VERIFIED | 85 | the behaviour is implemented and an executed case proves it |
 | PARTIAL | 18 | the core is proven; a named sub-feature is missing or diverges |
 | EXCLUDED_BY_DESIGN | 4 | a deliberate exclusion with the alternative stated |
 | OPEN | 2 | a Laravel capability with no Kelson equivalent yet |
-| **Total** | **108** | |
+| **Total** | **109** | |
 
-Of the 108 rows, **106 carry an executed case**
+Of the 109 rows, **107 carry an executed case**
 and 2 do not (the OPEN rows).
 
 | Category | Rows |
@@ -30,7 +30,7 @@ and 2 do not (the OPEN rows).
 | eloquent | 30 |
 | migrations | 12 |
 | mysql-8-native | 4 |
-| production | 13 |
+| production | 14 |
 | query-builder | 32 |
 | schema | 9 |
 | transactions | 3 |
@@ -105,6 +105,7 @@ competitive claim. Each one is an executed case, not a claim.
 | LDB-106 | The framework declares its own objectives | the objectives are the framework's, published on /meta/slo and as Prometheus gauges, and the status is COMPUTED from the telemetry, never asserted | `the_slo_surface_declares_the_objectives_and_their_status; every_objective_names_a_metric_the_framework_records` |
 | LDB-107 | A raw expression in a WHERE / HAVING / ORDER BY, and a derived table | the raw text is VALIDATED (no statement separator, no comment marker, no unbalanced quote, no statement keyword) and the values are BOUND, so the escape cannot smuggle a statement and cannot interpolate a value | `a_statement_separator_is_refused; mysql_native_an_app_can_expand_a_json_document_with_json_table` |
 | LDB-108 | A custom query that is still tenant-scoped | the app's statement does not mention the tenant at all, and the other tenant's matching rows are still hidden - the scope is applied where the guarantee lives, and a statement over a different table is refused | `mysql_native_the_store_scopes_a_raw_statement_the_app_built` |
+| LDB-109 | A deployment selects a configuration preset | the profile is a LAYER (profile < package defaults < config file < .env < environment), it is schema-checked on its own, a named-but-missing profile refuses the boot, and the effective profile is recorded and reported by kelson env | `the_profile_fills_the_keys_the_file_omits; a_named_profile_that_is_missing_refuses_the_load; a_profile_with_an_unknown_key_is_refused; the_file_can_name_its_own_profile` |
 
 ## 6. The divergences a Laravel developer must know about
 
