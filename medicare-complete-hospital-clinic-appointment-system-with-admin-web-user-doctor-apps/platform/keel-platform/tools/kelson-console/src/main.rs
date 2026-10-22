@@ -3469,6 +3469,18 @@ fn env_summary_text(root: &Path) -> anyhow::Result<String> {
         None => out.push_str("database: not configured\n"),
     }
     out.push_str(&format!("otp: {}\n", cfg.otp.provider));
+    // The cache driver the deployment selects: the operator must be able to
+    // see WHICH infrastructure the instance is configured to use (and a
+    // reload can change it without a restart).
+    out.push_str(&format!(
+        "cache: driver={} endpoint={}\n",
+        cfg.cache.driver.as_str(),
+        cfg.cache
+            .redis_url
+            .as_deref()
+            .map(kelson_config::mask_url_password)
+            .unwrap_or_else(|| "(none)".to_string())
+    ));
     let disks = if cfg.storage.disks.is_empty() {
         "(none)".to_string()
     } else {
@@ -9248,6 +9260,12 @@ cache_dir = "storage/framework/views"
             "{text}"
         );
         assert!(text.contains("disks=(none)"), "{text}");
+        // The cache driver the deployment selects is reported: the operator
+        // can see which infrastructure the instance uses.
+        assert!(text.contains("cache: driver=memory"), "{text}");
+        // The effective profile is reported (none when the deployment
+        // selects no preset).
+        assert!(text.contains("profile: (none)"), "{text}");
         // Wave 6 P3: the i18n surface (default locale + message roots).
         assert!(
             text.contains("i18n: default=en paths=lang"),

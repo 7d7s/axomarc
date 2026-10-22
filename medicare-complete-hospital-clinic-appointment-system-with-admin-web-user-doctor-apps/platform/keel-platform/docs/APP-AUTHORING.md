@@ -149,18 +149,27 @@ driver = "redis"                 # memory | redis - a typed enum, so an
 redis_url = "redis://127.0.0.1:6379"   # unknown name refuses the load
 ```
 
+A driver is a **recipe**, not an instance. It is built when the
+configuration selects it, so a deployment that runs on the local cache
+never opens a connection to the shared one:
+
 ```rust
 let mut registry = CacheDriverRegistry::new();
-registry.register_active(CacheDriver::new(
+registry.register(CacheDriver::with_builder(
     "memory",
     CacheCapabilities::process_local(4_096),
-    Arc::new(MemoryCache::shared(4_096)),
+    || Ok(Arc::new(MemoryCache::shared(4_096))),
 ));
-registry.driver("redis")?;   // fail-closed: the refusal names the name
-                              // and lists what IS registered
+registry.register(CacheDriver::with_builder(
+    "redis",
+    CacheCapabilities::shared(),
+    || Ok(Arc::new(RedisCache::connect(&url)?)),
+));
+registry.activate("redis")?;   // fail-closed: the refusal names the name
+                               // and lists what IS registered
 ```
 
-Three properties an application can rely on:
+Four properties an application can rely on:
 
 - **fail-closed** - a name that is not registered is an error, never a
   silent fallback to a default (a deployment that asked for a shared cache
@@ -170,7 +179,52 @@ Three properties an application can rely on:
   deployment needs to check and cannot assume;
 - **your own driver** - an application registers its own with the same
   shape as the built-in ones, so a bespoke cache is a registration, not a
-  fork.
+  fork;
+- **built on selection** - the recipe runs once, when the configuration
+  names the driver, and the instance is memoized. Nothing is opened before
+  it is chosen.
+
+## 4d. Changing your infrastructure without a restart
+
+The selection is not frozen at boot. A configuration reload that names a
+different driver **swaps it under the running service**:
+
+```text
+config file edited → the poller notices → the driver is built
+                   → the runtime holder is swapped → the next cache read
+                     goes to the new driver
+```
+
+The cache service reads *through* the holder, so the swap needs no
+re-wiring and no restart. The deployment's infrastructure follows its
+configuration the way its routes and its flags already do.
+
+```rust
+// The subscriber (what the demo's boot registers):
+impl ConfigReloader for CacheDriverReloader {
+    fn on_reload(&self, snapshot: &ConfigSnapshot) {
+        match self.registry.activate(driver_name(snapshot.config.cache.driver)) {
+            Ok(name) => tracing::info!(driver = name, swaps = self.registry.swaps(), "swapped"),
+            Err(error) => tracing::warn!(%error, "refused; the previous driver stays active"),
+        }
+    }
+}
+```
+
+Two rules keep the swap honest:
+
+- **a refused swap changes nothing** - a driver that is not registered, or
+  one whose recipe cannot build its store (the shared cache is
+  unreachable), leaves the previous driver active. A deployment never
+  silently runs on infrastructure it was not configured for;
+- **the swap count is the evidence** - `registry.swaps()` answers "did the
+  configuration change actually take effect?". Re-activating the same
+  driver is not a change and does not count.
+
+One consequence to know: a cache **lock** taken before a swap is released
+against the driver that is active afterwards, so it is freed by its lease
+(the TTL) rather than by its holder. The lease is what makes the swap
+safe.
 
 ## 5. The guarantees your application inherits
 

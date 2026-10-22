@@ -11,24 +11,34 @@
 //! * a **named driver** with a **capability manifest** - a shared cache
 //!   (across instances) is a different thing from a process-local one, and
 //!   an application that needs the shared property must be able to ASK;
+//! * a driver is a **recipe**, not an instance: it is BUILT when the
+//!   configuration selects it, so a deployment that runs on a local cache
+//!   never opens a connection to the shared one;
 //! * **fail-closed** resolution - a name that is not registered is an error
 //!   that names the name and lists what IS registered, never a silent
 //!   fallback to a default;
-//! * **swappable** - the active driver sits behind a lock, so a
-//!   configuration reload can swap it without a restart;
+//! * **swappable** - activating a driver swaps the runtime holder, so a
+//!   configuration reload changes the infrastructure without a restart;
 //! * **open registration** - an application registers its own driver with
 //!   the same shape as the built-in ones.
 //!
 //! The registry holds the *cache* drivers today. The shape is deliberately
-//! the one every adapter kind wants: a name, a capability manifest, and an
-//! instance.
+//! the one every adapter kind wants: a name, a capability manifest, and a
+//! way to build the thing.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use kelson_foundation::AppError;
 
+use crate::swappable::SwappableCache;
 use crate::CachePort;
+
+/// Builds a driver's store. The recipe runs ONCE per driver: the instance
+/// it produces is memoized, so every holder of the driver talks to the
+/// SAME store.
+pub type CacheDriverBuilder =
+    Arc<dyn Fn() -> Result<Arc<dyn CachePort>, AppError> + Send + Sync + 'static>;
 
 /// What a cache driver can do.
 ///
@@ -70,24 +80,44 @@ impl CacheCapabilities {
 }
 
 /// One registered cache driver.
-#[derive(Clone)]
 pub struct CacheDriver {
     name: String,
     capabilities: CacheCapabilities,
-    store: Arc<dyn CachePort>,
+    builder: CacheDriverBuilder,
+    /// The instance the recipe produced (memoized: the recipe runs once).
+    built: RwLock<Option<Arc<dyn CachePort>>>,
 }
 
 impl CacheDriver {
-    /// Register a driver under `name`.
+    /// Register a driver over a store that already exists.
+    ///
+    /// The convenience form for a store the application built itself. The
+    /// framework's own drivers use [`CacheDriver::with_builder`] so that
+    /// nothing is built until the configuration selects it.
     pub fn new(
         name: impl Into<String>,
         capabilities: CacheCapabilities,
         store: Arc<dyn CachePort>,
     ) -> Self {
+        Self::with_builder(name, capabilities, move || Ok(Arc::clone(&store)))
+    }
+
+    /// Register a driver as a RECIPE: the store is built when the
+    /// configuration selects the driver, and never before.
+    ///
+    /// This is the form that makes a runtime swap honest: a deployment
+    /// that runs on the local cache does not open a connection to the
+    /// shared one until the configuration names it.
+    pub fn with_builder(
+        name: impl Into<String>,
+        capabilities: CacheCapabilities,
+        builder: impl Fn() -> Result<Arc<dyn CachePort>, AppError> + Send + Sync + 'static,
+    ) -> Self {
         Self {
             name: name.into(),
             capabilities,
-            store,
+            builder: Arc::new(builder),
+            built: RwLock::new(None),
         }
     }
 
@@ -101,9 +131,38 @@ impl CacheDriver {
         self.capabilities
     }
 
-    /// The driver's store.
-    pub fn store(&self) -> Arc<dyn CachePort> {
-        Arc::clone(&self.store)
+    /// The driver's store, BUILT ONCE.
+    ///
+    /// A driver whose recipe fails (a shared cache that is unreachable) is
+    /// an error, never an empty store: the caller refuses rather than
+    /// running on an infrastructure it was not configured for.
+    pub fn store(&self) -> Result<Arc<dyn CachePort>, AppError> {
+        if let Some(store) = self.built.read().ok().and_then(|built| built.clone()) {
+            return Ok(store);
+        }
+        let store = (self.builder)()?;
+        let mut built = self.built.write().map_err(|_| {
+            AppError::persistence("the cache driver store lock is poisoned")
+        })?;
+        // Another caller may have won the race. Keeping the FIRST instance
+        // means every holder of the driver talks to the same store.
+        if let Some(existing) = built.as_ref() {
+            return Ok(Arc::clone(existing));
+        }
+        *built = Some(Arc::clone(&store));
+        Ok(store)
+    }
+}
+
+impl Clone for CacheDriver {
+    /// A clone shares the recipe and the instance it built.
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            capabilities: self.capabilities,
+            builder: Arc::clone(&self.builder),
+            built: RwLock::new(self.built.read().ok().and_then(|built| built.clone())),
+        }
     }
 }
 
@@ -122,16 +181,22 @@ impl std::fmt::Debug for CacheDriver {
 pub struct CacheDriverRegistry {
     drivers: BTreeMap<String, CacheDriver>,
     active: RwLock<Option<String>>,
+    /// The runtime holder: the active store, behind a lock, so a
+    /// configuration reload can swap it without a restart.
+    holder: RwLock<Option<Arc<SwappableCache>>>,
 }
 
 impl Clone for CacheDriverRegistry {
     /// A clone shares the drivers but not the active selection: the active
     /// driver is per-instance state (each process activates its own), while
-    /// the registry of what EXISTS is the same everywhere.
+    /// the registry of what EXISTS is the same everywhere. The runtime
+    /// holder is per-instance too - a clone swaps its OWN holder, never
+    /// the original's.
     fn clone(&self) -> Self {
         Self {
             drivers: self.drivers.clone(),
             active: RwLock::new(self.active.read().ok().and_then(|a| a.clone())),
+            holder: RwLock::new(None),
         }
     }
 }
@@ -150,10 +215,14 @@ impl CacheDriverRegistry {
     }
 
     /// Register a driver and make it active.
-    pub fn register_active(&mut self, driver: CacheDriver) {
+    ///
+    /// The activation can FAIL (the driver's recipe cannot build the
+    /// store), so this is fallible: the caller decides what a boot does
+    /// with a driver it cannot build.
+    pub fn register_active(&mut self, driver: CacheDriver) -> Result<(), AppError> {
         let name = driver.name.clone();
         self.register(driver);
-        self.activate(&name).expect("a registered driver activates");
+        self.activate(&name)
     }
 
     /// The registered names, sorted.
@@ -177,10 +246,32 @@ impl CacheDriverRegistry {
     }
 
     /// Make a registered driver the active one.
+    ///
+    /// This is the SWAP: the driver's store is built (once) and installed
+    /// in the runtime holder, so every cache read and write in the
+    /// process follows the new driver from the next call on. A driver
+    /// that cannot be built is refused and the previous driver stays
+    /// active - fail-closed, never a half-applied change.
     pub fn activate(&self, name: &str) -> Result<(), AppError> {
         // Resolve first: activating an unregistered name is refused, and
         // the ACTIVE driver is left as it was.
-        self.driver(name)?;
+        let driver = self.driver(name)?;
+        // Build the store: a shared cache that is unreachable is a
+        // refusal, not a silent fallback to a local one.
+        let store = driver.store()?;
+        // Install the store in the holder BEFORE the name is recorded, so
+        // the active name and the active store never disagree.
+        {
+            let mut holder = self.holder.write().map_err(|_| {
+                AppError::persistence("the cache driver registry lock is poisoned")
+            })?;
+            match holder.as_ref() {
+                Some(holder) => holder.swap(Arc::clone(&store))?,
+                None => {
+                    *holder = Some(Arc::new(SwappableCache::new(Arc::clone(&store))));
+                }
+            }
+        }
         let mut active = self.active.write().map_err(|_| {
             AppError::persistence("the cache driver registry lock is poisoned")
         })?;
@@ -199,7 +290,27 @@ impl CacheDriverRegistry {
 
     /// The active driver's store, if one is active.
     pub fn active_store(&self) -> Result<Option<Arc<dyn CachePort>>, AppError> {
-        Ok(self.active()?.map(|driver| driver.store()))
+        match self.active()? {
+            Some(driver) => Ok(Some(driver.store()?)),
+            None => Ok(None),
+        }
+    }
+
+    /// The runtime holder: the active store, behind a lock.
+    ///
+    /// The holder is what a deployment hands to the cache service, so that
+    /// a configuration reload can change the active driver under the
+    /// running service.
+    pub fn holder(&self) -> Option<Arc<SwappableCache>> {
+        self.holder.read().ok().and_then(|holder| holder.clone())
+    }
+
+    /// How many times the active driver CHANGED at runtime.
+    ///
+    /// The operator's evidence that a configuration change took effect:
+    /// a reload that re-activates the same driver is not a change.
+    pub fn swaps(&self) -> u64 {
+        self.holder().map(|holder| holder.swaps()).unwrap_or(0)
     }
 
     /// Whether the active driver is SHARED across a deployment's instances.
@@ -278,7 +389,7 @@ mod tests {
     #[test]
     fn a_registered_driver_resolves_and_activates() {
         let mut registry = CacheDriverRegistry::new();
-        registry.register_active(driver("memory", false));
+        registry.register_active(driver("memory", false)).unwrap();
         assert_eq!(registry.names(), vec!["memory".to_string()]);
         assert_eq!(registry.active().unwrap().unwrap().name(), "memory");
         assert!(!registry.active_is_shared().unwrap());
@@ -287,7 +398,7 @@ mod tests {
     #[test]
     fn an_unregistered_name_refuses_and_lists_what_is_registered() {
         let mut registry = CacheDriverRegistry::new();
-        registry.register_active(driver("memory", false));
+        registry.register_active(driver("memory", false)).unwrap();
         let err = registry
             .driver("redis")
             .expect_err("an unregistered name is refused");
@@ -301,7 +412,7 @@ mod tests {
     #[test]
     fn activating_an_unregistered_name_leaves_the_active_driver_alone() {
         let mut registry = CacheDriverRegistry::new();
-        registry.register_active(driver("memory", false));
+        registry.register_active(driver("memory", false)).unwrap();
         let _ = registry.activate("redis");
         assert_eq!(
             registry.active().unwrap().unwrap().name(),
@@ -313,8 +424,8 @@ mod tests {
     #[test]
     fn an_application_can_replace_a_built_in_driver() {
         let mut registry = CacheDriverRegistry::new();
-        registry.register_active(driver("memory", false));
-        registry.register_active(driver("memory", true));
+        registry.register_active(driver("memory", false)).unwrap();
+        registry.register_active(driver("memory", true)).unwrap();
         assert!(
             registry.active_is_shared().unwrap(),
             "the last registration wins, so an application can override a built-in"
@@ -329,5 +440,75 @@ mod tests {
         assert!(caps.shared);
         assert!(caps.atomic_primitives);
         assert_eq!(caps.max_entries, None);
+    }
+
+    #[test]
+    fn the_recipe_runs_when_the_driver_is_selected_not_when_it_is_registered() {
+        let built = Arc::new(Mutex::new(0usize));
+        let counter = Arc::clone(&built);
+        let mut registry = CacheDriverRegistry::new();
+        registry.register(CacheDriver::with_builder(
+            "shared",
+            CacheCapabilities::shared(),
+            move || {
+                *counter.lock().unwrap() += 1;
+                Ok(Arc::new(TestStore::default()) as Arc<dyn CachePort>)
+            },
+        ));
+        assert_eq!(
+            *built.lock().unwrap(),
+            0,
+            "registering a driver must not build it: a deployment that runs on another cache must not open this one"
+        );
+        registry.activate("shared").unwrap();
+        assert_eq!(*built.lock().unwrap(), 1, "the selection builds it");
+        registry.activate("shared").unwrap();
+        assert_eq!(
+            *built.lock().unwrap(),
+            1,
+            "the recipe runs ONCE: the instance is memoized"
+        );
+    }
+
+    #[test]
+    fn a_driver_that_cannot_be_built_is_refused_and_the_previous_driver_stays() {
+        let mut registry = CacheDriverRegistry::new();
+        registry.register_active(driver("memory", false)).unwrap();
+        registry.register(CacheDriver::with_builder(
+            "redis",
+            CacheCapabilities::shared(),
+            || Err(AppError::validation("the cache driver `redis` is unreachable")),
+        ));
+        let err = registry
+            .activate("redis")
+            .expect_err("a driver that cannot be built is refused");
+        assert!(err.public_message.contains("unreachable"));
+        assert_eq!(
+            registry.active().unwrap().unwrap().name(),
+            "memory",
+            "a refused activation leaves the previous driver active"
+        );
+    }
+
+    #[test]
+    fn activating_a_driver_swaps_the_runtime_holder() {
+        let mut registry = CacheDriverRegistry::new();
+        registry.register_active(driver("memory", false)).unwrap();
+        let holder = registry.holder().expect("the holder exists");
+        holder.store().put("k", b"memory".to_vec(), None);
+        assert_eq!(registry.swaps(), 0, "the first activation is not a swap");
+
+        registry.register_active(driver("redis", true)).unwrap();
+        assert_eq!(registry.swaps(), 1, "the activation changed the driver");
+        assert_eq!(
+            holder.store().get("k"),
+            None,
+            "the holder reads the NEW driver"
+        );
+        assert_eq!(
+            registry.active().unwrap().unwrap().name(),
+            "redis",
+            "the active driver is the new one"
+        );
     }
 }

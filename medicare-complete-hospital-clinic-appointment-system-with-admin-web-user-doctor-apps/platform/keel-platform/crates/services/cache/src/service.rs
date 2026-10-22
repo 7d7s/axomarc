@@ -43,16 +43,29 @@ const REMEMBER_WAIT_ATTEMPTS: u32 = 10;
 ///
 /// Cheap to build; share one instance per port (`Arc<CacheService>`).
 pub struct CacheService {
-    port: Arc<dyn CachePort>,
+    /// The active port, behind the swappable holder: a configuration
+    /// reload can swap the driver and the next call goes to the new one.
+    port: Arc<crate::swappable::SwappableCache>,
     locks: CacheLock,
 }
 
 impl CacheService {
     pub fn new(port: Arc<dyn CachePort>) -> Self {
+        Self::with_holder(Arc::new(crate::swappable::SwappableCache::new(port)))
+    }
+
+    /// A service over a swappable holder: the deployment can swap the
+    /// active driver without a restart.
+    pub fn with_holder(port: Arc<crate::swappable::SwappableCache>) -> Self {
         Self {
             locks: CacheLock::new(port.clone()),
             port,
         }
+    }
+
+    /// The holder a deployment swaps the driver through.
+    pub fn swappable(&self) -> Arc<crate::swappable::SwappableCache> {
+        self.port.clone()
     }
 
     // ------------------------------------------------------------ values ---
@@ -60,30 +73,30 @@ impl CacheService {
     /// Read a value. Corrupt or foreign bytes read as a miss (fail-open
     /// reads; `has` still reports the key as present).
     pub fn get(&self, key: &str) -> Option<Value> {
-        let bytes = self.port.get(key)?;
+        let bytes = self.port.store().get(key)?;
         serde_json::from_slice(&bytes).ok()
     }
 
     /// Write a value with an optional TTL (`None` = no expiry).
     pub fn put(&self, key: &str, value: &Value, ttl_secs: Option<u64>) {
-        self.port.put(key, to_bytes(value), ttl_secs);
+        self.port.store().put(key, to_bytes(value), ttl_secs);
     }
 
     /// Key presence at the byte level — true even when the payload would not
     /// deserialize.
     pub fn has(&self, key: &str) -> bool {
-        self.port.get(key).is_some()
+        self.port.store().get(key).is_some()
     }
 
     pub fn delete(&self, key: &str) {
-        self.port.delete(key);
+        self.port.store().delete(key);
     }
 
     /// Read + delete (Laravel `pull` parity). Removes the key even when its
     /// bytes were corrupt.
     pub fn pull(&self, key: &str) -> Option<Value> {
         let value = self.get(key);
-        self.port.delete(key);
+        self.port.store().delete(key);
         value
     }
 
@@ -95,19 +108,19 @@ impl CacheService {
     /// Write `(key, value)` pairs sharing one TTL.
     pub fn put_many(&self, entries: &[(&str, Value)], ttl_secs: Option<u64>) {
         for (key, value) in entries {
-            self.port.put(key, to_bytes(value), ttl_secs);
+            self.port.store().put(key, to_bytes(value), ttl_secs);
         }
     }
 
     /// Atomic set-if-absent (`put_if_absent`): true only when this call
     /// created the entry — the existing atomic primitive, exposed.
     pub fn add(&self, key: &str, value: &Value, ttl_secs: Option<u64>) -> bool {
-        self.port.put_if_absent(key, to_bytes(value), ttl_secs)
+        self.port.store().put_if_absent(key, to_bytes(value), ttl_secs)
     }
 
     /// Write without an expiry.
     pub fn forever(&self, key: &str, value: &Value) {
-        self.port.put(key, to_bytes(value), None);
+        self.port.store().put(key, to_bytes(value), None);
     }
 
     /// Read-modify-write counter: missing or non-integer values count from 0,
@@ -129,7 +142,7 @@ impl CacheService {
     /// `FLUSHDB` when it lands — adapters untouched). Clearing includes lock
     /// keys, which are cache entries too (Laravel flush parity).
     pub fn flush(&self) {
-        self.port.invalidate_prefix("");
+        self.port.store().invalidate_prefix("");
     }
 
     // ---------------------------------------------------------- remember ---
@@ -280,6 +293,7 @@ impl TaggedCache<'_> {
         for tag in &self.tags {
             self.service
                 .port
+                .store()
                 .invalidate_prefix(&format!("tag:{tag}:"));
         }
     }
@@ -336,7 +350,7 @@ impl CacheGuard<'_> {
     /// crashed holder.
     pub fn force_release(&mut self) {
         self.token = None;
-        self.locks.port.delete(&lock_key(&self.name));
+        self.locks.port.store().delete(&lock_key(&self.name));
     }
 }
 
@@ -505,7 +519,7 @@ mod tests {
         assert_eq!(p.ttl("forever-key"), Some(None), "forever stores no TTL");
 
         // The single-flight slot is released after every remember.
-        let locks = CacheLock::new(p.clone());
+        let locks = CacheLock::new(Arc::new(crate::swappable::SwappableCache::new(p.clone())));
         assert!(
             locks
                 .try_acquire(&remember_lock_name("answer"), REMEMBER_LOCK_TTL_SECS)
@@ -518,7 +532,7 @@ mod tests {
     fn remember_waiter_collapses_onto_the_leader_result() {
         let (c, p) = service();
         // A "leader" is in flight: the single-flight slot is already held...
-        let holder = CacheLock::new(p.clone())
+        let holder = CacheLock::new(Arc::new(crate::swappable::SwappableCache::new(p.clone())))
             .try_acquire(&remember_lock_name("slow"), REMEMBER_LOCK_TTL_SECS)
             .expect("external leader holds the lock");
         // ...and writes its value shortly after we start waiting.
@@ -539,13 +553,13 @@ mod tests {
 
         assert_eq!(out, json!("leader"), "waiter observes the leader write");
         assert_eq!(ran.get(), 0, "single-flight: the waiter never computed");
-        assert!(CacheLock::new(p.clone()).release(&holder));
+        assert!(CacheLock::new(Arc::new(crate::swappable::SwappableCache::new(p.clone()))).release(&holder));
     }
 
     #[test]
     fn remember_falls_back_when_the_leader_never_appears() {
         let (c, p) = service();
-        let holder = CacheLock::new(p.clone())
+        let holder = CacheLock::new(Arc::new(crate::swappable::SwappableCache::new(p.clone())))
             .try_acquire(&remember_lock_name("stuck"), REMEMBER_LOCK_TTL_SECS)
             .expect("leader holds the lock");
 
@@ -554,12 +568,12 @@ mod tests {
         assert_eq!(out, json!("mine"), "bounded wait, then compute — never error");
         assert_eq!(c.get("stuck"), Some(json!("mine")));
         assert!(
-            CacheLock::new(p.clone())
+            CacheLock::new(Arc::new(crate::swappable::SwappableCache::new(p.clone())))
                 .try_acquire(&remember_lock_name("stuck"), REMEMBER_LOCK_TTL_SECS)
                 .is_none(),
             "the foreign hold is untouched: no steal, no forced release"
         );
-        assert!(CacheLock::new(p.clone()).release(&holder));
+        assert!(CacheLock::new(Arc::new(crate::swappable::SwappableCache::new(p.clone()))).release(&holder));
     }
 
     #[test]
@@ -617,5 +631,41 @@ mod tests {
         assert!(!holder.release(), "holder's token no longer matches");
         let mut fresh = c.lock("job", 30);
         assert!(fresh.try_acquire(), "slot free after force_release");
+    }
+
+    /// The service reads THROUGH the holder, so a configuration reload that
+    /// swaps the driver changes what the running service sees - no
+    /// restart, no re-wiring.
+    #[test]
+    fn the_service_follows_a_driver_swap() {
+        let first = Arc::new(RecordingPort::default());
+        let holder = Arc::new(crate::swappable::SwappableCache::new(first.clone()));
+        let service = CacheService::with_holder(holder.clone());
+        service.put("k", &json!({"driver": "first"}), None);
+        assert_eq!(
+            service.get("k"),
+            Some(json!({"driver": "first"})),
+            "the value is in the first driver"
+        );
+
+        // The new driver starts EMPTY: a hit would prove the swap did not
+        // take effect.
+        let second = Arc::new(RecordingPort::default());
+        holder.swap(second.clone()).expect("the swap applies");
+        assert_eq!(
+            service.get("k"),
+            None,
+            "the running service must read the NEW driver"
+        );
+        service.put("k", &json!({"driver": "second"}), None);
+        assert!(
+            second.map.lock().unwrap().contains_key("k"),
+            "the write landed in the new driver"
+        );
+        assert!(
+            first.map.lock().unwrap().contains_key("k"),
+            "the first driver keeps what it had"
+        );
+        assert_eq!(holder.swaps(), 1, "the swap is counted once");
     }
 }

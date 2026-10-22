@@ -166,7 +166,10 @@ pub struct PlatformProvider {
     /// cache SHARED across the instances?) and the active store. The
     /// selection used to be an implicit environment variable read at the
     /// boot, with no way to see which driver was active.
-    pub cache_registry: kelson_caching::CacheDriverRegistry,
+    ///
+    /// The registry is shared with the configuration subscriber, so a
+    /// reload can swap the active driver under the running service.
+    pub cache_registry: Arc<kelson_caching::CacheDriverRegistry>,
     /// Wave 6 P3: the boot-loaded message catalog — the notify hub
     /// resolves notification strings through the same catalog as views
     /// and validation.
@@ -249,21 +252,24 @@ impl Provider for PlatformProvider {
         // selection, and the active driver provides the store. A deployment
         // that selected a shared driver gets the shared cache - and one that
         // selected the process-local one gets that, deliberately.
-        let port: Arc<dyn kelson_caching::CachePort> = self
+        //
+        // The service reads THROUGH the registry's runtime holder, so a
+        // configuration reload that swaps the driver changes what this
+        // running service sees - no restart, no re-wiring.
+        let holder = self
             .cache_registry
-            .active_store()
-            .map_err(|e| BootError::ProviderFailed {
-                provider: "platform.cache".to_string(),
-                source: e.public_message,
-            })?
+            .holder()
             .ok_or_else(|| BootError::ProviderFailed {
                 provider: "platform.cache".to_string(),
                 source: "no cache driver is active (the boot selects one)".to_string(),
             })?;
         r.insert(
             "cache.service",
-            Arc::new(kelson_caching::CacheService::new(port.clone())),
+            Arc::new(kelson_caching::CacheService::with_holder(holder.clone())),
         )?;
+        // The exposed port is the holder too, so a consumer that holds it
+        // follows the swap.
+        let port: Arc<dyn kelson_caching::CachePort> = holder.clone();
         r.insert("cache.port", Arc::new(CachePortRef(port)))?;
         let mut hub = kelson_notifications::NotifyHub::with_catalog(self.messages.clone())
             .with_store(self.notifications.clone());

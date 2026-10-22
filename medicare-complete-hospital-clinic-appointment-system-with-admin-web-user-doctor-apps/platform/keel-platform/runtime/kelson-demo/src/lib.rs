@@ -4,6 +4,7 @@
 
 pub mod auth_routes;
 pub mod broadcast_routes;
+pub mod cache_driver;
 pub mod call;
 pub mod dashboard;
 pub mod edge;
@@ -516,45 +517,69 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // (is the cache shared across the instances?). The selection used to be
     // an implicit environment variable read here, with no way to see which
     // driver was active.
+    //
+    // A driver is a RECIPE: it is BUILT when the configuration selects it,
+    // so a deployment that runs on the local cache never opens a
+    // connection to the shared one. The registry also carries the RUNTIME
+    // holder, so a later configuration reload swaps the active driver
+    // under the running service - the infrastructure changes without a
+    // rebuild and without a restart.
+    let redis_url = cfg
+        .cache()
+        .redis_url
+        .clone()
+        .or_else(|| std::env::var("REDIS_URL").ok());
     let mut cache_registry = kelson_caching::CacheDriverRegistry::new();
-    match cfg.cache().driver {
-        kelson_config::CacheDriver::Memory => {
-            let memory = kelson_cache_memory::MemoryCache::shared(4_096);
-            let store: Arc<dyn kelson_caching::CachePort> = memory;
-            cache_registry.register_active(kelson_caching::CacheDriver::new(
-                "memory",
-                kelson_caching::CacheCapabilities::process_local(4_096),
-                store,
-            ));
-        }
+    cache_registry.register(kelson_caching::CacheDriver::with_builder(
+        "memory",
+        kelson_caching::CacheCapabilities::process_local(4_096),
+        || {
+            let store: Arc<dyn kelson_caching::CachePort> =
+                kelson_cache_memory::MemoryCache::shared(4_096);
+            Ok(store)
+        },
+    ));
+    if let Some(url) = redis_url.clone() {
+        cache_registry.register(kelson_caching::CacheDriver::with_builder(
+            "redis",
+            kelson_caching::CacheCapabilities::shared(),
+            move || {
+                let cache = kelson_cache_redis::RedisCache::connect(&url).map_err(|e| {
+                    kelson_foundation::AppError::validation(format!(
+                        "the cache driver `redis` is unreachable: {e}"
+                    ))
+                })?;
+                let store: Arc<dyn kelson_caching::CachePort> = Arc::new(cache);
+                Ok(store)
+            },
+        ));
+    }
+    // The configured driver is activated: the activation builds it and
+    // installs it in the runtime holder.
+    let configured_driver = match cfg.cache().driver {
+        kelson_config::CacheDriver::Memory => "memory",
         kelson_config::CacheDriver::Redis => {
             // The shared driver NEEDS its endpoint: a deployment that
             // selected it and gave no URL is refused rather than silently
             // served a process-local cache.
-            let Some(url) = cfg
-                .cache()
-                .redis_url
-                .clone()
-                .or_else(|| std::env::var("REDIS_URL").ok())
-            else {
+            if redis_url.is_none() {
                 return Err(
                     "the cache driver is `redis` but no endpoint was configured \
                      ([cache].redis_url or KEEL_CACHE_REDIS_URL)"
                         .to_string()
                         .into(),
                 );
-            };
-            let cache = kelson_cache_redis::RedisCache::connect(&url).map_err(|e| {
-                format!("the cache driver `redis` is unreachable: {e}").to_string()
-            })?;
-            let store: Arc<dyn kelson_caching::CachePort> = Arc::new(cache);
-            cache_registry.register_active(kelson_caching::CacheDriver::new(
-                "redis",
-                kelson_caching::CacheCapabilities::shared(),
-                store,
-            ));
+            }
+            "redis"
         }
-    }
+    };
+    cache_registry.activate(configured_driver).map_err(|e| {
+        format!(
+            "the cache driver `{configured_driver}` could not be activated: {}",
+            e.public_message
+        )
+    })?;
+    let cache_registry = Arc::new(cache_registry);
     tracing::info!(
         driver = %cache_registry
             .active()
@@ -620,7 +645,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }));
     host.add_provider(Box::new(KernelProvider { pool: pool.clone() }));
     host.add_provider(Box::new(PlatformProvider {
-        cache_registry,
+        cache_registry: Arc::clone(&cache_registry),
 
         messages: messages.clone(),
         notifications: notification_store.clone(),
@@ -1127,6 +1152,13 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         state.clone(),
     ));
     config_rt.subscribe(crate::runtime_status::StatusReloader::new(state.runtime.clone()));
+    // The infrastructure follows the configuration too: a reload that
+    // names a different `[cache].driver` swaps the active driver under
+    // the running service - the cache service reads through the registry's
+    // runtime holder, so the next read goes to the new driver.
+    config_rt.subscribe(crate::cache_driver::CacheDriverReloader::new(Arc::clone(
+        &cache_registry,
+    )));
     // Row 16 wiring: the poller is the config module's runtime health check.
     // It shares the same module registry as the host (via `state`), so a
     // refused reload degrades `config` and a reload that lands recovers it.
@@ -2747,6 +2779,163 @@ mod config_poll_tests {
         assert_eq!(
             modules.read().unwrap().state("other"),
             Some(ModuleState::Ready)
+        );
+    }
+}
+
+/// The runtime driver swap: a configuration reload changes the cache
+/// driver **under the running service**.
+///
+/// The deployment's infrastructure follows its configuration without a
+/// rebuild and without a restart - the promise the driver registry was
+/// built for.
+#[cfg(test)]
+mod cache_driver_tests {
+    use super::cache_driver::CacheDriverReloader;
+    use kelson_caching::{CacheCapabilities, CacheDriver, CacheDriverRegistry, CachePort};
+    use kelson_config::ConfigReloader;
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+
+    /// A store that remembers what it was asked to hold.
+    #[derive(Default)]
+    struct FakeStore {
+        entries: Mutex<BTreeMap<String, Vec<u8>>>,
+    }
+
+    impl CachePort for FakeStore {
+        fn get(&self, key: &str) -> Option<Vec<u8>> {
+            self.entries.lock().unwrap().get(key).cloned()
+        }
+        fn put(&self, key: &str, value: Vec<u8>, _ttl: Option<u64>) {
+            self.entries
+                .lock()
+                .unwrap()
+                .insert(key.to_string(), value);
+        }
+        fn delete(&self, key: &str) {
+            self.entries.lock().unwrap().remove(key);
+        }
+        fn invalidate_prefix(&self, prefix: &str) {
+            self.entries
+                .lock()
+                .unwrap()
+                .retain(|k, _| !k.starts_with(prefix));
+        }
+        fn put_if_absent(&self, key: &str, value: Vec<u8>, _ttl: Option<u64>) -> bool {
+            let mut entries = self.entries.lock().unwrap();
+            if entries.contains_key(key) {
+                false
+            } else {
+                entries.insert(key.to_string(), value);
+                true
+            }
+        }
+        fn delete_if_equals(&self, key: &str, expected: &[u8]) -> bool {
+            let mut entries = self.entries.lock().unwrap();
+            match entries.get(key) {
+                Some(current) if current == expected => {
+                    entries.remove(key);
+                    true
+                }
+                _ => false,
+            }
+        }
+    }
+
+    /// A registry with the local driver active, and (optionally) the shared
+    /// one registered alongside it.
+    fn registry(shared_registered: bool) -> Arc<CacheDriverRegistry> {
+        let mut registry = CacheDriverRegistry::new();
+        registry.register(CacheDriver::with_builder(
+            "memory",
+            CacheCapabilities::process_local(16),
+            || {
+                let store: Arc<dyn CachePort> = Arc::new(FakeStore::default());
+                Ok(store)
+            },
+        ));
+        if shared_registered {
+            registry.register(CacheDriver::with_builder(
+                "redis",
+                CacheCapabilities::shared(),
+                || {
+                    let store: Arc<dyn CachePort> = Arc::new(FakeStore::default());
+                    Ok(store)
+                },
+            ));
+        }
+        registry.activate("memory").expect("the local driver activates");
+        Arc::new(registry)
+    }
+
+    /// A configuration snapshot that names a driver.
+    fn snapshot(driver: kelson_config::CacheDriver) -> kelson_config::ConfigSnapshot {
+        let mut config = kelson_config::PlatformConfig::default();
+        config.cache.driver = driver;
+        kelson_config::ConfigSnapshot {
+            version: 2,
+            config,
+            hash: "cache-driver-test".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_reload_swaps_the_active_cache_driver_under_the_running_service() {
+        let registry = registry(true);
+        let holder = registry.holder().expect("the holder exists");
+        let service = kelson_caching::CacheService::with_holder(holder.clone());
+        service.put("k", &serde_json::json!({"driver": "memory"}), None);
+        assert_eq!(
+            service.get("k"),
+            Some(serde_json::json!({"driver": "memory"}))
+        );
+
+        let reloader = CacheDriverReloader::new(Arc::clone(&registry));
+        reloader.on_reload(&snapshot(kelson_config::CacheDriver::Redis));
+
+        assert_eq!(
+            registry.active().unwrap().unwrap().name(),
+            "redis",
+            "the configuration named the shared driver"
+        );
+        assert!(
+            registry.active_is_shared().unwrap(),
+            "the capability manifest follows the driver"
+        );
+        assert_eq!(registry.swaps(), 1, "the swap is the operator's evidence");
+        assert_eq!(
+            service.get("k"),
+            None,
+            "the running service must read the NEW driver"
+        );
+        service.put("k", &serde_json::json!({"driver": "redis"}), None);
+        assert_eq!(
+            service.get("k"),
+            Some(serde_json::json!({"driver": "redis"}))
+        );
+    }
+
+    #[test]
+    fn a_reload_that_names_an_unregistered_driver_keeps_the_current_one() {
+        let registry = registry(false);
+        let holder = registry.holder().expect("the holder exists");
+        let service = kelson_caching::CacheService::with_holder(holder);
+        service.put("k", &serde_json::json!({"driver": "memory"}), None);
+
+        let reloader = CacheDriverReloader::new(Arc::clone(&registry));
+        reloader.on_reload(&snapshot(kelson_config::CacheDriver::Redis));
+
+        assert_eq!(
+            registry.active().unwrap().unwrap().name(),
+            "memory",
+            "a refused swap leaves the current driver active"
+        );
+        assert_eq!(registry.swaps(), 0, "nothing changed");
+        assert_eq!(
+            service.get("k"),
+            Some(serde_json::json!({"driver": "memory"})),
+            "the service keeps reading the driver it had"
         );
     }
 }

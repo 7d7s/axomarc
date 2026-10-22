@@ -140,6 +140,19 @@ pub enum CacheDriver {
     Redis,
 }
 
+impl CacheDriver {
+    /// The driver's name in the configuration's vocabulary.
+    ///
+    /// The same word the driver registry registers the driver under, so an
+    /// operator reading `kelson env` sees the name the deployment selects.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CacheDriver::Memory => "memory",
+            CacheDriver::Redis => "redis",
+        }
+    }
+}
+
 /// The cache section: the driver and its endpoint.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CacheSection {
@@ -1189,7 +1202,6 @@ impl PlatformConfig {
         cfg.assert_secrets()?;
         Ok(cfg)
     }
-
 
     /// Environment overrides (KEEL_SECTION_KEY). Last writer wins; file values are
     /// only a middle layer.

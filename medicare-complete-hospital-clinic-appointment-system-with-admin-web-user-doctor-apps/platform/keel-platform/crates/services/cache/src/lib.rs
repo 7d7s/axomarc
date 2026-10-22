@@ -8,6 +8,7 @@ use kelson_foundation::{AuthorizationRevision, FeatureRevision, PrincipalId, Ten
 /// Wave 4 Phase 6: value-level `CacheService` (remember/tags/locks) over the
 /// unchanged port — see the module docs.
 pub mod conformance;
+pub mod swappable;
 pub mod plugins;
 pub mod service;
 pub use conformance::cache_contract;
@@ -148,7 +149,7 @@ pub fn lock_key(name: &str) -> String {
 /// process has since acquired. Locks ALWAYS carry a TTL to bound worst-case
 /// hold time if the holder crashes.
 pub struct CacheLock {
-    port: std::sync::Arc<dyn CachePort>,
+    port: std::sync::Arc<crate::swappable::SwappableCache>,
 }
 
 /// Held lock: name + the token proving ownership.
@@ -159,7 +160,7 @@ pub struct LockToken {
 }
 
 impl CacheLock {
-    pub fn new(port: std::sync::Arc<dyn CachePort>) -> Self {
+    pub fn new(port: std::sync::Arc<crate::swappable::SwappableCache>) -> Self {
         Self { port }
     }
 
@@ -168,6 +169,7 @@ impl CacheLock {
         let token = kelson_foundation::id::lock_token();
         let ok =
             self.port
+                .store()
                 .put_if_absent(&lock_key(name), token.as_bytes().to_vec(), Some(ttl_secs));
         ok.then(|| LockToken {
             name: name.to_string(),
@@ -178,6 +180,7 @@ impl CacheLock {
     /// Release a held lock. Returns true only if THIS token released it.
     pub fn release(&self, token: &LockToken) -> bool {
         self.port
+            .store()
             .delete_if_equals(&lock_key(&token.name), token.token.as_bytes())
     }
 
@@ -256,7 +259,7 @@ mod tests {
 
     #[test]
     fn cache_lock_acquire_release_and_exclusivity() {
-        let lock = CacheLock::new(std::sync::Arc::new(FakePort::default()));
+        let lock = CacheLock::new(std::sync::Arc::new(crate::swappable::SwappableCache::new(std::sync::Arc::new(FakePort::default()))));
         let first = lock.try_acquire("billing.close", 30).unwrap();
         assert!(
             lock.try_acquire("billing.close", 30).is_none(),
@@ -372,7 +375,7 @@ mod tests {
     #[test]
     fn a_lock_lease_expires_so_a_crashed_holder_never_blocks_the_slot() {
         let port = std::sync::Arc::new(FakeClockPort::default());
-        let lock = CacheLock::new(port.clone());
+        let lock = CacheLock::new(std::sync::Arc::new(crate::swappable::SwappableCache::new(port.clone())));
         let crashed = lock.try_acquire("billing.close", 30).unwrap();
         assert!(
             lock.try_acquire("billing.close", 30).is_none(),
@@ -399,7 +402,7 @@ mod tests {
     #[test]
     fn the_lease_is_enforced_by_the_store_not_by_the_holders_clock() {
         let port = std::sync::Arc::new(FakeClockPort::default());
-        let lock = CacheLock::new(port.clone());
+        let lock = CacheLock::new(std::sync::Arc::new(crate::swappable::SwappableCache::new(port.clone())));
         lock.try_acquire("report.build", 30).unwrap();
         assert_eq!(
             port.expiry_of(&lock_key("report.build")),
@@ -420,7 +423,7 @@ mod tests {
 
     #[test]
     fn with_lock_runs_and_releases() {
-        let lock = CacheLock::new(std::sync::Arc::new(FakePort::default()));
+        let lock = CacheLock::new(std::sync::Arc::new(crate::swappable::SwappableCache::new(std::sync::Arc::new(FakePort::default()))));
         let ran = lock.with_lock("report.build", 30, || 42);
         assert_eq!(ran, Some(42));
         assert!(
@@ -615,3 +618,5 @@ mod tests {
 }
 
 pub use plugins::{CacheCapabilities, CacheDriver, CacheDriverRegistry};
+
+pub use swappable::SwappableCache;
