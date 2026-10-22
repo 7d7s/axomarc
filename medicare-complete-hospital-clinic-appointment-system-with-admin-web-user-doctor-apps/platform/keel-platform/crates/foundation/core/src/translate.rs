@@ -149,12 +149,13 @@ pub fn resolve_locale(
     tenant_locale: Option<&str>,
     default_locale: &str,
 ) -> String {
-    for candidate in [request_locale, tenant_locale, Some(default_locale)] {
-        if let Some(locale) = candidate {
-            let trimmed = locale.trim();
-            if !trimmed.is_empty() {
-                return trimmed.to_string();
-            }
+    for locale in [request_locale, tenant_locale, Some(default_locale)]
+        .into_iter()
+        .flatten()
+    {
+        let trimmed = locale.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
         }
     }
     default_locale.to_string()

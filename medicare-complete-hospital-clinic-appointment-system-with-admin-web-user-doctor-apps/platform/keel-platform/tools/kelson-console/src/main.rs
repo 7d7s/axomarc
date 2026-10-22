@@ -3445,9 +3445,10 @@ fn env_summary_text(root: &Path) -> anyhow::Result<String> {
     let cfg = load_config(root)?;
     let mut out = String::new();
     out.push_str(&format!("environment: {}\n", cfg.app.env.as_str()));
-    // The active profile: a deployment selects one with KEEL_APP_PROFILE and
-    // an operator must be able to see WHICH preset the instance is running.
-    let profile = kelson_config::profile::selected().unwrap_or_default();
+    // The active profile: the configuration RECORDS the effective profile
+    // (the environment wins, the file's own name is the fallback), so the
+    // operator sees the preset the instance actually runs.
+    let profile = cfg.app.profile.clone();
     if profile.is_empty() {
         out.push_str("profile: (none)\n");
     } else {

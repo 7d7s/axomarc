@@ -34,12 +34,14 @@ pub const PROFILE_ENV: &str = "KEEL_APP_PROFILE";
 /// The directory (beside the config file) that holds the profiles.
 pub const PROFILES_DIR: &str = "profiles";
 
-/// The active profile, if one was selected.
-pub fn selected() -> Option<String> {
-    std::env::var(PROFILE_ENV)
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
+/// The profile name an environment value selects.
+///
+/// The environment READ belongs to the configuration crate's boot path -
+/// the one sanctioned place for it - so this only interprets the value.
+/// A blank value selects nothing (an empty profile name is not a profile).
+pub fn selected_from_env(raw: Option<String>) -> Option<String> {
+    raw.map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 /// The path of a named profile, beside the config file.
@@ -58,16 +60,13 @@ pub fn profile_path(config_path: &Path, name: &str) -> Option<std::path::PathBuf
     Some(dir.join(format!("{name}.toml")))
 }
 
-/// Merge the selected profile UNDER `file_raw`.
+/// Merge the named profile UNDER `file_raw`.
 ///
-/// No profile selected (or no config file) returns the input untouched.
-pub(crate) fn apply(config_path: &Path, file_raw: String) -> Result<String, AppError> {
-    apply_named(config_path, selected().as_deref(), file_raw)
-}
-
-/// The testable core of [`apply`]: the profile is named explicitly, so a
-/// caller (and a test) never has to reach for the process-wide
-/// environment.
+/// No profile named (or no config file) returns the input untouched.
+///
+/// The name is passed IN: the environment read happens in the
+/// configuration crate's boot path, so this module never touches the
+/// process environment and a test can name a profile explicitly.
 pub(crate) fn apply_named(
     config_path: &Path,
     name: Option<&str>,
@@ -279,6 +278,43 @@ mod tests {
         let raw = "[app]\nname = \"x\"\n".to_string();
         let merged = apply_named(&config_path(&dir), None, raw.clone()).unwrap();
         assert_eq!(merged, raw);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The environment VALUE is interpreted here; the READ happens in the
+    /// boot path (the sanctioned place). A blank value selects nothing.
+    #[test]
+    fn the_environment_value_is_interpreted_not_read() {
+        assert_eq!(
+            selected_from_env(Some("  production  ".to_string())),
+            Some("production".to_string()),
+            "the value is trimmed"
+        );
+        assert_eq!(selected_from_env(Some("   ".to_string())), None);
+        assert_eq!(selected_from_env(Some(String::new())), None);
+        assert_eq!(selected_from_env(None), None);
+    }
+
+    /// The effective profile is RECORDED on the config: the file that names
+    /// its own profile keeps that name (it is not erased by the recording),
+    /// and an operator can always see which preset the instance runs.
+    #[test]
+    fn a_self_named_profile_is_recorded_on_the_config() {
+        let dir = scratch("recorded");
+        std::fs::write(
+            dir.join("config").join(PROFILES_DIR).join("saas.toml"),
+            "[app]\nname = \"from-the-profile\"\n",
+        )
+        .unwrap();
+        let path = config_path(&dir);
+        std::fs::write(&path, "[app]\nname = \"x\"\nprofile = \"saas\"\n").unwrap();
+
+        let cfg = crate::PlatformConfig::load(Some(&path)).expect("the config loads");
+        assert_eq!(
+            cfg.app.profile, "saas",
+            "the effective profile is recorded, so an operator can see it"
+        );
+        assert_eq!(cfg.app.name, "x", "the file still wins per key");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

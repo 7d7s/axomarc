@@ -149,6 +149,8 @@ named cases are green.
 | KFA-001/002/003/004 | VERIFIED FIX | The four supply-chain advisories are FIXED, not ignored: wasmtime 36.0.19 (the two Cranelift miscompilations and the handle-table cap), rustls 0.23.46 and rustls-webpki 0.103.16 (the four TLS advisories), webpki-roots 1.0.10 (the distrusted intermediates). `cargo deny check` is green and the dependency gate is now a blocking CI step |
 | KFA-005 | VERIFIED FIX | The reference host's boot stack overflow (the audit's S1): the boot now runs on a thread with an explicit 16 MiB stack, so the host starts, binds its listener and serves /healthz - and the no-rebuild experiment could finally run against a live process |
 | KFA-024 | VERIFIED FIX | The cold-start migration race: the loser now waits for the holder and re-checks the state, so a rolling deploy where every instance boots at once no longer fails N-1 of them (18/30 failing before, 30/30 green after) |
+| KFA-025 | VERIFIED FIX | The profile layer read `KEEL_APP_PROFILE` outside the sanctioned boot paths, so the lint gate was red. The read now happens in the configuration crate's boot path and the profile module only interprets the value - `cargo xtask lint` is clean again |
+| KFA-026 | VERIFIED FIX | The per-tenant locale chain tripped `clippy::manual_flatten`, and the CI clippy step is blocking - so every build was red at that step. The chain iterates the flattened candidates now (the same fall-through), and the workspace clippy gate is green |
 
 ---
 

@@ -1117,6 +1117,11 @@ impl PlatformConfig {
         if let Some(p) = path {
             dotenv::load_dotenv(&dotenv::config_dir_of(p))?;
         }
+        // The profile the environment selects. The READ happens here - the
+        // one sanctioned place for it - and the profile module only
+        // interprets the value.
+        let selected_profile =
+            profile::selected_from_env(std::env::var(profile::PROFILE_ENV).ok());
         let mut cfg = match path {
             Some(p) => {
                 let raw = std::fs::read_to_string(p).map_err(|e| {
@@ -1128,8 +1133,9 @@ impl PlatformConfig {
                 let raw = package_defaults::apply(p, raw)?;
                 // The profile layer sits between the package defaults and
                 // the file: the file wins over the profile, the profile over
-                // the package defaults.
-                let raw = profile::apply(p, raw)?;
+                // the package defaults. The name the environment selected
+                // wins over the file's own `app.profile`.
+                let raw = profile::apply_named(p, selected_profile.as_deref(), raw)?;
                 // Wave 4 Phase 5 (GRAPH-CONFIG-SCHEMA): unknown keys are
                 // refused here, fail-closed, before any typed accessor could
                 // silently ignore them. Every offender is reported (collect-
@@ -1174,11 +1180,16 @@ impl PlatformConfig {
             }
         }
         // The effective profile is RECORDED on the config: an operator can
-        // always see which preset the instance is running.
-        cfg.app.profile = profile::selected().unwrap_or_default();
+        // always see which preset the instance is running. The environment
+        // wins; the file's own `app.profile` is the fallback (a
+        // self-named profile is a profile too, and must not be erased).
+        if let Some(selected) = selected_profile {
+            cfg.app.profile = selected;
+        }
         cfg.assert_secrets()?;
         Ok(cfg)
     }
+
 
     /// Environment overrides (KEEL_SECTION_KEY). Last writer wins; file values are
     /// only a middle layer.
