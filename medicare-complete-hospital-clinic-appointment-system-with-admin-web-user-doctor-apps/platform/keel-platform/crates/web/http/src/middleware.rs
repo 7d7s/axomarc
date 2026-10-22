@@ -1023,7 +1023,10 @@ mod tests {
     async fn panicking_handler_answers_a_500_envelope() {
         let router = Router::new().route("/boom", get(|| async {
             panic!("handler exploded: super-secret-token-42");
-            "never reached"
+            #[allow(unreachable_code)]
+            {
+                "never reached"
+            }
         }));
         let res = Admission::default()
             .apply(router)
