@@ -57,6 +57,222 @@ impl ViewModel for ErrorVm {
     }
 }
 
+/// The pagination view model.
+///
+/// Renders a page window with first/last/prev/next links and page numbers.
+#[derive(Debug, Clone, Serialize)]
+pub struct PaginationVm {
+    /// The current page (1-indexed).
+    pub current_page: u64,
+    /// The last page number.
+    pub last_page: u64,
+    /// Total number of items.
+    pub total: u64,
+    /// Items per page.
+    pub per_page: u64,
+    /// The page window to display (e.g., [1, 2, 3, 4, 5]).
+    pub pages: Vec<u64>,
+    /// The base URL for pagination links.
+    pub base_url: String,
+    /// Query parameters to preserve.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query: Option<serde_json::Map<String, Value>>,
+}
+
+impl ViewModel for PaginationVm {
+    const VIEW: &'static str = "pagination";
+
+    fn schema() -> &'static [FieldSchema] {
+        view_schema![
+            FieldSchema::required("current_page", FieldKind::Int),
+            FieldSchema::required("last_page", FieldKind::Int),
+            FieldSchema::required("total", FieldKind::Int),
+            FieldSchema::required("per_page", FieldKind::Int),
+            FieldSchema::required("pages", FieldKind::List),
+            FieldSchema::required("base_url", FieldKind::String),
+            FieldSchema::optional("query", FieldKind::Object),
+        ]
+    }
+}
+
+/// A table column definition.
+#[derive(Debug, Clone, Serialize)]
+pub struct TableColumn {
+    /// The column key (matches the row object's key).
+    pub key: String,
+    /// The column header label.
+    pub label: String,
+    /// Whether the column is sortable.
+    #[serde(default)]
+    pub sortable: bool,
+    /// The sort direction if sorted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort_direction: Option<String>,
+}
+
+/// The table view model.
+///
+/// Renders a data table with columns, rows, and optional sorting/pagination.
+#[derive(Debug, Clone, Serialize)]
+pub struct TableVm {
+    /// The table's columns.
+    pub columns: Vec<TableColumn>,
+    /// The table's rows (each row is an object keyed by column key).
+    pub rows: Vec<serde_json::Map<String, Value>>,
+    /// Optional pagination for the table.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pagination: Option<PaginationVm>,
+    /// Optional empty state message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub empty_message: Option<String>,
+}
+
+impl ViewModel for TableVm {
+    const VIEW: &'static str = "table";
+
+    fn schema() -> &'static [FieldSchema] {
+        view_schema![
+            FieldSchema::required("columns", FieldKind::List),
+            FieldSchema::required("rows", FieldKind::List),
+            FieldSchema::optional("pagination", FieldKind::Object),
+            FieldSchema::optional("empty_message", FieldKind::String),
+        ]
+    }
+}
+
+/// A form field definition.
+#[derive(Debug, Clone, Serialize)]
+pub struct FormField {
+    /// The field name.
+    pub name: String,
+    /// The field label.
+    pub label: String,
+    /// The field type (text, email, password, select, textarea, checkbox, radio, hidden).
+    pub field_type: String,
+    /// Whether the field is required.
+    #[serde(default)]
+    pub required: bool,
+    /// The field's current value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<Value>,
+    /// Validation error message for this field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Options for select/radio fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<FormOption>>,
+    /// Placeholder text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+}
+
+/// An option for select/radio fields.
+#[derive(Debug, Clone, Serialize)]
+pub struct FormOption {
+    /// The option value.
+    pub value: String,
+    /// The option label.
+    pub label: String,
+    /// Whether this option is selected.
+    #[serde(default)]
+    pub selected: bool,
+}
+
+/// The form view model.
+///
+/// Renders a form with fields, validation errors, and CSRF protection.
+#[derive(Debug, Clone, Serialize)]
+pub struct FormVm {
+    /// The form's action URL.
+    pub action: String,
+    /// The form's HTTP method.
+    pub method: String,
+    /// The form's fields.
+    pub fields: Vec<FormField>,
+    /// The CSRF token.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub csrf_token: Option<String>,
+    /// General form-level error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl ViewModel for FormVm {
+    const VIEW: &'static str = "form";
+
+    fn schema() -> &'static [FieldSchema] {
+        view_schema![
+            FieldSchema::required("action", FieldKind::String),
+            FieldSchema::required("method", FieldKind::String),
+            FieldSchema::required("fields", FieldKind::List),
+            FieldSchema::optional("csrf_token", FieldKind::String),
+            FieldSchema::optional("error", FieldKind::String),
+        ]
+    }
+}
+
+/// The empty state view model.
+///
+/// Renders an empty state illustration with a message and optional action.
+#[derive(Debug, Clone, Serialize)]
+pub struct EmptyVm {
+    /// The empty state title.
+    pub title: String,
+    /// The empty state message.
+    pub message: String,
+    /// Optional action button label.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_label: Option<String>,
+    /// Optional action button URL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_url: Option<String>,
+    /// Optional illustration/icon name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub illustration: Option<String>,
+}
+
+impl ViewModel for EmptyVm {
+    const VIEW: &'static str = "empty";
+
+    fn schema() -> &'static [FieldSchema] {
+        view_schema![
+            FieldSchema::required("title", FieldKind::String),
+            FieldSchema::required("message", FieldKind::String),
+            FieldSchema::optional("action_label", FieldKind::String),
+            FieldSchema::optional("action_url", FieldKind::String),
+            FieldSchema::optional("illustration", FieldKind::String),
+        ]
+    }
+}
+
+/// The operations dashboard view model.
+///
+/// Renders the ops dashboard with queue, jobs, schedule, and trace sections.
+#[derive(Debug, Clone, Serialize)]
+pub struct OpsVm {
+    /// The dashboard title.
+    pub title: String,
+    /// When the dashboard was generated.
+    pub generated_at: String,
+    /// The refresh interval in seconds.
+    pub refresh_secs: u64,
+    /// The dashboard sections.
+    pub sections: serde_json::Map<String, Value>,
+}
+
+impl ViewModel for OpsVm {
+    const VIEW: &'static str = "dashboard.ops";
+
+    fn schema() -> &'static [FieldSchema] {
+        view_schema![
+            FieldSchema::required("title", FieldKind::String),
+            FieldSchema::required("generated_at", FieldKind::String),
+            FieldSchema::required("refresh_secs", FieldKind::Int),
+            FieldSchema::required("sections", FieldKind::Object),
+        ]
+    }
+}
+
 /// The registry the framework ships: the built-in views, bound to the
 /// built-in view models.
 ///
@@ -67,6 +283,11 @@ pub fn builtin_registry() -> ViewRegistry {
     for view in ["errors.404", "errors.500", "errors.maintenance"] {
         registry.register(ViewBinding::new::<ErrorVm>(view));
     }
+    registry.register(ViewBinding::new::<PaginationVm>("pagination"));
+    registry.register(ViewBinding::new::<TableVm>("table"));
+    registry.register(ViewBinding::new::<FormVm>("form"));
+    registry.register(ViewBinding::new::<EmptyVm>("empty"));
+    registry.register(ViewBinding::new::<OpsVm>("dashboard.ops"));
     registry
 }
 
@@ -78,7 +299,7 @@ mod tests {
     #[test]
     fn a_built_in_view_is_registered_by_the_framework() {
         let registry = builtin_registry();
-        assert_eq!(registry.len(), 3);
+        assert_eq!(registry.len(), 8);
         for view in ["errors.404", "errors.500", "errors.maintenance"] {
             let binding = registry
                 .binding(view)
@@ -89,6 +310,24 @@ mod tests {
                 binding.model
             );
             assert_eq!(binding.schema.len(), 6);
+        }
+        for (view, expected_model, expected_schema_len) in [
+            ("pagination", "PaginationVm", 7),
+            ("table", "TableVm", 4),
+            ("form", "FormVm", 5),
+            ("empty", "EmptyVm", 5),
+            ("dashboard.ops", "OpsVm", 4),
+        ] {
+            let binding = registry
+                .binding(view)
+                .unwrap_or_else(|| panic!("{view} is registered"));
+            assert!(
+                binding.model.contains(expected_model),
+                "{view} binds to {}: {}",
+                expected_model,
+                binding.model
+            );
+            assert_eq!(binding.schema.len(), expected_schema_len, "{view} schema len");
         }
     }
 
@@ -125,5 +364,130 @@ mod tests {
         })
         .expect("the model honours its declaration");
         assert_eq!(value["debug"], serde_json::json!({"cause": "redacted"}));
+    }
+
+    #[test]
+    fn the_pagination_view_model_carries_the_window() {
+        let value = view_model_value(&PaginationVm {
+            current_page: 3,
+            last_page: 10,
+            total: 100,
+            per_page: 10,
+            pages: vec![1, 2, 3, 4, 5],
+            base_url: "/items".to_string(),
+            query: None,
+        })
+        .expect("the model honours its declaration");
+        assert_eq!(value["current_page"], serde_json::json!(3));
+        assert_eq!(value["last_page"], serde_json::json!(10));
+        assert_eq!(value["total"], serde_json::json!(100));
+        assert_eq!(value["per_page"], serde_json::json!(10));
+        assert_eq!(value["pages"], serde_json::json!([1, 2, 3, 4, 5]));
+        assert_eq!(value["base_url"], serde_json::json!("/items"));
+    }
+
+    #[test]
+    fn the_table_view_model_declares_its_columns() {
+        let value = view_model_value(&TableVm {
+            columns: vec![
+                TableColumn {
+                    key: "id".to_string(),
+                    label: "ID".to_string(),
+                    sortable: true,
+                    sort_direction: Some("asc".to_string()),
+                },
+                TableColumn {
+                    key: "name".to_string(),
+                    label: "Name".to_string(),
+                    sortable: true,
+                    sort_direction: None,
+                },
+            ],
+            rows: vec![],
+            pagination: None,
+            empty_message: None,
+        })
+        .expect("the model honours its declaration");
+        assert_eq!(value["columns"].as_array().unwrap().len(), 2);
+        assert_eq!(value["columns"][0]["key"], serde_json::json!("id"));
+        assert_eq!(value["columns"][0]["label"], serde_json::json!("ID"));
+        assert_eq!(value["columns"][0]["sortable"], serde_json::json!(true));
+        assert_eq!(value["rows"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn the_form_view_model_carries_fields_and_errors() {
+        let value = view_model_value(&FormVm {
+            action: "/submit".to_string(),
+            method: "POST".to_string(),
+            fields: vec![
+                FormField {
+                    name: "email".to_string(),
+                    label: "Email".to_string(),
+                    field_type: "email".to_string(),
+                    required: true,
+                    value: Some(serde_json::json!("test@example.com")),
+                    error: None,
+                    options: None,
+                    placeholder: Some("Enter email".to_string()),
+                },
+                FormField {
+                    name: "password".to_string(),
+                    label: "Password".to_string(),
+                    field_type: "password".to_string(),
+                    required: true,
+                    value: None,
+                    error: Some("too short".to_string()),
+                    options: None,
+                    placeholder: None,
+                },
+            ],
+            csrf_token: Some("token123".to_string()),
+            error: None,
+        })
+        .expect("the model honours its declaration");
+        assert_eq!(value["action"], serde_json::json!("/submit"));
+        assert_eq!(value["method"], serde_json::json!("POST"));
+        assert_eq!(value["fields"].as_array().unwrap().len(), 2);
+        assert_eq!(value["fields"][0]["name"], serde_json::json!("email"));
+        assert_eq!(value["fields"][0]["required"], serde_json::json!(true));
+        assert_eq!(value["fields"][1]["error"], serde_json::json!("too short"));
+        assert_eq!(value["csrf_token"], serde_json::json!("token123"));
+    }
+
+    #[test]
+    fn the_empty_view_model_carries_message_and_action() {
+        let value = view_model_value(&EmptyVm {
+            title: "No appointments".to_string(),
+            message: "You have no appointments yet.".to_string(),
+            action_label: Some("Book one".to_string()),
+            action_url: Some("/appointments/new".to_string()),
+            illustration: Some("calendar".to_string()),
+        })
+        .expect("the model honours its declaration");
+        assert_eq!(value["title"], serde_json::json!("No appointments"));
+        assert_eq!(value["message"], serde_json::json!("You have no appointments yet."));
+        assert_eq!(value["action_label"], serde_json::json!("Book one"));
+        assert_eq!(value["action_url"], serde_json::json!("/appointments/new"));
+        assert_eq!(value["illustration"], serde_json::json!("calendar"));
+    }
+
+    #[test]
+    fn the_ops_view_model_carries_sections() {
+        let mut sections = serde_json::Map::new();
+        sections.insert("queue".to_string(), serde_json::json!({"depth": 5}));
+        sections.insert("jobs".to_string(), serde_json::json!({"rows": []}));
+
+        let value = view_model_value(&OpsVm {
+            title: "Operations".to_string(),
+            generated_at: "2026-10-22T10:00:00Z".to_string(),
+            refresh_secs: 10,
+            sections,
+        })
+        .expect("the model honours its declaration");
+        assert_eq!(value["title"], serde_json::json!("Operations"));
+        assert_eq!(value["generated_at"], serde_json::json!("2026-10-22T10:00:00Z"));
+        assert_eq!(value["refresh_secs"], serde_json::json!(10));
+        assert!(value["sections"]["queue"]["depth"].is_number());
     }
 }
