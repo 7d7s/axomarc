@@ -481,6 +481,104 @@ impl TestResponse {
         self
     }
 
+    /// The last view this response rendered received a **view model**
+    /// whose `key` is present.
+    ///
+    /// The model lives in the `vm` namespace of the view's context — the
+    /// namespace the binder (`@vm`) binds — so the assertion speaks the
+    /// view's language rather than the context's raw keys. The rendered
+    /// HTML is never consulted: the model is what the view was given.
+    pub fn assert_view_model_has(self, key: &str) -> Self {
+        let view = self.view.as_ref().unwrap_or_else(|| {
+            panic!(
+                "no view rendered for this response; body: {}",
+                self.body_text()
+            )
+        });
+        let model = view
+            .context
+            .get(kelson_views::VM_NAMESPACE)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the view {:?} received no view model; context: {}",
+                    view.view, view.context
+                )
+            });
+        assert!(
+            json_path(model, key).is_some(),
+            "the view model of {:?} lacks key {key:?}; model: {model}",
+            view.view
+        );
+        self
+    }
+
+    /// The last view this response rendered received a view model of the
+    /// model's **own type**.
+    ///
+    /// The assertion is typed twice over: the received model must
+    /// deserialise into `M`, and `key` must be a field `M` declares — so
+    /// a field the view model does not declare cannot be asserted at all,
+    /// and a view that received the wrong shape fails here rather than
+    /// quietly in a template.
+    pub fn assert_view_model<M: kelson_views::ViewModel + DeserializeOwned>(self, key: &str) -> Self {
+        let view = self.view.as_ref().unwrap_or_else(|| {
+            panic!(
+                "no view rendered for this response; body: {}",
+                self.body_text()
+            )
+        });
+        let model = view
+            .context
+            .get(kelson_views::VM_NAMESPACE)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the view {:?} received no view model; context: {}",
+                    view.view, view.context
+                )
+            });
+        serde_json::from_value::<M>(model.clone()).unwrap_or_else(|e| {
+            panic!(
+                "the view model of {:?} is not a {}: {e}",
+                view.view,
+                std::any::type_name::<M>()
+            )
+        });
+        assert!(
+            M::schema().iter().any(|field| field.path == key),
+            "the view model {} does not declare {key:?}",
+            std::any::type_name::<M>()
+        );
+        assert!(
+            json_path(model, key).is_some(),
+            "the view model of {:?} lacks key {key:?}; model: {model}",
+            view.view
+        );
+        self
+    }
+
+    /// The view this response rendered **lints clean**: every `vm.*` path
+    /// its template reads is declared by the view's registered view
+    /// model.
+    ///
+    /// The lint is the binder's build-time half: the render-time check
+    /// refuses an undeclared path when the page is served, the lint
+    /// refuses it in the test — before the page is ever served.
+    pub fn assert_view_lints_clean(self, engine: &kelson_views::ViewsEngine) -> Self {
+        let view = self.view.as_ref().unwrap_or_else(|| {
+            panic!(
+                "no view rendered for this response; body: {}",
+                self.body_text()
+            )
+        });
+        engine.lint(&view.view).unwrap_or_else(|e| {
+            panic!(
+                "the view {:?} does not lint clean: {e}",
+                view.view
+            )
+        });
+        self
+    }
+
     // ------------------------------------------ Wave 7 P2: content asserts
 
     /// Walk a dotted path through the JSON body (objects; numeric segments
@@ -1186,6 +1284,108 @@ mod tests {
     async fn view_assert_panics_when_key_absent() {
         let app = harness();
         app.get("/view").send().await.assert_view_has("ghost");
+    }
+
+    // ------------------------------------------------------- MVVC: the binder
+
+    /// The view model the binder cases bind: a typed struct that declares
+    /// the view it renders into and the fields that view may read.
+    #[derive(Serialize, serde::Deserialize)]
+    struct PageVm {
+        title: String,
+        depth: u64,
+    }
+
+    impl kelson_views::ViewModel for PageVm {
+        const VIEW: &'static str = "page";
+        fn schema() -> &'static [kelson_views::FieldSchema] {
+            kelson_views::view_schema![
+                kelson_views::FieldSchema::required("title", kelson_views::FieldKind::String),
+                kelson_views::FieldSchema::required("depth", kelson_views::FieldKind::Int),
+            ]
+        }
+    }
+
+    /// An engine over a view that binds the page model, plus the recorder
+    /// that watches its renders.
+    fn bound_view_engine(template: &str) -> (Arc<kelson_views::ViewsEngine>, Arc<ViewRecorder>) {
+        let dir = std::env::temp_dir().join(format!(
+            "kelson-testkit-vm-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::SeqCst)
+        ));
+        let views = dir.join("resources").join("views");
+        std::fs::create_dir_all(&views).unwrap();
+        std::fs::write(views.join("page.html"), template).unwrap();
+        let engine = Arc::new(kelson_views::ViewsEngine::new(kelson_views::ViewsConfig {
+            paths: vec![views],
+            cache_dir: None,
+            env: "testing".into(),
+        }));
+        let mut registry = kelson_views::ViewRegistry::new();
+        registry.register(kelson_views::ViewBinding::new::<PageVm>("page"));
+        engine.set_registry(Arc::new(registry));
+        let recorder = Arc::new(ViewRecorder::new());
+        engine.set_tap(recorder.clone());
+        (engine, recorder)
+    }
+
+    /// A router serving the bound view through the engine.
+    fn bound_view_router(engine: Arc<kelson_views::ViewsEngine>) -> Router {
+        Router::new().route(
+            "/page",
+            get(move || {
+                let engine = engine.clone();
+                async move {
+                    engine
+                        .render_bound(
+                            "page",
+                            json!({}),
+                            &PageVm {
+                                title: "Queue".to_string(),
+                                depth: 7,
+                            },
+                        )
+                        .expect("the model renders")
+                }
+            }),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_view_model_is_assertable_without_the_html() {
+        let (engine, recorder) = bound_view_engine("@vm<h1>{{ vm.title }}</h1>");
+        let app = TestApp::new(bound_view_router(engine.clone())).with_views(recorder);
+        // The assertions read the MODEL the view received - never the
+        // HTML it rendered.
+        app.get("/page").send().await
+            .assert_view_model_has("title")
+            .assert_view_model::<PageVm>("depth")
+            .assert_view_lints_clean(&engine)
+            .assert_status(200);
+    }
+
+    #[tokio::test]
+    async fn a_template_that_reads_an_undeclared_path_is_refused_by_the_lint() {
+        let (engine, _recorder) = bound_view_engine("@vm{{ vm.ghost }}");
+        let error = engine
+            .lint("page")
+            .expect_err("an undeclared path is refused by the lint");
+        assert_eq!(error.code, "VIEW-RENDER");
+        assert!(
+            error.message.contains("ghost"),
+            "the refusal names the path: {}",
+            error.message
+        );
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "does not declare")]
+    async fn a_view_model_assert_refuses_an_undeclared_field() {
+        let (engine, recorder) = bound_view_engine("@vm<h1>{{ vm.title }}</h1>");
+        let app = TestApp::new(bound_view_router(engine)).with_views(recorder);
+        app.get("/page").send().await
+            .assert_view_model::<PageVm>("ghost");
     }
 
     // ------------------------------------------------ Wave 7 P2: database row

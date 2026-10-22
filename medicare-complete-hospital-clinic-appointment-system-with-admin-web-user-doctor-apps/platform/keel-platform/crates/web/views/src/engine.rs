@@ -444,6 +444,57 @@ impl ViewsEngine {
         for hook in self.hooks_for(name) {
             hook(&mut context);
         }
+        self.render_with_context(name, context)
+    }
+
+    /// Render one view **from a view model**.
+    ///
+    /// The model is checked against its own declaration, serialised into
+    /// the `vm` namespace of the context, and the view is rendered with
+    /// the binder's checks in force. The view must have a registered
+    /// binding: a view model with nothing to bind to is refused, because
+    /// a model nobody declared cannot be checked against anything.
+    ///
+    /// The model goes into the context **after** the hooks have run, so a
+    /// hook cannot clobber the model the view is bound to.
+    pub fn render_bound<M: crate::viewmodel::ViewModel + ?Sized>(
+        &self,
+        name: &str,
+        mut context: Value,
+        model: &M,
+    ) -> Result<String, ViewError> {
+        let Some(registry) = self.registry() else {
+            return Err(ViewError::new(
+                VIEW_RENDER,
+                format!("the view {name:?} has no view registry: a view model cannot be bound"),
+            ));
+        };
+        if registry.binding(name).is_none() {
+            return Err(ViewError::new(
+                VIEW_RENDER,
+                format!("the view {name:?} has no registered view model"),
+            ));
+        }
+        let value = crate::viewmodel::view_model_value(model)?;
+        for hook in self.hooks_for(name) {
+            hook(&mut context);
+        }
+        let Some(object) = context.as_object_mut() else {
+            return Err(ViewError::new(
+                VIEW_RENDER,
+                "the context must be a JSON object to carry a view model",
+            ));
+        };
+        object.insert(
+            crate::viewmodel::VM_NAMESPACE.to_string(),
+            value,
+        );
+        self.render_with_context(name, context)
+    }
+
+    /// Render with the context already prepared (hooks applied, the view
+    /// model bound).
+    fn render_with_context(&self, name: &str, context: Value) -> Result<String, ViewError> {
         let template = self.template(name)?;
         if let Some(tap) = self.tap.lock().unwrap().clone() {
             tap.on_render(&ViewRender {
@@ -453,6 +504,50 @@ impl ViewsEngine {
         }
         let mut renderer = Renderer::new(self, context);
         renderer.render_template(&template, name)
+    }
+
+    /// Lint one view: every `vm.*` path the template reads must be
+    /// declared by the view's registered view model.
+    ///
+    /// The lint is the binder's build-time half. The render-time check
+    /// refuses an undeclared path when the page is served; the lint
+    /// refuses it before the page is ever served. A template without the
+    /// `@vm` directive reads whatever it likes, exactly as it did before
+    /// the binder existed, so it lints clean.
+    pub fn lint(&self, name: &str) -> Result<(), ViewError> {
+        let Some(registry) = self.registry() else {
+            return Ok(()); // nothing to check against
+        };
+        let template = self.template(name)?;
+        let Some(declaration) = crate::lint::vm_declaration(&template.nodes) else {
+            return Ok(());
+        };
+        let governing = declaration.view.as_deref().unwrap_or(name);
+        let Some(binding) = registry.binding(governing) else {
+            return Err(ViewError::new(
+                VIEW_RENDER,
+                format!("the view {governing:?} has no registered view model: @vm cannot bind"),
+            ));
+        };
+        let paths = crate::lint::vm_paths(&template.nodes);
+        crate::lint::check_paths(binding.schema, &paths, governing)
+    }
+
+    /// Lint every discoverable template. Returns the number of templates
+    /// linted. A template that reads an undeclared path fails the lint.
+    pub fn lint_all(&self) -> Result<usize, ViewError> {
+        let mut names = Vec::new();
+        for root in &self.config.paths {
+            collect_view_names(root, root, &mut names);
+        }
+        names.sort();
+        names.dedup();
+        let mut count = 0;
+        for name in &names {
+            self.lint(name)?;
+            count += 1;
+        }
+        Ok(count)
     }
 
     // -------------------------------------------------------- cache admin
@@ -996,5 +1091,144 @@ mod tests {
         let cfg = ViewsConfig::from_toml("paths = [\"x\"]").unwrap();
         assert_eq!(cfg.paths, vec![PathBuf::from("x")]);
         assert!(cfg.cache_dir.is_some());
+    }
+
+    // ------------------------------------------------------------- the binder
+
+    /// The view model the binder cases bind.
+    #[derive(serde::Serialize)]
+    struct PageVm {
+        title: String,
+        depth: u64,
+    }
+
+    impl crate::viewmodel::ViewModel for PageVm {
+        const VIEW: &'static str = "page";
+        fn schema() -> &'static [crate::viewmodel::FieldSchema] {
+            crate::view_schema![
+                crate::viewmodel::FieldSchema::required("title", crate::viewmodel::FieldKind::String),
+                crate::viewmodel::FieldSchema::required("depth", crate::viewmodel::FieldKind::Int),
+            ]
+        }
+    }
+
+    /// An engine whose "page" view is bound to the page model.
+    fn bound_engine(template: &str) -> (PathBuf, ViewsEngine) {
+        let (dir, engine) = engine_with(&[("page", template)]);
+        let mut registry = crate::registry::ViewRegistry::new();
+        registry.register(crate::registry::ViewBinding::new::<PageVm>("page"));
+        engine.set_registry(Arc::new(registry));
+        (dir, engine)
+    }
+
+    #[test]
+    fn a_bound_path_resolves_through_the_model() {
+        let (_dir, engine) =
+            bound_engine("@vm<h1>{{ vm.title }}</h1><span>{{ vm.depth }}</span>");
+        let out = engine
+            .render_bound(
+                "page",
+                json!({}),
+                &PageVm {
+                    title: "Queue".to_string(),
+                    depth: 7,
+                },
+            )
+            .expect("the model honours its declaration");
+        assert_eq!(out, "<h1>Queue</h1><span>7</span>");
+    }
+
+    #[test]
+    fn an_unknown_bound_path_is_a_render_error() {
+        let (_dir, engine) = bound_engine("@vm{{ vm.ghost }}");
+        let error = engine
+            .render_bound(
+                "page",
+                json!({}),
+                &PageVm {
+                    title: "Queue".to_string(),
+                    depth: 7,
+                },
+            )
+            .expect_err("a path the model does not declare is refused");
+        assert_eq!(error.code, VIEW_RENDER);
+        assert!(
+            error.message.contains("ghost"),
+            "the refusal names the path: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn a_bound_path_of_the_wrong_type_is_refused() {
+        let (_dir, engine) = bound_engine("@vm{{ vm.depth }}");
+        // The context carries a value of the wrong kind: the DECLARATION
+        // is checked, whatever put the value there.
+        let error = engine
+            .render(
+                "page",
+                json!({ "vm": { "title": "Queue", "depth": "seven" } }),
+            )
+            .expect_err("a value of the wrong kind is refused");
+        assert_eq!(error.code, VIEW_RENDER);
+        assert!(
+            error.message.contains("depth") && error.message.contains("int"),
+            "the refusal names the field and the kind: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn a_template_without_the_directive_behaves_as_before() {
+        // No registry, no directive: the template reads whatever it likes,
+        // and an unknown path is empty rather than an error - exactly as
+        // it was before the binder existed.
+        let (_dir, engine) = engine_with(&[("page", "{{ vm.ghost }}|{{ title }}")]);
+        let out = render(&engine, "page", json!({ "title": "Queue" }));
+        assert_eq!(out, "|Queue");
+    }
+
+    #[test]
+    fn a_template_that_binds_a_model_it_does_not_have_is_refused() {
+        let (_dir, engine) = engine_with(&[("page", "@vm{{ vm.title }}")]);
+        // The view has no registered model: the binder fails closed.
+        let error = engine
+            .render("page", json!({ "vm": { "title": "Queue" } }))
+            .expect_err("a view with no registered model cannot bind one");
+        assert_eq!(error.code, VIEW_RENDER);
+        // ... and the model missing from the context is refused too.
+        let (_dir, engine) = bound_engine("@vm{{ vm.title }}");
+        let error = engine
+            .render("page", json!({}))
+            .expect_err("a missing model is refused");
+        assert_eq!(error.code, VIEW_RENDER);
+    }
+
+    #[test]
+    fn the_lint_refuses_a_template_that_reads_an_undeclared_path() {
+        let (_dir, engine) = bound_engine("@vm{{ vm.title }}");
+        assert!(
+            engine.lint("page").is_ok(),
+            "a template that reads declared paths lints clean"
+        );
+        let (_dir, engine) = bound_engine("@vm{{ vm.ghost }}");
+        let error = engine
+            .lint("page")
+            .expect_err("an undeclared path is refused by the lint");
+        assert_eq!(error.code, VIEW_RENDER);
+        assert!(
+            error.message.contains("ghost"),
+            "the refusal names the path: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn a_template_without_the_directive_lints_clean() {
+        let (_dir, engine) = engine_with(&[("page", "{{ vm.ghost }}")]);
+        assert!(
+            engine.lint("page").is_ok(),
+            "a template that binds no model reads whatever it likes"
+        );
     }
 }

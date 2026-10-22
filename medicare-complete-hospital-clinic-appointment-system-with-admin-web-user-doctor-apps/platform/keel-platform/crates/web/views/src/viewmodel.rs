@@ -31,6 +31,13 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::engine::{ViewError, VIEW_MODEL};
+use crate::expr::Segment;
+
+/// The namespace a bound view model is read from.
+///
+/// The binder (`@vm`) puts the model's value here, and every `vm.*` path
+/// a template reads is checked against the model's declaration.
+pub const VM_NAMESPACE: &str = "vm";
 
 /// The kind of a declared field.
 ///
@@ -147,6 +154,44 @@ pub fn schema_field<'a>(
     schema.iter().find(|field| field.path == path)
 }
 
+/// The dotted key path of a segment path, ignoring array indices.
+///
+/// A declaration names the **keys** of a view model, so the indices are
+/// dropped: `rows[0].name` is the path `rows.name`, and the shape inside
+/// a declared list is the application's business.
+pub fn key_path(path: &[Segment]) -> String {
+    path.iter()
+        .filter_map(|segment| match segment {
+            Segment::Key(key) => Some(key.as_str()),
+            Segment::Index(_) => None,
+        })
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// The declaration that governs a dotted path under the `vm` namespace.
+///
+/// The **longest declared prefix** wins. The second element of the pair
+/// says whether the declaration is the path itself (`true`) or a prefix
+/// of it (`false` - the path is nested under a declared object or list).
+/// `None` means the path is undeclared, which the binder refuses.
+///
+/// The render-time check and the build-time lint share this function, so
+/// the two can never disagree about what a template may read.
+pub fn governing_field<'a>(
+    schema: &'a [FieldSchema],
+    path: &str,
+) -> Option<(&'a FieldSchema, bool)> {
+    let keys: Vec<&str> = path.split('.').filter(|key| !key.is_empty()).collect();
+    for take in (1..=keys.len()).rev() {
+        let candidate = keys[..take].join(".");
+        if let Some(field) = schema_field(schema, &candidate) {
+            return Some((field, take == keys.len()));
+        }
+    }
+    None
+}
+
 /// Declare a view model's schema.
 ///
 /// A `&'static [FieldSchema]` cannot be written inline (a temporary would
@@ -247,7 +292,7 @@ pub fn check_schema(
                         format!(
                             "the field {:?} of the view model for {view} is a {}, not a {}",
                             field.path,
-                            kind_of(found),
+                            value_kind(found),
                             field.kind.as_str()
                         ),
                     ));
@@ -259,7 +304,11 @@ pub fn check_schema(
 }
 
 /// The name of a value's actual kind, for the error message.
-fn kind_of(value: &Value) -> &'static str {
+///
+/// The declared kinds and the runtime kinds are deliberately distinct
+/// vocabularies: a declared `Int` is a number that is whole, while the
+/// runtime kind of `3.5` is a `float`. The refusal names both.
+pub fn value_kind(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
         Value::Bool(_) => "bool",

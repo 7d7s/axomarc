@@ -107,5 +107,21 @@ mod tests {
         // the view model's contract is reachable too: an application
         // implements it without depending on the internals.
         fn _view_model_is_reachable<M: crate::kelson_views::ViewModel>() {}
+
+        // the binder is reachable through the same door: the namespace a
+        // bound model is read from, and the rule that decides which
+        // declaration governs a path.
+        assert_eq!(crate::kelson_views::VM_NAMESPACE, "vm");
+        let schema = crate::kelson_views::view_schema![
+            crate::kelson_views::FieldSchema::required("title", crate::kelson_views::FieldKind::String)
+        ];
+        assert!(
+            crate::kelson_views::governing_field(schema, "title").is_some(),
+            "a declared path is governed by its declaration"
+        );
+        assert!(
+            crate::kelson_views::governing_field(schema, "ghost").is_none(),
+            "an undeclared path is governed by nothing"
+        );
     }
 }

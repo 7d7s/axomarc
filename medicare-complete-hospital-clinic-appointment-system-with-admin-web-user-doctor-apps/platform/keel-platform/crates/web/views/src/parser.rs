@@ -57,6 +57,7 @@ fn is_known(name: &str) -> bool {
             | "push"
             | "endpush"
             | "stack"
+            | "vm"
             | "csrf"
             | "method"
             | "error"
@@ -448,6 +449,28 @@ impl Parser {
             "stack" => {
                 let stack = parse_string_arg(arg, name, &self.loc())?;
                 Ok(Some(Node::Stack { name: stack }))
+            }
+            "vm" => {
+                // `@vm` binds the current view's registered view model;
+                // `@vm("other.view")` names the view whose registered model
+                // governs the reads under the `vm` namespace.
+                let model = match arg {
+                    None => None,
+                    Some(raw) => {
+                        let parts = split_args(&raw);
+                        let name = unquote(
+                            parts
+                                .first()
+                                .ok_or_else(|| self.err("@vm requires a view name"))?
+                                .trim(),
+                        );
+                        if name.is_empty() {
+                            return Err(self.err("@vm requires a view name"));
+                        }
+                        Some(name)
+                    }
+                };
+                Ok(Some(Node::VmBind { model }))
             }
             "csrf" => Ok(Some(Node::Csrf)),
             "method" => {

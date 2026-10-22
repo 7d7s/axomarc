@@ -15,13 +15,13 @@ against a live MySQL 8.0.44.
 
 | Status | Rows | Meaning |
 |---|---:|---|
-| VERIFIED | 89 | the behaviour is implemented and an executed case proves it |
+| VERIFIED | 90 | the behaviour is implemented and an executed case proves it |
 | PARTIAL | 18 | the core is proven; a named sub-feature is missing or diverges |
 | EXCLUDED_BY_DESIGN | 4 | a deliberate exclusion with the alternative stated |
 | OPEN | 2 | a Laravel capability with no Kelson equivalent yet |
-| **Total** | **113** | |
+| **Total** | **114** | |
 
-Of the 113 rows, **111 carry an executed case**
+Of the 114 rows, **112 carry an executed case**
 and 2 do not (the OPEN rows).
 
 | Category | Rows |
@@ -30,7 +30,7 @@ and 2 do not (the OPEN rows).
 | eloquent | 30 |
 | migrations | 12 |
 | mysql-8-native | 4 |
-| production | 18 |
+| production | 19 |
 | query-builder | 32 |
 | schema | 9 |
 | transactions | 3 |
@@ -110,6 +110,7 @@ competitive claim. Each one is an executed case, not a claim.
 | LDB-111 | The cache driver can be changed by the environment at runtime | the swap needs NO REDEPLOY - the poller notices the edited file and the next cache read goes to the new driver; a driver is a RECIPE built when it is selected (a deployment that runs on the local cache never opens the shared one), a refused swap leaves the previous driver active (fail-closed), and registry.swaps() is the operator's evidence that the change took effect | `activating_a_driver_swaps_the_runtime_holder; a_reload_swaps_the_active_cache_driver_under_the_running_service; a_reload_that_names_an_unregistered_driver_keeps_the_current_one; the_service_follows_a_driver_swap; the_holder_is_a_port_so_a_consumer_follows_the_swap; the_recipe_runs_when_the_driver_is_selected_not_when_it_is_registered` |
 | LDB-112 | A view's presentation state, kept out of the template | the view's data requirements are DECLARED and CHECKED - a required field that is missing and a field whose value is not the kind it declares are both refused (VIEW-MODEL) before the template runs, so a typo in a view's data contract is a render error instead of an empty string; the JSON escape hatch is explicit and the declared fields win a collision | `a_view_model_declares_its_fields; a_view_model_serialises_to_the_context; the_escape_hatch_merges_undeclared_json; a_missing_required_field_is_refused; a_field_of_the_wrong_type_is_refused; the_declared_kinds_accept_the_values_they_describe` |
 | LDB-113 | A view declares the data it is given | the binding carries the view's DECLARED data requirements, so the framework knows what a view may read without asking the application; an application's binding replaces a built-in (the last registration wins); an unbound view still renders exactly as before, so nothing that works today breaks; and the view layer is reachable through the framework facade, so an application takes one dependency | `a_registered_view_declares_its_model; an_unregistered_view_has_no_binding; a_registration_replaces_the_previous_one; a_built_in_view_is_registered_by_the_framework; the_error_model_carries_the_status_and_the_code; the_error_model_carries_the_debug_detail_when_there_is_one; the_framework_facade_exports_the_view_layer; the_error_page_renders_the_frameworks_error_model` |
+| LDB-114 | A view reads only the data it declared | the reads are CHECKED - a path the view model does not declare is a render error (fail-closed) instead of an empty string, a value of the wrong kind is refused, the same rule is available as a build-time lint, and the testkit asserts on the view model rather than on the raw context; the syntax is additive, so a template without @vm behaves exactly as it did before | `a_bound_path_resolves_through_the_model; an_unknown_bound_path_is_a_render_error; a_bound_path_of_the_wrong_type_is_refused; a_template_without_the_directive_behaves_as_before; a_template_that_binds_a_model_it_does_not_have_is_refused; the_lint_refuses_a_template_that_reads_an_undeclared_path; a_template_without_the_directive_lints_clean; a_view_model_is_assertable_without_the_html; a_template_that_reads_an_undeclared_path_is_refused_by_the_lint` |
 
 ## 6. The divergences a Laravel developer must know about
 

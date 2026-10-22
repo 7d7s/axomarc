@@ -116,6 +116,16 @@ pub enum Node {
     Push { stack: String, body: Vec<Node> },
     /// @stack("stack")
     Stack { name: String },
+    /// @vm - bind the view's registered view model into the `vm`
+    /// namespace and turn on schema checking for the `vm.*` paths that
+    /// follow. The optional argument names the view whose registered
+    /// model governs the reads; without it the current view's binding is
+    /// used.
+    VmBind {
+        /// The governing view's name; `None` = the current view.
+        #[serde(default)]
+        model: Option<String>,
+    },
     /// @csrf - hidden token input (context _csrf).
     Csrf,
     /// @method("PUT") - hidden method-spoofing input.

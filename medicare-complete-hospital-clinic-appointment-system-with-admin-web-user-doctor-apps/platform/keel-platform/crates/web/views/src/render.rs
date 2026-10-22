@@ -22,6 +22,7 @@ use crate::expr::{
     apply_filter, compare_values, html_escape, is_empty_value, is_truthy, lit_value,
     resolve_path, to_display, trans_filter, Cond, Expr, Operand, Segment,
 };
+use crate::viewmodel::{governing_field, key_path, value_kind, FieldSchema, VM_NAMESPACE};
 use crate::MAX_LOOP_ITERATIONS;
 
 /// Maximum include/component nesting depth (fail closed, VIEW-RENDER).
@@ -47,6 +48,14 @@ pub(crate) struct Renderer<'e> {
     current_parent: Option<(String, usize)>,
     /// True while rendering an extends chain (sections pre-collected).
     layout_mode: bool,
+    /// The view being rendered (the top-level view's name).
+    current_view: Option<String>,
+    /// The bound view model's declaration, when the template binds one
+    /// (`@vm`). While this is set, every `vm.*` path the template reads
+    /// is checked against the declaration.
+    bound: Option<&'static [FieldSchema]>,
+    /// The view whose binding is bound (for the refusal messages).
+    bound_view: Option<String>,
     depth: usize,
 }
 
@@ -63,6 +72,9 @@ impl<'e> Renderer<'e> {
             section_cache: HashMap::new(),
             current_parent: None,
             layout_mode: false,
+            current_view: None,
+            bound: None,
+            bound_view: None,
             depth: 0,
         }
     }
@@ -72,8 +84,9 @@ impl<'e> Renderer<'e> {
     pub(crate) fn render_template(
         &mut self,
         template: &Template,
-        _name: &str,
+        name: &str,
     ) -> Result<String, ViewError> {
+        self.current_view = Some(name.to_string());
         let mut chain: Vec<Template> = vec![template.clone()];
         while let Some(parent_name) = &chain.last().unwrap().extends {
             if chain.len() > MAX_DEPTH {
@@ -84,6 +97,17 @@ impl<'e> Renderer<'e> {
             }
             let parent = self.engine.template(parent_name)?;
             chain.push(parent);
+        }
+        // The binder: a template that declares a view model is checked
+        // against that model's declaration for the WHOLE template, not
+        // only for the paths that follow the directive. The child's
+        // declaration wins over the layout's (child-first, like the
+        // sections).
+        for t in &chain {
+            if let Some(declaration) = crate::lint::vm_declaration(&t.nodes) {
+                self.bind_vm(declaration.view.as_deref())?;
+                break;
+            }
         }
         if chain.len() > 1 {
             self.layout_mode = true;
@@ -115,6 +139,48 @@ impl<'e> Renderer<'e> {
         Ok(std::mem::take(&mut self.out))
     }
 
+    /// Bind a view model: resolve the binding and turn the schema checks
+    /// on.
+    ///
+    /// Fail-closed, like the rest of the engine: no registry, no
+    /// registered model, or no model in the context is a render error. A
+    /// template that binds nothing is not an error - it is a template
+    /// that behaves exactly as it did before the binder existed.
+    fn bind_vm(&mut self, model: Option<&str>) -> Result<(), ViewError> {
+        let view = match model {
+            Some(name) => name.to_string(),
+            None => self.current_view.clone().ok_or_else(|| {
+                ViewError::new(
+                    VIEW_RENDER,
+                    "@vm has no view to bind: the view name is unknown",
+                )
+            })?,
+        };
+        let Some(registry) = self.engine.registry() else {
+            return Err(ViewError::new(
+                VIEW_RENDER,
+                format!("the view {view:?} has no view registry: @vm cannot bind"),
+            ));
+        };
+        let Some(binding) = registry.binding(&view) else {
+            return Err(ViewError::new(
+                VIEW_RENDER,
+                format!("the view {view:?} has no registered view model: @vm cannot bind"),
+            ));
+        };
+        if self.lookup(&[Segment::Key(VM_NAMESPACE.to_string())]).is_null() {
+            return Err(ViewError::new(
+                VIEW_RENDER,
+                format!(
+                    "the view model for {view:?} is missing from the context: @vm cannot bind"
+                ),
+            ));
+        }
+        self.bound = Some(binding.schema);
+        self.bound_view = Some(view);
+        Ok(())
+    }
+
     // ---------------------------------------------------------- evaluation
 
     /// Scope-aware dot-path lookup: scoped bindings shadow the root.
@@ -131,17 +197,77 @@ impl<'e> Renderer<'e> {
         resolve_path(&self.root, path).cloned().unwrap_or(Value::Null)
     }
 
-    fn eval_operand(&self, op: &Operand) -> Value {
+    /// Resolve a path, enforcing the bound view model's declaration.
+    ///
+    /// This is the single choke point every template read goes through,
+    /// so the binder's guarantee is total: a path the bound model does
+    /// not declare never reaches the output.
+    fn lookup_var(&self, path: &[Segment]) -> Result<Value, ViewError> {
+        let value = self.lookup(path);
+        self.check_bound_path(path, &value)?;
+        Ok(value)
+    }
+
+    /// Check a resolved path against the bound view model's declaration.
+    ///
+    /// The rules, in order:
+    /// * a path outside the `vm` namespace is not the model's business;
+    /// * a path the model declares **exactly** must be the kind it
+    ///   declares - a null is allowed (an optional field may be absent);
+    /// * a path **nested under** a declared object or list is allowed:
+    ///   the shape inside is the application's business;
+    /// * anything else is refused.
+    fn check_bound_path(&self, path: &[Segment], value: &Value) -> Result<(), ViewError> {
+        let Some(schema) = self.bound else {
+            return Ok(());
+        };
+        let Some(Segment::Key(first)) = path.first() else {
+            return Ok(());
+        };
+        if first != VM_NAMESPACE {
+            return Ok(());
+        }
+        let dotted = key_path(&path[1..]);
+        if dotted.is_empty() {
+            // The namespace itself: the model's presence is checked when
+            // the model is bound.
+            return Ok(());
+        }
+        let Some((field, exact)) = governing_field(schema, &dotted) else {
+            return Err(ViewError::new(
+                VIEW_RENDER,
+                format!(
+                    "the view model for {:?} does not declare the path {:?}",
+                    self.bound_view.as_deref().unwrap_or("this view"),
+                    dotted
+                ),
+            ));
+        };
+        if exact && !value.is_null() && !field.kind.accepts(value) {
+            return Err(ViewError::new(
+                VIEW_RENDER,
+                format!(
+                    "the view model path {:?} is a {}, not the declared {}",
+                    dotted,
+                    value_kind(value),
+                    field.kind.as_str()
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn eval_operand(&self, op: &Operand) -> Result<Value, ViewError> {
         match op {
-            Operand::Path(p) => self.lookup(p),
-            Operand::Lit(l) => lit_value(l),
+            Operand::Path(p) => self.lookup_var(p),
+            Operand::Lit(l) => Ok(lit_value(l)),
         }
     }
 
-    fn eval_expr(&self, expr: &Expr) -> Value {
+    fn eval_expr(&self, expr: &Expr) -> Result<Value, ViewError> {
         let mut value = match &expr.literal {
             Some(lit) => Value::String(lit.clone()),
-            None => self.lookup(&expr.path),
+            None => self.lookup_var(&expr.path)?,
         };
         for filter in &expr.filters {
             value = if filter.name == "trans" {
@@ -162,26 +288,43 @@ impl<'e> Renderer<'e> {
                 apply_filter(value, filter)
             };
         }
-        value
+        Ok(value)
     }
 
-    fn eval_cond(&self, cond: &Cond) -> bool {
+    fn eval_cond(&self, cond: &Cond) -> Result<bool, ViewError> {
         match cond {
-            Cond::Or(parts) => parts.iter().any(|p| self.eval_cond(p)),
-            Cond::And(parts) => parts.iter().all(|p| self.eval_cond(p)),
-            Cond::Not(inner) => !self.eval_cond(inner),
-            Cond::Cmp { left, op, right } => {
-                let l = self.eval_operand(left);
-                let r = self.eval_operand(right);
-                compare_values(&l, *op, &r)
+            Cond::Or(parts) => {
+                for part in parts {
+                    if self.eval_cond(part)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
             }
-            Cond::Truthy(op) => is_truthy(&self.eval_operand(op)),
+            Cond::And(parts) => {
+                for part in parts {
+                    if !self.eval_cond(part)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            Cond::Not(inner) => Ok(!self.eval_cond(inner)?),
+            Cond::Cmp { left, op, right } => {
+                let l = self.eval_operand(left)?;
+                let r = self.eval_operand(right)?;
+                Ok(compare_values(&l, *op, &r))
+            }
+            Cond::Truthy(op) => Ok(is_truthy(&self.eval_operand(op)?)),
             Cond::Custom { name, args } => {
                 let Some(handler) = self.engine.conditional(name) else {
-                    return false; // unregistered conditionals fail closed
+                    return Ok(false); // unregistered conditionals fail closed
                 };
-                let values: Vec<Value> = args.iter().map(|a| self.eval_operand(a)).collect();
-                handler(&values, &self.root)
+                let mut values = Vec::with_capacity(args.len());
+                for arg in args {
+                    values.push(self.eval_operand(arg)?);
+                }
+                Ok(handler(&values, &self.root))
             }
         }
     }
@@ -237,16 +380,16 @@ impl<'e> Renderer<'e> {
             match node {
                 Node::Text(text) => self.out.push_str(text),
                 Node::Echo(expr) => {
-                    let value = self.eval_expr(expr);
+                    let value = self.eval_expr(expr)?;
                     self.out.push_str(&html_escape(&to_display(&value)));
                 }
                 Node::Raw(expr) => {
-                    let value = self.eval_expr(expr);
+                    let value = self.eval_expr(expr)?;
                     self.out.push_str(&to_display(&value));
                 }
                 Node::If { branches, fallback } => {
                     for (cond, body) in branches {
-                        if self.eval_cond(cond) {
+                        if self.eval_cond(cond)? {
                             self.render_nodes(body)?;
                             continue 'outer;
                         }
@@ -256,12 +399,12 @@ impl<'e> Renderer<'e> {
                     }
                 }
                 Node::Isset { path, body } => {
-                    if !self.lookup(path).is_null() {
+                    if !self.lookup_var(path)?.is_null() {
                         self.render_nodes(body)?;
                     }
                 }
                 Node::Empty { operand, body } => {
-                    if is_empty_value(&self.eval_operand(operand)) {
+                    if is_empty_value(&self.eval_operand(operand)?) {
                         self.render_nodes(body)?;
                     }
                 }
@@ -294,7 +437,7 @@ impl<'e> Renderer<'e> {
                     }
                 }
                 Node::ForEach { vars, source, body, empty } => {
-                    let value = self.eval_operand(source);
+                    let value = self.eval_operand(source)?;
                     let mut items: Vec<(Value, Value)> = Vec::new();
                     match &value {
                         Value::Array(a) => {
@@ -354,6 +497,13 @@ impl<'e> Renderer<'e> {
                         self.out.push_str(content);
                     }
                 }
+                Node::VmBind { model } => {
+                    // The template's whole node tree was already bound
+                    // before the first node rendered; binding again here
+                    // keeps an included template's own declaration
+                    // authoritative for the nodes it contributes.
+                    self.bind_vm(model.as_deref())?;
+                }
                 Node::Csrf => {
                     let token = self.lookup(&[Segment::Key("_csrf".into())]);
                     self.out.push_str(&format!(
@@ -392,25 +542,25 @@ impl<'e> Renderer<'e> {
                     }
                 }
                 Node::Js { expr } => {
-                    let value = self.eval_expr(expr);
+                    let value = self.eval_expr(expr)?;
                     self.out.push_str(&js_encode(&value));
                 }
                 Node::Class { entries } => {
-                    let parts = self.attr_entries(entries);
+                    let parts = self.attr_entries(entries)?;
                     if !parts.is_empty() {
                         self.out
                             .push_str(&format!("class=\"{}\"", html_escape(&parts.join(" "))));
                     }
                 }
                 Node::Style { entries } => {
-                    let parts = self.attr_entries(entries);
+                    let parts = self.attr_entries(entries)?;
                     if !parts.is_empty() {
                         self.out
                             .push_str(&format!("style=\"{}\"", html_escape(&parts.join("; "))));
                     }
                 }
                 Node::AttrIf { attr, cond } => {
-                    if self.eval_cond(cond) {
+                    if self.eval_cond(cond)? {
                         self.out.push_str(attr);
                     }
                 }
@@ -441,7 +591,7 @@ impl<'e> Renderer<'e> {
                 }
                 Node::Include { name, data, only_if_exists, when } => {
                     if let Some(cond) = when {
-                        if !self.eval_cond(cond) {
+                        if !self.eval_cond(cond)? {
                             continue 'outer;
                         }
                     }
@@ -460,7 +610,7 @@ impl<'e> Renderer<'e> {
                     let mut ctx = self.effective_context();
                     if let Some(obj) = ctx.as_object_mut() {
                         for (k, v) in data {
-                            obj.insert(k.clone(), self.eval_operand(v));
+                            obj.insert(k.clone(), self.eval_operand(v)?);
                         }
                     }
                     for hook in self.engine.hooks_for(name) {
@@ -486,7 +636,7 @@ impl<'e> Renderer<'e> {
                     let mut ctx = self.effective_context();
                     if let Some(obj) = ctx.as_object_mut() {
                         for (k, v) in data {
-                            obj.insert(k.clone(), self.eval_operand(v));
+                            obj.insert(k.clone(), self.eval_operand(v)?);
                         }
                     }
                     let default_slot = self.render_capture(body)?;
@@ -535,20 +685,26 @@ impl<'e> Renderer<'e> {
         Ok(())
     }
 
-    fn attr_entries(&self, entries: &[crate::ast::AttrEntry]) -> Vec<String> {
-        entries
-            .iter()
-            .filter(|e| e.cond.as_ref().map(|c| self.eval_cond(c)).unwrap_or(true))
-            .map(|e| e.value.clone())
-            .collect()
+    fn attr_entries(&self, entries: &[crate::ast::AttrEntry]) -> Result<Vec<String>, ViewError> {
+        let mut out = Vec::new();
+        for entry in entries {
+            let hit = match entry.cond.as_ref() {
+                Some(cond) => self.eval_cond(cond)?,
+                None => true,
+            };
+            if hit {
+                out.push(entry.value.clone());
+            }
+        }
+        Ok(out)
     }
 
     fn render_for(&mut self, spec: &ForSpec, body: &[Node]) -> Result<(), ViewError> {
         match spec {
             ForSpec::Range { var, from, to } => {
                 let (Some(start), Some(end)) = (
-                    self.eval_operand(from).as_f64(),
-                    self.eval_operand(to).as_f64(),
+                    self.eval_operand(from)?.as_f64(),
+                    self.eval_operand(to)?.as_f64(),
                 ) else {
                     return Ok(());
                 };
@@ -578,10 +734,10 @@ impl<'e> Renderer<'e> {
                         format!("loop {var} has a zero step and would never terminate"),
                     ));
                 }
-                let mut i = self.eval_operand(init).as_f64().unwrap_or(0.0);
+                let mut i = self.eval_operand(init)?.as_f64().unwrap_or(0.0);
                 let mut count = 0usize;
                 loop {
-                    let bound_value = self.eval_operand(bound);
+                    let bound_value = self.eval_operand(bound)?;
                     let var_value = num_value(i);
                     if !compare_values(&var_value, *op, &bound_value) {
                         break;
