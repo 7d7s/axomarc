@@ -15,13 +15,13 @@ against a live MySQL 8.0.44.
 
 | Status | Rows | Meaning |
 |---|---:|---|
-| VERIFIED | 87 | the behaviour is implemented and an executed case proves it |
+| VERIFIED | 88 | the behaviour is implemented and an executed case proves it |
 | PARTIAL | 18 | the core is proven; a named sub-feature is missing or diverges |
 | EXCLUDED_BY_DESIGN | 4 | a deliberate exclusion with the alternative stated |
 | OPEN | 2 | a Laravel capability with no Kelson equivalent yet |
-| **Total** | **111** | |
+| **Total** | **112** | |
 
-Of the 111 rows, **109 carry an executed case**
+Of the 112 rows, **110 carry an executed case**
 and 2 do not (the OPEN rows).
 
 | Category | Rows |
@@ -30,7 +30,7 @@ and 2 do not (the OPEN rows).
 | eloquent | 30 |
 | migrations | 12 |
 | mysql-8-native | 4 |
-| production | 16 |
+| production | 17 |
 | query-builder | 32 |
 | schema | 9 |
 | transactions | 3 |
@@ -108,6 +108,7 @@ competitive claim. Each one is an executed case, not a claim.
 | LDB-109 | A deployment selects a configuration preset | the profile is a LAYER (profile < package defaults < config file < .env < environment), it is schema-checked on its own, a named-but-missing profile refuses the boot, and the effective profile is recorded and reported by kelson env | `the_profile_fills_the_keys_the_file_omits; a_named_profile_that_is_missing_refuses_the_load; a_profile_with_an_unknown_key_is_refused; the_file_can_name_its_own_profile` |
 | LDB-110 | The infrastructure driver is chosen by configuration | the selection is a REGISTRY with a capability manifest (is the cache shared across the instances?), an unknown name is refused with the list of what IS registered, and an application can register its own driver - the selection used to be an implicit environment variable read at one place in the boot | `a_registered_driver_resolves_and_activates; an_unregistered_name_refuses_and_lists_what_is_registered; activating_an_unregistered_name_leaves_the_active_driver_alone; an_application_can_replace_a_built_in_driver; the_cache_section_selects_the_driver; an_unknown_cache_driver_refuses_the_load` |
 | LDB-111 | The cache driver can be changed by the environment at runtime | the swap needs NO REDEPLOY - the poller notices the edited file and the next cache read goes to the new driver; a driver is a RECIPE built when it is selected (a deployment that runs on the local cache never opens the shared one), a refused swap leaves the previous driver active (fail-closed), and registry.swaps() is the operator's evidence that the change took effect | `activating_a_driver_swaps_the_runtime_holder; a_reload_swaps_the_active_cache_driver_under_the_running_service; a_reload_that_names_an_unregistered_driver_keeps_the_current_one; the_service_follows_a_driver_swap; the_holder_is_a_port_so_a_consumer_follows_the_swap; the_recipe_runs_when_the_driver_is_selected_not_when_it_is_registered` |
+| LDB-112 | A view's presentation state, kept out of the template | the view's data requirements are DECLARED and CHECKED - a required field that is missing and a field whose value is not the kind it declares are both refused (VIEW-MODEL) before the template runs, so a typo in a view's data contract is a render error instead of an empty string; the JSON escape hatch is explicit and the declared fields win a collision | `a_view_model_declares_its_fields; a_view_model_serialises_to_the_context; the_escape_hatch_merges_undeclared_json; a_missing_required_field_is_refused; a_field_of_the_wrong_type_is_refused; the_declared_kinds_accept_the_values_they_describe` |
 
 ## 6. The divergences a Laravel developer must know about
 

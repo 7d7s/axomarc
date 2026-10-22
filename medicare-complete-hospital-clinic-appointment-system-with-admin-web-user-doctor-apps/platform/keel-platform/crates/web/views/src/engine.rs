@@ -31,6 +31,9 @@ pub const VIEW_NOT_FOUND: &str = "VIEW-NOT-FOUND";
 pub const VIEW_RENDER: &str = "VIEW-RENDER";
 pub const VIEW_CACHE: &str = "VIEW-CACHE";
 pub const VIEW_LOOP: &str = "VIEW-LOOP";
+/// A view model that does not honour its own declaration (a missing
+/// required field, a field of the wrong kind).
+pub const VIEW_MODEL: &str = "VIEW-MODEL";
 
 /// One views failure (code + human-readable message).
 #[derive(Debug, Clone, PartialEq, Eq)]

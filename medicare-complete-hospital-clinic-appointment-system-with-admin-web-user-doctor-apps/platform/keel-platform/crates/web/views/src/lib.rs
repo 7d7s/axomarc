@@ -29,6 +29,7 @@ pub mod engine;
 pub mod expr;
 mod parser;
 mod render;
+pub mod viewmodel;
 
 pub use ast::{AttrEntry, ForSpec, LoopVars, Node, Template};
 pub use engine::{
@@ -38,6 +39,9 @@ pub use engine::{
 pub use expr::{
     html_escape, parse_cond, parse_echo, parse_operand_str, parse_path, to_display, CmpOp, Cond,
     Expr, Filter, Lit, Operand, Segment,
+};
+pub use viewmodel::{
+    check_schema, schema_field, value_at, view_model_value, FieldKind, FieldSchema, ViewModel,
 };
 
 /// Maximum iterations for @for/@foreach/@forelse before VIEW-LOOP
