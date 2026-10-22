@@ -159,9 +159,14 @@ impl Provider for KernelProvider {
 /// Platform phase: framework services (cache, notify hub). CommandBus is built in
 /// the Modules phase because handlers are module-owned.
 pub struct PlatformProvider {
-    /// Optional Redis cache (S10 B-12). When absent, the cache port stays on
-    /// the in-memory adapter (single node; degraded boot, D-52).
-    pub redis: Option<Arc<kelson_cache_redis::RedisCache>>,
+    /// The cache driver the CONFIGURATION selected, through the driver
+    /// registry.
+    ///
+    /// The registry carries the selection, the capability manifest (is the
+    /// cache SHARED across the instances?) and the active store. The
+    /// selection used to be an implicit environment variable read at the
+    /// boot, with no way to see which driver was active.
+    pub cache_registry: kelson_caching::CacheDriverRegistry,
     /// Wave 6 P3: the boot-loaded message catalog — the notify hub
     /// resolves notification strings through the same catalog as views
     /// and validation.
@@ -240,15 +245,21 @@ impl Provider for PlatformProvider {
         Phase::Platform
     }
     fn init(&self, r: &mut ServiceRegistry) -> Result<(), BootError> {
-        let memory = kelson_cache_memory::MemoryCache::shared(4096);
-        r.insert("cache.memory", memory.clone())?;
-        let port: Arc<dyn kelson_caching::CachePort> = match &self.redis {
-            Some(redis) => {
-                r.insert("cache.redis", redis.clone())?;
-                redis.clone()
-            }
-            None => memory,
-        };
+        // The CONFIGURED driver is the cache port: the registry is the
+        // selection, and the active driver provides the store. A deployment
+        // that selected a shared driver gets the shared cache - and one that
+        // selected the process-local one gets that, deliberately.
+        let port: Arc<dyn kelson_caching::CachePort> = self
+            .cache_registry
+            .active_store()
+            .map_err(|e| BootError::ProviderFailed {
+                provider: "platform.cache".to_string(),
+                source: e.public_message,
+            })?
+            .ok_or_else(|| BootError::ProviderFailed {
+                provider: "platform.cache".to_string(),
+                source: "no cache driver is active (the boot selects one)".to_string(),
+            })?;
         r.insert(
             "cache.service",
             Arc::new(kelson_caching::CacheService::new(port.clone())),

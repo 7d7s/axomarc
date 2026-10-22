@@ -510,24 +510,60 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     host.add_provider(Box::new(
         kelson_observability::ObservabilityProvider::from_runtime(telemetry_runtime.clone()),
     ));
-    // S10 B-12: optional Redis cache. REDIS_URL present + reachable -> redis
-    // backs the cache port; otherwise the port stays in-memory (D-52 parity).
-    let redis_cache = match std::env::var("REDIS_URL") {
-        Ok(url) => match kelson_cache_redis::RedisCache::connect(&url) {
-            Ok(cache) => {
-                tracing::info!("cache backend: redis");
-                Some(Arc::new(cache))
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e.public_message,
-                    "redis unreachable; cache stays in-memory"
+    // The cache driver is CHOSEN BY CONFIGURATION through the driver
+    // registry: `[cache] driver` selects it (memory | redis), and the
+    // registry carries the capability manifest the deployment can ask about
+    // (is the cache shared across the instances?). The selection used to be
+    // an implicit environment variable read here, with no way to see which
+    // driver was active.
+    let mut cache_registry = kelson_caching::CacheDriverRegistry::new();
+    match cfg.cache().driver {
+        kelson_config::CacheDriver::Memory => {
+            let memory = kelson_cache_memory::MemoryCache::shared(4_096);
+            let store: Arc<dyn kelson_caching::CachePort> = memory;
+            cache_registry.register_active(kelson_caching::CacheDriver::new(
+                "memory",
+                kelson_caching::CacheCapabilities::process_local(4_096),
+                store,
+            ));
+        }
+        kelson_config::CacheDriver::Redis => {
+            // The shared driver NEEDS its endpoint: a deployment that
+            // selected it and gave no URL is refused rather than silently
+            // served a process-local cache.
+            let Some(url) = cfg
+                .cache()
+                .redis_url
+                .clone()
+                .or_else(|| std::env::var("REDIS_URL").ok())
+            else {
+                return Err(
+                    "the cache driver is `redis` but no endpoint was configured \
+                     ([cache].redis_url or KEEL_CACHE_REDIS_URL)"
+                        .to_string()
+                        .into(),
                 );
-                None
-            }
-        },
-        Err(_) => None,
-    };
+            };
+            let cache = kelson_cache_redis::RedisCache::connect(&url).map_err(|e| {
+                format!("the cache driver `redis` is unreachable: {e}").to_string()
+            })?;
+            let store: Arc<dyn kelson_caching::CachePort> = Arc::new(cache);
+            cache_registry.register_active(kelson_caching::CacheDriver::new(
+                "redis",
+                kelson_caching::CacheCapabilities::shared(),
+                store,
+            ));
+        }
+    }
+    tracing::info!(
+        driver = %cache_registry
+            .active()
+            .map_err(|e| e.public_message)?
+            .map(|d| d.name().to_string())
+            .unwrap_or_default(),
+        shared = cache_registry.active_is_shared().unwrap_or(false),
+        "cache backend: the configured driver"
+    );
 
     // F-3 Phase 3: the rate-limit buckets are shared when Redis is reachable.
     // The documented topology scales the API to several replicas, and an
@@ -584,7 +620,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }));
     host.add_provider(Box::new(KernelProvider { pool: pool.clone() }));
     host.add_provider(Box::new(PlatformProvider {
-        redis: redis_cache,
+        cache_registry,
+
         messages: messages.clone(),
         notifications: notification_store.clone(),
         views: views.clone(),

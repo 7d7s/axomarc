@@ -15,13 +15,13 @@ against a live MySQL 8.0.44.
 
 | Status | Rows | Meaning |
 |---|---:|---|
-| VERIFIED | 85 | the behaviour is implemented and an executed case proves it |
+| VERIFIED | 86 | the behaviour is implemented and an executed case proves it |
 | PARTIAL | 18 | the core is proven; a named sub-feature is missing or diverges |
 | EXCLUDED_BY_DESIGN | 4 | a deliberate exclusion with the alternative stated |
 | OPEN | 2 | a Laravel capability with no Kelson equivalent yet |
-| **Total** | **109** | |
+| **Total** | **110** | |
 
-Of the 109 rows, **107 carry an executed case**
+Of the 110 rows, **108 carry an executed case**
 and 2 do not (the OPEN rows).
 
 | Category | Rows |
@@ -30,7 +30,7 @@ and 2 do not (the OPEN rows).
 | eloquent | 30 |
 | migrations | 12 |
 | mysql-8-native | 4 |
-| production | 14 |
+| production | 15 |
 | query-builder | 32 |
 | schema | 9 |
 | transactions | 3 |
@@ -106,6 +106,7 @@ competitive claim. Each one is an executed case, not a claim.
 | LDB-107 | A raw expression in a WHERE / HAVING / ORDER BY, and a derived table | the raw text is VALIDATED (no statement separator, no comment marker, no unbalanced quote, no statement keyword) and the values are BOUND, so the escape cannot smuggle a statement and cannot interpolate a value | `a_statement_separator_is_refused; mysql_native_an_app_can_expand_a_json_document_with_json_table` |
 | LDB-108 | A custom query that is still tenant-scoped | the app's statement does not mention the tenant at all, and the other tenant's matching rows are still hidden - the scope is applied where the guarantee lives, and a statement over a different table is refused | `mysql_native_the_store_scopes_a_raw_statement_the_app_built` |
 | LDB-109 | A deployment selects a configuration preset | the profile is a LAYER (profile < package defaults < config file < .env < environment), it is schema-checked on its own, a named-but-missing profile refuses the boot, and the effective profile is recorded and reported by kelson env | `the_profile_fills_the_keys_the_file_omits; a_named_profile_that_is_missing_refuses_the_load; a_profile_with_an_unknown_key_is_refused; the_file_can_name_its_own_profile` |
+| LDB-110 | The infrastructure driver is chosen by configuration | the selection is a REGISTRY with a capability manifest (is the cache shared across the instances?), an unknown name is refused with the list of what IS registered, and an application can register its own driver - the selection used to be an implicit environment variable read at one place in the boot | `a_registered_driver_resolves_and_activates; an_unregistered_name_refuses_and_lists_what_is_registered; activating_an_unregistered_name_leaves_the_active_driver_alone; an_application_can_replace_a_built_in_driver; the_cache_section_selects_the_driver; an_unknown_cache_driver_refuses_the_load` |
 
 ## 6. The divergences a Laravel developer must know about
 

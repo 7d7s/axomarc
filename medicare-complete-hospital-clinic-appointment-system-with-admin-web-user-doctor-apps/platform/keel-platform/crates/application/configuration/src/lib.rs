@@ -126,6 +126,32 @@ fn default_true() -> bool {
     true
 }
 
+/// Which cache driver the deployment uses.
+///
+/// A typed enum, so an unknown driver refuses the config load (fail-closed)
+/// rather than silently falling back to the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CacheDriver {
+    /// A process-local cache: fast, single-node, not shared.
+    #[default]
+    Memory,
+    /// A shared cache (Redis): consistent across the instances.
+    Redis,
+}
+
+/// The cache section: the driver and its endpoint.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CacheSection {
+    /// Which cache driver the deployment uses.
+    #[serde(default)]
+    pub driver: CacheDriver,
+    /// The shared cache's endpoint (the `redis` driver's URL). The
+    /// environment may override it (`KEEL_CACHE_REDIS_URL`).
+    #[serde(default)]
+    pub redis_url: Option<String>,
+}
+
 /// `[database].driver` (Wave 9 B-31, docs/19): which first-class SQL driver
 /// boot selects for the probe, the migration runner and the store set.
 /// `postgres` (the default) is today's byte-identical path; `mysql` switches
@@ -146,7 +172,7 @@ pub enum DatabaseDriver {
 /// unchanged — the section adds a key, it does not move the old ones.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatabaseSection {
-    /// Which driver boot selects (serde-default: `postgres`).
+/// Which driver boot selects (serde-default: `postgres`).
     #[serde(default)]
     pub driver: DatabaseDriver,
     /// The connection settings themselves, flattened into `[database]`.
@@ -886,6 +912,9 @@ pub struct PlatformConfig {
     pub storage: StorageConfig,
     #[serde(default)]
     pub limits: LimitsConfig,
+    /// The cache section: which cache driver the deployment uses.
+    #[serde(default)]
+    pub cache: CacheSection,
     /// Sentinel (S5) telemetry section. Kept as an opaque JSON value because
     /// the application layer cannot depend on the observability class
     /// (dependency matrix); `kelson-observability::TelemetryConfig::from_section`
@@ -962,6 +991,7 @@ pub const CONFIG_SCHEMA: &[(&str, &[&str])] = &[
     ("http", &["problem_json", "encrypt_cookies", "trusted_proxies"]),
     ("i18n", &["default", "paths"]),
     ("identity", &["memory", "time", "parallelism"]),
+    ("cache", &["driver", "redis_url"]),
     ("limits", &["default_monthly_operations"]),
     ("mail", &["default", "mailers"]),
     ("otp", &["provider", "code_ttl_secs", "max_attempts"]),
@@ -1221,6 +1251,9 @@ impl PlatformConfig {
                 }
             }
         }
+        if let Some(v) = get("KEEL_CACHE_REDIS_URL") {
+            self.cache.redis_url = Some(v);
+        }
         if let Some(v) = get("KEEL_AUTH_JWT_SECRET") {
             self.auth.jwt_secret = v;
         }
@@ -1348,6 +1381,10 @@ impl FrozenConfig {
         &self.0.storage
     }
 
+    pub fn cache(&self) -> &CacheSection {
+        &self.0.cache
+    }
+
     pub fn limits(&self) -> &LimitsConfig {
         &self.0.limits
     }
@@ -1430,6 +1467,42 @@ pub fn mask_url_password(url: &str) -> String {
     masked.push_str("[REDACTED]");
     masked.push_str(&rest[at..]);
     masked
+}
+
+#[cfg(test)]
+mod cache_section_tests {
+    use super::*;
+
+    /// The cache section selects the driver by configuration, and the
+    /// driver is a TYPED enum: an unknown name refuses the load rather
+    /// than falling back to the default.
+    #[test]
+    fn the_cache_section_selects_the_driver() {
+        let raw = "[cache]\ndriver = \"redis\"\nredis_url = \"redis://127.0.0.1:6379\"\n";
+        let cfg: PlatformConfig = toml::from_str(raw).expect("the section parses");
+        assert_eq!(cfg.cache.driver, CacheDriver::Redis);
+        assert_eq!(
+            cfg.cache.redis_url.as_deref(),
+            Some("redis://127.0.0.1:6379")
+        );
+    }
+
+    #[test]
+    fn the_cache_section_defaults_to_the_process_local_driver() {
+        let cfg: PlatformConfig = toml::from_str("[app]\nname = \"x\"\n").expect("it parses");
+        assert_eq!(cfg.cache.driver, CacheDriver::Memory);
+        assert!(cfg.cache.redis_url.is_none());
+    }
+
+    #[test]
+    fn an_unknown_cache_driver_refuses_the_load() {
+        let raw = "[cache]\ndriver = \"memcached\"\n";
+        let err = toml::from_str::<PlatformConfig>(raw).expect_err("an unknown driver is refused");
+        assert!(
+            err.to_string().contains("memcached"),
+            "the refusal must name the driver: {err}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1873,7 +1946,7 @@ mod phase5_config_schema_tests {
             required: false,
         })
         .expect("database serializes");
-        let sections: [(&str, serde_json::Value); 11] = [
+        let sections: [(&str, serde_json::Value); 12] = [
             (
                 "app",
                 serde_json::to_value(AppConfig::default()).expect("app"),
@@ -1890,6 +1963,10 @@ mod phase5_config_schema_tests {
             (
                 "identity",
                 serde_json::to_value(IdentitySection::default()).expect("identity"),
+            ),
+            (
+                "cache",
+                serde_json::to_value(CacheSection::default()).expect("cache"),
             ),
             (
                 "limits",

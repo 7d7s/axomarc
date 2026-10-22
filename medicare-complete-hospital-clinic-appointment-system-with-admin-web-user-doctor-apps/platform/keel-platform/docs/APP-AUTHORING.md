@@ -137,6 +137,41 @@ failed to start.
 `kelson env` reports the active profile, so an operator can always see
 which preset an instance is running.
 
+## 4c. Choosing your infrastructure, and plugging in your own
+
+The infrastructure a deployment uses is **chosen by configuration**, through
+a **driver registry**: a named driver, a capability manifest, and an active
+instance.
+
+```toml
+[cache]
+driver = "redis"                 # memory | redis - a typed enum, so an
+redis_url = "redis://127.0.0.1:6379"   # unknown name refuses the load
+```
+
+```rust
+let mut registry = CacheDriverRegistry::new();
+registry.register_active(CacheDriver::new(
+    "memory",
+    CacheCapabilities::process_local(4_096),
+    Arc::new(MemoryCache::shared(4_096)),
+));
+registry.driver("redis")?;   // fail-closed: the refusal names the name
+                              // and lists what IS registered
+```
+
+Three properties an application can rely on:
+
+- **fail-closed** - a name that is not registered is an error, never a
+  silent fallback to a default (a deployment that asked for a shared cache
+  and got a process-local one is the failure mode that costs a day);
+- **the capability manifest** - `active_is_shared()` answers "is this
+  cache shared across my instances?", which is the property a multi-node
+  deployment needs to check and cannot assume;
+- **your own driver** - an application registers its own with the same
+  shape as the built-in ones, so a bespoke cache is a registration, not a
+  fork.
+
 ## 5. The guarantees your application inherits
 
 - **Tenant isolation** — every query and every write is tenant-scoped; a
