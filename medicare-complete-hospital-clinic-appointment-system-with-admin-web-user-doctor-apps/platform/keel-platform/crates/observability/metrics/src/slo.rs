@@ -196,10 +196,8 @@ pub fn evaluate(snapshot: &MetricsSnapshot, slo: &Slo) -> SloStatus {
     }
     // At risk: within 20 % of the ceiling (the "at most" shape; the other
     // comparisons have no meaningful approach to a boundary).
-    if slo.comparison == Comparison::AtMost && slo.target > 0.0 {
-        if value >= slo.target * 0.8 {
-            return SloStatus::AtRisk;
-        }
+    if slo.comparison == Comparison::AtMost && slo.target > 0.0 && value >= slo.target * 0.8 {
+        return SloStatus::AtRisk;
     }
     SloStatus::Met
 }

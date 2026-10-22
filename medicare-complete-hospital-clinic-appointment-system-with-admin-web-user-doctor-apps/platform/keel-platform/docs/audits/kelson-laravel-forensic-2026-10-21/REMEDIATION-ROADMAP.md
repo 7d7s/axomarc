@@ -151,6 +151,7 @@ named cases are green.
 | KFA-024 | VERIFIED FIX | The cold-start migration race: the loser now waits for the holder and re-checks the state, so a rolling deploy where every instance boots at once no longer fails N-1 of them (18/30 failing before, 30/30 green after) |
 | KFA-025 | VERIFIED FIX | The profile layer read `KEEL_APP_PROFILE` outside the sanctioned boot paths, so the lint gate was red. The read now happens in the configuration crate's boot path and the profile module only interprets the value - `cargo xtask lint` is clean again |
 | KFA-026 | VERIFIED FIX | The per-tenant locale chain tripped `clippy::manual_flatten`, and the CI clippy step is blocking - so every build was red at that step. The chain iterates the flattened candidates now (the same fall-through), and the workspace clippy gate is green |
+| KFA-027 | VERIFIED FIX | The workspace clippy gate had 16 default-on lint errors across six crates (the toolchain move to 1.92 added lints the slices never ran). Every one is fixed with the lint's own suggestion and the behaviour preserved - the cost budget's ceilings, the IPv4 parse (which was already the range check), the SLO's nested condition, the bearer guard's write-only strategy, the renderer's eight arguments. The gate is green again |
 
 ---
 

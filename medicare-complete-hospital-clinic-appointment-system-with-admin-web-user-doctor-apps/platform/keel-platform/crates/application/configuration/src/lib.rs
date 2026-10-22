@@ -1181,7 +1181,7 @@ impl PlatformConfig {
         // An unknown KEEL_DATABASE_DRIVER is refused (fail-closed): a typo
         // must not silently leave the driver on its default and open the
         // wrong engine.
-        if let Some(raw) = std::env::var("KEEL_DATABASE_DRIVER").ok() {
+        if let Ok(raw) = std::env::var("KEEL_DATABASE_DRIVER") {
             let normalized = raw.to_ascii_lowercase();
             if !matches!(
                 normalized.as_str(),

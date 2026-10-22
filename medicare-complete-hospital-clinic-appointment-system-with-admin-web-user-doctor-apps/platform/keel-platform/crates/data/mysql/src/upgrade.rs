@@ -212,7 +212,7 @@ where
 
     let mut done: Vec<String> = Vec::new();
     for pair in queued {
-        let verdict = apply_pair(&mut *conn, &pair.migration, &pair.up_sql).await?;
+        let verdict = apply_pair(&mut conn, &pair.migration, &pair.up_sql).await?;
         sqlx::query(&format!(
             "INSERT INTO {} (migration, batch) VALUES (?, ?)",
             crate::pairs::PAIRS_TABLE

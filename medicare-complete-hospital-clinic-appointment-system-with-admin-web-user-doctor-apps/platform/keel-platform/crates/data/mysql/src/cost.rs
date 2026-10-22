@@ -26,7 +26,7 @@ use std::time::Duration;
 use kelson_foundation::{AppError, TenantId};
 
 /// The ceiling one tenant's work may cost.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CostBudget {
     /// The most rows one write may touch. `None` means unbounded.
     pub max_rows_per_write: Option<u64>,
@@ -34,16 +34,6 @@ pub struct CostBudget {
     pub max_statement_elapsed: Option<Duration>,
     /// The most rows one read may return. `None` means unbounded.
     pub max_rows_per_read: Option<u64>,
-}
-
-impl Default for CostBudget {
-    fn default() -> Self {
-        Self {
-            max_rows_per_write: None,
-            max_statement_elapsed: None,
-            max_rows_per_read: None,
-        }
-    }
 }
 
 impl CostBudget {
@@ -69,17 +59,17 @@ impl CostBudget {
 
     /// Whether a write of `rows` rows is within the budget.
     pub fn allows_write(&self, rows: u64) -> bool {
-        self.max_rows_per_write.map_or(true, |max| rows <= max)
+        self.max_rows_per_write.is_none_or(|max| rows <= max)
     }
 
     /// Whether a read of `rows` rows is within the budget.
     pub fn allows_read(&self, rows: u64) -> bool {
-        self.max_rows_per_read.map_or(true, |max| rows <= max)
+        self.max_rows_per_read.is_none_or(|max| rows <= max)
     }
 
     /// Whether a statement that took `elapsed` is within the budget.
     pub fn allows_elapsed(&self, elapsed: Duration) -> bool {
-        self.max_statement_elapsed.map_or(true, |max| elapsed <= max)
+        self.max_statement_elapsed.is_none_or(|max| elapsed <= max)
     }
 }
 

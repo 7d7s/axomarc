@@ -113,6 +113,14 @@ impl<V: BearerVerifier> BearerGuard<V> {
     pub fn new(verifier: Arc<V>, strategy: GuardStrategy) -> Self {
         Self { verifier, strategy }
     }
+
+    /// The strategy this guard was declared with.
+    ///
+    /// The host says whether its verifier checks a personal access token or
+    /// a JWT; an application can ask the guard which one it is bound to.
+    pub fn strategy(&self) -> GuardStrategy {
+        self.strategy
+    }
 }
 
 impl<V: BearerVerifier> Guard for BearerGuard<V> {

@@ -1283,6 +1283,17 @@ fn html_response(
 
 // ---------------------------------------------------- Wave 2 response kinds
 
+/// The resolved caller a route renders for: the session, the tenant and
+/// the view authorisation the middleware produced for this request.
+///
+/// They travel together because a renderer needs all of them or none of
+/// them - and one value keeps the renderer's signature honest.
+struct RenderCaller {
+    session: Option<ResolvedSession>,
+    tenant: Option<TenantId>,
+    view_auth: Option<String>,
+}
+
 /// Render a successful operation result according to the route's declared
 /// response kind (19-PARITY "Response kinds"). Returns the response plus
 /// the exact bytes it was built from (when buffered) so the caching step
@@ -1292,12 +1303,15 @@ fn render_success(
     dispatch: &RouteDispatch,
     headers: &HeaderMap,
     request_target: &str,
-    session: Option<ResolvedSession>,
-    tenant: Option<TenantId>,
-    view_auth: Option<String>,
+    caller: RenderCaller,
     result: serde_json::Value,
 ) -> Result<(axum::response::Response, Option<Vec<u8>>), kelson_foundation::AppError> {
     use kelson_foundation::AppError;
+    let RenderCaller {
+        session,
+        tenant,
+        view_auth,
+    } = caller;
     match dispatch.response {
         ResponseKind::Html => {
             // The route was registered on the path, never on the query —
@@ -2145,9 +2159,11 @@ async fn graph_dispatch(
                 &dispatch,
                 &headers,
                 &request_target,
-                resolved_session,
-                Some(tenant),
-                view_auth,
+                RenderCaller {
+                    session: resolved_session,
+                    tenant: Some(tenant),
+                    view_auth,
+                },
                 outcome.result,
             ) {
                 Ok(rendered) => rendered,

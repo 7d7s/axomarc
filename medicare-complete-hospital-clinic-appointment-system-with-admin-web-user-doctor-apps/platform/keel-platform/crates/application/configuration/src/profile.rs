@@ -125,10 +125,10 @@ pub(crate) fn apply_named(
 
     // The file wins per key: the profile fills only the keys the file
     // omits.
-    Ok(toml::to_string(&crate::package_defaults::merge_file_over(
+    toml::to_string(&crate::package_defaults::merge_file_over(
         &profile, file,
     ))
-    .map_err(|e| AppError::validation(format!("the profile merge failed: {e}")))?)
+    .map_err(|e| AppError::validation(format!("the profile merge failed: {e}")))
 }
 
 #[cfg(test)]

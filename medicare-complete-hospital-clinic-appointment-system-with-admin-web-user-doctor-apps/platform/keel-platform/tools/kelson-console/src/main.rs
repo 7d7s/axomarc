@@ -2321,6 +2321,10 @@ url = "postgres://user:db-password@localhost:5432/keel"
 // config nor the WASM artifacts the boot loads.
 
 /// The port the demo's config listens on.
+///
+/// A test helper: the container case checks that the image exposes the
+/// port the config listens on.
+#[cfg(test)]
 fn configured_port(root: &Path) -> u16 {
     let raw = std::fs::read_to_string(root.join("config").join("dev.toml"))
         .expect("the dev config is readable");
@@ -2339,6 +2343,10 @@ fn configured_port(root: &Path) -> u16 {
 ///
 /// The pin lives one level above the build context (the Dockerfile's context
 /// is the crate workspace), so the lookup walks up until it finds it.
+///
+/// A test helper: the container case checks that the image builds with the
+/// pinned toolchain.
+#[cfg(test)]
 fn pinned_toolchain(root: &Path) -> String {
     let mut dir = Some(root);
     while let Some(current) = dir {

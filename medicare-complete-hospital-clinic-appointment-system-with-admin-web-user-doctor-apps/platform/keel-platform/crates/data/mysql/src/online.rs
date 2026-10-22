@@ -204,7 +204,7 @@ where
         })?;
 
     // 3. the copy, chunked and ordered by the key.
-    let columns: Vec<String> = column_names(&mut *conn, &change.table).await?;
+    let columns: Vec<String> = column_names(&mut conn, &change.table).await?;
     if columns.is_empty() {
         return Err(AppError::persistence(format!(
             "online change: the table {} has no columns",
@@ -212,7 +212,7 @@ where
         )));
     }
     let column_list = columns.join(", ");
-    let source_rows = count_rows(&mut *conn, &change.table).await?;
+    let source_rows = count_rows(&mut conn, &change.table).await?;
     let mut copied: u64 = 0;
     let mut last_key: Option<String> = None;
     loop {
@@ -251,11 +251,11 @@ where
         // The resume point is the last COPIED key - the shadow's maximum,
         // not the source's (the source still holds every row, so its
         // maximum would skip the rest of the copy).
-        last_key = Some(max_key(&mut *conn, &shadow, &change.key).await?);
+        last_key = Some(max_key(&mut conn, &shadow, &change.key).await?);
     }
 
     // 4. the verification: the shadow must hold exactly what the source held.
-    let shadow_rows = count_rows(&mut *conn, &shadow).await?;
+    let shadow_rows = count_rows(&mut conn, &shadow).await?;
     if shadow_rows != source_rows {
         return Err(AppError::persistence(format!(
             "online change: the shadow holds {shadow_rows} rows but the source holds {source_rows}; \

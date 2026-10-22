@@ -250,7 +250,7 @@ impl std::future::Future for PanicBoundary<'_> {
     type Output = Result<(), AppError>;
 
     fn poll(
-        mut self: std::pin::Pin<&mut Self>,
+        self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         // `PanicBoundary` is Unpin (it holds a `Pin<Box<..>>`), so the inner

@@ -489,12 +489,11 @@ fn parse_ip(text: &str) -> Result<([u8; 16], bool), String> {
     }
     let mut out = [0u8; 16];
     for (i, p) in parts.iter().enumerate() {
+        // A `u8` cannot hold more than 255: the parse IS the range check
+        // ("256" fails to parse, and is refused with the same message).
         let n: u8 = p
             .parse()
             .map_err(|_| format!("not an IPv4 address: {text}"))?;
-        if n > 255 {
-            return Err(format!("not an IPv4 address: {text}"));
-        }
         out[i] = n;
     }
     Ok((out, true))

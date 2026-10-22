@@ -12,7 +12,9 @@ pub mod swappable;
 pub mod plugins;
 pub mod service;
 pub use conformance::cache_contract;
+pub use plugins::{CacheCapabilities, CacheDriver, CacheDriverRegistry};
 pub use service::{CacheGuard, CacheService, TaggedCache};
+pub use swappable::SwappableCache;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CacheName {
@@ -276,13 +278,16 @@ mod tests {
         );
     }
 
+    /// The fake store's entries: the bytes and the TTL the store was given.
+    type FakeEntries = std::collections::BTreeMap<String, (Vec<u8>, Option<u64>)>;
+
     /// Port with a **fake clock** (the atlas's "TTL/fake clock"): the TTL is
     /// honoured against a test-controlled clock, so the lease cases are
     /// deterministic instead of sleeping. A real driver's expiry is proven
     /// separately against a live Redis.
     #[derive(Default)]
     struct FakeClockPort {
-        map: std::sync::Mutex<std::collections::BTreeMap<String, (Vec<u8>, Option<u64>)>>,
+        map: std::sync::Mutex<FakeEntries>,
         now: std::sync::Mutex<u64>,
     }
 
@@ -617,6 +622,3 @@ mod tests {
     }
 }
 
-pub use plugins::{CacheCapabilities, CacheDriver, CacheDriverRegistry};
-
-pub use swappable::SwappableCache;
