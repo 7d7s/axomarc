@@ -893,6 +893,56 @@ impl ModelStore for MySqlModelStore {
         Ok(affected > 0)
     }
 
+
+    /// Run a statement the app built, under this store's tenant scope and
+    /// soft-delete veil.
+    ///
+    /// The scope is applied HERE, by the store, and the statement is
+    /// refused if it reads a table other than the model's - so the escape
+    /// cannot become a way to forget the tenant scope.
+    fn query_raw(
+        &self,
+        model: &ModelDef,
+        tenant: Option<TenantId>,
+        select: Select,
+    ) -> Result<Vec<Record>, AppError> {
+        let table = ident(&model.table)?;
+        match select.source_table() {
+            Some(source) if source.as_str() == table.as_str() => {}
+            Some(other) => {
+                return Err(AppError::validation(format!(
+                    "the statement reads {} but the model is {}: the tenant scope cannot be applied \
+                     to a different table",
+                    other.as_str(),
+                    table.as_str()
+                )))
+            }
+            None => {
+                return Err(AppError::validation(
+                    "a raw statement needs a table to read",
+                ))
+            }
+        }
+
+        let mut select = select;
+        if model.tenant_scoped {
+            match tenant {
+                Some(t) => select = select.tenant_scope(ident("tenant_id")?, t),
+                None => {
+                    // Tenant-scoped model without a tenant: match nothing.
+                    select = select.where_eq(ident("tenant_id")?, Bind::Null);
+                }
+            }
+        }
+        if model.soft_deletes {
+            select = select.where_null(ident("deleted_at")?);
+        }
+
+        let compiled = select.build(&kelson_query::MYSQL)?;
+        let rows = fetch_rows(&self.pool, &compiled)?;
+        map_rows(rows, model)
+    }
+
     fn upsert(
         &self,
         model: &ModelDef,

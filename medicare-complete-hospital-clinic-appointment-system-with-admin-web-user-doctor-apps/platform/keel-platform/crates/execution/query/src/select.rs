@@ -553,6 +553,16 @@ impl Select {
         self
     }
 
+    /// The table the statement selects from, if it has one.
+    ///
+    /// A store applies the tenant scope to a statement it is handed, so it
+    /// must be able to check that the statement reads the model's table
+    /// and not some other one: a scope that lands on the wrong table is a
+    /// tenant-isolation hole.
+    pub fn source_table(&self) -> Option<&Ident> {
+        self.table.as_ref()
+    }
+
     /// Add a **derived table** to the FROM clause.
     ///
     /// The derived table is a validated raw expression (a MySQL

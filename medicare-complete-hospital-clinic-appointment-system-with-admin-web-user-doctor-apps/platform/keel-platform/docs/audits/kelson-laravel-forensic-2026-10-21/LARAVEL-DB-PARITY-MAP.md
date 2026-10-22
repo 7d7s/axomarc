@@ -15,13 +15,13 @@ against a live MySQL 8.0.44.
 
 | Status | Rows | Meaning |
 |---|---:|---|
-| VERIFIED | 83 | the behaviour is implemented and an executed case proves it |
+| VERIFIED | 84 | the behaviour is implemented and an executed case proves it |
 | PARTIAL | 18 | the core is proven; a named sub-feature is missing or diverges |
 | EXCLUDED_BY_DESIGN | 4 | a deliberate exclusion with the alternative stated |
 | OPEN | 2 | a Laravel capability with no Kelson equivalent yet |
-| **Total** | **107** | |
+| **Total** | **108** | |
 
-Of the 107 rows, **105 carry an executed case**
+Of the 108 rows, **106 carry an executed case**
 and 2 do not (the OPEN rows).
 
 | Category | Rows |
@@ -30,7 +30,7 @@ and 2 do not (the OPEN rows).
 | eloquent | 30 |
 | migrations | 12 |
 | mysql-8-native | 4 |
-| production | 12 |
+| production | 13 |
 | query-builder | 32 |
 | schema | 9 |
 | transactions | 3 |
@@ -104,6 +104,7 @@ competitive claim. Each one is an executed case, not a claim.
 | LDB-104 | A one-command capture of the state for a support ticket | the bundle is produced even when the database is down - the moment it is needed - and the schema's version and pending set are in it | `the_diagnostics_bundle_reports_the_state` |
 | LDB-106 | The framework declares its own objectives | the objectives are the framework's, published on /meta/slo and as Prometheus gauges, and the status is COMPUTED from the telemetry, never asserted | `the_slo_surface_declares_the_objectives_and_their_status; every_objective_names_a_metric_the_framework_records` |
 | LDB-107 | A raw expression in a WHERE / HAVING / ORDER BY, and a derived table | the raw text is VALIDATED (no statement separator, no comment marker, no unbalanced quote, no statement keyword) and the values are BOUND, so the escape cannot smuggle a statement and cannot interpolate a value | `a_statement_separator_is_refused; mysql_native_an_app_can_expand_a_json_document_with_json_table` |
+| LDB-108 | A custom query that is still tenant-scoped | the app's statement does not mention the tenant at all, and the other tenant's matching rows are still hidden - the scope is applied where the guarantee lives, and a statement over a different table is refused | `mysql_native_the_store_scopes_a_raw_statement_the_app_built` |
 
 ## 6. The divergences a Laravel developer must know about
 

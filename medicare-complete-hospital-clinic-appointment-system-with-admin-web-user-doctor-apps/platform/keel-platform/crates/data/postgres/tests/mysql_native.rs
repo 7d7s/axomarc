@@ -12,6 +12,8 @@
 
 #![cfg(feature = "pg-tests")]
 
+use kelson_models::store::ModelStore;
+use kelson_models::{FieldDef, FieldType, ModelDef, Record};
 use kelson_query::{CastTarget, Direction, Ident, Select, Value, WindowFunction, WindowSpec, MYSQL};
 use sqlx::{Column, Row};
 use uuid::Uuid;
@@ -511,4 +513,129 @@ async fn mysql_native_an_app_can_expand_a_json_document_with_json_table() {
         .execute(&pool)
         .await
         .expect("the probe table goes away");
+}
+
+/// The escape must not weaken the framework's central guarantee.
+///
+/// An app author who needs a query the typed builder cannot model hands the
+/// statement to the STORE - and the STORE applies the tenant scope, not the
+/// caller. If the caller applied the scope, the escape would be a way to
+/// forget it, and "forgot the tenant scope" is the exact failure the
+/// framework exists to make impossible.
+///
+/// The proof is deliberately blunt: the app's statement does **not** mention
+/// the tenant at all. It filters on a column the app owns. The other
+/// tenant's rows would match that filter - and the store still hides them,
+/// because the scope is applied where the guarantee lives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mysql_native_the_store_scopes_a_raw_statement_the_app_built() {
+    let Some(pool) = pool().await else { return };
+    let table = format!("kelson_rawscope_{}", Uuid::now_v7().simple());
+    sqlx::raw_sql(&format!(
+        "CREATE TABLE {table} (id BINARY(16) NOT NULL PRIMARY KEY, tenant_id BINARY(16) NOT NULL, \
+         amount BIGINT NOT NULL, deleted_at DATETIME(6) NULL)"
+    ))
+    .execute(&pool)
+    .await
+    .expect("the probe table is created");
+
+    let tenant_a = kelson_foundation::TenantId::new();
+    let tenant_b = kelson_foundation::TenantId::new();
+    // Both tenants have rows ABOVE the filter's threshold, so the filter
+    // alone would return both.
+    for tenant in [tenant_a, tenant_b] {
+        for i in 10..13i64 {
+            sqlx::query(&format!(
+                "INSERT INTO {table} (id, tenant_id, amount) VALUES (?, ?, ?)"
+            ))
+            .bind(Uuid::now_v7())
+            .bind(*tenant.as_uuid())
+            .bind(i)
+            .execute(&pool)
+            .await
+            .expect("the probe row inserts");
+        }
+    }
+
+    let model = ModelDef::new("RawScopeProbe", &table)
+        .tenant_scoped()
+        .field(FieldDef::new("id", FieldType::Uuid).required())
+        .field(FieldDef::new("tenant_id", FieldType::Uuid).required())
+        .field(FieldDef::new("amount", FieldType::Int64).required())
+        .field(FieldDef::new("deleted_at", FieldType::Timestamp));
+
+    let store = kelson_mysql::MySqlModelStore::new(pool.clone());
+
+    // The app's custom statement: a filter the typed builder does not
+    // model (a raw expression), and NO tenant predicate - the app is not
+    // responsible for one.
+    let filter = kelson_query::SqlExpr::raw("amount >= 10").expect("accepted");
+    let statement = Select::from_table(id(&table))
+        .where_expr(filter)
+        .select(vec![id("id"), id("amount")]);
+
+    // Tenant A sees ONLY its own rows. Both tenants hold three rows that
+    // match the app's filter, so the count IS the proof: the filter alone
+    // would have returned six.
+    let rows = store
+        .query_raw(&model, Some(tenant_a), statement.clone())
+        .expect("the scoped raw query runs");
+    assert_eq!(
+        rows.len(),
+        3,
+        "the store returned only the caller's rows: {}",
+        rows.len()
+    );
+
+    // Tenant B sees only its own rows - the same statement.
+    let rows = store
+        .query_raw(&model, Some(tenant_b), statement.clone())
+        .expect("the scoped raw query runs");
+    assert_eq!(rows.len(), 3);
+
+    // A tenant-scoped model read with NO tenant matches nothing (the same
+    // posture every other path has) rather than everything.
+    let rows = store
+        .query_raw(&model, None, statement.clone())
+        .expect("the scoped raw query runs");
+    assert!(
+        rows.is_empty(),
+        "a tenant-scoped model without a tenant must match nothing: {:?}",
+        rows.len()
+    );
+
+    // A statement that reads a DIFFERENT table is refused: the scope cannot
+    // land on the wrong relation.
+    let foreign = Select::from_table(id("tenants")).select(vec![id("id")]);
+    let refusal = store
+        .query_raw(&model, Some(tenant_a), foreign)
+        .expect_err("a statement over another table is refused");
+    assert!(
+        refusal.public_message.contains("cannot be applied"),
+        "{}",
+        refusal.public_message
+    );
+
+    // And the in-memory store refuses the escape outright rather than
+    // pretending: it cannot evaluate SQL.
+    let fake = kelson_models::conformance::appointments_model();
+    let refusal = fake_store_refusal(&fake);
+    assert!(
+        refusal.contains("cannot evaluate"),
+        "the in-memory store must say so: {refusal}"
+    );
+
+    sqlx::raw_sql(&format!("DROP TABLE {table}"))
+        .execute(&pool)
+        .await
+        .expect("the probe table goes away");
+}
+
+/// The in-memory store's refusal (the trait's default implementation).
+fn fake_store_refusal(model: &ModelDef) -> String {
+    let fake = kelson_models::store::InMemoryModelStore::new();
+    let statement = Select::from_table(id("anything")).select(vec![id("id")]);
+    fake.query_raw(model, None, statement)
+        .expect_err("the in-memory store refuses")
+        .public_message
 }

@@ -322,6 +322,35 @@ pub trait ModelStore: Send + Sync {
         tenant: Option<TenantId>,
     ) -> Result<bool, AppError>;
 
+    /// Run a statement the app built, under the SAME tenant scope and the
+    /// SAME soft-delete veil every other path applies.
+    ///
+    /// This is the escape for the queries the typed builder cannot model (a
+    /// MySQL `JSON_TABLE` expansion, a custom aggregate, a bespoke window
+    /// frame). The statement is built with `kelson-query` — so a raw
+    /// expression inside it is validated and its values are bound — and the
+    /// STORE applies the scope, not the caller.
+    ///
+    /// That ownership is the point: if the caller applied the scope, the
+    /// escape would be a way to forget it, and "forgot the tenant scope" is
+    /// the exact failure the framework exists to make impossible. The store
+    /// also refuses a statement that reads a table other than the model's,
+    /// so the scope cannot land on the wrong relation.
+    ///
+    /// The default implementation refuses: a store that cannot evaluate SQL
+    /// (the in-memory one) must say so rather than pretend.
+    fn query_raw(
+        &self,
+        model: &ModelDef,
+        tenant: Option<TenantId>,
+        select: kelson_query::Select,
+    ) -> Result<Vec<Record>, AppError> {
+        let _ = (model, tenant, select);
+        Err(AppError::validation(
+            "this store cannot evaluate a raw statement (it needs a SQL backend)",
+        ))
+    }
+
     /// Insert-or-merge keyed on `conflict` field values. Returns the stored
     /// row either way.
     fn upsert(

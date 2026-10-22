@@ -97,6 +97,18 @@ A raw expression that tries to smuggle a statement is refused **at build
 time**, so an application author cannot write an injection through it even
 by accident.
 
+And when the query goes through the **store** - the path an application
+actually takes - the store applies the tenant scope and the soft-delete
+veil, and refuses a statement that reads a table other than the model's:
+
+```rust
+let rows = store.query_raw(&model, Some(tenant), statement)?;
+```
+
+The application's statement does not have to mention the tenant, and the
+other tenant's rows are still hidden: the scope is applied where the
+guarantee lives, not where it can be forgotten.
+
 ## 5. The guarantees your application inherits
 
 - **Tenant isolation** — every query and every write is tenant-scoped; a
