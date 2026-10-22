@@ -15,13 +15,13 @@ against a live MySQL 8.0.44.
 
 | Status | Rows | Meaning |
 |---|---:|---|
-| VERIFIED | 81 | the behaviour is implemented and an executed case proves it |
+| VERIFIED | 83 | the behaviour is implemented and an executed case proves it |
 | PARTIAL | 18 | the core is proven; a named sub-feature is missing or diverges |
-| EXCLUDED_BY_DESIGN | 5 | a deliberate exclusion with the alternative stated |
+| EXCLUDED_BY_DESIGN | 4 | a deliberate exclusion with the alternative stated |
 | OPEN | 2 | a Laravel capability with no Kelson equivalent yet |
-| **Total** | **106** | |
+| **Total** | **107** | |
 
-Of the 106 rows, **104 carry an executed case**
+Of the 107 rows, **105 carry an executed case**
 and 2 do not (the OPEN rows).
 
 | Category | Rows |
@@ -30,7 +30,7 @@ and 2 do not (the OPEN rows).
 | eloquent | 30 |
 | migrations | 12 |
 | mysql-8-native | 4 |
-| production | 11 |
+| production | 12 |
 | query-builder | 32 |
 | schema | 9 |
 | transactions | 3 |
@@ -76,7 +76,6 @@ Laravel's full zoo); and **two capabilities are simply absent** (listed in secti
 | LDB-006 | An anonymous migration | the SQL file itself | Kelson's migration IS a file; there is no class to be anonymous |
 | LDB-007 | A migration class with up()/down() | the .sql migration + the paired .down file | SQL-first is the Kelson shape; the pair is the down() |
 | LDB-008 | Several migration paths | one migrations-mysql directory per fabric | one directory per engine keeps the fabric independent |
-| LDB-023 | A raw select expression | none - the builder refuses free-form SQL | the typed builder is the safety property; the raw escape hatch is deliberately absent |
 | LDB-052 | A raw statement | none at the builder level | the typed builder is the safety property |
 
 ## 5. Where Kelson is BETTER than Laravel
@@ -104,6 +103,7 @@ competitive claim. Each one is an executed case, not a claim.
 | LDB-103 | A zero-downtime schema change during an upgrade | the upgrade itself is zero-downtime - the shadow table, the copy, the atomic swap | `mysql_upgrade_a_change_to_an_existing_table_goes_through_the_online_path` |
 | LDB-104 | A one-command capture of the state for a support ticket | the bundle is produced even when the database is down - the moment it is needed - and the schema's version and pending set are in it | `the_diagnostics_bundle_reports_the_state` |
 | LDB-106 | The framework declares its own objectives | the objectives are the framework's, published on /meta/slo and as Prometheus gauges, and the status is COMPUTED from the telemetry, never asserted | `the_slo_surface_declares_the_objectives_and_their_status; every_objective_names_a_metric_the_framework_records` |
+| LDB-107 | A raw expression in a WHERE / HAVING / ORDER BY, and a derived table | the raw text is VALIDATED (no statement separator, no comment marker, no unbalanced quote, no statement keyword) and the values are BOUND, so the escape cannot smuggle a statement and cannot interpolate a value | `a_statement_separator_is_refused; mysql_native_an_app_can_expand_a_json_document_with_json_table` |
 
 ## 6. The divergences a Laravel developer must know about
 

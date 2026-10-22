@@ -422,3 +422,93 @@ async fn mysql_native_explain_analyze_proves_the_index_is_used() {
         plan.text()
     );
 }
+
+/// The app-author case: a MySQL-native query the typed builder cannot
+/// model, written through the VALIDATED raw escape and EXECUTED.
+///
+/// A reporting app needs to expand a JSON document into rows. MySQL's
+/// `JSON_TABLE` does that; the typed builder has no concept of a derived
+/// table, and before the raw escape the only way to write this query was
+/// to bypass the framework entirely with a raw `sqlx::query` - losing
+/// every guarantee the builder offers.
+///
+/// This case proves the whole path: the expression is validated, its
+/// values are BOUND (not interpolated), and the server returns the
+/// expanded rows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mysql_native_an_app_can_expand_a_json_document_with_json_table() {
+    let Some(pool) = pool().await else { return };
+    let table = format!("kelson_json_{}", Uuid::now_v7().simple());
+    sqlx::raw_sql(&format!(
+        "CREATE TABLE {table} (id CHAR(36) NOT NULL PRIMARY KEY, doc JSON NOT NULL)"
+    ))
+    .execute(&pool)
+    .await
+    .expect("the probe table is created");
+
+    // The document is BOUND, not interpolated: the app passes a tenant's
+    // JSON as a value.
+    let document = serde_json::json!([
+        { "sku": "a-1", "qty": 2 },
+        { "sku": "b-2", "qty": 5 }
+    ]);
+    sqlx::query(&format!(
+        "INSERT INTO {table} (id, doc) VALUES (?, ?)"
+    ))
+    .bind(Uuid::now_v7().to_string())
+    .bind(document.to_string())
+    .execute(&pool)
+    .await
+    .expect("the probe row inserts");
+
+    // The expansion: JSON_TABLE over the bound document, as a derived table.
+    let doc_expr = kelson_query::SqlExpr::new("doc", vec![]).expect("accepted");
+    let expansion = kelson_query::SqlExpr::json_table(
+        &doc_expr,
+        "$[*]",
+        "sku VARCHAR(32) PATH '$.sku', qty INT PATH '$.qty'",
+        vec![],
+    )
+    .expect("the JSON_TABLE expression is accepted");
+
+    let q = Select::from_table(id(&table))
+        .from_expr(expansion, id("jt"))
+        .select(vec![id("jt.sku"), id("jt.qty")])
+        .order_by_expr(
+            kelson_query::SqlExpr::raw("jt.sku").expect("accepted"),
+            Direction::Asc,
+        )
+        .build(&MYSQL)
+        .expect("the statement compiles");
+
+    // The expansion is a derived table beside the table, and the ORDER BY
+    // carries the raw expression.
+    assert!(
+        q.sql.contains("JSON_TABLE(doc , '$[*]' COLUMNS("),
+        "the derived table must render: {}",
+        q.sql
+    );
+    assert!(q.sql.contains(" AS jt"), "{}", q.sql);
+    assert!(q.sql.contains("ORDER BY jt.sku ASC"), "{}", q.sql);
+
+    let rows = fetch(&pool, &q).await.expect("the query runs");
+    assert_eq!(rows.len(), 2, "the document expands into its items");
+    let skus: Vec<String> = rows.iter().map(|r| r.get::<String, _>(0)).collect();
+    let qtys: Vec<i64> = rows.iter().map(|r| r.get::<i64, _>(1)).collect();
+    assert_eq!(skus, vec!["a-1".to_string(), "b-2".to_string()]);
+    assert_eq!(qtys, vec![2, 5]);
+
+    // A raw expression that tries to smuggle a statement is refused at
+    // BUILD time - the app cannot write an injection through it.
+    let refusal = kelson_query::SqlExpr::raw("1; DROP TABLE users").expect_err("refused");
+    assert!(
+        refusal.public_message.contains("statement separator"),
+        "{}",
+        refusal.public_message
+    );
+
+    sqlx::raw_sql(&format!("DROP TABLE {table}"))
+        .execute(&pool)
+        .await
+        .expect("the probe table goes away");
+}

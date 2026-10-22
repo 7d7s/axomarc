@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod delete;
 pub mod dialect;
+pub mod expr;
 pub mod insert;
 pub mod select;
 pub mod truncate;
@@ -16,6 +17,7 @@ pub mod window;
 
 pub use delete::Delete;
 pub use dialect::{CastTarget, Dialect, DialectId, MySqlDialect, PostgresDialect, POSTGRES, MYSQL};
+pub use expr::SqlExpr;
 pub use insert::{ConflictPolicy, Insert};
 pub use select::{
     Aggregate, Clause, CompiledSelect, Condition, DatePart, Direction, Ident, Junction, Lock,

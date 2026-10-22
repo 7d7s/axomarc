@@ -419,6 +419,17 @@ pub struct Select {
     ctes: Vec<crate::window::Cte>,
     /// The windowed projections (rendered after the column list).
     windows: Vec<crate::window::WindowProjection>,
+    /// The validated raw expressions projected after the column list.
+    expr_projections: Vec<crate::expr::SqlExpr>,
+    /// The derived tables (a validated raw expression plus its alias) the
+    /// statement selects from beside its table.
+    from_exprs: Vec<(crate::expr::SqlExpr, Ident)>,
+    /// The validated raw expressions AND-ed into the WHERE clause.
+    expr_conditions: Vec<(Junction, crate::expr::SqlExpr)>,
+    /// The validated raw expressions AND-ed into the HAVING clause.
+    expr_having: Vec<(Junction, crate::expr::SqlExpr)>,
+    /// The validated raw expressions the ORDER BY sorts by.
+    expr_order: Vec<(crate::expr::SqlExpr, Direction)>,
     /// Validation deferred from infallible builder methods to `build`.
     deferred_error: Option<String>,
 }
@@ -528,6 +539,56 @@ impl Select {
             alias: spec.alias,
             cast: spec.cast,
         });
+        self
+    }
+
+    /// Project a validated raw expression.
+    ///
+    /// The escape for the expressions the framework does not model (a
+    /// MySQL `JSON_TABLE` join, a `GROUP_CONCAT`, a custom function). The
+    /// text is validated and its values are **bound**, so the expression is
+    /// as injection-proof as the rest of the builder.
+    pub fn select_expr(mut self, expression: crate::expr::SqlExpr) -> Self {
+        self.expr_projections.push(expression);
+        self
+    }
+
+    /// Add a **derived table** to the FROM clause.
+    ///
+    /// The derived table is a validated raw expression (a MySQL
+    /// `JSON_TABLE` expansion, a lateral subquery, an unnest) plus the alias
+    /// its columns are qualified with. This is the capability a reporting
+    /// app needs and the typed builder cannot otherwise express.
+    pub fn from_expr(mut self, expression: crate::expr::SqlExpr, alias: Ident) -> Self {
+        self.from_exprs.push((expression, alias));
+        self
+    }
+
+    /// AND a validated raw expression into the WHERE clause.
+    pub fn where_expr(mut self, expression: crate::expr::SqlExpr) -> Self {
+        self.expr_conditions.push((Junction::And, expression));
+        self
+    }
+
+    /// OR a validated raw expression into the WHERE clause.
+    pub fn or_where_expr(mut self, expression: crate::expr::SqlExpr) -> Self {
+        self.expr_conditions.push((Junction::Or, expression));
+        self
+    }
+
+    /// AND a validated raw expression into the HAVING clause.
+    pub fn having_expr(mut self, expression: crate::expr::SqlExpr) -> Self {
+        self.expr_having.push((Junction::And, expression));
+        self
+    }
+
+    /// Sort by a validated raw expression.
+    pub fn order_by_expr(
+        mut self,
+        expression: crate::expr::SqlExpr,
+        direction: Direction,
+    ) -> Self {
+        self.expr_order.push((expression, direction));
         self
     }
 
@@ -1354,10 +1415,26 @@ impl Select {
                     }
                     sql.push_str(&window.render(dialect));
                 }
+                // The raw projections render after them, in order.
+                for expression in &self.expr_projections {
+                    if !cols.is_empty() || !self.windows.is_empty() {
+                        sql.push_str(", ");
+                    }
+                    sql.push_str(&expression.render(params, dialect));
+                }
             }
         }
         sql.push_str(" FROM ");
         sql.push_str(table.as_str());
+
+        // The derived tables sit beside the table, comma-separated, each
+        // with its alias.
+        for (expression, alias) in &self.from_exprs {
+            sql.push_str(", ");
+            sql.push_str(&expression.render(params, dialect));
+            sql.push_str(" AS ");
+            sql.push_str(alias.as_str());
+        }
 
         for join in &self.joins {
             sql.push_str(if join.left { " LEFT JOIN " } else { " JOIN " });
@@ -1368,14 +1445,28 @@ impl Select {
             sql.push_str(join.on_right.as_str());
         }
 
-        if !self.clauses.is_empty() {
+        if !self.clauses.is_empty() || !self.expr_conditions.is_empty() {
             sql.push_str(" WHERE ");
-            sql.push_str(&crate::render_conditions(
-                &self.clauses,
-                params,
-                crate::ClauseContext::Where,
-                dialect,
-            )?);
+            let mut first = true;
+            if !self.clauses.is_empty() {
+                sql.push_str(&crate::render_conditions(
+                    &self.clauses,
+                    params,
+                    crate::ClauseContext::Where,
+                    dialect,
+                )?);
+                first = false;
+            }
+            for (junction, expression) in &self.expr_conditions {
+                if !first {
+                    sql.push_str(match junction {
+                        Junction::And => " AND ",
+                        Junction::Or => " OR ",
+                    });
+                }
+                sql.push_str(&expression.render(params, dialect));
+                first = false;
+            }
         }
 
         if !self.group_by.is_empty() {
@@ -1384,14 +1475,28 @@ impl Select {
             sql.push_str(&cols.join(", "));
         }
 
-        if !self.having.is_empty() {
+        if !self.having.is_empty() || !self.expr_having.is_empty() {
             sql.push_str(" HAVING ");
-            sql.push_str(&crate::render_conditions(
-                &self.having,
-                params,
-                crate::ClauseContext::Having,
-                dialect,
-            )?);
+            let mut first = true;
+            if !self.having.is_empty() {
+                sql.push_str(&crate::render_conditions(
+                    &self.having,
+                    params,
+                    crate::ClauseContext::Having,
+                    dialect,
+                )?);
+                first = false;
+            }
+            for (junction, expression) in &self.expr_having {
+                if !first {
+                    sql.push_str(match junction {
+                        Junction::And => " AND ",
+                        Junction::Or => " OR ",
+                    });
+                }
+                sql.push_str(&expression.render(params, dialect));
+                first = false;
+            }
         }
 
         if self.unions.is_empty() {
@@ -1440,6 +1545,21 @@ impl Select {
         if let Some(n) = self.offset {
             params.push(Value::Int(n as i64));
             sql.push_str(&format!(" OFFSET {}", dialect.placeholder(params.len())));
+        }
+        if !self.expr_order.is_empty() {
+            let mut parts: Vec<String> = Vec::with_capacity(self.expr_order.len());
+            for (expression, direction) in &self.expr_order {
+                parts.push(format!(
+                    "{} {}",
+                    expression.render(params, dialect),
+                    match direction {
+                        Direction::Asc => "ASC",
+                        Direction::Desc => "DESC",
+                    }
+                ));
+            }
+            sql.push_str(" ORDER BY ");
+            sql.push_str(&parts.join(", "));
         }
         if let Some(lock) = self.lock {
             sql.push(' ');
