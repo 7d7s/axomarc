@@ -1147,7 +1147,12 @@ fn error_view_response(
     // pages can use `@lang` / the `trans` filter too - filled by the
     // framework's ONE assembler, so an error page reads the same
     // reserved keys a success page reads.
-    kelson_foundation::ViewContext::localized(&state.messages, locale).apply(&mut context);
+    kelson_foundation::ViewContext::localized(&state.messages, locale)
+        .with_head(kelson_foundation::HeadBuilder::new()
+            .title("Error")
+            .meta("description", "An error occurred")
+            .build())
+        .apply(&mut context);
     let html = engine.render(&name, context).ok()?;
     Some(
         (status, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response(),
@@ -1333,12 +1338,16 @@ fn render_success(
             );
             // The reserved context, assembled once by the framework: the
             // locale and its messages, the principal, the empty error
-            // bag (the result's own errors win) and the CSRF token the
-            // form roundtrip needs.
+            // bag (the result's own errors win), the CSRF token the
+            // form roundtrip needs, and the head metadata.
             let reserved = kelson_foundation::ViewContext::localized(&state.messages, &locale)
                 .with_auth(view_auth)
                 .with_errors(serde_json::json!({}))
-                .with_csrf(csrf_token(state, session.as_ref()));
+                .with_csrf(csrf_token(state, session.as_ref()))
+                .with_head(kelson_foundation::HeadBuilder::new()
+                    .title("Kelson")
+                    .meta("description", "Kelson application")
+                    .build());
             Ok(html_response(
                 state, dispatch, headers, path, reserved, result,
             ))

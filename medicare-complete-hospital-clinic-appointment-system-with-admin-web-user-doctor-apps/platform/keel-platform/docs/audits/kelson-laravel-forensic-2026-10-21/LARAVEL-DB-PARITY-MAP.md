@@ -15,13 +15,13 @@ against a live MySQL 8.0.44.
 
 | Status | Rows | Meaning |
 |---|---:|---|
-| VERIFIED | 92 | the behaviour is implemented and an executed case proves it |
+| VERIFIED | 93 | the behaviour is implemented and an executed case proves it |
 | PARTIAL | 18 | the core is proven; a named sub-feature is missing or diverges |
 | EXCLUDED_BY_DESIGN | 4 | a deliberate exclusion with the alternative stated |
 | OPEN | 2 | a Laravel capability with no Kelson equivalent yet |
-| **Total** | **116** | |
+| **Total** | **117** | |
 
-Of the 116 rows, **114 carry an executed case**
+Of the 117 rows, **115 carry an executed case**
 and 2 do not (the OPEN rows).
 
 | Category | Rows |
@@ -30,7 +30,7 @@ and 2 do not (the OPEN rows).
 | eloquent | 30 |
 | migrations | 12 |
 | mysql-8-native | 4 |
-| production | 21 |
+| production | 22 |
 | query-builder | 32 |
 | schema | 9 |
 | transactions | 3 |
@@ -113,6 +113,7 @@ competitive claim. Each one is an executed case, not a claim.
 | LDB-114 | A view reads only the data it declared | the reads are CHECKED - a path the view model does not declare is a render error (fail-closed) instead of an empty string, a value of the wrong kind is refused, the same rule is available as a build-time lint, and the testkit asserts on the view model rather than on the raw context; the syntax is additive, so a template without @vm behaves exactly as it did before | `a_bound_path_resolves_through_the_model; an_unknown_bound_path_is_a_render_error; a_bound_path_of_the_wrong_type_is_refused; a_template_without_the_directive_behaves_as_before; a_template_that_binds_a_model_it_does_not_have_is_refused; the_lint_refuses_a_template_that_reads_an_undeclared_path; a_template_without_the_directive_lints_clean; a_view_model_is_assertable_without_the_html; a_template_that_reads_an_undeclared_path_is_refused_by_the_lint` |
 | LDB-115 | The reserved context keys are assembled in one place | the three copies of injection logic (success, error, notification) collapse into one assembler in the foundation (not the web layer, so notifications can use it); the dashboard gains `_locale`/`_lang` it never had; `_csrf` becomes actually wired through the session token; the merge policy is stated and enforced in one place | `the_reserved_context_fills_the_documented_keys; the_csrf_token_reaches_the_view; the_dashboard_carries_the_locale_and_the_messages; the_notification_view_carries_the_same_reserved_keys` |
 | LDB-116 | Built-in view components (pagination, tables, forms, empty states) | the built-ins are typed ViewModels with DECLARED AND CHECKED schemas - a required field that is missing and a field of the wrong kind are refused (VIEW-MODEL) before the template runs; an application replaces a built-in by registering its own binding (last registration wins); the view registry carries the schema so the framework knows what a view may read without asking the application | `the_pagination_view_model_carries_the_window; the_table_view_model_declares_its_columns; the_form_view_model_carries_fields_and_errors; the_empty_view_model_carries_message_and_action; the_ops_view_model_carries_sections; a_built_in_view_is_registered_by_the_framework` |
+| LDB-117 | The head metadata store (LF-035) | the head state is REQUEST-SCOPED (no cross-request leakage - the gap LF-035 names); the merge policy is explicit (child wins, parent fills); the head is filled by the framework's ONE assembler (not manual @stack pushes); the head reaches the template via the ViewContext's _head key | `the_head_merges_the_child_over_the_parent; the_head_state_does_not_leak_between_requests; the_head_reaches_the_template` |
 
 ## 6. The divergences a Laravel developer must know about
 

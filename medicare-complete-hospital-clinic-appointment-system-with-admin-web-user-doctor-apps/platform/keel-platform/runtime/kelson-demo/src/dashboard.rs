@@ -212,7 +212,12 @@ pub async fn ops_dashboard(
             .and_then(|v| v.to_str().ok()),
     );
     let mut context = body.clone();
-    kelson_foundation::ViewContext::localized(&state.messages, &locale).apply(&mut context);
+    kelson_foundation::ViewContext::localized(&state.messages, &locale)
+        .with_head(kelson_foundation::HeadBuilder::new()
+            .title("Operations Dashboard")
+            .meta("description", "System operations overview")
+            .build())
+        .apply(&mut context);
     match state.views.as_ref() {
         Some(engine) if engine.exists(OPS_VIEW) => match engine.render(OPS_VIEW, context) {
             Ok(html) => Html(html).into_response(),

@@ -18,6 +18,7 @@
 use serde_json::Value;
 
 use crate::translate::MessageCatalog;
+use crate::head::HeadStore;
 
 /// The reserved key the resolved locale is under.
 pub const LOCALE_KEY: &str = "_locale";
@@ -29,6 +30,8 @@ pub const AUTH_KEY: &str = "_auth";
 pub const ERRORS_KEY: &str = "_errors";
 /// The reserved key the CSRF token is under.
 pub const CSRF_KEY: &str = "_csrf";
+/// The reserved key the head metadata is under.
+pub const HEAD_KEY: &str = "_head";
 
 /// The reserved context the framework fills for every view.
 ///
@@ -48,6 +51,8 @@ pub struct ViewContext {
     pub errors: Option<Value>,
     /// The CSRF token `@csrf` renders into a form.
     pub csrf: Option<String>,
+    /// The head metadata (title, metas, links, scripts, styles).
+    pub head: Option<HeadStore>,
 }
 
 impl ViewContext {
@@ -90,12 +95,18 @@ impl ViewContext {
         self
     }
 
+    /// The head metadata (title, metas, links, scripts, styles).
+    pub fn with_head(mut self, head: HeadStore) -> Self {
+        self.head = Some(head);
+        self
+    }
+
     /// Merge the reserved keys into a template context.
     ///
     /// The merge policy, in one place:
     ///
-    /// * the framework's keys **win** - `_locale`, `_lang`, `_auth` and
-    ///   `_csrf` are the request's truth, not the result's;
+    /// * the framework's keys **win** - `_locale`, `_lang`, `_auth`,
+    ///   `_csrf`, and `_head` are the request's truth, not the result's;
     /// * `_errors` does **not** overwrite what the context already
     ///   carries: the operation result's own errors are the
     ///   application's data, and they are what `@error` must render;
@@ -121,6 +132,9 @@ impl ViewContext {
         }
         if let Some(csrf) = &self.csrf {
             object.insert(CSRF_KEY.to_string(), Value::String(csrf.clone()));
+        }
+        if let Some(head) = &self.head {
+            object.insert(HEAD_KEY.to_string(), head.clone().into_context());
         }
     }
 

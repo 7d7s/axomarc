@@ -19,6 +19,7 @@ pub mod profile;
 pub mod revision;
 pub mod secret;
 pub mod strings;
+pub mod head;
 pub mod telemetry;
 pub mod translate;
 pub mod tz;
@@ -60,6 +61,7 @@ pub use tz::timezone_offset_secs;
 pub use viewcontext::{
     ViewContext, AUTH_KEY, CSRF_KEY, ERRORS_KEY, LANG_KEY, LOCALE_KEY,
 };
+pub use head::{HeadStore, HeadBuilder};
 
 #[cfg(test)]
 mod tests {
