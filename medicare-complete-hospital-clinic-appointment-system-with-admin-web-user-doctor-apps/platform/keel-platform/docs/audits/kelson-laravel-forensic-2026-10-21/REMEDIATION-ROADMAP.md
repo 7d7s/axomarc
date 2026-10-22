@@ -146,6 +146,7 @@ named cases are green.
 | KFA-017 | VERIFIED FIX | The CI checks the free disk before the build and names the disk in the failure |
 | KFA-007 | OPEN (Stage 0, minor) | The `rsa` Marvin advisory is transitive through `sqlx-mysql`; it rides the dependency-bump work rather than needing its own stage |
 | KFA-023 | OPEN (trivial) | The source parity matrix transposes LF-050 and LF-051; a one-line documentation fix plus a CI order check |
+| KFA-001/002/003/004 | VERIFIED FIX | The four supply-chain advisories are FIXED, not ignored: wasmtime 36.0.19 (the two Cranelift miscompilations and the handle-table cap), rustls 0.23.46 and rustls-webpki 0.103.16 (the four TLS advisories), webpki-roots 1.0.10 (the distrusted intermediates). `cargo deny check` is green and the dependency gate is now a blocking CI step |
 | KFA-005 | VERIFIED FIX | The reference host's boot stack overflow (the audit's S1): the boot now runs on a thread with an explicit 16 MiB stack, so the host starts, binds its listener and serves /healthz - and the no-rebuild experiment could finally run against a live process |
 | KFA-024 | VERIFIED FIX | The cold-start migration race: the loser now waits for the holder and re-checks the state, so a rolling deploy where every instance boots at once no longer fails N-1 of them (18/30 failing before, 30/30 green after) |
 

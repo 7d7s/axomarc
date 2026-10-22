@@ -67,6 +67,38 @@ jobs:
         run: cargo clippy --workspace --locked -- -D warnings
       - name: cargo test (includes architecture gate)
         run: cargo test --workspace --locked
+      # The dependency gate. `cargo deny` is the POLICY (the advisories, the
+      # bans, the licences, the sources) and it is BLOCKING: a wildcard
+      # dependency or a copyleft licence fails the build. `cargo audit` is
+      # the advisory scan. Neither had a step, so the gate existed only as
+      # a document.
+      - name: the dependency gate (cargo-deny: the advisories, the bans, the licences, the sources)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          argument: --manifest-path keel-platform/Cargo.toml
+      - name: install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+      # RUSTSEC-2023-0071 (the rsa "Marvin Attack") is the ONE accepted
+      # advisory: there is no upstream fix (patched = []), it arrives only
+      # transitively through sqlx-mysql, and the database connection must be
+      # TLS or local. The same justification is recorded in platform/deny.toml.
+      - name: the dependency audit (the RustSec advisories)
+        run: cargo audit --ignore RUSTSEC-2023-0071
+      # The supply-chain artefacts: the SBOM (CycloneDX, every locked crate
+      # with its checksum) and the build provenance (the git material and
+      # the digests of the release artifacts).
+      - name: the SBOM and the build provenance
+        shell: pwsh
+        run: |
+          ./keel-platform/tools/generate-sbom.ps1 -Output "${{ github.workspace }}/platform/keel-platform/sbom.cdx.json"
+          ./keel-platform/tools/generate-provenance.ps1 -Output "${{ github.workspace }}/platform/keel-platform/provenance.json"
+      - name: upload the supply-chain artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: supply-chain
+          path: |
+            keel-platform/sbom.cdx.json
+            keel-platform/provenance.json
       - name: G18 telemetry resilience (failure injection + tenant isolation)
         run: |
           cargo test -p kelson-observability --locked g18

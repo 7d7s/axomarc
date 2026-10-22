@@ -2306,6 +2306,134 @@ url = "postgres://user:db-password@localhost:5432/keel"
     }
 }
 
+// The container image must agree with the runtime it ships.
+//
+// The Dockerfile is the one artefact in the repository that cannot be
+// executed on this host (there is no Docker daemon), so its correctness is
+// asserted statically instead: the toolchain, the port, the config, the
+// module artifacts and the non-root posture must all agree with the
+// runtime, or this case fails.
+//
+// The defects this catches are the ones a drifted Dockerfile actually has:
+// a compiler that is not the pinned one, a port that is not the one the
+// config listens on, a healthcheck that probes the wrong port (or a runtime
+// image with no curl in it), and a runtime stage that ships neither the
+// config nor the WASM artifacts the boot loads.
+
+/// The port the demo's config listens on.
+fn configured_port(root: &Path) -> u16 {
+    let raw = std::fs::read_to_string(root.join("config").join("dev.toml"))
+        .expect("the dev config is readable");
+    raw.lines()
+        .find_map(|line| {
+            let line = line.trim();
+            let rest = line.strip_prefix("listen")?;
+            let rest = rest.trim_start().strip_prefix('=')?.trim();
+            let value = rest.trim_matches(|c| c == '"' || c == '\'');
+            value.rsplit_once(':').and_then(|(_, port)| port.parse().ok())
+        })
+        .expect("the config declares a listen port")
+}
+
+/// The Rust version the workspace is pinned to.
+///
+/// The pin lives one level above the build context (the Dockerfile's context
+/// is the crate workspace), so the lookup walks up until it finds it.
+fn pinned_toolchain(root: &Path) -> String {
+    let mut dir = Some(root);
+    while let Some(current) = dir {
+        let candidate = current.join("rust-toolchain.toml");
+        if candidate.exists() {
+            let raw = std::fs::read_to_string(&candidate).expect("the toolchain pin is readable");
+            return raw
+                .lines()
+                .find_map(|line| {
+                    let rest = line.trim().strip_prefix("channel")?;
+                    let rest = rest.trim_start().strip_prefix('=')?.trim();
+                    Some(rest.trim_matches('"').to_string())
+                })
+                .expect("the toolchain file declares a channel");
+        }
+        dir = current.parent();
+    }
+    panic!("no rust-toolchain.toml above {root:?}");
+}
+
+#[cfg(test)]
+mod container_tests {
+    use super::*;
+
+    #[test]
+    fn the_container_image_agrees_with_the_runtime() {
+        let root = workspace_root().expect("the workspace root");
+        let dockerfile = std::fs::read_to_string(root.join("Dockerfile"))
+            .expect("the Dockerfile is readable");
+
+        // 1. The builder's Rust version is the pinned one.
+        let pinned = pinned_toolchain(&root);
+        let major_minor: String = pinned.split('.').take(2).collect::<Vec<_>>().join(".");
+        assert!(
+            dockerfile.contains(&format!("FROM rust:{major_minor}-")),
+            "the image must build with the pinned toolchain {pinned}: {dockerfile}"
+        );
+
+        // 2. The exposed port is the one the config listens on.
+        let port = configured_port(&root);
+        assert!(
+            dockerfile.contains(&format!("EXPOSE {port}")),
+            "the image must expose the configured port {port}: {dockerfile}"
+        );
+
+        // 3. The healthcheck probes that port, and the runtime image has a
+        //    client to probe with.
+        assert!(
+            dockerfile.contains(&format!("127.0.0.1:{port}/healthz")),
+            "the healthcheck must probe the configured port {port}: {dockerfile}"
+        );
+        assert!(
+            dockerfile.contains("curl") && dockerfile.contains("ca-certificates"),
+            "the runtime image needs a client for the healthcheck: {dockerfile}"
+        );
+
+        // 4. The runtime stage ships the config the boot reads and the
+        //    package index the module artifacts are resolved through.
+        for required in [
+            "COPY --from=builder /app/config /app/config",
+            "COPY --from=builder /app/packages.toml /app/packages.toml",
+        ] {
+            assert!(
+                dockerfile.contains(required),
+                "the runtime stage must ship {required}: {dockerfile}"
+            );
+        }
+
+        // 5. The module artifacts are copied: the boot resolves every path
+        //    in packages.toml against the working directory.
+        let index = std::fs::read_to_string(root.join("packages.toml"))
+            .expect("the package index is readable");
+        for line in index.lines() {
+            let Some(rest) = line.trim().strip_prefix("path") else {
+                continue;
+            };
+            let Some(value) = rest.trim_start().strip_prefix('=') else {
+                continue;
+            };
+            let artifact = value.trim().trim_matches('"');
+            let top = artifact.split('/').next().unwrap_or_default();
+            assert!(
+                dockerfile.contains(&format!("COPY --from=builder /app/{top} /app/{top}")),
+                "the module artifact {artifact} is not in the image (the {top} tree is not copied): {dockerfile}"
+            );
+        }
+
+        // 6. The image runs as a non-root user.
+        assert!(
+            dockerfile.contains("USER kelson"),
+            "the image must run as a non-root user: {dockerfile}"
+        );
+    }
+}
+
 /// The `kelson diagnose` command.
 async fn diagnose() -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;

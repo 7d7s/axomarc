@@ -38,4 +38,4 @@ kelson-tenancy = { workspace = true }
 kelson-deployment = { workspace = true }
 kelson-observability = { workspace = true }
 kelson-telemetry = { workspace = true }
-kelson-wasm = { workspace = true }
+kelson-wasm = { version = "0.1.0", path = "../extension/wasm" }
