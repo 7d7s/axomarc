@@ -20,12 +20,17 @@ pub mod conformance;
 pub mod probes;
 pub mod prune;
 pub mod runtime;
+pub mod readmodel;
 pub mod store;
 
 pub use bindings::{resolve_binding, RouteBindingRegistry, RouteBindingResolver, RouteBindingsRef};
 pub use casts::{Cast, EncryptedCast};
 pub use probes::{ModelProbe, ProbeRegistry, ProbeRegistryRef, StoreProbe};
 pub use prune::{PruneRegistry, PruneRegistryRef};
+pub use readmodel::{
+    ReadModelData, ReadModelDef, ReadModelRefreshResult, ReadModelRegistry, ReadModelState,
+    ReadModelStaleness, ReadModelStore, RefreshPolicy,
+};
 pub use runtime::{
     json_to_bind, json_value_to_bind, parse_timestamp, record_to_columns, record_to_columns_for,
     EagerConstraint, ModelEvent, ModelObserver, ModelPhase, ModelRuntime, PivotSync,

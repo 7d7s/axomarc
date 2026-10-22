@@ -17,6 +17,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 time = { workspace = true }
 uuid = { workspace = true }
+async-trait = "0.1.68"
 
 [dev-dependencies]
 # Real AES-GCM proof for the `encrypted` cast (Data -> Security edge, cycle-free).

@@ -29,6 +29,8 @@ uuid = { workspace = true }
 time = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+async-trait = "0.1.68"
+chrono = { version = "0.4", features = ["serde"] }
 
 [package.metadata.docs.rs]
 all-features = true
