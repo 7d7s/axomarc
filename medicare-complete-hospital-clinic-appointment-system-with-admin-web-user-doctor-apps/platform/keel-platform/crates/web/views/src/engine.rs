@@ -510,6 +510,52 @@ impl ViewsEngine {
         self.render_with_context(name, context)
     }
 
+    /// Spawn a **stateful session** on a live view (D-6, F-10a / S-11).
+    ///
+    /// The session is opt-in per view: a view whose binding did not
+    /// declare itself live ([`crate::registry::ViewBinding::live`])
+    /// refuses the session, so the LF-032 exclusion of stateful
+    /// components lifts one view at a time and nothing else changes. The
+    /// session's state is the view's declared view model; every
+    /// re-render goes through [`Self::render_bound`], so the binder's
+    /// checks apply to a live state exactly as they do to a request-time
+    /// one. No registry, no registered model, and no live declaration
+    /// are all refusals — fail-closed, like the rest of the engine.
+    pub fn live_session<S: crate::viewmodel::ViewModel>(
+        &self,
+        name: &str,
+        state: S,
+    ) -> Result<crate::live::LiveSession<S>, ViewError> {
+        let Some(registry) = self.registry() else {
+            return Err(ViewError::new(
+                VIEW_RENDER,
+                format!(
+                    "the view {name:?} has no view registry: a live session has nothing that \
+                     declares it live"
+                ),
+            ));
+        };
+        let Some(binding) = registry.binding(name) else {
+            return Err(ViewError::new(
+                VIEW_RENDER,
+                format!(
+                    "the view {name:?} has no registered view model: a live session binds the \
+                     declared state, not a bare template"
+                ),
+            ));
+        };
+        if !binding.is_live() {
+            return Err(ViewError::new(
+                VIEW_RENDER,
+                format!(
+                    "the view {name:?} is not declared live: a stateful session is opt-in per \
+                     view (the view keeps its normal rendering)"
+                ),
+            ));
+        }
+        Ok(crate::live::LiveSession::spawn(name, state))
+    }
+
     /// Render with the context already prepared (hooks applied, the view
     /// model bound).
     fn render_with_context(&self, name: &str, context: Value) -> Result<String, ViewError> {
@@ -1054,6 +1100,118 @@ mod tests {
         let err = engine.render("page", json!({})).unwrap_err();
         assert_eq!(err.code, VIEW_RENDER);
         assert!(err.message.contains("no CSRF token"), "{err}");
+    }
+
+    // ------------------------------------------------------- the live spine
+
+    /// The model the spine cases run against: one declared integer.
+    #[derive(serde::Serialize)]
+    struct CounterVm {
+        count: u64,
+    }
+
+    impl crate::viewmodel::ViewModel for CounterVm {
+        const VIEW: &'static str = "counter";
+        fn schema() -> &'static [crate::viewmodel::FieldSchema] {
+            crate::view_schema![
+                crate::viewmodel::FieldSchema::required("count", crate::viewmodel::FieldKind::Int),
+            ]
+        }
+    }
+
+    /// An engine whose "counter" view is a LIVE binding of the counter
+    /// model: the stateful opt-in is in the registration, not in the
+    /// template.
+    fn live_engine(template: &str) -> (PathBuf, ViewsEngine) {
+        let (dir, engine) = engine_with(&[("counter", template)]);
+        let mut registry = crate::registry::ViewRegistry::new();
+        registry.register(crate::registry::ViewBinding::new::<CounterVm>("counter").live());
+        engine.set_registry(Arc::new(registry));
+        (dir, engine)
+    }
+
+    #[test]
+    fn a_state_change_rerenders_the_view_model() {
+        let (_dir, engine) = live_engine("@vm<count>{{ vm.count }}</count>");
+        let session = engine
+            .live_session("counter", CounterVm { count: 0 })
+            .expect("the view declared itself live");
+
+        // The first re-render carries the state as it stands, stamped
+        // with the revision of the state it rendered.
+        let first = session
+            .rerender(&engine)
+            .expect("the state honours its declaration");
+        assert_eq!(first.view, "counter");
+        assert_eq!(first.html, "<count>0</count>");
+        assert_eq!(
+            first.revision, 0,
+            "the session shipped with no changes applied"
+        );
+
+        // The applied changes are NOT renders: an application that moves
+        // several fields pays one re-render.
+        session.change(|vm| vm.count += 1);
+        session.change(|vm| vm.count += 1);
+        let second = session
+            .rerender(&engine)
+            .expect("the state still honours its declaration");
+        assert_eq!(
+            second.html, "<count>2</count>",
+            "the re-render carries the applied state"
+        );
+        assert_eq!(
+            second.revision, 2,
+            "the render is stamped with the state's revision"
+        );
+
+        // A re-render without a change between them returns the same
+        // revision again: the revision is the STATE's, not the wire's.
+        let again = session.rerender(&engine).expect("render");
+        assert_eq!(again.html, "<count>2</count>");
+        assert_eq!(again.revision, 2);
+        assert_eq!(session.revision(), 2);
+    }
+
+    #[test]
+    fn a_live_session_is_opt_in_per_view() {
+        // A plain binding refuses: the view keeps its normal rendering.
+        let (_dir, engine) = engine_with(&[("counter", "count: {{ vm.count }}")]);
+        let mut registry = crate::registry::ViewRegistry::new();
+        registry.register(crate::registry::ViewBinding::new::<CounterVm>("counter"));
+        engine.set_registry(Arc::new(registry));
+        let error = engine
+            .live_session("counter", CounterVm { count: 0 })
+            .expect_err("a view that did not declare itself live refuses the session");
+        assert_eq!(error.code, VIEW_RENDER);
+        assert!(
+            error.message.contains("not declared live"),
+            "{}",
+            error.message
+        );
+
+        // No registry at all: nothing can declare a view live, so
+        // nothing can host a stateful session.
+        let (_dir2, engine2) = engine_with(&[("counter", "count: {{ vm.count }}")]);
+        let error = engine2
+            .live_session("counter", CounterVm { count: 0 })
+            .expect_err("a session without a registry has nothing to check against");
+        assert_eq!(error.code, VIEW_RENDER);
+        assert!(error.message.contains("no view registry"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_live_session_on_an_unbound_view_is_refused() {
+        let (_dir, engine) = live_engine("count: {{ vm.count }}");
+        let error = engine
+            .live_session("ghost", CounterVm { count: 0 })
+            .expect_err("a view nobody bound cannot host a session");
+        assert_eq!(error.code, VIEW_RENDER);
+        assert!(
+            error.message.contains("no registered view model"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]

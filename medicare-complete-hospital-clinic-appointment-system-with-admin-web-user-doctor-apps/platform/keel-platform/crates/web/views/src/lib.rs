@@ -21,6 +21,10 @@
 //! - The command binder: @command("op") renders a CSRF-carrying form
 //!   bound to the route that declared the operation; an undeclared
 //!   command is refused (no free-form dispatch).
+//! - The live spine (S-11): an opt-in-per-view stateful session whose
+//!   state IS the view's declared view model; every re-render is the
+//!   SAME schema-checked render. The transport and the diff are
+//!   deliberately absent until the transport slice.
 //! - Extension points: custom directives, Blade::if-style custom
 //!   conditionals, package view namespaces (pkg::view) with a resolution
 //!   hook, and view hooks (composer-equivalent callbacks).
@@ -37,6 +41,7 @@ pub mod engine;
 pub mod expr;
 pub mod form_bridge;
 pub mod lint;
+pub mod live;
 mod parser;
 pub mod registry;
 mod render;
@@ -54,6 +59,7 @@ pub use expr::{
 };
 pub use form_bridge::BridgedForm;
 pub use lint::{check_paths, vm_declaration, vm_paths, VmDeclaration};
+pub use live::{LiveRender, LiveSession};
 pub use registry::{CommandRegistry, CommandRoute, ViewBinding, ViewRegistry};
 pub use viewmodel::{
     check_schema, governing_field, key_path, schema_field, value_at, value_kind, view_model_value,

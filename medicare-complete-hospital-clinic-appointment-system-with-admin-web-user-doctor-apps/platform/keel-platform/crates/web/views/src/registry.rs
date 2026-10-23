@@ -28,6 +28,11 @@ pub struct ViewBinding {
     pub model: String,
     /// The view's declared data requirements.
     pub schema: &'static [FieldSchema],
+    /// Whether the view opted into a **stateful session** (the live
+    /// spine, D-6). Default: `false` — the live loop is opt-in per view,
+    /// so the LF-032 exclusion of stateful components lifts one view at
+    /// a time and every other view keeps rendering exactly as it did.
+    pub live: bool,
 }
 
 impl ViewBinding {
@@ -40,7 +45,22 @@ impl ViewBinding {
             view: view.into(),
             model: std::any::type_name::<M>().to_string(),
             schema: M::schema(),
+            live: false,
         }
+    }
+
+    /// Declare the view **live**: it may host a stateful session whose
+    /// state is its declared view model. A view that did not declare
+    /// this refuses the session at spawn — the stateful loop never
+    /// grows onto a page by accident.
+    pub fn live(mut self) -> Self {
+        self.live = true;
+        self
+    }
+
+    /// Whether the view declared itself live.
+    pub fn is_live(&self) -> bool {
+        self.live
     }
 }
 
@@ -277,6 +297,21 @@ mod tests {
             registry.route("cancel").map(|r| r.verb.clone()),
             Some("POST".to_string()),
             "the later route declaration is the one the command binds to"
+        );
+    }
+
+    #[test]
+    fn a_binding_declares_itself_live() {
+        let default = ViewBinding::new::<OpsVm>("counter");
+        assert!(
+            !default.is_live(),
+            "the live loop is opt-in: a plain binding never hosts a stateful session"
+        );
+
+        let live = ViewBinding::new::<OpsVm>("counter").live();
+        assert!(
+            live.is_live(),
+            "the declaration is the opt-in: the declared view may host a session"
         );
     }
 }

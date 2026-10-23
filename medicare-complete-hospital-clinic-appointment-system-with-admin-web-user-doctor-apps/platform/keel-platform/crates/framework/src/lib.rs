@@ -88,6 +88,7 @@ mod tests {
             view: "example.view".to_string(),
             model: "ExampleVm".to_string(),
             schema: &[],
+            live: false,
         });
         assert_eq!(registry.names(), vec!["example.view".to_string()]);
         assert!(
