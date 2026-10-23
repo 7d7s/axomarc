@@ -58,6 +58,7 @@ fn is_known(name: &str) -> bool {
             | "endpush"
             | "stack"
             | "vm"
+            | "command"
             | "csrf"
             | "method"
             | "error"
@@ -471,6 +472,51 @@ impl Parser {
                     }
                 };
                 Ok(Some(Node::VmBind { model }))
+            }
+            "command" => {
+                // `@command("op")` binds to the operation a route declared;
+                // `@command("op", label="Cancel")` carries a button label.
+                // Unknown keyword arguments are refused (fail-closed), so a
+                // typo'd option is a parse error, not a silently dropped
+                // attribute.
+                let raw = arg_required(arg, name, &self.loc())?;
+                let mut parts = split_args(&raw).into_iter();
+                let op = unquote(
+                    parts
+                        .next()
+                        .ok_or_else(|| self.err("@command requires an operation id"))?
+                        .trim(),
+                );
+                if op.is_empty() {
+                    return Err(self.err("@command requires an operation id"));
+                }
+                let mut label: Option<String> = None;
+                for part in parts {
+                    let part = part.trim();
+                    let Some((key, value)) = part.split_once('=') else {
+                        return Err(self.err(&format!(
+                            "@command does not take the argument {part:?} (the operation id is \
+                             the first argument; label=\"...\" is the keyword form)"
+                        )));
+                    };
+                    match key.trim() {
+                        "label" => {
+                            let value = unquote(value);
+                            if value.is_empty() {
+                                return Err(self.err("@command label=\"\" would render a blank \
+                                                    submit button"));
+                            }
+                            label = Some(value);
+                        }
+                        unknown => {
+                            return Err(self.err(&format!(
+                                "@command does not recognise the option {unknown:?} (the op id \
+                                 comes first; the keyword form is label=\"...\")"
+                            )));
+                        }
+                    }
+                }
+                Ok(Some(Node::Command { op, label }))
             }
             "csrf" => Ok(Some(Node::Csrf)),
             "method" => {
@@ -1053,6 +1099,44 @@ mod tests {
         };
         assert_eq!(branches.len(), 2);
         assert!(fallback.is_some());
+    }
+
+    #[test]
+    fn parses_command_binding() {
+        let t = parse_ok("@command(\"cancel\", label=\"Cancel it\")");
+        let Node::Command { op, label } = &t.nodes[0] else {
+            panic!("expected a command binding")
+        };
+        assert_eq!(op, "cancel");
+        assert_eq!(label.as_deref(), Some("Cancel it"));
+
+        // A quoted op alone; unquoted op ids work too.
+        let t = parse_ok("@command(cancel)");
+        assert!(matches!(&t.nodes[0], Node::Command { op, label: None } if op == "cancel"));
+    }
+
+    #[test]
+    fn a_command_requires_an_operation_id() {
+        assert!(
+            parse("@command()").is_err(),
+            "a command with no op id is refused: there is nothing to bind"
+        );
+        assert!(
+            parse("@command").is_err(),
+            "the bare directive is refused - the op id is the declarative half"
+        );
+    }
+
+    #[test]
+    fn a_command_refuses_unknown_options() {
+        assert!(
+            parse("@command(\"cancel\", verb=\"PUT\")").is_err(),
+            "the verb is the ROUTE's declaration, not the template author's choice"
+        );
+        assert!(
+            parse("@command(\"cancel\", label=\"\")").is_err(),
+            "an empty label would render a blank button"
+        );
     }
 
     #[test]

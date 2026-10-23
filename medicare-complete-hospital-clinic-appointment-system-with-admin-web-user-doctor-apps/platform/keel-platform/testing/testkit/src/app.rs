@@ -579,6 +579,43 @@ impl TestResponse {
         self
     }
 
+    /// The last view this response rendered carries a **form error** for
+    /// `field`, and the field's message contains `fragment`.
+    ///
+    /// The assertion reads the view context's reserved `_errors` map — the
+    /// one place the framework puts a failed submission's messages (the
+    /// `@error("field")` directive reads it in templates), so a test
+    /// speaks the form's language: the field name and its message, never
+    /// the rendered HTML.
+    pub fn assert_view_error(self, field: &str, fragment: &str) -> Self {
+        let view = self.view.as_ref().unwrap_or_else(|| {
+            panic!(
+                "no view rendered for this response; body: {}",
+                self.body_text()
+            )
+        });
+        let errors = view.context.get("_errors").unwrap_or_else(|| {
+            panic!(
+                "the view {:?} carries no form errors (_errors); context: {}",
+                view.view, view.context
+            )
+        });
+        let message = json_path(errors, field).unwrap_or_else(|| {
+            panic!(
+                "the form errors of {:?} lack the field {field:?}; errors: {errors}",
+                view.view
+            )
+        });
+        let rendered = message
+            .as_str()
+            .unwrap_or_else(|| panic!("the form error for {field:?} is not a message string"));
+        assert!(
+            rendered.contains(fragment),
+            "the form error for {field:?} is {rendered:?}; expected it to contain {fragment:?}"
+        );
+        self
+    }
+
     // ------------------------------------------ Wave 7 P2: content asserts
 
     /// Walk a dotted path through the JSON body (objects; numeric segments
@@ -952,6 +989,7 @@ mod tests {
         let logout_mw = mw.clone();
         let db_store = store.clone();
         let view_engine = engine.clone();
+        let form_engine = engine.clone();
 
         let router = Router::new()
             .route("/see", get(|| async { "<p>Tom &amp; Jerry</p>" }))
@@ -981,6 +1019,26 @@ mod tests {
                     async move {
                         engine
                             .render("page", json!({ "title": "Hi", "user": { "name": "ada" } }))
+                            .expect("template renders")
+                    }
+                }),
+            )
+            // A form re-render (the failed-POST shape): the view context
+            // carries the reserved `_errors` map the bridge writes a
+            // validation failure into.
+            .route(
+                "/form",
+                get(move || {
+                    let engine = form_engine.clone();
+                    async move {
+                        engine
+                            .render(
+                                "page",
+                                json!({
+                                    "title": "Hi",
+                                    "_errors": { "email": "The email field is required" }
+                                }),
+                            )
                             .expect("template renders")
                     }
                 }),
@@ -1284,6 +1342,44 @@ mod tests {
     async fn view_assert_panics_when_key_absent() {
         let app = harness();
         app.get("/view").send().await.assert_view_has("ghost");
+    }
+
+    // ------------------------------------------------------ MVVC: the form bridge
+
+    #[tokio::test]
+    async fn form_error_assertion_speaks_the_field_language() {
+        let app = harness();
+        app.get("/form")
+            .send()
+            .await
+            .assert_view_error("email", "required");
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "carries no form errors")]
+    async fn form_error_assertion_panics_when_the_view_has_no_errors() {
+        let app = harness();
+        app.get("/view").send().await.assert_view_error("email", "required");
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "lack the field")]
+    async fn form_error_assertion_panics_when_the_field_is_absent() {
+        let app = harness();
+        app.get("/form")
+            .send()
+            .await
+            .assert_view_error("password", "required");
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "expected it to contain")]
+    async fn form_error_assertion_panics_on_a_message_mismatch() {
+        let app = harness();
+        app.get("/form")
+            .send()
+            .await
+            .assert_view_error("email", "expired");
     }
 
     // ------------------------------------------------------- MVVC: the binder

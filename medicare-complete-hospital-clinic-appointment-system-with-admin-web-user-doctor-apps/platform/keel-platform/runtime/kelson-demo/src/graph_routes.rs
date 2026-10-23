@@ -2423,6 +2423,68 @@ operation = "index"
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    // -------------------------------------------------- MVVC S-10: the @command registry
+
+    const COMMAND_MODULE: &str = r#"
+[module]
+name = "kennel"
+version = "0.1.0"
+api = 1
+
+[capabilities]
+book = { profile = "COMMAND", inputs = ["patient"] }
+list = { profile = "READ", inputs = ["page"] }
+
+[[routes]]
+method = "POST"
+path = "/appointments"
+operation = "book"
+
+[[routes]]
+method = "GET"
+path = "/appointments"
+operation = "list"
+"#;
+
+    fn command_manifest_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "kelson-demo-command-{}",
+            std::process::id()
+        ));
+        let app_dir = dir.join("applications").join("kennel");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(app_dir.join("module.toml"), COMMAND_MODULE).unwrap();
+        dir
+    }
+
+    #[test]
+    fn the_command_registry_follows_the_declared_routes() {
+        let dir = command_manifest_dir();
+        let graph = compile_graph(&dir).expect("graph compiles");
+
+        let engine = kelson_views::ViewsEngine::new(kelson_views::ViewsConfig {
+            paths: vec![std::env::temp_dir().join("kelson-demo-command-views")],
+            cache_dir: None,
+            env: "test".into(),
+        });
+        crate::install_command_registry(&engine, &graph);
+
+        let registry = engine
+            .command_registry()
+            .expect("the command registry installs on the views engine");
+        let book = registry.route("book").expect("the POST-declared op is bindable");
+        assert_eq!(book.verb, "POST");
+        assert_eq!(book.path, "/appointments");
+
+        // A GET route is not a command a template may bind: it dispatches
+        // reads, and a command form cannot submit a read-only verb.
+        assert!(
+            registry.route("list").is_none(),
+            "a read-only route never reaches the command registry"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn package_discovery_merges_indexed_manifests_and_fails_closed() {
         let dir = manifest_dir("pkgdisc");

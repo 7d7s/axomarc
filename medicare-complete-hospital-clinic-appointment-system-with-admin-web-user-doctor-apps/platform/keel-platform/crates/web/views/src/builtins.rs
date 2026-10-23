@@ -12,19 +12,29 @@
 //! has: a failure must render a page, and that page's data requirements
 //! are as much a contract as any other view's.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::LazyLock;
+use regex::Regex;
 
 use crate::registry::{ViewBinding, ViewRegistry};
 use crate::view_schema;
 use crate::viewmodel::{FieldKind, FieldSchema, ViewModel};
+
+// Static regexes for validation (created once, reused many times)
+static EMAIL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$").expect("valid email regex")
+});
+static URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^https?://[^\s/$.?#].[^\s]*$").expect("valid URL regex")
+});
 
 /// The error page's model.
 ///
 /// The error page is a **family** of views (404, 500, maintenance), so
 /// the model names the family; the registry binds each view of the family
 /// to it.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorVm {
     /// The HTTP status the page reports.
     pub status: u16,
@@ -60,7 +70,7 @@ impl ViewModel for ErrorVm {
 /// The pagination view model.
 ///
 /// Renders a page window with first/last/prev/next links and page numbers.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaginationVm {
     /// The current page (1-indexed).
     pub current_page: u64,
@@ -96,7 +106,7 @@ impl ViewModel for PaginationVm {
 }
 
 /// A table column definition.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableColumn {
     /// The column key (matches the row object's key).
     pub key: String,
@@ -113,7 +123,7 @@ pub struct TableColumn {
 /// The table view model.
 ///
 /// Renders a data table with columns, rows, and optional sorting/pagination.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableVm {
     /// The table's columns.
     pub columns: Vec<TableColumn>,
@@ -140,18 +150,44 @@ impl ViewModel for TableVm {
     }
 }
 
-/// A form field definition.
-#[derive(Debug, Clone, Serialize)]
+/// A validation rule for a form field.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ValidationRule {
+    /// Field must not be empty.
+    Required,
+    /// String must match a regex pattern.
+    Pattern(String),
+    /// String length must be at least min.
+    MinLength(usize),
+    /// String length must be at most max.
+    MaxLength(usize),
+    /// Number must be at least min.
+    Min(f64),
+    /// Number must be at most max.
+    Max(f64),
+    /// Must be a valid email format.
+    Email,
+    /// Must be a valid URL format.
+    Url,
+    /// Custom validation by name (resolved through the engine's conditional registry).
+    Custom(String),
+}
+
+/// A form field definition with validation rules.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FormField {
     /// The field name.
     pub name: String,
     /// The field label.
     pub label: String,
-    /// The field type (text, email, password, select, textarea, checkbox, radio, hidden).
+    /// The field type (text, email, password, select, textarea, checkbox, radio, hidden, number, date).
     pub field_type: String,
     /// Whether the field is required.
     #[serde(default)]
     pub required: bool,
+    /// Validation rules for this field.
+    #[serde(default)]
+    pub validation_rules: Vec<ValidationRule>,
     /// The field's current value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<Value>,
@@ -167,7 +203,7 @@ pub struct FormField {
 }
 
 /// An option for select/radio fields.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FormOption {
     /// The option value.
     pub value: String,
@@ -181,7 +217,7 @@ pub struct FormOption {
 /// The form view model.
 ///
 /// Renders a form with fields, validation errors, and CSRF protection.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FormVm {
     /// The form's action URL.
     pub action: String,
@@ -211,10 +247,111 @@ impl ViewModel for FormVm {
     }
 }
 
+/// Validation logic for FormVm - separate from the ViewModel trait implementation.
+impl FormVm {
+    /// Validate the form's fields against their declared rules.
+    /// Returns a vector of field errors (name -> error message).
+    /// If the form is valid, returns an empty vector.
+    pub fn validate(&self, submitted: &serde_json::Map<String, Value>) -> Vec<(String, String)> {
+        let mut errors = Vec::new();
+        for field in &self.fields {
+            let submitted_value = submitted.get(&field.name);
+            
+            // Check required
+            if field.required {
+                let is_empty = match submitted_value {
+                    Some(Value::String(s)) => s.trim().is_empty(),
+                    Some(Value::Null) | None => true,
+                    _ => false,
+                };
+                if is_empty {
+                    errors.push((field.name.clone(), format!("{} is required", field.label)));
+                    continue;
+                }
+            }
+            
+            // Skip validation if no value provided and not required
+            let Some(value) = submitted_value else { continue };
+            
+            // Validate each rule
+            for rule in &field.validation_rules {
+                let error_msg = match rule {
+                    ValidationRule::Required => None, // Already checked above
+                    ValidationRule::Pattern(pattern) => {
+                        if let Value::String(s) = value {
+                            let re = regex::Regex::new(pattern).ok();
+                            if !re.map(|r| r.is_match(s)).unwrap_or(false) {
+                                Some(format!("{} does not match required pattern", field.label))
+                            } else { None }
+                        } else { None }
+                    }
+                    ValidationRule::MinLength(min) => {
+                        if let Value::String(s) = value {
+                            if s.chars().count() < *min {
+                                Some(format!("{} must be at least {} characters", field.label, min))
+                            } else { None }
+                        } else { None }
+                    }
+                    ValidationRule::MaxLength(max) => {
+                        if let Value::String(s) = value {
+                            if s.chars().count() > *max {
+                                Some(format!("{} must be at most {} characters", field.label, max))
+                            } else { None }
+                        } else { None }
+                    }
+                    ValidationRule::Min(min) => {
+                        if let Value::Number(n) = value {
+                            if let Some(n) = n.as_f64() {
+                                if n < *min {
+                                    Some(format!("{} must be at least {}", field.label, min))
+                                } else { None }
+                            } else { None }
+                        } else { None }
+                    }
+                    ValidationRule::Max(max) => {
+                        if let Value::Number(n) = value {
+                            if let Some(n) = n.as_f64() {
+                                if n > *max {
+                                    Some(format!("{} must be at most {}", field.label, max))
+                                } else { None }
+                            } else { None }
+                        } else { None }
+                    }
+                    ValidationRule::Email => {
+                        if let Value::String(s) = value {
+                            if !EMAIL_REGEX.is_match(s) {
+                                Some(format!("{} must be a valid email address", field.label))
+                            } else { None }
+                        } else { None }
+                    }
+                    ValidationRule::Url => {
+                        if let Value::String(s) = value {
+                            if !URL_REGEX.is_match(s) {
+                                Some(format!("{} must be a valid URL", field.label))
+                            } else { None }
+                        } else { None }
+                    }
+                    ValidationRule::Custom(_name) => {
+                        // Custom validations would be resolved through the engine's conditional registry
+                        // For now, we skip custom validations in this basic implementation
+                        None
+                    }
+                };
+                
+                if let Some(msg) = error_msg {
+                    errors.push((field.name.clone(), msg));
+                    break; // Stop at first error per field
+                }
+            }
+        }
+        errors
+    }
+}
+
 /// The empty state view model.
 ///
 /// Renders an empty state illustration with a message and optional action.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmptyVm {
     /// The empty state title.
     pub title: String,
@@ -248,7 +385,7 @@ impl ViewModel for EmptyVm {
 /// The operations dashboard view model.
 ///
 /// Renders the ops dashboard with queue, jobs, schedule, and trace sections.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpsVm {
     /// The dashboard title.
     pub title: String,
@@ -426,6 +563,7 @@ mod tests {
                     label: "Email".to_string(),
                     field_type: "email".to_string(),
                     required: true,
+                    validation_rules: vec![],
                     value: Some(serde_json::json!("test@example.com")),
                     error: None,
                     options: None,
@@ -436,6 +574,7 @@ mod tests {
                     label: "Password".to_string(),
                     field_type: "password".to_string(),
                     required: true,
+                    validation_rules: vec![],
                     value: None,
                     error: Some("too short".to_string()),
                     options: None,

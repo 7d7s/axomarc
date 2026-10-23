@@ -712,6 +712,11 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         routes = graph.modules.iter().map(|m| m.routes.len()).sum::<usize>(),
         "platform graph compiled"
     );
+    // S-10: the routes are the commands. Everything the graph declared on a
+    // mutating verb is bindable via `@command`; read-only verbs are not.
+    if let Some(engine) = views.as_ref() {
+        crate::install_command_registry(engine, &graph);
+    }
 
     let bus = host
         .registry()
@@ -1409,6 +1414,36 @@ pub fn install_view_registry(engine: &kelson_views::ViewsEngine) {
     engine.set_registry(std::sync::Arc::new(
         kelson_views::builtins::builtin_registry(),
     ));
+}
+
+/// S-10: install the command registry from the compiled graph. Every
+/// declared mutating route (POST/PUT/PATCH/DELETE) becomes a command a
+/// template may bind to via `@command`, on the verb and path IT declared;
+/// GET routes (and the catch-alls) are not command-bindable. The route is
+/// the declaration: an operation no route declared is refused at render
+/// time, so a template can never invent an endpoint.
+pub fn install_command_registry(
+    engine: &kelson_views::ViewsEngine,
+    graph: &kelson_registry::PlatformGraph,
+) {
+    let mut registry = kelson_views::CommandRegistry::new();
+    for module in &graph.modules {
+        for route in &module.routes {
+            match route.method.to_ascii_uppercase().as_str() {
+                "POST" | "PUT" | "PATCH" | "DELETE" => {
+                    registry.register(kelson_views::CommandRoute::new(
+                        route.operation.clone(),
+                        route.method.to_ascii_uppercase(),
+                        route.path.clone(),
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+    let commands = registry.len();
+    tracing::info!(commands, "view command registry installed from the route graph");
+    engine.set_commands(std::sync::Arc::new(registry));
 }
 
 fn register_asset_directive(

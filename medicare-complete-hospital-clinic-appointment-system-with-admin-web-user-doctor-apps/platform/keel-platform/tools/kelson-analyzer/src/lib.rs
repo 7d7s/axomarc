@@ -6,6 +6,12 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+/// The external-dependency budget (DEPENDENCY-POLICY v2, D-62): the cap on
+/// direct externals in the root workspace dependency table. Raised to 26
+/// when the views engine took `regex` to compile the form bridge's
+/// declared-rule patterns once (S-9: one pattern per rule, not per field).
+pub const EXTERNAL_CAP: usize = 26;
+
 /// Topology classes (STAGE-0-SPEC §2/§3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Class {
@@ -483,7 +489,8 @@ pub fn analyze_workspace(root: &Path) -> Vec<Violation> {
         }
     }
 
-    // External-dependency budget (DEPENDENCY-POLICY v2, D-62): cap 25 direct externals.
+    // External-dependency budget (DEPENDENCY-POLICY v2, D-62): the cap on
+    // direct externals in the root workspace table.
     let externals = root_toml
         .parse::<toml::Value>()
         .ok()
@@ -494,12 +501,13 @@ pub fn analyze_workspace(root: &Path) -> Vec<Violation> {
                 .map(|t| t.iter().filter(|(_, v)| v.get("path").is_none()).count())
         })
         .unwrap_or(0);
-    if externals > 25 {
+    if externals > EXTERNAL_CAP {
         violations.push(Violation {
             code: "ANALYZER-BUDGET".into(),
             member: ".".into(),
             message: format!(
-                "{externals} direct external dependencies exceed the policy-v2 cap of 25 (D-62)"
+                "{externals} direct external dependencies exceed the policy-v2 cap of \
+                 {EXTERNAL_CAP} (D-62)"
             ),
         });
     }

@@ -83,6 +83,82 @@ impl ViewRegistry {
     }
 }
 
+// --------------------------------------------------------------- commands
+
+/// One declared command: the route that serves an operation a template
+/// may bind to (`@command("op")`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandRoute {
+    /// The operation id the route dispatches ("cancel").
+    pub op: String,
+    /// The HTTP verb the route declares ("POST").
+    pub verb: String,
+    /// The path the route declares ("/api/v1/appointments").
+    pub path: String,
+}
+
+impl CommandRoute {
+    /// Declare one command: an operation bound to the route that serves it.
+    pub fn new(op: impl Into<String>, verb: impl Into<String>, path: impl Into<String>) -> Self {
+        Self {
+            op: op.into(),
+            verb: verb.into(),
+            path: path.into(),
+        }
+    }
+}
+
+/// The command registry: which operations a template may bind to, and
+/// the route each one is served by.
+///
+/// Nothing is free-form: `@command("op")` renders **only** an operation a
+/// route has declared here, on the verb and path that route declared. A
+/// command the registry does not know is a render error, so a template can
+/// never invent an endpoint. Two rules, mirroring the view registry:
+///
+/// * **the registry is optional.** An engine without one renders views
+///   without commands exactly as before; `@command` is simply refused.
+/// * **the last registration wins.** Two routes declaring the same
+///   operation resolve to the later declaration — the framework binds to
+///   what the deployment says the operation is served by now.
+#[derive(Debug, Clone, Default)]
+pub struct CommandRegistry {
+    routes: BTreeMap<String, CommandRoute>,
+}
+
+impl CommandRegistry {
+    /// An empty registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a command route. The last registration for an operation
+    /// wins.
+    pub fn register(&mut self, route: CommandRoute) {
+        self.routes.insert(route.op.clone(), route);
+    }
+
+    /// The route that serves an operation, if any is registered.
+    pub fn route(&self, op: &str) -> Option<&CommandRoute> {
+        self.routes.get(op)
+    }
+
+    /// The registered operation ids, sorted.
+    pub fn ops(&self) -> Vec<String> {
+        self.routes.keys().cloned().collect()
+    }
+
+    /// How many operations are declared.
+    pub fn len(&self) -> usize {
+        self.routes.len()
+    }
+
+    /// Whether nothing is declared.
+    pub fn is_empty(&self) -> bool {
+        self.routes.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,6 +240,43 @@ mod tests {
                 .model
                 .contains("OtherVm"),
             "the application's binding is the one that applies"
+        );
+    }
+
+    #[test]
+    fn a_declared_command_names_its_operation_and_route() {
+        let mut registry = CommandRegistry::new();
+        registry.register(CommandRoute::new("cancel", "POST", "/appointments/cancel"));
+
+        let route = registry.route("cancel").expect("the operation is declared");
+        assert_eq!(route.verb, "POST");
+        assert_eq!(route.path, "/appointments/cancel");
+        assert_eq!(registry.ops(), vec!["cancel".to_string()]);
+        assert_eq!(registry.len(), 1);
+        assert!(!registry.is_empty());
+    }
+
+    #[test]
+    fn an_undeclared_operation_has_no_command_route() {
+        let registry = CommandRegistry::new();
+        assert!(registry.is_empty());
+        assert!(
+            registry.route("cancel").is_none(),
+            "an operation no route declared cannot be bound - there is nothing to dispatch"
+        );
+        assert!(registry.ops().is_empty());
+    }
+
+    #[test]
+    fn a_command_registration_replaces_the_previous_route() {
+        let mut registry = CommandRegistry::new();
+        registry.register(CommandRoute::new("cancel", "DELETE", "/appointments/{id}"));
+        registry.register(CommandRoute::new("cancel", "POST", "/appointments/cancel"));
+        assert_eq!(registry.len(), 1, "the last registration for an op wins");
+        assert_eq!(
+            registry.route("cancel").map(|r| r.verb.clone()),
+            Some("POST".to_string()),
+            "the later route declaration is the one the command binds to"
         );
     }
 }

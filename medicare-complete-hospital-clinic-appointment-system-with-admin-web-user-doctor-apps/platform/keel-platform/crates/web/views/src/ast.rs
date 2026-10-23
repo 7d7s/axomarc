@@ -126,6 +126,17 @@ pub enum Node {
         #[serde(default)]
         model: Option<String>,
     },
+    /// @command("op", label="...") - bind a template element to a named
+    /// operation. The engine renders a CSRF-carrying form bound to the
+    /// route that declared the operation; a command no route declared is
+    /// refused at render time (no free-form dispatch).
+    Command {
+        /// The operation id the form dispatches.
+        op: String,
+        /// Optional submit-button label; the op id is used when absent.
+        #[serde(default)]
+        label: Option<String>,
+    },
     /// @csrf - hidden token input (context _csrf).
     Csrf,
     /// @method("PUT") - hidden method-spoofing input.

@@ -181,6 +181,88 @@ impl<'e> Renderer<'e> {
         Ok(())
     }
 
+    /// Render one `@command` element: a CSRF-carrying form bound to the
+    /// route that declared the operation.
+    ///
+    /// Nothing dispatches here: the form posts to the **path the route
+    /// declared**, with the **verb the route declared** (a non-POST verb
+    /// rides the `_method` spoof the @method directive already speaks).
+    /// A command no route declared, an engine without a command registry,
+    /// a command bound to a read-only verb, and a page without a CSRF
+    /// token are all render errors — fail-closed, like the rest of the
+    /// engine.
+    fn render_command(&mut self, op: &str, label: Option<&str>) -> Result<(), ViewError> {
+        let Some(registry) = self.engine.command_registry() else {
+            return Err(ViewError::new(
+                VIEW_RENDER,
+                format!(
+                    "the command {op:?} has no command registry installed: the framework \
+                     refuses a binding with nothing to check it against"
+                ),
+            ));
+        };
+        let Some(route) = registry.route(op) else {
+            return Err(ViewError::new(
+                VIEW_RENDER,
+                format!(
+                    "the command {op:?} is not declared by any registered route: a template \
+                     binds only to dispatch that exists (no free-form addresses)"
+                ),
+            ));
+        };
+        match route.verb.to_ascii_uppercase().as_str() {
+            "POST" | "PUT" | "PATCH" | "DELETE" => {}
+            other => {
+                return Err(ViewError::new(
+                    VIEW_RENDER,
+                    format!(
+                        "the command {op:?} is declared on {other} - a command form cannot \
+                         submit a read-only verb (declare the operation on a mutating verb)"
+                    ),
+                ));
+            }
+        }
+        let token = self.lookup(&[Segment::Key("_csrf".into())]);
+        let csrf_token = match &token {
+            Value::String(s) if !s.is_empty() => s.clone(),
+            _ => {
+                return Err(ViewError::new(
+                    VIEW_RENDER,
+                    format!(
+                        "the command {op:?} has no CSRF token in the context (_csrf): a command \
+                         form always carries the token"
+                    ),
+                ));
+            }
+        };
+        let verb = route.verb.to_ascii_uppercase();
+        let (form_method, spoof) = if verb == "POST" {
+            ("POST".to_string(), None)
+        } else {
+            ("POST".to_string(), Some(verb.clone()))
+        };
+        let button = label.unwrap_or(op);
+        self.out.push_str(&format!(
+            "<form method=\"{form_method}\" action=\"{}\" class=\"kelson-command\">",
+            html_escape(&route.path),
+        ));
+        self.out.push_str(&format!(
+            "<input type=\"hidden\" name=\"_token\" value=\"{}\">",
+            html_escape(&csrf_token)
+        ));
+        if let Some(verb) = spoof {
+            self.out.push_str(&format!(
+                "<input type=\"hidden\" name=\"_method\" value=\"{}\">",
+                html_escape(&verb)
+            ));
+        }
+        self.out.push_str(&format!(
+            "<button type=\"submit\">{}</button></form>",
+            html_escape(button)
+        ));
+        Ok(())
+    }
+
     // ---------------------------------------------------------- evaluation
 
     /// Scope-aware dot-path lookup: scoped bindings shadow the root.
@@ -504,6 +586,7 @@ impl<'e> Renderer<'e> {
                     // authoritative for the nodes it contributes.
                     self.bind_vm(model.as_deref())?;
                 }
+                Node::Command { op, label } => self.render_command(op, label.as_deref())?,
                 Node::Csrf => {
                     let token = self.lookup(&[Segment::Key("_csrf".into())]);
                     self.out.push_str(&format!(

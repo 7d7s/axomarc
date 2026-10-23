@@ -186,6 +186,11 @@ pub struct ViewsEngine {
     /// view without a binding renders exactly as it did before the
     /// registry existed.
     registry: Mutex<Option<Arc<crate::registry::ViewRegistry>>>,
+    /// The command registry: which operations a template may bind to via
+    /// `@command`, and the routes that serve them. Optional - an engine
+    /// without one renders every other view exactly as before (and simply
+    /// refuses `@command`).
+    commands: Mutex<Option<Arc<crate::registry::CommandRegistry>>>,
 }
 
 impl ViewsEngine {
@@ -199,6 +204,7 @@ impl ViewsEngine {
             memo: Mutex::new(HashMap::new()),
             tap: Mutex::new(None),
             registry: Mutex::new(None),
+            commands: Mutex::new(None),
         }
     }
 
@@ -268,6 +274,18 @@ impl ViewsEngine {
     /// The view registry, if one is installed.
     pub fn registry(&self) -> Option<Arc<crate::registry::ViewRegistry>> {
         self.registry.lock().unwrap().clone()
+    }
+
+    /// Install the command registry: the operations a template may bind
+    /// to via `@command`, with the routes that serve them. Replaces any
+    /// previous registry; an engine without one simply refuses `@command`.
+    pub fn set_commands(&self, commands: Arc<crate::registry::CommandRegistry>) {
+        *self.commands.lock().unwrap() = Some(commands);
+    }
+
+    /// The command registry, if one is installed.
+    pub fn command_registry(&self) -> Option<Arc<crate::registry::CommandRegistry>> {
+        self.commands.lock().unwrap().clone()
     }
 
     pub(crate) fn directive(&self, name: &str) -> Option<Arc<DirectiveHandler>> {
@@ -952,6 +970,90 @@ mod tests {
     fn lang_falls_back_to_the_key() {
         let (_dir, engine) = engine_with(&[("page", "@lang(\"missing.key\")")]);
         assert_eq!(render(&engine, "page", json!({})), "missing.key");
+    }
+
+    // ------------------------------------------------------------ commands
+
+    fn engine_with_commands(engine: &ViewsEngine, commands: &[(&str, &str, &str)]) {
+        let mut registry = crate::registry::CommandRegistry::new();
+        for (op, verb, path) in commands {
+            registry.register(crate::registry::CommandRoute::new(*op, *verb, *path));
+        }
+        engine.set_commands(std::sync::Arc::new(registry));
+    }
+
+    #[test]
+    fn a_command_binds_to_the_declared_operation() {
+        let (_dir, engine) = engine_with(&[("page", "@command(\"cancel\", label=\"Cancel it\")")]);
+        engine_with_commands(&engine, &[("cancel", "POST", "/appointments/cancel")]);
+
+        let out = render(
+            &engine,
+            "page",
+            json!({ "_csrf": "tok&en" }),
+        );
+        assert!(
+            out.starts_with(
+                "<form method=\"POST\" action=\"/appointments/cancel\" class=\"kelson-command\">"
+            ),
+            "{out}"
+        );
+        assert!(out.contains("name=\"_token\" value=\"tok&amp;en\""), "{out}");
+        assert!(!out.contains("_method"), "{out}");
+        assert!(out.contains("<button type=\"submit\">Cancel it</button></form>"), "{out}");
+    }
+
+    #[test]
+    fn an_undeclared_command_is_refused() {
+        let (_dir, engine) = engine_with(&[("page", "@command(\"ghost-op\")")]);
+        engine_with_commands(&engine, &[("cancel", "POST", "/appointments/cancel")]);
+        let err = engine
+            .render("page", json!({ "_csrf": "tok" }))
+            .unwrap_err();
+        assert_eq!(err.code, VIEW_RENDER);
+        assert!(err.message.contains("ghost-op"), "{err}");
+
+        // No registry at all refuses too: a binding with nothing to check
+        // against is not a rendering, it is an invention.
+        let (_dir2, engine2) = engine_with(&[("page", "@command(\"cancel\")")]);
+        let err = engine2
+            .render("page", json!({ "_csrf": "tok" }))
+            .unwrap_err();
+        assert_eq!(err.code, VIEW_RENDER);
+        assert!(err.message.contains("no command registry"), "{err}");
+    }
+
+    #[test]
+    fn a_command_spoofs_the_declared_verb_and_refuses_a_read_only_one() {
+        // A DELETE-declared operation rides the `_method` spoof @method
+        // already speaks.
+        let (_dir, engine) = engine_with(&[("page", "@command(\"cancel\")")]);
+        engine_with_commands(&engine, &[("cancel", "DELETE", "/c")]);
+        let out = render(&engine, "page", json!({ "_csrf": "tok" }));
+        assert!(out.contains("<form method=\"POST\" action=\"/c\""), "{out}");
+        assert!(
+            out.contains("name=\"_method\" value=\"DELETE\""),
+            "{out}"
+        );
+
+        // A GET-declared operation refuses: a command form cannot submit
+        // a read-only verb.
+        let (_dir2, engine2) = engine_with(&[("page", "@command(\"fetch\")")]);
+        engine_with_commands(&engine2, &[("fetch", "GET", "/list")]);
+        let err = engine2
+            .render("page", json!({ "_csrf": "tok" }))
+            .unwrap_err();
+        assert_eq!(err.code, VIEW_RENDER);
+        assert!(err.message.contains("read-only verb"), "{err}");
+    }
+
+    #[test]
+    fn a_command_without_a_csrf_token_is_refused() {
+        let (_dir, engine) = engine_with(&[("page", "@command(\"cancel\")")]);
+        engine_with_commands(&engine, &[("cancel", "POST", "/c")]);
+        let err = engine.render("page", json!({})).unwrap_err();
+        assert_eq!(err.code, VIEW_RENDER);
+        assert!(err.message.contains("no CSRF token"), "{err}");
     }
 
     #[test]

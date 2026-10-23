@@ -195,7 +195,7 @@ kelson-mod-appointments = { path = "applications/appointments" }
 # that consume it ship as the `applications/*` guest artifact.
 kelson-oauth2-contract = { path = "crates/data/oauth2" }
 kelson-mod-oauth2 = { path = "applications/oauth2" }
-# --- external (budget: policy v2 D-62, cap 25; see DEPENDENCY-POLICY.md) ---
+# --- external (budget: policy v2 D-62, cap 26; see DEPENDENCY-POLICY.md) ---
 axum = { version = "=0.8.6", features = ["ws", "multipart"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
 tower = "0.5"
@@ -215,6 +215,7 @@ argon2 = "0.5"
 anyhow = "1"
 rand = "0.8"
 sha2 = "0.10"
+regex = "1.10"
 aes-gcm = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
