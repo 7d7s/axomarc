@@ -109,6 +109,16 @@ impl<S: ViewModel> LiveSession<S> {
         self.inner.lock().unwrap().revision
     }
 
+    /// The state as its **checked** value: serialised and validated
+    /// against the declaration — exactly what a bound render builds
+    /// from. The transport slice's diff consumes this, revision-stamped.
+    /// Hold the state lock, not a render: a changed-revision-without-
+    /// re-render still reads the current declared state.
+    pub fn state_value(&self) -> Result<serde_json::Value, crate::engine::ViewError> {
+        let inner = self.inner.lock().unwrap();
+        crate::viewmodel::view_model_value(&inner.state)
+    }
+
     /// Re-render the session.
     ///
     /// The current state is serialised, checked against its declaration,

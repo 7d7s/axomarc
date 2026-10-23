@@ -23,8 +23,11 @@
 //!   command is refused (no free-form dispatch).
 //! - The live spine (S-11): an opt-in-per-view stateful session whose
 //!   state IS the view's declared view model; every re-render is the
-//!   SAME schema-checked render. The transport and the diff are
-//!   deliberately absent until the transport slice.
+//!   SAME schema-checked render. The live wire (S-12) carries the wire
+//!   half: the leaf diff (only the changed parts travel), the session
+//!   registry (a closed or never-known id is stale and refused), and —
+//!   behind `feature = "live-transport"` — the hub publisher
+//!   (`global:live-<id>`, event `live.update`).
 //! - Extension points: custom directives, Blade::if-style custom
 //!   conditionals, package view namespaces (pkg::view) with a resolution
 //!   hook, and view hooks (composer-equivalent callbacks).
@@ -42,6 +45,7 @@ pub mod expr;
 pub mod form_bridge;
 pub mod lint;
 pub mod live;
+pub mod live_wire;
 mod parser;
 pub mod registry;
 mod render;
@@ -60,6 +64,9 @@ pub use expr::{
 pub use form_bridge::BridgedForm;
 pub use lint::{check_paths, vm_declaration, vm_paths, VmDeclaration};
 pub use live::{LiveRender, LiveSession};
+pub use live_wire::{state_diff, DiffEntry, LiveId, LiveNode, LiveSessions};
+#[cfg(feature = "live-transport")]
+pub use live_wire::LiveWire;
 pub use registry::{CommandRegistry, CommandRoute, ViewBinding, ViewRegistry};
 pub use viewmodel::{
     check_schema, governing_field, key_path, schema_field, value_at, value_kind, view_model_value,

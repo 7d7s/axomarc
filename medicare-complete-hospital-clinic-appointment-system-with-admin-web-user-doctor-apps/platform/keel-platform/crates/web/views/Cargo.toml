@@ -9,6 +9,13 @@ readme.workspace = true
 keywords.workspace = true
 description = "Kelson framework: zero-dep interpreted-AST views engine (Wave 2) - Blade-familiar directives over a JSON context, deliberately superseding arbitrary PHP eval."
 
+[features]
+# The live wire (D-6, S-12): the transport over `kelson-realtime`. The
+# spine (state, diff surface, session registry) needs none of it; only
+# the hub-publisher does, so the axum/tokio tree stays out of the
+# default build of the template engine.
+live-transport = ["dep:kelson-realtime", "dep:time"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -17,3 +24,5 @@ toml = { workspace = true }
 regex = { workspace = true }
 kelson-foundation = { workspace = true }
 kelson-http = { workspace = true }
+kelson-realtime = { workspace = true, optional = true }
+time = { workspace = true, optional = true }
