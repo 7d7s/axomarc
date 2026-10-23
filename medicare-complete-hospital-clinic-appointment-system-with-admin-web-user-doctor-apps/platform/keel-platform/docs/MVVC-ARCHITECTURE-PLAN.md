@@ -316,8 +316,9 @@ escape hatch. `kelson-views/src/viewmodel.rs`.
 ### F-02 — The view registry
 `ViewBinding`, `ViewRegistry`, the boot-time registration of the app's views
 and the framework's built-ins, the "unbound view" fallback.
-**Evidence:** `a_registered_view_declares_its_model`; `an_unregistered_view_still_renders`;
-`a_built_in_view_is_registered_by_the_framework`.
+**Evidence (reconciled at S-13 to the executed names):**
+`a_registered_view_declares_its_model`; `an_unregistered_view_has_no_binding`;
+`a_registration_replaces_the_previous_one`; `a_built_in_view_is_registered_by_the_framework`.
 **Risk:** low. **Slice:** S-2.
 
 ### F-03 — The binder: `@vm` and schema-checked paths
@@ -332,23 +333,32 @@ syntax is additive; the existing 50+ view cases must stay green unchanged ✓.
 ### F-04 — The typed ViewContext and the single assembler
 `ViewContext` in `foundation/core`, the assembler, the four call sites
 migrated, `_csrf` wired, the dashboard internationalised.
-**Evidence:** `the_reserved_keys_are_assembled_in_one_place`; `the_csrf_token_reaches_the_view`;
-`the_dashboard_carries_the_locale_and_the_messages`; `the_notification_view_carries_the_same_reserved_keys`.
+**Evidence (reconciled at S-13 to the executed names):**
+`the_reserved_context_fills_the_documented_keys` (the assembler fills `_locale`,
+`_lang`, `_auth`, `_errors`, `_csrf` — the CSRF token reaches the view through
+`_csrf`, that case included); `an_absent_field_stays_absent`;
+`the_frameworks_keys_win_and_the_results_errors_survive`;
+`a_context_that_is_not_an_object_is_left_alone`;
+`the_dashboard_carries_the_locale_and_the_messages`;
+`the_notification_view_carries_the_same_reserved_keys`.
 **Risk:** low-medium. **Slice:** S-4.
 
 ### F-05 — The built-in view models (D-3)
 `PaginationVm`, `TableVm<T>`, `FormVm`, `ErrorVm`, `EmptyVm`, `OpsVm` — typed,
 with schemas, usable by any app.
-**Evidence:** `the_pagination_view_model_carries_the_window`;
-`the_table_view_model_declares_its_columns`; `the_error_view_model_carries_the_status_and_the_code`.
+**Evidence (one name reconciled at S-13):** `the_pagination_view_model_carries_the_window`;
+`the_table_view_model_declares_its_columns`; `the_error_model_carries_the_status_and_the_code`.
 **Risk:** low. **Slice:** S-5.
 
 ### F-06 — The Model layer: read models (D-1, D-6)
 The read-model contract (a named, declared projection), the materialised-view
 store (MySQL + Postgres), the refresh policy (interval / on-write / on-demand),
 the staleness surface (the age, the state, the last refresh), the registry.
-**Evidence:** `a_read_model_is_materialised_and_refreshed_on_its_policy`;
-`a_read_model_reports_its_staleness`; `a_refresh_is_refused_when_the_budget_is_exceeded`.
+**Evidence (reconciled at S-13 to the executed names):**
+`a_read_model_declares_its_sources_and_policy`; `an_on_write_policy_triggers_for_its_sources`;
+`the_registry_rejects_duplicate_names`; `the_registry_tracks_stores`. Not built
+with the slice: the PostgreSQL materialised store and a budget-refused
+refresh — stated in `docs/APP-AUTHORING.md` §6 rather than claimed.
 **Risk:** **high** — a second persistence shape beside the model store, and
 the tenancy scope must hold for it ✓. Mitigation: the read model is a
 **projection over the existing store**, scoped by the same tenant rule ✓ —
@@ -368,15 +378,18 @@ would be a cross-tenant leak). **Slice:** S-8.
 The form object: the declared fields, the submitted values, the validation
 errors, the binding to the template, and the bridge to the existing
 `RequestViewModel` (the wire plane) so a form has **one** definition.
-**Evidence:** `a_form_carries_its_fields_and_its_errors`;
-`a_form_validates_against_the_declared_rules`; `the_form_reuses_the_wire_view_model`.
+**Evidence (reconciled at S-13 to the executed names):**
+`the_form_view_model_carries_fields_and_errors`;
+`a_bridged_form_validates_submitted_data`; `the_wire_plane_drops_a_key_no_field_declared`.
 **Risk:** medium. **Slice:** S-9.
 
 ### F-09 — The `@command` binding
 The command binding from a template element to a named operation, the
 refusal of an undeclared command, the CSRF-carrying rendering.
 **Evidence:** `a_command_binds_to_the_declared_operation`;
-`an_undeclared_command_is_refused`.
+`an_undeclared_command_is_refused`; `a_command_spoofs_the_declared_verb_and_refuses_a_read_only_one`;
+`a_command_without_a_csrf_token_is_refused`; `a_command_requires_an_operation_id`;
+`a_command_refuses_unknown_options`.
 **Risk:** medium-high (it touches the request path). **Slice:** S-10.
 
 ### F-10 — Live / stateful views (D-6)
@@ -384,8 +397,9 @@ The stateful session, the diff, the transport. The framework already ships
 `kelson-realtime`; the LiveView-ish loop is a **presentation** state machine
 over it, with the same ViewModel (the state is a ViewModel, re-rendered on
 change) ✓.
-**Evidence:** `a_state_change_rerenders_the_view_model`; `the_diff_carries_only_the_changed_parts`;
-`a_stale_session_is_refused`.
+**Evidence (S-11 spine, S-12 wire):** `a_state_change_rerenders_the_view_model`;
+`the_diff_carries_only_the_changed_parts`; `a_stale_session_is_refused`;
+`the_wire_carries_only_the_changed_parts`; `the_wire_refuses_to_publish_a_stale_session`.
 **Risk:** **highest** — it is a new execution model (a long-lived session
 per browser), and the framework currently excludes Livewire by design
 (LF-032). Mitigation: it is **opt-in per view** and reuses the ViewModel
@@ -497,6 +511,14 @@ New map rows (the same shape as LDB-107..LDB-111 ✓):
 | `LDB-117` | the typed forms | Laravel's form requests + `@error` |
 | `LDB-118` | the read-model layer | Laravel's `scout`/cached aggregates — **a deliberate divergence** (a declared, refreshable projection) |
 | `LDB-119` | the live/stateful views | Livewire (LF-032: currently excluded — this row supersedes it) |
+
+**Shipped numbering (reconciled at S-13):** the ledger followed the shipped
+order, not this table's preallocation — `LDB-118` = the forms (S-9), `LDB-119`
+= the `@command` binding (S-10), `LDB-120` = the live spine (S-11), `LDB-121`
+= the live wire (S-12), and the read-model layer — which this table
+preallocated as `LDB-118` — landed as `LDB-122`, since it shipped (S-6/S-7,
+materialised for MySQL; PostgreSQL's store still open) before the forms did.
+Every row's evidence column names the cases that actually ran.
 
 Findings-register rows: one per defect the plan's implementation uncovers
 ✓ (the register's rule ✓: a repro case, a report, a proposed fix ✓).
