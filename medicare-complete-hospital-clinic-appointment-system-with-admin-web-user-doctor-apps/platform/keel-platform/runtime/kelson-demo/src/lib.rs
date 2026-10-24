@@ -347,8 +347,16 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     Some(pool)
                 }
                 other => {
-                    if db.required {
-                        eprintln!("boot refused: database required but unreachable ({other:?})");
+                    // KFA-006: the durable-store posture is derived from the
+                    // ENVIRONMENT as well as the flag — staging/prod refuse a
+                    // volatile fallback even when `[database].required` is
+                    // absent (a silently non-durable deployment accepts
+                    // writes it will lose while looking healthy).
+                    if degraded_boot_refused(db.required, &env) {
+                        eprintln!(
+                            "boot refused: database required (env = {}) but unreachable ({other:?})",
+                            env.as_str()
+                        );
                         std::process::exit(1);
                     }
                     tracing::warn!("database unreachable; booting degraded on in-memory backend");
@@ -931,6 +939,12 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         health: health.clone(),
         modules: host.modules_shared(),
         env,
+        // MNC-004: parsed once here; the same set drives the admission
+        // pipeline AND the credential throttle (login/register/confirm), so
+        // both bucket clients identically and X-Forwarded-For is only ever
+        // honoured through the declared proxy ranges.
+        trusted_proxies: kelson_http::TrustedProxies::parse(&platform_cfg.http.trusted_proxies)
+            .map_err(|e| format!("[http.trusted_proxies]: {e}"))?,
         // Phase 3 (§4.3): shared cell — the FlagsReloader subscriber swaps
         // the ambient set in place; readers take a cheap read lock.
         flags: Arc::new(std::sync::RwLock::new(enabled_flags)),
@@ -1134,8 +1148,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let admission = kelson_http::Admission {
         maintenance: kelson_http::MaintenanceGuard::file(&root),
         cors: cors_cfg,
-        trusted_proxies: kelson_http::TrustedProxies::parse(&platform_cfg.http.trusted_proxies)
-            .map_err(|e| format!("[http.trusted_proxies]: {e}"))?,
+        trusted_proxies: state.trusted_proxies.clone(),
         rate_limit_store,
         request_timeout,
         ..Default::default()
@@ -1299,6 +1312,15 @@ pub fn ensure_transport_posture(listen: &str, terminating_proxy: bool) -> Result
          terminates TLS in front of this process, or bind a loopback address — \
          see docs/rust/05-SECURITY-ISOLATION.md"
     ))
+}
+
+/// KFA-006: may this boot fall back to volatile in-memory stores when the
+/// database is unreachable? Refused when the config says `required`, and also
+/// by default outside dev/test (`Environment::requires_durable_database`) —
+/// an omitted key must not silently make a staging/prod deployment
+/// non-durable. Extracted from the pool probe so the posture is testable.
+pub fn degraded_boot_refused(required: bool, env: &kelson_config::Environment) -> bool {
+    required || env.requires_durable_database()
 }
 
 /// Outcome of one config poll, for the module-lifecycle reaction (Row 16).
@@ -2107,6 +2129,10 @@ fn build_app_state_inner(
         principals,
         credentials,
         memberships,
+        // Harness posture: no proxies declared, so the credential throttle
+        // ignores X-Forwarded-For entirely (MNC-004) — tests that need the
+        // trusted walk inject a set.
+        trusted_proxies: Default::default(),
         policy,
         granted_capabilities,
         default_tenant_id: Some(TenantId::from_uuid(

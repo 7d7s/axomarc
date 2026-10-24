@@ -43,6 +43,16 @@ impl Environment {
         matches!(self, Environment::Prod)
     }
 
+    /// KFA-006: outside dev/test a host must never fall back to volatile
+    /// in-memory storage when the database is unreachable — a silently
+    /// non-durable deployment accepts writes it will lose while looking
+    /// healthy to a naive monitor. The `[database].required` flag stays as an
+    /// opt-in for dev; staging and prod get the durable posture by default
+    /// even when the key is absent.
+    pub fn requires_durable_database(&self) -> bool {
+        matches!(self, Environment::Staging | Environment::Prod)
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Environment::Dev => "dev",
@@ -2773,6 +2783,53 @@ mod wave7_identity_config_tests {
         let section = schema_violations("[idenitty]\nmemory = 65536\n");
         assert_eq!(section.len(), 1, "{section:?}");
         assert_eq!(section[0].key, "idenitty");
+    }
+}
+
+#[cfg(test)]
+mod kfa006_database_durability_tests {
+    use super::*;
+
+    /// KFA-006: the durable-store posture is derived from the ENVIRONMENT,
+    /// not from one optional config key. Staging/prod refuse a degraded
+    /// (volatile) boot even when `[database].required` is absent; dev/test
+    /// keep the opt-in fallback (D-52).
+    #[test]
+    fn staging_and_prod_require_a_durable_database_by_default() {
+        assert!(
+            Environment::Staging.requires_durable_database(),
+            "staging must never serve from a volatile store"
+        );
+        assert!(
+            Environment::Prod.requires_durable_database(),
+            "prod must never serve from a volatile store"
+        );
+        assert!(
+            !Environment::Dev.requires_durable_database(),
+            "dev keeps the degraded-boot fallback (D-52)"
+        );
+        assert!(
+            !Environment::Test.requires_durable_database(),
+            "test keeps the degraded-boot fallback (D-52)"
+        );
+    }
+
+    /// A prod config that OMITS `[database].required` still resolves to the
+    /// durable posture: the environment decides, not the absent key.
+    #[test]
+    fn a_prod_config_without_the_required_key_still_demands_durability() {
+        let cfg: PlatformConfig = toml::from_str(
+            "[app]\nenv = \"prod\"\n[database]\nurl = \"postgres://example\"\n",
+        )
+        .expect("a prod config parses");
+        assert!(
+            !cfg.database.as_ref().expect("[database] section").required,
+            "the flag's serde default stays false (dev posture)"
+        );
+        assert!(
+            cfg.app.env.requires_durable_database(),
+            "the boot derives refusal from the environment (KFA-006)"
+        );
     }
 }
 

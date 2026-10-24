@@ -626,8 +626,11 @@ async fn login_throttling_returns_429_after_burst() {
     let app = app();
     let email = format!("throttle-{}@clinic.test", uuid::Uuid::now_v7());
     register(&app, &email).await;
+    // MNC-005: registration spends one token of the SAME per-identity
+    // credential budget as login, so after the register above four failed
+    // logins ride through and the fifth is refused (the 6th token).
     let mut last;
-    for _ in 0..5 {
+    for _ in 0..4 {
         last = login(&app, &email, "bad-password-1", Some("dev"))
             .await
             .status;

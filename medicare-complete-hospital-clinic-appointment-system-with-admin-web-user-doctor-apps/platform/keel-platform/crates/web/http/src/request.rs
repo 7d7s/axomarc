@@ -59,9 +59,13 @@ pub fn bearer_token(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// Best-effort client IP: the first hop of `X-Forwarded-For`, otherwise the
-/// `global` sentinel the credential throttle already buckets on. The edge is
-/// behind a trusted proxy — a client-supplied header is never trusted for
-/// authorization, only for rate-bucket identity and telemetry.
+/// `global` sentinel. **Telemetry only** (MNC-004): this trusts the header
+/// unconditionally, so it must never decide a security-relevant bucket —
+/// credential throttling and rate limiting derive their client key through
+/// the deployment's `TrustedProxies` set instead
+/// (`middleware::client_key_with_proxies`, or the auth plane's
+/// `throttle_client`), where a client-supplied header cannot rotate its own
+/// bucket.
 pub fn client_ip(headers: &HeaderMap) -> String {
     headers
         .get("x-forwarded-for")

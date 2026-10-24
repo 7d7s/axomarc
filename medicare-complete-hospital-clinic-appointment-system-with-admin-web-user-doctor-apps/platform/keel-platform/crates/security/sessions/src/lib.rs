@@ -344,10 +344,14 @@ impl SessionManager {
         self.store.delete(id)
     }
 
-    /// Verify a CSRF token against a live session. Constant-time-ish compare.
+    /// Verify a CSRF token against a live session. Constant-time compare
+    /// (MNC-003): the byte comparison folds every position (up to the longer
+    /// side) into one accumulator, so neither the content nor a shared prefix
+    /// leaks through response timing — the previous `==` short-circuited at
+    /// the first differing byte, a classic timing oracle on the token.
     pub fn verify_csrf(&self, session: &Session, token: &str) -> bool {
         let expected = session.csrf_token(&self.secret);
-        expected.as_bytes() == token.as_bytes()
+        constant_time_eq(expected.as_bytes(), token.as_bytes())
     }
 
     /// Garbage-collect expired sessions; wire into a schedule (item 39).
@@ -355,6 +359,23 @@ impl SessionManager {
     pub fn sweep(&self, now: OffsetDateTime) -> Result<usize, AppError> {
         self.store.sweep(now, &self.policy)
     }
+}
+
+/// MNC-003: content- and length-oblivious byte comparison. Every position is
+/// folded into one XOR accumulator (padding the shorter side with zeros), so
+/// the work and the observable result do not depend on where — or whether —
+/// the inputs differ. The same pattern as `kelson-identity`'s `otp_matches`
+/// (each security crate carries its own copy; they cannot share without a
+/// layering violation).
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    let mut diff = 0u8;
+    let len = a.len().max(b.len());
+    for i in 0..len {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 #[cfg(test)]
@@ -483,6 +504,43 @@ mod tests {
         let mut other = s.clone();
         other.principal = principal();
         assert!(!mgr.verify_csrf(&other, &token));
+    }
+
+    // --- MNC-003: the constant-time compare behind verify_csrf ---
+
+    #[test]
+    fn verify_csrf_rejects_a_single_flipped_bit_anywhere_in_the_token() {
+        let mgr = mgr(InMemorySessionStore::shared());
+        let now = OffsetDateTime::now_utc();
+        let s = mgr.start(principal(), None, now).unwrap();
+        let token = s.csrf_token(mgr.secret.as_slice());
+        let bytes = token.clone().into_bytes();
+        // Flip one bit at the first, middle and last position: every mutant
+        // must be rejected, so no position is skipped or short-circuited.
+        for pos in [0, bytes.len() / 2, bytes.len() - 1] {
+            let mut mutant = bytes.clone();
+            mutant[pos] ^= 0x01;
+            let mutant = String::from_utf8(mutant).expect("ascii hex token");
+            assert!(!mgr.verify_csrf(&s, &mutant), "flip at {pos} accepted");
+        }
+    }
+
+    #[test]
+    fn constant_time_eq_folds_every_position() {
+        assert!(constant_time_eq(b"kelson-csrf-token", b"kelson-csrf-token"));
+        assert!(constant_time_eq(b"", b""));
+        // Prefix/suffix differences at both extremes.
+        assert!(!constant_time_eq(b"abc", b"xyz"));
+        assert!(!constant_time_eq(b"abc", b"abcd"));
+        assert!(!constant_time_eq(b"abcd", b"abc"));
+        assert!(!constant_time_eq(b"", b"x"));
+        // A single-bit flip anywhere in a long input.
+        let base = [b'a'; 64];
+        for i in 0..base.len() {
+            let mut flipped = base;
+            flipped[i] ^= 0x01;
+            assert!(!constant_time_eq(&base, &flipped), "diff at {i} accepted");
+        }
     }
 
     #[test]

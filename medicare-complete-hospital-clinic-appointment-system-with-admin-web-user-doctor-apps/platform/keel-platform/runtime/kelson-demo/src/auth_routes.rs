@@ -39,17 +39,46 @@ fn throttle_buckets() -> &'static Mutex<HashMap<String, kelson_http::middleware:
     BUCKETS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Client IP for the credential throttle bucket. One definition, in the
-/// transport crate, so login throttling and telemetry bucket the same way:
-/// first `X-Forwarded-For` hop, else the `global` sentinel.
-fn client_ip(headers: &HeaderMap) -> String {
-    kelson_http::client_ip(headers)
+/// MNC-004: client key for the CREDENTIAL throttle (login/register/confirm).
+/// Unlike the admission edge's `client_key`, NOTHING the client sends may pick
+/// the bucket: no `x-rate-key`, no bearer hash — either would let an attacker
+/// mint a fresh bucket per attempt. Only the rightmost `X-Forwarded-For` hop
+/// that is not a configured trusted proxy (i.e. the peer our own edge
+/// observed) is honoured; with no trusted proxies declared the header is
+/// ignored entirely. Behind the proxy, attacker-injected hops sit LEFT of the
+/// proxy-appended client hop and never change the key — so rotating XFF no
+/// longer resets the brute-force budget (the F-3 Phase 1 posture the admission
+/// rate limiter already enforces).
+fn throttle_client(headers: &HeaderMap, trusted: &kelson_http::TrustedProxies) -> String {
+    if !trusted.is_empty() {
+        if let Some(fwd) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+            for hop in fwd.split(',').rev() {
+                let ip = hop.trim();
+                if ip.is_empty() {
+                    continue;
+                }
+                if !trusted.contains(ip) {
+                    return ip.to_string();
+                }
+            }
+        }
+    }
+    "global".into()
 }
 
-/// Per credential-throttle bucket: IP + identifier (case-folded). Burst of 5,
-/// refilling at 5/minute — brute force is expensive, legitimate retries work.
-pub(crate) fn login_allowed(headers: &HeaderMap, identifier: &str) -> bool {
-    let key = format!("{}|{}", client_ip(headers), identifier.to_lowercase());
+/// Per credential-throttle bucket: client key (MNC-004) + identifier
+/// (case-folded). Burst of 5, refilling at 5/minute — brute force is
+/// expensive, legitimate retries work.
+pub(crate) fn login_allowed(
+    headers: &HeaderMap,
+    identifier: &str,
+    trusted: &kelson_http::TrustedProxies,
+) -> bool {
+    let key = format!(
+        "{}|{}",
+        throttle_client(headers, trusted),
+        identifier.to_lowercase()
+    );
     let mut buckets = throttle_buckets().lock().unwrap();
     let bucket = buckets
         .entry(key)
@@ -370,11 +399,20 @@ fn finish_login(
 
 async fn register(
     State(state): State<AppState>,
+    headers: HeaderMap,
     session: Option<axum::extract::Extension<ResolvedSession>>,
     Json(body): Json<RegisterBody>,
 ) -> impl IntoResponse {
     if !state.registration_open {
         let err = AppError::denied("registration is disabled in this environment");
+        return envelope(&state, &err).into_response();
+    }
+    // MNC-005: registration pays the SAME credential throttle as login,
+    // keyed per email. Without it, `/auth/register` ran one Argon2 hash per
+    // unauthenticated request — a free CPU-DoS amplifier (and an account-
+    // creation spawner). Throttled attempts never reach the hash.
+    if !login_allowed(&headers, &body.email, &state.trusted_proxies) {
+        let err = AppError::cap_limit("too many registration attempts; retry later");
         return envelope(&state, &err).into_response();
     }
     let result = (|| -> Result<(AuthData, Option<axum::http::HeaderValue>), AppError> {
@@ -446,7 +484,7 @@ async fn login(
     Json(body): Json<LoginBody>,
 ) -> impl IntoResponse {
     let identifier = body.identifier.trim().to_lowercase();
-    if !login_allowed(&headers, &identifier) {
+    if !login_allowed(&headers, &identifier, &state.trusted_proxies) {
         let err = AppError::cap_limit("too many login attempts; retry later");
         return envelope(&state, &err).into_response();
     }
@@ -647,7 +685,7 @@ async fn confirm(
         let principal_id = resolved.session.principal;
         // Brute force: the same credential throttle as login, keyed per
         // principal (this endpoint only re-verifies known sessions).
-        if !login_allowed(&headers, &principal_id.to_string()) {
+        if !login_allowed(&headers, &principal_id.to_string(), &state.trusted_proxies) {
             return Err(AppError::cap_limit(
                 "too many confirmation attempts; retry later",
             ));

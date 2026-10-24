@@ -48,6 +48,11 @@ pub struct AppState {
     /// MNC-001: the (principal, tenant) membership edge. Login and snapshot
     /// install read it; only register (and local dispatch bootstrap) grant.
     pub memberships: Arc<dyn kelson_identity::MembershipStore>,
+    /// MNC-004: the deployment's trusted-proxy ranges (same set the admission
+    /// pipeline uses). The credential throttle derives its client key from
+    /// the X-Forwarded-For chain ONLY through these ranges — a client-supplied
+    /// header must never rotate its own brute-force bucket.
+    pub trusted_proxies: kelson_http::TrustedProxies,
     /// Authz engine: login installs the access snapshot for a principal.
     pub policy: Arc<kelson_policy::PolicyEngine>,
     /// Capabilities granted to authenticated principals (module manifests).
