@@ -19,6 +19,9 @@ kelson-storage = { workspace = true }
 kelson-tokens = { workspace = true }
 axum = { workspace = true }
 tower-http = { workspace = true }
+# MNC-028: the admission request ceiling races a handler against a deadline
+# (`tokio::time::timeout`), so tokio is a lib dependency (it was dev-only).
+tokio = { workspace = true }
 rand = { workspace = true }
 sha2 = { workspace = true }
 serde = { workspace = true }
@@ -28,7 +31,6 @@ uuid = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true }
 tower = { workspace = true }
 
 [package.metadata.docs.rs]

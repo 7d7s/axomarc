@@ -285,6 +285,22 @@ impl AppError {
         .with_internal(internal)
     }
 
+    /// A deadline elapsed — the request (or job) exceeded the server's
+    /// configured budget. ResourceExhausted/Retryable, matching the
+    /// `WASM_DEADLINE` posture: it behaves like a timeout, not a client-side
+    /// rate limit, and the edge pins it to HTTP 504 (gateway timeout). The
+    /// transport sets the status; this error carries the machine-readable
+    /// `KSN_DEADLINE` code and a redacted public message.
+    pub fn timeout() -> Self {
+        Self::new(
+            codes::DEADLINE,
+            ErrorCategory::ResourceExhausted,
+            Severity::Medium,
+            Retryability::Retryable,
+            "the request exceeded the server deadline",
+        )
+    }
+
     pub fn not_implemented(what: impl Into<String>) -> Self {
         Self::new(
             codes::NOT_IMPLEMENTED,

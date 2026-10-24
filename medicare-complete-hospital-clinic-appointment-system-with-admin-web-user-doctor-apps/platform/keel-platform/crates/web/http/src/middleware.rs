@@ -735,6 +735,13 @@ pub struct Admission {
     /// to 20 replicas) must pass a shared store, or every instance enforces
     /// its own limit and the effective limit multiplies by the instance count.
     pub rate_limit_store: Option<Arc<dyn RateLimitStore>>,
+    /// A per-request execution ceiling (MNC-028): a handler that runs longer
+    /// than this is aborted and answered with a redacted 504 envelope, so one
+    /// slow handler cannot exhaust the connection pool. Long-lived transports
+    /// (a WebSocket upgrade or an `text/event-stream` response) are exempt —
+    /// a request ceiling would otherwise kill an open event stream. `None`
+    /// disables the ceiling.
+    pub request_timeout: Option<std::time::Duration>,
 }
 
 impl Default for Admission {
@@ -746,6 +753,7 @@ impl Default for Admission {
             rate_limit: RateLimitConfig::default(),
             trusted_proxies: TrustedProxies::default(),
             rate_limit_store: None,
+            request_timeout: Some(std::time::Duration::from_secs(30)),
         }
     }
 }
@@ -799,8 +807,55 @@ impl Admission {
                 self.body_limit,
                 body_limit_fn,
             ))
+            // Request ceiling (MNC-028): sits just inside trace/request-id so a
+            // timed-out response keeps its `x-request-id` / `x-trace-id`, but
+            // wraps CORS/maintenance/rate-limit/panic/handler so a slow handler
+            // is aborted before it exhausts the connection pool.
+            .layer(axum::middleware::from_fn_with_state(
+                self.request_timeout,
+                timeout_fn,
+            ))
             .layer(axum::middleware::from_fn(trace_fn))
             .layer(axum::middleware::from_fn(request_id_fn))
+    }
+}
+
+/// A long-lived transport — a WebSocket upgrade or an `text/event-stream`
+/// (SSE) response — must never be cut short by the request ceiling (MNC-028):
+/// an open event stream legitimately runs for hours.
+fn is_streaming(req: &Request<Body>) -> bool {
+    let upgrade = req.headers().contains_key(header::UPGRADE);
+    let sse = req
+        .headers()
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("text/event-stream"))
+        .unwrap_or(false);
+    upgrade || sse
+}
+
+/// Race the request against the configured deadline (MNC-028). On elapse the
+/// handler is aborted and answered with a redacted 504 envelope carrying the
+/// `KSN_DEADLINE` code. `None` (disabled) and long-lived transports pass
+/// straight through.
+async fn timeout_fn(
+    State(limit): State<Option<std::time::Duration>>,
+    req: Request<Body>,
+    next: Next,
+) -> Response<Body> {
+    let Some(limit) = limit else {
+        return next.run(req).await;
+    };
+    if is_streaming(&req) {
+        return next.run(req).await;
+    }
+    match tokio::time::timeout(limit, next.run(req)).await {
+        Ok(res) => res,
+        Err(_) => (
+            StatusCode::GATEWAY_TIMEOUT,
+            Json(Envelope::<()>::error(&AppError::timeout())),
+        )
+            .into_response(),
     }
 }
 
@@ -829,6 +884,118 @@ mod tests {
     async fn body_string(body: Body) -> String {
         let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
         String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    // --- MNC-028: the request ceiling ---
+
+    #[tokio::test]
+    async fn a_slow_handler_is_bounded_by_the_request_timeout() {
+        let router = Router::new().route(
+            "/slow",
+            get(|| async {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                "done"
+            }),
+        );
+        let admission = Admission {
+            request_timeout: Some(std::time::Duration::from_millis(50)),
+            ..Admission::default()
+        };
+        let res = admission
+            .apply(router)
+            .oneshot(req("GET", "/slow"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::GATEWAY_TIMEOUT);
+        let body = body_string(res.into_body()).await;
+        assert!(body.contains("KSN_DEADLINE"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_disabled_ceiling_lets_a_slow_handler_finish() {
+        let router = Router::new().route(
+            "/slow",
+            get(|| async {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                "done"
+            }),
+        );
+        let admission = Admission {
+            request_timeout: None,
+            ..Admission::default()
+        };
+        let res = admission
+            .apply(router)
+            .oneshot(req("GET", "/slow"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(body_string(res.into_body()).await, "done");
+    }
+
+    #[tokio::test]
+    async fn a_fast_handler_is_not_bounded_by_the_request_timeout() {
+        let admission = Admission {
+            request_timeout: Some(std::time::Duration::from_secs(30)),
+            ..Admission::default()
+        };
+        let res = app(admission).oneshot(req("GET", "/")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(body_string(res.into_body()).await, "root");
+    }
+
+    #[test]
+    fn streaming_requests_are_recognised_as_exempt() {
+        // A WebSocket upgrade.
+        let upgrade = Request::builder()
+            .uri("/")
+            .header(header::UPGRADE, "websocket")
+            .body(Body::empty())
+            .unwrap();
+        assert!(is_streaming(&upgrade));
+
+        // An SSE (text/event-stream) accept.
+        let sse = Request::builder()
+            .uri("/")
+            .header(header::ACCEPT, "text/event-stream")
+            .body(Body::empty())
+            .unwrap();
+        assert!(is_streaming(&sse));
+
+        // A plain request is not exempt.
+        assert!(!is_streaming(&req("GET", "/")));
+    }
+
+    #[tokio::test]
+    async fn an_sse_request_passes_through_the_ceiling() {
+        let router = Router::new().route(
+            "/events",
+            get(|| async {
+                // Completes immediately; the assertion is that an SSE accept
+                // is never turned into a 504 regardless of the ceiling.
+                axum::response::Response::builder()
+                    .header(header::CONTENT_TYPE, "text/event-stream")
+                    .body(Body::from("data: hi\n\n"))
+                    .unwrap()
+            }),
+        );
+        let admission = Admission {
+            // A ceiling that a slow handler would trip, but SSE is exempt.
+            request_timeout: Some(std::time::Duration::from_millis(1)),
+            ..Admission::default()
+        };
+        let sse_req = Request::builder()
+            .uri("/events")
+            .header(header::ACCEPT, "text/event-stream")
+            .body(Body::empty())
+            .unwrap();
+        let res = admission
+            .apply(router)
+            .oneshot(sse_req)
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(body_string(res.into_body()).await.contains("data: hi"));
     }
 
     #[tokio::test]

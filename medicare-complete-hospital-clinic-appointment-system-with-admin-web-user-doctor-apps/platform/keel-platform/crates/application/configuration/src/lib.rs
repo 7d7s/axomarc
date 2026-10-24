@@ -455,6 +455,24 @@ pub struct HttpSection {
     /// CIDR ranges, e.g. `["10.0.0.0/8", "fd00::/8"]`.
     #[serde(default)]
     pub trusted_proxies: Vec<String>,
+    /// `[http.request_timeout_secs]` (MNC-028): the per-request execution
+    /// ceiling. A handler that runs longer is aborted and answered with a 504
+    /// envelope. Long-lived transports (WebSocket upgrade, SSE) are exempt.
+    /// `0` disables the ceiling. Default 30s.
+    #[serde(default = "default_request_timeout_secs")]
+    pub request_timeout_secs: u64,
+    /// `[http.terminating_proxy]` (MNC-006): declare that TLS terminates at an
+    /// upstream proxy/ingress in front of this process. Required to bind a
+    /// **non-loopback** address (the boot refuses a public bind that would send
+    /// PHI in cleartext), and it forces the session cookie `Secure` flag on.
+    /// `false` (the default) means the process terminates its own TLS or binds
+    /// loopback only.
+    #[serde(default)]
+    pub terminating_proxy: bool,
+}
+
+fn default_request_timeout_secs() -> u64 {
+    30
 }
 
 /// Security posture section (Wave 7 P4, `[security]`): web-plane response
@@ -1001,7 +1019,13 @@ pub const CONFIG_SCHEMA: &[(&str, &[&str])] = &[
     ),
     (
         "http",
-        &["problem_json", "encrypt_cookies", "trusted_proxies"],
+        &[
+            "problem_json",
+            "encrypt_cookies",
+            "trusted_proxies",
+            "request_timeout_secs",
+            "terminating_proxy",
+        ],
     ),
     ("i18n", &["default", "paths"]),
     ("identity", &["memory", "time", "parallelism"]),

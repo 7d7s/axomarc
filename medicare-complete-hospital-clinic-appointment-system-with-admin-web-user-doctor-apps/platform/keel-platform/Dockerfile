@@ -44,6 +44,15 @@ COPY --from=builder /app/testing /app/testing
 # Non-root user
 USER kelson
 # The port the config listens on (config/dev.toml: `listen = 127.0.0.1:8180`).
+# MNC-039: the committed dev config binds loopback, which no Service/Ingress/
+# probe outside the pod can reach. The image overrides the bind to `0.0.0.0`
+# so it is reachable, and declares a TLS-terminating proxy (MNC-006) so the
+# boot's transport-posture guard allows the public bind (TLS terminates at the
+# ingress; the pod speaks plain HTTP internally). A real deployment fronting
+# the pod without a TLS proxy would set `KEEL_TERMINATING_PROXY=0` and terminate
+# TLS here instead.
+ENV KEEL_LISTEN=0.0.0.0:8180
+ENV KEEL_TERMINATING_PROXY=1
 EXPOSE 8180
 # The start period covers the WASM JIT: the boot compiles every guest
 # artifact before it binds, which takes tens of seconds.

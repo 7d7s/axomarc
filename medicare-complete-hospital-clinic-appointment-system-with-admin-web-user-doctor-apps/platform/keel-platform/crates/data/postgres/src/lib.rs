@@ -49,6 +49,17 @@ pub async fn create_pool(url: &str, max_connections: u32) -> Result<PgPool, AppE
     PgPoolOptions::new()
         .max_connections(max_connections)
         .acquire_timeout(std::time::Duration::from_secs(10))
+        // MNC-030: bound every statement so a hung query cannot block a
+        // bridge `recv` forever. A query that runs past the ceiling errors
+        // out instead of pinning a connection and a caller indefinitely.
+        .after_connect(|conn, _| {
+            Box::pin(async move {
+                sqlx::query("SET statement_timeout = '30s'")
+                    .execute(&mut *conn)
+                    .await?;
+                Ok(())
+            })
+        })
         .connect(url)
         .await
         .map_err(|e| AppError::persistence(format!("pool connect: {e}")))

@@ -371,7 +371,10 @@ platform = ["kelson-foundation"]
 
 [allow."kelson-http"]
 member = "crates/web/http"
-externals = ["axum", "rand", "serde", "serde_json", "sha2", "time", "tower-http", "tracing", "uuid"]
+# MNC-028: tokio is a reviewed lib dep — the admission request ceiling races
+# a handler against a deadline (`tokio::time::timeout`). tokio is already
+# ubiquitous (the demo, worker and every adapter allow it).
+externals = ["axum", "rand", "serde", "serde_json", "sha2", "time", "tokio", "tower-http", "tracing", "uuid"]
 platform = ["kelson-command", "kelson-context", "kelson-foundation", "kelson-registry", "kelson-session", "kelson-storage", "kelson-tokens"]
 
 [allow."kelson-views"]

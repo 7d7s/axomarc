@@ -134,7 +134,20 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let platform_cfg = PlatformConfig::load(Some(std::path::Path::new(&cfg_path)))?;
     let cfg = platform_cfg.clone().freeze();
     let env = cfg.app().env.clone();
-    let listen = cfg.app().listen.clone();
+    // MNC-039: the bind address is overridable by the environment so a
+    // container/ingress can reach the app (`KEEL_LISTEN=0.0.0.0:8180`) without
+    // editing the committed dev config. Defaults to the configured `listen`.
+    let listen = std::env::var("KEEL_LISTEN").unwrap_or_else(|_| cfg.app().listen.clone());
+    // MNC-006: a non-loopback bind must declare that TLS terminates upstream —
+    // `http.terminating_proxy = true` in config, or `KEEL_TERMINATING_PROXY=1`
+    // for a container that terminates TLS at the ingress. It also forces the
+    // session cookie `Secure` flag on (see the `SessionMiddleware` below).
+    let terminating_proxy = platform_cfg.http.terminating_proxy
+        || matches!(std::env::var("KEEL_TERMINATING_PROXY"), Ok(v) if v == "1" || v.eq_ignore_ascii_case("true"));
+    // MNC-028: the per-request execution ceiling from `[http].request_timeout_secs`
+    // (serde default 30s); an explicit `0` disables it.
+    let request_timeout = (platform_cfg.http.request_timeout_secs > 0)
+        .then(|| std::time::Duration::from_secs(platform_cfg.http.request_timeout_secs));
 
     // Sentinel (S5): the telemetry runtime replaces S1 `init_logging` as
     // the single logging init point. Layering: compiled defaults <-
@@ -776,7 +789,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
         Some(Arc::new(
             kelson_http::SessionMiddleware::new(manager, secret.clone())
-                .with_secure(env.is_prod())
+                .with_secure(env.is_prod() || terminating_proxy)
                 .with_cookie_ttl_secs(28_800),
         ))
     } else {
@@ -1124,6 +1137,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         trusted_proxies: kelson_http::TrustedProxies::parse(&platform_cfg.http.trusted_proxies)
             .map_err(|e| format!("[http.trusted_proxies]: {e}"))?,
         rate_limit_store,
+        request_timeout,
         ..Default::default()
     };
     let app = admission.apply(router);
@@ -1208,6 +1222,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // MNC-006: refuse a public bind that would send PHI in cleartext unless a
+    // TLS-terminating proxy is declared in front of the process.
+    ensure_transport_posture(&listen, terminating_proxy)?;
     let listener = tokio::net::TcpListener::bind(&listen).await?;
     tracing::info!(%listen, "listening");
 
@@ -1260,6 +1277,28 @@ async fn shutdown_signal() {
         tracing::info!("shutdown signal received");
     }
     tracing::info!("shutdown signal received, draining");
+}
+
+/// MNC-006: the transport-posture guard. A **loopback** bind is always safe
+/// (nothing off-host can reach it). A **non-loopback** bind sends session
+/// cookies and PHI over the wire, so it is only allowed when a TLS-terminating
+/// proxy is declared in front of the process (`http.terminating_proxy = true`
+/// / `KEEL_TERMINATING_PROXY=1`) — otherwise the boot refuses and points at the
+/// security doc. An unparseable address is left for the bind to reject.
+pub fn ensure_transport_posture(listen: &str, terminating_proxy: bool) -> Result<(), String> {
+    let Ok(addr) = listen.parse::<std::net::SocketAddr>() else {
+        return Ok(()); // not an ip:port — let the bind surface the error
+    };
+    if addr.ip().is_loopback() || terminating_proxy {
+        return Ok(());
+    }
+    Err(format!(
+        "refusing to bind {listen}: a non-loopback address sends session cookies \
+         and PHI in cleartext unless TLS terminates at an upstream proxy. Set \
+         http.terminating_proxy = true (or KEEL_TERMINATING_PROXY=1) if a proxy \
+         terminates TLS in front of this process, or bind a loopback address — \
+         see docs/rust/05-SECURITY-ISOLATION.md"
+    ))
 }
 
 /// Outcome of one config poll, for the module-lifecycle reaction (Row 16).

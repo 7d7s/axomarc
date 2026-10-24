@@ -661,6 +661,31 @@ impl DispatchCtx<'_> {
     }
 }
 
+/// The production stop trigger: SIGINT (Ctrl+C) **or** SIGTERM (the production
+/// orchestrator). Unix gets both; elsewhere only Ctrl+C exists. Mirrors the
+/// demo host's shutdown signal so a k8s rollout drains the worker's in-flight
+/// job, outbox and telemetry instead of killing it mid-write (MNC-041).
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("SIGINT received");
+            }
+            _ = sigterm.recv() => {
+                tracing::info!("SIGTERM received");
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        tracing::info!("shutdown signal received");
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
@@ -916,7 +941,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let stop = stop.clone();
         tokio::spawn(async move {
-            let _ = tokio::signal::ctrl_c().await;
+            // MNC-041: stop on SIGINT **or** SIGTERM. Previously only Ctrl+C
+            // was handled, so a k8s rollout (SIGTERM) killed the worker
+            // mid-job and skipped the outbox drain and telemetry flush — lost
+            // jobs and mail on every rollout. A SIGTERM now stops the same
+            // cooperative loop, so the in-flight job finishes and the drain
+            // paths below run.
+            shutdown_signal().await;
             tracing::info!("shutdown signal received; in-flight job will finish");
             stop.store(true, Ordering::SeqCst);
         });
@@ -2267,7 +2298,7 @@ mod tests {
     /// never see tenant B's job, no matter how many jobs it has already run.
     #[tokio::test]
     async fn a_long_lived_worker_never_crosses_tenants() {
-        use kelson_jobs::{JobStore, TenantJobStore};
+        use kelson_jobs::TenantJobStore;
 
         const JOBS: usize = 20;
 
