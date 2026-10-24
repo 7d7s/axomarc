@@ -14,6 +14,7 @@
 //! ledger documents' `file:line` citations — see `docs/20-ARCHITECTURE-VERIFICATION.md`.
 
 mod cite_audit;
+mod claims;
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -25,28 +26,43 @@ fn main() -> ExitCode {
     match task {
         "dep-rules" => dep_rules(),
         "lint" => lint(),
-        "semver" => semver(),
-        "publish" => publish(&args[1..]),
-        "cite-audit" => match args.get(1) {
-            None => {
-                println!("usage: cargo xtask cite-audit <doc> [<doc>...]   (paths relative to the repo root)");
-                println!("example: cargo xtask cite-audit platform/docs/20-ARCHITECTURE-VERIFICATION.md");
+        "claims" => {
+            let root = root_dir();
+            let report = claims::check(root);
+            for v in &report.violations {
+                println!("claims [!!] {}: {v}", claims::CODE);
+            }
+            println!("claims: {}", report.summary());
+            if report.violations.is_empty() {
+                ExitCode::SUCCESS
+            } else {
                 ExitCode::FAILURE
             }
-            Some(_) => {
-                // `cite-audit` is the one subcommand whose inputs are relative to
-                // the *repository* root rather than the workspace root, because its
-                // subjects are the ledger documents and they live in the tree above
-                // this one. `root_dir()` is `platform/keel-platform`, so the ladder
-                // in its own doc comment is walked here: one parent is the
-                // workspace, two is `<repo>/platform`, three is the repo root.
-                let repo = root_dir()
-                    .parent()
-                    .and_then(Path::parent)
-                    .expect("platform/keel-platform has two parents");
-                cite_audit::run(repo, &args[1..])
+        }
+        "semver" => semver(),
+        "publish" => publish(&args[1..]),
+        "cite-audit" => {
+            match args.get(1) {
+                None => {
+                    println!("usage: cargo xtask cite-audit <doc> [<doc>...]   (paths relative to the repo root)");
+                    println!("example: cargo xtask cite-audit platform/docs/20-ARCHITECTURE-VERIFICATION.md");
+                    ExitCode::FAILURE
+                }
+                Some(_) => {
+                    // `cite-audit` is the one subcommand whose inputs are relative to
+                    // the *repository* root rather than the workspace root, because its
+                    // subjects are the ledger documents and they live in the tree above
+                    // this one. `root_dir()` is `platform/keel-platform`, so the ladder
+                    // in its own doc comment is walked here: one parent is the
+                    // workspace, two is `<repo>/platform`, three is the repo root.
+                    let repo = root_dir()
+                        .parent()
+                        .and_then(Path::parent)
+                        .expect("platform/keel-platform has two parents");
+                    cite_audit::run(repo, &args[1..])
+                }
             }
-        },
+        }
         "bump" => match args.get(1) {
             Some(v) => bump(v),
             None => {
@@ -55,7 +71,7 @@ fn main() -> ExitCode {
             }
         },
         _ => {
-            println!("usage: cargo xtask <dep-rules|lint|semver|publish|bump|cite-audit>");
+            println!("usage: cargo xtask <dep-rules|lint|claims|semver|publish|bump|cite-audit>");
             ExitCode::SUCCESS
         }
     }
@@ -126,11 +142,8 @@ fn dep_rules() -> ExitCode {
     let root = root_dir();
     let violations = kelson_analyzer::analyze_workspace(root);
     let env_violations = env_var_violations(root);
-    if violations.is_empty() && env_violations.is_empty() {
-        println!("dep-rules: clean");
-        println!("lint: clean");
-        return ExitCode::SUCCESS;
-    }
+    let tautologies = sql_tautology_violations(root);
+    let claims = claims::check(root);
     let mut code = ExitCode::SUCCESS;
     if violations.is_empty() {
         println!("dep-rules: clean");
@@ -148,6 +161,21 @@ fn dep_rules() -> ExitCode {
         }
         code = ExitCode::FAILURE;
     }
+    if tautologies.is_empty() {
+        println!("sql: clean (no cross-tenant tautology)");
+    } else {
+        for v in &tautologies {
+            println!("dep-rules [!!] {SQL_TAUTOLOGY} {v}");
+        }
+        code = ExitCode::FAILURE;
+    }
+    for v in &claims.violations {
+        println!("claims [!!] {}: {v}", claims::CODE);
+    }
+    if !claims.violations.is_empty() {
+        code = ExitCode::FAILURE;
+    }
+    println!("claims: {}", claims.summary());
     code
 }
 
@@ -175,10 +203,7 @@ const SANCTIONED_ENV_PATHS: &[&str] = &[
 /// The env-read needles, assembled at runtime so this scanner cannot match
 /// its own source text (the literals never appear joined in the file).
 fn env_read_needles() -> [String; 2] {
-    [
-        format!("{}(", "env::var"),
-        format!("{}(", "env::var_os"),
-    ]
+    [format!("{}(", "env::var"), format!("{}(", "env::var_os")]
 }
 
 /// Recursively collect `*.rs` files, skipping build/VCS trees.
@@ -232,6 +257,86 @@ fn env_var_violations(root: &Path) -> Vec<String> {
     }
     out.sort();
     out
+}
+
+// ------------------------------------------------ SQL tautology gate (S-012)
+
+const SQL_TAUTOLOGY: &str = "SQL-TAUTOLOGY";
+
+/// FRESH-003/S-012: a `WHERE` clause that matches every tenant is refused.
+/// The needle is assembled from pieces so this gate's own source does not
+/// contain the literal it bans.
+fn sql_tautology_violations(root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    scan_sql_tautologies(root, root, &mut out);
+    out.sort();
+    out
+}
+
+fn scan_sql_tautologies(dir: &Path, root: &Path, out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if path.is_dir() {
+            if matches!(name.as_ref(), "target" | ".git" | "node_modules") {
+                continue;
+            }
+            scan_sql_tautologies(&path, root, out);
+            continue;
+        }
+        if !matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("rs") | Some("sql")
+        ) {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for (idx, line) in content.lines().enumerate() {
+            if contains_sql_tautology(line) {
+                let rel = path.strip_prefix(root).unwrap_or(&path);
+                out.push(format!(
+                    "{}:{}: a WHERE clause that matches every tenant (S-012/FRESH-003)",
+                    rel.display(),
+                    idx + 1
+                ));
+            }
+        }
+    }
+}
+
+/// `1` + optional spaces + `=` + optional spaces + `1`, not embedded in a
+/// longer identifier or number.
+fn contains_sql_tautology(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'1' && (i == 0 || !bytes[i - 1].is_ascii_alphanumeric()) {
+            let mut j = i + 1;
+            while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'=' {
+                j += 1;
+                while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                    j += 1;
+                }
+                if j < bytes.len()
+                    && bytes[j] == b'1'
+                    && (j + 1 == bytes.len() || !bytes[j + 1].is_ascii_alphanumeric())
+                {
+                    return true;
+                }
+            }
+        }
+        i += 1;
+    }
+    false
 }
 
 /// `cargo xtask lint` on its own (also enforced through `dep-rules`).

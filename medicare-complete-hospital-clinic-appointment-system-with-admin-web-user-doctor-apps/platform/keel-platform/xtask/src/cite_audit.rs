@@ -195,7 +195,9 @@ const EM_DASH: char = '\u{2014}';
 fn take_one_span_left(text: &str, j: usize, out: &mut Vec<String>) -> usize {
     let mut k = j;
     while k > 0 {
-        let Some(p) = text[..k].chars().next_back() else { break };
+        let Some(p) = text[..k].chars().next_back() else {
+            break;
+        };
         if p == ' ' || p == '\t' {
             k -= p.len_utf8();
         } else {
@@ -206,7 +208,9 @@ fn take_one_span_left(text: &str, j: usize, out: &mut Vec<String>) -> usize {
         return k;
     }
     let close = k - 1;
-    let Some(open) = text[..close].rfind('`') else { return k };
+    let Some(open) = text[..close].rfind('`') else {
+        return k;
+    };
     if let Some(tok) = normalize_token(&text[open + 1..close]) {
         out.push(tok);
     }
@@ -218,7 +222,9 @@ fn take_one_span_left(text: &str, j: usize, out: &mut Vec<String>) -> usize {
 /// clause begins.
 fn walk_left(text: &str, mut i: usize, out: &mut Vec<String>) -> usize {
     while i > 0 {
-        let Some(c) = text[..i].chars().next_back() else { break };
+        let Some(c) = text[..i].chars().next_back() else {
+            break;
+        };
         if is_clause_stop(c) {
             return i;
         }
@@ -226,7 +232,9 @@ fn walk_left(text: &str, mut i: usize, out: &mut Vec<String>) -> usize {
             // The backtick closes the preceding span, so everything between it
             // and the next backtick leftwards is that span's content.
             let close = i - 1;
-            let Some(open) = text[..close].rfind('`') else { return i };
+            let Some(open) = text[..close].rfind('`') else {
+                return i;
+            };
             if let Some(tok) = normalize_token(&text[open + 1..close]) {
                 out.push(tok);
             }
@@ -245,12 +253,16 @@ fn walk_left(text: &str, mut i: usize, out: &mut Vec<String>) -> usize {
 /// and return where the clause ends.
 fn walk_right(text: &str, mut i: usize, out: &mut Vec<String>) -> usize {
     while i < text.len() {
-        let Some(c) = text[i..].chars().next() else { break };
+        let Some(c) = text[i..].chars().next() else {
+            break;
+        };
         if is_clause_stop(c) || c == EM_DASH {
             return i;
         }
         if c == '`' {
-            let Some(close) = text[i + 1..].find('`').map(|x| i + 1 + x) else { return i };
+            let Some(close) = text[i + 1..].find('`').map(|x| i + 1 + x) else {
+                return i;
+            };
             if let Some(tok) = normalize_token(&text[i + 1..close]) {
                 out.push(tok);
             }
@@ -436,11 +448,16 @@ fn normalize_token(s: &str) -> Option<String> {
     for c in chars {
         match c {
             '-' => has_hyphen = true,
-            c if c.is_ascii_alphanumeric() || matches!(c, '_' | ':' | '<' | '>' | ',' | '*' | '!') => {}
+            c if c.is_ascii_alphanumeric()
+                || matches!(c, '_' | ':' | '<' | '>' | ',' | '*' | '!') => {}
             _ => return None,
         }
     }
-    if has_hyphen && !s.chars().all(|c| !c.is_ascii_alphabetic() || c.is_ascii_uppercase()) {
+    if has_hyphen
+        && !s
+            .chars()
+            .all(|c| !c.is_ascii_alphabetic() || c.is_ascii_uppercase())
+    {
         return None;
     }
     Some(s.to_ascii_lowercase())
@@ -644,7 +661,8 @@ fn resolve(text: &str, platform_root: &Path, cite: &Cite) -> Result<Resolved, Un
         let repo = platform_root
             .parent()
             .ok_or_else(|| Unresolved("no repo root above platform/".into()))?;
-        return probe(&repo.join(&norm), cite).map_err(|Unresolved(e)| Unresolved(format!("EXPLICIT {e}")));
+        return probe(&repo.join(&norm), cite)
+            .map_err(|Unresolved(e)| Unresolved(format!("EXPLICIT {e}")));
     }
     if let Some(rest) = norm.strip_prefix("keel-platform/") {
         let p = platform_root.join("keel-platform").join(rest);
@@ -655,7 +673,8 @@ fn resolve(text: &str, platform_root: &Path, cite: &Cite) -> Result<Resolved, Un
     match tree_named_in(text, cite.pos) {
         Some(Tree::Canonical) => {
             let p = platform_root.join("keel-platform").join(&norm);
-            return probe(&p, cite).map_err(|Unresolved(e)| Unresolved(format!("KEEL-PLATFORM {e}")));
+            return probe(&p, cite)
+                .map_err(|Unresolved(e)| Unresolved(format!("KEEL-PLATFORM {e}")));
         }
         Some(Tree::Root) => {
             let p = platform_root.join(&norm);
@@ -666,7 +685,10 @@ fn resolve(text: &str, platform_root: &Path, cite: &Cite) -> Result<Resolved, Un
 
     // (3) Bare: one tree must carry it, or both must agree on the cited span.
     let mut exists: Vec<PathBuf> = Vec::new();
-    for p in [platform_root.join(&norm), platform_root.join("keel-platform").join(&norm)] {
+    for p in [
+        platform_root.join(&norm),
+        platform_root.join("keel-platform").join(&norm),
+    ] {
         if p.exists() {
             exists.push(p);
         }
@@ -722,8 +744,8 @@ struct Report {
 }
 
 fn audit_document(platform_root: &Path, doc: &Path) -> Result<Report, String> {
-    let text = std::fs::read_to_string(doc)
-        .map_err(|e| format!("cannot read {}: {e}", doc.display()))?;
+    let text =
+        std::fs::read_to_string(doc).map_err(|e| format!("cannot read {}: {e}", doc.display()))?;
     let cites = extract_cites(&text);
     let mut rep = Report {
         citations: cites.len(),
@@ -742,7 +764,10 @@ fn audit_document(platform_root: &Path, doc: &Path) -> Result<Report, String> {
                     continue;
                 }
                 let span = lines.to_ascii_lowercase();
-                if tokens.iter().any(|t| claims_of(t).iter().any(|c| span.contains(c))) {
+                if tokens
+                    .iter()
+                    .any(|t| claims_of(t).iter().any(|c| span.contains(c)))
+                {
                     rep.content_ok += 1;
                 } else {
                     rep.failures.push(format!(
@@ -861,7 +886,11 @@ mod tests {
         let text = "see `crates/x/src/lib.rs:12-20` and `docs/a.md:3`, \
                     but not `e.g.` or the time 5:30.";
         let cites = extract_cites(text);
-        assert_eq!(cites.len(), 2, "prose periods and clock times are not citations");
+        assert_eq!(
+            cites.len(),
+            2,
+            "prose periods and clock times are not citations"
+        );
         assert_eq!(cites[0].file, "crates/x/src/lib.rs");
         assert_eq!((cites[0].start, cites[0].end), (12, 20));
         assert_eq!((cites[1].start, cites[1].end), (3, 3));
@@ -887,7 +916,10 @@ mod tests {
         // a guaranteed false alarm on a line reading `fn prepare(`.
         assert!(claims_of("WasmHost::prepare").contains(&"prepare".to_string()));
         assert!(claims_of("sock_*").contains(&"sock_".to_string()));
-        assert!(claims_of("prepare").len() == 1, "a plain name claims only itself");
+        assert!(
+            claims_of("prepare").len() == 1,
+            "a plain name claims only itself"
+        );
         // A TOML section and a macro path are both names. Losing either to its
         // brackets or its bang would turn a real claim into silence, and the
         // row that names `[budget]` is the one row that does name its subject.
@@ -920,7 +952,10 @@ mod tests {
             normalize_token("pub struct TenantId(pub uuid::Uuid)"),
             Some("tenantid".to_string())
         );
-        assert_eq!(normalize_token("pub fn drain(&mut self)"), Some("drain".to_string()));
+        assert_eq!(
+            normalize_token("pub fn drain(&mut self)"),
+            Some("drain".to_string())
+        );
         // A macro's parameter is not the name the macro declares: `$` starts
         // no identifier, so this claims nothing and the caller is expected to
         // point at the instantiation instead.
@@ -951,8 +986,11 @@ mod tests {
             "fn same() {}\n",
         )
         .unwrap();
-        std::fs::write(root.join("platform/crates/only_root.rs"), "fn a() {}\nfn b() {}\n")
-            .unwrap();
+        std::fs::write(
+            root.join("platform/crates/only_root.rs"),
+            "fn a() {}\nfn b() {}\n",
+        )
+        .unwrap();
         std::fs::write(
             root.join("platform/keel-platform/crates/differs.rs"),
             "fn canonical() {}\n",
@@ -990,8 +1028,11 @@ mod tests {
         std::fs::create_dir_all(root.join("platform/keel-platform/crates")).unwrap();
         std::fs::create_dir_all(root.join("platform/crates")).unwrap();
         std::fs::write(root.join("platform/crates/both.rs"), "fn root_tree() {}\n").unwrap();
-        std::fs::write(root.join("platform/keel-platform/crates/both.rs"), "fn canonical() {}\n")
-            .unwrap();
+        std::fs::write(
+            root.join("platform/keel-platform/crates/both.rs"),
+            "fn canonical() {}\n",
+        )
+        .unwrap();
         let platform_root = root.join("platform");
         let pinned = |text: &str| {
             let cites = extract_cites(text);
@@ -1046,8 +1087,11 @@ mod tests {
         std::fs::create_dir_all(root.join("platform/keel-platform/crates")).unwrap();
         std::fs::create_dir_all(root.join("platform/crates")).unwrap();
         std::fs::write(root.join("platform/crates/both.rs"), "fn root_tree() {}\n").unwrap();
-        std::fs::write(root.join("platform/keel-platform/crates/both.rs"), "fn canonical() {}\n")
-            .unwrap();
+        std::fs::write(
+            root.join("platform/keel-platform/crates/both.rs"),
+            "fn canonical() {}\n",
+        )
+        .unwrap();
         std::fs::write(root.join("platform/crates/whole.rs"), "fn root_only() {}\n").unwrap();
         let platform_root = root.join("platform");
 
@@ -1126,14 +1170,21 @@ mod tests {
         let doc = "the route plane (api/web) — `crates/engine.rs:7`";
         let cites = extract_cites(doc);
         assert_eq!(cites.len(), 1);
-        assert!(clause_tokens(doc, &cites[0]).is_empty(), "prose before a dash is not a claim");
+        assert!(
+            clause_tokens(doc, &cites[0]).is_empty(),
+            "prose before a dash is not a claim"
+        );
 
         // Walking right, the dash is an ordinary stop: what follows has
         // started a new claim, even when that claim is about another file.
-        let doc = "`keel-platform` `crates/lib.rs:7` — there is no swap path in `load_wasm_plugins`";
+        let doc =
+            "`keel-platform` `crates/lib.rs:7` — there is no swap path in `load_wasm_plugins`";
         let cites = extract_cites(doc);
         assert_eq!(cites.len(), 1);
-        assert!(clause_tokens(doc, &cites[0]).is_empty(), "text after a dash is a new claim");
+        assert!(
+            clause_tokens(doc, &cites[0]).is_empty(),
+            "text after a dash is a new claim"
+        );
     }
 
     /// Naming a file is not a claim about it.
@@ -1182,7 +1233,11 @@ mod tests {
 
         let doc = "`prepare` (`crates/lib.rs:12`, `resolve_budget` `:678`)";
         let cites = extract_cites(doc);
-        assert_eq!(cites.len(), 1, "a bare `:678` names no file, so is not extracted");
+        assert_eq!(
+            cites.len(),
+            1,
+            "a bare `:678` names no file, so is not extracted"
+        );
         assert_eq!(
             clause_tokens(doc, &cites[0]),
             vec!["prepare".to_string()],
@@ -1212,7 +1267,10 @@ mod tests {
         .unwrap();
 
         let rep = audit_document(&root.join("platform"), &doc).unwrap();
-        assert_eq!(rep.resolved, 1, "it resolves — that is what makes it insidious");
+        assert_eq!(
+            rep.resolved, 1,
+            "it resolves — that is what makes it insidious"
+        );
         assert_eq!(rep.content_ok, 0);
         assert!(
             rep.failures.iter().any(|f| f.contains("CONTRADICTION")),

@@ -1,6 +1,6 @@
 # 20 — Security & Compliance (HIPAA, GDPR, Threat Model, Controls)
 
-> The non-negotiable security baseline. Every layer is documented, every control is tested. This doc is the source of truth for "is this safe to deploy?".
+> The non-negotiable security baseline. Control status is stated as it is: a claim that is machine-checked names its check in `claims.toml`, and anything not backed by an executed case is written as open. This doc is the source of truth for "is this safe to deploy?".
 
 ---
 
@@ -8,9 +8,9 @@
 
 | Regulation | Status | Notes |
 |---|---|---|
-| **HIPAA** (US) | Aligned | All technical safeguards implemented. BAA required for US customers using AWS. |
-| **GDPR** (EU) | Aligned | Lawful basis, data subject rights, breach notification, DPIA done. |
-| **India DPDP Act 2023** | Aligned | Similar to GDPR; data principal rights honored. |
+| **HIPAA** (US) | Partial [claim:hipaa-technical-safeguards] | Tenant scoping, auth and audit surfaces exist; encryption at rest, PHI-read audit and BAA handling are open. BAA required for US customers using AWS. |
+| **GDPR** (EU) | Partial [claim:gdpr-data-subject-rights] | Rights surface exists; the erasure cascade is not yet evidenced by a green end-to-end case. |
+| **India DPDP Act 2023** | Partial [claim:dpdp-data-principal-rights] | Same rights surface as GDPR; consent/erasure evidence is open. |
 | **SOC 2 Type II** | Roadmap (V2) | All controls in place; audit in year 2. |
 | **ISO 27001** | Roadmap (V3) | Requires formal ISMS. |
 

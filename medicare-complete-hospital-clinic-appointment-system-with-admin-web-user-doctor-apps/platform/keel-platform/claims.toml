@@ -1,0 +1,76 @@
+# E8 — the doc-claims register (MVVC contract C24).
+#
+# `cargo xtask claims` (also run by `cargo xtask dep-rules`) refuses:
+# - an `enforced` claim whose named check is not emitted in the sources, or
+#   whose named test does not exist;
+# - an `open` claim that names a check or omits `reason`;
+# - a `[claim:<id>]` reference in docs that does not resolve here;
+# - a line in the scanned compliance surface that says "Aligned" without an
+#   enforced claim on the same line.
+#
+# The gate proves the named check EXISTS. Green is the CI run that executes
+# the check and this gate at the same commit; a registry is only honest when
+# the enforced claims are the checks the pipeline blocks on.
+
+[[claim]]
+id = "hipaa-technical-safeguards"
+clause = "C24"
+statement = "HIPAA technical safeguards are implemented."
+status = "open"
+reason = "Encryption at rest, PHI-read audit and BAA handling have no green named test in-tree yet (S-025 / P5)."
+
+[[claim]]
+id = "gdpr-data-subject-rights"
+clause = "C24"
+statement = "GDPR data-subject rights are implemented."
+status = "open"
+reason = "The lawful-basis and erasure cascade are modeled but not evidenced by an executed end-to-end case (P5)."
+
+[[claim]]
+id = "dpdp-data-principal-rights"
+clause = "C24"
+statement = "India DPDP data-principal rights are implemented."
+status = "open"
+reason = "Same rights surface as GDPR; no executed evidence of the consent/erasure path yet (P5)."
+
+[[claim]]
+id = "dependency-posture"
+clause = "C16"
+statement = "Each member ships only externals and platform crates on its reviewed allow-list."
+status = "enforced"
+check = "DEP-EXTERNAL-NOT-ALLOWED"
+
+[[claim]]
+id = "dependency-matrix"
+clause = "C22"
+statement = "The crate dependency matrix refuses an illegal cross-class edge."
+status = "enforced"
+check = "DEP-CLASS"
+
+[[claim]]
+id = "bound-template-lint"
+clause = "C07"
+statement = "A bound template cannot read an undeclared vm path or an un-namespaced root key."
+status = "enforced"
+check = "MVVC-LINT-UNDECLARED-PATH"
+
+[[claim]]
+id = "no-cross-tenant-tautology"
+clause = "C21"
+statement = "A read-model call without a tenant scope refuses instead of matching every row."
+status = "enforced"
+check = "SQL-TAUTOLOGY"
+
+[[claim]]
+id = "manifest-view-model-binding"
+clause = "C10"
+statement = "An HTML route that declares view_model without view is refused at graph compile."
+status = "enforced"
+check = "GRAPH-VIEW-MODEL"
+
+[[claim]]
+id = "doc-claims"
+clause = "C24"
+statement = "A doc claim names the check that enforces it."
+status = "enforced"
+check = "DOC-CLAIM-UNCHECKED"
