@@ -170,13 +170,21 @@ pub fn render_document(
                 .iter()
                 .filter_map(Value::as_object)
                 .map(|item| {
-                    resource_object(type_name, item, Some(request_uri), fields_for(&fields, type_name))
+                    resource_object(
+                        type_name,
+                        item,
+                        Some(request_uri),
+                        fields_for(&fields, type_name),
+                    )
                 })
                 .collect(),
         ),
-        Value::Object(item) => {
-            resource_object(type_name, item, Some(request_uri), fields_for(&fields, type_name))
-        }
+        Value::Object(item) => resource_object(
+            type_name,
+            item,
+            Some(request_uri),
+            fields_for(&fields, type_name),
+        ),
         // Fail-closed: primary data is object/array/null, never a scalar.
         _ => Value::Null,
     };
@@ -314,7 +322,10 @@ fn parse_fields(query: Option<&str>) -> Option<HashMap<String, HashSet<String>>>
         let Some((key, value)) = segment.split_once('=') else {
             continue;
         };
-        let Some(type_name) = key.strip_prefix("fields[").and_then(|k| k.strip_suffix(']')) else {
+        let Some(type_name) = key
+            .strip_prefix("fields[")
+            .and_then(|k| k.strip_suffix(']'))
+        else {
             continue;
         };
         if type_name.is_empty() {
@@ -348,16 +359,28 @@ fn page_links(meta: Option<&Value>, request_uri: &str) -> Option<Map<String, Val
     let page = meta.get("page").and_then(Value::as_u64)?;
     let per_page = meta.get("per_page").and_then(Value::as_u64)?;
     let mut links = Map::new();
-    links.insert("first".to_string(), Value::String(with_page(request_uri, 1)));
+    links.insert(
+        "first".to_string(),
+        Value::String(with_page(request_uri, 1)),
+    );
     if let Some(total) = meta.get("total").and_then(Value::as_u64) {
         let last = total.div_ceil(per_page.max(1)).max(1);
         if page > 1 {
-            links.insert("prev".to_string(), Value::String(with_page(request_uri, page - 1)));
+            links.insert(
+                "prev".to_string(),
+                Value::String(with_page(request_uri, page - 1)),
+            );
         }
         if page < last {
-            links.insert("next".to_string(), Value::String(with_page(request_uri, page + 1)));
+            links.insert(
+                "next".to_string(),
+                Value::String(with_page(request_uri, page + 1)),
+            );
         }
-        links.insert("last".to_string(), Value::String(with_page(request_uri, last)));
+        links.insert(
+            "last".to_string(),
+            Value::String(with_page(request_uri, last)),
+        );
     }
     Some(links)
 }
@@ -468,7 +491,9 @@ mod tests {
         assert_eq!(document["data"]["attributes"]["body"], "world");
         assert!(document["data"]["attributes"].get("id").is_none());
         assert!(document["data"]["attributes"].get("type").is_none());
-        assert!(document["data"]["attributes"].get("relationships").is_none());
+        assert!(document["data"]["attributes"]
+            .get("relationships")
+            .is_none());
         assert!(document["data"]["attributes"].get("included").is_none());
         assert_eq!(document["data"]["links"]["self"], "/notes/n-1");
         assert_eq!(document["links"]["self"], "/notes/n-1");
@@ -636,7 +661,10 @@ mod tests {
         });
         let document = doc("notes", first, None, "/notes?page=1&per_page=2");
         assert!(document["links"].get("prev").is_none(), "prev omits at 1");
-        assert!(document["links"].get("next").is_none(), "next omits at last");
+        assert!(
+            document["links"].get("next").is_none(),
+            "next omits at last"
+        );
         assert_eq!(document["links"]["last"], "/notes?per_page=2&page=1");
     }
 

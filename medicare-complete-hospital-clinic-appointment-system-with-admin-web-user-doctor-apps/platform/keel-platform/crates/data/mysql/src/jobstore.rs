@@ -107,7 +107,9 @@ fn job_from_row(row: sqlx::mysql::MySqlRow) -> Result<DurableJob, AppError> {
     let correlation: Option<Uuid> = row.try_get("correlation_id").map_err(my)?;
     Ok(DurableJob {
         id: row.try_get("id").map_err(my)?,
-        execution_id: kelson_foundation::ExecutionId::from_uuid(row.try_get("execution_id").map_err(my)?),
+        execution_id: kelson_foundation::ExecutionId::from_uuid(
+            row.try_get("execution_id").map_err(my)?,
+        ),
         name: row.try_get("name").map_err(my)?,
         payload: row.try_get("payload").map_err(my)?,
         queue: row.try_get("queue").map_err(my)?,
@@ -639,13 +641,7 @@ impl JobStoreAdmin for MySqlJobStore {
         })
     }
 
-    fn kill_claim(
-        &self,
-        id: Uuid,
-        attempt: u32,
-        owner: &str,
-        error: &str,
-    ) -> Result<(), AppError> {
+    fn kill_claim(&self, id: Uuid, attempt: u32, owner: &str, error: &str) -> Result<(), AppError> {
         let owner = owner.to_string();
         let error = error.to_string();
         let pool = self.pool.clone();
@@ -684,13 +680,14 @@ async fn scoped_miss(
     tenant: Uuid,
     conflict: impl FnOnce() -> AppError,
 ) -> Result<AppError, AppError> {
-    let visible: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM jobs_queue WHERE id = ? AND tenant_id = ?)")
-            .bind(id)
-            .bind(tenant)
-            .fetch_one(pool)
-            .await
-            .map_err(my)?;
+    let visible: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM jobs_queue WHERE id = ? AND tenant_id = ?)",
+    )
+    .bind(id)
+    .bind(tenant)
+    .fetch_one(pool)
+    .await
+    .map_err(my)?;
     Ok(if visible {
         conflict()
     } else {

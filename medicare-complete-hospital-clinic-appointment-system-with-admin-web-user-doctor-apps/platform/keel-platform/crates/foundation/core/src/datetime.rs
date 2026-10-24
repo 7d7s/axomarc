@@ -51,13 +51,12 @@ impl DateParts {
     /// dateless format (`H:i`) has no instant and returns `None`.
     pub fn to_instant(&self) -> Option<OffsetDateTime> {
         let (y, m, d) = (self.year?, self.month?, self.day?);
-        let month = u8::try_from(m).ok().and_then(|m| time::Month::try_from(m).ok())?;
-        let date = time::Date::from_calendar_date(
-            i32::try_from(y).ok()?,
-            month,
-            u8::try_from(d).ok()?,
-        )
-        .ok()?;
+        let month = u8::try_from(m)
+            .ok()
+            .and_then(|m| time::Month::try_from(m).ok())?;
+        let date =
+            time::Date::from_calendar_date(i32::try_from(y).ok()?, month, u8::try_from(d).ok()?)
+                .ok()?;
         let at = time::Time::from_hms(
             u8::try_from(self.hour.unwrap_or(0)).ok()?,
             u8::try_from(self.minute.unwrap_or(0)).ok()?,
@@ -173,8 +172,7 @@ pub fn in_tz(at: OffsetDateTime, tz: &str) -> Option<OffsetDateTime> {
 /// (no offset attached) — the shape a `datetime:<tz>` model cast stores
 /// the local reading of. `None` for a zone outside the table.
 pub fn local_wall(at: OffsetDateTime, tz: &str) -> Option<PrimitiveDateTime> {
-    in_tz(at, tz)
-        .map(|shifted| PrimitiveDateTime::new(shifted.date(), shifted.time()))
+    in_tz(at, tz).map(|shifted| PrimitiveDateTime::new(shifted.date(), shifted.time()))
 }
 
 /// Consume exactly `n` ASCII digits as a number (whole token, no prefix).
@@ -323,7 +321,10 @@ mod tests {
 
         // Round trip back to UTC reproduces the original.
         let utc = in_tz(kolkata, "UTC").expect("utc is bundled");
-        assert_eq!(format_date_with(utc, "Y-m-d H:i:s").unwrap(), "2024-01-02 03:04:05");
+        assert_eq!(
+            format_date_with(utc, "Y-m-d H:i:s").unwrap(),
+            "2024-01-02 03:04:05"
+        );
 
         // Zones outside the table never convert.
         assert!(in_tz(at, "Mars/Olympus_Mons").is_none());

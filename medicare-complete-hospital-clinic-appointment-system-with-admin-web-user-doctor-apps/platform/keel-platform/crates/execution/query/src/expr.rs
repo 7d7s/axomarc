@@ -36,9 +36,9 @@ pub const MAX_RAW_LENGTH: usize = 8_192;
 
 /// A statement keyword that may not head an expression.
 const STATEMENT_HEADS: &[&str] = &[
-    "SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "TRUNCATE", "GRANT", "REVOKE",
-    "SET", "CALL", "EXEC", "EXECUTE", "MERGE", "REPLACE", "WITH", "SHOW", "USE", "BEGIN", "COMMIT",
-    "ROLLBACK", "VACUUM", "ANALYZE", "EXPLAIN",
+    "SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "TRUNCATE", "GRANT",
+    "REVOKE", "SET", "CALL", "EXEC", "EXECUTE", "MERGE", "REPLACE", "WITH", "SHOW", "USE", "BEGIN",
+    "COMMIT", "ROLLBACK", "VACUUM", "ANALYZE", "EXPLAIN",
 ];
 
 /// A validated raw SQL expression with its own bound values.
@@ -95,7 +95,10 @@ impl SqlExpr {
                 "a raw expression cannot begin with the statement keyword {head}"
             )));
         }
-        Ok(Self { text: trimmed.to_string(), binds })
+        Ok(Self {
+            text: trimmed.to_string(),
+            binds,
+        })
     }
 
     /// A raw expression with no binds.
@@ -155,7 +158,10 @@ impl SqlExpr {
             return Err(AppError::validation("JSON_TABLE needs at least one column"));
         }
         Self::new(
-            format!("JSON_TABLE({} , '{path}' COLUMNS({columns}))", document.text),
+            format!(
+                "JSON_TABLE({} , '{path}' COLUMNS({columns}))",
+                document.text
+            ),
             binds,
         )
     }
@@ -176,7 +182,11 @@ impl SqlExpr {
     /// The placeholders are the dialect's own form, so the statement's bind
     /// order stays continuous (the expression's binds are pushed exactly
     /// where the expression appears).
-    pub(crate) fn render(&self, params: &mut Vec<Value>, dialect: &dyn crate::dialect::Dialect) -> String {
+    pub(crate) fn render(
+        &self,
+        params: &mut Vec<Value>,
+        dialect: &dyn crate::dialect::Dialect,
+    ) -> String {
         for bind in &self.binds {
             params.push(bind.clone());
         }
@@ -325,15 +335,20 @@ mod tests {
         let doc = SqlExpr::new("doc", vec![Value::Text("{}".into())]).expect("accepted");
         let table = SqlExpr::json_table(&doc, "$.items[*]", "id INT PATH '$.id'", vec![])
             .expect("accepted");
-        assert!(table.text().starts_with("JSON_TABLE(doc , '$.items[*]' COLUMNS("));
+        assert!(table
+            .text()
+            .starts_with("JSON_TABLE(doc , '$.items[*]' COLUMNS("));
         assert!(SqlExpr::json_table(&doc, "bad'path", "id INT", vec![]).is_err());
     }
 
     #[test]
     fn the_placeholders_are_translated_per_dialect() {
         let mut params: Vec<Value> = Vec::new();
-        let e = SqlExpr::new("amount > ? AND tenant = ?", vec![Value::Int(5), Value::Text("t".into())])
-            .expect("accepted");
+        let e = SqlExpr::new(
+            "amount > ? AND tenant = ?",
+            vec![Value::Int(5), Value::Text("t".into())],
+        )
+        .expect("accepted");
         let pg = e.render(&mut params, &crate::dialect::POSTGRES);
         assert_eq!(pg, "amount > $1 AND tenant = $2");
         assert_eq!(params.len(), 2);

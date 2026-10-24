@@ -110,10 +110,7 @@ impl SessionStore for MySqlSessionStore {
         })
     }
 
-    fn delete_principal_sessions(
-        &self,
-        principal: PrincipalId,
-    ) -> Result<usize, AppError> {
+    fn delete_principal_sessions(&self, principal: PrincipalId) -> Result<usize, AppError> {
         let pool = self.pool.clone();
         block_on(async move {
             let deleted = sqlx::query("DELETE FROM http_sessions WHERE principal_id = ?")

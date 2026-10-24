@@ -2,13 +2,13 @@
 //! guards → DeltaStone + Audit + Outbox writes → COMMIT (one transaction, D-53).
 
 use kelson_context::ExecutionContext;
-use kelson_foundation::{AppError, ConcurrencyStrategy, DeltaId, StreamRef};
 use kelson_execution::concurrency::expand_key;
 use kelson_execution::plan::ExecutionPlan;
 use kelson_execution::unit::{
     guard, AuditRecord, BoxFuture, CommitReceipt, ExecutionBackend, ExecutionUnit, HandlerFn,
     MutationRecord, OutboxMessage, RunOutcome,
 };
+use kelson_foundation::{AppError, ConcurrencyStrategy, DeltaId, StreamRef};
 use kelson_transaction::{advisory_lock_key, IsolationLevel, TxOptions};
 use sqlx::postgres::PgPool;
 use time::OffsetDateTime;
@@ -254,35 +254,27 @@ impl ExecutionBackend for PostgresBackend {
                     Some(h) => *h,
                     None => {
                         let fetched: Option<Vec<u8>> = match tenant_uuid {
-                            Some(tid) => {
-                                sqlx::query_scalar(
-                                    "SELECT chain_hash FROM audit_records
+                            Some(tid) => sqlx::query_scalar(
+                                "SELECT chain_hash FROM audit_records
                                       WHERE tenant_id = $1 AND chain_id = $2
                                         AND chain_hash IS NOT NULL
                                       ORDER BY at DESC, id DESC LIMIT 1",
-                                )
-                                .bind(tid)
-                                .bind(chain_id)
-                                .fetch_optional(&mut *unit.tx)
-                                .await
-                                .map_err(|e| {
-                                    AppError::persistence(format!("audit chain: {e}"))
-                                })?
-                            }
-                            None => {
-                                sqlx::query_scalar(
-                                    "SELECT chain_hash FROM audit_records
+                            )
+                            .bind(tid)
+                            .bind(chain_id)
+                            .fetch_optional(&mut *unit.tx)
+                            .await
+                            .map_err(|e| AppError::persistence(format!("audit chain: {e}")))?,
+                            None => sqlx::query_scalar(
+                                "SELECT chain_hash FROM audit_records
                                       WHERE tenant_id IS NULL AND chain_id = $1
                                         AND chain_hash IS NOT NULL
                                       ORDER BY at DESC, id DESC LIMIT 1",
-                                )
-                                .bind(chain_id)
-                                .fetch_optional(&mut *unit.tx)
-                                .await
-                                .map_err(|e| {
-                                    AppError::persistence(format!("audit chain: {e}"))
-                                })?
-                            }
+                            )
+                            .bind(chain_id)
+                            .fetch_optional(&mut *unit.tx)
+                            .await
+                            .map_err(|e| AppError::persistence(format!("audit chain: {e}")))?,
                         };
                         fetched
                             .and_then(|b| b.try_into().ok())

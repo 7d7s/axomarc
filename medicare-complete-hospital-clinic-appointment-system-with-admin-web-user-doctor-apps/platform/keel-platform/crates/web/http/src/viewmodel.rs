@@ -97,15 +97,19 @@ mod tests {
 
     #[test]
     fn validated_parses_then_validates() {
-        let ok = <Validated<NameForm> as TypedInput>::from_value(serde_json::json!({ "name": " kelson " }))
-            .unwrap();
+        let ok = <Validated<NameForm> as TypedInput>::from_value(
+            serde_json::json!({ "name": " kelson " }),
+        )
+        .unwrap();
         assert_eq!(ok.input, "kelson");
 
-        let blank = <Validated<NameForm> as TypedInput>::from_value(serde_json::json!({ "name": "  " }));
+        let blank =
+            <Validated<NameForm> as TypedInput>::from_value(serde_json::json!({ "name": "  " }));
         assert!(blank.is_err());
 
-        let bad_shape =
-            <Validated<NameForm> as TypedInput>::from_value(serde_json::json!(["not", "an", "object"]));
+        let bad_shape = <Validated<NameForm> as TypedInput>::from_value(serde_json::json!([
+            "not", "an", "object"
+        ]));
         assert!(bad_shape.is_err());
     }
 

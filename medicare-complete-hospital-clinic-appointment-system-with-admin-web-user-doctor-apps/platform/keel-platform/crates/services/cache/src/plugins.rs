@@ -141,9 +141,10 @@ impl CacheDriver {
             return Ok(store);
         }
         let store = (self.builder)()?;
-        let mut built = self.built.write().map_err(|_| {
-            AppError::persistence("the cache driver store lock is poisoned")
-        })?;
+        let mut built = self
+            .built
+            .write()
+            .map_err(|_| AppError::persistence("the cache driver store lock is poisoned"))?;
         // Another caller may have won the race. Keeping the FIRST instance
         // means every holder of the driver talks to the same store.
         if let Some(existing) = built.as_ref() {
@@ -262,9 +263,10 @@ impl CacheDriverRegistry {
         // Install the store in the holder BEFORE the name is recorded, so
         // the active name and the active store never disagree.
         {
-            let mut holder = self.holder.write().map_err(|_| {
-                AppError::persistence("the cache driver registry lock is poisoned")
-            })?;
+            let mut holder = self
+                .holder
+                .write()
+                .map_err(|_| AppError::persistence("the cache driver registry lock is poisoned"))?;
             match holder.as_ref() {
                 Some(holder) => holder.swap(Arc::clone(&store))?,
                 None => {
@@ -272,9 +274,10 @@ impl CacheDriverRegistry {
                 }
             }
         }
-        let mut active = self.active.write().map_err(|_| {
-            AppError::persistence("the cache driver registry lock is poisoned")
-        })?;
+        let mut active = self
+            .active
+            .write()
+            .map_err(|_| AppError::persistence("the cache driver registry lock is poisoned"))?;
         *active = Some(name.to_string());
         Ok(())
     }
@@ -285,7 +288,10 @@ impl CacheDriverRegistry {
             .active
             .read()
             .map_err(|_| AppError::persistence("the cache driver registry lock is poisoned"))?;
-        Ok(active.as_deref().and_then(|name| self.drivers.get(name)).cloned())
+        Ok(active
+            .as_deref()
+            .and_then(|name| self.drivers.get(name))
+            .cloned())
     }
 
     /// The active driver's store, if one is active.
@@ -320,7 +326,10 @@ impl CacheDriverRegistry {
     /// safe - the property that is easy to assume and expensive to get
     /// wrong.
     pub fn active_is_shared(&self) -> Result<bool, AppError> {
-        Ok(self.active()?.map(|d| d.capabilities.shared).unwrap_or(false))
+        Ok(self
+            .active()?
+            .map(|d| d.capabilities.shared)
+            .unwrap_or(false))
     }
 }
 
@@ -477,7 +486,11 @@ mod tests {
         registry.register(CacheDriver::with_builder(
             "redis",
             CacheCapabilities::shared(),
-            || Err(AppError::validation("the cache driver `redis` is unreachable")),
+            || {
+                Err(AppError::validation(
+                    "the cache driver `redis` is unreachable",
+                ))
+            },
         ));
         let err = registry
             .activate("redis")

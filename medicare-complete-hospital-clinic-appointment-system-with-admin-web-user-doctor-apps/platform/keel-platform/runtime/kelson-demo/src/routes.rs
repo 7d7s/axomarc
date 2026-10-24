@@ -45,6 +45,9 @@ pub struct AppState {
     pub sessions: Option<Arc<kelson_http::SessionMiddleware>>,
     pub principals: Arc<dyn kelson_identity::PrincipalStore>,
     pub credentials: Arc<dyn kelson_identity::CredentialStore>,
+    /// MNC-001: the (principal, tenant) membership edge. Login and snapshot
+    /// install read it; only register (and local dispatch bootstrap) grant.
+    pub memberships: Arc<dyn kelson_identity::MembershipStore>,
     /// Authz engine: login installs the access snapshot for a principal.
     pub policy: Arc<kelson_policy::PolicyEngine>,
     /// Capabilities granted to authenticated principals (module manifests).
@@ -118,8 +121,9 @@ pub struct AppState {
     pub probes: Arc<kelson_models::ProbeRegistry>,
     /// Shared token-bucket state for throttle groups (one bucket per
     /// group+client across all routes).
-    pub throttle_buckets:
-        Arc<std::sync::Mutex<std::collections::HashMap<String, kelson_http::middleware::BucketState>>>,
+    pub throttle_buckets: Arc<
+        std::sync::Mutex<std::collections::HashMap<String, kelson_http::middleware::BucketState>>,
+    >,
     /// Route-cache plans (storage/framework/routes.json); None = live
     /// compile from the catalog at registration. Phase 3 (target-arch
     /// §4.2): hot-swappable — a config/route reload writes a fresh `Arc`
@@ -127,9 +131,7 @@ pub struct AppState {
     /// registration reads it once per build. Behind an outer `Arc` so
     /// `AppState::clone` (per-request `State`) SHARES the cell — a swap
     /// is visible through every clone.
-    pub route_plans: Arc<
-        std::sync::RwLock<Option<Arc<Vec<kelson_registry::RoutePlan>>>>,
-    >,
+    pub route_plans: Arc<std::sync::RwLock<Option<Arc<Vec<kelson_registry::RoutePlan>>>>>,
     // --- S10 observability -------------------------------------------------
     /// Process metrics registry (always recording; exposure is flag-gated).
     pub metrics: Arc<kelson_metrics::MetricsRegistry>,
@@ -248,7 +250,8 @@ impl AppState {
     /// `crate::edge::edge_mw`, applied last in `run()` so it wraps every
     /// route including the merged module/auth surfaces.
     pub fn edge_config(&self) -> crate::edge::EdgeConfig {
-        crate::edge::EdgeConfig::new(Arc::clone(&self.terminating)).with_cipher(self.cookie_cipher.clone())
+        crate::edge::EdgeConfig::new(Arc::clone(&self.terminating))
+            .with_cipher(self.cookie_cipher.clone())
     }
 
     /// Wave 2 error rendering (the choke point every JSON edge goes through):
@@ -257,8 +260,10 @@ impl AppState {
     /// detail; per-code custom renderer output lands in `error.meta`.
     /// Report-only codes (`renderable = false`) keep the mapped status but
     /// serve the generic internal body.
-    pub fn error_envelope(&self, err: &kelson_foundation::AppError)
-    -> (axum::http::StatusCode, Envelope<serde_json::Value>) {
+    pub fn error_envelope(
+        &self,
+        err: &kelson_foundation::AppError,
+    ) -> (axum::http::StatusCode, Envelope<serde_json::Value>) {
         let plan = self.error_renders.plan(err);
         if plan.reportable {
             tracing::warn!(
@@ -272,7 +277,10 @@ impl AppState {
         }
         let envelope = if plan.renderable {
             let mut envelope = Envelope::<serde_json::Value>::error(err);
-            let mut error = envelope.error.take().unwrap_or_else(|| kelson_http::ErrorBody::from_app_error(err));
+            let mut error = envelope
+                .error
+                .take()
+                .unwrap_or_else(|| kelson_http::ErrorBody::from_app_error(err));
             if let Some(detail) = self.error_renders.detail(err) {
                 error = error.with_detail(detail);
             }
@@ -293,7 +301,8 @@ impl AppState {
 
     /// `(status, envelope body)` tuple for the JSON edges.
     pub fn error_json(
-        &self, err: &kelson_foundation::AppError,
+        &self,
+        err: &kelson_foundation::AppError,
     ) -> (axum::http::StatusCode, Json<serde_json::Value>) {
         let (status, envelope) = self.error_envelope(err);
         (
@@ -313,7 +322,9 @@ impl AppState {
         instance: Option<&str>,
     ) -> axum::response::Response {
         let (status, envelope) = self.error_envelope(err);
-        let accept = headers.get(axum::http::header::ACCEPT).and_then(|v| v.to_str().ok());
+        let accept = headers
+            .get(axum::http::header::ACCEPT)
+            .and_then(|v| v.to_str().ok());
         if kelson_http::wants_problem(accept, self.problem_json) {
             let error = envelope
                 .error
@@ -411,7 +422,7 @@ pub fn router(state: AppState) -> Router {
         .route("/meta/boot", get(boot_meta))
         .route("/meta/flags", get(flags_meta))
         .route("/meta/routes", get(routes_meta))
-    .route("/meta/slo", get(slo_meta))
+        .route("/meta/slo", get(slo_meta))
         .route("/__runtime/status", get(crate::runtime_status::status_meta))
         .route("/metrics", get(metrics_text))
         .route("/_dashboard", get(dashboard))
@@ -432,9 +443,7 @@ pub fn router(state: AppState) -> Router {
 ///
 /// The objectives name metrics the framework really records, so the status
 /// is computed from the telemetry, never asserted.
-async fn slo_meta(
-    State(s): State<AppState>,
-) -> Json<Envelope<serde_json::Value>> {
+async fn slo_meta(State(s): State<AppState>) -> Json<Envelope<serde_json::Value>> {
     let report = kelson_metrics::render_slo_report(&s.metrics.snapshot());
     let parsed: serde_json::Value =
         serde_json::from_str(&report).unwrap_or(serde_json::Value::Null);
@@ -443,7 +452,9 @@ async fn slo_meta(
 
 async fn metrics_text(State(s): State<AppState>) -> axum::response::Response {
     if !s.flags.read().unwrap().iter().any(|f| f == "app.metrics") {
-        let err = kelson_foundation::AppError::not_found("metrics exposition disabled (enable flag app.metrics)");
+        let err = kelson_foundation::AppError::not_found(
+            "metrics exposition disabled (enable flag app.metrics)",
+        );
         return s.error_json(&err).into_response();
     }
     s.metrics.set_gauge(
@@ -507,8 +518,7 @@ async fn metrics_text(State(s): State<AppState>) -> axum::response::Response {
             }
         }
     }
-    let body = kelson_metrics::render_prometheus(&s.metrics.snapshot())
-        + &slo_gauges;
+    let body = kelson_metrics::render_prometheus(&s.metrics.snapshot()) + &slo_gauges;
     (
         [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
         body,
@@ -521,7 +531,9 @@ async fn metrics_text(State(s): State<AppState>) -> axum::response::Response {
 /// `app.dashboard` flag).
 async fn dashboard(State(s): State<AppState>) -> axum::response::Response {
     if !s.dashboard_enabled {
-        let err = kelson_foundation::AppError::not_found("dashboard disabled (enable flag app.dashboard)");
+        let err = kelson_foundation::AppError::not_found(
+            "dashboard disabled (enable flag app.dashboard)",
+        );
         return s.error_json(&err).into_response();
     }
     (
@@ -623,13 +635,7 @@ async fn boot_meta(State(s): State<AppState>) -> Json<Envelope<BootBody>> {
         name: "kelson-demo",
         version: env!("CARGO_PKG_VERSION"),
         services: s.health.services.lock().unwrap().clone(),
-        modules: s
-            .modules
-            .read()
-            .unwrap()
-            .snapshot()
-            .into_iter()
-            .collect(),
+        modules: s.modules.read().unwrap().snapshot().into_iter().collect(),
     }))
 }
 
@@ -740,7 +746,10 @@ impl DispatchBus {
     /// so callers that used to register on the boot bus keep their contract.
     /// The whole map is written back in one step, so a reader sees the map
     /// with the handler or without it, never a partial insert.
-    pub fn register(&self, handler: Arc<dyn OperationHandler>) -> Result<(), kelson_foundation::AppError> {
+    pub fn register(
+        &self,
+        handler: Arc<dyn OperationHandler>,
+    ) -> Result<(), kelson_foundation::AppError> {
         let op = handler.plan().operation.clone();
         let mut cell = self.active.write().unwrap_or_else(|e| e.into_inner());
         let mut map = (**cell).clone();
@@ -863,8 +872,6 @@ impl DispatchBus {
         let handler = self.handler(operation).ok_or_else(|| {
             kelson_foundation::AppError::not_found(format!("operation {operation}"))
         })?;
-        self.boot
-            .dispatch_handler(&handler, ctx, input, key)
-            .await
+        self.boot.dispatch_handler(&handler, ctx, input, key).await
     }
 }

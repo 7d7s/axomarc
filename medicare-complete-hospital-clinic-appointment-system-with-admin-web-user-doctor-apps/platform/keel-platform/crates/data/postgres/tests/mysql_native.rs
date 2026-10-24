@@ -14,7 +14,9 @@
 
 use kelson_models::store::ModelStore;
 use kelson_models::{FieldDef, FieldType, ModelDef, Record};
-use kelson_query::{CastTarget, Direction, Ident, Select, Value, WindowFunction, WindowSpec, MYSQL};
+use kelson_query::{
+    CastTarget, Direction, Ident, Select, Value, WindowFunction, WindowSpec, MYSQL,
+};
 use sqlx::{Column, Row};
 use uuid::Uuid;
 
@@ -92,9 +94,7 @@ async fn fetch(
         kelson_query::DialectId::MySql,
         "the statement must be rendered for MySQL"
     );
-    bind(sqlx::query(&q.sql), &q.params)
-        .fetch_all(pool)
-        .await
+    bind(sqlx::query(&q.sql), &q.params).fetch_all(pool).await
 }
 
 /// A deterministic timestamp built from a sequence number (the cases must
@@ -147,7 +147,8 @@ async fn mysql_native_a_cte_projects_through_a_common_table_expression() {
         .expect("the CTE statement compiles");
 
     assert!(
-        q.sql.starts_with("WITH paid_orders AS (SELECT label, amount FROM"),
+        q.sql
+            .starts_with("WITH paid_orders AS (SELECT label, amount FROM"),
         "the CTE must lead the statement: {}",
         q.sql
     );
@@ -232,7 +233,8 @@ async fn mysql_native_a_window_function_sums_per_partition() {
         .expect("the window statement compiles");
 
     assert!(
-        q.sql.contains("SUM(amount) OVER (PARTITION BY tenant_id ORDER BY created_at ASC)"),
+        q.sql
+            .contains("SUM(amount) OVER (PARTITION BY tenant_id ORDER BY created_at ASC)"),
         "{}",
         q.sql
     );
@@ -454,14 +456,12 @@ async fn mysql_native_an_app_can_expand_a_json_document_with_json_table() {
         { "sku": "a-1", "qty": 2 },
         { "sku": "b-2", "qty": 5 }
     ]);
-    sqlx::query(&format!(
-        "INSERT INTO {table} (id, doc) VALUES (?, ?)"
-    ))
-    .bind(Uuid::now_v7().to_string())
-    .bind(document.to_string())
-    .execute(&pool)
-    .await
-    .expect("the probe row inserts");
+    sqlx::query(&format!("INSERT INTO {table} (id, doc) VALUES (?, ?)"))
+        .bind(Uuid::now_v7().to_string())
+        .bind(document.to_string())
+        .execute(&pool)
+        .await
+        .expect("the probe row inserts");
 
     // The expansion: JSON_TABLE over the bound document, as a derived table.
     let doc_expr = kelson_query::SqlExpr::new("doc", vec![]).expect("accepted");

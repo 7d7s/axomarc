@@ -15,6 +15,7 @@ keywords.workspace = true
 kelson-foundation = { workspace = true }
 kelson-context = { workspace = true }
 kelson-execution = { workspace = true }
+kelson-identity = { workspace = true }
 kelson-lifecycle = { workspace = true }
 kelson-policy = { workspace = true }
 kelson-command = { workspace = true }

@@ -59,15 +59,19 @@ impl FilePromotionLock {
         let raw = std::fs::read_to_string(&self.path).ok()?;
         let mut parts = raw.split_whitespace();
         let owner = parts.next()?.to_string();
-        let epoch = parts.next().and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
+        let epoch = parts
+            .next()
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0);
         Some(LockHolderInfo { owner, epoch })
     }
 
     /// Break an expired lease ✓ — the explicit operator action ✓.
     pub fn break_expired(&self, now_epoch: i64) -> Result<bool, AppError> {
-        let _guard = self.guard.lock().map_err(|_| {
-            AppError::internal("the promotion lock's internal guard is poisoned")
-        })?;
+        let _guard = self
+            .guard
+            .lock()
+            .map_err(|_| AppError::internal("the promotion lock's internal guard is poisoned"))?;
         let Some(info) = self.holder() else {
             return Ok(false);
         };
@@ -115,14 +119,15 @@ impl PromotionLock for FilePromotionLock {
                 if now - info.epoch < self.lease_secs {
                     return Err(AppError::conflict(format!(
                         "a promotion is already running (held by {} since {})",
-                        info.owner,
-                        info.epoch
+                        info.owner, info.epoch
                     )));
                 }
             }
             if let Some(parent) = self.path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| {
-                    AppError::persistence(format!("cannot create the promotion lock's directory: {e}"))
+                    AppError::persistence(format!(
+                        "cannot create the promotion lock's directory: {e}"
+                    ))
                 })?;
             }
             std::fs::write(&self.path, format!("{owner} {now}\n")).map_err(|e| {
@@ -160,7 +165,10 @@ mod tests {
         let dir = scratch();
         let lock = FilePromotionLock::new(&dir);
 
-        let lease = lock.try_acquire("release-a").await.expect("the lock is free");
+        let lease = lock
+            .try_acquire("release-a")
+            .await
+            .expect("the lock is free");
         assert_eq!(lock.holder().map(|h| h.owner).as_deref(), Some("release-a"));
 
         // A second holder is told, not queued ✓.
@@ -191,7 +199,10 @@ mod tests {
     async fn an_expired_lease_can_be_broken_but_a_live_one_may_not() {
         let dir = scratch();
         let lock = FilePromotionLock::with_lease(&dir, 60);
-        let _lease = lock.try_acquire("release-a").await.expect("the lock is free");
+        let _lease = lock
+            .try_acquire("release-a")
+            .await
+            .expect("the lock is free");
 
         let now = time::OffsetDateTime::now_utc().unix_timestamp();
         assert!(

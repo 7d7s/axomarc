@@ -39,12 +39,7 @@ impl HostTokenStore {
 
 impl TokenStore for HostTokenStore {
     fn insert(&self, token: AuthToken) -> Result<(), AppError> {
-        call(
-            Port::TokenWrite,
-            "insert",
-            &TokenInsertArgs { token },
-        )
-        .map(|_| ())
+        call(Port::TokenWrite, "insert", &TokenInsertArgs { token }).map(|_| ())
     }
 
     fn find_by_hash(

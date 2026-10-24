@@ -185,10 +185,7 @@ mod tests {
         assert_eq!(calls[0], "jobs.ensure_compatibility", "guard runs first");
         assert_eq!(calls[1], "events.verify_idempotency_stability");
         // The three mutating dimensions keep §7.1's order.
-        let mutating: Vec<&str> = calls[2..]
-            .iter()
-            .map(String::as_str)
-            .collect();
+        let mutating: Vec<&str> = calls[2..].iter().map(String::as_str).collect();
         assert_eq!(
             mutating,
             vec![
@@ -210,9 +207,15 @@ mod tests {
         let err = h.executor().rollback(&target()).await.unwrap_err();
         assert_eq!(err.code, kelson_foundation::codes::VALIDATION);
 
-        assert_eq!(h.trace.calls(), vec!["jobs.ensure_compatibility".to_string()]);
+        assert_eq!(
+            h.trace.calls(),
+            vec!["jobs.ensure_compatibility".to_string()]
+        );
         for prefix in ["config.", "db.", "modules."] {
-            assert!(h.trace.under(prefix).is_empty(), "{prefix} must not have run");
+            assert!(
+                h.trace.under(prefix).is_empty(),
+                "{prefix} must not have run"
+            );
         }
     }
 
@@ -233,7 +236,10 @@ mod tests {
             ]
         );
         for prefix in ["config.", "db.", "modules."] {
-            assert!(h.trace.under(prefix).is_empty(), "{prefix} must not have run");
+            assert!(
+                h.trace.under(prefix).is_empty(),
+                "{prefix} must not have run"
+            );
         }
     }
 
@@ -264,12 +270,19 @@ mod tests {
 
         assert_eq!(cp.config_version, 7, "live config revision");
         assert_eq!(cp.db_version, Some(5), "live watermark");
-        assert_eq!(cp.module_versions.get("echo").map(String::as_str), Some("v1"));
+        assert_eq!(
+            cp.module_versions.get("echo").map(String::as_str),
+            Some("v1")
+        );
         assert_eq!(cp.job_schema_versions.get("mail.send"), Some(&2));
 
         // Read-only: no mutation call ever happened.
         for prefix in ["config.activate", "db.rollback_to", "modules.pin_versions"] {
-            assert!(h.trace.under(prefix).is_empty(), "checkpoint mutated: {:?}", h.trace.calls());
+            assert!(
+                h.trace.under(prefix).is_empty(),
+                "checkpoint mutated: {:?}",
+                h.trace.calls()
+            );
         }
     }
 
@@ -291,7 +304,12 @@ mod tests {
         assert_eq!(*h.config.live.lock().unwrap(), 7, "config restored");
         assert_eq!(*h.migrations.watermark.lock().unwrap(), 5, "db restored");
         assert_eq!(
-            h.modules.pins.lock().unwrap().get("echo").map(String::as_str),
+            h.modules
+                .pins
+                .lock()
+                .unwrap()
+                .get("echo")
+                .map(String::as_str),
             Some("v1"),
             "pins restored"
         );

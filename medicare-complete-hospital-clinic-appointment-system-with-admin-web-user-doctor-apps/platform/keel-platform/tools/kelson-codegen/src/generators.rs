@@ -883,11 +883,23 @@ mod tests {
             assert!(GENERATOR_KINDS.contains(&kind), "{kind} missing");
             let (path, content) = generate(kind, "demo", "sample_thing").unwrap();
             assert!(path.starts_with("applications/demo/"), "{kind}: {path}");
-            assert!(!content.contains("__NAME__"), "unsubstituted name in {kind}");
-            assert!(!content.contains("__MODULE__"), "unsubstituted module in {kind}");
-            assert!(!content.contains("__TYPE__"), "unsubstituted type in {kind}");
+            assert!(
+                !content.contains("__NAME__"),
+                "unsubstituted name in {kind}"
+            );
+            assert!(
+                !content.contains("__MODULE__"),
+                "unsubstituted module in {kind}"
+            );
+            assert!(
+                !content.contains("__TYPE__"),
+                "unsubstituted type in {kind}"
+            );
             assert!(!content.contains("todo!("), "placeholder in {kind}");
-            assert!(!content.contains("unimplemented!("), "placeholder in {kind}");
+            assert!(
+                !content.contains("unimplemented!("),
+                "placeholder in {kind}"
+            );
         }
     }
 
@@ -903,15 +915,24 @@ mod tests {
             ("cast", "impl Cast for SampleThingCast"),
             ("observer", "impl ModelObserver for SampleThingObserver"),
             ("rule", "register_custom_rule(\"sample_thing\""),
-            ("scope", "pub fn sample_thing_scope(filters: Vec<FieldFilter>)"),
+            (
+                "scope",
+                "pub fn sample_thing_scope(filters: Vec<FieldFilter>)",
+            ),
             (
                 "middleware",
                 "pub async fn sample_thing_middleware(request: Request, next: Next)",
             ),
             ("channel", "routes/channels.toml"),
             ("exception", "impl From<SampleThingError> for AppError"),
-            ("job-middleware", "impl JobMiddleware for SampleThingJobMiddleware"),
-            ("job-middleware", "kelson_jobs::{BoxFuture, Control, DurableJob, JobMiddleware}"),
+            (
+                "job-middleware",
+                "impl JobMiddleware for SampleThingJobMiddleware",
+            ),
+            (
+                "job-middleware",
+                "kelson_jobs::{BoxFuture, Control, DurableJob, JobMiddleware}",
+            ),
             (
                 "notification",
                 "impl NotificationDef for SampleThingNotification",
@@ -923,15 +944,18 @@ mod tests {
         }
         for kind in ["mail", "notification"] {
             let (_, content) = generate(kind, "demo", "sample_thing").unwrap();
-            assert!(content.contains("Wave 6"), "{kind} documents its Wave 6 landing");
+            assert!(
+                content.contains("Wave 6"),
+                "{kind} documents its Wave 6 landing"
+            );
         }
         // Template files land under the module's view root.
         let (path, content) = generate("view", "demo", "sample_thing").unwrap();
-        assert_eq!(
-            path,
-            "applications/demo/resources/views/sample_thing.html"
+        assert_eq!(path, "applications/demo/resources/views/sample_thing.html");
+        assert!(
+            content.contains("@include"),
+            "view documents include resolution"
         );
-        assert!(content.contains("@include"), "view documents include resolution");
         let (path, content) = generate("component", "demo", "sample_thing").unwrap();
         assert_eq!(
             path,

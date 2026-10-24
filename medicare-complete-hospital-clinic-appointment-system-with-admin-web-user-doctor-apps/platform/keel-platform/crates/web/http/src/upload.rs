@@ -129,10 +129,7 @@ fn webp_dimensions(b: &[u8]) -> Option<(u32, u32)> {
         )),
         b"VP8L" => {
             let bits = u32::from_le_bytes([b[21], b[22], b[23], b[24]]);
-            Some((
-                (bits & 0x3FFF) + 1,
-                ((bits >> 14) & 0x3FFF) + 1,
-            ))
+            Some(((bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1))
         }
         b"VP8X" => {
             let w = u32::from_le_bytes([b[24], b[25], b[26], 0]) & 0x00FF_FFFF;
@@ -444,15 +441,8 @@ pub async fn ingest_multipart(
     bucket: &str,
     key_prefix: &str,
 ) -> Result<Vec<StoredUpload>, AppError> {
-    let (_fields, stored) = ingest_multipart_mixed(
-        multipart,
-        limits,
-        storage,
-        disk,
-        bucket,
-        key_prefix,
-    )
-    .await?;
+    let (_fields, stored) =
+        ingest_multipart_mixed(multipart, limits, storage, disk, bucket, key_prefix).await?;
     if stored.is_empty() {
         return Err(AppError::validation(
             "no file parts found in the multipart body",
@@ -701,7 +691,10 @@ mod multipart_tests {
             vec![0u8; 64],
         )]);
         let err = run(req, &limits, vec![]).await.unwrap_err();
-        assert_eq!(err.category, kelson_foundation::ErrorCategory::ResourceExhausted);
+        assert_eq!(
+            err.category,
+            kelson_foundation::ErrorCategory::ResourceExhausted
+        );
     }
 
     #[tokio::test]
@@ -762,7 +755,11 @@ mod multipart_tests {
             .expect("an honest PNG is accepted");
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].content_type, "image/png");
-        assert_eq!(stored[0].width, Some(300), "the dimensions still come from the bytes");
+        assert_eq!(
+            stored[0].width,
+            Some(300),
+            "the dimensions still come from the bytes"
+        );
         assert_eq!(stored[0].height, Some(200));
 
         // A type the sniffer does not know is never a refusal.
@@ -773,9 +770,13 @@ mod multipart_tests {
             vec![0x00, 0xFF, 0x10, 0x42],
         )]);
         assert!(
-            run(req, &UploadLimits::default(), vec!["application/octet-stream".into()])
-                .await
-                .is_ok(),
+            run(
+                req,
+                &UploadLimits::default(),
+                vec!["application/octet-stream".into()]
+            )
+            .await
+            .is_ok(),
             "an unknown format is not a spoof"
         );
     }
@@ -791,7 +792,10 @@ mod multipart_tests {
             ("b", Some("2.txt"), "text/plain", vec![2]),
         ]);
         let err = run(req, &limits, vec![]).await.unwrap_err();
-        assert_eq!(err.category, kelson_foundation::ErrorCategory::ResourceExhausted);
+        assert_eq!(
+            err.category,
+            kelson_foundation::ErrorCategory::ResourceExhausted
+        );
     }
 
     #[tokio::test]

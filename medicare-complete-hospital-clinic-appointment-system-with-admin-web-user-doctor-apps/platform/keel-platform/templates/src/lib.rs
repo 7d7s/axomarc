@@ -31,17 +31,44 @@ pub type TemplateFile = (&'static str, &'static str);
 pub const STARTER_TEMPLATE: &[TemplateFile] = &[
     ("Cargo.toml", include_str!("../starter-template/Cargo.toml")),
     ("README.md", include_str!("../starter-template/README.md")),
-    ("e2e/auth.spec.ts", include_str!("../starter-template/e2e/auth.spec.ts")),
-    ("e2e/notes.spec.ts", include_str!("../starter-template/e2e/notes.spec.ts")),
-    ("e2e/package.json", include_str!("../starter-template/e2e/package.json")),
-    ("e2e/playwright.config.ts", include_str!("../starter-template/e2e/playwright.config.ts")),
-    ("module.toml", include_str!("../starter-template/module.toml")),
-    ("resources/views/errors/404.html", include_str!("../starter-template/resources/views/errors/404.html")),
-    ("resources/views/errors/500.html", include_str!("../starter-template/resources/views/errors/500.html")),
-    ("resources/views/errors/maintenance.html", include_str!("../starter-template/resources/views/errors/maintenance.html")),
+    (
+        "e2e/auth.spec.ts",
+        include_str!("../starter-template/e2e/auth.spec.ts"),
+    ),
+    (
+        "e2e/notes.spec.ts",
+        include_str!("../starter-template/e2e/notes.spec.ts"),
+    ),
+    (
+        "e2e/package.json",
+        include_str!("../starter-template/e2e/package.json"),
+    ),
+    (
+        "e2e/playwright.config.ts",
+        include_str!("../starter-template/e2e/playwright.config.ts"),
+    ),
+    (
+        "module.toml",
+        include_str!("../starter-template/module.toml"),
+    ),
+    (
+        "resources/views/errors/404.html",
+        include_str!("../starter-template/resources/views/errors/404.html"),
+    ),
+    (
+        "resources/views/errors/500.html",
+        include_str!("../starter-template/resources/views/errors/500.html"),
+    ),
+    (
+        "resources/views/errors/maintenance.html",
+        include_str!("../starter-template/resources/views/errors/maintenance.html"),
+    ),
     ("src/lib.rs", include_str!("../starter-template/src/lib.rs")),
     ("web/app.js", include_str!("../starter-template/web/app.js")),
-    ("web/index.html", include_str!("../starter-template/web/index.html")),
+    (
+        "web/index.html",
+        include_str!("../starter-template/web/index.html"),
+    ),
 ];
 
 /// The default template: one module with a single read route, for a project
@@ -49,7 +76,10 @@ pub const STARTER_TEMPLATE: &[TemplateFile] = &[
 pub const PROJECT_TEMPLATE: &[TemplateFile] = &[
     ("Cargo.toml", include_str!("../project-template/Cargo.toml")),
     ("README.md", include_str!("../project-template/README.md")),
-    ("module.toml", include_str!("../project-template/module.toml")),
+    (
+        "module.toml",
+        include_str!("../project-template/module.toml"),
+    ),
     ("src/lib.rs", include_str!("../project-template/src/lib.rs")),
 ];
 
@@ -127,7 +157,9 @@ mod tests {
     #[test]
     fn a_marker_next_to_an_underscore_renders_one_separator() {
         assert_eq!(render("create___PROJECT_NAME___notes"), "create_blog_notes");
-        assert_eq!(render("ModelDef::new(\"Note\", \"__PROJECT_NAME___notes\")"),
-            "ModelDef::new(\"Note\", \"blog_notes\")");
+        assert_eq!(
+            render("ModelDef::new(\"Note\", \"__PROJECT_NAME___notes\")"),
+            "ModelDef::new(\"Note\", \"blog_notes\")"
+        );
     }
 }

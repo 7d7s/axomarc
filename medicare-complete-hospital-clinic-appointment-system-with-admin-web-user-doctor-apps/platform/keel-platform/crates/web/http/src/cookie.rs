@@ -553,7 +553,10 @@ mod tests {
         // A second seal of the same value may differ (fresh nonce upstream);
         // both must still open.
         let again = cipher.seal("patient-preference=evening").expect("seal");
-        assert_eq!(cipher.open(&again).expect("open"), "patient-preference=evening");
+        assert_eq!(
+            cipher.open(&again).expect("open"),
+            "patient-preference=evening"
+        );
     }
 
     #[test]

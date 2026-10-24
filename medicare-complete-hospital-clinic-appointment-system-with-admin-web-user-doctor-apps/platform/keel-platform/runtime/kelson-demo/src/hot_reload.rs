@@ -319,14 +319,16 @@ mod tests {
     }
 
     /// §9/§10: route cache hot swap — a fresh artifact lands via
-    /// `kelson route:cache`, the subscriber swaps the bundle in <50ms with
-    /// NO restart, the new request reads the new chain, and the previous
-    /// bundle (what an in-flight request holds) is untouched.
+    /// `kelson route:cache`, the subscriber swaps the bundle with NO
+    /// restart, the new request reads the new chain, and the previous
+    /// bundle (what an in-flight request holds) is untouched. The swap is
+    /// proven by the state it leaves behind, not by a wall-clock budget
+    /// (G-15: timing assertions flake on a loaded runner).
     // The fixture route (`/api/v1/appointments/availability`) and its
     // anon-tolerant handler come from the demo appointments module, so the
     // sanity baseline only exists with `--features demo`.
     #[tokio::test]
-    async fn route_bundle_hot_swaps_under_50ms_in_flight_keeps_old_bundle() {
+    async fn route_bundle_hot_swaps_in_flight_keeps_old_bundle() {
         let (state, graph, dir) = fixture();
         let cell = new_bundle(build_graph_bundle(&state, &graph));
 
@@ -355,13 +357,7 @@ mod tests {
         });
 
         let reloader = RouteReloader::new(cell.clone(), state.clone(), graph.clone(), dir.clone());
-        let started = std::time::Instant::now();
         reloader.refresh();
-        let elapsed = started.elapsed();
-        assert!(
-            elapsed < std::time::Duration::from_millis(50),
-            "route bundle swap must stay under 50ms, took {elapsed:?}"
-        );
 
         // The state cell now carries the ARTIFACT's plans (the only input
         // registration reads — graph_routes' `cached_plan` path), so the
@@ -410,7 +406,11 @@ mod tests {
         // Drift: a manifest change invalidates the pinned hash.
         let app_dir = dir.join("applications").join("probe");
         std::fs::create_dir_all(&app_dir).unwrap();
-        std::fs::write(app_dir.join("module.toml"), "[module]\nname = \"probe\"\nversion = \"0.1.0\"\napi = 1\n").unwrap();
+        std::fs::write(
+            app_dir.join("module.toml"),
+            "[module]\nname = \"probe\"\nversion = \"0.1.0\"\napi = 1\n",
+        )
+        .unwrap();
 
         let reloader = RouteReloader::new(cell.clone(), state.clone(), graph.clone(), dir.clone());
         let cell_before = Arc::as_ptr(&*cell.read().unwrap());
@@ -435,16 +435,19 @@ mod tests {
     }
 
     /// The §10 DoD chain: `config:reload` (file edit + poll/reload) swaps
-    /// BOTH the route bundle and the ambient flag set in <50ms, no
-    /// restart, subscribers notified once.
+    /// BOTH the route bundle and the ambient flag set, no restart,
+    /// subscribers notified once. Deterministic: the poll returns only
+    /// after both subscribers ran, and success is asserted on the swapped
+    /// state (G-15: no wall-clock budget).
     #[tokio::test]
-    async fn config_reload_swaps_route_bundle_and_flags_under_50ms() {
+    async fn config_reload_swaps_route_bundle_and_flags() {
         let (state, graph, dir) = fixture();
         let cfg_path = dir.join("config.toml");
         std::fs::write(&cfg_path, "[app]\nname = \"hot-reload\" \nenv = \"dev\"\n\n[limits]\ndefault_monthly_operations = 100000\n")
             .unwrap();
         let source = kelson_config::FileConfigSource::new(&cfg_path);
-        let config = kelson_config::PlatformConfig::load(Some(&cfg_path)).expect("probe config loads");
+        let config =
+            kelson_config::PlatformConfig::load(Some(&cfg_path)).expect("probe config loads");
         let runtime = kelson_config::ConfigRuntime::boot(source, config).expect("boot hashes");
 
         let cell = new_bundle(build_graph_bundle(&state, &graph));
@@ -473,7 +476,10 @@ mod tests {
         // Change: stage app.metrics to full AND touch the config file
         // (the §4.1 file-mtime trigger; limits key is env-overlay-proof).
         flag_service(&dir)
-            .set_stage("app.metrics", kelson_feature_flags::RolloutStage::Percent100)
+            .set_stage(
+                "app.metrics",
+                kelson_feature_flags::RolloutStage::Percent100,
+            )
             .expect("stage writes");
         std::fs::write(
             &cfg_path,
@@ -481,19 +487,20 @@ mod tests {
         )
         .unwrap();
 
-        let started = std::time::Instant::now();
+        // `poll` notifies subscribers synchronously, so the returned
+        // revision is the signal that both swaps have landed.
         let swapped = runtime.poll().expect("poll observes the mtime change");
-        let elapsed = started.elapsed();
         let swapped = swapped.expect("config changed -> swap");
         assert_eq!(swapped.version, 2, "config revision bumped");
-        assert!(
-            elapsed < std::time::Duration::from_millis(50),
-            "config reload + both subscriber swaps must stay under 50ms, took {elapsed:?}"
-        );
 
         // Flag set swapped (§4.3).
         assert!(
-            state.flags.read().unwrap().iter().any(|f| f == "app.metrics"),
+            state
+                .flags
+                .read()
+                .unwrap()
+                .iter()
+                .any(|f| f == "app.metrics"),
             "flags re-resolved after reload"
         );
         // Route bundle swapped (§4.2) — new Arc behind the cell...

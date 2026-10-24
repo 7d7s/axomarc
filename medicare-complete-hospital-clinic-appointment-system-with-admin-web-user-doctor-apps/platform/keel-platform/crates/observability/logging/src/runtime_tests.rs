@@ -16,8 +16,10 @@ use crate::config::{ExporterConfig, PolicyRuleConfig, TelemetryConfig};
 use crate::runtime::ObservabilityRuntime;
 
 fn temp_dir(name: &str) -> PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("kelson-runtime-test-{name}-{}", uuid::Uuid::now_v7()));
+    let dir = std::env::temp_dir().join(format!(
+        "kelson-runtime-test-{name}-{}",
+        uuid::Uuid::now_v7()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -310,7 +312,8 @@ fn g18_isolation_hammer_no_cross_tenant_leakage() {
     let runtime = ObservabilityRuntime::new(cfg, ServiceIdentity::new("g18", "test"), &[]).unwrap();
     runtime.start().unwrap();
 
-    let tenants: Vec<kelson_foundation::TenantId> = (0..4).map(|_| kelson_foundation::TenantId::new()).collect();
+    let tenants: Vec<kelson_foundation::TenantId> =
+        (0..4).map(|_| kelson_foundation::TenantId::new()).collect();
     let per_tenant = 150usize;
 
     std::thread::scope(|scope| {

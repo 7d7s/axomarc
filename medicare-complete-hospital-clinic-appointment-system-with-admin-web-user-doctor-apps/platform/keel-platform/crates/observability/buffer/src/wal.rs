@@ -129,10 +129,7 @@ impl Wal {
             let _ = f.flush();
         }
         let path = self.cfg.dir.join(segment_name(next_lsn));
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
         self.current = Some(file);
         self.current_first_lsn = next_lsn;
         self.current_size = 0;
@@ -169,12 +166,9 @@ impl Wal {
                     skipped += 1;
                     break;
                 }
-                let len = u32::from_le_bytes([
-                    buf[pos + 2],
-                    buf[pos + 3],
-                    buf[pos + 4],
-                    buf[pos + 5],
-                ]) as usize;
+                let len =
+                    u32::from_le_bytes([buf[pos + 2], buf[pos + 3], buf[pos + 4], buf[pos + 5]])
+                        as usize;
                 let record_end = pos + 6 + len;
                 if len < 12 || record_end > buf.len() {
                     skipped += 1; // partial tail record
@@ -182,7 +176,8 @@ impl Wal {
                 }
                 let lsn = u64::from_le_bytes(buf[pos + 6..pos + 14].try_into().unwrap());
                 let body = &buf[pos + 14..record_end - 4];
-                let expect = u32::from_le_bytes(buf[record_end - 4..record_end].try_into().unwrap());
+                let expect =
+                    u32::from_le_bytes(buf[record_end - 4..record_end].try_into().unwrap());
                 if checksum(lsn, body) != expect {
                     skipped += 1;
                     break; // corrupted: trust nothing after it in this segment
@@ -316,10 +311,14 @@ mod tests {
         let dir = tmp_dir("watermark-filter");
         let mut wal = Wal::open(WalConfig::new(&dir)).unwrap();
         for lsn in 1..=5 {
-            wal.append(lsn, format!("e{lsn}").as_bytes(), false).unwrap();
+            wal.append(lsn, format!("e{lsn}").as_bytes(), false)
+                .unwrap();
         }
         let (records, _) = wal.replay(3).unwrap();
-        assert_eq!(records.iter().map(|r| r.lsn).collect::<Vec<_>>(), vec![4, 5]);
+        assert_eq!(
+            records.iter().map(|r| r.lsn).collect::<Vec<_>>(),
+            vec![4, 5]
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

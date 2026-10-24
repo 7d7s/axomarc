@@ -107,7 +107,9 @@ impl FileConfigSource {
     }
 
     fn mtime(&self) -> Option<SystemTime> {
-        std::fs::metadata(&self.path).and_then(|m| m.modified()).ok()
+        std::fs::metadata(&self.path)
+            .and_then(|m| m.modified())
+            .ok()
     }
 }
 
@@ -229,10 +231,7 @@ impl ConfigRuntime {
     /// Register a subscriber (route cache, flag service, …). Subscribers
     /// boot with their own initial state; this is for REVISIONS only.
     pub fn subscribe(&self, reloader: impl ConfigReloader + 'static) {
-        self.reloaders
-            .lock()
-            .unwrap()
-            .push(Arc::new(reloader));
+        self.reloaders.lock().unwrap().push(Arc::new(reloader));
     }
 
     /// Explicit reload (§4.1): load → hash-compare → swap → notify.
@@ -351,8 +350,7 @@ mod tests {
     impl ConfigReloader for Arc<Recorder> {
         fn on_reload(&self, snapshot: &ConfigSnapshot) {
             self.seen.lock().unwrap().push(snapshot.version);
-            *self.routes.lock().unwrap() =
-                Arc::from(format!("routes-{}", snapshot.version));
+            *self.routes.lock().unwrap() = Arc::from(format!("routes-{}", snapshot.version));
             *self.flags.lock().unwrap() += 1;
         }
     }

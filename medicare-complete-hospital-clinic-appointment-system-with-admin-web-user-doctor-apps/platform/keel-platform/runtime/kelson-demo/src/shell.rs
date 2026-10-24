@@ -1,4 +1,4 @@
-﻿//! Interactive platform console (B-29, Tinker-class): a typed REPL over the
+//! Interactive platform console (B-29, Tinker-class): a typed REPL over the
 //! booted application graph that dispatches through the CommandBus under the
 //! caller's principal. Zero new dependencies — plain stdin/stdout.
 //!
@@ -208,14 +208,16 @@ fn login(state: &AppState, session: &mut ShellSession, args: Vec<&str>) -> Outco
             Some(found) => found,
             None => {
                 // Equalized timing, same as the HTTP login handler.
-                let _ = kelson_identity::verify_password(&Secret::new(password), &dummy_hash(state));
+                let _ =
+                    kelson_identity::verify_password(&Secret::new(password), &dummy_hash(state));
                 return Err(AppError::unauthenticated());
             }
         };
         let credential = match state.credentials.password_for(principal.id)? {
             Some(found) => found,
             None => {
-                let _ = kelson_identity::verify_password(&Secret::new(password), &dummy_hash(state));
+                let _ =
+                    kelson_identity::verify_password(&Secret::new(password), &dummy_hash(state));
                 return Err(AppError::unauthenticated());
             }
         };
@@ -230,7 +232,14 @@ fn login(state: &AppState, session: &mut ShellSession, args: Vec<&str>) -> Outco
     })();
     match result {
         Ok((principal, tenant)) => {
-            install_access_snapshot(state, principal, tenant);
+            // MNC-001: the REPL is a local-trust edge like `kelson call` —
+            // it bootstraps the membership edge, then installs the snapshot
+            // through the same store-gated installer the HTTP login uses.
+            if let Err(err) = crate::auth_routes::ensure_local_membership(state, principal, tenant)
+                .and_then(|_| install_access_snapshot(state, principal, tenant))
+            {
+                return Outcome::Reply(format!("{err}"));
+            }
             session.principal = Some(principal);
             session.tenant = Some(tenant);
             session.email = Some(identifier);
@@ -417,12 +426,11 @@ pub async fn run(state: AppState, graph: &PlatformGraph) -> Result<(), Box<dyn s
 mod tests {
     use super::*;
     use kelson_identity::{hash_password, Credential, CredentialKind, Principal, PrincipalStatus};
-    // `AccessSnapshot` is named only by the demo-gated capability test
-    // below, so the import rides the same gate: ungated it is an unused
-    // import in a build without `demo`.
-    use kelson_policy::AccessSnapshot;
 
-    fn harness() -> (AppState, Arc<kelson_appointments_contract::AppointmentStore>) {
+    fn harness() -> (
+        AppState,
+        Arc<kelson_appointments_contract::AppointmentStore>,
+    ) {
         let dir = std::env::temp_dir().join(format!("kelson-shell-{}", uuid::Uuid::now_v7()));
         let (state, _graph, store) = crate::build_app_state(&dir, false, true);
         (state, store)
@@ -475,8 +483,6 @@ mod tests {
         }
     }
 
-
-
     #[tokio::test]
     async fn help_lists_commands() {
         let (state, _store) = harness();
@@ -491,8 +497,6 @@ mod tests {
         }
     }
 
-
-
     #[tokio::test]
     async fn unknown_command_points_at_help() {
         let (state, _store) = harness();
@@ -503,8 +507,6 @@ mod tests {
         assert!(text.contains("unknown command"), "{text}");
         assert!(text.contains("help"), "{text}");
     }
-
-
 
     #[tokio::test]
     async fn exit_returns_exit() {
@@ -520,8 +522,6 @@ mod tests {
         );
     }
 
-
-
     #[tokio::test]
     async fn run_requires_login() {
         let (state, _store) = harness();
@@ -536,8 +536,6 @@ mod tests {
         };
         assert!(text.contains("anonymous"), "{text}");
     }
-
-
 
     #[tokio::test]
     async fn login_rejects_bad_password_and_unknown_email() {
@@ -568,8 +566,6 @@ mod tests {
         assert!(session.principal.is_none(), "failed login installs nothing");
     }
 
-
-
     #[tokio::test]
     async fn login_denies_suspended_principal() {
         let (state, _store) = harness();
@@ -592,8 +588,6 @@ mod tests {
         assert!(text.contains("AUTH_DENIED"), "{text}");
         assert!(session.principal.is_none());
     }
-
-
 
     #[tokio::test]
     async fn login_then_run_dispatches_under_principal() {
@@ -640,17 +634,16 @@ mod tests {
         let tenant = session.tenant.expect("tenant resolved");
 
         // Downgrade the installed snapshot: only demo.echo remains granted.
-        state.policy.install_snapshot(AccessSnapshot {
-            principal_id: principal,
-            tenant_id: tenant,
-            membership_active: true,
-            capabilities: ["demo.echo".to_string()].into_iter().collect(),
-            scope_paths: ["/".to_string()].into_iter().collect(),
-            authorization_revision: state.policy.revision(),
-            feature_revision: kelson_foundation::FeatureRevision(1),
-            module_revision: kelson_foundation::ModuleRevision(1),
-            computed_at: OffsetDateTime::now_utc(),
-        });
+        // The edge is already granted by login; the membership bit is read
+        // back from the store, never fabricated here.
+        crate::auth_routes::install_snapshot_fields(
+            &state.policy,
+            &["demo.echo".to_string()],
+            state.memberships.as_ref(),
+            principal,
+            tenant,
+        )
+        .expect("snapshot installs");
 
         let Outcome::Reply(text) = execute_line(
             &state,
@@ -668,8 +661,6 @@ mod tests {
             "denial writes nothing"
         );
     }
-
-
 
     #[tokio::test]
     async fn ops_and_routes_introspect_the_booted_graph() {

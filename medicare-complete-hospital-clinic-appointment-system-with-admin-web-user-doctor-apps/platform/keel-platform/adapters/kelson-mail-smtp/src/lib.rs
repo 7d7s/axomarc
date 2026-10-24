@@ -429,17 +429,16 @@ impl MailChain {
             }
             let mailer = match spec.transport {
                 TransportKind::Log => BuiltMailer::Log(SmtpSandbox::new()),
-                TransportKind::Smtp => BuiltMailer::Smtp(Box::new(SmtpLive::new(spec.smtp_config())?)),
+                TransportKind::Smtp => {
+                    BuiltMailer::Smtp(Box::new(SmtpLive::new(spec.smtp_config())?))
+                }
             };
-            entries.insert(
-                name.clone(),
-                ChainEntry {
-                    spec,
-                    mailer,
-                },
-            );
+            entries.insert(name.clone(), ChainEntry { spec, mailer });
         }
-        Ok(Self { chain: names, entries })
+        Ok(Self {
+            chain: names,
+            entries,
+        })
     }
 
     fn builtin_log(name: &str) -> MailerSpec {
@@ -654,7 +653,8 @@ mod tests {
     #[test]
     fn sandbox_stores_rendered_mail() {
         let s = SmtpSandbox::new();
-        s.send(&msg("ops@example.com", "welcome"), "Welcome").unwrap();
+        s.send(&msg("ops@example.com", "welcome"), "Welcome")
+            .unwrap();
         assert_eq!(s.outbox.lock().unwrap().len(), 1);
     }
 
@@ -673,8 +673,8 @@ mod tests {
 
     #[test]
     fn live_rejects_bad_addresses_before_network() {
-        let err = SmtpLive::build_message(&config(), &msg("not-an-address", "body"), "s")
-            .unwrap_err();
+        let err =
+            SmtpLive::build_message(&config(), &msg("not-an-address", "body"), "s").unwrap_err();
         assert_eq!(err.code, kelson_foundation::codes::VALIDATION);
         let live = SmtpLive::new(config()).unwrap();
         assert!(live.send(&msg("", "body"), "s").is_err());
@@ -717,7 +717,11 @@ mod tests {
     fn chain_rejects_bad_configuration() {
         let err = MailChain::new("primry", Vec::new()).unwrap_err();
         assert_eq!(err.code, kelson_foundation::codes::VALIDATION);
-        assert!(err.public_message.contains("unknown mailer"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("unknown mailer"),
+            "{}",
+            err.public_message
+        );
 
         assert!(MailChain::new(" , ", Vec::new()).is_err(), "empty chain");
         assert!(MailChain::new("log,log", Vec::new()).is_err(), "duplicate");
@@ -725,7 +729,11 @@ mod tests {
         let mut spec = smtp_spec("relay", "", 587);
         spec.host.clear();
         let err = MailChain::new("relay", vec![spec]).unwrap_err();
-        assert!(err.public_message.contains("no host"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("no host"),
+            "{}",
+            err.public_message
+        );
 
         // Built-in `log` resolves with zero declared mailers, and an
         // explicit entry under the same name wins.
@@ -749,10 +757,15 @@ mod tests {
     /// owns retry → backoff → dead-letter).
     #[test]
     fn all_unhealthy_chain_is_an_external_error() {
-        let chain = MailChain::new("dead", vec![smtp_spec("dead", "127.0.0.1", DEAD_PORT)]).unwrap();
+        let chain =
+            MailChain::new("dead", vec![smtp_spec("dead", "127.0.0.1", DEAD_PORT)]).unwrap();
         let err = chain.send_mailable(&mailable(), &[]).unwrap_err();
         assert_eq!(err.code, kelson_foundation::codes::EXTERNAL);
-        assert!(err.public_message.contains("unhealthy"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("unhealthy"),
+            "{}",
+            err.public_message
+        );
     }
 
     /// The log/sandbox transport records the full recipient set and the
@@ -780,7 +793,11 @@ mod tests {
         let mut bad = mailable();
         bad.to = vec!["not-an-address".into()];
         assert!(sandbox.send_mailable(&bad, &[]).is_err());
-        assert_eq!(sandbox.mailables.lock().unwrap().len(), 1, "nothing recorded");
+        assert_eq!(
+            sandbox.mailables.lock().unwrap().len(),
+            1,
+            "nothing recorded"
+        );
     }
 
     /// Full message build: alternative body, cc/reply-to, custom header,
@@ -824,7 +841,10 @@ mod tests {
     fn live_build_refuses_bad_attachment_content_type() {
         let message = SmtpLive::build_mailable(&config(), &mailable(), &[]).unwrap();
         let rendered = String::from_utf8_lossy(&message.formatted()).to_string();
-        assert!(!rendered.contains("multipart"), "single part, no attachments");
+        assert!(
+            !rendered.contains("multipart"),
+            "single part, no attachments"
+        );
 
         let atts = vec![ResolvedMailAttachment {
             filename: "x.bin".into(),
@@ -922,7 +942,8 @@ mod tests {
     #[test]
     fn queued_send_retries_then_dead_letters() {
         // A chain that can never become healthy: nothing listens on port 1.
-        let chain = MailChain::new("dead", vec![smtp_spec("dead", "127.0.0.1", DEAD_PORT)]).unwrap();
+        let chain =
+            MailChain::new("dead", vec![smtp_spec("dead", "127.0.0.1", DEAD_PORT)]).unwrap();
         let handler = MailSendHandler::new(chain, None);
 
         let mut registry = JobRegistry::new();
@@ -945,7 +966,11 @@ mod tests {
         assert_eq!(next, JobStatus::Pending, "retry scheduled, not dead yet");
         let listed = store.list(Some(JobStatus::Pending), 10).unwrap();
         assert_eq!(listed[0].id, id);
-        assert!(listed[0].last_error.as_deref().unwrap().contains("unhealthy"));
+        assert!(listed[0]
+            .last_error
+            .as_deref()
+            .unwrap()
+            .contains("unhealthy"));
         assert!(
             listed[0].available_at > now,
             "backoff pushes the next claim into the future"

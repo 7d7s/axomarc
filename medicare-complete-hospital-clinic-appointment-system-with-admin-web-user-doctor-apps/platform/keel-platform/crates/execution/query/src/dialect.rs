@@ -233,7 +233,10 @@ impl Dialect for PostgresDialect {
                     .iter()
                     .map(|c| format!("{} = EXCLUDED.{}", c.as_str(), c.as_str()))
                     .collect();
-                format!("ON CONFLICT{target_sql} DO UPDATE SET {}", assigns.join(", "))
+                format!(
+                    "ON CONFLICT{target_sql} DO UPDATE SET {}",
+                    assigns.join(", ")
+                )
             }
         };
         UpsertRendering {
@@ -487,10 +490,7 @@ mod tests {
             MYSQL.render_cast("SUM(amount)", CastTarget::BigInt),
             "CAST(SUM(amount) AS SIGNED)"
         );
-        assert_eq!(
-            MYSQL.render_cast("x", CastTarget::Text),
-            "CAST(x AS CHAR)"
-        );
+        assert_eq!(MYSQL.render_cast("x", CastTarget::Text), "CAST(x AS CHAR)");
     }
 
     #[test]

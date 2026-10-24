@@ -19,6 +19,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+kelson-identity = { workspace = true }
 kelson-policy = { workspace = true }
 time = { workspace = true }
 uuid = { workspace = true }

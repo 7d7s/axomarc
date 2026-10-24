@@ -476,11 +476,32 @@ mod tests {
     fn fixture(capabilities: &[&str]) -> (Arc<Engine>, Arc<NotesStore>, PrincipalId, TenantId) {
         let principal = PrincipalId::new();
         let tenant = TenantId::new();
+        // S-001c: grant the edge, then read the membership bit back from the
+        // store - fixtures never fabricate an active snapshot.
+        let memberships = kelson_identity::InMemoryMembershipStore::new();
+        kelson_identity::store::MembershipStore::grant(
+            &memberships,
+            kelson_identity::Membership {
+                id: kelson_foundation::MembershipId::new(),
+                principal_id: principal,
+                tenant_id: tenant,
+                status: kelson_identity::MembershipStatus::Active,
+                joined_at: OffsetDateTime::now_utc(),
+            },
+        )
+        .expect("the fixture edge grants");
+        let membership_active = kelson_identity::store::MembershipStore::active_for(
+            &memberships,
+            principal,
+            tenant,
+        )
+        .expect("the store answers")
+        .is_some();
         let policies = Arc::new(PolicyEngine::new());
         policies.install_snapshot(AccessSnapshot {
             principal_id: principal,
             tenant_id: tenant,
-            membership_active: true,
+            membership_active,
             capabilities: capabilities.iter().map(|c| c.to_string()).collect(),
             scope_paths: ["/".to_string()].into_iter().collect(),
             authorization_revision: policies.revision(),

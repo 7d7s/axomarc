@@ -200,7 +200,10 @@ async fn mysql_upgrade_a_change_to_an_existing_table_goes_through_the_online_pat
     .fetch_one(&pool)
     .await
     .expect("the leftovers are counted");
-    assert_eq!(leftovers, 0, "the shadow and the retired table must be gone");
+    assert_eq!(
+        leftovers, 0,
+        "the shadow and the retired table must be gone"
+    );
 
     sqlx::raw_sql(&format!("DROP TABLE {table}"))
         .execute(&pool)

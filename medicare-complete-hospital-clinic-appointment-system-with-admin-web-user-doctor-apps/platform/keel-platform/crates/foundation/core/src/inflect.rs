@@ -115,10 +115,7 @@ fn ends_with_vowel_y(word: &str) -> bool {
     let bytes = word.as_bytes();
     bytes.len() >= 2
         && bytes[bytes.len() - 1] == b'y'
-        && matches!(
-            bytes[bytes.len() - 2],
-            b'a' | b'e' | b'i' | b'o' | b'u'
-        )
+        && matches!(bytes[bytes.len() - 2], b'a' | b'e' | b'i' | b'o' | b'u')
 }
 
 /// Plural form (documented subset). Order: uncountable -> already-plural

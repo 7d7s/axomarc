@@ -61,7 +61,6 @@ impl MySqlCredentialStore {
     }
 }
 
-
 fn my(e: impl std::fmt::Display) -> AppError {
     AppError::persistence(format!("identity: {e}"))
 }

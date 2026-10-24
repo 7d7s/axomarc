@@ -60,10 +60,6 @@ pub struct GlobalCustomRules;
 
 impl CustomRuleLookup for GlobalCustomRules {
     fn rule(&self, name: &str) -> Option<Arc<dyn CustomRule>> {
-        registry()
-            .lock()
-            .ok()?
-            .get(name)
-            .cloned()
+        registry().lock().ok()?.get(name).cloned()
     }
 }

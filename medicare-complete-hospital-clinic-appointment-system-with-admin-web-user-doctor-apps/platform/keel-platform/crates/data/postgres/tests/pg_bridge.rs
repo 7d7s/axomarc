@@ -19,11 +19,17 @@ async fn pg_bridged_queries_reuse_pool_across_runtimes() {
     for round in 0..3 {
         let p = pool.clone();
         let row: (i32,) = bridge::block_on(async move {
-            sqlx::query_as("SELECT 1").fetch_one(&p).await.expect("bridge query")
+            sqlx::query_as("SELECT 1")
+                .fetch_one(&p)
+                .await
+                .expect("bridge query")
         });
         assert_eq!(row.0, 1, "round {round}");
         // Interleave an async query on the test runtime between bridge calls.
-        let (n,): (i32,) = sqlx::query_as("SELECT 2").fetch_one(&pool).await.expect("direct");
+        let (n,): (i32,) = sqlx::query_as("SELECT 2")
+            .fetch_one(&pool)
+            .await
+            .expect("direct");
         assert_eq!(n, 2);
     }
 }

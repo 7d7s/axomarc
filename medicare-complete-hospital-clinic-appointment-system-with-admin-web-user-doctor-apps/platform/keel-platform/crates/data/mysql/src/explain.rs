@@ -37,9 +37,10 @@ impl ExplainPlan {
     /// index) does **not** name the index, so the caller should pass the
     /// index name it expects to see.
     pub fn uses_index(&self, index: &str) -> bool {
-        self.lines
-            .iter()
-            .any(|line| line.split(|c: char| !c.is_ascii_alphanumeric() && c != '_').any(|w| w == index))
+        self.lines.iter().any(|line| {
+            line.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .any(|w| w == index)
+        })
     }
 
     /// Whether the plan used a full table scan (`ALL` in the plan's type

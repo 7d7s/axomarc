@@ -20,7 +20,6 @@ impl PgSessionStore {
     }
 }
 
-
 fn pg(e: impl std::fmt::Display) -> AppError {
     AppError::persistence(format!("http_sessions: {e}"))
 }
@@ -106,10 +105,7 @@ impl SessionStore for PgSessionStore {
         })
     }
 
-    fn delete_principal_sessions(
-        &self,
-        principal: PrincipalId,
-    ) -> Result<usize, AppError> {
+    fn delete_principal_sessions(&self, principal: PrincipalId) -> Result<usize, AppError> {
         let pool = self.pool.clone();
         block_on(async move {
             let deleted = sqlx::query("DELETE FROM http_sessions WHERE principal_id = $1")

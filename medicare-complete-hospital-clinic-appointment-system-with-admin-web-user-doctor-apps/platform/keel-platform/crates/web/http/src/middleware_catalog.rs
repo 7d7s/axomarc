@@ -34,7 +34,9 @@ use axum::extract::State;
 use axum::http::{header, HeaderMap, Request, Response};
 use axum::middleware::Next;
 use axum::response::IntoResponse;
-use kelson_foundation::{codes, AppError, ErrorCategory, PrincipalId, Retryability, Severity, TenantId};
+use kelson_foundation::{
+    codes, AppError, ErrorCategory, PrincipalId, Retryability, Severity, TenantId,
+};
 
 pub use kelson_registry::middleware_catalog::{
     middleware_violations, parse_builtin_id, BuiltinMw, MiddlewareCatalog, MwViolation,
@@ -120,11 +122,7 @@ pub async fn chain_middleware(
     for mw in &rt.chain {
         match mw {
             BuiltinMw::Throttle { group } => {
-                let cfg = rt
-                    .throttle
-                    .get(group)
-                    .cloned()
-                    .unwrap_or_default();
+                let cfg = rt.throttle.get(group).cloned().unwrap_or_default();
                 let key = format!("{group}|{}", client_key(req.headers()));
                 let allowed = {
                     let mut buckets = rt.buckets.lock().unwrap();
@@ -159,8 +157,7 @@ pub async fn chain_middleware(
                         abilities: None,
                     })
                 } else {
-                    bearer_token(req.headers())
-                        .and_then(|token| rt.auth.resolve_bearer(token))
+                    bearer_token(req.headers()).and_then(|token| rt.auth.resolve_bearer(token))
                 };
                 match resolved {
                     Some(principal) => {
@@ -298,7 +295,10 @@ mod tests {
     }
 
     /// Chain runtime with a signed-URL resolver attached (Wave 2 `signed`).
-    fn signed_runtime(chain: Vec<BuiltinMw>, port: Arc<dyn crate::SignedUrlPort>) -> Arc<ChainRuntime> {
+    fn signed_runtime(
+        chain: Vec<BuiltinMw>,
+        port: Arc<dyn crate::SignedUrlPort>,
+    ) -> Arc<ChainRuntime> {
         Arc::new(ChainRuntime {
             chain,
             auth: Arc::new(FakeAuth { verified: true }),
@@ -342,22 +342,25 @@ mod tests {
             b"unit-secret",
         );
         let session = manager
-            .start(PrincipalId::new(), Some(TenantId::new()), OffsetDateTime::now_utc())
+            .start(
+                PrincipalId::new(),
+                Some(TenantId::new()),
+                OffsetDateTime::now_utc(),
+            )
             .unwrap();
         let rt = runtime(vec![BuiltinMw::Auth], false, &[]);
         let router = Router::new()
             .route("/", get(|| async { "ok" }))
-            .layer(axum::middleware::from_fn_with_state(
-                rt,
-                chain_middleware,
-            ))
-            .layer(axum::middleware::from_fn(move |mut req: Request<Body>, next: Next| {
-                let session = session.clone();
-                async move {
-                    req.extensions_mut().insert(ResolvedSession { session });
-                    next.run(req).await
-                }
-            }));
+            .layer(axum::middleware::from_fn_with_state(rt, chain_middleware))
+            .layer(axum::middleware::from_fn(
+                move |mut req: Request<Body>, next: Next| {
+                    let session = session.clone();
+                    async move {
+                        req.extensions_mut().insert(ResolvedSession { session });
+                        next.run(req).await
+                    }
+                },
+            ));
         let res = router.oneshot(get_req()).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
     }
@@ -471,10 +474,9 @@ mod tests {
             .unwrap();
         session.data.insert(
             "confirmed_at".into(),
-            serde_json::json!(
-                at.format(&time::format_description::well_known::Rfc3339)
-                    .expect("rfc3339")
-            ),
+            serde_json::json!(at
+                .format(&time::format_description::well_known::Rfc3339)
+                .expect("rfc3339")),
         );
         session
     }
@@ -497,7 +499,9 @@ mod tests {
         // 429, not a 401 (ordering proof).
         let rt = runtime(
             vec![
-                BuiltinMw::Throttle { group: "api".into() },
+                BuiltinMw::Throttle {
+                    group: "api".into(),
+                },
                 BuiltinMw::Auth,
             ],
             false,
@@ -572,7 +576,9 @@ mod tests {
         let rt = signed_runtime(vec![BuiltinMw::Signed], gate);
         let res = app(rt).oneshot(uri_req(&link)).await.unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
-        let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let envelope: serde_json::Value = serde_json::from_slice(&body).expect("error envelope");
         assert_eq!(envelope["ok"], false);
         assert_eq!(envelope["error"]["code"], "KSN_NOT_FOUND");

@@ -4,7 +4,9 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use kelson_foundation::{AppError, CorrelationId, DeltaId, DeltaStone, ExecutionId, PrincipalId, TenantId};
+use kelson_foundation::{
+    AppError, CorrelationId, DeltaId, DeltaStone, ExecutionId, PrincipalId, TenantId,
+};
 use time::OffsetDateTime;
 
 use crate::plan::ExecutionPlan;

@@ -2,7 +2,9 @@
 //! `main.rs`; this lib exposes the routing modules and boot function so the
 //! integration suite can drive the exact production wiring.
 
+pub mod app_vm;
 pub mod auth_routes;
+pub mod batch_routes;
 pub mod broadcast_routes;
 pub mod cache_driver;
 pub mod call;
@@ -13,7 +15,6 @@ pub mod host;
 pub mod hot_reload;
 pub mod i18n;
 pub mod notification_routes;
-pub mod batch_routes;
 pub mod routes;
 pub mod runtime_status;
 pub mod shell;
@@ -24,8 +25,9 @@ use std::sync::Arc;
 
 use host::{
     ConfigProvider, CredentialStoreRef, DemoModuleProvider, DiskRegistryRef, FeatureFlagsProvider,
-    IdentityProvider, KernelProvider, PersistenceProvider, PlatformProvider, PrincipalStoreRef,
-    RealtimeProvider, SessionsProvider, StorageProvider, StorageRef, SystemHealth,
+    IdentityProvider, KernelProvider, MembershipStoreRef, PersistenceProvider, PlatformProvider,
+    PrincipalStoreRef, RealtimeProvider, SessionsProvider, StorageProvider, StorageRef,
+    SystemHealth,
 };
 use kelson_config::{Environment, PlatformConfig};
 use kelson_foundation::{PrincipalId, TenantId};
@@ -54,7 +56,10 @@ pub fn load_wasm_plugins(
         format!("module pins: {e} — refusing to boot rather than running unpinned WASM modules")
     })?;
     if pinned > 0 {
-        tracing::info!(pins = pinned, "module pins verified against the package index");
+        tracing::info!(
+            pins = pinned,
+            "module pins verified against the package index"
+        );
     }
     let host = kelson_wasm::WasmHost::new().map_err(|e| e.to_string())?;
     let mut handlers: Vec<Arc<dyn kelson_execution::OperationHandler>> = Vec::new();
@@ -135,20 +140,14 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // the single logging init point. Layering: compiled defaults <-
     // `[telemetry]` section <- env overlay; the S1 env conventions stay
     // honored (RUST_LOG, KEEL_LOG_FILE, environment-driven console format).
-    let mut telemetry_config =
-        kelson_observability::TelemetryConfig::from_section(cfg.telemetry());
-    if cfg
-        .telemetry()
-        .and_then(|s| s.get("format"))
-        .is_none()
-    {
-        telemetry_config.format = if cfg.app().env.is_prod()
-            || matches!(cfg.app().env, Environment::Staging)
-        {
-            "json".into()
-        } else {
-            "pretty".into()
-        };
+    let mut telemetry_config = kelson_observability::TelemetryConfig::from_section(cfg.telemetry());
+    if cfg.telemetry().and_then(|s| s.get("format")).is_none() {
+        telemetry_config.format =
+            if cfg.app().env.is_prod() || matches!(cfg.app().env, Environment::Staging) {
+                "json".into()
+            } else {
+                "pretty".into()
+            };
     }
     if let Ok(level) = std::env::var("RUST_LOG") {
         telemetry_config.level = level;
@@ -185,11 +184,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // effective config boot just derived (file + environment overlay),
     // else boot is refused — drift-refuse semantics identical to the route
     // cache below.
-    kelson_registry::config_cache_check(
-        &root,
-        &kelson_registry::config_hash(&cfg.cache_json()),
-    )
-    .map_err(Box::<dyn std::error::Error>::from)?;
+    kelson_registry::config_cache_check(&root, &kelson_registry::config_hash(&cfg.cache_json()))
+        .map_err(Box::<dyn std::error::Error>::from)?;
     // Resolve telemetry storage paths against the workspace root, then
     // construct + start the runtime BEFORE the lifecycle host boots so
     // boot-time events flow through it (S1 parity); the provider boot()
@@ -360,8 +356,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Wave 1 route cache: a present artifact must match the current
     // manifests + middleware.toml (and module ABI) or boot is refused with a
     // pointer to `kelson route:cache`; absent artifact = live compile.
-    let route_plans = graph_routes::route_cache_check(&root)
-        .map_err(|e| format!("route cache rejected: {e}"))?;
+    let route_plans =
+        graph_routes::route_cache_check(&root).map_err(|e| format!("route cache rejected: {e}"))?;
     // Wave 1 middleware model: middleware.toml at the discovery root (absent
     // file = builtin catalog); malformed files refuse boot (fail closed).
     let middleware_catalog = kelson_http::MiddlewareCatalog::load(&root)
@@ -438,10 +434,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     (
                         Some((store.clone() as Arc<dyn kelson_jobs::JobStore>, registry())),
                         Some(store as Arc<dyn kelson_jobs::JobStoreAdmin>),
-                        Some(
-                            Arc::new(kelson_postgres::PgBatchLedger::new(pool.clone()))
-                                as Arc<dyn kelson_jobs::BatchLedger>,
-                        ),
+                        Some(Arc::new(kelson_postgres::PgBatchLedger::new(pool.clone()))
+                            as Arc<dyn kelson_jobs::BatchLedger>),
                     )
                 }
                 kelson_mysql::DbPool::MySql(pool) => {
@@ -449,10 +443,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     (
                         Some((store.clone() as Arc<dyn kelson_jobs::JobStore>, registry())),
                         Some(store as Arc<dyn kelson_jobs::JobStoreAdmin>),
-                        Some(
-                            Arc::new(kelson_mysql::MySqlBatchLedger::new(pool.clone()))
-                                as Arc<dyn kelson_jobs::BatchLedger>,
-                        ),
+                        Some(Arc::new(kelson_mysql::MySqlBatchLedger::new(pool.clone()))
+                            as Arc<dyn kelson_jobs::BatchLedger>),
                     )
                 }
             }
@@ -629,10 +621,21 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut views_cfg = views_config(cfg.views(), &root, env.as_str());
     // Wave 8 ADR 0009: the platform-shipped view root (dashboard/ops.html
     // + partials) rides LAST, so an app's own `dashboard/ops.html` in any
-    // `[views] paths` entry wins. Appended here rather than in
-    // `views_config`, whose output the views tests pin exactly.
-    views_cfg.paths.push(crate::dashboard::builtin_views_root());
+    // `[views] paths` entry wins. The dev configs now also name it in
+    // `[views].paths` (MVA-001: one roots truth shared with the CLI), so
+    // this push only fills the gap for configs that do not — deduped to
+    // keep the boot's path list exactly equal to the CLI's.
+    let builtin = crate::dashboard::builtin_views_root();
+    if !views_cfg.paths.contains(&builtin) {
+        views_cfg.paths.push(builtin);
+    }
     let views_engine = kelson_views::ViewsEngine::new(views_cfg);
+    for missing in views_engine.missing_roots() {
+        tracing::warn!(
+            root = %missing.display(),
+            "configured view root does not exist — templates cannot resolve from it (MVA-001)"
+        );
+    }
     install_view_registry(&views_engine);
     register_asset_directive(&views_engine, assets.clone());
     // Wave 8 B-25: indexed packages register their view roots (no copy —
@@ -657,7 +660,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         registry: flags_registry,
         store: flags_store,
     }));
-    host.add_provider(Box::new(IdentityProvider { pool: pool.clone() }));
+    host.add_provider(Box::new(IdentityProvider {
+        pool: pool.clone(),
+        env: cfg.app().env.clone(),
+    }));
     host.add_provider(Box::new(StorageProvider {
         root: root.clone(),
         disks: cfg.storage().clone(),
@@ -716,6 +722,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // mutating verb is bindable via `@command`; read-only verbs are not.
     if let Some(engine) = views.as_ref() {
         crate::install_command_registry(engine, &graph);
+        // MVA-005: every manifest `view_model` must resolve to a registered
+        // binding here, before a single request is served.
+        crate::verify_declared_view_models(engine, &graph).map_err(Box::new)?;
     }
 
     let bus = host
@@ -739,6 +748,12 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let credentials = host
         .registry()
         .get::<CredentialStoreRef>()
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?
+        .0
+        .clone();
+    let memberships = host
+        .registry()
+        .get::<MembershipStoreRef>()
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?
         .0
         .clone();
@@ -833,16 +848,14 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // real files through the router fallback installed below. The directory
     // is allowed to be missing (dev before the first build) — the resolver
     // then misses every request and unmatched paths render the not-found.
-    let static_files = Some(Arc::new(kelson_http::StaticFiles::new(
-        root.join("public"),
-    )));
+    let static_files = Some(Arc::new(kelson_http::StaticFiles::new(root.join("public"))));
 
     // Wave 7 P6 signed-URL TTL bounds (19-PARITY "over-bound →
     // boot-refusing config error"): a `max_ttl_secs` above the hard ceiling
     // refuses boot here, before anything can mint — the validated bound then
     // binds the gate below (`sign_once` refuses any TTL above it).
-    let signed_ttl_bound = signed_url_max_ttl_secs(cfg.security())
-        .map_err(|error| error.public_message)?;
+    let signed_ttl_bound =
+        signed_url_max_ttl_secs(cfg.security()).map_err(|error| error.public_message)?;
 
     // Wave 2 signed URLs (19-PARITY "URL generation"): the `signed`
     // middleware builtin verifies links through this gate. An empty
@@ -902,7 +915,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = routes::AppState {
         bus: Arc::new(routes::DispatchBus::new(bus)),
-        health: health.clone(), modules: host.modules_shared(),
+        health: health.clone(),
+        modules: host.modules_shared(),
         env,
         // Phase 3 (§4.3): shared cell — the FlagsReloader subscriber swaps
         // the ambient set in place; readers take a cheap read lock.
@@ -911,6 +925,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         sessions: sessions_mw,
         principals,
         credentials,
+        memberships,
         policy,
         granted_capabilities,
         default_tenant_id,
@@ -919,7 +934,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         confirm_timeout_secs: cfg.auth().confirm_timeout_secs,
         jwt,
         body_limit: 1024 * 1024,
-        storage, disks,
+        storage,
+        disks,
         notifications: notification_store,
         mail: crate::mail::port_from(cfg.mail()).map_err(|error| error.public_message)?,
         uploads: crate::upload_routes::UploadPolicy::from_config(cfg.files()),
@@ -986,7 +1002,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .registry()
             .get::<kelson_models::PruneRegistryRef>()
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?
-            .0.clone();
+            .0
+            .clone();
         let store = host
             .registry()
             .get::<kelson_models::ModelStoreRef>()
@@ -1104,10 +1121,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let admission = kelson_http::Admission {
         maintenance: kelson_http::MaintenanceGuard::file(&root),
         cors: cors_cfg,
-        trusted_proxies: kelson_http::TrustedProxies::parse(
-            &platform_cfg.http.trusted_proxies,
-        )
-        .map_err(|e| format!("[http.trusted_proxies]: {e}"))?,
+        trusted_proxies: kelson_http::TrustedProxies::parse(&platform_cfg.http.trusted_proxies)
+            .map_err(|e| format!("[http.trusted_proxies]: {e}"))?,
         rate_limit_store,
         ..Default::default()
     };
@@ -1144,12 +1159,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         kelson_config::FileConfigSource::new(&cfg_path),
         platform_cfg,
     )?;
-    let route_reloader = hot_reload::RouteReloader::new(
-        bundle_cell,
-        state.clone(),
-        graph,
-        root.clone(),
-    );
+    let route_reloader =
+        hot_reload::RouteReloader::new(bundle_cell, state.clone(), graph, root.clone());
     config_rt.subscribe(route_reloader.clone());
     config_rt.subscribe(hot_reload::FlagsReloader::new(
         flag_service,
@@ -1157,7 +1168,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         PrincipalId::from_uuid(uuid::Uuid::parse_str(host::BOOT_ACTOR_UUID).expect("static uuid")),
         state.clone(),
     ));
-    config_rt.subscribe(crate::runtime_status::StatusReloader::new(state.runtime.clone()));
+    config_rt.subscribe(crate::runtime_status::StatusReloader::new(
+        state.runtime.clone(),
+    ));
     // The infrastructure follows the configuration too: a reload that
     // names a different `[cache].driver` swaps the active driver under
     // the running service - the cache service reads through the registry's
@@ -1220,7 +1233,9 @@ pub async fn serve_with_shutdown(
     listener: tokio::net::TcpListener,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
-    axum::serve(listener, app).with_graceful_shutdown(shutdown).await
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
+        .await
 }
 
 /// The production stop trigger: SIGINT (Ctrl+C) or SIGTERM (the production
@@ -1314,7 +1329,10 @@ fn note_config_poll(
             if modules.state(CONFIG_MODULE) == Some(kelson_lifecycle::ModuleState::Ready) {
                 match modules.degrade(CONFIG_MODULE) {
                     Ok(()) => {
-                        tracing::warn!(module = CONFIG_MODULE, "config module degraded: reload refused")
+                        tracing::warn!(
+                            module = CONFIG_MODULE,
+                            "config module degraded: reload refused"
+                        )
                     }
                     Err(error) => {
                         tracing::debug!(%error, module = CONFIG_MODULE, "config module degrade skipped")
@@ -1326,7 +1344,10 @@ fn note_config_poll(
             if modules.state(CONFIG_MODULE) == Some(kelson_lifecycle::ModuleState::Degraded) {
                 match modules.recover(CONFIG_MODULE) {
                     Ok(()) => {
-                        tracing::info!(module = CONFIG_MODULE, "config module recovered: reload landed")
+                        tracing::info!(
+                            module = CONFIG_MODULE,
+                            "config module recovered: reload landed"
+                        )
                     }
                     Err(error) => {
                         tracing::debug!(%error, module = CONFIG_MODULE, "config module recover skipped")
@@ -1405,15 +1426,21 @@ fn load_asset_manifest(public: &std::path::Path) -> Option<Arc<kelson_http::Asse
 /// its hashed artifact) and otherwise emits the literal root-absolute URL —
 /// Laravel's `asset()` helper as a view directive. The handler owns
 /// escaping, so the URL always leaves the template HTML-safe.
-/// Install the framework's view registry: the built-in views, bound to
-/// the built-in view models.
+/// Install the view registry: the framework's built-in views and models,
+/// plus the reference application's own bindings on top.
 ///
-/// An application registers its own bindings on top of this one, so a
-/// deployment can replace any built-in view with its own model.
+/// An application registers its own view after the framework registered
+/// the built-in, and the application's binding is the one that applies.
 pub fn install_view_registry(engine: &kelson_views::ViewsEngine) {
-    engine.set_registry(std::sync::Arc::new(
-        kelson_views::builtins::builtin_registry(),
+    use kelson_views::ViewModel;
+    let mut registry = kelson_views::builtins::builtin_registry();
+    // MVA-004: the reference app's live pages. A manifest route declares
+    // each of these by name (`view_model`); `verify_declared_view_models`
+    // closes the loop at boot.
+    registry.register(kelson_views::ViewBinding::new::<app_vm::BookAppointmentVm>(
+        app_vm::BookAppointmentVm::VIEW,
     ));
+    engine.set_registry(std::sync::Arc::new(registry));
 }
 
 /// S-10: install the command registry from the compiled graph. Every
@@ -1442,8 +1469,99 @@ pub fn install_command_registry(
         }
     }
     let commands = registry.len();
-    tracing::info!(commands, "view command registry installed from the route graph");
+    tracing::info!(
+        commands,
+        "view command registry installed from the route graph"
+    );
     engine.set_commands(std::sync::Arc::new(registry));
+}
+
+/// MVA-005 (S-14): the manifest half of the MVVC contract, closed at boot.
+/// A route may declare `view_model` next to `view`; the graph gate
+/// (`GRAPH-VIEW-MODEL`) refuses the split pair, and this verifies the other
+/// half: every declared model must be a **registered binding** on the
+/// route's view, and the binding's model must name the declared type.
+/// A manifest pointing at an unbound or misnamed page refuses the boot —
+/// fail-closed — so a declared page can never silently serve unbound.
+pub fn verify_declared_view_models(
+    engine: &kelson_views::ViewsEngine,
+    graph: &kelson_registry::PlatformGraph,
+) -> Result<(), kelson_foundation::AppError> {
+    let mut problems: Vec<String> = Vec::new();
+    for m in &graph.modules {
+        for r in &m.routes {
+            let Some(declared) = r
+                .view_model
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            else {
+                continue;
+            };
+            let registry = match engine.registry() {
+                Some(registry) => registry,
+                None => {
+                    problems.push(format!(
+                        "module {}: route {} {} declares view_model {declared} with no view registry installed",
+                        m.name(),
+                        r.method,
+                        r.path
+                    ));
+                    continue;
+                }
+            };
+            let Some(view) = r.view.as_deref().filter(|v| !v.trim().is_empty()) else {
+                problems.push(format!(
+                    "module {}: route {} {} declares view_model {declared} with no view",
+                    m.name(),
+                    r.method,
+                    r.path
+                ));
+                continue;
+            };
+            match registry.binding(view) {
+                Some(binding) => {
+                    // The manifest names the model by its short type name;
+                    // the binding carries `std::any::type_name` (module path
+                    // plus generics) — a declared name must be one of its
+                    // segments.
+                    let named = binding
+                        .model
+                        .split([':', '<', '>', ' '])
+                        .any(|seg| seg == declared);
+                    if !named {
+                        problems.push(format!(
+                            "module {}: route {} {} declares view_model {declared} but the view {view:?} is bound to {}",
+                            m.name(),
+                            r.method,
+                            r.path,
+                            binding.model
+                        ));
+                    }
+                }
+                None => problems.push(format!(
+                    "module {}: route {} {} declares view_model {declared} but the view {view:?} has no registered view model",
+                    m.name(),
+                    r.method,
+                    r.path
+                )),
+            }
+        }
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        // A boot refusal is operator-facing contract information, not a
+        // runtime secret: the reason stays in the PUBLIC message so the
+        // host's exit path names the offending declaration.
+        Err(kelson_foundation::AppError::new(
+            kelson_foundation::codes::BOOT,
+            kelson_foundation::ErrorCategory::Validation,
+            kelson_foundation::Severity::Critical,
+            kelson_foundation::Retryability::NotRetryable,
+            format!("view_model declarations rejected: {}", problems.join("; ")),
+        ))
+    }
 }
 
 fn register_asset_directive(
@@ -1482,20 +1600,9 @@ fn register_package_view_namespaces(root: &std::path::Path, engine: &kelson_view
             )
         })
         .collect();
-    if roots.is_empty() {
-        return;
-    }
-    engine.set_resolver(move |ns, name| {
-        let base = roots.get(ns)?;
-        let rel = name.replace('.', "/");
-        let file = if rel.ends_with(".html") {
-            rel
-        } else {
-            format!("{rel}.html")
-        };
-        let candidate = base.join(file);
-        candidate.is_file().then_some(candidate)
-    });
+    // The resolution rule itself lives in the engine (MVA-002: the boot and
+    // the CLI install from the same code, so the two engines cannot drift).
+    engine.install_package_view_namespaces(roots);
 }
 
 /// Wave 2 queued-cookie encryption (opt-in via `[http] encrypt_cookies`).
@@ -1511,7 +1618,8 @@ fn cookie_cipher(
         return Ok(None);
     }
     let material = kelson_http::derive_cookie_key(app_key);
-    let sealer = kelson_tokens::AesGcmSealer::from_secret(&kelson_foundation::Secret::new(material))?;
+    let sealer =
+        kelson_tokens::AesGcmSealer::from_secret(&kelson_foundation::Secret::new(material))?;
     Ok(Some(Arc::new(kelson_http::CookieCipher::new(
         Arc::new(sealer),
         "cookies.v1",
@@ -1701,7 +1809,7 @@ fn build_app_state_inner(
     HarnessAppStore,
 ) {
     use kelson_execution::{AuthorizationPort, Engine, InMemoryBackend, InMemoryIdempotency};
-    use kelson_policy::{AccessSnapshot, PolicyAuthz, PolicyEngine};
+    use kelson_policy::{PolicyAuthz, PolicyEngine};
 
     let policy = Arc::new(PolicyEngine::new());
     let authz: Arc<dyn AuthorizationPort> = Arc::new(PolicyAuthz {
@@ -1714,8 +1822,9 @@ fn build_app_state_inner(
     ));
 
     let appt_backend = _appt_backend;
-    let appt_store: HarnessAppStore =
-        Arc::new(kelson_appointments_contract::AppointmentStore::new(appt_backend.clone()));
+    let appt_store: HarnessAppStore = Arc::new(
+        kelson_appointments_contract::AppointmentStore::new(appt_backend.clone()),
+    );
 
     // Wave 6 P3/P5/P6: the harness catalog (`<storage_root>/lang`, absent
     // = the empty default catalog) and a fresh in-memory inbox store, plus
@@ -1740,23 +1849,6 @@ fn build_app_state_inner(
     // The appointments handlers are not linked into this process any more
     // (Stage C.2); they are registered from their artifact further down,
     // once the token service the oauth2 module needs exists.
-
-    // Dev golden-path snapshot: demo.echo stays authorized without identity.
-    policy.install_snapshot(AccessSnapshot {
-        principal_id: PrincipalId::from_uuid(
-            uuid::Uuid::parse_str(host::DEV_PRINCIPAL_UUID).expect("static uuid"),
-        ),
-        tenant_id: TenantId::from_uuid(
-            uuid::Uuid::parse_str(host::DEV_TENANT_UUID).expect("static uuid"),
-        ),
-        membership_active: true,
-        capabilities: ["demo.echo".to_string()].into_iter().collect(),
-        scope_paths: ["LE1".to_string()].into_iter().collect(),
-        authorization_revision: policy.revision(),
-        feature_revision: kelson_foundation::FeatureRevision(1),
-        module_revision: kelson_foundation::ModuleRevision(1),
-        computed_at: time::OffsetDateTime::now_utc(),
-    });
 
     // Graph from the real appointments manifest (compile-path parity with
     // `kelson graph`, independent of process cwd).
@@ -1807,6 +1899,36 @@ fn build_app_state_inner(
         Arc::new(kelson_identity::InMemoryPrincipalStore::new());
     let credentials: Arc<dyn kelson_identity::CredentialStore> =
         Arc::new(kelson_identity::InMemoryCredentialStore::new());
+    // MNC-001: the harness rides the in-memory membership edge — the same
+    // gate the HTTP login/register paths enforce against the fabric store.
+    let memberships: Arc<dyn kelson_identity::MembershipStore> =
+        Arc::new(kelson_identity::InMemoryMembershipStore::new());
+    // Dev golden-path snapshot: demo.echo stays authorized without identity.
+    // The edge is granted into the harness store first and the snapshot's
+    // membership bit is read back from it - the same path a login takes,
+    // never a fabricated flag.
+    let dev_principal = PrincipalId::from_uuid(
+        uuid::Uuid::parse_str(host::DEV_PRINCIPAL_UUID).expect("static uuid"),
+    );
+    let dev_tenant =
+        TenantId::from_uuid(uuid::Uuid::parse_str(host::DEV_TENANT_UUID).expect("static uuid"));
+    memberships
+        .grant(kelson_identity::Membership {
+            id: kelson_foundation::MembershipId::new(),
+            principal_id: dev_principal,
+            tenant_id: dev_tenant,
+            status: kelson_identity::MembershipStatus::Active,
+            joined_at: time::OffsetDateTime::now_utc(),
+        })
+        .expect("harness dev edge grants");
+    crate::auth_routes::install_snapshot_fields(
+        &policy,
+        &["demo.echo".to_string()],
+        memberships.as_ref(),
+        dev_principal,
+        dev_tenant,
+    )
+    .expect("harness dev snapshot installs");
     let sessions = if sessions_enabled {
         let secret = b"integration-cookie-secret-0123456789".to_vec();
         let manager = Arc::new(kelson_session::SessionManager::new(
@@ -1936,13 +2058,16 @@ fn build_app_state_inner(
         // registry starts empty — `/readyz` stays ready and `/meta/boot`
         // reports an empty map; tests seed states directly when they need
         // one (e.g. the module-admin integration tests).
-        modules: Arc::new(std::sync::RwLock::new(kelson_lifecycle::ModuleRegistry::new())),
+        modules: Arc::new(std::sync::RwLock::new(
+            kelson_lifecycle::ModuleRegistry::new(),
+        )),
         env: Environment::Test,
         flags: Arc::new(std::sync::RwLock::new(Vec::new())),
         tokens,
         sessions,
         principals,
         credentials,
+        memberships,
         policy,
         granted_capabilities,
         default_tenant_id: Some(TenantId::from_uuid(
@@ -1954,7 +2079,8 @@ fn build_app_state_inner(
         jwt: None,
         body_limit: 1024 * 1024,
         storage,
-        disks: Arc::new(disks), notifications: notification_store,
+        disks: Arc::new(disks),
+        notifications: notification_store,
         mail: None,
         uploads: Default::default(),
         // Row 20: no config file or disk manifests in the harness: empty digest components.
@@ -1965,14 +2091,17 @@ fn build_app_state_inner(
         // series stays absent (tests inject one to prove the census).
         // Wave 6 P9: same posture for the batch ledger — tests inject a
         // ledger + admin store to prove the batch operations.
-        queue: None, batches: None,
+        queue: None,
+        batches: None,
         // Wave 8 ADR 0009 (D-52 posture, like `queue`): no registry is
         // registered and no trace plane is attached in the harness — the
         // ops dashboard's sections degrade inline; tests inject handles.
-        schedule: None, traces: None,
+        schedule: None,
+        traces: None,
         route_inventory: graph_routes::route_inventory(&graph),
         middleware_catalog: kelson_http::MiddlewareCatalog::builtin(),
-        route_bindings, probes,
+        route_bindings,
+        probes,
         throttle_buckets: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         route_plans: Arc::new(std::sync::RwLock::new(None)),
         metrics: Arc::new(kelson_metrics::MetricsRegistry::new(4096)),
@@ -2054,9 +2183,7 @@ mod views_tests {
         );
         assert_eq!(
             cfg.cache_dir,
-            Some(std::path::PathBuf::from(
-                "/srv/app/storage/framework/views"
-            ))
+            Some(std::path::PathBuf::from("/srv/app/storage/framework/views"))
         );
         assert_eq!(cfg.env, "dev", "env follows app.env when not pinned");
     }
@@ -2118,7 +2245,10 @@ mod wave6_mail_tests {
         std::fs::create_dir_all(root.join("packages").join("billing").join("views"))
             .expect("view dirs");
         std::fs::write(
-            root.join("packages").join("billing").join("views").join("welcome.html"),
+            root.join("packages")
+                .join("billing")
+                .join("views")
+                .join("welcome.html"),
             "pkg says hi",
         )
         .expect("fixture template");
@@ -2134,7 +2264,7 @@ mod wave6_mail_tests {
             env: "test".into(),
         });
         crate::install_view_registry(&engine);
-    crate::register_package_view_namespaces(&root, &engine);
+        crate::register_package_view_namespaces(&root, &engine);
         assert_eq!(
             engine
                 .render("billing::welcome", serde_json::json!({}))
@@ -2171,14 +2301,15 @@ mod wave6_mail_tests {
         assert_eq!(err.code, kelson_views::engine::VIEW_NOT_FOUND);
 
         // No index -> no resolver installed -> namespaces stay closed.
-        let bare = std::env::temp_dir().join(format!("kelson-pkgviews-bare-{}", uuid::Uuid::now_v7()));
+        let bare =
+            std::env::temp_dir().join(format!("kelson-pkgviews-bare-{}", uuid::Uuid::now_v7()));
         let engine = kelson_views::ViewsEngine::new(kelson_views::ViewsConfig {
             paths: vec![],
             cache_dir: None,
             env: "test".into(),
         });
         crate::install_view_registry(&engine);
-    crate::register_package_view_namespaces(&bare, &engine);
+        crate::register_package_view_namespaces(&bare, &engine);
         let err = engine
             .render("billing::welcome", serde_json::json!({}))
             .expect_err("no index means no namespaces");
@@ -2190,30 +2321,30 @@ mod wave6_mail_tests {
     #[tokio::test]
     async fn notification_html_mail_renders_through_the_views_engine() {
         use kelson_notifications::{
-            Channel, Mailable, MailPort, NotificationContext, NotificationDef, NotifyHub,
+            Channel, MailPort, Mailable, NotificationContext, NotificationDef, NotifyHub,
             ResolvedMailAttachment,
         };
 
-        let root = std::env::temp_dir().join(format!("kelson-notif-views-{}", uuid::Uuid::now_v7()));
+        let root =
+            std::env::temp_dir().join(format!("kelson-notif-views-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(root.join("notifications/appointment")).expect("view dirs");
         std::fs::write(
             root.join("notifications/appointment/booked.html"),
             "<p>Booked for {{ patient }} ({{ slots }} slot(s))</p>",
         )
         .expect("fixture template");
-        let engine = std::sync::Arc::new(kelson_views::ViewsEngine::new(kelson_views::ViewsConfig {
-            paths: vec![root.clone()],
-            cache_dir: None,
-            env: "test".into(),
-        }));
+        let engine =
+            std::sync::Arc::new(kelson_views::ViewsEngine::new(kelson_views::ViewsConfig {
+                paths: vec![root.clone()],
+                cache_dir: None,
+                env: "test".into(),
+            }));
         crate::install_view_registry(&engine);
         let mut hub = NotifyHub::empty().with_view_renderer(std::sync::Arc::new(
             crate::host::ViewsNotificationRenderer(engine),
         ));
         let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        hub.mail = Some(Box::new(LogMail {
-            sent: log.clone(),
-        }));
+        hub.mail = Some(Box::new(LogMail { sent: log.clone() }));
         let ctx = NotificationContext {
             principal_id: kelson_foundation::PrincipalId::new(),
             tenant_id: None,
@@ -2348,7 +2479,7 @@ mod wave6_mail_tests {
     #[tokio::test]
     async fn producer_mail_localizes_through_the_shipped_catalog_and_resolver() {
         use kelson_notifications::{
-            Channel, Mailable, MailPort, NotificationContext, NotifyHub, ResolvedMailAttachment,
+            Channel, MailPort, Mailable, NotificationContext, NotifyHub, ResolvedMailAttachment,
         };
 
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -2426,7 +2557,7 @@ mod wave6_mail_tests {
     async fn queue_via_enqueues_a_drainable_envelope_round_trip() {
         use kelson_jobs::JobStore as _;
         use kelson_notifications::{
-            Channel, Mailable, MailPort, NotificationContext, NotificationDef, NotifyHub,
+            Channel, MailPort, Mailable, NotificationContext, NotificationDef, NotifyHub,
             ResolvedMailAttachment,
         };
 
@@ -2625,7 +2756,8 @@ mod wave6_disk_tests {
     /// pre-disk wiring), and objects round-trip through the port.
     #[test]
     fn synthetic_local_disk_fills_an_empty_storage_section() {
-        let root = std::env::temp_dir().join(format!("kelson-disks-synth-{}", uuid::Uuid::now_v7()));
+        let root =
+            std::env::temp_dir().join(format!("kelson-disks-synth-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&root).expect("temp root");
         let registry = disk_registry(&kelson_config::StorageConfig::default(), &root).unwrap();
         assert_eq!(registry.default_name(), "local");
@@ -2699,7 +2831,11 @@ mod wave6_disk_tests {
             },
         );
         let err = disk_registry(&bad, &root).unwrap_err();
-        assert!(err.public_message.contains("root"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("root"),
+            "{}",
+            err.public_message
+        );
 
         // s3 without `bucket` refuses boot.
         let mut bad = kelson_config::StorageConfig::default();
@@ -2736,7 +2872,11 @@ mod wave6_disk_tests {
             },
         );
         let err = disk_registry(&bad, &root).unwrap_err();
-        assert!(err.public_message.contains("nope"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("nope"),
+            "{}",
+            err.public_message
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 }
@@ -2861,10 +3001,7 @@ mod cache_driver_tests {
             self.entries.lock().unwrap().get(key).cloned()
         }
         fn put(&self, key: &str, value: Vec<u8>, _ttl: Option<u64>) {
-            self.entries
-                .lock()
-                .unwrap()
-                .insert(key.to_string(), value);
+            self.entries.lock().unwrap().insert(key.to_string(), value);
         }
         fn delete(&self, key: &str) {
             self.entries.lock().unwrap().remove(key);
@@ -2918,7 +3055,9 @@ mod cache_driver_tests {
                 },
             ));
         }
-        registry.activate("memory").expect("the local driver activates");
+        registry
+            .activate("memory")
+            .expect("the local driver activates");
         Arc::new(registry)
     }
 
@@ -3012,7 +3151,12 @@ pub fn build_app_state_with_backend(
     kelson_registry::PlatformGraph,
     HarnessAppStore,
 ) {
-    build_app_state_inner(storage_root, sessions_enabled, registration_open, appt_backend)
+    build_app_state_inner(
+        storage_root,
+        sessions_enabled,
+        registration_open,
+        appt_backend,
+    )
 }
 
 /// The harness boot every suite builds on: appointments over a fresh

@@ -286,9 +286,7 @@ impl TokenService {
     pub fn consume(&self, purpose: TokenPurpose, plaintext: &str) -> Result<AuthToken, AppError> {
         let token = self.verify(purpose, plaintext)?;
         if purpose.single_use() {
-            let consumed = self
-                .store
-                .mark_consumed(token.id, self.now())?;
+            let consumed = self.store.mark_consumed(token.id, self.now())?;
             if !consumed {
                 return Err(AppError::denied("token is not valid"));
             }
@@ -483,10 +481,7 @@ mod tests {
             .expect("the token verifies");
         assert_eq!(
             verified.abilities,
-            vec![
-                "appointments:read".to_string(),
-                "inbox:read".to_string()
-            ],
+            vec!["appointments:read".to_string(), "inbox:read".to_string()],
             "the abilities survive the round trip — they are part of the row"
         );
 
@@ -577,7 +572,10 @@ mod tests {
         let missing = svc
             .verify(TokenPurpose::Api, "not-a-real-token")
             .unwrap_err();
-        assert_eq!(missing.category, kelson_foundation::ErrorCategory::Authorization);
+        assert_eq!(
+            missing.category,
+            kelson_foundation::ErrorCategory::Authorization
+        );
     }
 
     #[test]
@@ -601,7 +599,8 @@ mod tests {
             .unwrap();
         assert_eq!(consumed.principal_id, principal);
         assert!(
-            svc.consume(TokenPurpose::OauthCode, &code.plaintext).is_err(),
+            svc.consume(TokenPurpose::OauthCode, &code.plaintext)
+                .is_err(),
             "authorization code is single-use"
         );
         // Purposes stay disjoint across the new variants.

@@ -106,7 +106,8 @@ fn fixture(with_error_view: bool) -> Fixture {
         "{}{EXTRA_ROUTES}",
         include_str!("../../../applications/appointments/module.toml")
     );
-    let manifest = kelson_registry::ModuleManifest::from_toml(&raw).expect("fixture manifest parses");
+    let manifest =
+        kelson_registry::ModuleManifest::from_toml(&raw).expect("fixture manifest parses");
     let graph =
         kelson_registry::PlatformGraph::compile(vec![manifest]).expect("fixture graph compiles");
     Fixture { state, graph }
@@ -115,7 +116,10 @@ fn fixture(with_error_view: bool) -> Fixture {
 fn router(fx: &Fixture) -> axum::Router {
     let state = fx.state.clone();
     let router = kelson_demo::routes::router(state.clone())
-        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &fx.graph))
+        .merge(kelson_demo::graph_routes::graph_router(
+            state.clone(),
+            &fx.graph,
+        ))
         .merge(kelson_demo::auth_routes::router(state.clone()));
     state
         .sessions
@@ -280,12 +284,20 @@ async fn the_csrf_token_reaches_the_view() {
 
     let reply = get_with_cookie(&router, "/web/appointments", &cookie).await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
-    assert!(reply.body.contains("name=\"_token\""), "the view received the CSRF token: {}", reply.body);
+    assert!(
+        reply.body.contains("name=\"_token\""),
+        "the view received the CSRF token: {}",
+        reply.body
+    );
 
     // No session -> no token -> the field renders empty.
     let anon = get(&router, "/web/availability", None).await;
     assert_eq!(anon.status, StatusCode::OK, "{}", anon.body);
-    assert!(anon.body.contains("name=\"_token\"") && anon.body.contains("value=\"\""), "a guest carries no CSRF token: {}", anon.body);
+    assert!(
+        anon.body.contains("name=\"_token\"") && anon.body.contains("value=\"\""),
+        "a guest carries no CSRF token: {}",
+        anon.body
+    );
 }
 
 // ------------------------------------------------------------- error views
@@ -378,7 +390,12 @@ async fn html_route_without_an_engine_degrades_to_a_private_500_envelope() {
     let router = router(&fx);
     let reply = get(&router, "/web/availability?date=2026-09-01", None).await;
 
-    assert_eq!(reply.status, StatusCode::INTERNAL_SERVER_ERROR, "{}", reply.body);
+    assert_eq!(
+        reply.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        reply.body
+    );
     assert!(
         reply.content_type.contains("application/json"),
         "{}",
@@ -433,7 +450,8 @@ fn i18n_fixture() -> Fixture {
         "{}{EXTRA_ROUTES}",
         include_str!("../../../applications/appointments/module.toml")
     );
-    let manifest = kelson_registry::ModuleManifest::from_toml(&raw).expect("fixture manifest parses");
+    let manifest =
+        kelson_registry::ModuleManifest::from_toml(&raw).expect("fixture manifest parses");
     let graph =
         kelson_registry::PlatformGraph::compile(vec![manifest]).expect("fixture graph compiles");
     Fixture { state, graph }

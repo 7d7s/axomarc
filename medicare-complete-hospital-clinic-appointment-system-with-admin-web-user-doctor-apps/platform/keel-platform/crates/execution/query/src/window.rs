@@ -101,7 +101,9 @@ impl WindowFrame {
             WindowFrame::RowsWholePartition => {
                 "ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING"
             }
-            WindowFrame::RowsCurrentToUnbounded => "ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING",
+            WindowFrame::RowsCurrentToUnbounded => {
+                "ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING"
+            }
         }
     }
 }

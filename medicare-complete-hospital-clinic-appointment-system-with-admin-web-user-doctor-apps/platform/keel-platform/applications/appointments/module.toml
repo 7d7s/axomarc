@@ -62,6 +62,24 @@ capability = "availability"
 name = "availability"
 public = true
 
+# MVA-004: the first live MVVC page. It reuses the public `availability`
+# READ operation (no new operation) but renders an HTML view instead of the
+# JSON envelope. The manifest names BOTH the view and its view model
+# (`view_model`, MVA-005); boot registers the binding and
+# `verify_declared_view_models` refuses to start if the declaration points at
+# nothing. The template reads only through `@vm`.
+[[routes]]
+method = "GET"
+path = "/appointments/book"
+operation = "availability"
+capability = "availability"
+name = "book-page"
+plane = "web"
+response = "html"
+view = "pages.book-appointment"
+view_model = "BookAppointmentVm"
+public = true
+
 # Wave 1 reference: deprecated = true emits the Deprecation: true response
 # header + envelope meta (L72). Kept as an alias of list.
 [[routes]]

@@ -148,10 +148,7 @@ mod tests {
 
     fn row(tenant: TenantId, email: &str, status: &str) -> Record {
         let mut r = Record::new();
-        r.insert(
-            "id".into(),
-            Json::String(uuid::Uuid::now_v7().to_string()),
-        );
+        r.insert("id".into(), Json::String(uuid::Uuid::now_v7().to_string()));
         r.insert("tenant_id".into(), Json::String(tenant.to_string()));
         r.insert("email".into(), Json::String(email.into()));
         r.insert("status".into(), Json::String(status.into()));
@@ -162,9 +159,13 @@ mod tests {
     fn store_probe_is_tenant_scoped_and_column_checked() {
         let store = Arc::new(crate::store::InMemoryModelStore::new());
         let model = patient_model();
-        store.insert(&model, &row(TenantId::new(), "a@clinic.test", "active")).unwrap();
+        store
+            .insert(&model, &row(TenantId::new(), "a@clinic.test", "active"))
+            .unwrap();
         let other = TenantId::new();
-        store.insert(&model, &row(other, "b@clinic.test", "active")).unwrap();
+        store
+            .insert(&model, &row(other, "b@clinic.test", "active"))
+            .unwrap();
 
         let probe = StoreProbe::new(model, store);
         // The default probe lives in the other tenant: no match under ours.
@@ -207,7 +208,13 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("no column ghost"), "{err}");
         let err = probe
-            .has_row(Some(other), "email", "x", &[("ghost".into(), "y".into())], None)
+            .has_row(
+                Some(other),
+                "email",
+                "x",
+                &[("ghost".into(), "y".into())],
+                None,
+            )
             .unwrap_err();
         assert!(err.contains("no column ghost"), "{err}");
     }
@@ -235,7 +242,13 @@ mod tests {
             .unwrap());
         // A bogus ignore id excludes nothing (fail closed on the value).
         assert!(probe
-            .has_row(Some(tenant), "email", "dup@clinic.test", &[], Some("not-a-uuid"))
+            .has_row(
+                Some(tenant),
+                "email",
+                "dup@clinic.test",
+                &[],
+                Some("not-a-uuid")
+            )
             .unwrap());
     }
 

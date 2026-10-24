@@ -14,21 +14,22 @@ pub mod middleware_catalog;
 pub mod packages;
 pub mod route_plan;
 
-pub use constraint::{
-    constraint_matches, ConstraintKind, ConstraintPattern, ConstraintSpec, PatternElement,
-    PatternTerm, Repeat, ResolvedConstraint, GRAPH_CONSTRAINT_KIND, GRAPH_CONSTRAINT_PARAM,
-};
-pub use middleware_catalog::{
-    middleware_violations, parse_builtin_id, BuiltinMw, MiddlewareCatalog, MwViolation,
-    ThrottleGroupConfig, GRAPH_MW_UNKNOWN,
-};
 pub use config_cache::{
     config_cache_check, config_cache_path, config_hash, ConfigCacheArtifact, CONFIG_CACHE_ABI,
     CONFIG_CACHE_CODE,
 };
+pub use constraint::{
+    constraint_matches, ConstraintKind, ConstraintPattern, ConstraintSpec, PatternElement,
+    PatternTerm, Repeat, ResolvedConstraint, GRAPH_CONSTRAINT_KIND, GRAPH_CONSTRAINT_PARAM,
+};
+pub use discovery::{discover_manifests, discover_route_files};
+pub use middleware_catalog::{
+    middleware_violations, parse_builtin_id, BuiltinMw, MiddlewareCatalog, MwViolation,
+    ThrottleGroupConfig, GRAPH_MW_UNKNOWN,
+};
 pub use packages::{
     ModulePinMap, PackageEntry, PackageIndex, WasmModuleEntry, MODULE_PINS_PATH, PACKAGES_FILE,
-};pub use discovery::{discover_manifests, discover_route_files};
+};
 pub use route_plan::{
     manifests_hash, resolve_route_plans, route_cache_path, RouteCacheArtifact, RoutePlan,
 };
@@ -167,7 +168,9 @@ impl RoutePlane {
         match token {
             "api" => Ok(Self::Api),
             "web" => Ok(Self::Web),
-            other => Err(format!("unknown route plane {other:?} (expected api or web)")),
+            other => Err(format!(
+                "unknown route plane {other:?} (expected api or web)"
+            )),
         }
     }
 
@@ -310,6 +313,14 @@ pub struct RouteSpec {
     /// View template name for `response = "html"` routes (Wave 2 views).
     #[serde(default)]
     pub view: Option<String>,
+    /// The view model this route's `view` is bound to (MVA-005, the MVVC
+    /// manifest contract): the model's short type name, e.g.
+    /// `view_model = "ThingShowVm"`. Only meaningful with `view` (the
+    /// `GRAPH-VIEW-MODEL` gate refuses the pair split); the boot verifies
+    /// the binding is registered and names this model, and the route edge
+    /// renders the page schema-checked instead of unbound.
+    #[serde(default)]
+    pub view_model: Option<String>,
     /// Exact host match (Wave 2): the route only matches this Host header.
     /// Mutually exclusive with `subdomain`.
     #[serde(default)]
@@ -440,6 +451,7 @@ fn expand_route_list(
                 fallback: false,
                 excluded_middleware: route.excluded_middleware.clone(),
                 view: route.view.clone(),
+                view_model: route.view_model.clone(),
                 domain: route.domain.clone(),
                 subdomain: route.subdomain.clone(),
                 cache: route.cache,
@@ -824,10 +836,11 @@ impl ModuleManifest {
     /// reviewed sidecar compares like with like. A malformed document is
     /// `GRAPH-MANIFEST` — the plugin load refuses, fail closed.
     pub fn from_json(raw: &str) -> Result<Self, GraphViolation> {
-        let mut manifest: ModuleManifest = serde_json::from_str(raw).map_err(|e| GraphViolation {
-            code: "GRAPH-MANIFEST".into(),
-            message: format!("manifest parse failed: {e}"),
-        })?;
+        let mut manifest: ModuleManifest =
+            serde_json::from_str(raw).map_err(|e| GraphViolation {
+                code: "GRAPH-MANIFEST".into(),
+                message: format!("manifest parse failed: {e}"),
+            })?;
         expand_resources(&mut manifest)?;
         Ok(manifest)
     }
@@ -1029,7 +1042,11 @@ impl PlatformGraph {
                         ),
                     });
                 }
-                let operation_id = if r.from_route_file { r.operation.clone() } else { format!("{}.{}", m.name(), r.operation) };
+                let operation_id = if r.from_route_file {
+                    r.operation.clone()
+                } else {
+                    format!("{}.{}", m.name(), r.operation)
+                };
                 if kelson_foundation::OperationId::parse(&operation_id).is_err() {
                     violations.push(GraphViolation {
                         code: "GRAPH-ROUTE-OPID".into(),
@@ -1244,7 +1261,10 @@ impl PlatformGraph {
                 // field outside the declared input shape
                 // (GRAPH-VALIDATION-FIELD).
                 if let Some(name) = &spec.custom {
-                    if !kelson_validation::custom_rule_names().iter().any(|n| n == name) {
+                    if !kelson_validation::custom_rule_names()
+                        .iter()
+                        .any(|n| n == name)
+                    {
                         violations.push(GraphViolation {
                             code: "GRAPH-RULE-UNKNOWN".into(),
                             message: format!(
@@ -1448,8 +1468,11 @@ impl PlatformGraph {
 
     /// Find a route by its declared name within a module (S9 URL generation).
     pub fn route_named(&self, module_name: &str, route_name: &str) -> Option<&RouteSpec> {
-        self.module(module_name)
-            .and_then(|m| m.routes.iter().find(|r| r.name.as_deref() == Some(route_name)))
+        self.module(module_name).and_then(|m| {
+            m.routes
+                .iter()
+                .find(|r| r.name.as_deref() == Some(route_name))
+        })
     }
 
     /// Generate a concrete path for a named route (S9 B-07). Every `{param}`
@@ -1650,12 +1673,13 @@ api = 1
                 .expect("parses");
         assert!(opted.binding.with_trashed);
 
-        let json: Wrap =
-            serde_json::from_str(r#"{"binding":{"param":"id","model":"Thing","with_trashed":true}}"#)
-                .expect("parses");
+        let json: Wrap = serde_json::from_str(
+            r#"{"binding":{"param":"id","model":"Thing","with_trashed":true}}"#,
+        )
+        .expect("parses");
         assert!(json.binding.with_trashed);
-        let json_bare: Wrap = serde_json::from_str(r#"{"binding":{"param":"id","model":"Thing"}}"#)
-            .expect("parses");
+        let json_bare: Wrap =
+            serde_json::from_str(r#"{"binding":{"param":"id","model":"Thing"}}"#).expect("parses");
         assert!(!json_bare.binding.with_trashed);
     }
 
@@ -1757,7 +1781,9 @@ name = "same"
         let url = graph.resolve_url("alpha", "things.show", &params).unwrap();
         assert_eq!(url, "/api/v1/things/weird%20id%26x");
         assert_eq!(
-            graph.resolve_url("alpha", "things.index", &BTreeMap::new()).unwrap(),
+            graph
+                .resolve_url("alpha", "things.index", &BTreeMap::new())
+                .unwrap(),
             "/api/v1/things"
         );
     }
@@ -1815,9 +1841,10 @@ path = "/api/v1/things"
 operation = "create"
 name = "things.index"
 "#;
-        let graph =
-            PlatformGraph::compile(vec![ModuleManifest::from_toml(toml).expect("manifest parses")])
-                .expect("graph compiles");
+        let graph = PlatformGraph::compile(vec![
+            ModuleManifest::from_toml(toml).expect("manifest parses")
+        ])
+        .expect("graph compiles");
         assert_eq!(
             graph.module("alpha").expect("alpha").url.defaults["locale"],
             "en"
@@ -1869,9 +1896,10 @@ path = "/api/v1/{locale}/things/{id}"
 operation = "create"
 name = "things.show"
 "#;
-        let graph =
-            PlatformGraph::compile(vec![ModuleManifest::from_toml(toml).expect("manifest parses")])
-                .expect("graph compiles");
+        let graph = PlatformGraph::compile(vec![
+            ModuleManifest::from_toml(toml).expect("manifest parses")
+        ])
+        .expect("graph compiles");
         let err = graph
             .resolve_url("alpha", "things.show", &BTreeMap::new())
             .unwrap_err();
@@ -1965,12 +1993,19 @@ resource = "notes"
         assert!(pairs.contains(&("PUT".into(), "/notes/{id}".into())));
         assert!(pairs.contains(&("PATCH".into(), "/notes/{id}".into())));
         assert!(pairs.contains(&("DELETE".into(), "/notes/{id}".into())));
-        let names: Vec<&str> = m.routes.iter().map(|r| r.name.as_deref().unwrap()).collect();
+        let names: Vec<&str> = m
+            .routes
+            .iter()
+            .map(|r| r.name.as_deref().unwrap())
+            .collect();
         assert!(names.contains(&"notes.index"));
         assert!(names.contains(&"notes.destroy"));
         // update shares one operation across two specs
-        let updates: Vec<&RouteSpec> =
-            m.routes.iter().filter(|r| r.operation == "update").collect();
+        let updates: Vec<&RouteSpec> = m
+            .routes
+            .iter()
+            .filter(|r| r.operation == "update")
+            .collect();
         assert_eq!(updates.len(), 2);
         assert!(updates.iter().all(|r| r.from_resource));
     }
@@ -2011,11 +2046,7 @@ resource = "profile"
     #[test]
     fn singleton_expands_without_id_into_four_route_specs() {
         let m = singleton_manifest("");
-        assert_eq!(
-            m.routes.len(),
-            4,
-            "show + update (PUT/PATCH) + destroy"
-        );
+        assert_eq!(m.routes.len(), 4, "show + update (PUT/PATCH) + destroy");
         let pairs: Vec<(String, String)> = m
             .routes
             .iter()
@@ -2031,7 +2062,11 @@ resource = "profile"
             ],
             "one instance per path — never an {{id}} segment"
         );
-        let names: Vec<&str> = m.routes.iter().map(|r| r.name.as_deref().unwrap()).collect();
+        let names: Vec<&str> = m
+            .routes
+            .iter()
+            .map(|r| r.name.as_deref().unwrap())
+            .collect();
         assert_eq!(
             names,
             vec![
@@ -2343,13 +2378,13 @@ custom = "unregistered_phase4_rule"
 "#;
         let m = ModuleManifest::from_toml(toml).expect("parses");
         let v = PlatformGraph::compile(vec![m]).unwrap_err();
-        assert!(
-            v.iter().any(|x| x.code == "GRAPH-RULE-UNKNOWN"),
-            "{v:?}"
-        );
+        assert!(v.iter().any(|x| x.code == "GRAPH-RULE-UNKNOWN"), "{v:?}");
 
         // Registered names pass (modules register before graph compile).
-        kelson_validation::register_custom_rule("registered_phase4_rule", std::sync::Arc::new(Noop));
+        kelson_validation::register_custom_rule(
+            "registered_phase4_rule",
+            std::sync::Arc::new(Noop),
+        );
         let toml = toml.replace("unregistered_phase4_rule", "registered_phase4_rule");
         let m = ModuleManifest::from_toml(&toml).expect("parses");
         PlatformGraph::compile(vec![m]).expect("registered custom rule compiles");
@@ -2394,8 +2429,8 @@ messages = { requird = "typo never fires" }
         let m = ModuleManifest::from_toml(bad).expect("parses");
         let v = PlatformGraph::compile(vec![m]).unwrap_err();
         assert!(
-            v.iter().any(|x| x.code == "GRAPH-VALIDATION-RULE"
-                && x.message.contains("requird")),
+            v.iter()
+                .any(|x| x.code == "GRAPH-VALIDATION-RULE" && x.message.contains("requird")),
             "{v:?}"
         );
     }
@@ -2603,7 +2638,9 @@ plane = "intranet"
         // Collect-all: BOTH the route plane and the group plane are reported.
         assert_eq!(plane_violations.len(), 2, "{v:?}");
         assert!(plane_violations.iter().any(|x| x.message.contains("admin")));
-        assert!(plane_violations.iter().any(|x| x.message.contains("intranet")));
+        assert!(plane_violations
+            .iter()
+            .any(|x| x.message.contains("intranet")));
     }
 
     #[test]
@@ -2616,10 +2653,7 @@ operation = "create"
 plane = "web"
 "#;
         let graph = PlatformGraph::compile(vec![manifest("alpha", routes)]).unwrap();
-        assert_eq!(
-            graph.modules[0].routes[0].plane.as_deref(),
-            Some("web")
-        );
+        assert_eq!(graph.modules[0].routes[0].plane.as_deref(), Some("web"));
     }
 
     #[test]
@@ -2638,8 +2672,10 @@ operation = "create"
 group = "phantom"
 "#;
         let v = PlatformGraph::compile(vec![manifest("alpha", routes)]).unwrap_err();
-        let group_violations: Vec<_> =
-            v.iter().filter(|x| x.code == "GRAPH-GROUP-UNKNOWN").collect();
+        let group_violations: Vec<_> = v
+            .iter()
+            .filter(|x| x.code == "GRAPH-GROUP-UNKNOWN")
+            .collect();
         assert_eq!(group_violations.len(), 2, "{v:?}");
     }
 
@@ -2673,7 +2709,10 @@ operation = "create"
 constraints = [{ param = "id", kind = "number" }]
 "#;
         let v = PlatformGraph::compile(vec![manifest("alpha", routes)]).unwrap_err();
-        assert!(v.iter().any(|x| x.code == "GRAPH-CONSTRAINT-PARAM"), "{v:?}");
+        assert!(
+            v.iter().any(|x| x.code == "GRAPH-CONSTRAINT-PARAM"),
+            "{v:?}"
+        );
     }
 
     #[test]
@@ -2691,8 +2730,10 @@ constraints = [
         let v = PlatformGraph::compile(vec![manifest("alpha", routes)]).unwrap_err();
         // Collect-all: unknown kind AND pattern-without-pattern are both
         // GRAPH-CONSTRAINT-KIND violations in one boot refusal.
-        let kind_violations: Vec<_> =
-            v.iter().filter(|x| x.code == "GRAPH-CONSTRAINT-KIND").collect();
+        let kind_violations: Vec<_> = v
+            .iter()
+            .filter(|x| x.code == "GRAPH-CONSTRAINT-KIND")
+            .collect();
         assert_eq!(kind_violations.len(), 2, "{v:?}");
     }
 
@@ -2779,12 +2820,12 @@ operation = "create"
             Some("web"),
         )
         .expect("route file parses");
-        let v = PlatformGraph::compile(vec![
-            manifest("alpha", ""),
-            file.into_module("routes_web"),
-        ])
-        .unwrap_err();
-        let rf: Vec<_> = v.iter().filter(|x| x.code == "GRAPH-ROUTEFILE-OP").collect();
+        let v = PlatformGraph::compile(vec![manifest("alpha", ""), file.into_module("routes_web")])
+            .unwrap_err();
+        let rf: Vec<_> = v
+            .iter()
+            .filter(|x| x.code == "GRAPH-ROUTEFILE-OP")
+            .collect();
         // Collect-all: both the unknown AND the unqualified op are reported;
         // the valid alpha.create route passes.
         assert_eq!(rf.len(), 2, "{v:?}");
@@ -2803,11 +2844,9 @@ operation = "alpha.create"
             Some("web"),
         )
         .expect("route file parses");
-        let graph = PlatformGraph::compile(vec![
-            manifest("alpha", ""),
-            file.into_module("routes_web"),
-        ])
-        .expect("compiles");
+        let graph =
+            PlatformGraph::compile(vec![manifest("alpha", ""), file.into_module("routes_web")])
+                .expect("compiles");
         let route_file_module = graph.module("routes_web").unwrap();
         assert_eq!(route_file_module.routes[0].plane.as_deref(), Some("web"));
         assert!(route_file_module.routes[0].from_route_file);
@@ -2923,7 +2962,10 @@ constraints = [{ param = "missing", kind = "number" }]
         let v = PlatformGraph::compile(vec![manifest("alpha", routes)]).unwrap_err();
         assert!(v.iter().any(|x| x.code == "GRAPH-PLANE"), "{v:?}");
         assert!(v.iter().any(|x| x.code == "GRAPH-GROUP-UNKNOWN"), "{v:?}");
-        assert!(v.iter().any(|x| x.code == "GRAPH-CONSTRAINT-PARAM"), "{v:?}");
+        assert!(
+            v.iter().any(|x| x.code == "GRAPH-CONSTRAINT-PARAM"),
+            "{v:?}"
+        );
     }
 
     #[test]
@@ -2945,7 +2987,8 @@ operation = "DoThing"
 "#;
         let v = PlatformGraph::compile(vec![manifest("alpha", routes)]).unwrap_err();
         assert!(
-            v.iter().any(|x| x.code == "GRAPH-ROUTE-METHOD" && x.message.contains("PURGE")),
+            v.iter()
+                .any(|x| x.code == "GRAPH-ROUTE-METHOD" && x.message.contains("PURGE")),
             "{v:?}"
         );
         assert!(

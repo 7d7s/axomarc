@@ -255,7 +255,10 @@ mod tests {
         let budget = CostBudget::writes_at_most(100);
         assert!(budget.allows_write(100));
         assert!(!budget.allows_write(101));
-        assert!(budget.allows_read(1_000_000), "an unset ceiling is unbounded");
+        assert!(
+            budget.allows_read(1_000_000),
+            "an unset ceiling is unbounded"
+        );
         assert!(budget.allows_elapsed(Duration::from_secs(999)));
     }
 
@@ -297,6 +300,12 @@ mod tests {
         let mut ledger = CostLedger::new();
         let tenant = TenantId::new();
         ledger.record_refusal(Some(tenant));
-        assert_eq!(ledger.cost_of(&tenant).expect("the tenant is known").refused, 1);
+        assert_eq!(
+            ledger
+                .cost_of(&tenant)
+                .expect("the tenant is known")
+                .refused,
+            1
+        );
     }
 }

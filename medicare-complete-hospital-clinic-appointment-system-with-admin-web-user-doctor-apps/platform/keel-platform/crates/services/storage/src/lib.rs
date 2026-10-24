@@ -154,9 +154,7 @@ impl<P: StoragePort + ?Sized> ObjectWriter for BufferedWriter<'_, P> {
 
     fn finish(self: Box<Self>) -> Result<ObjectRef, AppError> {
         let session = *self;
-        session
-            .port
-            .put(&session.bucket, &session.key, session.buf)
+        session.port.put(&session.bucket, &session.key, session.buf)
     }
 }
 
@@ -393,9 +391,7 @@ impl DiskRegistry {
 
     pub fn register(&mut self, name: &str, entry: DiskEntry) -> Result<(), AppError> {
         if name.is_empty() {
-            return Err(AppError::validation(
-                "storage disk name must not be empty",
-            ));
+            return Err(AppError::validation("storage disk name must not be empty"));
         }
         if self.disks.contains_key(name) {
             return Err(AppError::conflict(format!(
@@ -513,7 +509,11 @@ mod tests {
         let port = Blob(vec![]);
         let err = port.list("uploads/").unwrap_err();
         assert_eq!(err.code, kelson_foundation::codes::NOT_IMPLEMENTED);
-        assert!(err.public_message.contains("list"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("list"),
+            "{}",
+            err.public_message
+        );
         assert_eq!(
             port.make_dir("uploads/").unwrap_err().code,
             kelson_foundation::codes::NOT_IMPLEMENTED
@@ -532,16 +532,7 @@ mod tests {
             validate_dir_prefix(ok).unwrap_or_else(|e| panic!("{ok}: {}", e.public_message));
         }
         for bad in [
-            "",
-            "/",
-            "/abs/",
-            "a/../b",
-            "a\\b",
-            "a:z",
-            "~user",
-            "a//b",
-            "..",
-            "a/./b",
+            "", "/", "/abs/", "a/../b", "a\\b", "a:z", "~user", "a//b", "..", "a/./b",
         ] {
             assert!(
                 validate_dir_prefix(bad).is_err(),
@@ -623,7 +614,11 @@ mod tests {
 
         // Unknown disk names the miss and lists what exists.
         let err = registry.url_for("nope", &obj(), 60).unwrap_err();
-        assert!(err.public_message.contains("nope"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("nope"),
+            "{}",
+            err.public_message
+        );
         assert!(err.public_message.contains("cdn"), "{}", err.public_message);
 
         // Public without a base is a config gap surfaced at issuance.
@@ -664,7 +659,11 @@ mod tests {
                 },
             )
             .unwrap_err();
-        assert!(err.public_message.contains("empty"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("empty"),
+            "{}",
+            err.public_message
+        );
         assert!(empty_name.validate_default().is_err());
     }
 
@@ -854,15 +853,9 @@ mod tests {
         let a = TenantId::new();
         let b = TenantId::new();
 
-        shard
-            .put(a, "uploads", "x/1.png", vec![1])
-            .unwrap();
-        shard
-            .put(a, "uploads", "y/2.png", vec![2])
-            .unwrap();
-        shard
-            .put(b, "uploads", "x/9.png", vec![9])
-            .unwrap();
+        shard.put(a, "uploads", "x/1.png", vec![1]).unwrap();
+        shard.put(a, "uploads", "y/2.png", vec![2]).unwrap();
+        shard.put(b, "uploads", "x/9.png", vec![9]).unwrap();
 
         let list_a: Vec<String> = shard
             .list(a, "uploads/")
@@ -918,9 +911,7 @@ mod tests {
         let a = TenantId::new();
         let b = TenantId::new();
 
-        let obj = shard
-            .put(a, "uploads", "photo.png", vec![1])
-            .unwrap();
+        let obj = shard.put(a, "uploads", "photo.png", vec![1]).unwrap();
         let url = shard.presigned_url(a, &obj, 60).unwrap();
         assert!(
             url.contains(&format!("tenant/{a}/")),

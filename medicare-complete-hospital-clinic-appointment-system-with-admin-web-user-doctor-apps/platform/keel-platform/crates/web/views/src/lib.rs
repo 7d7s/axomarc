@@ -52,7 +52,10 @@ mod render;
 pub mod viewmodel;
 
 pub use ast::{AttrEntry, ForSpec, LoopVars, Node, Template};
-pub use builtins::{ErrorVm, FormField, FormVm, PaginationVm, TableVm, TableColumn, EmptyVm, OpsVm, ValidationRule, FormOption};
+pub use builtins::{
+    EmptyVm, ErrorVm, FormField, FormOption, FormVm, OpsVm, PaginationVm, TableColumn, TableVm,
+    ValidationRule,
+};
 pub use engine::{
     ConditionalHandler, DirectiveHandler, HookHandler, ResolverFn, ViewError, ViewRender, ViewTap,
     ViewsConfig, ViewsEngine,
@@ -62,11 +65,14 @@ pub use expr::{
     Expr, Filter, Lit, Operand, Segment,
 };
 pub use form_bridge::BridgedForm;
-pub use lint::{check_paths, vm_declaration, vm_paths, VmDeclaration};
+pub use lint::{
+    check_paths, check_root_reads, root_reads, vm_declaration, vm_paths, VmDeclaration,
+    LINT_ROOT_READ, LINT_UNDECLARED_PATH, RESERVED_CONTEXT_KEYS,
+};
 pub use live::{LiveRender, LiveSession};
-pub use live_wire::{state_diff, DiffEntry, LiveId, LiveNode, LiveSessions};
 #[cfg(feature = "live-transport")]
 pub use live_wire::LiveWire;
+pub use live_wire::{state_diff, DiffEntry, LiveId, LiveNode, LiveSessions};
 pub use registry::{CommandRegistry, CommandRoute, ViewBinding, ViewRegistry};
 pub use viewmodel::{
     check_schema, governing_field, key_path, schema_field, value_at, value_kind, view_model_value,

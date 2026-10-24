@@ -226,10 +226,7 @@ impl ContextBuilder {
     /// narrowing ✓). The authorization boundary intersects the granted
     /// capabilities with the list ✓ — a narrowly-scoped token can then only
     /// exercise what it was granted ✓.
-    pub fn with_credential_abilities(
-        mut self,
-        abilities: impl Into<Vec<String>>,
-    ) -> Self {
+    pub fn with_credential_abilities(mut self, abilities: impl Into<Vec<String>>) -> Self {
         self.credential_abilities = Some(abilities.into());
         self
     }

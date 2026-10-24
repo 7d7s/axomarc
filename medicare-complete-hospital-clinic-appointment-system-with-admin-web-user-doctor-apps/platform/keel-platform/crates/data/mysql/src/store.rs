@@ -34,9 +34,9 @@
 //!   (rule 2) and `result` stays a `serde_json::Value` over `JSON`
 //!   (rule 4).
 
-use kelson_foundation::{AppError, OperationId, TenantId};
 use kelson_execution::ports::{IdempotencyCheck, IdempotencyKey, IdempotencyPort};
 use kelson_execution::BoxFuture;
+use kelson_foundation::{AppError, OperationId, TenantId};
 use serde_json::Value;
 use sqlx::mysql::MySqlPool;
 use uuid::Uuid;

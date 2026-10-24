@@ -62,8 +62,6 @@ impl<T> BoundedQueue<T> {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,7 +75,11 @@ mod tests {
         assert_eq!(q.depth(), 4);
         assert!(q.try_push(99).is_err());
         assert_eq!(q.dropped(), 1);
-        assert_eq!(q.recv_timeout(std::time::Duration::from_millis(50)).unwrap(), 0);
+        assert_eq!(
+            q.recv_timeout(std::time::Duration::from_millis(50))
+                .unwrap(),
+            0
+        );
         assert_eq!(q.depth(), 3);
     }
 }

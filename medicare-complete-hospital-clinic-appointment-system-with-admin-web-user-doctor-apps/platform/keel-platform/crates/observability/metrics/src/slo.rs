@@ -154,11 +154,7 @@ impl SloStatus {
 /// A gauge is read as-is; a counter is summed over its label sets (the
 /// total, not one series).
 pub fn observed(snapshot: &MetricsSnapshot, metric: &str) -> Option<f64> {
-    if let Some((_, value)) = snapshot
-        .gauges
-        .iter()
-        .find(|(key, _)| key.name == metric)
-    {
+    if let Some((_, value)) = snapshot.gauges.iter().find(|(key, _)| key.name == metric) {
         return Some(*value);
     }
     // A counter is the TOTAL over its label sets, not one series.
@@ -249,7 +245,9 @@ pub fn render_slo_gauges(snapshot: &MetricsSnapshot) -> String {
             slo.target
         ));
     }
-    out.push_str("# HELP kelson_slo_breached Whether a declared objective is missed (1) or met (0).\n");
+    out.push_str(
+        "# HELP kelson_slo_breached Whether a declared objective is missed (1) or met (0).\n",
+    );
     out.push_str("# TYPE kelson_slo_breached gauge\n");
     for slo in SLOS {
         let mut labels = BTreeMap::new();
@@ -259,7 +257,11 @@ pub fn render_slo_gauges(snapshot: &MetricsSnapshot) -> String {
             .iter()
             .map(|(k, v)| format!("{k}=\"{}\"", escape_label_value(v)))
             .collect();
-        let breached = if evaluate(snapshot, slo).is_breached() { 1 } else { 0 };
+        let breached = if evaluate(snapshot, slo).is_breached() {
+            1
+        } else {
+            0
+        };
         out.push_str(&format!(
             "kelson_slo_breached{{{}}} {breached}\n",
             rendered.join(",")
@@ -314,17 +316,31 @@ mod tests {
     fn a_breached_objective_is_reported() {
         let registry = registry_with("telemetry_error_rate", 0.5, "telemetry_dropped_total", 0.0);
         let snapshot = registry.snapshot();
-        let error_rate = SLOS.iter().find(|s| s.metric == "telemetry_error_rate").unwrap();
+        let error_rate = SLOS
+            .iter()
+            .find(|s| s.metric == "telemetry_error_rate")
+            .unwrap();
         assert_eq!(evaluate(&snapshot, error_rate), SloStatus::Breached);
-        let dropped = SLOS.iter().find(|s| s.metric == "telemetry_dropped_total").unwrap();
+        let dropped = SLOS
+            .iter()
+            .find(|s| s.metric == "telemetry_dropped_total")
+            .unwrap();
         assert_eq!(evaluate(&snapshot, dropped), SloStatus::Met);
     }
 
     #[test]
     fn an_objective_within_twenty_percent_of_the_ceiling_is_at_risk() {
-        let registry = registry_with("telemetry_error_rate", 0.045, "telemetry_dropped_total", 0.0);
+        let registry = registry_with(
+            "telemetry_error_rate",
+            0.045,
+            "telemetry_dropped_total",
+            0.0,
+        );
         let snapshot = registry.snapshot();
-        let error_rate = SLOS.iter().find(|s| s.metric == "telemetry_error_rate").unwrap();
+        let error_rate = SLOS
+            .iter()
+            .find(|s| s.metric == "telemetry_error_rate")
+            .unwrap();
         assert_eq!(evaluate(&snapshot, error_rate), SloStatus::AtRisk);
     }
 
@@ -344,7 +360,10 @@ mod tests {
         let gauges = render_slo_gauges(&registry.snapshot());
         assert!(gauges.contains("kelson_slo_target"), "{gauges}");
         assert!(gauges.contains("kelson_slo_breached"), "{gauges}");
-        assert!(gauges.contains("slo=\"operability.incident_active\""), "{gauges}");
+        assert!(
+            gauges.contains("slo=\"operability.incident_active\""),
+            "{gauges}"
+        );
     }
 
     #[test]

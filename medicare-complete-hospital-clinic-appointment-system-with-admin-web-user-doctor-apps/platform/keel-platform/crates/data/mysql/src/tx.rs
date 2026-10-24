@@ -68,13 +68,13 @@
 //!   produce the same chain for the same logical rows.
 
 use kelson_context::ExecutionContext;
-use kelson_foundation::{AppError, ConcurrencyStrategy, DeltaId, StreamRef};
 use kelson_execution::concurrency::expand_key;
 use kelson_execution::plan::ExecutionPlan;
 use kelson_execution::unit::{
     guard, AuditRecord, BoxFuture, CommitReceipt, ExecutionBackend, ExecutionUnit, HandlerFn,
     MutationRecord, OutboxMessage, RunOutcome,
 };
+use kelson_foundation::{AppError, ConcurrencyStrategy, DeltaId, StreamRef};
 use kelson_transaction::{advisory_lock_key, IsolationLevel, TxOptions};
 use sqlx::mysql::MySqlPool;
 use sqlx::Executor;
@@ -97,7 +97,11 @@ async fn apply_tx_options(
         // read-committed freshness the audit chain depends on.
         IsolationLevel::ReadCommitted => "READ COMMITTED",
     };
-    let access = if opts.readonly { "READ ONLY" } else { "READ WRITE" };
+    let access = if opts.readonly {
+        "READ ONLY"
+    } else {
+        "READ WRITE"
+    };
     // `raw_sql` binds nothing, so sqlx takes the COM_QUERY (simple) path -
     // `SET TRANSACTION` is not preparable on MySQL (module docs). Receiver
     // form via `sqlx::Executor` - see the module docs note on why
@@ -212,8 +216,7 @@ impl ExecutionBackend for MySqlBackend {
             // (`run_body` below): any early error drops `tx`, which queues the
             // ROLLBACK on `conn` (sqlx contract), and the release below still
             // runs.
-            let outcome =
-                run_body(&mut conn, plan, ctx, handler, t_begin, &mut lock_name).await;
+            let outcome = run_body(&mut conn, plan, ctx, handler, t_begin, &mut lock_name).await;
 
             // Release the session-scoped lock only AFTER the transaction has
             // ended (COMMIT, or the ROLLBACK sqlx queues when the unit is
@@ -249,115 +252,111 @@ async fn run_body(
     t_begin: std::time::Instant,
     lock_name: &mut Option<String>,
 ) -> Result<RunOutcome, AppError> {
-    let mut tx: sqlx::Transaction<'_, sqlx::MySql> =
-        sqlx::Transaction::begin(&mut *conn, None)
+    let mut tx: sqlx::Transaction<'_, sqlx::MySql> = sqlx::Transaction::begin(&mut *conn, None)
+        .await
+        .map_err(|e| AppError::persistence(format!("begin: {e}")))?;
+    kelson_execution::QueryTap::record("mysql:tx.begin", "BEGIN", t_begin.elapsed());
+
+    // RLS anchor: pg sets a session GUC for the whole transaction
+    // scope; MySQL has no RLS (rule 11), so there is no statement
+    // here - tenant isolation is the explicit tenant_id bind on
+    // every delta/audit/outbox write and the explicit tenant_id
+    // predicate on every audit-chain read below.
+
+    // Centralized sequencing (Serialized plans): transaction-scoped
+    // advisory lock keyed by tenant + plan key template (S1 locks).
+    // MySQL has no transaction-scoped advisory lock: GET_LOCK is
+    // session-scoped and survives COMMIT/ROLLBACK, so it is
+    // released explicitly after the transaction ends (module docs).
+    if plan.concurrency.strategy == ConcurrencyStrategy::Serialized && plan.transaction.required {
+        let partition = ctx
+            .tenant_id()
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "platform".into());
+        let key = expand_key(
+            plan.concurrency
+                .serialized_key
+                .as_deref()
+                .unwrap_or("{operation}"),
+            ctx.tenant_id(),
+            &plan.operation,
+        );
+        let name = format!("kelson.serialized:{}", advisory_lock_key(&partition, &key));
+        let acquired: Option<i64> = sqlx::query_scalar("SELECT GET_LOCK(?, -1)")
+            .bind(&name)
+            .fetch_one(&mut *tx)
             .await
-            .map_err(|e| AppError::persistence(format!("begin: {e}")))?;
-                kelson_execution::QueryTap::record("mysql:tx.begin", "BEGIN", t_begin.elapsed());
+            .map_err(|e| AppError::persistence(format!("advisory lock: {e}")))?;
+        if acquired != Some(1) {
+            return Err(AppError::persistence(format!(
+                "advisory lock: GET_LOCK did not acquire (returned {acquired:?}); fail-closed"
+            )));
+        }
+        *lock_name = Some(name);
+    }
 
-                // RLS anchor: pg sets a session GUC for the whole transaction
-                // scope; MySQL has no RLS (rule 11), so there is no statement
-                // here - tenant isolation is the explicit tenant_id bind on
-                // every delta/audit/outbox write and the explicit tenant_id
-                // predicate on every audit-chain read below.
+    let scope_paths = ctx
+        .scope
+        .as_ref()
+        .map(|s| s.nodes.iter().map(|n| n.path.clone()).collect())
+        .unwrap_or_default();
 
-                // Centralized sequencing (Serialized plans): transaction-scoped
-                // advisory lock keyed by tenant + plan key template (S1 locks).
-                // MySQL has no transaction-scoped advisory lock: GET_LOCK is
-                // session-scoped and survives COMMIT/ROLLBACK, so it is
-                // released explicitly after the transaction ends (module docs).
-                if plan.concurrency.strategy == ConcurrencyStrategy::Serialized
-                    && plan.transaction.required
-                {
-                    let partition = ctx
-                        .tenant_id()
+    let mut unit = MySqlUnit {
+        tx,
+        tenant_id: ctx.tenant_id(),
+        execution_id: ctx.execution_id,
+        principal_id: Some(ctx.principal.id),
+        correlation_id: ctx.correlation_id,
+        command: plan.operation.to_string(),
+        default_stream: plan.delta.stream.clone(),
+        scope_paths,
+        mutations: Vec::new(),
+        audits: Vec::new(),
+        outbox: Vec::new(),
+    };
+
+    let result = handler(&mut unit).await?;
+    guard(plan, unit.mutation_count())?;
+
+    // DeltaStones with per-stream monotonic sequences.
+    for m in unit.mutations.iter() {
+        let t_delta = std::time::Instant::now();
+        let stream = m
+            .stream
+            .clone()
+            .or_else(|| unit.default_stream.clone())
+            .unwrap_or_else(|| {
+                StreamRef::data(
+                    unit.tenant_id
                         .map(|t| t.to_string())
-                        .unwrap_or_else(|| "platform".into());
-                    let key = expand_key(
-                        plan.concurrency
-                            .serialized_key
-                            .as_deref()
-                            .unwrap_or("{operation}"),
-                        ctx.tenant_id(),
-                        &plan.operation,
-                    );
-                    let name =
-                        format!("kelson.serialized:{}", advisory_lock_key(&partition, &key));
-                    let acquired: Option<i64> = sqlx::query_scalar("SELECT GET_LOCK(?, -1)")
-                        .bind(&name)
-                        .fetch_one(&mut *tx)
-                        .await
-                        .map_err(|e| AppError::persistence(format!("advisory lock: {e}")))?;
-                    if acquired != Some(1) {
-                        return Err(AppError::persistence(format!(
-                            "advisory lock: GET_LOCK did not acquire (returned {acquired:?}); fail-closed"
-                        )));
-                    }
-                    *lock_name = Some(name);
-                }
+                        .unwrap_or_else(|| "platform".into()),
+                )
+            });
+        let key = stream.to_string();
 
-                let scope_paths = ctx
-                    .scope
-                    .as_ref()
-                    .map(|s| s.nodes.iter().map(|n| n.path.clone()).collect())
-                    .unwrap_or_default();
-
-                let mut unit = MySqlUnit {
-                    tx,
-                    tenant_id: ctx.tenant_id(),
-                    execution_id: ctx.execution_id,
-                    principal_id: Some(ctx.principal.id),
-                    correlation_id: ctx.correlation_id,
-                    command: plan.operation.to_string(),
-                    default_stream: plan.delta.stream.clone(),
-                    scope_paths,
-                    mutations: Vec::new(),
-                    audits: Vec::new(),
-                    outbox: Vec::new(),
-                };
-
-                let result = handler(&mut unit).await?;
-                guard(plan, unit.mutation_count())?;
-
-                // DeltaStones with per-stream monotonic sequences.
-                for m in unit.mutations.iter() {
-                    let t_delta = std::time::Instant::now();
-                    let stream = m
-                        .stream
-                        .clone()
-                        .or_else(|| unit.default_stream.clone())
-                        .unwrap_or_else(|| {
-                            StreamRef::data(
-                                unit.tenant_id
-                                    .map(|t| t.to_string())
-                                    .unwrap_or_else(|| "platform".into()),
-                            )
-                        });
-                    let key = stream.to_string();
-
-                    // Stream sequence (rule 10): pg does the upsert and
-                    // `RETURNING next_seq` in ONE statement; MySQL has no
-                    // RETURNING, so it is an upsert + select-back on this same
-                    // transaction connection. The upsert holds the row X lock
-                    // until COMMIT (serializing concurrent incrementers like
-                    // pg's ON CONFLICT), and the select-back reads our own
-                    // increment.
-                    sqlx::query(
-                        "INSERT INTO delta_streams (stream_key, next_seq) VALUES (?, 1)
+        // Stream sequence (rule 10): pg does the upsert and
+        // `RETURNING next_seq` in ONE statement; MySQL has no
+        // RETURNING, so it is an upsert + select-back on this same
+        // transaction connection. The upsert holds the row X lock
+        // until COMMIT (serializing concurrent incrementers like
+        // pg's ON CONFLICT), and the select-back reads our own
+        // increment.
+        sqlx::query(
+            "INSERT INTO delta_streams (stream_key, next_seq) VALUES (?, 1)
                          ON DUPLICATE KEY UPDATE next_seq = delta_streams.next_seq + 1",
-                    )
-                    .bind(&key)
-                    .execute(&mut *unit.tx)
-                    .await
-                    .map_err(|e| AppError::persistence(format!("stream sequence: {e}")))?;
-                    let seq: i64 =
-                        sqlx::query_scalar("SELECT next_seq FROM delta_streams WHERE stream_key = ?")
-                            .bind(&key)
-                            .fetch_one(&mut *unit.tx)
-                            .await
-                            .map_err(|e| AppError::persistence(format!("stream sequence: {e}")))?;
+        )
+        .bind(&key)
+        .execute(&mut *unit.tx)
+        .await
+        .map_err(|e| AppError::persistence(format!("stream sequence: {e}")))?;
+        let seq: i64 =
+            sqlx::query_scalar("SELECT next_seq FROM delta_streams WHERE stream_key = ?")
+                .bind(&key)
+                .fetch_one(&mut *unit.tx)
+                .await
+                .map_err(|e| AppError::persistence(format!("stream sequence: {e}")))?;
 
-                    sqlx::query(
+        sqlx::query(
                         r"INSERT INTO delta_stones
                             (id, stream_key, sequence, resource_type, resource_id, resource_version,
                              execution_id, principal_id, tenant_id, scope_snapshot, ownership_snapshot,
@@ -384,91 +383,82 @@ async fn run_body(
                     .execute(&mut *unit.tx)
                     .await
                     .map_err(|e| AppError::persistence(format!("delta stone: {e}")))?;
-                    kelson_execution::QueryTap::record(
-                        "mysql:delta.write",
-                        "INSERT delta_stones",
-                        t_delta.elapsed(),
-                    );
-                }
+        kelson_execution::QueryTap::record(
+            "mysql:delta.write",
+            "INSERT delta_stones",
+            t_delta.elapsed(),
+        );
+    }
 
-                let deltas_written = unit.mutations.len();
-                let audit_written = unit.audits.len();
-                let outbox_queued = unit.outbox.len();
+    let deltas_written = unit.mutations.len();
+    let audit_written = unit.audits.len();
+    let outbox_queued = unit.outbox.len();
 
-                // Sentinel (S5): audit hash-chaining (D-74). Each row hashes
-                // prev_hash || canonical(row) inside this transaction - no side
-                // channels. Segments anchor per (tenant, day); legacy rows stay
-                // NULL and are skipped by verification. Chain inputs and their
-                // order are byte-identical to the pg twin.
-                let mut chain_prev: std::collections::HashMap<Uuid, [u8; 32]> =
-                    std::collections::HashMap::new();
-                for a in unit.audits.iter() {
-                    let t_audit = std::time::Instant::now();
-                    let at = truncate_to_micros(OffsetDateTime::now_utc());
-                    let tenant_uuid = unit.tenant_id.map(|t| *t.as_uuid());
-                    let tenant_str = unit.tenant_id.map(|t| t.to_string());
-                    let principal_str = unit.principal_id.map(|p| p.to_string());
-                    let day = at.date().to_string();
-                    let chain_id = kelson_integrity::chain_id_for(tenant_str.as_deref(), &day);
+    // Sentinel (S5): audit hash-chaining (D-74). Each row hashes
+    // prev_hash || canonical(row) inside this transaction - no side
+    // channels. Segments anchor per (tenant, day); legacy rows stay
+    // NULL and are skipped by verification. Chain inputs and their
+    // order are byte-identical to the pg twin.
+    let mut chain_prev: std::collections::HashMap<Uuid, [u8; 32]> =
+        std::collections::HashMap::new();
+    for a in unit.audits.iter() {
+        let t_audit = std::time::Instant::now();
+        let at = truncate_to_micros(OffsetDateTime::now_utc());
+        let tenant_uuid = unit.tenant_id.map(|t| *t.as_uuid());
+        let tenant_str = unit.tenant_id.map(|t| t.to_string());
+        let principal_str = unit.principal_id.map(|p| p.to_string());
+        let day = at.date().to_string();
+        let chain_id = kelson_integrity::chain_id_for(tenant_str.as_deref(), &day);
 
-                    let prev_hash: [u8; 32] = match chain_prev.get(&chain_id) {
-                        Some(h) => *h,
-                        None => {
-                            let fetched: Option<Vec<u8>> = match tenant_uuid {
-                                Some(tid) => {
-                                    sqlx::query_scalar(
-                                        "SELECT chain_hash FROM audit_records
+        let prev_hash: [u8; 32] = match chain_prev.get(&chain_id) {
+            Some(h) => *h,
+            None => {
+                let fetched: Option<Vec<u8>> = match tenant_uuid {
+                    Some(tid) => sqlx::query_scalar(
+                        "SELECT chain_hash FROM audit_records
                                           WHERE tenant_id = ? AND chain_id = ?
                                             AND chain_hash IS NOT NULL
                                           ORDER BY at DESC, id DESC LIMIT 1",
-                                    )
-                                    .bind(tid)
-                                    .bind(chain_id)
-                                    .fetch_optional(&mut *unit.tx)
-                                    .await
-                                    .map_err(|e| {
-                                        AppError::persistence(format!("audit chain: {e}"))
-                                    })?
-                                }
-                                None => {
-                                    sqlx::query_scalar(
-                                        "SELECT chain_hash FROM audit_records
+                    )
+                    .bind(tid)
+                    .bind(chain_id)
+                    .fetch_optional(&mut *unit.tx)
+                    .await
+                    .map_err(|e| AppError::persistence(format!("audit chain: {e}")))?,
+                    None => sqlx::query_scalar(
+                        "SELECT chain_hash FROM audit_records
                                           WHERE tenant_id IS NULL AND chain_id = ?
                                             AND chain_hash IS NOT NULL
                                           ORDER BY at DESC, id DESC LIMIT 1",
-                                    )
-                                    .bind(chain_id)
-                                    .fetch_optional(&mut *unit.tx)
-                                    .await
-                                    .map_err(|e| {
-                                        AppError::persistence(format!("audit chain: {e}"))
-                                    })?
-                                }
-                            };
-                            fetched
-                                .and_then(|b| b.try_into().ok())
-                                .unwrap_or(kelson_integrity::GENESIS_HASH)
-                        }
-                    };
+                    )
+                    .bind(chain_id)
+                    .fetch_optional(&mut *unit.tx)
+                    .await
+                    .map_err(|e| AppError::persistence(format!("audit chain: {e}")))?,
+                };
+                fetched
+                    .and_then(|b| b.try_into().ok())
+                    .unwrap_or(kelson_integrity::GENESIS_HASH)
+            }
+        };
 
-                    let outcome_str = format!("{:?}", a.outcome);
-                    let merged_detail =
-                        serde_json::json!({ "detail": a.detail, "outcome": outcome_str });
-                    let at_iso = at
-                        .format(&time::format_description::well_known::Rfc3339)
-                        .map_err(|e| AppError::persistence(format!("audit chain time: {e}")))?;
-                    let canonical = kelson_integrity::canonical_audit_row(
-                        tenant_str.as_deref(),
-                        principal_str.as_deref(),
-                        &a.action,
-                        &a.resource,
-                        &a.authority,
-                        &merged_detail,
-                        &at_iso,
-                    );
-                    let chain_hash = kelson_integrity::audit_hash(&prev_hash, &canonical);
+        let outcome_str = format!("{:?}", a.outcome);
+        let merged_detail = serde_json::json!({ "detail": a.detail, "outcome": outcome_str });
+        let at_iso = at
+            .format(&time::format_description::well_known::Rfc3339)
+            .map_err(|e| AppError::persistence(format!("audit chain time: {e}")))?;
+        let canonical = kelson_integrity::canonical_audit_row(
+            tenant_str.as_deref(),
+            principal_str.as_deref(),
+            &a.action,
+            &a.resource,
+            &a.authority,
+            &merged_detail,
+            &at_iso,
+        );
+        let chain_hash = kelson_integrity::audit_hash(&prev_hash, &canonical);
 
-                    sqlx::query(
+        sqlx::query(
                         r"INSERT INTO audit_records
                             (id, execution_id, tenant_id, principal_id, action, resource, authority, outcome, detail, at, chain_id, prev_hash, chain_hash)
                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -489,20 +479,20 @@ async fn run_body(
                     .execute(&mut *unit.tx)
                     .await
                     .map_err(|e| AppError::persistence(format!("audit: {e}")))?;
-                    chain_prev.insert(chain_id, chain_hash);
-                    kelson_execution::QueryTap::record(
-                        "mysql:audit.write",
-                        "INSERT audit_records",
-                        t_audit.elapsed(),
-                    );
-                }
+        chain_prev.insert(chain_id, chain_hash);
+        kelson_execution::QueryTap::record(
+            "mysql:audit.write",
+            "INSERT audit_records",
+            t_audit.elapsed(),
+        );
+    }
 
-                for o in unit.outbox.iter() {
-                    let t_outbox = std::time::Instant::now();
-                    // §5.2: key computed at APPEND time inside the commit so
-                    // the row and its key are atomic (KEEL-006).
-                    let key = kelson_event::idempotency_key(&o.event, unit.tenant_id, &o.payload);
-                    sqlx::query(
+    for o in unit.outbox.iter() {
+        let t_outbox = std::time::Instant::now();
+        // §5.2: key computed at APPEND time inside the commit so
+        // the row and its key are atomic (KEEL-006).
+        let key = kelson_event::idempotency_key(&o.event, unit.tenant_id, &o.payload);
+        sqlx::query(
                         r"INSERT INTO outbox (id, tenant_id, event, topic, payload, idempotency_key, published, created_at)
                           VALUES (?,?,?,?,?,?,false,NOW(6))",
                     )
@@ -515,29 +505,29 @@ async fn run_body(
                     .execute(&mut *unit.tx)
                     .await
                     .map_err(|e| AppError::persistence(format!("outbox: {e}")))?;
-                    kelson_execution::QueryTap::record(
-                        "mysql:outbox.write",
-                        "INSERT outbox",
-                        t_outbox.elapsed(),
-                    );
-                }
+        kelson_execution::QueryTap::record(
+            "mysql:outbox.write",
+            "INSERT outbox",
+            t_outbox.elapsed(),
+        );
+    }
 
-                let t_commit = std::time::Instant::now();
-                unit.tx
-                    .commit()
-                    .await
-                    .map_err(|e| AppError::persistence(format!("commit: {e}")))?;
-                kelson_execution::QueryTap::record("mysql:tx.commit", "COMMIT", t_commit.elapsed());
+    let t_commit = std::time::Instant::now();
+    unit.tx
+        .commit()
+        .await
+        .map_err(|e| AppError::persistence(format!("commit: {e}")))?;
+    kelson_execution::QueryTap::record("mysql:tx.commit", "COMMIT", t_commit.elapsed());
 
-                Ok(RunOutcome {
-                    result,
-                    receipt: CommitReceipt {
-                        deltas_written,
-                        audit_written,
-                        outbox_queued,
-                        replayed: false,
-                    },
-                })
+    Ok(RunOutcome {
+        result,
+        receipt: CommitReceipt {
+            deltas_written,
+            audit_written,
+            outbox_queued,
+            replayed: false,
+        },
+    })
 }
 /// Truncate to microsecond precision so the canonical RFC3339 string survives
 /// the `DATETIME(6)` roundtrip unchanged (S5 audit chain contract).

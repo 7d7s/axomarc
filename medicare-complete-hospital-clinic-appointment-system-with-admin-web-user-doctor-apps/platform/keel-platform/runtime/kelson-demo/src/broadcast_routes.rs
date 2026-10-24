@@ -70,10 +70,7 @@ pub fn resolve_channels(graph: &kelson_registry::PlatformGraph) -> Vec<ChannelAu
 }
 
 /// Look up a requested channel (exact match — see the module docs).
-pub fn find_channel<'a>(
-    channels: &'a [ChannelAuthz],
-    requested: &str,
-) -> Option<&'a ChannelAuthz> {
+pub fn find_channel<'a>(channels: &'a [ChannelAuthz], requested: &str) -> Option<&'a ChannelAuthz> {
     channels.iter().find(|entry| entry.name == requested)
 }
 
@@ -136,11 +133,10 @@ async fn auth(
     session: Option<Extension<ResolvedSession>>,
     body: axum::body::Bytes,
 ) -> axum::response::Response {
-    let (principal, tenant) =
-        match resolve_identity(&state, &headers, session.as_deref()) {
-            Ok(identity) => identity,
-            Err(err) => return error_response(&state, &headers, &err),
-        };
+    let (principal, tenant) = match resolve_identity(&state, &headers, session.as_deref()) {
+        Ok(identity) => identity,
+        Err(err) => return error_response(&state, &headers, &err),
+    };
     let request: AuthRequest = match serde_json::from_slice(&body) {
         Ok(request) => request,
         Err(_) => {
@@ -198,11 +194,10 @@ async fn members(
     session: Option<Extension<ResolvedSession>>,
     Query(query): Query<MembersQuery>,
 ) -> axum::response::Response {
-    let (principal, tenant) =
-        match resolve_identity(&state, &headers, session.as_deref()) {
-            Ok(identity) => identity,
-            Err(err) => return error_response(&state, &headers, &err),
-        };
+    let (principal, tenant) = match resolve_identity(&state, &headers, session.as_deref()) {
+        Ok(identity) => identity,
+        Err(err) => return error_response(&state, &headers, &err),
+    };
     let channel = match kelson_realtime::sanitize_channel(&query.channel) {
         Some(channel) => channel,
         None => {
@@ -223,9 +218,7 @@ async fn members(
         .presence
         .members(&channel)
         .iter()
-        .map(|member| {
-            serde_json::json!({ "id": member.id, "display_name": member.display_name })
-        })
+        .map(|member| serde_json::json!({ "id": member.id, "display_name": member.display_name }))
         .collect();
     let envelope = Envelope::ok(serde_json::json!({
         "channel": channel,
@@ -296,7 +289,8 @@ mod tests {
             "../../../applications/appointments/module.toml"
         ))
         .expect("appointments manifest parses");
-        let graph = kelson_registry::PlatformGraph::compile(vec![manifest]).expect("graph compiles");
+        let graph =
+            kelson_registry::PlatformGraph::compile(vec![manifest]).expect("graph compiles");
         // No [[channel]] entries in the shipped manifest — resolution
         // starts empty and every resolved entry points at a granted form.
         let resolved = resolve_channels(&graph);
@@ -327,8 +321,7 @@ mod tests {
             tokens: tokens.clone(),
             principals,
         };
-        let principal =
-            kelson_foundation::PrincipalId::from_uuid(uuid::Uuid::now_v7());
+        let principal = kelson_foundation::PrincipalId::from_uuid(uuid::Uuid::now_v7());
 
         let issued = tokens
             .issue(

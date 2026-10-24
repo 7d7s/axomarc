@@ -91,7 +91,8 @@ fn fixture() -> Fixture {
         "{}{EXTRA_ROUTES}",
         include_str!("../../../applications/appointments/module.toml")
     );
-    let manifest = kelson_registry::ModuleManifest::from_toml(&raw).expect("fixture manifest parses");
+    let manifest =
+        kelson_registry::ModuleManifest::from_toml(&raw).expect("fixture manifest parses");
     let graph =
         kelson_registry::PlatformGraph::compile(vec![manifest]).expect("fixture graph compiles");
     Fixture { state, graph }
@@ -100,7 +101,10 @@ fn fixture() -> Fixture {
 fn router_for(fx: &Fixture) -> axum::Router {
     let state = fx.state.clone();
     let router = kelson_demo::routes::router(state.clone())
-        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &fx.graph))
+        .merge(kelson_demo::graph_routes::graph_router(
+            state.clone(),
+            &fx.graph,
+        ))
         .merge(kelson_demo::auth_routes::router(state.clone()));
     state
         .sessions
@@ -202,8 +206,7 @@ async fn explicit_accept_header_beats_the_deployment_default() {
     .await;
     assert_eq!(reply.status, StatusCode::NOT_FOUND, "{}", reply.body);
     assert!(
-        reply.content_type.contains("application/json")
-            && !reply.content_type.contains("problem"),
+        reply.content_type.contains("application/json") && !reply.content_type.contains("problem"),
         "{}",
         reply.content_type
     );
@@ -274,7 +277,12 @@ async fn app_debug_gate_hides_internal_detail_when_closed() {
     let router = router_for(&fx);
 
     let reply = get(&router, "/web/broken", None).await;
-    assert_eq!(reply.status, StatusCode::INTERNAL_SERVER_ERROR, "{}", reply.body);
+    assert_eq!(
+        reply.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        reply.body
+    );
     let body = reply.json();
     assert_eq!(body["ok"], json!(false));
     assert_eq!(body["error"]["code"], json!("KSN_INTERNAL"));
@@ -298,9 +306,19 @@ async fn app_debug_gate_renders_redacted_internal_detail_when_open() {
     let router = router_for(&fx);
 
     let reply = get(&router, "/web/broken", None).await;
-    assert_eq!(reply.status, StatusCode::INTERNAL_SERVER_ERROR, "{}", reply.body);
+    assert_eq!(
+        reply.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        reply.body
+    );
     let debug = &reply.json()["error"]["debug"];
-    assert_eq!(debug["internal"], json!("views are not configured"), "{}", debug);
+    assert_eq!(
+        debug["internal"],
+        json!("views are not configured"),
+        "{}",
+        debug
+    );
 }
 
 #[tokio::test]
@@ -309,7 +327,12 @@ async fn app_debug_detail_reaches_the_error_view_too() {
     let fx = fixture();
     let router = router_for(&fx);
     let reply = get(&router, "/web/broken", None).await;
-    assert_eq!(reply.status, StatusCode::INTERNAL_SERVER_ERROR, "{}", reply.body);
+    assert_eq!(
+        reply.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        reply.body
+    );
     assert!(
         reply.content_type.starts_with("text/html"),
         "{}",
@@ -331,7 +354,12 @@ async fn app_debug_detail_reaches_the_error_view_too() {
     fx.state.debug = true;
     let router = router_for(&fx);
     let reply = get(&router, "/web/broken", None).await;
-    assert_eq!(reply.status, StatusCode::INTERNAL_SERVER_ERROR, "{}", reply.body);
+    assert_eq!(
+        reply.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        reply.body
+    );
     assert!(
         reply.body.contains("view pages.missing failed"),
         "{}",
@@ -363,12 +391,15 @@ async fn registry_overrides_and_renderer_output_reach_the_wire() {
     fx.state
         .error_renders
         .set_status("KSN_NOT_FOUND", StatusCode::GONE);
-    fx.state.error_renders.set_view("KSN_NOT_FOUND", "errors.404");
     fx.state
         .error_renders
-        .register("KSN_NOT_FOUND", std::sync::Arc::new(|err: &kelson_foundation::AppError| {
+        .set_view("KSN_NOT_FOUND", "errors.404");
+    fx.state.error_renders.register(
+        "KSN_NOT_FOUND",
+        std::sync::Arc::new(|err: &kelson_foundation::AppError| {
             Some(json!({ "docs": format!("https://docs.test/{}", err.code) }))
-        }));
+        }),
+    );
     let router = router_for(&fx);
 
     let reply = get(&router, "/api/availability/not-a-uuid", None).await;
@@ -386,7 +417,9 @@ async fn registry_overrides_and_renderer_output_reach_the_wire() {
 #[tokio::test]
 async fn report_only_codes_keep_the_status_but_serve_the_generic_body() {
     let fx = fixture();
-    fx.state.error_renders.set_renderable("KSN_NOT_FOUND", false);
+    fx.state
+        .error_renders
+        .set_renderable("KSN_NOT_FOUND", false);
     let router = router_for(&fx);
 
     let reply = get(&router, "/api/availability/not-a-uuid", None).await;

@@ -27,9 +27,7 @@
 //! No regex engine: every pattern here is a hand-rolled closed grammar (the
 //! documented replacement for Laravel's `regex:` rule).
 
-use crate::validator::{
-    DateTarget, DimBound, NumTarget, Rule, UploadMeta, ValidationContext,
-};
+use crate::validator::{DateTarget, DimBound, NumTarget, Rule, UploadMeta, ValidationContext};
 use serde_json::Value;
 
 /// Apply one value rule to one present value. `field` is the field the rules
@@ -177,8 +175,7 @@ pub(crate) fn check(
         Rule::AlphaDash => match v {
             Value::String(s)
                 if !s.is_empty()
-                    && s
-                        .chars()
+                    && s.chars()
                         .all(|c| c.is_alphanumeric() || c == '-' || c == '_') =>
             {
                 None
@@ -249,15 +246,21 @@ pub(crate) fn check(
             },
             _ => Some("must be a number".into()),
         },
-        Rule::Digits(n) => digits_check(v, |len| len == *n as usize, || {
-            format!(
-                "must be exactly {n} digit{}",
-                if *n == 1 { "" } else { "s" }
-            )
-        }),
-        Rule::DigitsBetween(a, b) => digits_check(v, |len| {
-            len >= *a as usize && len <= *b as usize
-        }, || format!("must be between {a} and {b} digits")),
+        Rule::Digits(n) => digits_check(
+            v,
+            |len| len == *n as usize,
+            || {
+                format!(
+                    "must be exactly {n} digit{}",
+                    if *n == 1 { "" } else { "s" }
+                )
+            },
+        ),
+        Rule::DigitsBetween(a, b) => digits_check(
+            v,
+            |len| len >= *a as usize && len <= *b as usize,
+            || format!("must be between {a} and {b} digits"),
+        ),
         Rule::MultipleOf(n) => match as_number(v) {
             None => Some("must be a number".into()),
             Some(x) if is_multiple_of(x, *n) => None,
@@ -298,9 +301,8 @@ pub(crate) fn check(
         }
         Rule::Distinct => match v {
             Value::Array(items) => {
-                let dup = (0..items.len()).any(|i| {
-                    (i + 1..items.len()).any(|j| json_same(&items[i], &items[j]))
-                });
+                let dup = (0..items.len())
+                    .any(|i| (i + 1..items.len()).any(|j| json_same(&items[i], &items[j])));
                 if dup {
                     Some("must contain unique values".into())
                 } else {
@@ -386,9 +388,11 @@ pub(crate) fn check(
             },
             _ => Some("is incorrect".into()),
         },
-        Rule::Letters => {
-            criterion(v, |s| s.chars().any(|c| c.is_alphabetic()), "must contain a letter")
-        }
+        Rule::Letters => criterion(
+            v,
+            |s| s.chars().any(|c| c.is_alphabetic()),
+            "must contain a letter",
+        ),
         Rule::Numbers => criterion(
             v,
             |s| s.chars().any(|c| c.is_ascii_digit()),
@@ -557,11 +561,7 @@ fn dimensions_fail(part: &UploadMeta, bounds: &[DimBound]) -> Option<String> {
 
 /// Standalone criterion token shape: strings are tested, anything else
 /// fails closed (`password`'s sub-rules are usable on any field).
-fn criterion(
-    v: &Value,
-    ok: impl FnOnce(&str) -> bool,
-    msg: &str,
-) -> Option<String> {
+fn criterion(v: &Value, ok: impl FnOnce(&str) -> bool, msg: &str) -> Option<String> {
     match v {
         Value::String(s) if ok(s) => None,
         Value::String(_) => Some(msg.to_string()),
@@ -583,9 +583,7 @@ pub(crate) fn check_presence(
 ) -> Option<String> {
     match rule {
         Rule::Required => required_fail(value).then(|| format!("{field} is required")),
-        Rule::Present => value
-            .is_none()
-            .then(|| format!("{field} must be present")),
+        Rule::Present => value.is_none().then(|| format!("{field} must be present")),
         Rule::RequiredIf(other, vals) => {
             if triggered(ctx, other, vals) && required_fail(value) {
                 Some(format!(
@@ -622,8 +620,9 @@ pub(crate) fn check_presence(
                 None
             }
         }
-        Rule::Accepted => (!value.is_some_and(accepted_ok))
-            .then(|| format!("{field} must be accepted")),
+        Rule::Accepted => {
+            (!value.is_some_and(accepted_ok)).then(|| format!("{field} must be accepted"))
+        }
         Rule::AcceptedIf(other, vals) => {
             if triggered(ctx, other, vals) && !value.is_some_and(accepted_ok) {
                 Some(format!(
@@ -634,8 +633,9 @@ pub(crate) fn check_presence(
                 None
             }
         }
-        Rule::Declined => (!value.is_some_and(declined_ok))
-            .then(|| format!("{field} must be declined")),
+        Rule::Declined => {
+            (!value.is_some_and(declined_ok)).then(|| format!("{field} must be declined"))
+        }
         Rule::DeclinedIf(other, vals) => {
             if triggered(ctx, other, vals) && !value.is_some_and(declined_ok) {
                 Some(format!(
@@ -668,9 +668,7 @@ pub(crate) fn check_presence(
                 None
             }
         }
-        Rule::Missing => value
-            .is_some()
-            .then(|| format!("{field} must be missing")),
+        Rule::Missing => value.is_some().then(|| format!("{field} must be missing")),
         Rule::MissingIf(other, vals) => {
             if triggered(ctx, other, vals) && value.is_some() {
                 Some(format!(
@@ -818,7 +816,10 @@ pub(crate) fn as_number(v: &Value) -> Option<f64> {
 }
 
 fn is_numeric_str(s: &str) -> bool {
-    s.trim().parse::<f64>().map(|f| f.is_finite()).unwrap_or(false)
+    s.trim()
+        .parse::<f64>()
+        .map(|f| f.is_finite())
+        .unwrap_or(false)
 }
 
 fn is_integer_valued(n: &serde_json::Number) -> bool {
@@ -983,9 +984,7 @@ pub(crate) fn is_e164(s: &str) -> bool {
 /// `before:*`/`after:*` and `date_format` all read this one grammar, so a
 /// value that passes `date` is always comparable.
 pub(crate) fn date_instant(s: &str) -> Option<time::OffsetDateTime> {
-    if let Ok(dt) =
-        time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
-    {
+    if let Ok(dt) = time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339) {
         return Some(dt);
     }
     // RFC 3339 strictly requires seconds; also accept minute-precision
@@ -1134,134 +1133,403 @@ fn is_ulid(s: &str) -> bool {
 /// replaces PHP's full `timezone_identifiers_list()` (documented divergence).
 static TIMEZONES: &[&str] = &[
     // legacy aliases
-    "UTC", "GMT", "UCT", "Universal", "Zulu", "Greenwich",
-    "Etc/UTC", "Etc/GMT",
+    "UTC",
+    "GMT",
+    "UCT",
+    "Universal",
+    "Zulu",
+    "Greenwich",
+    "Etc/UTC",
+    "Etc/GMT",
     // Africa
-    "Africa/Abidjan", "Africa/Accra", "Africa/Addis_Ababa", "Africa/Algiers",
-    "Africa/Asmara", "Africa/Bamako", "Africa/Bangui", "Africa/Banjul",
-    "Africa/Bissau", "Africa/Blantyre", "Africa/Bujumbura", "Africa/Cairo",
-    "Africa/Casablanca", "Africa/Ceuta", "Africa/Conakry", "Africa/Dakar",
-    "Africa/Dar_es_Salaam", "Africa/Djibouti", "Africa/Douala",
-    "Africa/El_Aaiun", "Africa/Freetown", "Africa/Gaborone", "Africa/Harare",
-    "Africa/Juba", "Africa/Johannesburg", "Africa/Kampala", "Africa/Khartoum",
-    "Africa/Kigali", "Africa/Kinshasa", "Africa/Kisumu", "Africa/Lagos",
-    "Africa/Libreville", "Africa/Lome", "Africa/Luanda", "Africa/Lubumbashi",
-    "Africa/Lusaka", "Africa/Malabo", "Africa/Maputo", "Africa/Maseru",
-    "Africa/Mbabane", "Africa/Mogadishu", "Africa/Monrovia", "Africa/Nairobi",
-    "Africa/Ndjamena", "Africa/Niamey", "Africa/Nouakchott",
-    "Africa/Ouagadougou", "Africa/Porto-Novo", "Africa/Sao_Tome",
-    "Africa/Tripoli", "Africa/Tunis", "Africa/Windhoek",
+    "Africa/Abidjan",
+    "Africa/Accra",
+    "Africa/Addis_Ababa",
+    "Africa/Algiers",
+    "Africa/Asmara",
+    "Africa/Bamako",
+    "Africa/Bangui",
+    "Africa/Banjul",
+    "Africa/Bissau",
+    "Africa/Blantyre",
+    "Africa/Bujumbura",
+    "Africa/Cairo",
+    "Africa/Casablanca",
+    "Africa/Ceuta",
+    "Africa/Conakry",
+    "Africa/Dakar",
+    "Africa/Dar_es_Salaam",
+    "Africa/Djibouti",
+    "Africa/Douala",
+    "Africa/El_Aaiun",
+    "Africa/Freetown",
+    "Africa/Gaborone",
+    "Africa/Harare",
+    "Africa/Juba",
+    "Africa/Johannesburg",
+    "Africa/Kampala",
+    "Africa/Khartoum",
+    "Africa/Kigali",
+    "Africa/Kinshasa",
+    "Africa/Kisumu",
+    "Africa/Lagos",
+    "Africa/Libreville",
+    "Africa/Lome",
+    "Africa/Luanda",
+    "Africa/Lubumbashi",
+    "Africa/Lusaka",
+    "Africa/Malabo",
+    "Africa/Maputo",
+    "Africa/Maseru",
+    "Africa/Mbabane",
+    "Africa/Mogadishu",
+    "Africa/Monrovia",
+    "Africa/Nairobi",
+    "Africa/Ndjamena",
+    "Africa/Niamey",
+    "Africa/Nouakchott",
+    "Africa/Ouagadougou",
+    "Africa/Porto-Novo",
+    "Africa/Sao_Tome",
+    "Africa/Tripoli",
+    "Africa/Tunis",
+    "Africa/Windhoek",
     // America
-    "America/Adak", "America/Anchorage", "America/Anguilla",
-    "America/Antigua", "America/Araguaina", "America/Argentina/Buenos_Aires",
-    "America/Argentina/Catamarca", "America/Argentina/Cordoba",
-    "America/Argentina/Jujuy", "America/Argentina/La_Rioja",
-    "America/Argentina/Mendoza", "America/Argentina/Rio_Gallegos",
-    "America/Argentina/Salta", "America/Argentina/San_Juan",
-    "America/Argentina/San_Luis", "America/Argentina/Tucuman",
-    "America/Argentina/Ushuaia", "America/Aruba", "America/Asuncion",
-    "America/Atikokan", "America/Bahia", "America/Bahia_Banderas",
-    "America/Barbados", "America/Belem", "America/Belize", "America/Blanc-Sablon",
-    "America/Boise", "America/Cambridge_Bay", "America/Cancun",
-    "America/Caracas", "America/Cayman", "America/Chicago",
-    "America/Chihuahua", "America/Ciudad_Juarez", "America/Costa_Rica",
-    "America/Cuiaba", "America/Curacao", "America/Dawson",
-    "America/Dawson_Creek", "America/Denver", "America/Detroit",
-    "America/Dominica", "America/Edmonton", "America/El_Salvador",
-    "America/Fort_Nelson", "America/Fortaleza", "America/Glace_Bay",
-    "America/Godthab", "America/Goose_Bay", "America/Grand_Turk",
-    "America/Grenada", "America/Guadeloupe", "America/Guatemala",
-    "America/Guayaquil", "America/Guyana", "America/Halifax", "America/Havana",
-    "America/Hermosillo", "America/Indiana/Indianapolis",
-    "America/Indiana/Knox", "America/Indiana/Marengo",
-    "America/Indiana/Petersburg", "America/Indiana/Tell_City",
-    "America/Indiana/Vevay", "America/Indiana/Vincennes",
-    "America/Indiana/Winamac", "America/Indianapolis", "America/Inuvik",
-    "America/Iqaluit", "America/Jamaica", "America/Juneau",
-    "America/Kentucky/Louisville", "America/Kentucky/Monticello",
-    "America/Lima", "America/Los_Angeles", "America/Maceio", "America/Managua",
-    "America/Manaus", "America/Martinique", "America/Matamoros",
-    "America/Mazatlan", "America/Mendoza", "America/Menominee",
-    "America/Merida", "America/Metlakatla", "America/Mexico_City",
-    "America/Moncton", "America/Monterrey", "America/Montevideo",
-    "America/Montserrat", "America/Nassau", "America/New_York",
-    "America/Nome", "America/Noronha", "America/North_Dakota/Center",
-    "America/North_Dakota/New_Salem", "America/Nuuk", "America/Ojinaga",
-    "America/Panama", "America/Pangnirtung", "America/Paramaribo",
-    "America/Phoenix", "America/Port-au-Prince", "America/Port_of_Spain",
-    "America/Puerto_Rico", "America/Punta_Arenas", "America/Regina",
-    "America/Resolute", "America/Rio_Branco", "America/Santarem",
-    "America/Santiago", "America/Santo_Domingo", "America/Sao_Paulo",
-    "America/Scoresbysund", "America/Sitka", "America/St_Johns",
-    "America/St_Kitts", "America/St_Lucia", "America/St_Thomas",
-    "America/St_Vincent", "America/Swift_Current", "America/Tegucigalpa",
-    "America/Thule", "America/Thunder_Bay", "America/Tijuana",
-    "America/Toronto", "America/Vancouver", "America/Whitehorse",
-    "America/Winnipeg", "America/Yakutat", "America/Yellowknife",
+    "America/Adak",
+    "America/Anchorage",
+    "America/Anguilla",
+    "America/Antigua",
+    "America/Araguaina",
+    "America/Argentina/Buenos_Aires",
+    "America/Argentina/Catamarca",
+    "America/Argentina/Cordoba",
+    "America/Argentina/Jujuy",
+    "America/Argentina/La_Rioja",
+    "America/Argentina/Mendoza",
+    "America/Argentina/Rio_Gallegos",
+    "America/Argentina/Salta",
+    "America/Argentina/San_Juan",
+    "America/Argentina/San_Luis",
+    "America/Argentina/Tucuman",
+    "America/Argentina/Ushuaia",
+    "America/Aruba",
+    "America/Asuncion",
+    "America/Atikokan",
+    "America/Bahia",
+    "America/Bahia_Banderas",
+    "America/Barbados",
+    "America/Belem",
+    "America/Belize",
+    "America/Blanc-Sablon",
+    "America/Boise",
+    "America/Cambridge_Bay",
+    "America/Cancun",
+    "America/Caracas",
+    "America/Cayman",
+    "America/Chicago",
+    "America/Chihuahua",
+    "America/Ciudad_Juarez",
+    "America/Costa_Rica",
+    "America/Cuiaba",
+    "America/Curacao",
+    "America/Dawson",
+    "America/Dawson_Creek",
+    "America/Denver",
+    "America/Detroit",
+    "America/Dominica",
+    "America/Edmonton",
+    "America/El_Salvador",
+    "America/Fort_Nelson",
+    "America/Fortaleza",
+    "America/Glace_Bay",
+    "America/Godthab",
+    "America/Goose_Bay",
+    "America/Grand_Turk",
+    "America/Grenada",
+    "America/Guadeloupe",
+    "America/Guatemala",
+    "America/Guayaquil",
+    "America/Guyana",
+    "America/Halifax",
+    "America/Havana",
+    "America/Hermosillo",
+    "America/Indiana/Indianapolis",
+    "America/Indiana/Knox",
+    "America/Indiana/Marengo",
+    "America/Indiana/Petersburg",
+    "America/Indiana/Tell_City",
+    "America/Indiana/Vevay",
+    "America/Indiana/Vincennes",
+    "America/Indiana/Winamac",
+    "America/Indianapolis",
+    "America/Inuvik",
+    "America/Iqaluit",
+    "America/Jamaica",
+    "America/Juneau",
+    "America/Kentucky/Louisville",
+    "America/Kentucky/Monticello",
+    "America/Lima",
+    "America/Los_Angeles",
+    "America/Maceio",
+    "America/Managua",
+    "America/Manaus",
+    "America/Martinique",
+    "America/Matamoros",
+    "America/Mazatlan",
+    "America/Mendoza",
+    "America/Menominee",
+    "America/Merida",
+    "America/Metlakatla",
+    "America/Mexico_City",
+    "America/Moncton",
+    "America/Monterrey",
+    "America/Montevideo",
+    "America/Montserrat",
+    "America/Nassau",
+    "America/New_York",
+    "America/Nome",
+    "America/Noronha",
+    "America/North_Dakota/Center",
+    "America/North_Dakota/New_Salem",
+    "America/Nuuk",
+    "America/Ojinaga",
+    "America/Panama",
+    "America/Pangnirtung",
+    "America/Paramaribo",
+    "America/Phoenix",
+    "America/Port-au-Prince",
+    "America/Port_of_Spain",
+    "America/Puerto_Rico",
+    "America/Punta_Arenas",
+    "America/Regina",
+    "America/Resolute",
+    "America/Rio_Branco",
+    "America/Santarem",
+    "America/Santiago",
+    "America/Santo_Domingo",
+    "America/Sao_Paulo",
+    "America/Scoresbysund",
+    "America/Sitka",
+    "America/St_Johns",
+    "America/St_Kitts",
+    "America/St_Lucia",
+    "America/St_Thomas",
+    "America/St_Vincent",
+    "America/Swift_Current",
+    "America/Tegucigalpa",
+    "America/Thule",
+    "America/Thunder_Bay",
+    "America/Tijuana",
+    "America/Toronto",
+    "America/Vancouver",
+    "America/Whitehorse",
+    "America/Winnipeg",
+    "America/Yakutat",
+    "America/Yellowknife",
     // Antarctica
-    "Antarctica/Casey", "Antarctica/Davis", "Antarctica/DumontDUrville",
-    "Antarctica/Mawson", "Antarctica/Palmer", "Antarctica/Rothera",
-    "Antarctica/Syowa", "Antarctica/Troll", "Antarctica/Vostok",
+    "Antarctica/Casey",
+    "Antarctica/Davis",
+    "Antarctica/DumontDUrville",
+    "Antarctica/Mawson",
+    "Antarctica/Palmer",
+    "Antarctica/Rothera",
+    "Antarctica/Syowa",
+    "Antarctica/Troll",
+    "Antarctica/Vostok",
     // Asia
-    "Asia/Almaty", "Asia/Amman", "Asia/Anadyr", "Asia/Aqtau", "Asia/Aqtobe",
-    "Asia/Ashgabat", "Asia/Baghdad", "Asia/Baku", "Asia/Bangkok",
-    "Asia/Barnaul", "Asia/Beirut", "Asia/Bishkek", "Asia/Brunei",
-    "Asia/Chita", "Asia/Choibalsan", "Asia/Colombo", "Asia/Damascus",
-    "Asia/Dhaka", "Asia/Dili", "Asia/Dubai", "Asia/Dushanbe",
-    "Asia/Famagusta", "Asia/Gaza", "Asia/Hebron", "Asia/Ho_Chi_Minh",
-    "Asia/Hong_Kong", "Asia/Hovd", "Asia/Irkutsk", "Asia/Jakarta",
-    "Asia/Jerusalem", "Asia/Kabul", "Asia/Kathmandu", "Asia/Khandyga",
-    "Asia/Kolkata", "Asia/Krasnoyarsk", "Asia/Kuala_Lumpur", "Asia/Kuching",
-    "Asia/Macau", "Asia/Magadan", "Asia/Makassar", "Asia/Manila",
-    "Asia/Muscat", "Asia/Novokuznetsk", "Asia/Novosibirsk", "Asia/Omsk",
-    "Asia/Oral", "Asia/Phnom_Penh", "Asia/Pontianak", "Asia/Pyongyang",
-    "Asia/Qatar", "Asia/Riyadh", "Asia/Sakhalin", "Asia/Samarkand",
-    "Asia/Seoul", "Asia/Shanghai", "Asia/Singapore", "Asia/Srednekolymsk",
-    "Asia/Taipei", "Asia/Tashkent", "Asia/Tbilisi", "Asia/Tehran",
-    "Asia/Thimphu", "Asia/Tokyo", "Asia/Tomsk", "Asia/Ulaanbaatar",
-    "Asia/Urumqi", "Asia/Ust-Nera", "Asia/Vientiane", "Asia/Vladivostok",
-    "Asia/Yakutsk", "Asia/Yangon", "Asia/Yekaterinburg", "Asia/Yerevan",
+    "Asia/Almaty",
+    "Asia/Amman",
+    "Asia/Anadyr",
+    "Asia/Aqtau",
+    "Asia/Aqtobe",
+    "Asia/Ashgabat",
+    "Asia/Baghdad",
+    "Asia/Baku",
+    "Asia/Bangkok",
+    "Asia/Barnaul",
+    "Asia/Beirut",
+    "Asia/Bishkek",
+    "Asia/Brunei",
+    "Asia/Chita",
+    "Asia/Choibalsan",
+    "Asia/Colombo",
+    "Asia/Damascus",
+    "Asia/Dhaka",
+    "Asia/Dili",
+    "Asia/Dubai",
+    "Asia/Dushanbe",
+    "Asia/Famagusta",
+    "Asia/Gaza",
+    "Asia/Hebron",
+    "Asia/Ho_Chi_Minh",
+    "Asia/Hong_Kong",
+    "Asia/Hovd",
+    "Asia/Irkutsk",
+    "Asia/Jakarta",
+    "Asia/Jerusalem",
+    "Asia/Kabul",
+    "Asia/Kathmandu",
+    "Asia/Khandyga",
+    "Asia/Kolkata",
+    "Asia/Krasnoyarsk",
+    "Asia/Kuala_Lumpur",
+    "Asia/Kuching",
+    "Asia/Macau",
+    "Asia/Magadan",
+    "Asia/Makassar",
+    "Asia/Manila",
+    "Asia/Muscat",
+    "Asia/Novokuznetsk",
+    "Asia/Novosibirsk",
+    "Asia/Omsk",
+    "Asia/Oral",
+    "Asia/Phnom_Penh",
+    "Asia/Pontianak",
+    "Asia/Pyongyang",
+    "Asia/Qatar",
+    "Asia/Riyadh",
+    "Asia/Sakhalin",
+    "Asia/Samarkand",
+    "Asia/Seoul",
+    "Asia/Shanghai",
+    "Asia/Singapore",
+    "Asia/Srednekolymsk",
+    "Asia/Taipei",
+    "Asia/Tashkent",
+    "Asia/Tbilisi",
+    "Asia/Tehran",
+    "Asia/Thimphu",
+    "Asia/Tokyo",
+    "Asia/Tomsk",
+    "Asia/Ulaanbaatar",
+    "Asia/Urumqi",
+    "Asia/Ust-Nera",
+    "Asia/Vientiane",
+    "Asia/Vladivostok",
+    "Asia/Yakutsk",
+    "Asia/Yangon",
+    "Asia/Yekaterinburg",
+    "Asia/Yerevan",
     // Atlantic
-    "Atlantic/Azores", "Atlantic/Bermuda", "Atlantic/Canary",
-    "Atlantic/Cape_Verde", "Atlantic/Faroe", "Atlantic/Madeira",
-    "Atlantic/Reykjavik", "Atlantic/South_Georgia", "Atlantic/St_Helena",
+    "Atlantic/Azores",
+    "Atlantic/Bermuda",
+    "Atlantic/Canary",
+    "Atlantic/Cape_Verde",
+    "Atlantic/Faroe",
+    "Atlantic/Madeira",
+    "Atlantic/Reykjavik",
+    "Atlantic/South_Georgia",
+    "Atlantic/St_Helena",
     "Atlantic/Stanley",
     // Australia + Pacific islands (Australian block)
-    "Australia/Adelaide", "Australia/Brisbane", "Australia/Broken_Hill",
-    "Australia/Currie", "Australia/Darwin", "Australia/Eucla",
-    "Australia/Hobart", "Australia/Lindeman", "Australia/Lord_Howe",
-    "Australia/Melbourne", "Australia/Perth", "Australia/Sydney",
+    "Australia/Adelaide",
+    "Australia/Brisbane",
+    "Australia/Broken_Hill",
+    "Australia/Currie",
+    "Australia/Darwin",
+    "Australia/Eucla",
+    "Australia/Hobart",
+    "Australia/Lindeman",
+    "Australia/Lord_Howe",
+    "Australia/Melbourne",
+    "Australia/Perth",
+    "Australia/Sydney",
     // Europe
-    "Europe/Amsterdam", "Europe/Andorra", "Europe/Astrakhan", "Europe/Athens",
-    "Europe/Belgrade", "Europe/Berlin", "Europe/Bratislava", "Europe/Brussels",
-    "Europe/Bucharest", "Europe/Budapest", "Europe/Chisinau",
-    "Europe/Copenhagen", "Europe/Dublin", "Europe/Gibraltar",
-    "Europe/Helsinki", "Europe/Istanbul", "Europe/Kaliningrad",
-    "Europe/Kyiv", "Europe/Lisbon", "Europe/Ljubljana", "Europe/London",
-    "Europe/Luxembourg", "Europe/Madrid", "Europe/Malta", "Europe/Minsk",
-    "Europe/Monaco", "Europe/Moscow", "Europe/Oslo", "Europe/Paris",
-    "Europe/Prague", "Europe/Riga", "Europe/Rome", "Europe/Samara",
-    "Europe/Sarajevo", "Europe/Saratov", "Europe/Simferopol", "Europe/Skopje",
-    "Europe/Sofia", "Europe/Stockholm", "Europe/Tallinn", "Europe/Tirane",
-    "Europe/Vaduz", "Europe/Vienna", "Europe/Vilnius", "Europe/Volgograd",
-    "Europe/Warsaw", "Europe/Zurich",
+    "Europe/Amsterdam",
+    "Europe/Andorra",
+    "Europe/Astrakhan",
+    "Europe/Athens",
+    "Europe/Belgrade",
+    "Europe/Berlin",
+    "Europe/Bratislava",
+    "Europe/Brussels",
+    "Europe/Bucharest",
+    "Europe/Budapest",
+    "Europe/Chisinau",
+    "Europe/Copenhagen",
+    "Europe/Dublin",
+    "Europe/Gibraltar",
+    "Europe/Helsinki",
+    "Europe/Istanbul",
+    "Europe/Kaliningrad",
+    "Europe/Kyiv",
+    "Europe/Lisbon",
+    "Europe/Ljubljana",
+    "Europe/London",
+    "Europe/Luxembourg",
+    "Europe/Madrid",
+    "Europe/Malta",
+    "Europe/Minsk",
+    "Europe/Monaco",
+    "Europe/Moscow",
+    "Europe/Oslo",
+    "Europe/Paris",
+    "Europe/Prague",
+    "Europe/Riga",
+    "Europe/Rome",
+    "Europe/Samara",
+    "Europe/Sarajevo",
+    "Europe/Saratov",
+    "Europe/Simferopol",
+    "Europe/Skopje",
+    "Europe/Sofia",
+    "Europe/Stockholm",
+    "Europe/Tallinn",
+    "Europe/Tirane",
+    "Europe/Vaduz",
+    "Europe/Vienna",
+    "Europe/Vilnius",
+    "Europe/Volgograd",
+    "Europe/Warsaw",
+    "Europe/Zurich",
     // Indian Ocean
-    "Indian/Antananarivo", "Indian/Chagos", "Indian/Christmas",
-    "Indian/Cocos", "Indian/Comoro", "Indian/Maldives", "Indian/Mauritius",
-    "Indian/Mayotte", "Indian/Reunion",
+    "Indian/Antananarivo",
+    "Indian/Chagos",
+    "Indian/Christmas",
+    "Indian/Cocos",
+    "Indian/Comoro",
+    "Indian/Maldives",
+    "Indian/Mauritius",
+    "Indian/Mayotte",
+    "Indian/Reunion",
     // Pacific
-    "Pacific/Auckland", "Pacific/Bougainville", "Pacific/Chatham",
-    "Pacific/Chuuk", "Pacific/Easter", "Pacific/Efate", "Pacific/Fakaofo",
-    "Pacific/Fiji", "Pacific/Funafuti", "Pacific/Galapagos",
-    "Pacific/Gambier", "Pacific/Guadalcanal", "Pacific/Guam",
-    "Pacific/Honolulu", "Pacific/Honiara", "Pacific/Kiritimati",
-    "Pacific/Kosrae", "Pacific/Kwajalein", "Pacific/Majuro",
-    "Pacific/Marquesas", "Pacific/Midway", "Pacific/Nauru", "Pacific/Niue",
-    "Pacific/Norfolk", "Pacific/Noumea", "Pacific/Pago_Pago",
-    "Pacific/Palau", "Pacific/Pitcairn", "Pacific/Pohnpei",
-    "Pacific/Port_Moresby", "Pacific/Rarotonga", "Pacific/Saipan",
-    "Pacific/Tahiti", "Pacific/Tarawa", "Pacific/Tongatapu",
-    "Pacific/Wake", "Pacific/Wallis",
+    "Pacific/Auckland",
+    "Pacific/Bougainville",
+    "Pacific/Chatham",
+    "Pacific/Chuuk",
+    "Pacific/Easter",
+    "Pacific/Efate",
+    "Pacific/Fakaofo",
+    "Pacific/Fiji",
+    "Pacific/Funafuti",
+    "Pacific/Galapagos",
+    "Pacific/Gambier",
+    "Pacific/Guadalcanal",
+    "Pacific/Guam",
+    "Pacific/Honolulu",
+    "Pacific/Honiara",
+    "Pacific/Kiritimati",
+    "Pacific/Kosrae",
+    "Pacific/Kwajalein",
+    "Pacific/Majuro",
+    "Pacific/Marquesas",
+    "Pacific/Midway",
+    "Pacific/Nauru",
+    "Pacific/Niue",
+    "Pacific/Norfolk",
+    "Pacific/Noumea",
+    "Pacific/Pago_Pago",
+    "Pacific/Palau",
+    "Pacific/Pitcairn",
+    "Pacific/Pohnpei",
+    "Pacific/Port_Moresby",
+    "Pacific/Rarotonga",
+    "Pacific/Saipan",
+    "Pacific/Tahiti",
+    "Pacific/Tarawa",
+    "Pacific/Tongatapu",
+    "Pacific/Wake",
+    "Pacific/Wallis",
 ];
 
 fn is_timezone(s: &str) -> bool {
@@ -1344,7 +1612,10 @@ mod tests {
         assert!(fails(Rule::Alpha, json!(42)), "alpha is string-only");
 
         assert!(passes(Rule::AlphaNum, json!("abc123")));
-        assert!(passes(Rule::AlphaNum, json!(42)), "integers pass in Laravel");
+        assert!(
+            passes(Rule::AlphaNum, json!(42)),
+            "integers pass in Laravel"
+        );
         assert!(fails(Rule::AlphaNum, json!("ab-c")));
         assert!(fails(Rule::AlphaNum, json!(4.5)));
 
@@ -1376,10 +1647,7 @@ mod tests {
             Rule::DoesntStartWith("tmp".into()),
             json!("report.pdf")
         ));
-        assert!(fails(
-            Rule::DoesntStartWith("tmp".into()),
-            json!("tmpfile")
-        ));
+        assert!(fails(Rule::DoesntStartWith("tmp".into()), json!("tmpfile")));
 
         assert!(passes(
             Rule::DoesntEndWith(".exe".into()),
@@ -1458,10 +1726,7 @@ mod tests {
         assert!(fails(Rule::Digits(4), json!("-123")));
         assert!(fails(Rule::Digits(4), json!(1234.5)));
 
-        assert!(passes(
-            Rule::DigitsBetween(4, 6),
-            json!("12345")
-        ));
+        assert!(passes(Rule::DigitsBetween(4, 6), json!("12345")));
         assert!(fails(Rule::DigitsBetween(4, 6), json!("123")));
         assert!(fails(Rule::DigitsBetween(4, 6), json!("1234567")));
 
@@ -1479,9 +1744,21 @@ mod tests {
         // literal targets
         assert!(check(&Rule::Gt(NumTarget::Literal(18.0)), "age", &json!(21), &ctx).is_none());
         assert!(check(&Rule::Gt(NumTarget::Literal(18.0)), "age", &json!(18), &ctx).is_some());
-        assert!(check(&Rule::Gte(NumTarget::Literal(18.0)), "age", &json!(18), &ctx).is_none());
+        assert!(check(
+            &Rule::Gte(NumTarget::Literal(18.0)),
+            "age",
+            &json!(18),
+            &ctx
+        )
+        .is_none());
         assert!(check(&Rule::Lt(NumTarget::Literal(20.0)), "age", &json!(21), &ctx).is_some());
-        assert!(check(&Rule::Lte(NumTarget::Literal(21.0)), "age", &json!(21), &ctx).is_none());
+        assert!(check(
+            &Rule::Lte(NumTarget::Literal(21.0)),
+            "age",
+            &json!(21),
+            &ctx
+        )
+        .is_none());
 
         // field targets resolve from the shared input
         let age = Rule::Gt(NumTarget::Field("floor".into()));

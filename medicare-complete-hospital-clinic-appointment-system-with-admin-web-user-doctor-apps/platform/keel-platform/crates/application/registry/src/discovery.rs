@@ -90,8 +90,7 @@ pub fn discover_route_files(root: &Path) -> Result<Vec<ModuleManifest>, String> 
         if !path.exists() {
             continue;
         }
-        let raw =
-            std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let raw = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let manifest = RouteFileManifest::from_toml(&raw, &format!("routes/{file}"), plane)
             .map_err(|v| format!("{}: {}", path.display(), v.message))?;
         out.push(manifest.into_module(module_name));
@@ -141,7 +140,11 @@ mod tests {
 
         let manifests = discover_manifests(&root).expect("discovers");
         let names: Vec<&str> = manifests.iter().map(|m| m.name()).collect();
-        assert_eq!(names, vec!["alpha"], "one file read twice is one declaration");
+        assert_eq!(
+            names,
+            vec!["alpha"],
+            "one file read twice is one declaration"
+        );
         crate::PlatformGraph::compile(manifests).expect("one declaration compiles");
 
         std::fs::remove_dir_all(&root).ok();

@@ -66,15 +66,9 @@ pub enum Node {
         fallback: Option<Vec<Node>>,
     },
     /// @isset(path) ... @endisset
-    Isset {
-        path: Vec<Segment>,
-        body: Vec<Node>,
-    },
+    Isset { path: Vec<Segment>, body: Vec<Node> },
     /// @empty(operand) ... @endempty
-    Empty {
-        operand: Operand,
-        body: Vec<Node>,
-    },
+    Empty { operand: Operand, body: Vec<Node> },
     /// @auth ... @else ... @endauth (context _auth truthy = authenticated).
     Auth {
         body: Vec<Node>,

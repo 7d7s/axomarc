@@ -11,11 +11,11 @@
 #![cfg(feature = "pg-tests")]
 
 use kelson_foundation::TenantId;
-use kelson_mysql::cost::{CostBudget, CostGuard, CostLedger};
-use kelson_models::{FieldDef, FieldType, ModelDef, Record};
 use kelson_models::store::{FieldFilter, ListOpts, ModelStore};
-use uuid::Uuid;
+use kelson_models::{FieldDef, FieldType, ModelDef, Record};
+use kelson_mysql::cost::{CostBudget, CostGuard, CostLedger};
 use std::sync::{Arc, Mutex};
+use uuid::Uuid;
 
 async fn pool() -> Option<kelson_mysql::MySqlPool> {
     let url = match std::env::var("DATABASE_URL") {
@@ -76,18 +76,24 @@ async fn mysql_cost_the_budget_refuses_a_runaway_write_before_it_runs() {
 
     let mut changes = Record::new();
     changes.insert("amount".into(), serde_json::json!(999));
-    let filters = vec![FieldFilter::eq("tenant_id", serde_json::json!(tenant.as_uuid().to_string()))];
+    let filters = vec![FieldFilter::eq(
+        "tenant_id",
+        serde_json::json!(tenant.as_uuid().to_string()),
+    )];
 
     let refusal = store
         .update_filtered(&model(&table), Some(tenant), &filters, &changes)
         .expect_err("the over-budget write is refused");
     assert!(
-        refusal.public_message.contains("cost budget refused the write"),
+        refusal
+            .public_message
+            .contains("cost budget refused the write"),
         "the refusal must name the cause: {}",
         refusal.public_message
     );
     assert!(
-        refusal.public_message.contains("10 rows") && refusal.public_message.contains("ceiling is 5"),
+        refusal.public_message.contains("10 rows")
+            && refusal.public_message.contains("ceiling is 5"),
         "the refusal must carry the numbers: {}",
         refusal.public_message
     );
@@ -106,7 +112,10 @@ async fn mysql_cost_the_budget_refuses_a_runaway_write_before_it_runs() {
         .cost_of(&tenant)
         .expect("the tenant is known");
     assert_eq!(cost.refused, 1, "the refusal is recorded");
-    assert_eq!(cost.statements, 0, "the refused write is not counted as work");
+    assert_eq!(
+        cost.statements, 0,
+        "the refused write is not counted as work"
+    );
 
     // With a ceiling that fits, the same write goes through and the cost
     // is recorded.
@@ -164,8 +173,8 @@ async fn mysql_cost_the_ledger_aggregates_per_tenant() {
     }
 
     let ledger = Arc::new(Mutex::new(CostLedger::new()));
-    let store = kelson_mysql::MySqlModelStore::new(pool.clone())
-        .with_cost_ledger(Arc::clone(&ledger));
+    let store =
+        kelson_mysql::MySqlModelStore::new(pool.clone()).with_cost_ledger(Arc::clone(&ledger));
 
     let mut changes = Record::new();
     changes.insert("amount".into(), serde_json::json!(7));

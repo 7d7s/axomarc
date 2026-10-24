@@ -240,10 +240,16 @@ fn services() -> Migration {
     Migration::new()
         .comment("-- MySQL 8 dialect twin of database/migrations/20260820000002_services.sql.")
         .comment("-- uuid: BINARY(16) (sqlx MySQL Uuid codec is binary)")
-        .comment("-- Kelson services DDL (S2 item 19): durable jobs, diagnostics chain, auth tokens.")
+        .comment(
+            "-- Kelson services DDL (S2 item 19): durable jobs, diagnostics chain, auth tokens.",
+        )
         .comment("-- The outbox table already exists in 20260819000001_foundation.sql (the outbox")
-        .comment("-- writer landed with the engine); the pump (item 24) reads it. Same conventions:")
-        .comment("-- application-generated UUID v7 ids, runtime role never owns tables (roles.sql).")
+        .comment(
+            "-- writer landed with the engine); the pump (item 24) reads it. Same conventions:",
+        )
+        .comment(
+            "-- application-generated UUID v7 ids, runtime role never owns tables (roles.sql).",
+        )
         .blank()
         .section("DURABLE JOB QUEUE (SKIP LOCKED, item 22/23)")
         .blank()
@@ -275,7 +281,11 @@ fn services() -> Migration {
         .comment("-- MySQL has no partial index: WHERE status = 'pending' is dropped (non-unique")
         .comment("-- index, so only index size / scan selectivity diverges; the claim query keeps")
         .comment("-- its explicit status = 'pending' predicate).")
-        .create_index("ix_jobs_claimable", "jobs_queue", "priority DESC, available_at")
+        .create_index(
+            "ix_jobs_claimable",
+            "jobs_queue",
+            "priority DESC, available_at",
+        )
         .create_index("ix_jobs_status", "jobs_queue", "status")
         .create_index("ix_jobs_correlation", "jobs_queue", "correlation_id")
         .blank()
@@ -375,7 +385,9 @@ fn appointments() -> Migration {
 
 fn audit_hash_chain() -> Migration {
     Migration::new()
-        .comment("-- MySQL 8 dialect twin of database/migrations/20260823000001_audit_hash_chain.sql.")
+        .comment(
+            "-- MySQL 8 dialect twin of database/migrations/20260823000001_audit_hash_chain.sql.",
+        )
         .comment("-- uuid: BINARY(16) (sqlx MySQL Uuid codec is binary)")
         .comment("-- Sentinel (S5): audit hash-chain columns (D-74, STAGE-SENTINEL-SPEC).")
         .comment("-- Per-(tenant, day) chain segments; chain computation happens inside the")
@@ -399,7 +411,9 @@ fn audit_hash_chain() -> Migration {
 
 fn email_verification() -> Migration {
     Migration::new()
-        .comment("-- MySQL 8 dialect twin of database/migrations/20260824000001_email_verification.sql.")
+        .comment(
+            "-- MySQL 8 dialect twin of database/migrations/20260824000001_email_verification.sql.",
+        )
         .comment("-- B-23 email verification: record when a principal proved ownership of the")
         .comment("-- contact email. NULL = unverified. Additive column only (forward-only")
         .comment("-- migration discipline, G08); existing rows stay unverified until proven.")
@@ -512,8 +526,8 @@ const MIGRATIONS: &[ShippedMigration] = &[
 
 #[test]
 fn fluent_schema_builder_byte_round_trips_every_shipped_migration() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../database/migrations-mysql");
+    let dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../database/migrations-mysql");
     let regenerate = std::env::var("KEEL_SCHEMA_REGENERATE").is_ok_and(|v| v == "1");
     for (file, program) in MIGRATIONS {
         let rendered = program().render();

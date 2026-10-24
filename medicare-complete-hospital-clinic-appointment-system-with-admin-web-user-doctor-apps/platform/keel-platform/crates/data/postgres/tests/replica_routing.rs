@@ -70,8 +70,7 @@ async fn mysql_a_replica_eligible_list_is_served_by_the_replica() {
         .await
         .expect("the replica migrations apply");
 
-    let store =
-        kelson_mysql::MySqlModelStore::new(primary.clone()).with_read_pool(replica.clone());
+    let store = kelson_mysql::MySqlModelStore::new(primary.clone()).with_read_pool(replica.clone());
     let runtime = ModelRuntime::new(appointments_model());
 
     let tenant = TenantId::new();
@@ -85,23 +84,14 @@ async fn mysql_a_replica_eligible_list_is_served_by_the_replica() {
 
     let patient = format!("replica-probe-{}", Uuid::now_v7());
     runtime
-        .insert(
-            &store,
-            &booking(&patient, "slot-1"),
-            Some(tenant),
-        )
+        .insert(&store, &booking(&patient, "slot-1"), Some(tenant))
         .expect("the row lands on the PRIMARY");
 
     let filter = vec![FieldFilter::eq("patient", patient.clone())];
 
     // Without the opt-in the read stays on the primary: the row is there.
     let primary_read = store
-        .list(
-            runtime.model(),
-            Some(tenant),
-            &filter,
-            &ListOpts::default(),
-        )
+        .list(runtime.model(), Some(tenant), &filter, &ListOpts::default())
         .expect("the primary read succeeds");
     assert_eq!(
         primary_read.items.len(),
@@ -161,8 +151,7 @@ async fn pg_a_replica_eligible_list_is_served_by_the_replica() {
         .await
         .expect("the replica migrations apply");
 
-    let store =
-        kelson_postgres::PgModelStore::new(primary.clone()).with_read_pool(replica.clone());
+    let store = kelson_postgres::PgModelStore::new(primary.clone()).with_read_pool(replica.clone());
     let runtime = ModelRuntime::new(appointments_model());
 
     let tenant = TenantId::new();

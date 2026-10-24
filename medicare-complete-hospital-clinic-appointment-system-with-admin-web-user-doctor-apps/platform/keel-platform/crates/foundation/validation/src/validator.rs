@@ -389,18 +389,92 @@ impl Rule {
 /// [`Rule::name`]; the `rule_names_cover_the_token_battery` test proves
 /// every parsed token's name lands here.
 pub const RULE_NAMES: &[&str] = &[
-    "required", "min", "max", "email", "url", "uuid", "e164", "one_of", "range", "date",
-    "nullable", "boolean", "integer", "numeric", "string", "array", "json", "ascii", "alpha",
-    "alpha_num", "alpha_dash", "lowercase", "uppercase", "starts_with", "ends_with", "contains",
-    "doesnt_start_with", "doesnt_end_with", "doesnt_contain", "hex_color", "mac_address",
-    "timezone", "ulid", "decimal", "digits", "digits_between", "multiple_of", "gt", "gte", "lt",
-    "lte", "required_if", "required_unless", "required_with", "required_without", "accepted",
-    "accepted_if", "declined", "declined_if", "prohibited", "prohibited_if", "prohibited_with",
-    "exclude", "exclude_if", "missing", "missing_if", "missing_with", "sometimes", "filled",
-    "present", "same", "different", "confirmed", "in_array", "distinct", "bail", "date_format",
-    "before", "after", "before_or_equal", "after_or_equal", "file", "image", "mimes",
-    "mimetypes", "extensions", "dimensions", "password", "current_password", "letters",
-    "numbers", "symbols", "mixed_case", "unique", "exists", "custom",
+    "required",
+    "min",
+    "max",
+    "email",
+    "url",
+    "uuid",
+    "e164",
+    "one_of",
+    "range",
+    "date",
+    "nullable",
+    "boolean",
+    "integer",
+    "numeric",
+    "string",
+    "array",
+    "json",
+    "ascii",
+    "alpha",
+    "alpha_num",
+    "alpha_dash",
+    "lowercase",
+    "uppercase",
+    "starts_with",
+    "ends_with",
+    "contains",
+    "doesnt_start_with",
+    "doesnt_end_with",
+    "doesnt_contain",
+    "hex_color",
+    "mac_address",
+    "timezone",
+    "ulid",
+    "decimal",
+    "digits",
+    "digits_between",
+    "multiple_of",
+    "gt",
+    "gte",
+    "lt",
+    "lte",
+    "required_if",
+    "required_unless",
+    "required_with",
+    "required_without",
+    "accepted",
+    "accepted_if",
+    "declined",
+    "declined_if",
+    "prohibited",
+    "prohibited_if",
+    "prohibited_with",
+    "exclude",
+    "exclude_if",
+    "missing",
+    "missing_if",
+    "missing_with",
+    "sometimes",
+    "filled",
+    "present",
+    "same",
+    "different",
+    "confirmed",
+    "in_array",
+    "distinct",
+    "bail",
+    "date_format",
+    "before",
+    "after",
+    "before_or_equal",
+    "after_or_equal",
+    "file",
+    "image",
+    "mimes",
+    "mimetypes",
+    "extensions",
+    "dimensions",
+    "password",
+    "current_password",
+    "letters",
+    "numbers",
+    "symbols",
+    "mixed_case",
+    "unique",
+    "exists",
+    "custom",
 ];
 
 /// Is `name` a rule of the closed grammar (e.g. a manifest `messages` key)?
@@ -469,15 +543,12 @@ impl Rule {
         if crate::checks::date_instant(a).is_some() {
             return Ok(DateTarget::Literal(a.to_string()));
         }
-        if a
-            .chars()
+        if a.chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
         {
             return Ok(DateTarget::Field(a.to_string()));
         }
-        Err(format!(
-            "{rule} must be {rule}:<date|now|field>: {token}"
-        ))
+        Err(format!("{rule} must be {rule}:<date|now|field>: {token}"))
     }
 
     /// `<a,b>`: a non-empty comma list of single-token values
@@ -509,9 +580,12 @@ impl Rule {
                 ));
             };
             let key = key.trim();
-            let n: u32 = raw.trim().parse().ok().filter(|n: &u32| *n > 0).ok_or_else(|| {
-                format!("dimensions values must be positive integers: {token}")
-            })?;
+            let n: u32 = raw
+                .trim()
+                .parse()
+                .ok()
+                .filter(|n: &u32| *n > 0)
+                .ok_or_else(|| format!("dimensions values must be positive integers: {token}"))?;
             let bound = match key {
                 "w" => DimBound::Width(n),
                 "h" => DimBound::Height(n),
@@ -655,9 +729,9 @@ impl Rule {
             "starts_with" => Rule::StartsWith(Rule::arg(arg, token, "starts_with")?.to_string()),
             "ends_with" => Rule::EndsWith(Rule::arg(arg, token, "ends_with")?.to_string()),
             "contains" => Rule::Contains(Rule::arg(arg, token, "contains")?.to_string()),
-            "doesnt_start_with" => Rule::DoesntStartWith(
-                Rule::arg(arg, token, "doesnt_start_with")?.to_string(),
-            ),
+            "doesnt_start_with" => {
+                Rule::DoesntStartWith(Rule::arg(arg, token, "doesnt_start_with")?.to_string())
+            }
             "doesnt_end_with" => {
                 Rule::DoesntEndWith(Rule::arg(arg, token, "doesnt_end_with")?.to_string())
             }
@@ -667,15 +741,17 @@ impl Rule {
             "decimal" => {
                 let n = Rule::arg(arg, token, "decimal")?;
                 Rule::Decimal(
-                    n.parse::<u8>()
-                        .map_err(|_| format!("decimal value must be an unsigned integer: {token}"))?,
+                    n.parse::<u8>().map_err(|_| {
+                        format!("decimal value must be an unsigned integer: {token}")
+                    })?,
                 )
             }
             "digits" => {
                 let n = Rule::arg(arg, token, "digits")?;
                 Rule::Digits(
-                    n.parse::<u64>()
-                        .map_err(|_| format!("digits value must be an unsigned integer: {token}"))?,
+                    n.parse::<u64>().map_err(|_| {
+                        format!("digits value must be an unsigned integer: {token}")
+                    })?,
                 )
             }
             "digits_between" => {
@@ -703,21 +779,13 @@ impl Rule {
                     })?;
                 Rule::MultipleOf(n)
             }
-            "gt" => Rule::Gt(NumTarget::parse(
-                Rule::arg(arg, token, "gt")?,
-                token,
-                "gt",
-            )?),
+            "gt" => Rule::Gt(NumTarget::parse(Rule::arg(arg, token, "gt")?, token, "gt")?),
             "gte" => Rule::Gte(NumTarget::parse(
                 Rule::arg(arg, token, "gte")?,
                 token,
                 "gte",
             )?),
-            "lt" => Rule::Lt(NumTarget::parse(
-                Rule::arg(arg, token, "lt")?,
-                token,
-                "lt",
-            )?),
+            "lt" => Rule::Lt(NumTarget::parse(Rule::arg(arg, token, "lt")?, token, "lt")?),
             "lte" => Rule::Lte(NumTarget::parse(
                 Rule::arg(arg, token, "lte")?,
                 token,
@@ -841,15 +909,9 @@ impl Rule {
             if let Some((col, val)) = tok.split_once('=') {
                 let (col, val) = (col.trim(), val.trim());
                 if col.is_empty() || val.is_empty() {
-                    return Err(format!(
-                        "{rule} where pairs must be col=val: {token}"
-                    ));
+                    return Err(format!("{rule} where pairs must be col=val: {token}"));
                 }
-                if spec
-                    .wheres
-                    .iter()
-                    .any(|(c, _)| c == col)
-                {
+                if spec.wheres.iter().any(|(c, _)| c == col) {
                     return Err(format!("{rule} repeats where column {col}: {token}"));
                 }
                 spec.wheres.push((col.to_string(), val.to_string()));
@@ -1204,12 +1266,7 @@ impl FieldSpec {
 /// catalog entry (when the request context carries a catalog + locale),
 /// then the built-in English message. Catalog templates substitute
 /// `{attribute}` exactly like manifest ones.
-fn message_for(
-    spec: &FieldSpec,
-    rule: &Rule,
-    msg: String,
-    ctx: &ValidationContext<'_>,
-) -> String {
+fn message_for(spec: &FieldSpec, rule: &Rule, msg: String, ctx: &ValidationContext<'_>) -> String {
     if spec.messages.contains_key(rule.name()) {
         return spec.resolve_message(rule, msg);
     }
@@ -1320,80 +1377,55 @@ impl Validator {
             // and reports under its own path. An expansion with no matches
             // (missing parent, empty array) skips the entry, Laravel-style.
             for field in expand_field(input, &spec.field) {
-            let rules = &spec.rules;
-            let json_value = lookup(input, &field);
-            let upload = ctx.upload_for(&field);
-            // A stored part counts as a submitted value: presence rules must
-            // see the file even though only its metadata is in context.
-            let value = match json_value {
-                Some(v) => Some(v),
-                None => upload.map(|_| &*UPLOAD_MARKER),
-            };
-            // Structural: `sometimes` lets an absent key through untouched.
-            if value.is_none() && rules.iter().any(|r| matches!(r, Rule::Sometimes)) {
-                continue;
-            }
-            // Structural: `exclude`/`exclude_if` ignore the field entirely
-            // (their other rules — including `required` — never run).
-            if rules.iter().any(|r| is_excluded(r, ctx)) {
-                continue;
-            }
-            let bail = rules.iter().any(|r| matches!(r, Rule::Bail));
-            let implicit_only = match value {
-                None => true,
-                Some(Value::Null) => rules.iter().any(|r| matches!(r, Rule::Nullable)),
-                Some(Value::String(s)) if s.trim().is_empty() => true,
-                _ => false,
-            };
-            let mut presence_failed = false;
-            for rule in rules {
-                if is_presence(rule) {
-                    if !is_implicit(rule) && implicit_only {
-                        continue;
-                    }
-                    if let Some(msg) = check_presence(rule, &field, value, ctx) {
-                        report.push(&field, message_for(spec, rule, msg, ctx));
-                        presence_failed = true;
-                        if bail {
-                            break;
-                        }
-                    }
+                let rules = &spec.rules;
+                let json_value = lookup(input, &field);
+                let upload = ctx.upload_for(&field);
+                // A stored part counts as a submitted value: presence rules must
+                // see the file even though only its metadata is in context.
+                let value = match json_value {
+                    Some(v) => Some(v),
+                    None => upload.map(|_| &*UPLOAD_MARKER),
+                };
+                // Structural: `sometimes` lets an absent key through untouched.
+                if value.is_none() && rules.iter().any(|r| matches!(r, Rule::Sometimes)) {
                     continue;
                 }
-                // File rules evaluate the stored part whenever one exists —
-                // even if the JSON key is absent. Without a part they fall
-                // back to normal breadth (a JSON value must be checkable).
-                if is_file_rule(rule) {
-                    if presence_failed || (implicit_only && upload.is_none()) {
-                        continue;
-                    }
-                    if let Some(v) = value {
-                        if let Some(msg) = check(rule, &field, v, ctx) {
+                // Structural: `exclude`/`exclude_if` ignore the field entirely
+                // (their other rules — including `required` — never run).
+                if rules.iter().any(|r| is_excluded(r, ctx)) {
+                    continue;
+                }
+                let bail = rules.iter().any(|r| matches!(r, Rule::Bail));
+                let implicit_only = match value {
+                    None => true,
+                    Some(Value::Null) => rules.iter().any(|r| matches!(r, Rule::Nullable)),
+                    Some(Value::String(s)) if s.trim().is_empty() => true,
+                    _ => false,
+                };
+                let mut presence_failed = false;
+                for rule in rules {
+                    if is_presence(rule) {
+                        if !is_implicit(rule) && implicit_only {
+                            continue;
+                        }
+                        if let Some(msg) = check_presence(rule, &field, value, ctx) {
                             report.push(&field, message_for(spec, rule, msg, ctx));
+                            presence_failed = true;
                             if bail {
                                 break;
                             }
                         }
+                        continue;
                     }
-                    continue;
-                }
-                if implicit_only || presence_failed {
-                    continue;
-                }
-                // Format rules describe JSON values; the upload marker is
-                // presence-only and never reaches them.
-                if let Some(v) = json_value {
-                    // Phase 4 database rules carry the FATAL channel: a
-                    // store failure (or an unregistered probe) aborts into
-                    // report.fatal → 503 envelope, never a field pass.
-                    if matches!(rule, Rule::Unique(_) | Rule::Exists(_)) {
-                        match crate::checks::db_check(rule, &field, v, ctx) {
-                            Err(detail) => {
-                                report.fatal = Some(detail);
-                                return Err(report);
-                            }
-                            Ok(None) => {}
-                            Ok(Some(msg)) => {
+                    // File rules evaluate the stored part whenever one exists —
+                    // even if the JSON key is absent. Without a part they fall
+                    // back to normal breadth (a JSON value must be checkable).
+                    if is_file_rule(rule) {
+                        if presence_failed || (implicit_only && upload.is_none()) {
+                            continue;
+                        }
+                        if let Some(v) = value {
+                            if let Some(msg) = check(rule, &field, v, ctx) {
                                 report.push(&field, message_for(spec, rule, msg, ctx));
                                 if bail {
                                     break;
@@ -1402,14 +1434,39 @@ impl Validator {
                         }
                         continue;
                     }
-                    if let Some(msg) = check(rule, &field, v, ctx) {
-                        report.push(&field, message_for(spec, rule, msg, ctx));
-                        if bail {
-                            break;
+                    if implicit_only || presence_failed {
+                        continue;
+                    }
+                    // Format rules describe JSON values; the upload marker is
+                    // presence-only and never reaches them.
+                    if let Some(v) = json_value {
+                        // Phase 4 database rules carry the FATAL channel: a
+                        // store failure (or an unregistered probe) aborts into
+                        // report.fatal → 503 envelope, never a field pass.
+                        if matches!(rule, Rule::Unique(_) | Rule::Exists(_)) {
+                            match crate::checks::db_check(rule, &field, v, ctx) {
+                                Err(detail) => {
+                                    report.fatal = Some(detail);
+                                    return Err(report);
+                                }
+                                Ok(None) => {}
+                                Ok(Some(msg)) => {
+                                    report.push(&field, message_for(spec, rule, msg, ctx));
+                                    if bail {
+                                        break;
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                        if let Some(msg) = check(rule, &field, v, ctx) {
+                            report.push(&field, message_for(spec, rule, msg, ctx));
+                            if bail {
+                                break;
+                            }
                         }
                     }
                 }
-            }
             }
         }
         if report.is_empty() {
@@ -1782,16 +1839,17 @@ mod tests {
     fn field_ref_rules_resolve_through_the_context() {
         let v = Validator::new()
             .field("start", vec![Rule::Required, Rule::Numeric])
-            .field("end", vec![Rule::Required, Rule::Gt(NumTarget::Field("start".into()))]);
-        assert!(v
-            .validate(&json!({ "start": "09:00", "end": "10:00" }))
-            .is_err(), "non-numeric sibling fails closed");
-        assert!(v
-            .validate(&json!({ "start": 9, "end": 10 }))
-            .is_ok());
-        let report = v
-            .validate(&json!({ "start": 10, "end": 9 }))
-            .unwrap_err();
+            .field(
+                "end",
+                vec![Rule::Required, Rule::Gt(NumTarget::Field("start".into()))],
+            );
+        assert!(
+            v.validate(&json!({ "start": "09:00", "end": "10:00" }))
+                .is_err(),
+            "non-numeric sibling fails closed"
+        );
+        assert!(v.validate(&json!({ "start": 9, "end": 10 })).is_ok());
+        let report = v.validate(&json!({ "start": 10, "end": 9 })).unwrap_err();
         assert!(report.violations[0].message.contains("start"));
     }
 
@@ -2003,12 +2061,10 @@ mod tests {
     #[test]
     fn conditional_rules_follow_sibling_state() {
         // required_if: an absent sibling imposes NO requirement.
-        let v = Validator::new()
-            .field("type", vec![Rule::Required])
-            .field(
-                "guest_name",
-                vec![Rule::RequiredIf("type".into(), vec!["guest".into()])],
-            );
+        let v = Validator::new().field("type", vec![Rule::Required]).field(
+            "guest_name",
+            vec![Rule::RequiredIf("type".into(), vec!["guest".into()])],
+        );
         assert!(v.validate(&json!({ "type": "hotel" })).is_ok());
         let report = v
             .validate(&json!({ "type": "guest" }))
@@ -2025,17 +2081,16 @@ mod tests {
         );
         assert!(u.validate(&json!({ "kind": "anon" })).is_ok());
         assert!(u.validate(&json!({ "kind": "member" })).is_err());
-        assert!(u
-            .validate(&json!({}))
-            .is_err(), "absent sibling never matches a string token");
+        assert!(
+            u.validate(&json!({})).is_err(),
+            "absent sibling never matches a string token"
+        );
 
         // required_with: triggered only by a present AND non-blank sibling.
         let w = Validator::new().field("email", vec![Rule::RequiredWith("phone".into())]);
         assert!(w.validate(&json!({})).is_ok());
         assert!(w.validate(&json!({ "phone": "   " })).is_ok());
-        assert!(w
-            .validate(&json!({ "phone": "+919876543210" }))
-            .is_err());
+        assert!(w.validate(&json!({ "phone": "+919876543210" })).is_err());
 
         // required_without: triggered when the sibling is absent OR blank.
         let wo = Validator::new().field("email", vec![Rule::RequiredWithout("phone".into())]);
@@ -2061,7 +2116,10 @@ mod tests {
         assert!(a.validate(&json!({ "tos": true })).is_ok());
         assert!(a.validate(&json!({ "tos": 1 })).is_ok());
         assert!(a.validate(&json!({ "tos": "1" })).is_ok());
-        assert!(a.validate(&json!({ "tos": 1.0 })).is_err(), "strict: float 1.0 is not 1");
+        assert!(
+            a.validate(&json!({ "tos": 1.0 })).is_err(),
+            "strict: float 1.0 is not 1"
+        );
         let report = a
             .validate(&json!({ "tos": "no" }))
             .expect_err("no is not accepted");
@@ -2080,9 +2138,10 @@ mod tests {
         );
         assert!(ai.validate(&json!({ "flow": "edit" })).is_ok());
         assert!(ai.validate(&json!({ "tos": "yes" })).is_ok());
-        assert!(ai
-            .validate(&json!({ "flow": "signup" }))
-            .is_err(), "condition on ⇒ must be accepted");
+        assert!(
+            ai.validate(&json!({ "flow": "signup" })).is_err(),
+            "condition on ⇒ must be accepted"
+        );
         assert!(ai
             .validate(&json!({ "flow": "signup", "tos": "yes" }))
             .is_ok());
@@ -2108,8 +2167,12 @@ mod tests {
             "note",
             vec![Rule::ProhibitedIf("role".into(), vec!["admin".into()])],
         );
-        assert!(pi.validate(&json!({ "role": "user", "note": "hi" })).is_ok());
-        assert!(pi.validate(&json!({ "role": "admin", "note": "hi" })).is_err());
+        assert!(pi
+            .validate(&json!({ "role": "user", "note": "hi" }))
+            .is_ok());
+        assert!(pi
+            .validate(&json!({ "role": "admin", "note": "hi" }))
+            .is_err());
         assert!(pi.validate(&json!({ "role": "admin" })).is_ok());
 
         let pw = Validator::new().field("b", vec![Rule::ProhibitedWith("a".into())]);
@@ -2144,8 +2207,12 @@ mod tests {
             vec![Rule::MissingIf("version".into(), vec!["1".into()])],
         );
         assert!(mi.validate(&json!({ "version": "1" })).is_ok());
-        assert!(mi.validate(&json!({ "version": "1", "legacy": "x" })).is_err());
-        assert!(mi.validate(&json!({ "version": "2", "legacy": "x" })).is_ok());
+        assert!(mi
+            .validate(&json!({ "version": "1", "legacy": "x" }))
+            .is_err());
+        assert!(mi
+            .validate(&json!({ "version": "2", "legacy": "x" }))
+            .is_ok());
 
         let mw = Validator::new().field("old", vec![Rule::MissingWith("new".into())]);
         assert!(mw.validate(&json!({ "old": "x" })).is_ok());
@@ -2155,10 +2222,7 @@ mod tests {
     #[test]
     fn exclude_and_sometimes_skip_validation() {
         // `exclude` ignores the field entirely — even `required`.
-        let e = Validator::new().field(
-            "noise",
-            vec![Rule::Exclude, Rule::Required, Rule::Email],
-        );
+        let e = Validator::new().field("noise", vec![Rule::Exclude, Rule::Required, Rule::Email]);
         assert!(e.validate(&json!({})).is_ok());
         assert!(e.validate(&json!({ "noise": "whatever" })).is_ok());
 
@@ -2178,10 +2242,7 @@ mod tests {
         );
 
         // sometimes: an absent key skips every rule (incl. required).
-        let s = Validator::new().field(
-            "nick",
-            vec![Rule::Sometimes, Rule::Required, Rule::Email],
-        );
+        let s = Validator::new().field("nick", vec![Rule::Sometimes, Rule::Required, Rule::Email]);
         assert!(s.validate(&json!({})).is_ok());
         assert!(s.validate(&json!({ "nick": "bad" })).is_err());
         assert!(s.validate(&json!({ "nick": "" })).is_err());
@@ -2197,7 +2258,10 @@ mod tests {
 
         // without bail every failing rule reports
         let all = Validator::new().field("code", vec![Rule::Min(5), Rule::Email]);
-        assert_eq!(all.validate(&json!({ "code": "abc" })).unwrap_err().len(), 2);
+        assert_eq!(
+            all.validate(&json!({ "code": "abc" })).unwrap_err().len(),
+            2
+        );
 
         // bail also stops after the first PRESENCE failure
         let both = Validator::new().field("x", vec![Rule::Required, Rule::Present]);
@@ -2234,12 +2298,17 @@ mod tests {
 
         // in_array: element of the sibling array; missing sibling fails closed
         let ia = Validator::new().field("tag", vec![Rule::InArray("tags".into())]);
-        assert!(ia.validate(&json!({ "tags": ["a", "b"], "tag": "a" })).is_ok());
-        assert!(ia.validate(&json!({ "tags": ["a", "b"], "tag": "c" })).is_err());
-        assert!(ia.validate(&json!({ "tag": "a" })).is_err());
         assert!(ia
-            .validate(&json!({ "tags": "a", "tag": "a" }))
-            .is_ok(), "scalar sibling compares equal");
+            .validate(&json!({ "tags": ["a", "b"], "tag": "a" }))
+            .is_ok());
+        assert!(ia
+            .validate(&json!({ "tags": ["a", "b"], "tag": "c" }))
+            .is_err());
+        assert!(ia.validate(&json!({ "tag": "a" })).is_err());
+        assert!(
+            ia.validate(&json!({ "tags": "a", "tag": "a" })).is_ok(),
+            "scalar sibling compares equal"
+        );
 
         // distinct: unique array elements
         let dist = Validator::new().field("ids", vec![Rule::Distinct]);
@@ -2272,8 +2341,17 @@ mod tests {
     #[test]
     fn rule_tokens_reject_malformed() {
         for bad in [
-            "min", "min:x", "max:-1", "one_of", "one_of:", "one_of: ,", "range:1", "range:a,b",
-            "nope", "min:3:4", "",
+            "min",
+            "min:x",
+            "max:-1",
+            "one_of",
+            "one_of:",
+            "one_of: ,",
+            "range:1",
+            "range:a,b",
+            "nope",
+            "min:3:4",
+            "",
             // Wave 4: missing arguments
             "starts_with",
             "starts_with:",
@@ -2337,7 +2415,10 @@ mod tests {
             "required_if"
         );
         assert_eq!(Rule::RequiredWith("a".into()).name(), "required_with");
-        assert_eq!(Rule::MissingIf("a".into(), vec!["b".into()]).name(), "missing_if");
+        assert_eq!(
+            Rule::MissingIf("a".into(), vec!["b".into()]).name(),
+            "missing_if"
+        );
         assert_eq!(Rule::Confirmed.name(), "confirmed");
         assert_eq!(Rule::InArray("a".into()).name(), "in_array");
         assert_eq!(Rule::Bail.name(), "bail");
@@ -2513,24 +2594,46 @@ mod tests {
         let report = v
             .validate(&json!({ "on": "29-09-2026" }))
             .expect_err("wrong order");
-        assert_eq!(
-            report.violations[0].message,
-            "must match the format Y-m-d"
+        assert_eq!(report.violations[0].message, "must match the format Y-m-d");
+        assert!(
+            v.validate(&json!({ "on": "2026-13-01" })).is_err(),
+            "month range"
         );
-        assert!(v.validate(&json!({ "on": "2026-13-01" })).is_err(), "month range");
-        assert!(v.validate(&json!({ "on": "2026-02-30" })).is_err(), "day range");
-        assert!(v.validate(&json!({ "on": "2024-02-29" })).is_ok(), "leap day");
-        assert!(v.validate(&json!({ "on": "2026-9-29" })).is_err(), "digit counts");
-        assert!(v.validate(&json!({ "on": "2026-09-29T00" })).is_err(), "no trailing");
+        assert!(
+            v.validate(&json!({ "on": "2026-02-30" })).is_err(),
+            "day range"
+        );
+        assert!(
+            v.validate(&json!({ "on": "2024-02-29" })).is_ok(),
+            "leap day"
+        );
+        assert!(
+            v.validate(&json!({ "on": "2026-9-29" })).is_err(),
+            "digit counts"
+        );
+        assert!(
+            v.validate(&json!({ "on": "2026-09-29T00" })).is_err(),
+            "no trailing"
+        );
         let report = v
             .validate(&json!({ "on": 20260929 }))
             .expect_err("non-string");
         assert_eq!(report.violations[0].message, "must be a string date");
 
         let full = Validator::new().field("at", vec![Rule::DateFormat("Y-m-d H:i:s".into())]);
-        assert!(full.validate(&json!({ "at": "2026-09-29 14:30:05" })).is_ok());
-        assert!(full.validate(&json!({ "at": "2026-09-29 25:30:05" })).is_err(), "hour range");
-        assert!(full.validate(&json!({ "at": "2026-09-29 14:30:61" })).is_err(), "second range");
+        assert!(full
+            .validate(&json!({ "at": "2026-09-29 14:30:05" }))
+            .is_ok());
+        assert!(
+            full.validate(&json!({ "at": "2026-09-29 25:30:05" }))
+                .is_err(),
+            "hour range"
+        );
+        assert!(
+            full.validate(&json!({ "at": "2026-09-29 14:30:61" }))
+                .is_err(),
+            "second range"
+        );
 
         let eu = Validator::new().field("on", vec![Rule::DateFormat("d/m/Y".into())]);
         assert!(eu.validate(&json!({ "on": "29/09/2026" })).is_ok());
@@ -2539,9 +2642,13 @@ mod tests {
 
     #[test]
     fn before_and_after_compare_across_zones_and_fields() {
-        let before =
-            Validator::new().field("slot", vec![Rule::Before(DateTarget::Literal("2030-01-01".into()))]);
-        assert!(before.validate(&json!({ "slot": "2026-09-01T10:00Z" })).is_ok());
+        let before = Validator::new().field(
+            "slot",
+            vec![Rule::Before(DateTarget::Literal("2030-01-01".into()))],
+        );
+        assert!(before
+            .validate(&json!({ "slot": "2026-09-01T10:00Z" }))
+            .is_ok());
         let report = before
             .validate(&json!({ "slot": "2031-06-01" }))
             .expect_err("after the target");
@@ -2561,12 +2668,16 @@ mod tests {
         // or_equal variants are inclusive, strict ones are not
         let eq = Validator::new().field(
             "d",
-            vec![Rule::BeforeOrEqual(DateTarget::Literal("2030-01-01".into()))],
+            vec![Rule::BeforeOrEqual(DateTarget::Literal(
+                "2030-01-01".into(),
+            ))],
         );
         assert!(eq.validate(&json!({ "d": "2030-01-01" })).is_ok());
         assert!(eq.validate(&json!({ "d": "2030-01-02" })).is_err());
-        let after =
-            Validator::new().field("d", vec![Rule::After(DateTarget::Literal("2030-01-01".into()))]);
+        let after = Validator::new().field(
+            "d",
+            vec![Rule::After(DateTarget::Literal("2030-01-01".into()))],
+        );
         assert!(after.validate(&json!({ "d": "2030-01-02" })).is_ok());
         assert!(after.validate(&json!({ "d": "2030-01-01" })).is_err());
         let oae = Validator::new().field(
@@ -2579,7 +2690,9 @@ mod tests {
         // 02:00+05:30 on Jan 2 is 20:30Z on Jan 1 (after).
         let tz = Validator::new().field(
             "when",
-            vec![Rule::Before(DateTarget::Literal("2026-01-01T20:00:00Z".into()))],
+            vec![Rule::Before(DateTarget::Literal(
+                "2026-01-01T20:00:00Z".into(),
+            ))],
         );
         assert!(tz
             .validate(&json!({ "when": "2026-01-01T23:00:00+05:30" }))
@@ -2589,7 +2702,8 @@ mod tests {
             .is_err());
 
         // field targets resolve through the context and fail closed
-        let fe = Validator::new().field("end", vec![Rule::After(DateTarget::Field("start".into()))]);
+        let fe =
+            Validator::new().field("end", vec![Rule::After(DateTarget::Field("start".into()))]);
         assert!(fe
             .validate(&json!({ "start": "2026-09-01", "end": "2026-09-02" }))
             .is_ok());
@@ -2600,9 +2714,11 @@ mod tests {
             .validate(&json!({ "end": "2026-09-02" }))
             .expect_err("missing sibling target");
         assert_eq!(report.violations[0].message, "must be after start");
-        assert!(fe
-            .validate(&json!({ "start": "nope", "end": "2026-09-02" }))
-            .is_err(), "non-date sibling fails closed");
+        assert!(
+            fe.validate(&json!({ "start": "nope", "end": "2026-09-02" }))
+                .is_err(),
+            "non-date sibling fails closed"
+        );
 
         // `now` resolves at evaluation: only the certain sides are asserted
         let past = Validator::new().field("d", vec![Rule::Before(DateTarget::Now)]);
@@ -2731,7 +2847,10 @@ mod tests {
         let report = v
             .validate(&json!({ "pw": "Shrt1!" }))
             .expect_err("below min length");
-        assert_eq!(report.violations[0].message, "must be at least 8 characters");
+        assert_eq!(
+            report.violations[0].message,
+            "must be at least 8 characters"
+        );
         let report = v
             .validate(&json!({ "pw": "alllowercase1!" }))
             .expect_err("no uppercase");
@@ -2763,10 +2882,7 @@ mod tests {
             mixed_case: false,
             ..PasswordPolicy::default()
         };
-        let cv = Validator::new().field(
-            "pw",
-            vec![Rule::Required, Rule::Password],
-        );
+        let cv = Validator::new().field("pw", vec![Rule::Required, Rule::Password]);
         let ctx_json = json!({ "pw": "abcdefgh1234" });
         let ctx = ValidationContext::new(&ctx_json).with_password_policy(custom);
         assert!(cv.validate_with(&ctx).is_ok());
@@ -2801,20 +2917,22 @@ mod tests {
         assert!(mixed.validate(&json!({ "x": "Abc" })).is_ok());
 
         // `password` composes with the existing length rule
-        let composed =
-            Validator::new().field("pw", vec![Rule::Password, Rule::Min(12)]);
-        assert!(composed
-            .validate(&json!({ "pw": "Secret1!xyzw" }))
-            .is_ok());
-        assert!(composed
-            .validate(&json!({ "pw": "Secret1!" }))
-            .is_err(), "min:12");
+        let composed = Validator::new().field("pw", vec![Rule::Password, Rule::Min(12)]);
+        assert!(composed.validate(&json!({ "pw": "Secret1!xyzw" })).is_ok());
+        assert!(
+            composed.validate(&json!({ "pw": "Secret1!" })).is_err(),
+            "min:12"
+        );
     }
 
     #[test]
     fn current_password_verifies_against_the_principal() {
         let verifier = |candidate: &str| candidate == "hunter2";
-        let with = |ctx: ValidationContext<'_>| Validator::new().field("pw", vec![Rule::CurrentPassword]).validate_with(&ctx);
+        let with = |ctx: ValidationContext<'_>| {
+            Validator::new()
+                .field("pw", vec![Rule::CurrentPassword])
+                .validate_with(&ctx)
+        };
 
         let ok = json!({ "pw": "hunter2" });
         let ctx = ValidationContext::new(&ok).with_verifier(&verifier);
@@ -2849,17 +2967,21 @@ mod tests {
     #[test]
     fn wave4_phase4_probe_tokens_parse() {
         let ignore = "550e8400-e29b-41d4-a716-446655440000";
-        let spec = |column: Option<&str>, ignore_id: Option<&str>, wheres: Vec<(&str, &str)>| ProbeSpec {
-            model: "Appointment".into(),
-            column: column.map(str::to_string),
-            ignore_id: ignore_id.map(str::to_string),
-            wheres: wheres
-                .into_iter()
-                .map(|(c, v)| (c.to_string(), v.to_string()))
-                .collect(),
-        };
+        let spec =
+            |column: Option<&str>, ignore_id: Option<&str>, wheres: Vec<(&str, &str)>| ProbeSpec {
+                model: "Appointment".into(),
+                column: column.map(str::to_string),
+                ignore_id: ignore_id.map(str::to_string),
+                wheres: wheres
+                    .into_iter()
+                    .map(|(c, v)| (c.to_string(), v.to_string()))
+                    .collect(),
+            };
         let cases: Vec<(String, Rule)> = vec![
-            ("unique:Appointment".into(), Rule::Unique(spec(None, None, vec![]))),
+            (
+                "unique:Appointment".into(),
+                Rule::Unique(spec(None, None, vec![])),
+            ),
             (
                 format!("unique:Appointment,{ignore}"),
                 Rule::Unique(spec(None, Some(ignore), vec![])),
@@ -2872,7 +2994,10 @@ mod tests {
                 format!("unique:Appointment,patient,{ignore}"),
                 Rule::Unique(spec(Some("patient"), Some(ignore), vec![])),
             ),
-            ("exists:Appointment".into(), Rule::Exists(spec(None, None, vec![]))),
+            (
+                "exists:Appointment".into(),
+                Rule::Exists(spec(None, None, vec![])),
+            ),
             (
                 "exists:Appointment,slot".into(),
                 Rule::Exists(spec(Some("slot"), None, vec![])),
@@ -2981,7 +3106,10 @@ mod tests {
 
         // unique: a live row means taken.
         let input = json!({ "patient": "A. Patient" });
-        let v = Validator::new().field("patient", vec![Rule::from_token("unique:Appointment").unwrap()]);
+        let v = Validator::new().field(
+            "patient",
+            vec![Rule::from_token("unique:Appointment").unwrap()],
+        );
         let report = v
             .validate_with(&probe_ctx(&input, &lookup, Some(tenant)))
             .expect_err("row exists");
@@ -2994,17 +3122,21 @@ mod tests {
             Arc::new(StubProbe::answering(false)) as Arc<dyn DbProbe>,
         )]));
         let input = json!({ "slot": "2026-09-01T10:00Z" });
-        let v = Validator::new().field("slot", vec![Rule::from_token("exists:Appointment").unwrap()]);
+        let v = Validator::new().field(
+            "slot",
+            vec![Rule::from_token("exists:Appointment").unwrap()],
+        );
         let report = v
             .validate_with(&probe_ctx(&input, &missing, None))
             .expect_err("no row");
         assert_eq!(report.violations[0].message, "is invalid");
 
         // exists satisfied → passes.
-        let v = Validator::new().field("slot", vec![Rule::from_token("exists:Appointment").unwrap()]);
-        assert!(v
-            .validate_with(&probe_ctx(&input, &lookup, None))
-            .is_ok());
+        let v = Validator::new().field(
+            "slot",
+            vec![Rule::from_token("exists:Appointment").unwrap()],
+        );
+        assert!(v.validate_with(&probe_ctx(&input, &lookup, None)).is_ok());
 
         // column override, wheres, ignore_id and tenant reach the probe.
         let probe = Arc::new(StubProbe::answering(false));
@@ -3066,7 +3198,10 @@ mod tests {
         assert!(report.fatal.unwrap().contains("connection reset"));
 
         // Non-string value fails as a field message (not a probe call).
-        let v = Validator::new().field("patient", vec![Rule::from_token("unique:Appointment").unwrap()]);
+        let v = Validator::new().field(
+            "patient",
+            vec![Rule::from_token("unique:Appointment").unwrap()],
+        );
         let numeric = json!({ "patient": 42 });
         let lookup = StubLookup(BTreeMap::new());
         let report = v
@@ -3099,7 +3234,10 @@ mod tests {
         assert!(report.violations[0].message.contains("required"));
 
         // `bail` stops each ELEMENT at its first failure, not the whole set.
-        let v = Validator::new().field("items.*.name", vec![Rule::Bail, Rule::Required, Rule::Max(4)]);
+        let v = Validator::new().field(
+            "items.*.name",
+            vec![Rule::Bail, Rule::Required, Rule::Max(4)],
+        );
         let report = v
             .validate(&json!({ "items": [{ "name": "" }, { "name": "toolong" }] }))
             .expect_err("both elements fail");
@@ -3133,23 +3271,23 @@ mod tests {
         let good = json!({ "code": "ABC" });
         assert!(v
             .validate_with(
-                &ValidationContext::new(&good).with_custom_rules(&crate::custom::GLOBAL_CUSTOM_RULES)
+                &ValidationContext::new(&good)
+                    .with_custom_rules(&crate::custom::GLOBAL_CUSTOM_RULES)
             )
             .is_ok());
 
         let bad = json!({ "code": "abc" });
         let report = v
             .validate_with(
-                &ValidationContext::new(&bad).with_custom_rules(&crate::custom::GLOBAL_CUSTOM_RULES)
+                &ValidationContext::new(&bad)
+                    .with_custom_rules(&crate::custom::GLOBAL_CUSTOM_RULES),
             )
             .expect_err("lowercase");
         assert_eq!(report.violations[0].message, "must be uppercase");
 
         // Unregistered name (or no lookup at all) fails closed as a field
         // message — never a silent pass.
-        let report = v
-            .validate(&bad)
-            .expect_err("no lookup attached");
+        let report = v.validate(&bad).expect_err("no lookup attached");
         assert_eq!(
             report.violations[0].message,
             "custom rule wave4_phase4_upper is not registered"
@@ -3158,7 +3296,8 @@ mod tests {
         let v = Validator::new().field("code", vec![Rule::Custom("wave4_phase4_never".into())]);
         let report = v
             .validate_with(
-                &ValidationContext::new(&ghost).with_custom_rules(&crate::custom::GLOBAL_CUSTOM_RULES)
+                &ValidationContext::new(&ghost)
+                    .with_custom_rules(&crate::custom::GLOBAL_CUSTOM_RULES),
             )
             .expect_err("unregistered custom rule");
         assert_eq!(
@@ -3173,7 +3312,10 @@ mod tests {
     #[test]
     fn messages_override_and_attribute_substitution() {
         let mut messages = BTreeMap::new();
-        messages.insert("required".to_string(), "the {attribute} is mandatory".to_string());
+        messages.insert(
+            "required".to_string(),
+            "the {attribute} is mandatory".to_string(),
+        );
         let v = Validator::new().field_messages(
             "patient",
             vec![Rule::Required, Rule::Max(3)],
@@ -3181,7 +3323,10 @@ mod tests {
             Some("Patient name".into()),
         );
         let report = v.validate(&json!({})).expect_err("required");
-        assert_eq!(report.violations[0].message, "the Patient name is mandatory");
+        assert_eq!(
+            report.violations[0].message,
+            "the Patient name is mandatory"
+        );
 
         // Rules without an override keep the built-in message.
         let report = v
@@ -3190,12 +3335,7 @@ mod tests {
         assert_eq!(report.violations[0].message, "must be at most 3");
 
         // `{attribute}` defaults to the field path when no attribute is set.
-        let v = Validator::new().field_messages(
-            "patient",
-            vec![Rule::Required],
-            messages,
-            None,
-        );
+        let v = Validator::new().field_messages("patient", vec![Rule::Required], messages, None);
         let report = v.validate(&json!({})).expect_err("required");
         assert_eq!(report.violations[0].message, "the patient is mandatory");
     }
@@ -3210,10 +3350,7 @@ mod tests {
         catalog
             .load(
                 "en",
-                &[(
-                    "validation.required",
-                    "{attribute} is required (en)",
-                )],
+                &[("validation.required", "{attribute} is required (en)")],
             )
             .unwrap();
         catalog
@@ -3252,11 +3389,31 @@ mod tests {
         // Every token in the Phase 4 battery parses to a name the manifest
         // `messages` vocabulary knows.
         for token in [
-            "required", "min:1", "max:120", "email", "date", "before:2030-01-01",
-            "date_format:Y-m-d", "file", "mimes:jpg", "password", "current_password",
-            "unique:Appointment", "exists:Appointment", "nullable", "bail", "sometimes",
-            "confirmed", "distinct", "decimal:2", "digits:4", "multiple_of:3",
-            "required_if:kind,vip", "same:other", "in_array:others", "dimensions:min_w=1",
+            "required",
+            "min:1",
+            "max:120",
+            "email",
+            "date",
+            "before:2030-01-01",
+            "date_format:Y-m-d",
+            "file",
+            "mimes:jpg",
+            "password",
+            "current_password",
+            "unique:Appointment",
+            "exists:Appointment",
+            "nullable",
+            "bail",
+            "sometimes",
+            "confirmed",
+            "distinct",
+            "decimal:2",
+            "digits:4",
+            "multiple_of:3",
+            "required_if:kind,vip",
+            "same:other",
+            "in_array:others",
+            "dimensions:min_w=1",
         ] {
             let rules = parse_rules(&[token.to_string()]).expect(token);
             for rule in rules {

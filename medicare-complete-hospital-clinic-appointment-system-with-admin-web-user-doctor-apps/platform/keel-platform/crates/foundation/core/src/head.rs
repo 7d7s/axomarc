@@ -142,32 +142,56 @@ impl HeadStore {
             obj.insert("title".to_string(), Value::String(title));
         }
         if !self.metas.is_empty() {
-            obj.insert("metas".to_string(), Value::Object(
-                self.metas.into_iter().map(|(k, v)| (k, Value::String(v))).collect()
-            ));
+            obj.insert(
+                "metas".to_string(),
+                Value::Object(
+                    self.metas
+                        .into_iter()
+                        .map(|(k, v)| (k, Value::String(v)))
+                        .collect(),
+                ),
+            );
         }
         if !self.links.is_empty() {
-            obj.insert("links".to_string(), Value::Object(
-                self.links.into_iter().map(|(k, v)| (k, Value::String(v))).collect()
-            ));
+            obj.insert(
+                "links".to_string(),
+                Value::Object(
+                    self.links
+                        .into_iter()
+                        .map(|(k, v)| (k, Value::String(v)))
+                        .collect(),
+                ),
+            );
         }
         if !self.scripts.is_empty() {
-            obj.insert("scripts".to_string(), Value::Array(
-                self.scripts.into_iter().map(|(src, attrs)| {
-                    let mut obj = attrs.as_object().cloned().unwrap_or_default();
-                    obj.insert("src".to_string(), Value::String(src));
-                    Value::Object(obj)
-                }).collect()
-            ));
+            obj.insert(
+                "scripts".to_string(),
+                Value::Array(
+                    self.scripts
+                        .into_iter()
+                        .map(|(src, attrs)| {
+                            let mut obj = attrs.as_object().cloned().unwrap_or_default();
+                            obj.insert("src".to_string(), Value::String(src));
+                            Value::Object(obj)
+                        })
+                        .collect(),
+                ),
+            );
         }
         if !self.styles.is_empty() {
-            obj.insert("styles".to_string(), Value::Array(
-                self.styles.into_iter().map(|(href, attrs)| {
-                    let mut obj = attrs.as_object().cloned().unwrap_or_default();
-                    obj.insert("href".to_string(), Value::String(href));
-                    Value::Object(obj)
-                }).collect()
-            ));
+            obj.insert(
+                "styles".to_string(),
+                Value::Array(
+                    self.styles
+                        .into_iter()
+                        .map(|(href, attrs)| {
+                            let mut obj = attrs.as_object().cloned().unwrap_or_default();
+                            obj.insert("href".to_string(), Value::String(href));
+                            Value::Object(obj)
+                        })
+                        .collect(),
+                ),
+            );
         }
         Value::Object(obj)
     }
@@ -259,19 +283,31 @@ mod tests {
 
         parent.merge_child(child);
 
-        assert_eq!(parent.link("canonical"), Some("https://child.example.com/page"));
-        assert_eq!(parent.link("alternate"), Some("https://child.example.com/page?format=amp"));
+        assert_eq!(
+            parent.link("canonical"),
+            Some("https://child.example.com/page")
+        );
+        assert_eq!(
+            parent.link("alternate"),
+            Some("https://child.example.com/page?format=amp")
+        );
     }
 
     #[test]
     fn scripts_and_styles_are_additive() {
         let mut parent = HeadStore::new();
         parent.add_script("https://parent.example.com/app.js".to_string(), Value::Null);
-        parent.add_style("https://parent.example.com/app.css".to_string(), Value::Null);
+        parent.add_style(
+            "https://parent.example.com/app.css".to_string(),
+            Value::Null,
+        );
 
         let mut child = HeadStore::new();
         child.add_script("https://child.example.com/page.js".to_string(), Value::Null);
-        child.add_style("https://child.example.com/page.css".to_string(), Value::Null);
+        child.add_style(
+            "https://child.example.com/page.css".to_string(),
+            Value::Null,
+        );
 
         parent.merge_child(child);
 
@@ -286,7 +322,8 @@ mod tests {
 
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             head.set_title("Too late");
-        })).expect_err("mutating a finalised store panics");
+        }))
+        .expect_err("mutating a finalised store panics");
     }
 
     #[test]
@@ -315,7 +352,10 @@ mod tests {
 
         let ctx = head.into_context();
         assert_eq!(ctx["title"], serde_json::json!("Context Title"));
-        assert_eq!(ctx["metas"]["description"], serde_json::json!("Context description"));
+        assert_eq!(
+            ctx["metas"]["description"],
+            serde_json::json!("Context description")
+        );
         assert!(ctx["metas"].is_object());
     }
 
@@ -387,7 +427,13 @@ mod tests {
         let ctx = head.into_context();
         // into_context() puts fields at root level
         assert_eq!(ctx["title"], serde_json::json!("Template Title"));
-        assert_eq!(ctx["metas"]["description"], serde_json::json!("Template description"));
-        assert_eq!(ctx["links"]["canonical"], serde_json::json!("https://example.com/page"));
+        assert_eq!(
+            ctx["metas"]["description"],
+            serde_json::json!("Template description")
+        );
+        assert_eq!(
+            ctx["links"]["canonical"],
+            serde_json::json!("https://example.com/page")
+        );
     }
 }

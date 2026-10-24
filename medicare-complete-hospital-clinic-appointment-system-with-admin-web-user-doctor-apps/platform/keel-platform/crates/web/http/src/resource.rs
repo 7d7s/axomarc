@@ -341,10 +341,7 @@ mod tests {
     #[test]
     fn collection_page_passes_pagination_meta_through() {
         let page = Page::new(
-            vec![
-                account("alice", false, None),
-                account("bob", true, None),
-            ],
+            vec![account("alice", false, None), account("bob", true, None)],
             2,
             10,
             Some(42),

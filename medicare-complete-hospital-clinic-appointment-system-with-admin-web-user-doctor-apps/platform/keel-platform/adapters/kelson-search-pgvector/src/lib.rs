@@ -54,7 +54,11 @@ impl PgVectorSearchEngine {
         let raw = index.0.to_ascii_lowercase();
         let valid = !raw.is_empty()
             && raw.len() <= 40
-            && raw.chars().next().map(|c| c.is_ascii_lowercase()).unwrap_or(false)
+            && raw
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_lowercase())
+                .unwrap_or(false)
             && raw
                 .chars()
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
@@ -98,11 +102,7 @@ impl PgVectorSearchEngine {
     }
 
     /// Execute the DDL for an index table and remember its shape.
-    pub async fn create_table(
-        &self,
-        index: &Index,
-        dims: Option<usize>,
-    ) -> Result<(), AppError> {
+    pub async fn create_table(&self, index: &Index, dims: Option<usize>) -> Result<(), AppError> {
         let sql = Self::create_table_sql(index, dims)?;
         for stmt in sql.split(';') {
             let stmt = stmt.trim();
@@ -128,7 +128,10 @@ impl PgVectorSearchEngine {
             .execute(&self.pool)
             .await
             .map_err(|e| AppError::persistence(format!("search drop: {e}")))?;
-        self.known.lock().expect("known-tables poisoned").remove(&table);
+        self.known
+            .lock()
+            .expect("known-tables poisoned")
+            .remove(&table);
         Ok(())
     }
 
@@ -279,7 +282,10 @@ impl SearchEngine for PgVectorSearchEngine {
         let where_sql = if filter_sql.is_empty() {
             format!("tenant_id = $1 AND {where_core}")
         } else {
-            format!("tenant_id = $1 AND {where_core} AND {}", filter_sql.join(" AND "))
+            format!(
+                "tenant_id = $1 AND {where_core} AND {}",
+                filter_sql.join(" AND ")
+            )
         };
         // Precompute every SQL string so the async closures only own data.
         let count_sql = format!("SELECT COUNT(*) AS n FROM {table} WHERE {where_sql}");
@@ -593,12 +599,13 @@ mod tests {
         assert!(with_vec.contains("CREATE EXTENSION IF NOT EXISTS vector;"));
         assert!(with_vec.contains("embedding vector(3)"));
         assert!(with_vec.contains("kelson_search_notes_tenant_idx"));
-        let kw_only =
-            PgVectorSearchEngine::create_table_sql(&Index("notes".into()), None).unwrap();
+        let kw_only = PgVectorSearchEngine::create_table_sql(&Index("notes".into()), None).unwrap();
         assert!(!kw_only.contains("vector"));
         assert!(kw_only.contains("fields JSONB"));
         assert!(PgVectorSearchEngine::create_table_sql(&Index("notes".into()), Some(0)).is_err());
-        assert!(PgVectorSearchEngine::create_table_sql(&Index("Bad Name".into()), Some(3)).is_err());
+        assert!(
+            PgVectorSearchEngine::create_table_sql(&Index("Bad Name".into()), Some(3)).is_err()
+        );
     }
 
     #[test]

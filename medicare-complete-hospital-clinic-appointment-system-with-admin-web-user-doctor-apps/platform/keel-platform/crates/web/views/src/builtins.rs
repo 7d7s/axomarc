@@ -12,10 +12,10 @@
 //! has: a failure must render a page, and that page's data requirements
 //! are as much a contract as any other view's.
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::LazyLock;
-use regex::Regex;
 
 use crate::registry::{ViewBinding, ViewRegistry};
 use crate::view_schema;
@@ -25,9 +25,8 @@ use crate::viewmodel::{FieldKind, FieldSchema, ViewModel};
 static EMAIL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$").expect("valid email regex")
 });
-static URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^https?://[^\s/$.?#].[^\s]*$").expect("valid URL regex")
-});
+static URL_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^https?://[^\s/$.?#].[^\s]*$").expect("valid URL regex"));
 
 /// The error page's model.
 ///
@@ -256,7 +255,7 @@ impl FormVm {
         let mut errors = Vec::new();
         for field in &self.fields {
             let submitted_value = submitted.get(&field.name);
-            
+
             // Check required
             if field.required {
                 let is_empty = match submitted_value {
@@ -269,10 +268,12 @@ impl FormVm {
                     continue;
                 }
             }
-            
+
             // Skip validation if no value provided and not required
-            let Some(value) = submitted_value else { continue };
-            
+            let Some(value) = submitted_value else {
+                continue;
+            };
+
             // Validate each rule
             for rule in &field.validation_rules {
                 let error_msg = match rule {
@@ -282,54 +283,92 @@ impl FormVm {
                             let re = regex::Regex::new(pattern).ok();
                             if !re.map(|r| r.is_match(s)).unwrap_or(false) {
                                 Some(format!("{} does not match required pattern", field.label))
-                            } else { None }
-                        } else { None }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
                     }
                     ValidationRule::MinLength(min) => {
                         if let Value::String(s) = value {
                             if s.chars().count() < *min {
-                                Some(format!("{} must be at least {} characters", field.label, min))
-                            } else { None }
-                        } else { None }
+                                Some(format!(
+                                    "{} must be at least {} characters",
+                                    field.label, min
+                                ))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
                     }
                     ValidationRule::MaxLength(max) => {
                         if let Value::String(s) = value {
                             if s.chars().count() > *max {
-                                Some(format!("{} must be at most {} characters", field.label, max))
-                            } else { None }
-                        } else { None }
+                                Some(format!(
+                                    "{} must be at most {} characters",
+                                    field.label, max
+                                ))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
                     }
                     ValidationRule::Min(min) => {
                         if let Value::Number(n) = value {
                             if let Some(n) = n.as_f64() {
                                 if n < *min {
                                     Some(format!("{} must be at least {}", field.label, min))
-                                } else { None }
-                            } else { None }
-                        } else { None }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
                     }
                     ValidationRule::Max(max) => {
                         if let Value::Number(n) = value {
                             if let Some(n) = n.as_f64() {
                                 if n > *max {
                                     Some(format!("{} must be at most {}", field.label, max))
-                                } else { None }
-                            } else { None }
-                        } else { None }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
                     }
                     ValidationRule::Email => {
                         if let Value::String(s) = value {
                             if !EMAIL_REGEX.is_match(s) {
                                 Some(format!("{} must be a valid email address", field.label))
-                            } else { None }
-                        } else { None }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
                     }
                     ValidationRule::Url => {
                         if let Value::String(s) = value {
                             if !URL_REGEX.is_match(s) {
                                 Some(format!("{} must be a valid URL", field.label))
-                            } else { None }
-                        } else { None }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
                     }
                     ValidationRule::Custom(_name) => {
                         // Custom validations would be resolved through the engine's conditional registry
@@ -337,7 +376,7 @@ impl FormVm {
                         None
                     }
                 };
-                
+
                 if let Some(msg) = error_msg {
                     errors.push((field.name.clone(), msg));
                     break; // Stop at first error per field
@@ -464,7 +503,11 @@ mod tests {
                 expected_model,
                 binding.model
             );
-            assert_eq!(binding.schema.len(), expected_schema_len, "{view} schema len");
+            assert_eq!(
+                binding.schema.len(),
+                expected_schema_len,
+                "{view} schema len"
+            );
         }
     }
 
@@ -605,7 +648,10 @@ mod tests {
         })
         .expect("the model honours its declaration");
         assert_eq!(value["title"], serde_json::json!("No appointments"));
-        assert_eq!(value["message"], serde_json::json!("You have no appointments yet."));
+        assert_eq!(
+            value["message"],
+            serde_json::json!("You have no appointments yet.")
+        );
         assert_eq!(value["action_label"], serde_json::json!("Book one"));
         assert_eq!(value["action_url"], serde_json::json!("/appointments/new"));
         assert_eq!(value["illustration"], serde_json::json!("calendar"));
@@ -625,7 +671,10 @@ mod tests {
         })
         .expect("the model honours its declaration");
         assert_eq!(value["title"], serde_json::json!("Operations"));
-        assert_eq!(value["generated_at"], serde_json::json!("2026-10-22T10:00:00Z"));
+        assert_eq!(
+            value["generated_at"],
+            serde_json::json!("2026-10-22T10:00:00Z")
+        );
         assert_eq!(value["refresh_secs"], serde_json::json!(10));
         assert!(value["sections"]["queue"]["depth"].is_number());
     }

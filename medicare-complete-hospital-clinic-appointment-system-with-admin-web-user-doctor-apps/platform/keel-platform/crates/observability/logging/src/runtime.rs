@@ -297,19 +297,25 @@ impl ObservabilityRuntime {
             .lock()
             .expect("rx slot")
             .take()
-            .ok_or_else(|| kelson_foundation::AppError::internal("telemetry runtime already started"))?;
+            .ok_or_else(|| {
+                kelson_foundation::AppError::internal("telemetry runtime already started")
+            })?;
         let worker_runtime = Arc::clone(self);
         let handle = std::thread::Builder::new()
             .name("kelson-telemetry-worker".into())
             .spawn(move || worker_thread(worker_runtime, rx))
-            .map_err(|e| kelson_foundation::AppError::internal(format!("telemetry worker spawn: {e}")))?;
+            .map_err(|e| {
+                kelson_foundation::AppError::internal(format!("telemetry worker spawn: {e}"))
+            })?;
         *self.worker.lock().expect("worker lock") = Some(handle);
 
         let poller_runtime = Arc::clone(self);
         let poller = std::thread::Builder::new()
             .name("kelson-telemetry-incident".into())
             .spawn(move || incident_poll_thread(poller_runtime))
-            .map_err(|e| kelson_foundation::AppError::internal(format!("incident poller spawn: {e}")))?;
+            .map_err(|e| {
+                kelson_foundation::AppError::internal(format!("incident poller spawn: {e}"))
+            })?;
         *self.incident_poller.lock().expect("poller lock") = Some(poller);
 
         install_tracing_bridge(Arc::clone(self), &self.inner.config.level);
@@ -824,7 +830,9 @@ fn worker_loop(runtime: &Arc<ObservabilityRuntime>, rx: mpsc::Receiver<WorkItem>
         match w.replay(since) {
             Ok((records, skipped)) => {
                 if skipped > 0 {
-                    eprintln!("kelson-observability: WAL replay skipped {skipped} corrupted records");
+                    eprintln!(
+                        "kelson-observability: WAL replay skipped {skipped} corrupted records"
+                    );
                 }
                 for record in records {
                     match serde_json::from_slice::<Event>(&record.bytes) {

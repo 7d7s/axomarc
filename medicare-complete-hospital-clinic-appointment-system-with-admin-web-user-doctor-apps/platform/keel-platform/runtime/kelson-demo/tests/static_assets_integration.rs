@@ -84,8 +84,11 @@ fn fixture(with_manifest: bool) -> Fixture {
 
     std::fs::write(public.join("assets").join("app-B7f3k9Jh.css"), CSS).expect("css writes");
     std::fs::write(public.join("css").join("site.css"), "html{zoom:1}").expect("css writes");
-    std::fs::write(public.join("index.html"), "<!doctype html><title>app shell</title>")
-        .expect("shell writes");
+    std::fs::write(
+        public.join("index.html"),
+        "<!doctype html><title>app shell</title>",
+    )
+    .expect("shell writes");
     std::fs::write(public.join("favicon.ico"), b"\x00\x00icon").expect("icon writes");
     if with_manifest {
         std::fs::write(public.join("build").join("manifest.json"), MANIFEST)
@@ -96,13 +99,24 @@ fn fixture(with_manifest: bool) -> Fixture {
     std::fs::create_dir_all(public.join("web")).expect("decoy dirs");
     std::fs::write(public.join("web").join("assets"), "FILE-AT-WEB-ASSETS").expect("decoy writes");
     // A secret one level ABOVE the root: only reachable via traversal.
-    std::fs::write(dir.parent().expect("temp parent").join("kelson-static-it-secret.txt"), "hunter2")
-        .expect("secret writes");
+    std::fs::write(
+        dir.parent()
+            .expect("temp parent")
+            .join("kelson-static-it-secret.txt"),
+        "hunter2",
+    )
+    .expect("secret writes");
 
-    std::fs::write(dir.join("views").join("pages").join("assets.html"), ASSETS_VIEW)
-        .expect("view writes");
-    std::fs::write(dir.join("views").join("errors").join("404.html"), ERROR_404_VIEW)
-        .expect("error view writes");
+    std::fs::write(
+        dir.join("views").join("pages").join("assets.html"),
+        ASSETS_VIEW,
+    )
+    .expect("view writes");
+    std::fs::write(
+        dir.join("views").join("errors").join("404.html"),
+        ERROR_404_VIEW,
+    )
+    .expect("error view writes");
 
     let (state, _, _) = kelson_demo::build_app_state(&dir, true, true);
     let raw = format!(
@@ -119,7 +133,10 @@ fn fixture(with_manifest: bool) -> Fixture {
 fn router(fx: &Fixture) -> axum::Router {
     let state = fx.state.clone();
     let router = kelson_demo::routes::router(state.clone())
-        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &fx.graph))
+        .merge(kelson_demo::graph_routes::graph_router(
+            state.clone(),
+            &fx.graph,
+        ))
         .merge(kelson_demo::auth_routes::router(state.clone()));
     let router = state
         .sessions
@@ -178,12 +195,7 @@ async fn send(router: &axum::Router, req: Request<Body>) -> Reply {
     }
 }
 
-async fn request(
-    router: &axum::Router,
-    method: Method,
-    uri: &str,
-    accept: Option<&str>,
-) -> Reply {
+async fn request(router: &axum::Router, method: Method, uri: &str, accept: Option<&str>) -> Reply {
     let mut builder = Request::builder().method(method).uri(uri);
     if let Some(accept) = accept {
         builder = builder.header(header::ACCEPT, accept);
@@ -219,7 +231,11 @@ async fn public_files_serve_with_their_type_and_cache_posture() {
     // The SPA shell answers "/" through public/index.html.
     let shell = get(&router, "/").await;
     assert_eq!(shell.status, StatusCode::OK, "{}", shell.text());
-    assert!(shell.content_type.starts_with("text/html"), "{}", shell.content_type);
+    assert!(
+        shell.content_type.starts_with("text/html"),
+        "{}",
+        shell.content_type
+    );
     assert!(shell.text().contains("app shell"), "{}", shell.text());
 }
 
@@ -241,7 +257,11 @@ async fn declared_routes_still_win_over_files_with_the_same_path() {
     // Nor may one shadow a graph route: /web/assets still renders the view.
     let page = get(&router, "/web/assets").await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
-    assert!(page.content_type.starts_with("text/html"), "{}", page.content_type);
+    assert!(
+        page.content_type.starts_with("text/html"),
+        "{}",
+        page.content_type
+    );
     assert!(page.text().contains("class=\"assets\""), "{}", page.text());
     assert!(!page.text().contains("FILE-AT-WEB-ASSETS"));
 }
@@ -253,7 +273,10 @@ async fn head_reports_the_entity_length_without_a_body() {
 
     let head = request(&router, Method::HEAD, "/assets/app-B7f3k9Jh.css", None).await;
     assert_eq!(head.status, StatusCode::OK, "{}", head.text());
-    assert_eq!(head.content_length.as_deref(), Some(CSS.len().to_string().as_str()));
+    assert_eq!(
+        head.content_length.as_deref(),
+        Some(CSS.len().to_string().as_str())
+    );
     assert_eq!(
         head.cache_control, "public, max-age=31536000, immutable",
         "HEAD carries the same cache posture"
@@ -262,7 +285,10 @@ async fn head_reports_the_entity_length_without_a_body() {
 
     // The GET twin proves the length header matches the real entity.
     let get = get(&router, "/assets/app-B7f3k9Jh.css").await;
-    assert_eq!(get.content_length.as_deref(), Some(CSS.len().to_string().as_str()));
+    assert_eq!(
+        get.content_length.as_deref(),
+        Some(CSS.len().to_string().as_str())
+    );
     assert_eq!(get.body.len(), CSS.len());
 }
 
@@ -281,7 +307,12 @@ async fn traversal_attempts_and_unknown_paths_render_the_not_found_view() {
         "/no/such/place",
     ] {
         let reply = get(&router, attempt).await;
-        assert_eq!(reply.status, StatusCode::NOT_FOUND, "{attempt}: {}", reply.text());
+        assert_eq!(
+            reply.status,
+            StatusCode::NOT_FOUND,
+            "{attempt}: {}",
+            reply.text()
+        );
         assert!(
             reply.content_type.starts_with("text/html"),
             "{attempt}: browser gets the error view, not bare text"

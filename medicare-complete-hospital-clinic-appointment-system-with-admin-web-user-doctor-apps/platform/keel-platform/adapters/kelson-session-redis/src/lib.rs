@@ -1,6 +1,6 @@
 //! # kelson-session-redis
 //! Redis adapter for the `SessionStore` port (kelson-session).
-//! 
+//!
 //! Session semantics:
 //! - `save` -> `SET session:{id} json [EX ttl]` (TTL = max(idle, absolute) from policy)
 //! - `load` -> `GET session:{id}` + deserialise + expiry check
@@ -36,7 +36,10 @@ impl SharedConn {
             .map(|_| ())
     }
 
-    pub fn with<R>(&self, mut f: impl FnMut(&mut redis::Connection) -> redis::RedisResult<R>) -> Result<R, AppError> {
+    pub fn with<R>(
+        &self,
+        mut f: impl FnMut(&mut redis::Connection) -> redis::RedisResult<R>,
+    ) -> Result<R, AppError> {
         let mut guard = self.conn.lock().expect("redis conn poisoned");
         if guard.is_none() {
             let conn = self
@@ -98,16 +101,12 @@ impl RedisSessionStore {
         let mut ttl = u64::MAX;
         if policy.idle_secs > 0 {
             let idle_expiry = session.last_seen + Duration::seconds(policy.idle_secs as i64);
-            let idle_remaining = (idle_expiry - now)
-                .whole_seconds()
-                .max(1) as u64;
+            let idle_remaining = (idle_expiry - now).whole_seconds().max(1) as u64;
             ttl = ttl.min(idle_remaining);
         }
         if policy.absolute_secs > 0 {
             let abs_expiry = session.created_at + Duration::seconds(policy.absolute_secs as i64);
-            let abs_remaining = (abs_expiry - now)
-                .whole_seconds()
-                .max(1) as u64;
+            let abs_remaining = (abs_expiry - now).whole_seconds().max(1) as u64;
             ttl = ttl.min(abs_remaining);
         }
         if ttl == u64::MAX {
@@ -124,7 +123,7 @@ impl SessionStore for RedisSessionStore {
         let raw = self
             .conn
             .with(|c| redis::cmd("GET").arg(&key).query::<Option<String>>(c))?;
-        
+
         match raw {
             Some(raw) => {
                 let session: Session = serde_json::from_str(&raw)
@@ -139,8 +138,12 @@ impl SessionStore for RedisSessionStore {
         let key = self.key(&session.id);
         let raw = serde_json::to_string(session)
             .map_err(|e| AppError::persistence(format!("session serialize: {e}")))?;
-        let ttl = self.ttl_secs(session, &SessionPolicy::default(), OffsetDateTime::now_utc());
-        
+        let ttl = self.ttl_secs(
+            session,
+            &SessionPolicy::default(),
+            OffsetDateTime::now_utc(),
+        );
+
         let _: () = self.conn.with(|c| {
             let mut cmd = redis::cmd("SET");
             cmd.arg(&key).arg(&raw).arg("EX").arg(ttl);
@@ -151,7 +154,9 @@ impl SessionStore for RedisSessionStore {
 
     fn delete(&self, id: &SessionId) -> Result<(), AppError> {
         let key = self.key(id);
-        let _ = self.conn.with(|c| redis::cmd("DEL").arg(&key).query::<u64>(c));
+        let _ = self
+            .conn
+            .with(|c| redis::cmd("DEL").arg(&key).query::<u64>(c));
         Ok(())
     }
 
@@ -162,7 +167,11 @@ impl SessionStore for RedisSessionStore {
         loop {
             let step = self.conn.with(|c| {
                 let mut cmd = redis::cmd("SCAN");
-                cmd.arg(cursor).arg("MATCH").arg(&pattern).arg("COUNT").arg(200);
+                cmd.arg(cursor)
+                    .arg("MATCH")
+                    .arg(&pattern)
+                    .arg("COUNT")
+                    .arg(200);
                 cmd.query::<(u64, Vec<String>)>(c)
             });
             let (next, keys) = match step {
@@ -185,11 +194,15 @@ impl SessionStore for RedisSessionStore {
         let pattern = format!("{}*", self.prefix);
         let mut cursor: u64 = 0;
         let mut deleted = 0usize;
-        
+
         loop {
             let step = self.conn.with(|c| {
                 let mut cmd = redis::cmd("SCAN");
-                cmd.arg(cursor).arg("MATCH").arg(&pattern).arg("COUNT").arg(200);
+                cmd.arg(cursor)
+                    .arg("MATCH")
+                    .arg(&pattern)
+                    .arg("COUNT")
+                    .arg(200);
                 cmd.query::<(u64, Vec<String>)>(c)
             });
             let (next, keys) = match step {
@@ -199,25 +212,29 @@ impl SessionStore for RedisSessionStore {
                     return Ok(deleted);
                 }
             };
-            
+
             for key in keys {
-                let raw = self.conn.with(|c| redis::cmd("GET").arg(&key).query::<Option<String>>(c))?;
+                let raw = self
+                    .conn
+                    .with(|c| redis::cmd("GET").arg(&key).query::<Option<String>>(c))?;
                 if let Some(raw) = raw {
                     if let Ok(session) = serde_json::from_str::<Session>(&raw) {
                         if session.expired(now, policy) {
-                            let _ = self.conn.with(|c| redis::cmd("DEL").arg(&key).query::<u64>(c));
+                            let _ = self
+                                .conn
+                                .with(|c| redis::cmd("DEL").arg(&key).query::<u64>(c));
                             deleted += 1;
                         }
                     }
                 }
             }
-            
+
             cursor = next;
             if cursor == 0 {
                 break;
             }
         }
-        
+
         Ok(deleted)
     }
 }
@@ -230,8 +247,13 @@ mod tests {
     fn session_key_format() {
         let conn = SharedConn::new("redis://localhost:6379").unwrap();
         let store = RedisSessionStore::from_conn(conn);
-        let id = SessionId::parse("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789").unwrap();
+        let id =
+            SessionId::parse("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+                .unwrap();
         let key = store.key(&id);
-        assert_eq!(key, "keel:session:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789");
+        assert_eq!(
+            key,
+            "keel:session:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        );
     }
 }

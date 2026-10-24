@@ -3,14 +3,98 @@
 //! Cargo.toml, classifies crates by their topology folder, and enforces the
 //! layer dependency matrix. Runs in `kelson check`, xtask, CI and pre-release.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// The external-dependency budget (DEPENDENCY-POLICY v2, D-62): the cap on
 /// direct externals in the root workspace dependency table. Raised to 26
 /// when the views engine took `regex` to compile the form bridge's
 /// declared-rule patterns once (S-9: one pattern per rule, not per field).
+///
+/// This is the fallback only: a workspace with a `deps-policy.toml` reads
+/// the cap from `[policy].external_cap` (G-10), so the number has one
+/// reviewed home instead of a literal duplicated in prose.
 pub const EXTERNAL_CAP: usize = 26;
+
+/// The reviewed per-crate dependency policy (gate E5, MVVC contract C16).
+/// One table entry per workspace member, keyed by package name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CratePolicy {
+    /// External crates the member may name in `[dependencies]` /
+    /// `[build-dependencies]` (dev-dependencies stay under the class matrix).
+    pub externals: BTreeSet<String>,
+    /// Workspace crates the member may name outside dev-dependencies.
+    pub platform: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DependencyPolicy {
+    pub external_cap: usize,
+    pub allow: BTreeMap<String, CratePolicy>,
+}
+
+/// The policy file the analyzer reads, relative to the workspace root.
+pub const POLICY_FILE: &str = "deps-policy.toml";
+
+/// Load `deps-policy.toml`. `Ok(None)` = no policy file (the class matrix
+/// still runs); `Err` = the file exists but does not parse, which is a
+/// refusal rather than a silent fallback.
+pub fn load_dependency_policy(root: &Path) -> Result<Option<DependencyPolicy>, String> {
+    let path = root.join(POLICY_FILE);
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    };
+    let value: toml::Value = raw
+        .parse()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let external_cap = value
+        .get("policy")
+        .and_then(|p| p.get("external_cap"))
+        .and_then(|c| c.as_integer())
+        .map(|c| c.max(0) as usize)
+        .unwrap_or(EXTERNAL_CAP);
+    let mut allow = BTreeMap::new();
+    if let Some(table) = value.get("allow").and_then(|a| a.as_table()) {
+        for (name, entry) in table {
+            allow.insert(
+                name.clone(),
+                CratePolicy {
+                    externals: string_set(entry, "externals")?,
+                    platform: string_set(entry, "platform")?,
+                },
+            );
+        }
+    }
+    Ok(Some(DependencyPolicy {
+        external_cap,
+        allow,
+    }))
+}
+
+fn string_set(entry: &toml::Value, key: &str) -> Result<BTreeSet<String>, String> {
+    let Some(values) = entry.get(key).and_then(|v| v.as_array()) else {
+        return Ok(BTreeSet::new());
+    };
+    values
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .map(|s| s.to_string())
+                .ok_or_else(|| format!("[allow] {key}: every entry must be a string"))
+        })
+        .collect()
+}
+
+/// The cap in force for this workspace (policy input, literal fallback).
+pub fn external_cap(root: &Path) -> usize {
+    load_dependency_policy(root)
+        .ok()
+        .flatten()
+        .map(|p| p.external_cap)
+        .unwrap_or(EXTERNAL_CAP)
+}
 
 /// Topology classes (STAGE-0-SPEC §2/§3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -339,7 +423,8 @@ impl Class {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Violation {
     /// Stable codes: DEP-CLASS, DEP-UNKNOWN-CRATE, DEP-UNKNOWN-MEMBER,
-    /// DEP-MISSING-MANIFEST, DEP-NO-MEMBERS, ANALYZER-BUDGET.
+    /// DEP-MISSING-MANIFEST, DEP-NO-MEMBERS, ANALYZER-BUDGET,
+    /// DEP-EXTERNAL-NOT-ALLOWED, DEP-CLASS-POSTURE, DEP-POLICY.
     pub code: String,
     pub member: String,
     pub message: String,
@@ -351,6 +436,10 @@ pub struct CrateInfo {
     pub class: Class,
     /// (dependency crate name, is_dev_dependency)
     pub kelson_deps: Vec<(String, bool)>,
+    /// Externals declared outside dev-dependencies (gate E5).
+    pub externals: Vec<String>,
+    /// Workspace crates declared outside dev-dependencies (gate E5).
+    pub platform_deps: Vec<String>,
 }
 
 /// Extract `[workspace].members` from the root manifest.
@@ -385,6 +474,80 @@ fn kelson_deps(manifest: &toml::Value, table: &str) -> Vec<(String, bool)> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// The crates a member SHIPS with: `[dependencies]` + `[build-dependencies]`,
+/// split into workspace crates and externals. Dev-dependencies are excluded
+/// on purpose — they are not part of the published surface, and the class
+/// matrix already governs their direction.
+fn shipped_deps(manifest: &toml::Value) -> (Vec<String>, Vec<String>) {
+    let mut externals = Vec::new();
+    let mut platform = Vec::new();
+    for table in ["dependencies", "build-dependencies"] {
+        let Some(deps) = manifest.get(table).and_then(|d| d.as_table()) else {
+            continue;
+        };
+        for (name, spec) in deps {
+            let is_workspace_crate = name.starts_with("kelson-") || spec.get("path").is_some();
+            if is_workspace_crate {
+                platform.push(name.clone());
+            } else {
+                externals.push(name.clone());
+            }
+        }
+    }
+    externals.sort();
+    externals.dedup();
+    platform.sort();
+    platform.dedup();
+    (externals, platform)
+}
+
+/// Gate E5 (MVVC C16): every shipped dependency must be on the member's
+/// reviewed allow-list. A missing entry is a refusal, not a wildcard — a new
+/// workspace member cannot ship dependencies nobody reviewed.
+fn e5_violations(crates: &[CrateInfo], policy: &DependencyPolicy) -> Vec<Violation> {
+    let mut out = Vec::new();
+    for c in crates {
+        let Some(entry) = policy.allow.get(&c.name) else {
+            out.push(Violation {
+                code: "DEP-EXTERNAL-NOT-ALLOWED".into(),
+                member: c.member.clone(),
+                message: format!(
+                    "crate {} has no [allow] entry in {POLICY_FILE} (E5)",
+                    c.name
+                ),
+            });
+            continue;
+        };
+        for ext in &c.externals {
+            if !entry.externals.contains(ext) {
+                out.push(Violation {
+                    code: "DEP-EXTERNAL-NOT-ALLOWED".into(),
+                    member: c.member.clone(),
+                    message: format!(
+                        "crate {} ships external dependency {ext}, which is not on its \
+                         reviewed allow-list in {POLICY_FILE} (E5/C16)",
+                        c.name
+                    ),
+                });
+            }
+        }
+        for dep in &c.platform_deps {
+            if !entry.platform.contains(dep) {
+                out.push(Violation {
+                    code: "DEP-CLASS-POSTURE".into(),
+                    member: c.member.clone(),
+                    message: format!(
+                        "crate {} ships platform dependency {dep}, which is not on its \
+                         reviewed allow-list in {POLICY_FILE} (E5/C16)",
+                        c.name
+                    ),
+                });
+            }
+        }
+    }
+    out
 }
 
 /// Analyze a workspace root. Returns ALL violations (no fail-fast).
@@ -454,11 +617,14 @@ pub fn analyze_workspace(root: &Path) -> Vec<Violation> {
             .to_string();
         let mut deps = kelson_deps(&manifest, "dependencies");
         deps.extend(kelson_deps(&manifest, "dev-dependencies"));
+        let (externals, platform_deps) = shipped_deps(&manifest);
         crates.push(CrateInfo {
             member: member.clone(),
             name,
             class,
             kelson_deps: deps,
+            externals,
+            platform_deps,
         });
     }
 
@@ -489,6 +655,24 @@ pub fn analyze_workspace(root: &Path) -> Vec<Violation> {
         }
     }
 
+    // Gate E5 (MVVC C16): the per-crate allow-list, plus the cap from the
+    // same reviewed policy file. A malformed policy refuses rather than
+    // falling back to "no checks" — a gate that silently disappears when its
+    // input breaks is not a gate.
+    let mut cap = EXTERNAL_CAP;
+    match load_dependency_policy(root) {
+        Ok(Some(policy)) => {
+            cap = policy.external_cap;
+            violations.extend(e5_violations(&crates, &policy));
+        }
+        Ok(None) => {}
+        Err(e) => violations.push(Violation {
+            code: "DEP-POLICY".into(),
+            member: ".".into(),
+            message: e,
+        }),
+    }
+
     // External-dependency budget (DEPENDENCY-POLICY v2, D-62): the cap on
     // direct externals in the root workspace table.
     let externals = root_toml
@@ -501,15 +685,97 @@ pub fn analyze_workspace(root: &Path) -> Vec<Violation> {
                 .map(|t| t.iter().filter(|(_, v)| v.get("path").is_none()).count())
         })
         .unwrap_or(0);
-    if externals > EXTERNAL_CAP {
+    if externals > cap {
         violations.push(Violation {
             code: "ANALYZER-BUDGET".into(),
             member: ".".into(),
             message: format!(
                 "{externals} direct external dependencies exceed the policy-v2 cap of \
-                 {EXTERNAL_CAP} (D-62)"
+                 {cap} (D-62)"
             ),
         });
     }
     violations
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info(name: &str, externals: &[&str], platform: &[&str]) -> CrateInfo {
+        CrateInfo {
+            member: format!("crates/test/{name}"),
+            name: name.to_string(),
+            class: Class::Foundation,
+            kelson_deps: Vec::new(),
+            externals: externals.iter().map(|s| s.to_string()).collect(),
+            platform_deps: platform.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    fn policy(externals: &[&str], platform: &[&str]) -> DependencyPolicy {
+        let mut allow = BTreeMap::new();
+        allow.insert(
+            "reviewed".to_string(),
+            CratePolicy {
+                externals: externals.iter().map(|s| s.to_string()).collect(),
+                platform: platform.iter().map(|s| s.to_string()).collect(),
+            },
+        );
+        DependencyPolicy {
+            external_cap: EXTERNAL_CAP,
+            allow,
+        }
+    }
+
+    #[test]
+    fn e5_allows_a_dependency_on_the_reviewed_list() {
+        let crates = [info("reviewed", &["serde"], &["kelson-foundation"])];
+        let violations = e5_violations(&crates, &policy(&["serde"], &["kelson-foundation"]));
+        assert!(violations.is_empty(), "{violations:?}");
+    }
+
+    #[test]
+    fn e5_refuses_an_unreviewed_external() {
+        let crates = [info("reviewed", &["serde", "regex"], &[])];
+        let violations = e5_violations(&crates, &policy(&["serde"], &[]));
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].code, "DEP-EXTERNAL-NOT-ALLOWED");
+        assert!(violations[0].message.contains("regex"));
+    }
+
+    #[test]
+    fn e5_refuses_an_unreviewed_platform_dependency() {
+        let crates = [info("reviewed", &[], &["kelson-foundation", "kelson-http"])];
+        let violations = e5_violations(&crates, &policy(&[], &["kelson-foundation"]));
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].code, "DEP-CLASS-POSTURE");
+        assert!(violations[0].message.contains("kelson-http"));
+    }
+
+    #[test]
+    fn e5_refuses_a_member_with_no_policy_entry() {
+        let crates = [info("unlisted", &["serde"], &[])];
+        let violations = e5_violations(&crates, &policy(&["serde"], &[]));
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].code, "DEP-EXTERNAL-NOT-ALLOWED");
+        assert!(violations[0].message.contains("no [allow] entry"));
+    }
+
+    #[test]
+    fn the_external_cap_is_read_from_the_policy_file() {
+        let dir =
+            std::env::temp_dir().join(format!("kelson-analyzer-policy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(POLICY_FILE),
+            "[policy]\nexternal_cap = 7\n\n[allow.\"reviewed\"]\nexternals = [\"serde\"]\nplatform = []\n",
+        )
+        .unwrap();
+        let loaded = load_dependency_policy(&dir).unwrap().unwrap();
+        assert_eq!(loaded.external_cap, 7);
+        assert_eq!(external_cap(&dir), 7);
+        assert!(loaded.allow["reviewed"].externals.contains("serde"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

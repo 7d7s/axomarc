@@ -683,7 +683,8 @@ fn errors_cmd(tcfg: &TelemetryConfig, last: usize) -> anyhow::Result<ExitCode> {
     let errors: Vec<&Value> = events
         .iter()
         .filter(|v| {
-            ev_str(v, &["schema"]) == Some("kelson.exception") || matches!(ev_level(v), Some("error"))
+            ev_str(v, &["schema"]) == Some("kelson.exception")
+                || matches!(ev_level(v), Some("error"))
         })
         .collect();
     let start = errors.len().saturating_sub(last);
@@ -857,8 +858,8 @@ async fn audit(
     // stays shared and runs up front.
     let mut filters: Vec<String> = vec!["chain_hash IS NOT NULL".into()];
     if let Some(tid) = &tenant {
-        let tid = uuid::Uuid::parse_str(tid)
-            .map_err(|_| anyhow::anyhow!("invalid tenant id {tid:?}"))?;
+        let tid =
+            uuid::Uuid::parse_str(tid).map_err(|_| anyhow::anyhow!("invalid tenant id {tid:?}"))?;
         filters.push(match &pool {
             DbPool::Postgres(_) => format!("tenant_id = '{tid}'"),
             // The same 16 bytes sqlx binds for a uuid, as a MySQL hex literal.
@@ -866,11 +867,9 @@ async fn audit(
         });
     }
     if let Some(since) = &since {
-        let parsed = time::OffsetDateTime::parse(
-            since,
-            &time::format_description::well_known::Rfc3339,
-        )
-        .map_err(|_| anyhow::anyhow!("invalid --since timestamp {since:?} (RFC3339)"))?;
+        let parsed =
+            time::OffsetDateTime::parse(since, &time::format_description::well_known::Rfc3339)
+                .map_err(|_| anyhow::anyhow!("invalid --since timestamp {since:?} (RFC3339)"))?;
         filters.push(match &pool {
             DbPool::Postgres(_) => format!("at >= '{since}'"),
             // MySQL: 'YYYY-MM-DD HH:MM:SS.ffffff' in UTC - no 'T', no 'Z'.
@@ -978,9 +977,21 @@ async fn audit(
 
     let mut segments: BTreeMap<(Option<uuid::Uuid>, uuid::Uuid), Vec<kelson_integrity::ChainRow>> =
         BTreeMap::new();
-    for (id, tenant_id, principal_id, action, resource, authority, outcome, detail, at, chain_id, prev_hash, chain_hash) in rows
+    for (
+        id,
+        tenant_id,
+        principal_id,
+        action,
+        resource,
+        authority,
+        outcome,
+        detail,
+        at,
+        chain_id,
+        prev_hash,
+        chain_hash,
+    ) in rows
     {
-
         // Mirror the write path (kelson-postgres tx): merged detail + Rfc3339.
         let merged_detail = serde_json::json!({ "detail": detail, "outcome": outcome });
         let at_iso = at.format(&time::format_description::well_known::Rfc3339)?;

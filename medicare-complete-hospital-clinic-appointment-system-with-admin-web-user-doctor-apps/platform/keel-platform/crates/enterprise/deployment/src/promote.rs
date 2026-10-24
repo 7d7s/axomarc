@@ -123,16 +123,12 @@ impl PromotionPipeline {
         // because the checkpoint is the restore target and two promotions
         // would disagree about what "before" means. Fail fast: a second
         // promotion is told the lock is held, it is never queued.
-        let _lease = self
-            .lock
-            .try_acquire(&release.release)
-            .await
-            .map_err(|e| {
-                AppError::conflict(format!(
-                    "the promotion lock was not taken: {}",
-                    e.public_message
-                ))
-            })?;
+        let _lease = self.lock.try_acquire(&release.release).await.map_err(|e| {
+            AppError::conflict(format!(
+                "the promotion lock was not taken: {}",
+                e.public_message
+            ))
+        })?;
         let mut state = PromotionState::Built;
 
         // §7.2 `create_checkpoint` — taken BEFORE anything moves, so the
@@ -146,11 +142,15 @@ impl PromotionPipeline {
             .pin_versions(&release.target.module_versions)
             .await
         {
-            return Err(self.abort(&release, &checkpoint, PROMOTION_STAGES[0], e.public_message).await);
+            return Err(self
+                .abort(&release, &checkpoint, PROMOTION_STAGES[0], e.public_message)
+                .await);
         }
         state = state.advance()?;
         if let Err(reason) = self.gate(PROMOTION_STAGES[0]).await {
-            return Err(self.abort(&release, &checkpoint, PROMOTION_STAGES[0], reason).await);
+            return Err(self
+                .abort(&release, &checkpoint, PROMOTION_STAGES[0], reason)
+                .await);
         }
 
         // Stage 2 — migrate DB (forward only). Skipped entirely when the
@@ -158,7 +158,9 @@ impl PromotionPipeline {
         // §7.1's optional DB dimension.
         if release.target.db_version.is_some() {
             if let Err(e) = self.executor.migrations().apply_pending().await {
-                return Err(self.abort(&release, &checkpoint, PROMOTION_STAGES[1], e.public_message).await);
+                return Err(self
+                    .abort(&release, &checkpoint, PROMOTION_STAGES[1], e.public_message)
+                    .await);
             }
             // The release must actually have landed where it claims: a
             // watermark short of the target means migrations are missing.
@@ -176,12 +178,16 @@ impl PromotionPipeline {
                     }
                 }
                 Err(e) => {
-                    return Err(self.abort(&release, &checkpoint, PROMOTION_STAGES[1], e.public_message).await);
+                    return Err(self
+                        .abort(&release, &checkpoint, PROMOTION_STAGES[1], e.public_message)
+                        .await);
                 }
             }
         }
         if let Err(reason) = self.gate(PROMOTION_STAGES[1]).await {
-            return Err(self.abort(&release, &checkpoint, PROMOTION_STAGES[1], reason).await);
+            return Err(self
+                .abort(&release, &checkpoint, PROMOTION_STAGES[1], reason)
+                .await);
         }
 
         // Stage 3 — switch traffic: make the release's config live.
@@ -201,15 +207,21 @@ impl PromotionPipeline {
                 .await
         };
         if let Err(e) = activated {
-            return Err(self.abort(&release, &checkpoint, PROMOTION_STAGES[2], e.public_message).await);
+            return Err(self
+                .abort(&release, &checkpoint, PROMOTION_STAGES[2], e.public_message)
+                .await);
         }
         if let Err(reason) = self.gate(PROMOTION_STAGES[2]).await {
-            return Err(self.abort(&release, &checkpoint, PROMOTION_STAGES[2], reason).await);
+            return Err(self
+                .abort(&release, &checkpoint, PROMOTION_STAGES[2], reason)
+                .await);
         }
 
         // Stage 4 — canary verification.
         if let Err(reason) = self.gate(PROMOTION_STAGES[3]).await {
-            return Err(self.abort(&release, &checkpoint, PROMOTION_STAGES[3], reason).await);
+            return Err(self
+                .abort(&release, &checkpoint, PROMOTION_STAGES[3], reason)
+                .await);
         }
 
         // Staged -> Deployed. Cannot fail: `state` is `Staged` by
@@ -229,7 +241,10 @@ impl PromotionPipeline {
         match probe.run().await {
             Ok(true) => Ok(()),
             Ok(false) => Err(format!("`{stage}` health check reported unhealthy")),
-            Err(e) => Err(format!("`{stage}` health check failed: {}", e.public_message)),
+            Err(e) => Err(format!(
+                "`{stage}` health check failed: {}",
+                e.public_message
+            )),
         }
     }
 
@@ -298,20 +313,21 @@ mod tests {
 
     /// Build a pipeline whose probes are all healthy except `bad`.
     fn pipeline(h: &Harness, bad: Option<(&str, Outcome)>) -> PromotionPipeline {
-        let checks: Vec<Arc<dyn HealthCheck>> = ["post-deploy", "post-migrate", "post-traffic", "canary"]
-            .into_iter()
-            .map(|stage| {
-                let outcome = match bad {
-                    Some((name, o)) if name == stage => o,
-                    _ => Outcome::Healthy,
-                };
-                Arc::new(crate::fakes::FakeHealth {
-                    name: stage,
-                    outcome,
-                    trace: h.trace.clone(),
-                }) as Arc<dyn HealthCheck>
-            })
-            .collect();
+        let checks: Vec<Arc<dyn HealthCheck>> =
+            ["post-deploy", "post-migrate", "post-traffic", "canary"]
+                .into_iter()
+                .map(|stage| {
+                    let outcome = match bad {
+                        Some((name, o)) if name == stage => o,
+                        _ => Outcome::Healthy,
+                    };
+                    Arc::new(crate::fakes::FakeHealth {
+                        name: stage,
+                        outcome,
+                        trace: h.trace.clone(),
+                    }) as Arc<dyn HealthCheck>
+                })
+                .collect();
         PromotionPipeline::new(h.executor().into(), checks, lock()).unwrap()
     }
 
@@ -357,7 +373,10 @@ mod tests {
         // Releasing the lock lets the next promotion through ✓.
         held.release();
         assert_eq!(shared.holder(), None);
-        let state = p.promote(release()).await.expect("the promotion runs once the lock is free");
+        let state = p
+            .promote(release())
+            .await
+            .expect("the promotion runs once the lock is free");
         assert_eq!(state, PromotionState::Deployed);
     }
 
@@ -397,7 +416,12 @@ mod tests {
         assert_eq!(*h.config.live.lock().unwrap(), 8);
         assert_eq!(*h.migrations.watermark.lock().unwrap(), 6);
         assert_eq!(
-            h.modules.pins.lock().unwrap().get("echo").map(String::as_str),
+            h.modules
+                .pins
+                .lock()
+                .unwrap()
+                .get("echo")
+                .map(String::as_str),
             Some("v2")
         );
     }
@@ -411,21 +435,38 @@ mod tests {
 
         let err = p.promote(release()).await.unwrap_err();
         assert_eq!(err.code, codes::WORKFLOW);
-        assert_eq!(err.meta.get("stage").and_then(|v| v.as_str()), Some("post-traffic"));
-        assert_eq!(err.meta.get("release").and_then(|v| v.as_str()), Some("1.4.0"));
-        assert_eq!(err.meta.get("rolled_back").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            err.meta.get("stage").and_then(|v| v.as_str()),
+            Some("post-traffic")
+        );
+        assert_eq!(
+            err.meta.get("release").and_then(|v| v.as_str()),
+            Some("1.4.0")
+        );
+        assert_eq!(
+            err.meta.get("rolled_back").and_then(|v| v.as_bool()),
+            Some(true)
+        );
 
         // Nothing moved: the live state is byte-identical to the start.
         assert_eq!(*h.config.live.lock().unwrap(), 7, "config restored");
         assert_eq!(*h.migrations.watermark.lock().unwrap(), 5, "db restored");
         assert_eq!(
-            h.modules.pins.lock().unwrap().get("echo").map(String::as_str),
+            h.modules
+                .pins
+                .lock()
+                .unwrap()
+                .get("echo")
+                .map(String::as_str),
             Some("v1"),
             "pins restored"
         );
         // The failed gate is the last probe run; the restore followed it.
         let calls = h.trace.calls();
-        let failed = calls.iter().position(|c| c == "health.post-traffic").unwrap();
+        let failed = calls
+            .iter()
+            .position(|c| c == "health.post-traffic")
+            .unwrap();
         assert!(
             calls[failed + 1..].contains(&"config.activate(7)".to_string()),
             "restore ran after the failed gate: {calls:?}"
@@ -442,11 +483,22 @@ mod tests {
 
         let err = p.promote(release()).await.unwrap_err();
         assert_eq!(err.code, codes::WORKFLOW);
-        assert_eq!(err.meta.get("stage").and_then(|v| v.as_str()), Some("post-deploy"));
-        assert_eq!(err.meta.get("rolled_back").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            err.meta.get("stage").and_then(|v| v.as_str()),
+            Some("post-deploy")
+        );
+        assert_eq!(
+            err.meta.get("rolled_back").and_then(|v| v.as_bool()),
+            Some(true)
+        );
 
         assert_eq!(
-            h.modules.pins.lock().unwrap().get("echo").map(String::as_str),
+            h.modules
+                .pins
+                .lock()
+                .unwrap()
+                .get("echo")
+                .map(String::as_str),
             Some("v1"),
             "stage 1 pin reverted"
         );
@@ -471,8 +523,14 @@ mod tests {
 
         let err = p.promote(release()).await.unwrap_err();
         assert_eq!(err.code, codes::WORKFLOW);
-        assert_eq!(err.meta.get("stage").and_then(|v| v.as_str()), Some("canary"));
-        assert_eq!(err.meta.get("rolled_back").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            err.meta.get("stage").and_then(|v| v.as_str()),
+            Some("canary")
+        );
+        assert_eq!(
+            err.meta.get("rolled_back").and_then(|v| v.as_bool()),
+            Some(true)
+        );
         assert_eq!(*h.config.live.lock().unwrap(), 7, "config restored");
     }
 
@@ -487,11 +545,22 @@ mod tests {
 
         let err = p.promote(release()).await.unwrap_err();
         assert_eq!(err.code, codes::WORKFLOW);
-        let stage = err.meta.get("stage").and_then(|v| v.as_str()).unwrap().to_string();
+        let stage = err
+            .meta
+            .get("stage")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .to_string();
         assert_eq!(stage, "post-migrate", "refused before stage 2's gate");
-        assert_eq!(err.meta.get("rolled_back").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            err.meta.get("rolled_back").and_then(|v| v.as_bool()),
+            Some(true)
+        );
         assert_eq!(*h.config.live.lock().unwrap(), 7, "config never activated");
-        assert!(h.trace.under("health.post-traffic").is_empty(), "later stages never ran");
+        assert!(
+            h.trace.under("health.post-traffic").is_empty(),
+            "later stages never ran"
+        );
     }
 
     /// Wiring is fail-closed: a missing, duplicate, or unknown probe is a
@@ -527,10 +596,16 @@ mod tests {
         r.target.db_version = None;
         assert_eq!(p.promote(r).await.unwrap(), PromotionState::Deployed);
 
-        assert!(h.trace.under("db.apply_pending").is_empty(), "DB work skipped");
+        assert!(
+            h.trace.under("db.apply_pending").is_empty(),
+            "DB work skipped"
+        );
         // The probe still runs: skipping a gate would quietly weaken the
         // fail-closed posture for a release that happens to carry no DDL.
-        assert!(!h.trace.under("health.post-migrate").is_empty(), "gate still runs");
+        assert!(
+            !h.trace.under("health.post-migrate").is_empty(),
+            "gate still runs"
+        );
         assert_eq!(*h.config.live.lock().unwrap(), 8, "config still advanced");
     }
 
@@ -544,8 +619,13 @@ mod tests {
             .map(|c| c.name().to_string())
             .collect();
         names.sort();
-        assert_eq!(names, vec!["canary", "post-deploy", "post-migrate", "post-traffic"]);
-        assert!(PromotionPipeline::new(h.executor().into(), healthy_probes(&h.trace), lock()).is_ok());
+        assert_eq!(
+            names,
+            vec!["canary", "post-deploy", "post-migrate", "post-traffic"]
+        );
+        assert!(
+            PromotionPipeline::new(h.executor().into(), healthy_probes(&h.trace), lock()).is_ok()
+        );
     }
 
     /// Chaos (Phase 5, §9 "rollback mid-promotion"): the full failure
@@ -635,7 +715,12 @@ mod tests {
                     "{at}: watermark restored"
                 );
                 assert_eq!(
-                    h.modules.pins.lock().unwrap().get("echo").map(String::as_str),
+                    h.modules
+                        .pins
+                        .lock()
+                        .unwrap()
+                        .get("echo")
+                        .map(String::as_str),
                     Some("v1"),
                     "{at}: pins restored"
                 );

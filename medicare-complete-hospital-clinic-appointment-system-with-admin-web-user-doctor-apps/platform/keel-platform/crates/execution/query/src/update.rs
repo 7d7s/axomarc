@@ -78,7 +78,8 @@ impl Update {
     }
 
     fn push(&mut self, condition: Condition) {
-        self.conditions.push((Junction::And, Clause::Pred(condition)));
+        self.conditions
+            .push((Junction::And, Clause::Pred(condition)));
     }
 
     pub fn where_eq(mut self, column: Ident, value: impl Into<Value>) -> Self {
@@ -90,12 +91,7 @@ impl Update {
         self
     }
 
-    pub fn where_op(
-        mut self,
-        column: Ident,
-        operator: Operator,
-        value: impl Into<Value>,
-    ) -> Self {
+    pub fn where_op(mut self, column: Ident, operator: Operator, value: impl Into<Value>) -> Self {
         self.push(Condition {
             column,
             operator,
@@ -148,10 +144,7 @@ impl Update {
         self
     }
 
-    pub fn build(
-        &self,
-        dialect: &dyn crate::dialect::Dialect,
-    ) -> Result<CompiledWrite, AppError> {
+    pub fn build(&self, dialect: &dyn crate::dialect::Dialect) -> Result<CompiledWrite, AppError> {
         if self.sets.is_empty() {
             return Err(AppError::validation("UPDATE needs at least one SET"));
         }
@@ -178,11 +171,7 @@ impl Update {
             .map(|item| match item {
                 SetItem::Assign(col, v) => {
                     params.push(v.clone());
-                    format!(
-                        "{} = {}",
-                        col.as_str(),
-                        dialect.placeholder(params.len())
-                    )
+                    format!("{} = {}", col.as_str(), dialect.placeholder(params.len()))
                 }
                 SetItem::Adjust {
                     column,
@@ -323,10 +312,7 @@ mod tests {
             .where_eq(id("id"), 1i64)
             .build(&crate::dialect::POSTGRES)
             .unwrap();
-        assert_eq!(
-            q.sql,
-            "UPDATE t SET balance = balance - $1 WHERE id = $2"
-        );
+        assert_eq!(q.sql, "UPDATE t SET balance = balance - $1 WHERE id = $2");
     }
 
     #[test]

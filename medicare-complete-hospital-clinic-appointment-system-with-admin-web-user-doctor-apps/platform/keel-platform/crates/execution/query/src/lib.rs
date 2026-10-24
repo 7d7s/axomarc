@@ -16,7 +16,7 @@ pub mod update;
 pub mod window;
 
 pub use delete::Delete;
-pub use dialect::{CastTarget, Dialect, DialectId, MySqlDialect, PostgresDialect, POSTGRES, MYSQL};
+pub use dialect::{CastTarget, Dialect, DialectId, MySqlDialect, PostgresDialect, MYSQL, POSTGRES};
 pub use expr::SqlExpr;
 pub use insert::{ConflictPolicy, Insert};
 pub use select::{
@@ -86,7 +86,11 @@ fn render_clause(
     use select::{Clause, Operator};
     match clause {
         Clause::Pred(cond) => render_predicate(cond, params, dialect),
-        Clause::Column { left, operator, right } => {
+        Clause::Column {
+            left,
+            operator,
+            right,
+        } => {
             if !operator.is_scalar() {
                 return Err(AppError::validation(format!(
                     "column comparison does not accept operator {}",
@@ -119,7 +123,11 @@ fn render_clause(
             }
             if !matches!(
                 operator,
-                Operator::Eq | Operator::Ne | Operator::Gt | Operator::GtEq | Operator::Lt
+                Operator::Eq
+                    | Operator::Ne
+                    | Operator::Gt
+                    | Operator::GtEq
+                    | Operator::Lt
                     | Operator::LtEq
             ) {
                 return Err(AppError::validation(format!(

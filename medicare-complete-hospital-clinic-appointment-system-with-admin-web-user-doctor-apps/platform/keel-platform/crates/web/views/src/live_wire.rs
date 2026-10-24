@@ -30,9 +30,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use serde_json::Value;
 #[cfg(feature = "live-transport")]
 use serde_json::json;
+use serde_json::Value;
 
 use crate::engine::{ViewError, ViewsEngine, VIEW_RENDER};
 use crate::live::{LiveRender, LiveSession};
@@ -204,17 +204,12 @@ impl LiveSessions {
     /// The session an id names — while the registry still hosts it. An
     /// unhosted id (never known, or closed) is **stale** and refused.
     pub fn get(&self, id: &LiveId) -> Result<Arc<dyn LiveNode>, ViewError> {
-        self.slots
-            .lock()
-            .unwrap()
-            .get(id)
-            .cloned()
-            .ok_or_else(|| {
-                ViewError::new(
-                    VIEW_RENDER,
-                    format!("the live session {id} is stale: the registry no longer hosts it"),
-                )
-            })
+        self.slots.lock().unwrap().get(id).cloned().ok_or_else(|| {
+            ViewError::new(
+                VIEW_RENDER,
+                format!("the live session {id} is stale: the registry no longer hosts it"),
+            )
+        })
     }
 
     /// Retire a session: the id goes stale and the wire refuses it.
@@ -397,9 +392,10 @@ mod tests {
     impl crate::viewmodel::ViewModel for CountVm {
         const VIEW: &'static str = "counter";
         fn schema() -> &'static [crate::viewmodel::FieldSchema] {
-            crate::view_schema![
-                crate::viewmodel::FieldSchema::required("count", crate::viewmodel::FieldKind::Int),
-            ]
+            crate::view_schema![crate::viewmodel::FieldSchema::required(
+                "count",
+                crate::viewmodel::FieldKind::Int
+            ),]
         }
     }
 
@@ -455,9 +451,10 @@ mod wire_tests {
     impl crate::viewmodel::ViewModel for WireVm {
         const VIEW: &'static str = "wire";
         fn schema() -> &'static [crate::viewmodel::FieldSchema] {
-            crate::view_schema![
-                crate::viewmodel::FieldSchema::required("count", crate::viewmodel::FieldKind::Int),
-            ]
+            crate::view_schema![crate::viewmodel::FieldSchema::required(
+                "count",
+                crate::viewmodel::FieldKind::Int
+            ),]
         }
     }
 
@@ -526,7 +523,9 @@ mod wire_tests {
         );
 
         // A publish with nothing changed carries nothing.
-        let quiet = wire.publish(&id, session.as_ref()).expect("the publish diffs");
+        let quiet = wire
+            .publish(&id, session.as_ref())
+            .expect("the publish diffs");
         assert!(quiet.is_none(), "no change, no event: {quiet:?}");
         assert!(
             receiver.try_recv().is_err(),

@@ -109,7 +109,11 @@ pub fn classify_app_error(err: &AppError) -> TransactionFailure {
 ///
 /// A failure that is not retryable is returned immediately, and the last
 /// failure is returned when the attempts run out.
-pub fn retry_transaction<T, F>(attempts: u32, delay: std::time::Duration, mut body: F) -> Result<T, AppError>
+pub fn retry_transaction<T, F>(
+    attempts: u32,
+    delay: std::time::Duration,
+    mut body: F,
+) -> Result<T, AppError>
 where
     F: FnMut() -> Result<T, AppError>,
 {
@@ -285,7 +289,10 @@ mod tests {
         .expect_err("every attempt lost the race");
         assert_eq!(calls, 3, "the attempt cap is respected");
         assert!(
-            err.internal.as_deref().unwrap_or_default().contains("deadlock"),
+            err.internal
+                .as_deref()
+                .unwrap_or_default()
+                .contains("deadlock"),
             "the last failure is returned: {err:?}"
         );
     }
@@ -300,7 +307,10 @@ mod tests {
         .expect_err("a fatal failure is returned as-is");
         assert_eq!(calls, 1, "a fatal failure is not re-run");
         assert!(
-            err.internal.as_deref().unwrap_or_default().contains("duplicate key"),
+            err.internal
+                .as_deref()
+                .unwrap_or_default()
+                .contains("duplicate key"),
             "the fatal failure is returned as-is: {err:?}"
         );
     }
@@ -317,4 +327,3 @@ mod tests {
         assert_eq!(calls, 1);
     }
 }
-

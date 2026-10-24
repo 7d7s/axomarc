@@ -119,7 +119,10 @@ impl SessionMiddleware {
     }
 
     /// Set-Cookie header for a fresh/rotated session (login, regenerate).
-    pub fn issue_cookie(&self, session: &Session) -> Result<HeaderValue, kelson_foundation::AppError> {
+    pub fn issue_cookie(
+        &self,
+        session: &Session,
+    ) -> Result<HeaderValue, kelson_foundation::AppError> {
         self.cookie_header(session, None)
     }
 
@@ -270,8 +273,8 @@ mod tests {
             SessionPolicy::default(),
             b"unit-secret",
         ));
-        let mw = SessionMiddleware::new(manager.clone(), b"cookie-secret")
-            .with_clock(clock.clone());
+        let mw =
+            SessionMiddleware::new(manager.clone(), b"cookie-secret").with_clock(clock.clone());
         let router = Router::new().route(
             "/whoami",
             get(|Extension(rs): Extension<ResolvedSession>| async move {
@@ -287,7 +290,11 @@ mod tests {
             session_cookie_value(&session, b"cookie-secret")
         ));
 
-        let res = router.clone().oneshot(get_req(cookie.clone())).await.unwrap();
+        let res = router
+            .clone()
+            .oneshot(get_req(cookie.clone()))
+            .await
+            .unwrap();
         assert_eq!(
             res.status(),
             axum::http::StatusCode::OK,
@@ -296,7 +303,11 @@ mod tests {
 
         // Still inside the window: nothing expires (touch slides `last_seen`).
         clock.advance(time::Duration::seconds(1_799));
-        let res = router.clone().oneshot(get_req(cookie.clone())).await.unwrap();
+        let res = router
+            .clone()
+            .oneshot(get_req(cookie.clone()))
+            .await
+            .unwrap();
         assert_eq!(res.status(), axum::http::StatusCode::OK);
 
         // One idle window past the SLIDING touch crosses `idle_secs` —
@@ -370,8 +381,8 @@ mod tests {
         let session = manager
             .start(PrincipalId::new(), None, OffsetDateTime::now_utc())
             .unwrap();
-        let mw = SessionMiddleware::new(manager.clone(), b"cookie-secret")
-            .with_cookie_ttl_secs(28_800);
+        let mw =
+            SessionMiddleware::new(manager.clone(), b"cookie-secret").with_cookie_ttl_secs(28_800);
         assert_eq!(manager.policy().remember_ttl, 2_592_000);
         let plain = mw
             .issue_cookie(&session)

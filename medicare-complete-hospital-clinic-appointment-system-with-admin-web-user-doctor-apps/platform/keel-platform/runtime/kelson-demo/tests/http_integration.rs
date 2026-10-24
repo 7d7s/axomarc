@@ -20,7 +20,10 @@ fn app() -> App {
     let dir = std::env::temp_dir().join(format!("kelson-demo-it-{}", uuid::Uuid::now_v7()));
     let (state, graph, store) = kelson_demo::build_app_state(&dir, true, true);
     let router = kelson_demo::routes::router(state.clone())
-        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph))
+        .merge(kelson_demo::graph_routes::graph_router(
+            state.clone(),
+            &graph,
+        ))
         .merge(kelson_demo::auth_routes::router(state.clone()))
         .merge(kelson_demo::upload_routes::router(state.clone()))
         .merge(kelson_demo::notification_routes::router(state.clone()))
@@ -425,8 +428,9 @@ fn seed_password_with(
             created_at: now,
         })
         .expect("principal creates");
-    let hash = kelson_identity::hash_password_with(&factors, &kelson_identity::Secret::new(password))
-        .expect("argon2 works");
+    let hash =
+        kelson_identity::hash_password_with(&factors, &kelson_identity::Secret::new(password))
+            .expect("argon2 works");
     app.state
         .credentials
         .create(kelson_identity::Credential {
@@ -438,6 +442,18 @@ fn seed_password_with(
             expires_at: None,
         })
         .expect("credential creates");
+    // MNC-001: a seeded credential alone is not tenant entry — grant the
+    // membership edge this fixture's login (tenant "dev") is gated on.
+    app.state
+        .memberships
+        .grant(kelson_identity::Membership {
+            id: kelson_foundation::MembershipId::new(),
+            principal_id: principal.id,
+            tenant_id: app.state.default_tenant_id.expect("dev fallback tenant"),
+            status: kelson_identity::MembershipStatus::Active,
+            joined_at: now,
+        })
+        .expect("membership grants");
     principal.id
 }
 
@@ -1011,13 +1027,10 @@ async fn the_production_wiring_answers_over_a_real_socket() {
     }
     assert!(connected, "the real server accepts connections on {addr}");
 
-    let health = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        get(addr, "/healthz"),
-    )
-    .await
-    .expect("the liveness probe answers within the timeout")
-    .expect("the liveness probe answers");
+    let health = tokio::time::timeout(std::time::Duration::from_secs(15), get(addr, "/healthz"))
+        .await
+        .expect("the liveness probe answers within the timeout")
+        .expect("the liveness probe answers");
     let missing = tokio::time::timeout(
         std::time::Duration::from_secs(15),
         get(addr, "/definitely-not-a-route"),
@@ -1483,7 +1496,10 @@ async fn ops_dashboard_renders_shipped_view_for_a_session() {
         "Schedule state",
         "Execution inspect",
     ] {
-        assert!(body.contains(heading), "section {heading} rendered:\n{body}");
+        assert!(
+            body.contains(heading),
+            "section {heading} rendered:\n{body}"
+        );
     }
     // Harness boots without queue/trace/schedule handles (D-52): sections
     // degrade inline instead of failing the page.
@@ -1687,11 +1703,21 @@ async fn the_slo_surface_declares_the_objectives_and_their_status() {
     let slos = json["data"]["slos"]
         .as_array()
         .expect("the report carries the objectives");
-    assert!(!slos.is_empty(), "the framework declares objectives: {body}");
+    assert!(
+        !slos.is_empty(),
+        "the framework declares objectives: {body}"
+    );
 
     // Every objective names a metric, a target, a window and a status.
     for slo in slos {
-        for field in ["name", "metric", "target", "window", "status", "description"] {
+        for field in [
+            "name",
+            "metric",
+            "target",
+            "window",
+            "status",
+            "description",
+        ] {
             assert!(
                 slo.get(field).is_some(),
                 "the objective is missing {field}: {body}"
@@ -2006,7 +2032,10 @@ fn app_with_jwt(secret: &[u8]) -> App {
         secret.to_vec(),
     )));
     let router = kelson_demo::routes::router(state.clone())
-        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph))
+        .merge(kelson_demo::graph_routes::graph_router(
+            state.clone(),
+            &graph,
+        ))
         .merge(kelson_demo::auth_routes::router(state.clone()))
         .merge(kelson_demo::upload_routes::router(state.clone()));
     let router = state
@@ -2206,7 +2235,10 @@ fn app_with_telemetry() -> App {
     let dir = std::env::temp_dir().join(format!("kelson-demo-it-{}", uuid::Uuid::now_v7()));
     let (state, graph, store) = kelson_demo::build_app_state(&dir, true, true);
     let router = kelson_demo::routes::router(state.clone())
-        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph))
+        .merge(kelson_demo::graph_routes::graph_router(
+            state.clone(),
+            &graph,
+        ))
         .merge(kelson_demo::auth_routes::router(state.clone()))
         .merge(kelson_demo::upload_routes::router(state.clone()))
         .merge(kelson_demo::telemetry_routes::router(state.clone()));
@@ -2224,6 +2256,28 @@ fn app_with_telemetry() -> App {
     }
 }
 
+/// Reinstall a capability-limited snapshot through the grant-backed
+/// installer: the membership bit is read from the store for this pair,
+/// never fabricated by the fixture.
+fn reinstall_snapshot(
+    app: &App,
+    principal: kelson_foundation::PrincipalId,
+    tenant: kelson_foundation::TenantId,
+    capabilities: &[&str],
+) {
+    kelson_demo::auth_routes::install_snapshot_fields(
+        &app.state.policy,
+        &capabilities
+            .iter()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>(),
+        app.state.memberships.as_ref(),
+        principal,
+        tenant,
+    )
+    .expect("the snapshot installs");
+}
+
 /// Grant the incident-operator capability (registered principals only get
 /// module capabilities by default).
 fn grant_incident_capability(
@@ -2231,21 +2285,7 @@ fn grant_incident_capability(
     principal: kelson_foundation::PrincipalId,
     tenant: kelson_foundation::TenantId,
 ) {
-    app.state
-        .policy
-        .install_snapshot(kelson_policy::AccessSnapshot {
-            principal_id: principal,
-            tenant_id: tenant,
-            membership_active: true,
-            capabilities: ["telemetry.incident.manage".to_string()]
-                .into_iter()
-                .collect(),
-            scope_paths: ["/".to_string()].into_iter().collect(),
-            authorization_revision: app.state.policy.revision(),
-            feature_revision: kelson_foundation::FeatureRevision(1),
-            module_revision: kelson_foundation::ModuleRevision(1),
-            computed_at: time::OffsetDateTime::now_utc(),
-        });
+    reinstall_snapshot(app, principal, tenant, &["telemetry.incident.manage"]);
 }
 
 #[tokio::test]
@@ -2386,7 +2426,10 @@ fn app_with_modules() -> App {
     let dir = std::env::temp_dir().join(format!("kelson-demo-it-{}", uuid::Uuid::now_v7()));
     let (state, graph, store) = kelson_demo::build_app_state(&dir, true, true);
     let router = kelson_demo::routes::router(state.clone())
-        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph))
+        .merge(kelson_demo::graph_routes::graph_router(
+            state.clone(),
+            &graph,
+        ))
         .merge(kelson_demo::auth_routes::router(state.clone()))
         .merge(kelson_demo::upload_routes::router(state.clone()))
         .merge(kelson_demo::routes::module_routes::router(state.clone()));
@@ -2423,23 +2466,12 @@ fn grant_module_capability(
     principal: kelson_foundation::PrincipalId,
     tenant: kelson_foundation::TenantId,
 ) {
-    app.state
-        .policy
-        .install_snapshot(kelson_policy::AccessSnapshot {
-            principal_id: principal,
-            tenant_id: tenant,
-            membership_active: true,
-            capabilities: [
-                kelson_demo::routes::module_routes::MODULE_MANAGE_CAPABILITY.to_string(),
-            ]
-                .into_iter()
-                .collect(),
-            scope_paths: ["/".to_string()].into_iter().collect(),
-            authorization_revision: app.state.policy.revision(),
-            feature_revision: kelson_foundation::FeatureRevision(1),
-            module_revision: kelson_foundation::ModuleRevision(1),
-            computed_at: time::OffsetDateTime::now_utc(),
-        });
+    reinstall_snapshot(
+        app,
+        principal,
+        tenant,
+        &[kelson_demo::routes::module_routes::MODULE_MANAGE_CAPABILITY],
+    );
 }
 
 #[tokio::test]
@@ -2516,7 +2548,10 @@ async fn module_manage_roundtrip_degrade_recover_disable_and_readyz() {
     assert_eq!(degrade.data()["state"], "Degraded");
     let (status, _, _) = raw_text(
         app.router.clone(),
-        Request::builder().uri("/readyz").body(Body::empty()).unwrap(),
+        Request::builder()
+            .uri("/readyz")
+            .body(Body::empty())
+            .unwrap(),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "Degraded still counts as serving");
@@ -2552,7 +2587,10 @@ async fn module_manage_roundtrip_degrade_recover_disable_and_readyz() {
     assert_eq!(disable.data()["state"], "Disabled");
     let (status, _, body) = raw_text(
         app.router.clone(),
-        Request::builder().uri("/readyz").body(Body::empty()).unwrap(),
+        Request::builder()
+            .uri("/readyz")
+            .body(Body::empty())
+            .unwrap(),
     )
     .await;
     assert_eq!(
@@ -2627,12 +2665,7 @@ async fn module_manage_unknown_module_404_and_bad_action_422() {
         ),
     )
     .await;
-    assert_eq!(
-        bad.status,
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "{}",
-        bad.body
-    );
+    assert_eq!(bad.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", bad.body);
 }
 
 #[tokio::test]
@@ -2934,7 +2967,10 @@ async fn multipart_book_rejects_files_that_fail_the_manifest_rules() {
             &[
                 ("patient", GraphPart::Text("A. Patient")),
                 ("slot", GraphPart::Text("2026-09-01T10:00Z")),
-                ("photo", GraphPart::File("notes.txt", "text/plain", b"not an image")),
+                (
+                    "photo",
+                    GraphPart::File("notes.txt", "text/plain", b"not an image"),
+                ),
             ],
         ),
     )
@@ -2962,7 +2998,10 @@ async fn multipart_book_rejects_files_that_fail_the_manifest_rules() {
             &[
                 ("patient", GraphPart::Text("A. Patient")),
                 ("slot", GraphPart::Text("2026-09-01T10:00Z")),
-                ("photo", GraphPart::File("tiny.png", "image/png", &png_bytes(50, 50))),
+                (
+                    "photo",
+                    GraphPart::File("tiny.png", "image/png", &png_bytes(50, 50)),
+                ),
             ],
         ),
     )
@@ -3135,7 +3174,8 @@ async fn booking_the_same_slot_twice_is_rejected_as_a_unique_violation() {
         .as_array()
         .expect("slot errors");
     assert!(
-        slot.iter().any(|m| m.as_str() == Some("has already been taken")),
+        slot.iter()
+            .any(|m| m.as_str() == Some("has already been taken")),
         "{}",
         second.body
     );
@@ -3230,7 +3270,12 @@ async fn binding_miss_malformed_and_cross_tenant_are_404() {
         ),
     )
     .await;
-    assert_eq!(malformed.status, StatusCode::NOT_FOUND, "{}", malformed.body);
+    assert_eq!(
+        malformed.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        malformed.body
+    );
 
     // Cross-tenant: a principal in tenant B cannot see tenant A's record.
     let tenant_b = uuid::Uuid::now_v7();
@@ -3422,8 +3467,9 @@ async fn throttle_group_exhaustion_is_429() {
             refill_per_sec: 0.0,
         },
     );
-    let router = kelson_demo::routes::router(state.clone())
-        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph));
+    let router = kelson_demo::routes::router(state.clone()).merge(
+        kelson_demo::graph_routes::graph_router(state.clone(), &graph),
+    );
 
     let req = || {
         Request::builder()
@@ -3576,9 +3622,11 @@ async fn password_confirm_stamps_the_session_and_fails_closed() {
 
     // Read the bag back through the session store for the same cookie: the
     // stamp is an rfc3339 timestamp the `confirmed` gate can parse.
-    let value = cookie.strip_prefix("kelson_session=").expect("cookie value");
-    let sid = kelson_session::SessionId::parse(value.split('.').next().unwrap())
-        .expect("session id");
+    let value = cookie
+        .strip_prefix("kelson_session=")
+        .expect("cookie value");
+    let sid =
+        kelson_session::SessionId::parse(value.split('.').next().unwrap()).expect("session id");
     let stored = app
         .state
         .sessions
@@ -3600,13 +3648,7 @@ async fn password_confirm_stamps_the_session_and_fails_closed() {
     // Confirm never implies remember-me.
     let me = send(
         &app,
-        json_req(
-            Method::GET,
-            "/auth/me",
-            Value::Null,
-            Some(&cookie),
-            None,
-        ),
+        json_req(Method::GET, "/auth/me", Value::Null, Some(&cookie), None),
     )
     .await;
     assert_eq!(me.status, StatusCode::OK, "{}", me.body);
@@ -3671,7 +3713,13 @@ async fn notifications_endpoints_require_authentication() {
     let app = app();
     let list = send(
         &app,
-        json_req(Method::GET, "/api/v1/notifications", Value::Null, None, None),
+        json_req(
+            Method::GET,
+            "/api/v1/notifications",
+            Value::Null,
+            None,
+            None,
+        ),
     )
     .await;
     assert_eq!(list.status, StatusCode::UNAUTHORIZED, "{}", list.body);
@@ -3701,7 +3749,13 @@ async fn notifications_feed_lists_newest_first_with_unread_meta() {
 
     let feed = send(
         &app,
-        json_req(Method::GET, "/api/v1/notifications", Value::Null, Some(&cookie), None),
+        json_req(
+            Method::GET,
+            "/api/v1/notifications",
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
     )
     .await;
     assert_eq!(feed.status, StatusCode::OK, "{}", feed.body);
@@ -3712,7 +3766,10 @@ async fn notifications_feed_lists_newest_first_with_unread_meta() {
     assert_eq!(rows[0]["data"]["n"], 2, "newest first");
     assert_eq!(rows[1]["data"]["n"], 1);
     assert_eq!(rows[2]["data"]["n"], 0);
-    assert!(rows[2]["read_at"].as_str().is_some(), "the pre-read row carries read_at");
+    assert!(
+        rows[2]["read_at"].as_str().is_some(),
+        "the pre-read row carries read_at"
+    );
     assert!(rows[0]["read_at"].is_null());
     assert!(rows[0]["id"].as_str().is_some());
     assert!(rows[0]["created_at"].as_str().is_some());
@@ -3785,7 +3842,13 @@ async fn notifications_feed_lists_newest_first_with_unread_meta() {
     seed_notifications(&app, other, 2, 0).await;
     let mine = send(
         &app,
-        json_req(Method::GET, "/api/v1/notifications", Value::Null, Some(&cookie), None),
+        json_req(
+            Method::GET,
+            "/api/v1/notifications",
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
     )
     .await;
     assert_eq!(
@@ -3816,7 +3879,11 @@ async fn notifications_read_marks_rows_and_gates_the_capability() {
     )
     .await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
-    assert_eq!(res.data()["updated"], 0, "another principal's rows never mark");
+    assert_eq!(
+        res.data()["updated"],
+        0,
+        "another principal's rows never mark"
+    );
 
     // Happy path: mark one → updated 1, unread drops 2 → 1.
     let res = send(
@@ -3834,7 +3901,13 @@ async fn notifications_read_marks_rows_and_gates_the_capability() {
     assert_eq!(res.data()["updated"], 1);
     let feed = send(
         &app,
-        json_req(Method::GET, "/api/v1/notifications", Value::Null, Some(&cookie), None),
+        json_req(
+            Method::GET,
+            "/api/v1/notifications",
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
     )
     .await;
     assert_eq!(feed.body["meta"]["unread"], 1);
@@ -3870,31 +3943,19 @@ async fn notifications_read_marks_rows_and_gates_the_capability() {
             ),
         )
         .await;
-        assert_eq!(
-            res.status,
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "{}",
-            res.body
-        );
+        assert_eq!(res.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", res.body);
         assert_eq!(res.error_code(), kelson_foundation::codes::VALIDATION);
     }
 
     // Capability gate: a snapshot WITHOUT notifications.mark_read refuses
     // the mark (403) — the check exists and stays revocable — and the row
     // it would have marked stays unread.
-    app.state
-        .policy
-        .install_snapshot(kelson_policy::AccessSnapshot {
-            principal_id: principal,
-            tenant_id: app.state.default_tenant_id.expect("dev tenant"),
-            membership_active: true,
-            capabilities: ["appointments.list".to_string()].into_iter().collect(),
-            scope_paths: ["/".to_string()].into_iter().collect(),
-            authorization_revision: app.state.policy.revision(),
-            feature_revision: kelson_foundation::FeatureRevision(1),
-            module_revision: kelson_foundation::ModuleRevision(1),
-            computed_at: time::OffsetDateTime::now_utc(),
-        });
+    reinstall_snapshot(
+        &app,
+        principal,
+        app.state.default_tenant_id.expect("dev tenant"),
+        &["appointments.list"],
+    );
     let res = send(
         &app,
         json_req(
@@ -3910,7 +3971,13 @@ async fn notifications_read_marks_rows_and_gates_the_capability() {
     assert_eq!(res.error_code(), kelson_foundation::codes::DENIED);
     let feed = send(
         &app,
-        json_req(Method::GET, "/api/v1/notifications", Value::Null, Some(&cookie), None),
+        json_req(
+            Method::GET,
+            "/api/v1/notifications",
+            Value::Null,
+            Some(&cookie),
+            None,
+        ),
     )
     .await;
     assert_eq!(
@@ -3940,7 +4007,10 @@ fn app_with_lang() -> App {
     .expect("fr lang fixture writes");
     let (state, graph, store) = kelson_demo::build_app_state(&dir, true, true);
     let router = kelson_demo::routes::router(state.clone())
-        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph))
+        .merge(kelson_demo::graph_routes::graph_router(
+            state.clone(),
+            &graph,
+        ))
         .merge(kelson_demo::auth_routes::router(state.clone()))
         .merge(kelson_demo::upload_routes::router(state.clone()))
         .merge(kelson_demo::notification_routes::router(state.clone()))
@@ -3977,8 +4047,7 @@ async fn booked_appointment_lands_in_the_inbox_in_the_request_locale() {
         .header(header::COOKIE, &cookie)
         .header(header::ACCEPT_LANGUAGE, "fr")
         .body(Body::from(
-            serde_json::json!({ "patient": "A. Patient", "slot": "2026-09-01T10:00Z" })
-                .to_string(),
+            serde_json::json!({ "patient": "A. Patient", "slot": "2026-09-01T10:00Z" }).to_string(),
         ))
         .unwrap();
     let book = send(&app, req).await;
@@ -4076,7 +4145,10 @@ fn app_with_channels() -> App {
         }),
     );
     let router = kelson_demo::routes::router(state.clone())
-        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph))
+        .merge(kelson_demo::graph_routes::graph_router(
+            state.clone(),
+            &graph,
+        ))
         .merge(kelson_demo::auth_routes::router(state.clone()))
         .merge(kelson_demo::upload_routes::router(state.clone()))
         .merge(kelson_demo::notification_routes::router(state.clone()))
@@ -4389,7 +4461,10 @@ fn batch_app() -> (
     state.queue = Some(jobs.clone());
     state.batches = Some(ledger.clone());
     let router = kelson_demo::routes::router(state.clone())
-        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph))
+        .merge(kelson_demo::graph_routes::graph_router(
+            state.clone(),
+            &graph,
+        ))
         .merge(kelson_demo::auth_routes::router(state.clone()))
         .merge(kelson_demo::upload_routes::router(state.clone()))
         .merge(kelson_demo::notification_routes::router(state.clone()))
@@ -4495,37 +4570,22 @@ async fn batch_endpoints_require_authentication_and_capabilities() {
         ),
     )
     .await;
-    assert_eq!(
-        bad.status,
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "{}",
-        bad.body
-    );
+    assert_eq!(bad.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", bad.body);
     assert_eq!(bad.error_code(), kelson_foundation::codes::VALIDATION);
 
     // Capability gate: a snapshot WITHOUT batches.cancel refuses (403) —
     // the check exists and stays revocable per snapshot (P5 posture).
-    app.state
-        .policy
-        .install_snapshot(kelson_policy::AccessSnapshot {
-            principal_id: principal,
-            tenant_id: app.state.default_tenant_id.expect("dev tenant"),
-            membership_active: true,
-            capabilities: ["appointments.list".to_string()].into_iter().collect(),
-            scope_paths: ["/".to_string()].into_iter().collect(),
-            authorization_revision: app.state.policy.revision(),
-            feature_revision: kelson_foundation::FeatureRevision(1),
-            module_revision: kelson_foundation::ModuleRevision(1),
-            computed_at: time::OffsetDateTime::now_utc(),
-        });
+    reinstall_snapshot(
+        &app,
+        principal,
+        app.state.default_tenant_id.expect("dev tenant"),
+        &["appointments.list"],
+    );
     let denied = send(
         &app,
         json_req(
             Method::POST,
-            &format!(
-                "/api/v1/batches/{}/cancel",
-                uuid::Uuid::now_v7()
-            ),
+            &format!("/api/v1/batches/{}/cancel", uuid::Uuid::now_v7()),
             Value::Null,
             Some(&cookie),
             None,
@@ -4595,7 +4655,11 @@ async fn batch_status_cancel_retry_roundtrip() {
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
     assert_eq!(res.data()["killed"], 2, "{}", res.body);
     assert_eq!(res.data()["running"], 0);
-    assert_eq!(res.data()["settled"], 1, "the finished member is left alone");
+    assert_eq!(
+        res.data()["settled"],
+        1,
+        "the finished member is left alone"
+    );
 
     let res = send(
         &app,
@@ -4798,7 +4862,10 @@ async fn oauth_client(
     )
     .await
     .expect("client creates");
-    let client_id = created["client_id"].as_str().expect("client_id").to_string();
+    let client_id = created["client_id"]
+        .as_str()
+        .expect("client_id")
+        .to_string();
     let secret = created["secret"].as_str().expect("secret").to_string();
     (cookie, principal, client_id, secret)
 }
@@ -4951,13 +5018,7 @@ async fn oauth_authorize_post_requires_csrf_double_submit() {
     let mut echo = cookie.clone();
     echo.push_str("; kelson_csrf=");
     echo.push_str(&csrf);
-    let mut req = json_req(
-        Method::POST,
-        "/oauth/authorize",
-        body,
-        Some(&echo),
-        None,
-    );
+    let mut req = json_req(Method::POST, "/oauth/authorize", body, Some(&echo), None);
     req.headers_mut().insert(
         header::HeaderName::from_static("x-csrf-token"),
         header::HeaderValue::from_str(&csrf).expect("header value"),
@@ -5108,8 +5169,14 @@ async fn oauth_code_exchanges_for_a_usable_pat() {
         Some(30 * 24 * 60 * 60),
         "access tokens carry the platform PAT TTL"
     );
-    let access = data["access_token"].as_str().expect("access token").to_string();
-    let refresh = data["refresh_token"].as_str().expect("refresh token").to_string();
+    let access = data["access_token"]
+        .as_str()
+        .expect("access token")
+        .to_string();
+    let refresh = data["refresh_token"]
+        .as_str()
+        .expect("refresh token")
+        .to_string();
     assert!(!refresh.is_empty());
 
     // The minted access token IS a platform PAT: it authenticates the api
@@ -5324,11 +5391,7 @@ async fn oauth_token_endpoint_accepts_form_encoded_bodies() {
     assert_eq!(res.status, StatusCode::OK, "form token: {}", res.body);
     let data = res.data();
     assert_eq!(data["token_type"], "Bearer");
-    assert!(
-        data["access_token"].as_str().is_some(),
-        "{}",
-        res.body
-    );
+    assert!(data["access_token"].as_str().is_some(), "{}", res.body);
 }
 
 /// Client authentication and grant validation: missing/unknown secrets are
@@ -5502,7 +5565,10 @@ async fn oauth_refresh_rotates_and_kills_the_old_token() {
         .expect("rotated access token")
         .to_string();
     assert_ne!(new_refresh, refresh, "rotation issues a fresh token");
-    assert_ne!(new_access, access_before, "rotation issues a fresh access token");
+    assert_ne!(
+        new_access, access_before,
+        "rotation issues a fresh access token"
+    );
 
     // The burned refresh token is dead.
     let replay = send(
@@ -5707,13 +5773,9 @@ async fn oauth_clients_manage_crud_shows_the_secret_once() {
     let _ = &cookie;
     assert!(!secret.is_empty(), "create returns the plaintext secret");
 
-    let listed = oauth_manage(
-        &app,
-        principal,
-        serde_json::json!({ "action": "list" }),
-    )
-    .await
-    .expect("list runs");
+    let listed = oauth_manage(&app, principal, serde_json::json!({ "action": "list" }))
+        .await
+        .expect("list runs");
     let rows = listed["clients"].as_array().expect("client array");
     let row = rows
         .iter()
@@ -5753,13 +5815,9 @@ async fn oauth_clients_manage_crud_shows_the_secret_once() {
     .await
     .expect("delete runs");
     assert_eq!(deleted["deleted"].as_str().expect("deleted id"), id);
-    let after = oauth_manage(
-        &app,
-        principal,
-        serde_json::json!({ "action": "list" }),
-    )
-    .await
-    .expect("list runs");
+    let after = oauth_manage(&app, principal, serde_json::json!({ "action": "list" }))
+        .await
+        .expect("list runs");
     assert!(
         after["clients"]
             .as_array()
@@ -5790,19 +5848,12 @@ async fn oauth_clients_manage_requires_the_capability() {
 
     // Reinstall the snapshot WITHOUT the oauth2 capability (the same
     // revoke-by-snapshot posture the batch gate exercises).
-    app.state
-        .policy
-        .install_snapshot(kelson_policy::AccessSnapshot {
-            principal_id: principal,
-            tenant_id: app.state.default_tenant_id.expect("dev tenant"),
-            membership_active: true,
-            capabilities: Vec::<String>::new().into_iter().collect(),
-            scope_paths: ["/".to_string()].into_iter().collect(),
-            authorization_revision: app.state.policy.revision(),
-            feature_revision: kelson_foundation::FeatureRevision(1),
-            module_revision: kelson_foundation::ModuleRevision(1),
-            computed_at: time::OffsetDateTime::now_utc(),
-        });
+    reinstall_snapshot(
+        &app,
+        principal,
+        app.state.default_tenant_id.expect("dev tenant"),
+        &[],
+    );
     let denied = oauth_manage(
         &app,
         principal,
@@ -5880,8 +5931,7 @@ async fn precognition_pass_returns_204_without_dispatching() {
     let cookie = register(&app, &email).await.session_cookie().unwrap();
     let tenant = app.state.default_tenant_id.unwrap();
     assert_eq!(app.store.count(tenant).unwrap(), 0, "fixture: empty store");
-    let payload =
-        serde_json::json!({ "patient": "A. Patient", "slot": "2026-09-01T10:00Z" });
+    let payload = serde_json::json!({ "patient": "A. Patient", "slot": "2026-09-01T10:00Z" });
 
     // Matched ASCII case-insensitively, value trimmed + case-insensitive.
     let probe = send(
@@ -5922,7 +5972,11 @@ async fn precognition_pass_returns_204_without_dispatching() {
     )
     .await;
     assert_eq!(miss.status, StatusCode::OK, "{}", miss.body);
-    assert_eq!(app.store.count(tenant).unwrap(), 1, "absent = full dispatch");
+    assert_eq!(
+        app.store.count(tenant).unwrap(),
+        1,
+        "absent = full dispatch"
+    );
 }
 
 /// ADR 0008 Outcome: validation fails -> the existing 422 envelope, one
@@ -6031,10 +6085,7 @@ async fn precognition_refuses_multipart_bodies_before_intake() {
     let email = format!("preco-mp-{}@clinic.test", uuid::Uuid::now_v7());
     let cookie = register(&app, &email).await.session_cookie().unwrap();
     let tenant = app.state.default_tenant_id.unwrap();
-    let fields = [
-        ("patient", "A. Patient"),
-        ("slot", "2026-09-01T10:00Z"),
-    ];
+    let fields = [("patient", "A. Patient"), ("slot", "2026-09-01T10:00Z")];
 
     let probe = send(
         &app,
@@ -6062,7 +6113,11 @@ async fn precognition_refuses_multipart_bodies_before_intake() {
         probe.body["error"]["message"],
         "precognition does not accept multipart bodies"
     );
-    assert_eq!(app.store.count(tenant).unwrap(), 0, "no intake, no dispatch");
+    assert_eq!(
+        app.store.count(tenant).unwrap(),
+        0,
+        "no intake, no dispatch"
+    );
 
     let full = send(
         &app,
@@ -6105,7 +6160,10 @@ async fn precognition_is_not_an_anonymous_401_bypass() {
     )
     .await;
     assert_eq!(probe.status, StatusCode::UNAUTHORIZED, "{}", probe.body);
-    assert_eq!(probe.error_code(), kelson_foundation::codes::UNAUTHENTICATED);
+    assert_eq!(
+        probe.error_code(),
+        kelson_foundation::codes::UNAUTHENTICATED
+    );
 }
 
 /// ADR 0008 Security posture: web-plane POSTs still run the double-submit
@@ -6146,13 +6204,7 @@ async fn precognition_is_not_a_csrf_403_bypass() {
     let probe = send(
         &app,
         with_precognition(
-            json_req(
-                Method::POST,
-                "/oauth/authorize",
-                body,
-                Some(&cookie),
-                None,
-            ),
+            json_req(Method::POST, "/oauth/authorize", body, Some(&cookie), None),
             "true",
         ),
     )
@@ -6262,15 +6314,19 @@ async fn route_file_route_dispatches_to_the_declared_module_handler() {
     // The inventory reports the dispatched id (raw), not a synthetic prefix.
     let inventory = kelson_demo::graph_routes::route_inventory(&graph);
     assert!(
-        inventory.iter().any(|r| r.path == "/api/v1/hooks/book"
-            && r.operation == "appointments.book"),
+        inventory
+            .iter()
+            .any(|r| r.path == "/api/v1/hooks/book" && r.operation == "appointments.book"),
         "{inventory:?}"
     );
 
     // Route the production edge with THIS graph (route file included).
     let (state, _, store) = kelson_demo::build_app_state(&dir, true, true);
     let router = kelson_demo::routes::router(state.clone())
-        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph))
+        .merge(kelson_demo::graph_routes::graph_router(
+            state.clone(),
+            &graph,
+        ))
         .merge(kelson_demo::auth_routes::router(state.clone()))
         .merge(kelson_demo::upload_routes::router(state.clone()))
         .merge(kelson_demo::notification_routes::router(state.clone()))
@@ -6337,12 +6393,14 @@ async fn fallback_route_attaches_and_dispatches_on_unmatched_paths() {
     );
     let manifest =
         kelson_registry::ModuleManifest::from_toml(&mutated).expect("mutated manifest parses");
-    let graph =
-        kelson_registry::PlatformGraph::compile(vec![manifest]).expect("graph compiles");
+    let graph = kelson_registry::PlatformGraph::compile(vec![manifest]).expect("graph compiles");
 
     let (state, _, store) = kelson_demo::build_app_state(&dir, true, true);
     let router = kelson_demo::routes::router(state.clone())
-        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph))
+        .merge(kelson_demo::graph_routes::graph_router(
+            state.clone(),
+            &graph,
+        ))
         .merge(kelson_demo::auth_routes::router(state.clone()))
         .merge(kelson_demo::upload_routes::router(state.clone()))
         .merge(kelson_demo::notification_routes::router(state.clone()))
@@ -6363,7 +6421,13 @@ async fn fallback_route_attaches_and_dispatches_on_unmatched_paths() {
     // Anonymous: the fallback runs the normal auth chain.
     let anon = send(
         &app,
-        json_req(Method::GET, "/definitely/not/a/route", Value::Null, None, None),
+        json_req(
+            Method::GET,
+            "/definitely/not/a/route",
+            Value::Null,
+            None,
+            None,
+        ),
     )
     .await;
     assert_eq!(anon.status, StatusCode::UNAUTHORIZED, "{}", anon.body);
@@ -6424,8 +6488,7 @@ fn two_plane_fallbacks_refuse_at_the_edge() {
         "[[routes]]\nmethod = \"GET\"\npath = \"/\"\noperation = \"list\"\nfallback = true\n\n[[routes]]",
         1,
     );
-    let appointments =
-        kelson_registry::ModuleManifest::from_toml(&api_fallback).expect("parses");
+    let appointments = kelson_registry::ModuleManifest::from_toml(&api_fallback).expect("parses");
     let alpha = kelson_registry::ModuleManifest::from_toml(
         "[module]\nname = \"alpha\"\nversion = \"0.1.0\"\napi = 1\n\n\
          [capabilities]\n\"index\" = { profile = \"READ\" }\n\n\
@@ -6669,7 +6732,10 @@ async fn a_concurrent_reset_of_one_token_changes_the_password_once() {
         .iter()
         .filter(|status| **status == StatusCode::OK)
         .count();
-    assert_eq!(winners, 1, "exactly one redemption of a single-use token wins");
+    assert_eq!(
+        winners, 1,
+        "exactly one redemption of a single-use token wins"
+    );
     let losers = [first.status, second.status]
         .iter()
         .filter(|status| **status != StatusCode::OK)
@@ -6719,7 +6785,9 @@ async fn two_concurrent_logins_get_distinct_sessions() {
     assert_eq!(first.status, StatusCode::OK, "{}", first.body);
     assert_eq!(second.status, StatusCode::OK, "{}", second.body);
 
-    let first_cookie = first.session_cookie().expect("the first login issues a cookie");
+    let first_cookie = first
+        .session_cookie()
+        .expect("the first login issues a cookie");
     let second_cookie = second
         .session_cookie()
         .expect("the second login issues a cookie");
@@ -6735,7 +6803,11 @@ async fn two_concurrent_logins_get_distinct_sessions() {
             json_req(Method::GET, "/auth/me", Value::Null, Some(cookie), None),
         )
         .await;
-        assert_eq!(me.status, StatusCode::OK, "each session resolves its principal");
+        assert_eq!(
+            me.status,
+            StatusCode::OK,
+            "each session resolves its principal"
+        );
     }
 }
 
@@ -6956,13 +7028,21 @@ async fn a_password_reset_revokes_the_old_session_and_api_token() {
         json_req(Method::GET, "/auth/me", Value::Null, Some(&cookie), None),
     )
     .await;
-    assert_eq!(me.status, StatusCode::OK, "the session works before the reset");
+    assert_eq!(
+        me.status,
+        StatusCode::OK,
+        "the session works before the reset"
+    );
     let pat = send(
         &app,
         json_req(Method::GET, "/auth/me", Value::Null, None, Some(&token)),
     )
     .await;
-    assert_eq!(pat.status, StatusCode::OK, "the API token works before the reset");
+    assert_eq!(
+        pat.status,
+        StatusCode::OK,
+        "the API token works before the reset"
+    );
 
     // Reset the password.
     let request = send(
@@ -7040,7 +7120,10 @@ async fn password_reset_and_verification_requests_deliver_token_mail() {
     let mail = RecordingMail::default();
     state.mail = Some(Arc::new(mail.clone()));
     let router = kelson_demo::routes::router(state.clone())
-        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph))
+        .merge(kelson_demo::graph_routes::graph_router(
+            state.clone(),
+            &graph,
+        ))
         .merge(kelson_demo::auth_routes::router(state.clone()))
         .merge(kelson_demo::upload_routes::router(state.clone()))
         .merge(kelson_demo::notification_routes::router(state.clone()))
@@ -7178,7 +7261,10 @@ async fn upload_quota_refuses_the_overage_and_keeps_the_ledger_exact() {
     state.uploads.quota_bytes = 4608;
     let dev_tenant = state.default_tenant_id.expect("default tenant");
     let router = kelson_demo::routes::router(state.clone())
-        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph))
+        .merge(kelson_demo::graph_routes::graph_router(
+            state.clone(),
+            &graph,
+        ))
         .merge(kelson_demo::auth_routes::router(state.clone()))
         .merge(kelson_demo::upload_routes::router(state.clone()))
         .merge(kelson_demo::notification_routes::router(state.clone()))
@@ -7278,7 +7364,10 @@ async fn multipart_failure_rolls_back_the_parts_that_already_landed() {
     // Small cap so the second part blows it without a big body.
     state.uploads.limits.max_file_bytes = 64 * 1024;
     let router = kelson_demo::routes::router(state.clone())
-        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph))
+        .merge(kelson_demo::graph_routes::graph_router(
+            state.clone(),
+            &graph,
+        ))
         .merge(kelson_demo::auth_routes::router(state.clone()))
         .merge(kelson_demo::upload_routes::router(state.clone()))
         .merge(kelson_demo::notification_routes::router(state.clone()))
@@ -7321,10 +7410,7 @@ async fn multipart_failure_rolls_back_the_parts_that_already_landed() {
     );
     let (_, entry) = app.state.disks.resolve(None).expect("default disk");
     let objects = entry.port.list("uploads/").expect("listable");
-    assert!(
-        objects.is_empty(),
-        "no half-batch on disk: {objects:?}"
-    );
+    assert!(objects.is_empty(), "no half-batch on disk: {objects:?}");
 
     std::fs::remove_dir_all(&dir).ok();
 }

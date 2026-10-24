@@ -81,10 +81,7 @@ impl<S: ViewModel> LiveSession<S> {
     pub(crate) fn spawn(view: impl Into<String>, state: S) -> Self {
         Self {
             view: view.into(),
-            inner: Mutex::new(LiveInner {
-                state,
-                revision: 0,
-            }),
+            inner: Mutex::new(LiveInner { state, revision: 0 }),
         }
     }
 
@@ -152,9 +149,10 @@ mod tests {
     impl ViewModel for MeterVm {
         const VIEW: &'static str = "meter";
         fn schema() -> &'static [crate::viewmodel::FieldSchema] {
-            crate::view_schema![
-                crate::viewmodel::FieldSchema::required("depth", crate::viewmodel::FieldKind::Int),
-            ]
+            crate::view_schema![crate::viewmodel::FieldSchema::required(
+                "depth",
+                crate::viewmodel::FieldKind::Int
+            ),]
         }
     }
 

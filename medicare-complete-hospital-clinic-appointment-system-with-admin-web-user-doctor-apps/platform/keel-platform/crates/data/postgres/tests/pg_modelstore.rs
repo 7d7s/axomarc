@@ -96,7 +96,10 @@ async fn seed_tenant(pool: &PgPool) -> TenantId {
 }
 
 fn record_id(record: &Record) -> Uuid {
-    record["id"].as_str().and_then(|s| s.parse().ok()).expect("record carries a uuid id")
+    record["id"]
+        .as_str()
+        .and_then(|s| s.parse().ok())
+        .expect("record carries a uuid id")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -108,7 +111,11 @@ async fn pg_modelstore_crud_roundtrip_with_returning() {
 
     // INSERT: prepared by the runtime, RETURNING carries server columns.
     let stored = runtime
-        .insert(&store, &booking("P. One", "2026-10-01T09:00Z"), Some(tenant))
+        .insert(
+            &store,
+            &booking("P. One", "2026-10-01T09:00Z"),
+            Some(tenant),
+        )
         .expect("insert succeeds");
     let id = record_id(&stored);
     assert_eq!(stored["tenant_id"], json!(*tenant.as_uuid().to_string()));
@@ -146,7 +153,9 @@ async fn pg_modelstore_crud_roundtrip_with_returning() {
     assert_eq!(updated["version"], json!(2));
 
     // DELETE: soft-delete veil hides the row; trash toggle reveals it.
-    runtime.delete(&store, id, Some(tenant)).expect("delete succeeds");
+    runtime
+        .delete(&store, id, Some(tenant))
+        .expect("delete succeeds");
     assert!(
         runtime.find(&store, id, Some(tenant)).unwrap().is_none(),
         "soft-deleted row is veiled"
@@ -169,11 +178,19 @@ async fn pg_modelstore_tenant_isolation_end_to_end() {
     let tenant_b = seed_tenant(&pool).await;
 
     let row_a = runtime
-        .insert(&store, &booking("Iso A", "2026-10-03T09:00Z"), Some(tenant_a))
+        .insert(
+            &store,
+            &booking("Iso A", "2026-10-03T09:00Z"),
+            Some(tenant_a),
+        )
         .unwrap();
     let id_a = record_id(&row_a);
     runtime
-        .insert(&store, &booking("Iso B", "2026-10-03T09:00Z"), Some(tenant_b))
+        .insert(
+            &store,
+            &booking("Iso B", "2026-10-03T09:00Z"),
+            Some(tenant_b),
+        )
         .unwrap();
 
     // Same slot string, different tenants: both coexist.
@@ -184,24 +201,25 @@ async fn pg_modelstore_tenant_isolation_end_to_end() {
     assert_eq!(list_b.items[0]["patient"], json!("Iso B"));
 
     // Cross-tenant find/update/delete see nothing.
-    assert!(runtime.find(&store, id_a, Some(tenant_b)).unwrap().is_none());
+    assert!(runtime
+        .find(&store, id_a, Some(tenant_b))
+        .unwrap()
+        .is_none());
     let cross_update = store
-        .update(
-            runtime.model(),
-            id_a,
-            Some(tenant_b),
-            &{
-                let mut c = Record::new();
-                c.insert("status".into(), json!("cancelled"));
-                c
-            },
-        )
+        .update(runtime.model(), id_a, Some(tenant_b), &{
+            let mut c = Record::new();
+            c.insert("status".into(), json!("cancelled"));
+            c
+        })
         .unwrap();
     assert!(cross_update.is_none(), "foreign tenant cannot update");
     let cross_delete = store.delete(runtime.model(), id_a, Some(tenant_b)).unwrap();
     assert!(!cross_delete, "foreign tenant cannot delete");
     assert!(
-        runtime.find(&store, id_a, Some(tenant_a)).unwrap().is_some(),
+        runtime
+            .find(&store, id_a, Some(tenant_a))
+            .unwrap()
+            .is_some(),
         "owner row untouched"
     );
 }
@@ -214,11 +232,19 @@ async fn pg_partial_unique_index_blocks_double_booking() {
     let tenant = seed_tenant(&pool).await;
 
     let first = runtime
-        .insert(&store, &booking("P. Two", "2026-10-02T09:00Z"), Some(tenant))
+        .insert(
+            &store,
+            &booking("P. Two", "2026-10-02T09:00Z"),
+            Some(tenant),
+        )
         .unwrap();
     let id = record_id(&first);
 
-    let dup = runtime.insert(&store, &booking("P. Two", "2026-10-02T09:00Z"), Some(tenant));
+    let dup = runtime.insert(
+        &store,
+        &booking("P. Two", "2026-10-02T09:00Z"),
+        Some(tenant),
+    );
     assert!(
         dup.is_err(),
         "partial unique index rejects a second BOOKED row for the same slot"
@@ -233,7 +259,11 @@ async fn pg_partial_unique_index_blocks_double_booking() {
     changes.insert("status".into(), json!("cancelled"));
     changes.insert("version".into(), json!(2));
     runtime.update(&store, id, Some(tenant), &changes).unwrap();
-    let rebook = runtime.insert(&store, &booking("P. Two", "2026-10-02T09:00Z"), Some(tenant));
+    let rebook = runtime.insert(
+        &store,
+        &booking("P. Two", "2026-10-02T09:00Z"),
+        Some(tenant),
+    );
     assert!(rebook.is_ok(), "cancelled row no longer blocks the slot");
 }
 
@@ -312,7 +342,11 @@ fn credential_model() -> ModelDef {
         .field(FieldDef::new("principal_id", FieldType::Uuid).required())
         .field(FieldDef::new("kind", FieldType::Text))
         .field(FieldDef::new("secret_hash", FieldType::Text).required())
-        .relation(RelationDef::belongs_to("owner", "PrimePrincipal", "principal_id"))
+        .relation(RelationDef::belongs_to(
+            "owner",
+            "PrimePrincipal",
+            "principal_id",
+        ))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -339,7 +373,9 @@ async fn pg_modelstore_belongs_to_eager_load() {
     cred.insert("principal_id".into(), json!(principal_id.to_string()));
     cred.insert("kind".into(), json!("password_argon2"));
     cred.insert("secret_hash".into(), json!("$argon2id$test-only-hash"));
-    let stored = store.insert(cred_rt.model(), &cred).expect("credential inserts");
+    let stored = store
+        .insert(cred_rt.model(), &cred)
+        .expect("credential inserts");
 
     let mut rows = vec![stored];
     cred_rt
@@ -400,7 +436,9 @@ async fn mysql_seed_tenant(pool: &kelson_mysql::MySqlPool) -> TenantId {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_modelstore_crud_roundtrip() {
-    let Some(pool) = mysql_pool().await else { return };
+    let Some(pool) = mysql_pool().await else {
+        return;
+    };
     let store = kelson_mysql::MySqlModelStore::new(pool.clone());
     let runtime = ModelRuntime::new(appointment_model());
     let tenant = mysql_seed_tenant(&pool).await;
@@ -408,7 +446,11 @@ async fn mysql_modelstore_crud_roundtrip() {
     // INSERT: prepared by the runtime; the store selects the row back on
     // the same connection (MySQL has no RETURNING).
     let stored = runtime
-        .insert(&store, &booking("P. One", "2026-10-01T09:00Z"), Some(tenant))
+        .insert(
+            &store,
+            &booking("P. One", "2026-10-01T09:00Z"),
+            Some(tenant),
+        )
         .expect("insert succeeds");
     let id = record_id(&stored);
     assert_eq!(stored["tenant_id"], json!(*tenant.as_uuid().to_string()));
@@ -446,7 +488,9 @@ async fn mysql_modelstore_crud_roundtrip() {
     assert_eq!(updated["version"], json!(2));
 
     // DELETE: soft-delete veil hides the row; trash toggle reveals it.
-    runtime.delete(&store, id, Some(tenant)).expect("delete succeeds");
+    runtime
+        .delete(&store, id, Some(tenant))
+        .expect("delete succeeds");
     assert!(
         runtime.find(&store, id, Some(tenant)).unwrap().is_none(),
         "soft-deleted row is veiled"
@@ -463,18 +507,28 @@ async fn mysql_modelstore_crud_roundtrip() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_modelstore_tenant_isolation_end_to_end() {
-    let Some(pool) = mysql_pool().await else { return };
+    let Some(pool) = mysql_pool().await else {
+        return;
+    };
     let store = kelson_mysql::MySqlModelStore::new(pool.clone());
     let runtime = ModelRuntime::new(appointment_model());
     let tenant_a = mysql_seed_tenant(&pool).await;
     let tenant_b = mysql_seed_tenant(&pool).await;
 
     let row_a = runtime
-        .insert(&store, &booking("Iso A", "2026-10-03T09:00Z"), Some(tenant_a))
+        .insert(
+            &store,
+            &booking("Iso A", "2026-10-03T09:00Z"),
+            Some(tenant_a),
+        )
         .unwrap();
     let id_a = record_id(&row_a);
     runtime
-        .insert(&store, &booking("Iso B", "2026-10-03T09:00Z"), Some(tenant_b))
+        .insert(
+            &store,
+            &booking("Iso B", "2026-10-03T09:00Z"),
+            Some(tenant_b),
+        )
         .unwrap();
 
     // Same slot string, different tenants: both coexist.
@@ -486,24 +540,25 @@ async fn mysql_modelstore_tenant_isolation_end_to_end() {
 
     // Cross-tenant find/update/delete see nothing — MySQL has no RLS, so
     // the explicit tenant predicates ARE the isolation story (docs/05).
-    assert!(runtime.find(&store, id_a, Some(tenant_b)).unwrap().is_none());
+    assert!(runtime
+        .find(&store, id_a, Some(tenant_b))
+        .unwrap()
+        .is_none());
     let cross_update = store
-        .update(
-            runtime.model(),
-            id_a,
-            Some(tenant_b),
-            &{
-                let mut c = Record::new();
-                c.insert("status".into(), json!("cancelled"));
-                c
-            },
-        )
+        .update(runtime.model(), id_a, Some(tenant_b), &{
+            let mut c = Record::new();
+            c.insert("status".into(), json!("cancelled"));
+            c
+        })
         .unwrap();
     assert!(cross_update.is_none(), "foreign tenant cannot update");
     let cross_delete = store.delete(runtime.model(), id_a, Some(tenant_b)).unwrap();
     assert!(!cross_delete, "foreign tenant cannot delete");
     assert!(
-        runtime.find(&store, id_a, Some(tenant_a)).unwrap().is_some(),
+        runtime
+            .find(&store, id_a, Some(tenant_a))
+            .unwrap()
+            .is_some(),
         "owner row untouched"
     );
 }
@@ -515,17 +570,27 @@ async fn mysql_modelstore_tenant_isolation_end_to_end() {
 /// repeated NULLs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_generated_unique_index_blocks_double_booking() {
-    let Some(pool) = mysql_pool().await else { return };
+    let Some(pool) = mysql_pool().await else {
+        return;
+    };
     let store = kelson_mysql::MySqlModelStore::new(pool.clone());
     let runtime = ModelRuntime::new(appointment_model());
     let tenant = mysql_seed_tenant(&pool).await;
 
     let first = runtime
-        .insert(&store, &booking("P. Two", "2026-10-02T09:00Z"), Some(tenant))
+        .insert(
+            &store,
+            &booking("P. Two", "2026-10-02T09:00Z"),
+            Some(tenant),
+        )
         .unwrap();
     let id = record_id(&first);
 
-    let dup = runtime.insert(&store, &booking("P. Two", "2026-10-02T09:00Z"), Some(tenant));
+    let dup = runtime.insert(
+        &store,
+        &booking("P. Two", "2026-10-02T09:00Z"),
+        Some(tenant),
+    );
     assert!(
         dup.is_err(),
         "generated-column unique index rejects a second BOOKED row for the same slot"
@@ -540,13 +605,19 @@ async fn mysql_generated_unique_index_blocks_double_booking() {
     changes.insert("status".into(), json!("cancelled"));
     changes.insert("version".into(), json!(2));
     runtime.update(&store, id, Some(tenant), &changes).unwrap();
-    let rebook = runtime.insert(&store, &booking("P. Two", "2026-10-02T09:00Z"), Some(tenant));
+    let rebook = runtime.insert(
+        &store,
+        &booking("P. Two", "2026-10-02T09:00Z"),
+        Some(tenant),
+    );
     assert!(rebook.is_ok(), "cancelled row no longer blocks the slot");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_modelstore_upsert_merges_on_conflict() {
-    let Some(pool) = mysql_pool().await else { return };
+    let Some(pool) = mysql_pool().await else {
+        return;
+    };
     // Test-only probe table with a PLAIN unique constraint — the port's
     // `AS new ON DUPLICATE KEY UPDATE` contract surface.
     sqlx::query(
@@ -598,7 +669,9 @@ async fn mysql_modelstore_upsert_merges_on_conflict() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_modelstore_belongs_to_eager_load() {
-    let Some(pool) = mysql_pool().await else { return };
+    let Some(pool) = mysql_pool().await else {
+        return;
+    };
     let mut registry = ModelRegistry::new();
     registry.register(principal_model()).unwrap();
     registry.register(credential_model()).unwrap();
@@ -620,7 +693,9 @@ async fn mysql_modelstore_belongs_to_eager_load() {
     cred.insert("principal_id".into(), json!(principal_id.to_string()));
     cred.insert("kind".into(), json!("password_argon2"));
     cred.insert("secret_hash".into(), json!("$argon2id$test-only-hash"));
-    let stored = store.insert(cred_rt.model(), &cred).expect("credential inserts");
+    let stored = store
+        .insert(cred_rt.model(), &cred)
+        .expect("credential inserts");
 
     let mut rows = vec![stored];
     cred_rt

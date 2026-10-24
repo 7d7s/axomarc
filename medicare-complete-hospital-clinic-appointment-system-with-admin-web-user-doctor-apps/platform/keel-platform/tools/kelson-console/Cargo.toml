@@ -31,6 +31,7 @@ kelson-mysql = { workspace = true }
 kelson-integrity = { workspace = true }
 kelson-observability = { workspace = true }
 kelson-http = { workspace = true }
+kelson-identity = { workspace = true }
 kelson-views = { workspace = true }
 kelson-jobs = { workspace = true }
 kelson-scheduling = { workspace = true }

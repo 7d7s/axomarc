@@ -21,7 +21,9 @@ use axum::http::{header, HeaderMap, Request, Response, StatusCode};
 use axum::middleware::Next;
 use axum::response::IntoResponse;
 use axum::Json;
-use kelson_foundation::{codes, AppError, ErrorCategory, RequestId, Retryability, Severity, TraceId};
+use kelson_foundation::{
+    codes, AppError, ErrorCategory, RequestId, Retryability, Severity, TraceId,
+};
 use serde::{Deserialize, Serialize};
 use tower_http::catch_panic::CatchPanicLayer;
 
@@ -380,10 +382,12 @@ impl RateLimitStore for InMemoryRateLimitStore {
                 buckets.remove(&oldest);
             }
         }
-        let bucket = buckets.entry(key.to_string()).or_insert_with(|| BucketState {
-            tokens: capacity as f64,
-            updated_at: now,
-        });
+        let bucket = buckets
+            .entry(key.to_string())
+            .or_insert_with(|| BucketState {
+                tokens: capacity as f64,
+                updated_at: now,
+            });
         take_from_bucket(bucket, now, capacity, refill_per_sec)
     }
 }
@@ -767,22 +771,20 @@ impl Admission {
         router
             // Panic boundary (innermost): catches a handler panic and answers a
             // redacted 500 envelope. The panic payload never reaches the client.
-            .layer(CatchPanicLayer::custom(|err: Box<dyn std::any::Any + Send>| {
-                // Log the panic server-side (never the payload to the client).
-                let msg = err
-                    .downcast_ref::<String>()
-                    .map(|s| s.as_str())
-                    .or_else(|| err.downcast_ref::<&str>().copied())
-                    .unwrap_or("internal server error");
-                tracing::error!(panic = %msg, "handler panicked; answering 500");
-                let app_err = AppError::internal("internal server error");
-                let env = Envelope::<()>::error(&app_err);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(env),
-                )
-                    .into_response()
-            }))
+            .layer(CatchPanicLayer::custom(
+                |err: Box<dyn std::any::Any + Send>| {
+                    // Log the panic server-side (never the payload to the client).
+                    let msg = err
+                        .downcast_ref::<String>()
+                        .map(|s| s.as_str())
+                        .or_else(|| err.downcast_ref::<&str>().copied())
+                        .unwrap_or("internal server error");
+                    tracing::error!(panic = %msg, "handler panicked; answering 500");
+                    let app_err = AppError::internal("internal server error");
+                    let env = Envelope::<()>::error(&app_err);
+                    (StatusCode::INTERNAL_SERVER_ERROR, Json(env)).into_response()
+                },
+            ))
             .layer(axum::middleware::from_fn_with_state(
                 rate_state,
                 rate_limit_fn,
@@ -1021,13 +1023,16 @@ mod tests {
     /// caught response, and the panic payload never reaches the client.
     #[tokio::test]
     async fn panicking_handler_answers_a_500_envelope() {
-        let router = Router::new().route("/boom", get(|| async {
-            panic!("handler exploded: super-secret-token-42");
-            #[allow(unreachable_code)]
-            {
-                "never reached"
-            }
-        }));
+        let router = Router::new().route(
+            "/boom",
+            get(|| async {
+                panic!("handler exploded: super-secret-token-42");
+                #[allow(unreachable_code)]
+                {
+                    "never reached"
+                }
+            }),
+        );
         let res = Admission::default()
             .apply(router)
             .oneshot(req("GET", "/boom"))
@@ -1076,9 +1081,7 @@ mod tests {
         r.headers_mut()
             .insert("origin", "https://evil.com".parse().unwrap());
         let res = admission.apply(router).oneshot(r).await.unwrap();
-        assert!(!res
-            .headers()
-            .contains_key("access-control-allow-origin"));
+        assert!(!res.headers().contains_key("access-control-allow-origin"));
     }
 
     /// An allowlist echoes the allowed origin.
@@ -1192,7 +1195,10 @@ mod tests {
     #[test]
     fn client_key_ignores_forwarded_for_without_trusted_proxies() {
         let mut headers = HeaderMap::new();
-        headers.insert("x-forwarded-for", "192.168.1.100, 10.0.0.5".parse().unwrap());
+        headers.insert(
+            "x-forwarded-for",
+            "192.168.1.100, 10.0.0.5".parse().unwrap(),
+        );
         assert_eq!(
             client_key_with_proxies(&headers, &TrustedProxies::default()),
             "global",

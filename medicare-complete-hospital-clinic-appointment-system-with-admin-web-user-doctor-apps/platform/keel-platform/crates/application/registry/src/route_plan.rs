@@ -62,6 +62,11 @@ pub struct RoutePlan {
     /// View template name for `response = "html"` routes (Wave 2).
     #[serde(default)]
     pub view: Option<String>,
+    /// The view model the `view` is bound to (MVA-005): declared in the
+    /// manifest, verified against the registered binding at boot, and the
+    /// route edge renders schema-checked when it is set.
+    #[serde(default)]
+    pub view_model: Option<String>,
     /// Exact Host header match (Wave 2).
     #[serde(default)]
     pub domain: Option<String>,
@@ -125,6 +130,25 @@ pub fn resolve_route_plans(
                 .as_deref()
                 .and_then(|p| RoutePlane::from_token(p).ok())
                 .unwrap_or_default();
+            // MVA-005: `view_model` without a `view` is a declaration of
+            // nothing — the pair is the contract (fail-closed, collect-all).
+            if r.view_model
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty())
+                && r.view.as_deref().is_none_or(|v| v.trim().is_empty())
+            {
+                violations.push(GraphViolation {
+                    code: "GRAPH-VIEW-MODEL".into(),
+                    message: format!(
+                        "module {}: route {} {} declares view_model {:?} with no view to bind it to",
+                        m.name(),
+                        r.method,
+                        r.path,
+                        r.view_model
+                    ),
+                });
+                continue;
+            }
             plans.push(RoutePlan {
                 module: m.name().to_string(),
                 method: r.method.to_ascii_uppercase(),
@@ -146,6 +170,7 @@ pub fn resolve_route_plans(
                 constraints: r.resolved_constraints.clone(),
                 fallback: r.fallback,
                 view: r.view.clone(),
+                view_model: r.view_model.clone(),
                 domain: r.domain.clone(),
                 subdomain: r.subdomain.clone(),
             });
@@ -183,8 +208,7 @@ impl RouteCacheArtifact {
         if !path.exists() {
             return Ok(None);
         }
-        let raw =
-            std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let raw = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let artifact: Self =
             serde_json::from_str(&raw).map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(Some(artifact))
@@ -217,8 +241,8 @@ pub fn manifests_hash(root: &Path) -> Result<String, String> {
             .collect();
         paths.sort();
         for path in paths {
-            let raw = std::fs::read_to_string(&path)
-                .map_err(|e| format!("{}: {e}", path.display()))?;
+            let raw =
+                std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             hasher.update(path.display().to_string().as_bytes());
             hasher.update(b"\0");
             hasher.update(raw.as_bytes());
@@ -277,8 +301,8 @@ pub fn manifests_hash(root: &Path) -> Result<String, String> {
     for name in ["api.toml", "channels.toml", "console.toml", "web.toml"] {
         let path = root.join("routes").join(name);
         if path.exists() {
-            let raw = std::fs::read_to_string(&path)
-                .map_err(|e| format!("{}: {e}", path.display()))?;
+            let raw =
+                std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             hasher.update(format!("routes/{name}\0").as_bytes());
             hasher.update(raw.as_bytes());
             hasher.update(b"\0");
@@ -340,10 +364,14 @@ rules = ["required", "max:10"]
         assert_eq!(
             get.chain,
             vec![
-                BuiltinMw::Throttle { group: "api".into() },
+                BuiltinMw::Throttle {
+                    group: "api".into()
+                },
                 BuiltinMw::Auth,
                 BuiltinMw::Verified,
-                BuiltinMw::Throttle { group: "api".into() },
+                BuiltinMw::Throttle {
+                    group: "api".into()
+                },
             ]
         );
         assert!(get.validation.is_empty());
@@ -375,20 +403,22 @@ operation = "index"
 plane = "web"
 response = "html"
 view = "things/show"
+view_model = "ThingShowVm"
 fallback = false
 domain = "app.example.com"
 constraints = [{ param = "id", kind = "number" }]
 "#,
         );
         let graph = PlatformGraph::compile(vec![m]).expect("graph compiles");
-        let plans = resolve_route_plans(&graph, &MiddlewareCatalog::builtin())
-            .expect("plans resolve");
+        let plans =
+            resolve_route_plans(&graph, &MiddlewareCatalog::builtin()).expect("plans resolve");
         let web = plans
             .iter()
             .find(|p| p.path == "/web/things/{id}")
             .expect("web route planned");
         assert_eq!(web.route_plane, RoutePlane::Web);
         assert_eq!(web.view.as_deref(), Some("things/show"));
+        assert_eq!(web.view_model.as_deref(), Some("ThingShowVm"));
         assert_eq!(web.domain.as_deref(), Some("app.example.com"));
         assert!(web.subdomain.is_none());
         assert!(!web.fallback);
@@ -398,6 +428,30 @@ constraints = [{ param = "id", kind = "number" }]
         let api = plans.iter().find(|p| p.method == "POST").unwrap();
         assert_eq!(api.route_plane, RoutePlane::Api);
         assert!(api.constraints.is_empty());
+    }
+
+    #[test]
+    fn view_model_without_a_view_is_refused() {
+        // MVA-005: the contract is the PAIR — a model declared with no
+        // view to bind it to refuses the compile (fail-closed, collect-all).
+        let m = manifest(
+            r#"
+[[routes]]
+method = "GET"
+path = "/web/things"
+operation = "index"
+plane = "web"
+response = "html"
+view_model = "ThingIndexVm"
+"#,
+        );
+        let graph = PlatformGraph::compile(vec![m]).expect("graph compiles");
+        let errs = resolve_route_plans(&graph, &MiddlewareCatalog::builtin())
+            .expect_err("the split pair refuses");
+        assert!(
+            errs.iter().any(|v| v.code == "GRAPH-VIEW-MODEL"),
+            "{errs:?}"
+        );
     }
 
     #[test]
@@ -412,8 +466,12 @@ constraints = [{ param = "id", kind = "number" }]
         let base = manifests_hash(&dir).unwrap();
 
         // Adding a root route file changes the pin.
-        std::fs::write(dir.join("routes").join("web.toml"), "# routes
-").unwrap();
+        std::fs::write(
+            dir.join("routes").join("web.toml"),
+            "# routes
+",
+        )
+        .unwrap();
         let with_web = manifests_hash(&dir).unwrap();
         assert_ne!(base, with_web);
 
@@ -421,8 +479,12 @@ constraints = [{ param = "id", kind = "number" }]
         assert_eq!(with_web, manifests_hash(&dir).unwrap());
 
         // Drift in the route file changes the pin again.
-        std::fs::write(dir.join("routes").join("web.toml"), "# routes v2
-").unwrap();
+        std::fs::write(
+            dir.join("routes").join("web.toml"),
+            "# routes v2
+",
+        )
+        .unwrap();
         assert_ne!(with_web, manifests_hash(&dir).unwrap());
 
         std::fs::remove_dir_all(&dir).ok();
@@ -501,7 +563,7 @@ operation = "index"
         // The converse: a MANIFEST change DOES require a rebuild.
         std::fs::write(
             &manifest_path,
-            &manifest_toml.replace("version = \"0.1.0\"", "version = \"0.2.0\""),
+            manifest_toml.replace("version = \"0.1.0\"", "version = \"0.2.0\""),
         )
         .unwrap();
         assert_ne!(
@@ -538,7 +600,8 @@ operation = "index"
             "[module]\nname = \"billing\"\nversion = \"0.1.0\"\n",
         )
         .unwrap();
-        let index_raw = "[[package]]\nname = \"billing\"\nversion = \"0.1.0\"\npath = \"packages/billing\"\n";
+        let index_raw =
+            "[[package]]\nname = \"billing\"\nversion = \"0.1.0\"\npath = \"packages/billing\"\n";
         std::fs::write(dir.join("packages.toml"), index_raw).unwrap();
         let with_index = manifests_hash(&dir).unwrap();
         assert_ne!(base, with_index);
@@ -629,7 +692,9 @@ middleware = ["ghost", "phantom"]
         // The route-level resolution reports the first unknown entry; the
         // gate reports one violation per offending route (collect-all).
         assert!(!errs.is_empty());
-        assert!(errs.iter().all(|v| v.code == crate::middleware_catalog::GRAPH_MW_UNKNOWN));
+        assert!(errs
+            .iter()
+            .all(|v| v.code == crate::middleware_catalog::GRAPH_MW_UNKNOWN));
     }
 
     #[test]

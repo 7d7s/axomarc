@@ -57,7 +57,10 @@ fn app_over_pg(store: kelson_postgres::PgModelStore) -> App {
     let (state, graph, _store) =
         kelson_demo::build_app_state_with_backend(&dir, true, true, Arc::new(store));
     let router = kelson_demo::routes::router(state.clone())
-        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph))
+        .merge(kelson_demo::graph_routes::graph_router(
+            state.clone(),
+            &graph,
+        ))
         .merge(kelson_demo::auth_routes::router(state.clone()))
         .merge(kelson_demo::upload_routes::router(state.clone()))
         .merge(kelson_demo::notification_routes::router(state.clone()))
@@ -201,7 +204,10 @@ async fn http_dispatch_serves_over_the_pg_model_store() {
     .await;
     assert_eq!(list.status, StatusCode::OK, "list: {}", list.body);
     let ids = listed_ids(&list);
-    assert!(ids.contains(&id), "the booked row survived the fabric: {ids:?}");
+    assert!(
+        ids.contains(&id),
+        "the booked row survived the fabric: {ids:?}"
+    );
 
     // Tenant isolation holds in the fabric: a principal of another tenant
     // neither lists nor reaches the row (the binding miss is a 404).

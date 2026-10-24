@@ -43,7 +43,6 @@ impl MySqlTokenStore {
     }
 }
 
-
 fn purpose_from(text: &str) -> Result<TokenPurpose, AppError> {
     Ok(match text {
         "api" => TokenPurpose::Api,

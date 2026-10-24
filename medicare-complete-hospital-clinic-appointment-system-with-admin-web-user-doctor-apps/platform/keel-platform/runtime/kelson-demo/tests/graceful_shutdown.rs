@@ -22,8 +22,7 @@ use tokio::net::TcpStream;
 /// A minimal HTTP/1.1 GET over a raw socket: the assertion is about the wire.
 async fn get(addr: std::net::SocketAddr, path: &str) -> std::io::Result<String> {
     let mut stream = TcpStream::connect(addr).await?;
-    let request =
-        format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    let request = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
     stream.write_all(request.as_bytes()).await?;
     let mut raw = Vec::new();
     stream.read_to_end(&mut raw).await?;
@@ -106,10 +105,7 @@ async fn a_stop_drains_in_flight_requests_and_drops_nothing() {
 /// wait for a timeout it does not need.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stop_with_nothing_in_flight_returns_at_once() {
-    let app = axum::Router::new().route(
-        "/fast",
-        axum::routing::get(|| async { "ok" }),
-    );
+    let app = axum::Router::new().route("/fast", axum::routing::get(|| async { "ok" }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("the listener binds");

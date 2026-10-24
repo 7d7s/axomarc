@@ -70,9 +70,16 @@ pub enum Cond {
     Or(Vec<Cond>),
     And(Vec<Cond>),
     Not(Box<Cond>),
-    Cmp { left: Operand, op: CmpOp, right: Operand },
+    Cmp {
+        left: Operand,
+        op: CmpOp,
+        right: Operand,
+    },
     Truthy(Operand),
-    Custom { name: String, args: Vec<Operand> },
+    Custom {
+        name: String,
+        args: Vec<Operand>,
+    },
 }
 
 // ------------------------------------------------------------------ parsing
@@ -84,7 +91,10 @@ struct Cursor<'a> {
 
 impl<'a> Cursor<'a> {
     fn new(s: &'a str) -> Self {
-        Self { bytes: s.as_bytes(), pos: 0 }
+        Self {
+            bytes: s.as_bytes(),
+            pos: 0,
+        }
     }
     fn peek(&self) -> Option<u8> {
         self.bytes.get(self.pos).copied()
@@ -445,9 +455,7 @@ fn try_parse_custom(cur: &mut Cursor) -> Result<Option<Cond>, String> {
         return Ok(None);
     }
     let mut probe = cur.pos;
-    while probe < cur.bytes.len()
-        && matches!(cur.bytes[probe], b' ' | b'\t' | b'\r' | b'\n')
-    {
+    while probe < cur.bytes.len() && matches!(cur.bytes[probe], b' ' | b'\t' | b'\r' | b'\n') {
         probe += 1;
     }
     if probe >= cur.bytes.len() || cur.bytes[probe] != b'(' {
@@ -463,7 +471,9 @@ fn try_parse_custom(cur: &mut Cursor) -> Result<Option<Cond>, String> {
             break;
         }
         if cur.eof() {
-            return Err(format!("unterminated argument list in custom condition {name:?}"));
+            return Err(format!(
+                "unterminated argument list in custom condition {name:?}"
+            ));
         }
         args.push(parse_operand(cur)?);
         cur.skip_ws();
@@ -665,7 +675,9 @@ pub fn apply_filters(mut value: Value, filters: &[Filter]) -> Value {
 pub fn eval_expr(expr: &Expr, ctx: &Value) -> Value {
     let mut value = match &expr.literal {
         Some(lit) => Value::String(lit.clone()),
-        None => resolve_path(ctx, &expr.path).cloned().unwrap_or(Value::Null),
+        None => resolve_path(ctx, &expr.path)
+            .cloned()
+            .unwrap_or(Value::Null),
     };
     for filter in &expr.filters {
         value = if filter.name == "trans" {
@@ -965,12 +977,18 @@ mod tests {
 
     #[test]
     fn operand_parsing_covers_literals_and_paths() {
-        assert_eq!(parse_operand_str("12").unwrap(), Operand::Lit(Lit::Num(12.0)));
+        assert_eq!(
+            parse_operand_str("12").unwrap(),
+            Operand::Lit(Lit::Num(12.0))
+        );
         assert_eq!(
             parse_operand_str("\"hi\"").unwrap(),
             Operand::Lit(Lit::Str("hi".into()))
         );
-        assert_eq!(parse_operand_str("true").unwrap(), Operand::Lit(Lit::Bool(true)));
+        assert_eq!(
+            parse_operand_str("true").unwrap(),
+            Operand::Lit(Lit::Bool(true))
+        );
         assert!(matches!(
             parse_operand_str("user.name").unwrap(),
             Operand::Path(_)

@@ -99,7 +99,11 @@ fn from_record(record: &Record) -> Result<Appointment, AppError> {
             .and_then(|s| Uuid::parse_str(s).ok())
             .ok_or_else(|| AppError::validation(format!("appointment record missing {name}")))
     };
-    let status = match record.get("status").and_then(|v| v.as_str()).unwrap_or("booked") {
+    let status = match record
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("booked")
+    {
         "cancelled" => AppointmentStatus::Cancelled,
         _ => AppointmentStatus::Booked,
     };
@@ -219,10 +223,7 @@ impl AppointmentStore {
         let page = self
             .runtime
             .list(&*self.backend, Some(tenant), vec![], &[], None)?;
-        Ok(page
-            .total
-            .map(|t| t as usize)
-            .unwrap_or(page.items.len()))
+        Ok(page.total.map(|t| t as usize).unwrap_or(page.items.len()))
     }
 
     /// Wave 1 model binding support: tenant-scoped find for the route
@@ -288,11 +289,7 @@ impl kelson_models::RouteBindingResolver for AppointmentBindingResolver {
         "Appointment"
     }
 
-    fn resolve(
-        &self,
-        tenant: Option<TenantId>,
-        id: Uuid,
-    ) -> Result<Option<Record>, AppError> {
+    fn resolve(&self, tenant: Option<TenantId>, id: Uuid) -> Result<Option<Record>, AppError> {
         self.store.find_for_binding(tenant, id)
     }
 
@@ -406,7 +403,6 @@ impl NotificationDef for AppointmentCancelled {
     }
 }
 
-
 /// Module provider: binds the domain store to the framework ModelStore port
 /// (registered by the Platform phase) and registers the handler bundle.
 /// Tracks the module's lifecycle state (Discovered -> Validated -> Registered
@@ -417,7 +413,9 @@ pub struct ModuleProvider {
 
 impl ModuleProvider {
     pub fn new() -> Self {
-        Self { state: Mutex::new(ModuleState::Discovered) }
+        Self {
+            state: Mutex::new(ModuleState::Discovered),
+        }
     }
 
     pub fn state(&self) -> ModuleState {
@@ -475,12 +473,10 @@ impl Provider for ModuleProvider {
         // for the `unique`/`exists` validation rules when the platform
         // provides the registry (same tolerance posture as route.bindings).
         if let Ok(probes) = registry.get::<kelson_models::ProbeRegistryRef>() {
-            probes
-                .0
-                .register(Arc::new(kelson_models::StoreProbe::new(
-                    appointment_model(),
-                    backend.0.clone(),
-                )));
+            probes.0.register(Arc::new(kelson_models::StoreProbe::new(
+                appointment_model(),
+                backend.0.clone(),
+            )));
         }
         Ok(())
     }

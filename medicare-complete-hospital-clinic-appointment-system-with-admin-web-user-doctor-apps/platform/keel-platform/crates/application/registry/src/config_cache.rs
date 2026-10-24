@@ -46,8 +46,7 @@ impl ConfigCacheArtifact {
         if !path.exists() {
             return Ok(None);
         }
-        let raw =
-            std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let raw = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let artifact: Self =
             serde_json::from_str(&raw).map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(Some(artifact))
@@ -165,8 +164,7 @@ mod tests {
             config: sample(),
         };
         stale_abi.write(&path).unwrap();
-        config_cache_check(&dir, &config_hash(&sample()))
-            .expect_err("abi mismatch refuses boot");
+        config_cache_check(&dir, &config_hash(&sample())).expect_err("abi mismatch refuses boot");
 
         // Corrupt artifact -> refuse boot (fail closed).
         std::fs::write(&path, "{ not json").unwrap();

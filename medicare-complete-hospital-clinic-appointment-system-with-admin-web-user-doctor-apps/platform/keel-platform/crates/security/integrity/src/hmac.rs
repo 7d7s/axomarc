@@ -102,8 +102,18 @@ mod tests {
         let chain_id = Uuid::now_v7();
         let head = [7u8; 32];
         let signature = sign_chain_head(b"app-key", &chain_id, &head, 42);
-        assert!(verify_chain_head(b"app-key", &chain_id, &head, 42, &signature));
-        assert!(!verify_chain_head(b"app-key", &chain_id, &head, 43, &signature));
-        assert!(!verify_chain_head(b"other-key", &chain_id, &head, 42, &signature));
+        assert!(verify_chain_head(
+            b"app-key", &chain_id, &head, 42, &signature
+        ));
+        assert!(!verify_chain_head(
+            b"app-key", &chain_id, &head, 43, &signature
+        ));
+        assert!(!verify_chain_head(
+            b"other-key",
+            &chain_id,
+            &head,
+            42,
+            &signature
+        ));
     }
 }

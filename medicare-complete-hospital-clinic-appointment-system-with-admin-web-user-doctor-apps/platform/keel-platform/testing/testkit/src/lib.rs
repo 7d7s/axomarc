@@ -19,11 +19,11 @@ pub use app::{TestApp, TestRequest, TestResponse, ViewRecorder};
 pub use factories::{
     sample_event, sample_job, EventFactory, Factory, JobFactory, ModelFactory, Sequence,
 };
-pub use kelson_models::{ModelDef, ModelStore, Record};
 pub use fakes::{
     assert_delta, assert_event, AuditRecorder, CacheFake, EventFake, FakeMail, FakeQueue,
     FakeSearch, FakeStorage, MailFake, MailMessage, NotificationFake, QueueFake, StorageFake,
 };
+pub use kelson_models::{ModelDef, ModelStore, Record};
 pub use kelson_search::{
     HybridQuery, Index, SearchDocument, SearchEngine, SearchQuery, SearchResult, VectorQuery,
 };

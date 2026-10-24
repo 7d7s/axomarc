@@ -12,8 +12,8 @@ use std::sync::Arc;
 use kelson_ai::{AiClient, AiMessage, CompletionRequest, ModelTool};
 use kelson_ai_tools::{ToolRegistry, ToolSpec};
 use kelson_context::ExecutionContext;
-use kelson_foundation::{codes, AppError, OperationId};
 use kelson_execution::{Engine, IdempotencyKey, OperationHandler};
+use kelson_foundation::{codes, AppError, OperationId};
 use serde::{Deserialize, Serialize};
 
 /// Resolves the live handler for an operation id (wired by the runtime boot).
@@ -191,11 +191,11 @@ mod tests {
     use kelson_ai::{StubAiClient, ToolCall};
     use kelson_ai_tools::StaticToolRegistry;
     use kelson_context::{PrincipalContext, ScopeSnapshot, TenantContext};
-    use kelson_foundation::{AuthorizationRevision, ExecutionProfileKind, PrincipalId, TenantId};
     use kelson_execution::{
         BoxFuture, ExecutionUnit, InMemoryBackend, InMemoryIdempotency, MutationRecord,
         PlanCompiler, PlanIntent,
     };
+    use kelson_foundation::{AuthorizationRevision, ExecutionProfileKind, PrincipalId, TenantId};
     use kelson_policy::{AccessSnapshot, PolicyAuthz, PolicyEngine};
     use std::collections::BTreeMap;
 
@@ -295,11 +295,29 @@ mod tests {
     ) {
         let principal = PrincipalId::new();
         let tenant = TenantId::new();
+        // S-001c: granted, not fabricated - the membership bit is the
+        // store's answer for this exact pair.
+        let memberships = kelson_identity::InMemoryMembershipStore::new();
+        kelson_identity::store::MembershipStore::grant(
+            &memberships,
+            kelson_identity::Membership {
+                id: kelson_foundation::MembershipId::new(),
+                principal_id: principal,
+                tenant_id: tenant,
+                status: kelson_identity::MembershipStatus::Active,
+                joined_at: time::OffsetDateTime::now_utc(),
+            },
+        )
+        .expect("the fixture edge grants");
+        let membership_active =
+            kelson_identity::store::MembershipStore::active_for(&memberships, principal, tenant)
+                .expect("the store answers")
+                .is_some();
         let policies = Arc::new(PolicyEngine::new());
         policies.install_snapshot(AccessSnapshot {
             principal_id: principal,
             tenant_id: tenant,
-            membership_active: true,
+            membership_active,
             capabilities: allowed_capability
                 .into_iter()
                 .map(|c| c.to_string())

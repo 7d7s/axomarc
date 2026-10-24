@@ -5,9 +5,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use kelson_caching::CachePort;
-use kelson_foundation::{AppError, Clock, FixedClock, PrincipalId, TenantId};
 use kelson_event::{InMemoryOutbox, OutboxEvent};
 use kelson_execution::{AuditOutcome, AuditRecord};
+use kelson_foundation::{AppError, Clock, FixedClock, PrincipalId, TenantId};
 use kelson_jobs::{DurableJob, InMemoryJobStore, JobStore, JobStoreAdmin};
 use kelson_notifications::{
     Channel, DispatchRecord, DispatchTap, MailPort, Mailable, NotifyMessage, ResolvedMailAttachment,
@@ -267,15 +267,18 @@ impl MailFake {
     /// `attachments.len()` inside the closure; panics listing what was
     /// sent.
     pub fn assert_sent(&self, matches: impl Fn(&Mailable) -> bool) -> Mailable {
-        self.mailables().into_iter().find(matches).unwrap_or_else(|| {
-            panic!(
-                "no sent mailable matched the predicate; subjects: {:?}",
-                self.mailables()
-                    .iter()
-                    .map(|m| m.subject.clone())
-                    .collect::<Vec<_>>()
-            )
-        })
+        self.mailables()
+            .into_iter()
+            .find(matches)
+            .unwrap_or_else(|| {
+                panic!(
+                    "no sent mailable matched the predicate; subjects: {:?}",
+                    self.mailables()
+                        .iter()
+                        .map(|m| m.subject.clone())
+                        .collect::<Vec<_>>()
+                )
+            })
     }
 }
 
@@ -537,9 +540,8 @@ impl CacheFake {
     }
 
     fn insert(&self, key: &str, value: Vec<u8>, ttl_secs: Option<u64>) {
-        let expires_at = ttl_secs.map(|s| {
-            self.now() + time::Duration::seconds(i64::try_from(s).unwrap_or(i64::MAX))
-        });
+        let expires_at = ttl_secs
+            .map(|s| self.now() + time::Duration::seconds(i64::try_from(s).unwrap_or(i64::MAX)));
         self.entries.lock().unwrap().insert(
             key.to_string(),
             CacheEntry {
@@ -989,7 +991,8 @@ mod tests {
     #[test]
     fn mail_fake_records_mailables_and_messages() {
         let fake = MailFake::new();
-        fake.send_mailable(&welcome_mailable(), &[]).expect("valid mailable sends");
+        fake.send_mailable(&welcome_mailable(), &[])
+            .expect("valid mailable sends");
 
         let sent = fake.assert_sent(|m| {
             m.subject == "Welcome to Kelson"
@@ -1032,7 +1035,8 @@ mod tests {
     #[should_panic(expected = "no sent mailable matched")]
     fn mail_fake_assert_sent_panics_without_match() {
         let fake = MailFake::new();
-        fake.send_mailable(&welcome_mailable(), &[]).expect("valid mailable sends");
+        fake.send_mailable(&welcome_mailable(), &[])
+            .expect("valid mailable sends");
         fake.assert_sent(|m| m.subject == "Something else");
     }
 
@@ -1082,7 +1086,11 @@ mod tests {
         cache.put("query:products", b"[]".to_vec(), None);
         assert_eq!(cache.get("query:products"), Some(b"[]".to_vec()));
         cache.assert_has("query:products");
-        assert_eq!(cache.ttl_secs("query:products"), None, "stored without a TTL");
+        assert_eq!(
+            cache.ttl_secs("query:products"),
+            None,
+            "stored without a TTL"
+        );
 
         cache.put("authz:user", b"token".to_vec(), Some(60));
         assert_eq!(cache.ttl_secs("authz:user"), Some(60));
@@ -1158,11 +1166,10 @@ mod tests {
         };
 
         // A failed dispatch (no target for the email channel) records nothing.
-        assert!(
-            hub.dispatch_notification(&TestNote, Channel::Email, None, &ctx)
-                .await
-                .is_err()
-        );
+        assert!(hub
+            .dispatch_notification(&TestNote, Channel::Email, None, &ctx)
+            .await
+            .is_err());
         assert!(fake.records().is_empty(), "failed dispatch must not record");
 
         hub.dispatch_notification(&TestNote, Channel::Email, Some("ada@example.com"), &ctx)
@@ -1188,11 +1195,10 @@ mod tests {
             origin: kelson_notifications::DeliveryOrigin::default(),
         };
         // Only successful dispatches record; this one has no target.
-        assert!(
-            hub.dispatch_notification(&TestNote, Channel::Email, None, &ctx)
-                .await
-                .is_err()
-        );
+        assert!(hub
+            .dispatch_notification(&TestNote, Channel::Email, None, &ctx)
+            .await
+            .is_err());
         fake.assert_sent_to(ctx.principal_id, "testkit.note", Channel::Email);
     }
 }

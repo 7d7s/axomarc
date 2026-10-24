@@ -115,7 +115,9 @@ impl CacheService {
     /// Atomic set-if-absent (`put_if_absent`): true only when this call
     /// created the entry — the existing atomic primitive, exposed.
     pub fn add(&self, key: &str, value: &Value, ttl_secs: Option<u64>) -> bool {
-        self.port.store().put_if_absent(key, to_bytes(value), ttl_secs)
+        self.port
+            .store()
+            .put_if_absent(key, to_bytes(value), ttl_secs)
     }
 
     /// Write without an expiry.
@@ -153,12 +155,7 @@ impl CacheService {
     /// jitter-poll for the leader's write and return it without computing
     /// (single-flight collapse). If the leader never appears (crash, expired
     /// TTL), waiters compute themselves after the bounded window.
-    pub fn remember(
-        &self,
-        key: &str,
-        ttl_secs: Option<u64>,
-        f: impl FnOnce() -> Value,
-    ) -> Value {
+    pub fn remember(&self, key: &str, ttl_secs: Option<u64>, f: impl FnOnce() -> Value) -> Value {
         if let Some(hit) = self.get(key) {
             return hit;
         }
@@ -245,9 +242,9 @@ fn remember_lock_name(key: &str) -> String {
 /// a stable per-key offset, so racing waiters desynchronize without a `rand`
 /// dependency.
 fn jittered_sleep(key: &str) {
-    let offset = key
-        .bytes()
-        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(u32::from(b)));
+    let offset = key.bytes().fold(0u32, |acc, b| {
+        acc.wrapping_mul(31).wrapping_add(u32::from(b))
+    });
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.subsec_nanos())
@@ -393,7 +390,10 @@ mod tests {
         fn invalidate_prefix(&self, prefix: &str) {
             let dead: Vec<String> = {
                 let map = self.map.lock().unwrap();
-                map.keys().filter(|k| k.starts_with(prefix)).cloned().collect()
+                map.keys()
+                    .filter(|k| k.starts_with(prefix))
+                    .cloned()
+                    .collect()
             };
             for k in dead {
                 self.map.lock().unwrap().remove(&k);
@@ -438,7 +438,10 @@ mod tests {
 
         // Foreign/corrupt bytes: `has` sees them, `get` reads a miss, and
         // `pull` drops them anyway.
-        p.map.lock().unwrap().insert("junk".into(), b"not-json".to_vec());
+        p.map
+            .lock()
+            .unwrap()
+            .insert("junk".into(), b"not-json".to_vec());
         assert!(c.has("junk"));
         assert_eq!(c.get("junk"), None);
         assert_eq!(c.pull("junk"), None);
@@ -553,7 +556,10 @@ mod tests {
 
         assert_eq!(out, json!("leader"), "waiter observes the leader write");
         assert_eq!(ran.get(), 0, "single-flight: the waiter never computed");
-        assert!(CacheLock::new(Arc::new(crate::swappable::SwappableCache::new(p.clone()))).release(&holder));
+        assert!(
+            CacheLock::new(Arc::new(crate::swappable::SwappableCache::new(p.clone())))
+                .release(&holder)
+        );
     }
 
     #[test]
@@ -565,7 +571,11 @@ mod tests {
 
         let out = c.remember("stuck", Some(60), || json!("mine"));
 
-        assert_eq!(out, json!("mine"), "bounded wait, then compute — never error");
+        assert_eq!(
+            out,
+            json!("mine"),
+            "bounded wait, then compute — never error"
+        );
         assert_eq!(c.get("stuck"), Some(json!("mine")));
         assert!(
             CacheLock::new(Arc::new(crate::swappable::SwappableCache::new(p.clone())))
@@ -573,7 +583,10 @@ mod tests {
                 .is_none(),
             "the foreign hold is untouched: no steal, no forced release"
         );
-        assert!(CacheLock::new(Arc::new(crate::swappable::SwappableCache::new(p.clone()))).release(&holder));
+        assert!(
+            CacheLock::new(Arc::new(crate::swappable::SwappableCache::new(p.clone())))
+                .release(&holder)
+        );
     }
 
     #[test]

@@ -182,10 +182,7 @@ mod tests {
             Some("fr")
         );
         assert_eq!(negotiate("de-DE", &supported), None);
-        assert_eq!(
-            negotiate("en-us, ar", &supported).as_deref(),
-            Some("en")
-        );
+        assert_eq!(negotiate("en-us, ar", &supported).as_deref(), Some("en"));
         // Regional shipped tag accepts its plain language and vice versa.
         assert_eq!(negotiate("fr", &["fr-FR"]).as_deref(), Some("fr-FR"));
         assert_eq!(negotiate("fr-FR", &["fr"]).as_deref(), Some("fr"));

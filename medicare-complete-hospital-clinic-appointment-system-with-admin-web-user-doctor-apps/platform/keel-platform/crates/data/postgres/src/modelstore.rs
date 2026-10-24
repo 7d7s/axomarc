@@ -4,15 +4,17 @@
 //! on EVERY path (`tenant_scope`); soft deletes honor `ModelDef::soft_deletes`.
 
 use kelson_foundation::{AppError, TenantId};
+use kelson_models::store::{
+    require_write_filters, validate_aggregate, validate_counter, validate_list_opts,
+};
 use kelson_models::{
     json_value_to_bind, record_to_columns_for, ExistsFilter, FieldFilter, FieldType, FilterOp,
     ListOpts, ModelDef, ModelStore, Record,
 };
-use kelson_models::store::{
-    require_write_filters, validate_aggregate, validate_counter, validate_list_opts,
-};
 use kelson_query::select::{Condition, Direction, Ident, Operator};
-use kelson_query::{CompiledSelect, CompiledWrite, Delete, Insert, ConflictPolicy, Select, Update, Value as Bind};
+use kelson_query::{
+    CompiledSelect, CompiledWrite, ConflictPolicy, Delete, Insert, Select, Update, Value as Bind,
+};
 use serde_json::Value as Json;
 use sqlx::postgres::{PgArguments, PgPool, PgRow};
 use sqlx::{Column, Row};
@@ -342,11 +344,7 @@ fn base_select(
 ///
 /// The anchor is applied to the page query AND to the COUNT query, so `total`
 /// is the size of the window that is left.
-fn apply_keyset(
-    select: Select,
-    model: &ModelDef,
-    opts: &ListOpts,
-) -> Result<Select, AppError> {
+fn apply_keyset(select: Select, model: &ModelDef, opts: &ListOpts) -> Result<Select, AppError> {
     let Some(after) = &opts.after else {
         return Ok(select);
     };
@@ -371,44 +369,43 @@ fn push_filters(
 ) -> Result<Select, AppError> {
     let pushers: Vec<Box<dyn FnOnce(Select) -> Select>> = filters
         .iter()
-        .map(|filter| -> Result<Box<dyn FnOnce(Select) -> Select>, AppError> {
-            match filter {
-                FieldFilter::Cmp { .. } => {
-                    let cond = filter_condition(Some(model), filter)?;
-                    Ok(Box::new(move |select| match cond.operator {
-                        Operator::In => select.where_in(cond.column, cond.values),
-                        Operator::IsNull => select.where_null(cond.column),
-                        Operator::NotNull => select.where_not_null(cond.column),
-                        other => select.where_op(
-                            cond.column,
-                            other,
-                            cond.values.into_iter().next().unwrap_or(Bind::Null),
-                        ),
-                    }))
+        .map(
+            |filter| -> Result<Box<dyn FnOnce(Select) -> Select>, AppError> {
+                match filter {
+                    FieldFilter::Cmp { .. } => {
+                        let cond = filter_condition(Some(model), filter)?;
+                        Ok(Box::new(move |select| match cond.operator {
+                            Operator::In => select.where_in(cond.column, cond.values),
+                            Operator::IsNull => select.where_null(cond.column),
+                            Operator::NotNull => select.where_not_null(cond.column),
+                            other => select.where_op(
+                                cond.column,
+                                other,
+                                cond.values.into_iter().next().unwrap_or(Bind::Null),
+                            ),
+                        }))
+                    }
+                    FieldFilter::Exists(ex) => {
+                        let sub = exists_select(tenant, ex)?;
+                        let (negated, or) = (ex.negated, ex.or);
+                        Ok(Box::new(move |select| match (negated, or) {
+                            (false, false) => select.where_exists(sub),
+                            (true, false) => select.where_not_exists(sub),
+                            (false, true) => select.or_where_exists(sub),
+                            (true, true) => select.or_where_not_exists(sub),
+                        }))
+                    }
                 }
-                FieldFilter::Exists(ex) => {
-                    let sub = exists_select(tenant, ex)?;
-                    let (negated, or) = (ex.negated, ex.or);
-                    Ok(Box::new(move |select| match (negated, or) {
-                        (false, false) => select.where_exists(sub),
-                        (true, false) => select.where_not_exists(sub),
-                        (false, true) => select.or_where_exists(sub),
-                        (true, true) => select.or_where_not_exists(sub),
-                    }))
-                }
-            }
-        })
+            },
+        )
         .collect::<Result<_, _>>()?;
     let has_or = filters
         .iter()
         .any(|f| matches!(f, FieldFilter::Exists(ex) if ex.or));
     if has_or {
-        Ok(select
-            .group(move |inner| pushers.into_iter().fold(inner, |acc, push| push(acc))))
+        Ok(select.group(move |inner| pushers.into_iter().fold(inner, |acc, push| push(acc))))
     } else {
-        Ok(pushers
-            .into_iter()
-            .fold(select, |acc, push| push(acc)))
+        Ok(pushers.into_iter().fold(select, |acc, push| push(acc)))
     }
 }
 
@@ -455,7 +452,6 @@ fn exists_select(tenant: Option<TenantId>, ex: &ExistsFilter) -> Result<Select, 
     Ok(sub)
 }
 
-
 fn fetch_rows(pool: &PgPool, compiled: &CompiledSelect) -> Result<Vec<PgRow>, AppError> {
     let sql = compiled.sql.clone();
     let params = compiled.params.clone();
@@ -498,7 +494,11 @@ impl ModelStore for PgModelStore {
         if let Some((field, desc)) = &opts.sort {
             select = select.order_by(
                 ident(field)?,
-                if *desc { Direction::Desc } else { Direction::Asc },
+                if *desc {
+                    Direction::Desc
+                } else {
+                    Direction::Asc
+                },
             );
         }
         // Cursor (keyset) mode: the page starts AFTER the anchor, so a
@@ -507,7 +507,9 @@ impl ModelStore for PgModelStore {
         let (page, per_page) = match opts.page {
             Some(req) => {
                 let req = req.validate()?;
-                select = select.limit(u64::from(req.per_page)).offset(u64::from(req.offset()));
+                select = select
+                    .limit(u64::from(req.per_page))
+                    .offset(u64::from(req.offset()));
                 (req.page, req.per_page)
             }
             None => {
@@ -563,10 +565,8 @@ impl ModelStore for PgModelStore {
         tenant: Option<TenantId>,
         include_deleted: bool,
     ) -> Result<Option<Record>, AppError> {
-        let mut select = Select::from_table(ident(&model.table)?).where_eq(
-            ident("id")?,
-            Bind::Uuid(id),
-        );
+        let mut select =
+            Select::from_table(ident(&model.table)?).where_eq(ident("id")?, Bind::Uuid(id));
         if model.tenant_scoped {
             match tenant {
                 Some(t) => select = select.tenant_scope(ident("tenant_id")?, t),
@@ -590,7 +590,9 @@ impl ModelStore for PgModelStore {
                 kelson_foundation::TenantId::from_uuid(record_uuid(record, "tenant_id")?),
             );
         }
-        let compiled = insert.returning(all_columns(model)?).build(&kelson_query::POSTGRES)?;
+        let compiled = insert
+            .returning(all_columns(model)?)
+            .build(&kelson_query::POSTGRES)?;
         let rows = write_rows(&self.pool, &compiled)?;
         map_rows(rows, model)?
             .into_iter()
@@ -622,7 +624,9 @@ impl ModelStore for PgModelStore {
             };
             update = update.set(ident(key)?, bind);
         }
-        let compiled = update.returning(all_columns(model)?).build(&kelson_query::POSTGRES)?;
+        let compiled = update
+            .returning(all_columns(model)?)
+            .build(&kelson_query::POSTGRES)?;
         let rows = write_rows(&self.pool, &compiled)?;
         Ok(map_rows(rows, model)?.into_iter().next())
     }
@@ -637,29 +641,36 @@ impl ModelStore for PgModelStore {
             let mut update = Update::table(ident(&model.table)?)
                 .where_eq(ident("id")?, Bind::Uuid(id))
                 .where_is_null(ident("deleted_at")?)
-                .set(ident("deleted_at")?, Bind::Timestamp(OffsetDateTime::now_utc()));
+                .set(
+                    ident("deleted_at")?,
+                    Bind::Timestamp(OffsetDateTime::now_utc()),
+                );
             if model.tenant_scoped {
                 match tenant {
                     Some(t) => update = update.tenant_scope(ident("tenant_id")?, t),
                     None => update = update.where_eq(ident("tenant_id")?, Bind::Null),
                 }
             }
-            let compiled = update.returning(vec![ident("id")?]).build(&kelson_query::POSTGRES)?;
+            let compiled = update
+                .returning(vec![ident("id")?])
+                .build(&kelson_query::POSTGRES)?;
             let rows = write_rows(&self.pool, &compiled)?;
             return Ok(!rows.is_empty());
         }
-        let mut delete = Delete::from_table(ident(&model.table)?).where_eq(ident("id")?, Bind::Uuid(id));
+        let mut delete =
+            Delete::from_table(ident(&model.table)?).where_eq(ident("id")?, Bind::Uuid(id));
         if model.tenant_scoped {
             match tenant {
                 Some(t) => delete = delete.tenant_scope(ident("tenant_id")?, t),
                 None => delete = delete.where_eq(ident("tenant_id")?, Bind::Null),
             }
         }
-        let compiled = delete.returning(vec![ident("id")?]).build(&kelson_query::POSTGRES)?;
+        let compiled = delete
+            .returning(vec![ident("id")?])
+            .build(&kelson_query::POSTGRES)?;
         let rows = write_rows(&self.pool, &compiled)?;
         Ok(!rows.is_empty())
     }
-
 
     /// Run a statement the app built, under this store's tenant scope and
     /// soft-delete veil.
@@ -678,11 +689,11 @@ impl ModelStore for PgModelStore {
             Some(source) if source.as_str() == table.as_str() => {}
             Some(other) => {
                 return Err(AppError::validation(format!(
-                    "the statement reads {} but the model is {}: the tenant scope cannot be applied \
+                "the statement reads {} but the model is {}: the tenant scope cannot be applied \
                      to a different table",
-                    other.as_str(),
-                    table.as_str()
-                )))
+                other.as_str(),
+                table.as_str()
+            )))
             }
             None => {
                 return Err(AppError::validation(
@@ -737,7 +748,9 @@ impl ModelStore for PgModelStore {
                 kelson_foundation::TenantId::from_uuid(record_uuid(record, "tenant_id")?),
             );
         }
-        let compiled = insert.returning(all_columns(model)?).build(&kelson_query::POSTGRES)?;
+        let compiled = insert
+            .returning(all_columns(model)?)
+            .build(&kelson_query::POSTGRES)?;
         let rows = write_rows(&self.pool, &compiled)?;
         map_rows(rows, model)?
             .into_iter()
@@ -823,7 +836,11 @@ impl ModelStore for PgModelStore {
         Ok(map_rows(rows, model)?.into_iter().next())
     }
 
-    fn insert_or_ignore(&self, model: &ModelDef, record: &Record) -> Result<Option<Record>, AppError> {
+    fn insert_or_ignore(
+        &self,
+        model: &ModelDef,
+        record: &Record,
+    ) -> Result<Option<Record>, AppError> {
         let (columns, params) = record_to_columns_for(record, model)?;
         let mut insert = Insert::into_table(ident(&model.table)?)
             .columns(columns)
@@ -836,7 +853,9 @@ impl ModelStore for PgModelStore {
                 kelson_foundation::TenantId::from_uuid(record_uuid(record, "tenant_id")?),
             );
         }
-        let compiled = insert.returning(all_columns(model)?).build(&kelson_query::POSTGRES)?;
+        let compiled = insert
+            .returning(all_columns(model)?)
+            .build(&kelson_query::POSTGRES)?;
         let rows = write_rows(&self.pool, &compiled)?;
         Ok(map_rows(rows, model)?.into_iter().next())
     }
@@ -851,7 +870,9 @@ impl ModelStore for PgModelStore {
         require_write_filters("update_filtered", filters)?;
         if changes.is_empty() {
             // Nothing to write: return the matching rows (mirrors `update`).
-            return Ok(self.list(model, tenant, filters, &ListOpts::default())?.items);
+            return Ok(self
+                .list(model, tenant, filters, &ListOpts::default())?
+                .items);
         }
         let mut update = Update::table(ident(&model.table)?);
         if model.tenant_scoped {
@@ -883,7 +904,9 @@ impl ModelStore for PgModelStore {
             };
             update = update.set(ident(field)?, bind);
         }
-        let compiled = update.returning(all_columns(model)?).build(&kelson_query::POSTGRES)?;
+        let compiled = update
+            .returning(all_columns(model)?)
+            .build(&kelson_query::POSTGRES)?;
         let rows = write_rows(&self.pool, &compiled)?;
         map_rows(rows, model)
     }
@@ -897,7 +920,10 @@ impl ModelStore for PgModelStore {
         require_write_filters("delete_filtered", filters)?;
         if model.soft_deletes {
             let mut changes = Record::new();
-            changes.insert("deleted_at".into(), Json::String(kelson_models::now_rfc3339()));
+            changes.insert(
+                "deleted_at".into(),
+                Json::String(kelson_models::now_rfc3339()),
+            );
             return self.update_filtered(model, tenant, filters, &changes);
         }
         let mut delete = Delete::from_table(ident(&model.table)?);
@@ -920,7 +946,9 @@ impl ModelStore for PgModelStore {
                 ),
             };
         }
-        let compiled = delete.returning(all_columns(model)?).build(&kelson_query::POSTGRES)?;
+        let compiled = delete
+            .returning(all_columns(model)?)
+            .build(&kelson_query::POSTGRES)?;
         let rows = write_rows(&self.pool, &compiled)?;
         map_rows(rows, model)
     }
@@ -932,7 +960,8 @@ impl ModelStore for PgModelStore {
         tenant: Option<TenantId>,
     ) -> Result<bool, AppError> {
         // No deleted_at veil: purges live AND trashed rows alike.
-        let mut delete = Delete::from_table(ident(&model.table)?).where_eq(ident("id")?, Bind::Uuid(id));
+        let mut delete =
+            Delete::from_table(ident(&model.table)?).where_eq(ident("id")?, Bind::Uuid(id));
         if model.tenant_scoped {
             match tenant {
                 Some(t) => delete = delete.tenant_scope(ident("tenant_id")?, t),
@@ -987,7 +1016,9 @@ impl ModelStore for PgModelStore {
             };
             update = update.set(ident(key)?, bind);
         }
-        let compiled = update.returning(all_columns(model)?).build(&kelson_query::POSTGRES)?;
+        let compiled = update
+            .returning(all_columns(model)?)
+            .build(&kelson_query::POSTGRES)?;
         let rows = write_rows(&self.pool, &compiled)?;
         Ok(map_rows(rows, model)?.into_iter().next())
     }
@@ -1015,7 +1046,9 @@ impl ModelStore for PgModelStore {
                 None => update = update.where_eq(ident("tenant_id")?, Bind::Null),
             }
         }
-        let compiled = update.returning(all_columns(model)?).build(&kelson_query::POSTGRES)?;
+        let compiled = update
+            .returning(all_columns(model)?)
+            .build(&kelson_query::POSTGRES)?;
         let rows = write_rows(&self.pool, &compiled)?;
         Ok(map_rows(rows, model)?.into_iter().next())
     }

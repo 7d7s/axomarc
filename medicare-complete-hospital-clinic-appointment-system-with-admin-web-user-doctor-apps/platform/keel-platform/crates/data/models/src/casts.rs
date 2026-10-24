@@ -163,7 +163,9 @@ impl Cast for DatetimeCast {
 fn round_decimal(value: f64, scale: u8) -> Result<Json, AppError> {
     let text = format!("{:.*}", scale as usize, value);
     let rounded = text.parse::<f64>().map_err(|_| {
-        AppError::validation(format!("decimal value {value} cannot be scaled to {scale} digits"))
+        AppError::validation(format!(
+            "decimal value {value} cannot be scaled to {scale} digits"
+        ))
     })?;
     serde_json::Number::from_f64(rounded)
         .map(Json::Number)
@@ -176,15 +178,17 @@ impl Cast for DecimalCast {
             // Numeric fields arrive as numbers (json_to_bind already
             // enforced the column type): round in place.
             Json::Number(_) => {
-                let value = wire.as_f64().ok_or_else(|| {
-                    AppError::validation("decimal cast expects a finite number")
-                })?;
+                let value = wire
+                    .as_f64()
+                    .ok_or_else(|| AppError::validation("decimal cast expects a finite number"))?;
                 round_decimal(value, self.scale)
             }
             // Text columns arrive as strings: validate and pin the scale.
             Json::String(raw) => {
                 let value = raw.trim().parse::<f64>().map_err(|_| {
-                    AppError::validation(format!("decimal cast expects a numeric string, got {raw:?}"))
+                    AppError::validation(format!(
+                        "decimal cast expects a numeric string, got {raw:?}"
+                    ))
                 })?;
                 Ok(Json::String(format!("{:.*}", self.scale as usize, value)))
             }
@@ -378,10 +382,14 @@ pub(crate) fn validate_cast_spec(spec: &str) -> Result<(), AppError> {
         return datetime_tz_or_err(rest);
     }
     if spec == "decimal" {
-        return Err(AppError::validation("decimal cast needs a scale: decimal:<n>"));
+        return Err(AppError::validation(
+            "decimal cast needs a scale: decimal:<n>",
+        ));
     }
     if spec == "enum" {
-        return Err(AppError::validation("enum cast needs variants: enum:<a,b,c>"));
+        return Err(AppError::validation(
+            "enum cast needs variants: enum:<a,b,c>",
+        ));
     }
     if BUILTIN_NAMES.contains(&spec) {
         return Ok(());
@@ -435,9 +443,8 @@ fn base64_decode(text: &str) -> Result<Vec<u8>, AppError> {
         if byte == b'=' {
             break;
         }
-        let value = sextet(byte).ok_or_else(|| {
-            AppError::validation("encrypted cast payload is not valid base64")
-        })?;
+        let value = sextet(byte)
+            .ok_or_else(|| AppError::validation("encrypted cast payload is not valid base64"))?;
         buf = (buf << 6) | value;
         bits += 6;
         if bits >= 8 {
@@ -465,9 +472,7 @@ mod tests {
             date.to_db(&Json::String("2024-01-02".into())).unwrap(),
             Json::String("2024-01-02".into())
         );
-        let feb30 = date
-            .to_db(&Json::String("2024-02-30".into()))
-            .unwrap_err();
+        let feb30 = date.to_db(&Json::String("2024-02-30".into())).unwrap_err();
         assert!(feb30.public_message.contains("valid calendar date"));
         assert!(date.to_db(&Json::String("2024-1-2".into())).is_err());
 
@@ -497,12 +502,16 @@ mod tests {
             .unwrap();
         assert_eq!(local, Json::String("2024-01-02T08:34:05+05:30".into()));
         // Malformed stored values fail closed.
-        assert!(cast.from_db(&Json::String("not-a-timestamp".into())).is_err());
+        assert!(cast
+            .from_db(&Json::String("not-a-timestamp".into()))
+            .is_err());
 
         // The bare datetime cast keeps its UTC pass-through.
         let plain = builtin("datetime");
         assert_eq!(
-            plain.from_db(&Json::String("2024-01-02T03:04:05Z".into())).unwrap(),
+            plain
+                .from_db(&Json::String("2024-01-02T03:04:05Z".into()))
+                .unwrap(),
             Json::String("2024-01-02T03:04:05Z".into())
         );
 
@@ -521,7 +530,9 @@ mod tests {
         let money = builtin("decimal:2");
         assert_eq!(
             money
-                .to_db(&Json::Number(serde_json::Number::from_f64(12.3456).unwrap()))
+                .to_db(&Json::Number(
+                    serde_json::Number::from_f64(12.3456).unwrap()
+                ))
                 .unwrap(),
             Json::Number(serde_json::Number::from_f64(12.35).unwrap())
         );
@@ -549,9 +560,7 @@ mod tests {
 
         let array = builtin("array");
         assert!(array.to_db(&Json::Array(vec![])).is_ok());
-        assert!(array
-            .to_db(&Json::Object(serde_json::Map::new()))
-            .is_err());
+        assert!(array.to_db(&Json::Object(serde_json::Map::new())).is_err());
     }
 
     #[test]
@@ -562,8 +571,7 @@ mod tests {
         let blob = sealed.as_str().expect("seal stores base64 text");
         assert_ne!(blob, "hush");
         // The payload really decodes to an AES-256-GCM envelope.
-        let envelope: Envelope =
-            serde_json::from_slice(&base64_decode(blob).unwrap()).unwrap();
+        let envelope: Envelope = serde_json::from_slice(&base64_decode(blob).unwrap()).unwrap();
         assert_eq!(envelope.alg, "AES-256-GCM");
         assert_eq!(cast.from_db(&sealed).unwrap(), Json::String("hush".into()));
 

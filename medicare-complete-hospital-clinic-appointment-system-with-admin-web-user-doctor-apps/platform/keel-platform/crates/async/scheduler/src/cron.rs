@@ -125,13 +125,7 @@ fn invalid(expr: &str, detail: String) -> AppError {
 /// One field: comma-separated items, each `*`, `n`, `lo-hi`, optionally
 /// followed by `/step` (`*/5`, `1-30/2`). Values are range-checked against
 /// the field's bounds before expansion.
-fn parse_field(
-    expr: &str,
-    label: &str,
-    spec: &str,
-    min: u8,
-    max: u8,
-) -> Result<Vec<u8>, AppError> {
+fn parse_field(expr: &str, label: &str, spec: &str, min: u8, max: u8) -> Result<Vec<u8>, AppError> {
     if spec.is_empty() {
         return Err(invalid(expr, format!("{label} field is empty")));
     }
@@ -167,19 +161,13 @@ fn parse_field(
                 let lo = parse_value(expr, label, a)?;
                 let hi = parse_value(expr, label, b)?;
                 if lo > hi {
-                    return Err(invalid(
-                        expr,
-                        format!("{label} range `{range}` descends"),
-                    ));
+                    return Err(invalid(expr, format!("{label} range `{range}` descends")));
                 }
                 (lo, hi)
             }
         };
         if lo < min || hi > max {
-            return Err(invalid(
-                expr,
-                format!("{label} value outside {min}-{max}"),
-            ));
+            return Err(invalid(expr, format!("{label} value outside {min}-{max}")));
         }
         let mut v = u16::from(lo);
         while v <= u16::from(hi) {
@@ -255,17 +243,17 @@ pub fn daily() -> String {
 
 /// `0 <hour> * * *` from `"HH:MM"` (same clock rules as the `Daily` spec).
 pub fn daily_at(hhmm: &str) -> Result<String, AppError> {
-    let (hour, minute) = hhmm.split_once(':').ok_or_else(|| {
-        AppError::validation(format!(
-            "daily_at expects `HH:MM`, found `{hhmm}`"
-        ))
-    })?;
-    let hour: u8 = hour.trim().parse().map_err(|_| {
-        AppError::validation(format!("daily_at hour `{hour}` is not a number"))
-    })?;
-    let minute: u8 = minute.trim().parse().map_err(|_| {
-        AppError::validation(format!("daily_at minute `{minute}` is not a number"))
-    })?;
+    let (hour, minute) = hhmm
+        .split_once(':')
+        .ok_or_else(|| AppError::validation(format!("daily_at expects `HH:MM`, found `{hhmm}`")))?;
+    let hour: u8 = hour
+        .trim()
+        .parse()
+        .map_err(|_| AppError::validation(format!("daily_at hour `{hour}` is not a number")))?;
+    let minute: u8 = minute
+        .trim()
+        .parse()
+        .map_err(|_| AppError::validation(format!("daily_at minute `{minute}` is not a number")))?;
     if hour > 23 || minute > 59 {
         return Err(AppError::validation(format!(
             "daily_at time `{hhmm}` out of range"
@@ -329,9 +317,7 @@ mod tests {
             vec![0, 15, 30, 45]
         );
         assert_eq!(
-            CronExpr::parse("10-30/5 0 1-31/2 * *")
-                .unwrap()
-                .minutes,
+            CronExpr::parse("10-30/5 0 1-31/2 * *").unwrap().minutes,
             vec![10, 15, 20, 25, 30]
         );
         assert_eq!(

@@ -99,12 +99,16 @@ fn router_with(prepare: impl FnOnce(&mut kelson_demo::routes::AppState)) -> axum
         "{}{EXTRA_ROUTES}",
         include_str!("../../../applications/appointments/module.toml")
     );
-    let manifest = kelson_registry::ModuleManifest::from_toml(&raw).expect("fixture manifest parses");
+    let manifest =
+        kelson_registry::ModuleManifest::from_toml(&raw).expect("fixture manifest parses");
     let graph =
         kelson_registry::PlatformGraph::compile(vec![manifest]).expect("fixture graph compiles");
 
     let router = kelson_demo::routes::router(state.clone())
-        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph))
+        .merge(kelson_demo::graph_routes::graph_router(
+            state.clone(),
+            &graph,
+        ))
         .merge(kelson_demo::auth_routes::router(state.clone()));
     let router = state
         .sessions
@@ -219,7 +223,10 @@ async fn post_with_csrf(router: &axum::Router, uri: &str, token: &str) -> Reply 
         Request::builder()
             .method(Method::POST)
             .uri(uri)
-            .header(header::COOKIE, format!("{}={token}", kelson_http::CSRF_COOKIE))
+            .header(
+                header::COOKIE,
+                format!("{}={token}", kelson_http::CSRF_COOKIE),
+            )
             .header(kelson_http::CSRF_HEADER, token)
             .body(Body::empty())
             .expect("request builds"),
@@ -408,7 +415,10 @@ async fn api_plane_responses_stay_untouched_by_the_security_headers() {
         "content-security-policy",
         "referrer-policy",
     ] {
-        assert!(reply.header(name).is_none(), "{name} must not appear on the api plane");
+        assert!(
+            reply.header(name).is_none(),
+            "{name} must not appear on the api plane"
+        );
     }
 }
 
@@ -425,7 +435,10 @@ async fn the_security_headers_stay_off_until_a_deployment_turns_them_on() {
         "content-security-policy",
         "referrer-policy",
     ] {
-        assert!(reply.header(name).is_none(), "{name} must not appear while disabled");
+        assert!(
+            reply.header(name).is_none(),
+            "{name} must not appear while disabled"
+        );
     }
 }
 
@@ -459,7 +472,10 @@ async fn the_web_plane_csrf_roundtrip_bootstraps_from_a_safe_request() {
 
     let reply = post_with_csrf(&router, "/web/submit", &token).await;
     let body = reply.text();
-    assert!(!body.contains(CSRF_DENIED), "the pair passes the guard: {body}");
+    assert!(
+        !body.contains(CSRF_DENIED),
+        "the pair passes the guard: {body}"
+    );
     assert_ne!(reply.status, StatusCode::FORBIDDEN, "{body}");
 }
 
@@ -471,7 +487,10 @@ async fn api_plane_state_changing_requests_stay_free_of_the_csrf_guard() {
     let router = router_for();
     let reply = post(&router, "/api/submit").await;
     let body = reply.text();
-    assert!(!body.contains(CSRF_DENIED), "the api plane never runs the guard: {body}");
+    assert!(
+        !body.contains(CSRF_DENIED),
+        "the api plane never runs the guard: {body}"
+    );
     assert_ne!(reply.status, StatusCode::FORBIDDEN, "{body}");
 }
 
@@ -488,7 +507,10 @@ async fn csrf_skip_paths_carry_a_declared_receiver_through() {
     });
     let reply = post(&router, "/web/submit").await;
     let body = reply.text();
-    assert!(!body.contains(CSRF_DENIED), "the skip path passes unsigned: {body}");
+    assert!(
+        !body.contains(CSRF_DENIED),
+        "the skip path passes unsigned: {body}"
+    );
     assert_ne!(reply.status, StatusCode::FORBIDDEN, "{body}");
 }
 
@@ -595,7 +617,10 @@ impl OperationHandler for StubOperation {
 }
 
 fn stub(operation: &'static str, result: Value) -> Arc<StubOperation> {
-    let mut plan = ExecutionPlan::new(OperationId::from_static(operation), ExecutionProfileKind::Read);
+    let mut plan = ExecutionPlan::new(
+        OperationId::from_static(operation),
+        ExecutionProfileKind::Read,
+    );
     // Public fixture route: the HTTP edge admits anonymous callers only
     // when the plan says authorization is not required.
     plan.authorization.required = false;
@@ -621,7 +646,10 @@ fn jsonapi_router() -> axum::Router {
         kelson_registry::PlatformGraph::compile(vec![manifest]).expect("notes graph compiles");
 
     let router = kelson_demo::routes::router(state.clone())
-        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph))
+        .merge(kelson_demo::graph_routes::graph_router(
+            state.clone(),
+            &graph,
+        ))
         .merge(kelson_demo::auth_routes::router(state.clone()));
     let router = state
         .sessions
@@ -652,18 +680,31 @@ async fn get_accept(router: &axum::Router, uri: &str, accept: &str) -> Reply {
 #[tokio::test]
 async fn jsonapi_negotiation_renders_the_compound_document() {
     let router = jsonapi_router();
-    let reply = get_accept(&router, "/notes?page=1&per_page=2", "application/vnd.api+json").await;
+    let reply = get_accept(
+        &router,
+        "/notes?page=1&per_page=2",
+        "application/vnd.api+json",
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
     assert_eq!(reply.content_type, "application/vnd.api+json");
 
     let document: Value = serde_json::from_slice(&reply.body).expect("JSON:API document parses");
-    assert!(document.get("ok").is_none(), "never the envelope: {document}");
+    assert!(
+        document.get("ok").is_none(),
+        "never the envelope: {document}"
+    );
 
-    let data = document["data"].as_array().expect("collection primary data");
+    let data = document["data"]
+        .as_array()
+        .expect("collection primary data");
     assert_eq!(data.len(), 2);
     assert_eq!(data[0]["type"], "notes");
     assert_eq!(data[0]["id"], "n-1");
-    assert_eq!(data[1]["id"], "2", "non-scalar ids lift as canonical strings");
+    assert_eq!(
+        data[1]["id"], "2",
+        "non-scalar ids lift as canonical strings"
+    );
     assert_eq!(data[0]["attributes"]["title"], "first note");
     assert!(data[0]["attributes"].get("id").is_none());
     assert!(data[0]["attributes"].get("type").is_none());
@@ -717,8 +758,8 @@ async fn jsonapi_item_documents_carry_self_links_and_strip_reserved_members() {
 #[tokio::test]
 async fn jsonapi_negotiation_absent_falls_back_to_the_default_envelope() {
     let router = jsonapi_router();
-    let expected =
-        serde_json::to_vec(&kelson_http::Envelope::ok(index_result())).expect("envelope serializes");
+    let expected = serde_json::to_vec(&kelson_http::Envelope::ok(index_result()))
+        .expect("envelope serializes");
 
     // No Accept header: today's bytes, byte for byte.
     let reply = get(&router, "/notes?page=1&per_page=2").await;
@@ -763,7 +804,10 @@ async fn jsonapi_media_type_parameters_are_refused_with_406() {
     let body: Value = serde_json::from_slice(&reply.body).expect("refusal parses");
     assert_eq!(body["ok"], false);
     assert_eq!(body["error"]["code"], "KSN_NOT_ACCEPTABLE");
-    assert_eq!(body["error"]["message"], "unsupported media type parameters");
+    assert_eq!(
+        body["error"]["message"],
+        "unsupported media type parameters"
+    );
     assert_eq!(body["error"]["retryable"], false);
     assert!(
         body.get("data").is_none(),

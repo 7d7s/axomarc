@@ -8,6 +8,7 @@
 
 #![cfg(feature = "pg-tests")]
 
+use kelson_event::OutboxStore;
 use kelson_foundation::{PrincipalId, TenantId};
 use kelson_identity::store::{CredentialStore, PrincipalStore};
 use kelson_identity::{Credential, CredentialKind, Principal, PrincipalStatus, Secret};
@@ -16,7 +17,6 @@ use kelson_postgres::{
     create_pool, run_migrations, PgBatchLedger, PgCredentialStore, PgNotificationStore, PgPool,
     PgPrincipalStore, PgSessionStore,
 };
-use kelson_event::OutboxStore;
 use kelson_session::{SessionPolicy, SessionStore};
 use time::OffsetDateTime;
 
@@ -178,18 +178,19 @@ async fn pg_session_sweep_removes_expired_rows() {
     let principals = PgPrincipalStore::new(pool.clone());
     let fresh_row = principal(&format!("pg-fresh-{}@it.test", uuid::Uuid::now_v7()));
     let fresh_principal = fresh_row.id;
-    principals.create(fresh_row).expect("fresh principal inserts");
+    principals
+        .create(fresh_row)
+        .expect("fresh principal inserts");
     let stale_row = principal(&format!("pg-stale-{}@it.test", uuid::Uuid::now_v7()));
     let stale_principal = stale_row.id;
-    principals.create(stale_row).expect("stale principal inserts");
+    principals
+        .create(stale_row)
+        .expect("stale principal inserts");
 
     let fresh = kelson_session::Session::new(fresh_principal, None, now);
     store.save(&fresh).unwrap();
-    let mut stale = kelson_session::Session::new(
-        stale_principal,
-        None,
-        now - time::Duration::seconds(600),
-    );
+    let mut stale =
+        kelson_session::Session::new(stale_principal, None, now - time::Duration::seconds(600));
     stale.last_seen = now - time::Duration::seconds(600);
     store.save(&stale).unwrap();
 
@@ -238,7 +239,10 @@ async fn pg_email_verification_timestamp_roundtrip() {
 
     let created = principals.create(principal(&email)).expect("inserts");
     let loaded = principals.by_id(created.id).unwrap().unwrap();
-    assert!(loaded.email_verified_at.is_none(), "fresh principal unverified");
+    assert!(
+        loaded.email_verified_at.is_none(),
+        "fresh principal unverified"
+    );
 
     principals.mark_email_verified(created.id).expect("marks");
     let loaded = principals.by_id(created.id).unwrap().unwrap();
@@ -249,9 +253,14 @@ async fn pg_email_verification_timestamp_roundtrip() {
     let first = loaded.email_verified_at;
 
     // Idempotent: a second call does not move the timestamp.
-    principals.mark_email_verified(created.id).expect("idempotent");
+    principals
+        .mark_email_verified(created.id)
+        .expect("idempotent");
     let loaded = principals.by_id(created.id).unwrap().unwrap();
-    assert_eq!(loaded.email_verified_at, first, "timestamp stable on re-mark");
+    assert_eq!(
+        loaded.email_verified_at, first,
+        "timestamp stable on re-mark"
+    );
 
     // Unknown principal is NOT_FOUND.
     assert!(principals.mark_email_verified(PrincipalId::new()).is_err());
@@ -280,9 +289,14 @@ async fn pg_notification_store_roundtrip() {
         )))
         .expect("noise principal inserts");
     let tenant_id = uuid::Uuid::now_v7();
-    kelson_postgres::seed_tenant(&pool, tenant_id, &format!("notif-{}", uuid::Uuid::now_v7()), "Notifications Tenant")
-        .await
-        .expect("tenant seeds");
+    kelson_postgres::seed_tenant(
+        &pool,
+        tenant_id,
+        &format!("notif-{}", uuid::Uuid::now_v7()),
+        "Notifications Tenant",
+    )
+    .await
+    .expect("tenant seeds");
     let tenant = Some(TenantId::from_uuid(tenant_id));
 
     let row_for = |principal_id: PrincipalId, patient: &str| NotificationRow {
@@ -412,7 +426,9 @@ async fn pg_batch_ledger_roundtrip() {
 
     // The terminal stamp is one-shot (finished_at IS NULL guard)...
     let finished_at = OffsetDateTime::now_utc();
-    ledger.mark_finished(record.id, finished_at).expect("stamps");
+    ledger
+        .mark_finished(record.id, finished_at)
+        .expect("stamps");
     let later = finished_at + time::Duration::seconds(5);
     ledger
         .mark_finished(record.id, later)
@@ -428,7 +444,11 @@ async fn pg_batch_ledger_roundtrip() {
     // ...and only strictly-before cutoffs age the record out.
     let past = OffsetDateTime::now_utc() - time::Duration::hours(1);
     assert_eq!(ledger.prune(past).expect("prunes"), 0, "stamp is newer");
-    assert_eq!(ledger.prune(future).expect("prunes"), 1, "finished record aged out");
+    assert_eq!(
+        ledger.prune(future).expect("prunes"),
+        1,
+        "finished record aged out"
+    );
     assert!(
         ledger.get(record.id).expect("reads").is_none(),
         "pruned records are gone"
@@ -458,12 +478,11 @@ async fn pg_savepoint_rollback_isolates_two_tests_sharing_a_table() {
             .execute(sp.conn())
             .await
             .expect("insert inside the scope");
-        let seen: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM principals WHERE email = $1")
-                .bind(&email_a)
-                .fetch_one(sp.conn())
-                .await
-                .expect("count inside the scope");
+        let seen: i64 = sqlx::query_scalar("SELECT count(*) FROM principals WHERE email = $1")
+            .bind(&email_a)
+            .fetch_one(sp.conn())
+            .await
+            .expect("count inside the scope");
         assert_eq!(seen, 1, "the body sees its own write");
         sp.rollback().await.expect("ROLLBACK TO kelson_test");
     }
@@ -472,12 +491,11 @@ async fn pg_savepoint_rollback_isolates_two_tests_sharing_a_table() {
     // and the shared table still accepts writes through its own scope.
     {
         let mut conn = pool.acquire().await.expect("connection B");
-        let residue: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM principals WHERE email = $1")
-                .bind(&email_a)
-                .fetch_one(&mut *conn)
-                .await
-                .expect("count after A rolled back");
+        let residue: i64 = sqlx::query_scalar("SELECT count(*) FROM principals WHERE email = $1")
+            .bind(&email_a)
+            .fetch_one(&mut *conn)
+            .await
+            .expect("count after A rolled back");
         assert_eq!(residue, 0, "body A left no residue behind");
 
         let mut sp = kelson_postgres::test_support::Savepoint::begin(&mut conn)
@@ -494,11 +512,12 @@ async fn pg_savepoint_rollback_isolates_two_tests_sharing_a_table() {
 
     // Final state: the table is exactly as both bodies found it.
     let mut conn = pool.acquire().await.expect("connection C");
-    let total: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM principals WHERE email LIKE 'savepoint-%@it.test'")
-            .fetch_one(&mut *conn)
-            .await
-            .expect("final count");
+    let total: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM principals WHERE email LIKE 'savepoint-%@it.test'",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .expect("final count");
     assert_eq!(total, 0, "no savepoint row survives its scope");
 }
 
@@ -634,8 +653,7 @@ async fn pg_outbox_rollback_suppresses_the_event_and_a_crash_redelivers_it() {
         .find(|e| e.id == committed)
         .expect("the committed event is claimed");
     assert_eq!(
-        event.idempotency_key.0,
-        key,
+        event.idempotency_key.0, key,
         "the idempotency key is stable across the redelivery"
     );
     assert!(!event.published, "an un-marked event is still unpublished");
@@ -647,8 +665,7 @@ async fn pg_outbox_rollback_suppresses_the_event_and_a_crash_redelivers_it() {
         .find(|e| e.id == committed)
         .expect("the event is redelivered after the crash");
     assert_eq!(
-        redelivered.idempotency_key.0,
-        key,
+        redelivered.idempotency_key.0, key,
         "the redelivery carries the same key, so the consumer can dedupe"
     );
 
@@ -717,8 +734,7 @@ async fn mysql_outbox_rollback_suppresses_the_event_and_a_crash_redelivers_it() 
         .find(|e| e.id == committed)
         .expect("the committed event is claimed");
     assert_eq!(
-        event.idempotency_key.0,
-        key,
+        event.idempotency_key.0, key,
         "the idempotency key is stable across the redelivery"
     );
 
@@ -728,8 +744,7 @@ async fn mysql_outbox_rollback_suppresses_the_event_and_a_crash_redelivers_it() 
         .find(|e| e.id == committed)
         .expect("the event is redelivered after the crash");
     assert_eq!(
-        redelivered.idempotency_key.0,
-        key,
+        redelivered.idempotency_key.0, key,
         "the redelivery carries the same key, so the consumer can dedupe"
     );
 
@@ -737,7 +752,8 @@ async fn mysql_outbox_rollback_suppresses_the_event_and_a_crash_redelivers_it() 
         .bind(committed.as_bytes().to_vec())
         .execute(&pool)
         .await;
-}#[tokio::test]
+}
+#[tokio::test]
 async fn mysql_outbox_store_claim_and_mark_published() {
     let pool = match mysql_pool().await {
         Some(p) => p,
@@ -821,7 +837,9 @@ async fn mysql_pool() -> Option<kelson_mysql::MySqlPool> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_principal_and_credential_roundtrip() {
-    let Some(pool) = mysql_pool().await else { return };
+    let Some(pool) = mysql_pool().await else {
+        return;
+    };
     let principals = kelson_mysql::MySqlPrincipalStore::new(pool.clone());
     let credentials = kelson_mysql::MySqlCredentialStore::new(pool.clone());
     let email = format!("mysql-{}@it.test", uuid::Uuid::now_v7());
@@ -879,7 +897,9 @@ async fn mysql_principal_and_credential_roundtrip() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_session_store_lifecycle() {
-    let Some(pool) = mysql_pool().await else { return };
+    let Some(pool) = mysql_pool().await else {
+        return;
+    };
     let store = kelson_mysql::MySqlSessionStore::new(pool.clone());
     let manager = kelson_session::SessionManager::new(
         std::sync::Arc::new(store),
@@ -923,7 +943,9 @@ async fn mysql_session_store_lifecycle() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_session_sweep_removes_expired_rows() {
-    let Some(pool) = mysql_pool().await else { return };
+    let Some(pool) = mysql_pool().await else {
+        return;
+    };
     let store = kelson_mysql::MySqlSessionStore::new(pool.clone());
     let now = OffsetDateTime::now_utc();
     let policy = SessionPolicy {
@@ -935,18 +957,19 @@ async fn mysql_session_sweep_removes_expired_rows() {
     let principals = kelson_mysql::MySqlPrincipalStore::new(pool.clone());
     let fresh_row = principal(&format!("mysql-fresh-{}@it.test", uuid::Uuid::now_v7()));
     let fresh_principal = fresh_row.id;
-    principals.create(fresh_row).expect("fresh principal inserts");
+    principals
+        .create(fresh_row)
+        .expect("fresh principal inserts");
     let stale_row = principal(&format!("mysql-stale-{}@it.test", uuid::Uuid::now_v7()));
     let stale_principal = stale_row.id;
-    principals.create(stale_row).expect("stale principal inserts");
+    principals
+        .create(stale_row)
+        .expect("stale principal inserts");
 
     let fresh = kelson_session::Session::new(fresh_principal, None, now);
     store.save(&fresh).unwrap();
-    let mut stale = kelson_session::Session::new(
-        stale_principal,
-        None,
-        now - time::Duration::seconds(600),
-    );
+    let mut stale =
+        kelson_session::Session::new(stale_principal, None, now - time::Duration::seconds(600));
     stale.last_seen = now - time::Duration::seconds(600);
     store.save(&stale).unwrap();
 
@@ -958,7 +981,9 @@ async fn mysql_session_sweep_removes_expired_rows() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_token_store_issue_verify_consume() {
-    let Some(pool) = mysql_pool().await else { return };
+    let Some(pool) = mysql_pool().await else {
+        return;
+    };
     let service = kelson_tokens::TokenService::new(std::sync::Arc::new(
         kelson_mysql::MySqlTokenStore::new(pool.clone()),
     ));
@@ -999,7 +1024,9 @@ async fn mysql_token_store_issue_verify_consume() {
 /// under it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_every_connection_is_pinned_to_utc() {
-    let Some(pool) = mysql_pool().await else { return };
+    let Some(pool) = mysql_pool().await else {
+        return;
+    };
 
     let tz: String = sqlx::query_scalar("SELECT @@session.time_zone")
         .fetch_one(&pool)
@@ -1025,7 +1052,9 @@ async fn mysql_every_connection_is_pinned_to_utc() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_server_side_timestamps_are_utc() {
-    let Some(pool) = mysql_pool().await else { return };
+    let Some(pool) = mysql_pool().await else {
+        return;
+    };
     let principals = kelson_mysql::MySqlPrincipalStore::new(pool.clone());
     let email = format!("mysql-utc-{}@it.test", uuid::Uuid::now_v7());
 
@@ -1068,13 +1097,18 @@ async fn mysql_server_side_timestamps_are_utc() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_email_verification_timestamp_roundtrip() {
-    let Some(pool) = mysql_pool().await else { return };
+    let Some(pool) = mysql_pool().await else {
+        return;
+    };
     let principals = kelson_mysql::MySqlPrincipalStore::new(pool.clone());
     let email = format!("mysql-verify-{}@it.test", uuid::Uuid::now_v7());
 
     let created = principals.create(principal(&email)).expect("inserts");
     let loaded = principals.by_id(created.id).unwrap().unwrap();
-    assert!(loaded.email_verified_at.is_none(), "fresh principal unverified");
+    assert!(
+        loaded.email_verified_at.is_none(),
+        "fresh principal unverified"
+    );
 
     principals.mark_email_verified(created.id).expect("marks");
     let loaded = principals.by_id(created.id).unwrap().unwrap();
@@ -1085,9 +1119,14 @@ async fn mysql_email_verification_timestamp_roundtrip() {
     let first = loaded.email_verified_at;
 
     // Idempotent: a second call does not move the timestamp.
-    principals.mark_email_verified(created.id).expect("idempotent");
+    principals
+        .mark_email_verified(created.id)
+        .expect("idempotent");
     let loaded = principals.by_id(created.id).unwrap().unwrap();
-    assert_eq!(loaded.email_verified_at, first, "timestamp stable on re-mark");
+    assert_eq!(
+        loaded.email_verified_at, first,
+        "timestamp stable on re-mark"
+    );
 
     // Unknown principal is NOT_FOUND.
     assert!(principals.mark_email_verified(PrincipalId::new()).is_err());
@@ -1098,7 +1137,9 @@ async fn mysql_email_verification_timestamp_roundtrip() {
 /// idempotent principal-only mark-read on MySQL.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_notification_store_roundtrip() {
-    let Some(pool) = mysql_pool().await else { return };
+    let Some(pool) = mysql_pool().await else {
+        return;
+    };
     let principals = kelson_mysql::MySqlPrincipalStore::new(pool.clone());
     let notifications = kelson_mysql::MySqlNotificationStore::new(pool.clone());
 
@@ -1201,7 +1242,9 @@ async fn mysql_notification_store_roundtrip() {
 async fn mysql_batch_ledger_roundtrip() {
     use kelson_jobs::{BatchLedger, BatchRecord};
 
-    let Some(pool) = mysql_pool().await else { return };
+    let Some(pool) = mysql_pool().await else {
+        return;
+    };
     let ledger = kelson_mysql::MySqlBatchLedger::new(pool.clone());
 
     let record = BatchRecord {
@@ -1249,7 +1292,9 @@ async fn mysql_batch_ledger_roundtrip() {
 
     // The terminal stamp is one-shot (finished_at IS NULL guard)...
     let finished_at = OffsetDateTime::now_utc();
-    ledger.mark_finished(record.id, finished_at).expect("stamps");
+    ledger
+        .mark_finished(record.id, finished_at)
+        .expect("stamps");
     let later = finished_at + time::Duration::seconds(5);
     ledger
         .mark_finished(record.id, later)
@@ -1264,7 +1309,11 @@ async fn mysql_batch_ledger_roundtrip() {
     // ...and only strictly-before cutoffs age the record out.
     let past = OffsetDateTime::now_utc() - time::Duration::hours(1);
     assert_eq!(ledger.prune(past).expect("prunes"), 0, "stamp is newer");
-    assert_eq!(ledger.prune(future).expect("prunes"), 1, "finished record aged out");
+    assert_eq!(
+        ledger.prune(future).expect("prunes"),
+        1,
+        "finished record aged out"
+    );
     assert!(
         ledger.get(record.id).expect("reads").is_none(),
         "pruned records are gone"
@@ -1277,7 +1326,9 @@ async fn mysql_batch_ledger_roundtrip() {
 /// scopes the same way through `BEGIN`/`ROLLBACK` (the port's own tx flow).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_transaction_rollback_isolates_two_tests_sharing_a_table() {
-    let Some(pool) = mysql_pool().await else { return };
+    let Some(pool) = mysql_pool().await else {
+        return;
+    };
     let email_a = format!("mysql-savepoint-a-{}@it.test", uuid::Uuid::now_v7());
     let email_b = format!("mysql-savepoint-b-{}@it.test", uuid::Uuid::now_v7());
 
@@ -1290,12 +1341,11 @@ async fn mysql_transaction_rollback_isolates_two_tests_sharing_a_table() {
             .execute(&mut *tx)
             .await
             .expect("insert inside the scope");
-        let seen: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM principals WHERE email = ?")
-                .bind(&email_a)
-                .fetch_one(&mut *tx)
-                .await
-                .expect("count inside the scope");
+        let seen: i64 = sqlx::query_scalar("SELECT count(*) FROM principals WHERE email = ?")
+            .bind(&email_a)
+            .fetch_one(&mut *tx)
+            .await
+            .expect("count inside the scope");
         assert_eq!(seen, 1, "the body sees its own write");
         tx.rollback().await.expect("ROLLBACK");
     }
@@ -1304,12 +1354,11 @@ async fn mysql_transaction_rollback_isolates_two_tests_sharing_a_table() {
     // and the shared table still accepts writes through its own scope.
     {
         let mut conn = pool.acquire().await.expect("connection B");
-        let residue: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM principals WHERE email = ?")
-                .bind(&email_a)
-                .fetch_one(&mut *conn)
-                .await
-                .expect("count after A rolled back");
+        let residue: i64 = sqlx::query_scalar("SELECT count(*) FROM principals WHERE email = ?")
+            .bind(&email_a)
+            .fetch_one(&mut *conn)
+            .await
+            .expect("count after A rolled back");
         assert_eq!(residue, 0, "body A left no residue behind");
         drop(conn);
 
@@ -1347,7 +1396,9 @@ async fn mysql_transaction_rollback_isolates_two_tests_sharing_a_table() {
 /// it. DDL inside the scope is NOT rolled back on MySQL — see the module doc.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_savepoint_rollback_isolates_two_tests_sharing_a_table() {
-    let Some(pool) = mysql_pool().await else { return };
+    let Some(pool) = mysql_pool().await else {
+        return;
+    };
     let email_a = format!("mysql-sp-a-{}@it.test", uuid::Uuid::now_v7());
     let email_b = format!("mysql-sp-b-{}@it.test", uuid::Uuid::now_v7());
 
@@ -1397,12 +1448,11 @@ async fn mysql_savepoint_rollback_isolates_two_tests_sharing_a_table() {
 
     // Final state: the table is exactly as both bodies found it.
     let mut conn = pool.acquire().await.expect("connection C");
-    let total: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM principals WHERE email LIKE 'mysql-sp-%@it.test'",
-    )
-    .fetch_one(&mut *conn)
-    .await
-    .expect("final count");
+    let total: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM principals WHERE email LIKE 'mysql-sp-%@it.test'")
+            .fetch_one(&mut *conn)
+            .await
+            .expect("final count");
     assert_eq!(total, 0, "no savepoint row survives its scope");
 }
 
@@ -1420,7 +1470,9 @@ async fn mysql_a_traced_job_row_carries_the_request_correlation() {
     let _guard = JOBS_QUEUE_LOCK.lock().await;
     use kelson_jobs::{build_from_def, JobDef, JobStore};
 
-    let Some(pool) = mysql_pool().await else { return };
+    let Some(pool) = mysql_pool().await else {
+        return;
+    };
     // The queue is shared and PERSISTS across runs: without this, the claim
     // could hand back a row an earlier run left behind and the assertion
     // below would be about someone else's job.
@@ -1432,7 +1484,11 @@ async fn mysql_a_traced_job_row_carries_the_request_correlation() {
 
     let correlation = kelson_foundation::CorrelationId::new();
     let now = OffsetDateTime::now_utc();
-    let mut job = build_from_def(&JobDef::new("mysql.trace.probe"), serde_json::json!({}), now);
+    let mut job = build_from_def(
+        &JobDef::new("mysql.trace.probe"),
+        serde_json::json!({}),
+        now,
+    );
     job.available_at = now - time::Duration::seconds(60);
     let job = job.with_origin(Some(correlation), Some(correlation));
     let id = store.enqueue(job).expect("the job enqueues");
@@ -1450,13 +1506,14 @@ async fn mysql_a_traced_job_row_carries_the_request_correlation() {
     assert_eq!(claimed.causation_id, Some(correlation));
 }
 
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_job_store_claim_completes_and_fails_with_skip_locked() {
     let _guard = JOBS_QUEUE_LOCK.lock().await;
     use kelson_jobs::{JobStatus, JobStore, JobStoreAdmin};
 
-    let Some(pool) = mysql_pool().await else { return };
+    let Some(pool) = mysql_pool().await else {
+        return;
+    };
     let store = kelson_mysql::MySqlJobStore::new(pool.clone());
 
     // `claim` takes the globally first pending row (`ORDER BY priority DESC,
@@ -1503,8 +1560,16 @@ async fn mysql_job_store_claim_completes_and_fails_with_skip_locked() {
         let pool = pool.clone();
         async move { kelson_mysql::MySqlJobStore::new(pool).claim("mysql-worker-b") }
     });
-    let first = claim_a.await.expect("join a").expect("claim a").expect("row for a");
-    let second = claim_b.await.expect("join b").expect("claim b").expect("row for b");
+    let first = claim_a
+        .await
+        .expect("join a")
+        .expect("claim a")
+        .expect("row for a");
+    let second = claim_b
+        .await
+        .expect("join b")
+        .expect("claim b")
+        .expect("row for b");
     assert_ne!(first.id, second.id, "skip-locked never double-claims");
     assert!(
         (first.id == id_a && second.id == id_b) || (first.id == id_b && second.id == id_a),
@@ -1535,8 +1600,14 @@ async fn mysql_job_store_claim_completes_and_fails_with_skip_locked() {
 
     // Admin surface: both rows are listed for the operator.
     let listed = store.list(None, 100).expect("lists");
-    assert!(listed.iter().any(|j| j.id == first.id), "succeeded row lists");
-    assert!(listed.iter().any(|j| j.id == second.id), "requeued row lists");
+    assert!(
+        listed.iter().any(|j| j.id == first.id),
+        "succeeded row lists"
+    );
+    assert!(
+        listed.iter().any(|j| j.id == second.id),
+        "requeued row lists"
+    );
 }
 
 /// P0 runtime-safety acceptance (queue crash recovery, MySQL fabric).
@@ -1553,7 +1624,9 @@ async fn mysql_job_store_recovers_orphaned_running_job_after_worker_crash() {
     let _guard = JOBS_QUEUE_LOCK.lock().await;
     use kelson_jobs::{build_from_def, JobDef, JobStatus, JobStore, JobStoreAdmin};
 
-    let Some(pool) = mysql_pool().await else { return };
+    let Some(pool) = mysql_pool().await else {
+        return;
+    };
     let store = kelson_mysql::MySqlJobStore::new(pool.clone());
 
     sqlx::query("DELETE FROM jobs_queue WHERE status IN ('pending', 'running')")
@@ -1653,7 +1726,9 @@ async fn mysql_job_store_fences_a_deferred_job_reclaimed_at_the_same_epoch() {
     let _guard = JOBS_QUEUE_LOCK.lock().await;
     use kelson_jobs::{build_from_def, JobDef, JobStatus, JobStore, JobStoreAdmin};
 
-    let Some(pool) = mysql_pool().await else { return };
+    let Some(pool) = mysql_pool().await else {
+        return;
+    };
     let store = kelson_mysql::MySqlJobStore::new(pool.clone());
 
     sqlx::query("DELETE FROM jobs_queue WHERE status IN ('pending', 'running')")
@@ -1685,12 +1760,22 @@ async fn mysql_job_store_fences_a_deferred_job_reclaimed_at_the_same_epoch() {
         )
         .expect("defer");
     let deferred = store.get(id).expect("reads").expect("row");
-    assert_eq!(deferred.status, JobStatus::Pending, "defer returns it to pending");
+    assert_eq!(
+        deferred.status,
+        JobStatus::Pending,
+        "defer returns it to pending"
+    );
     assert_eq!(deferred.attempt, 0, "the attempt is given back");
-    assert!(deferred.claimed_by.is_none(), "the abandoned claim is disowned");
+    assert!(
+        deferred.claimed_by.is_none(),
+        "the abandoned claim is disowned"
+    );
 
     // Worker B claims it — and lands on the SAME epoch A held.
-    let reclaimed = store.claim("mysql-worker-B").expect("reclaim").expect("row");
+    let reclaimed = store
+        .claim("mysql-worker-B")
+        .expect("reclaim")
+        .expect("row");
     assert_eq!(reclaimed.id, id);
     assert_eq!(reclaimed.attempt, 1, "the deferred attempt was given back");
     assert_eq!(reclaimed.claimed_by.as_deref(), Some("mysql-worker-B"));
@@ -1726,7 +1811,9 @@ async fn mysql_job_store_dead_letters_an_exhausted_orphan_claim() {
     let _guard = JOBS_QUEUE_LOCK.lock().await;
     use kelson_jobs::{build_from_def, JobDef, JobStatus, JobStore, JobStoreAdmin};
 
-    let Some(pool) = mysql_pool().await else { return };
+    let Some(pool) = mysql_pool().await else {
+        return;
+    };
     let store = kelson_mysql::MySqlJobStore::new(pool.clone());
 
     sqlx::query("DELETE FROM jobs_queue WHERE status IN ('pending', 'running')")
@@ -1789,7 +1876,9 @@ async fn mysql_job_store_tenant_scoped_queue_is_usable_and_isolated() {
     let _guard = JOBS_QUEUE_LOCK.lock().await;
     use kelson_jobs::{build_from_def, JobDef, JobStatus, JobStoreAdmin, TenantJobStore};
 
-    let Some(pool) = mysql_pool().await else { return };
+    let Some(pool) = mysql_pool().await else {
+        return;
+    };
     let store = kelson_mysql::MySqlJobStore::new(pool.clone());
     let tenant_a = TenantId::from_uuid(uuid::Uuid::now_v7());
     let tenant_b = TenantId::from_uuid(uuid::Uuid::now_v7());

@@ -18,13 +18,10 @@
 //! `WasmHost::prepare` refuses the load with `WasmError::Drift`.
 use std::sync::Arc;
 
-
-
-use kelson_oauth2_contract::*;
 use kelson_context::ExecutionContext;
-use kelson_foundation::{AppError, ExecutionProfileKind, OperationId, PrincipalId, TenantId};
 use kelson_execution::{BoxFuture, ExecutionPlan, ExecutionUnit, MutationRecord, OperationHandler};
-
+use kelson_foundation::{AppError, ExecutionProfileKind, OperationId, PrincipalId, TenantId};
+use kelson_oauth2_contract::*;
 
 use kelson_tokens::{TokenPurpose, TokenService};
 use serde::{Deserialize, Serialize};
@@ -74,7 +71,10 @@ fn split_scopes(raw: &str) -> Vec<String> {
 }
 
 fn authenticate_client(store: &OauthClientStore, input: &Value) -> Result<OauthClient, AppError> {
-    store.authenticate(&text_field(input, "client_id"), &text_field(input, "client_secret"))
+    store.authenticate(
+        &text_field(input, "client_id"),
+        &text_field(input, "client_secret"),
+    )
 }
 
 /// PAT labels carry `tenant:<uuid>`; the bearer resolver reads the same
@@ -138,9 +138,9 @@ fn claims_label<T: Serialize>(claims: &T) -> Result<String, AppError> {
 }
 
 fn parse_claims<T: serde::de::DeserializeOwned>(label: Option<&str>) -> Result<T, AppError> {
-    let raw = label.filter(|raw| !raw.is_empty()).ok_or_else(|| {
-        AppError::denied("token is not valid")
-    })?;
+    let raw = label
+        .filter(|raw| !raw.is_empty())
+        .ok_or_else(|| AppError::denied("token is not valid"))?;
     serde_json::from_str(raw).map_err(|_| AppError::denied("token is not valid"))
 }
 
@@ -209,9 +209,7 @@ impl OperationHandler for AuthorizeHandler {
                 ));
             }
             if text_field(&input, "code_challenge_method") != "S256" {
-                return Err(AppError::validation(
-                    "code_challenge_method must be S256",
-                ));
+                return Err(AppError::validation("code_challenge_method must be S256"));
             }
             // Requested scopes narrow the registered set; omitting the
             // parameter grants the full registered scope (RFC defaulting).
@@ -401,9 +399,7 @@ impl TokenHandler {
         // Rotation: consume kills the presented token; a fresh pair comes
         // back. Client binding is checked after consumption so a stolen
         // token is dead either way (fail closed).
-        let consumed = self
-            .tokens
-            .consume(TokenPurpose::OauthRefresh, &refresh)?;
+        let consumed = self.tokens.consume(TokenPurpose::OauthRefresh, &refresh)?;
         let claims: RefreshClaims = parse_claims(consumed.label.as_deref())?;
         if claims.client_id != client.client_id {
             return Err(AppError::denied(
@@ -529,9 +525,11 @@ impl OperationHandler for RevokeHandler {
             let tenant = ctx.tenant.as_ref().map(|t| t.id);
             let hint = text_field(&input, "token_type_hint");
             let revoked = if hint == "refresh_token" {
-                self.revoke_refresh(&client.client_id, &token)? || self.revoke_access(tenant, &token)?
+                self.revoke_refresh(&client.client_id, &token)?
+                    || self.revoke_access(tenant, &token)?
             } else {
-                self.revoke_access(tenant, &token)? || self.revoke_refresh(&client.client_id, &token)?
+                self.revoke_access(tenant, &token)?
+                    || self.revoke_refresh(&client.client_id, &token)?
             };
             if revoked {
                 // A real transition hit the token store. The presented token

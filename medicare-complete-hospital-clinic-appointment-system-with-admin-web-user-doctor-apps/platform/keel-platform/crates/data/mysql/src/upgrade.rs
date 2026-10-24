@@ -135,7 +135,10 @@ where
 }
 
 /// The schema's state against the framework's requirement.
-pub async fn schema_state<'a, A>(acquire: A, root: &std::path::Path) -> Result<SchemaState, AppError>
+pub async fn schema_state<'a, A>(
+    acquire: A,
+    root: &std::path::Path,
+) -> Result<SchemaState, AppError>
 where
     A: sqlx::Acquire<'a, Database = sqlx::MySql>,
     A::Connection: std::ops::DerefMut<Target = sqlx::MySqlConnection>,
@@ -267,18 +270,23 @@ async fn apply_pair(
         if let Some((table, rest)) = guarded::alter_target(statement) {
             let key = online::primary_key_of(conn, &table).await?;
             let change = online::OnlineChange::new(&table, &rest, &key);
-            online::apply_online(&mut *conn, &change).await.map_err(|e| {
-                AppError::persistence(format!(
-                    "{migration}: step {index} (the online change on {table}) failed: {e}"
-                ))
-            })?;
+            online::apply_online(&mut *conn, &change)
+                .await
+                .map_err(|e| {
+                    AppError::persistence(format!(
+                        "{migration}: step {index} (the online change on {table}) failed: {e}"
+                    ))
+                })?;
         } else {
-            sqlx::raw_sql(statement).execute(&mut *conn).await.map_err(|e| {
-                AppError::persistence(format!(
-                    "{migration}: step {index} failed: {e} ({})",
-                    guarded::NONTRANSACTIONAL_NOTE
-                ))
-            })?;
+            sqlx::raw_sql(statement)
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| {
+                    AppError::persistence(format!(
+                        "{migration}: step {index} failed: {e} ({})",
+                        guarded::NONTRANSACTIONAL_NOTE
+                    ))
+                })?;
         }
 
         guarded::record_step(conn, migration, index, &digest).await?;
@@ -301,11 +309,21 @@ mod tests {
 
     #[test]
     fn the_version_is_a_digest_of_the_applied_set() {
-        let a = vec!["20260101000000_a".to_string(), "20260102000000_b".to_string()];
-        let b = vec!["20260102000000_b".to_string(), "20260101000000_a".to_string()];
+        let a = vec![
+            "20260101000000_a".to_string(),
+            "20260102000000_b".to_string(),
+        ];
+        let b = vec![
+            "20260102000000_b".to_string(),
+            "20260101000000_a".to_string(),
+        ];
         assert_eq!(version_of(&a), version_of(&b), "the order does not matter");
         let c = vec!["20260101000000_a".to_string()];
-        assert_ne!(version_of(&a), version_of(&c), "a different set is a different version");
+        assert_ne!(
+            version_of(&a),
+            version_of(&c),
+            "a different set is a different version"
+        );
     }
 
     #[test]

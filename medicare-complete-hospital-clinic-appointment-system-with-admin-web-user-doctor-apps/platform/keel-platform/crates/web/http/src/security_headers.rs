@@ -167,7 +167,10 @@ mod tests {
     fn enabled_emits_the_full_documented_baseline() {
         let mut res = Response::new(Body::empty());
         baseline().apply(&mut res);
-        assert_eq!(get(res.headers(), "x-content-type-options"), Some("nosniff"));
+        assert_eq!(
+            get(res.headers(), "x-content-type-options"),
+            Some("nosniff")
+        );
         assert_eq!(
             get(res.headers(), "strict-transport-security"),
             Some("max-age=31536000")
@@ -217,10 +220,7 @@ mod tests {
         let b = generate_nonce();
         assert_ne!(a, b, "two nonces must differ");
         assert_eq!(a.len(), 32, "16 random bytes as hex: {a}");
-        assert!(
-            a.chars().all(|c| c.is_ascii_hexdigit()),
-            "hex only: {a}"
-        );
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()), "hex only: {a}");
     }
 
     /// The middleware hands the nonce to the route (request extensions) and
@@ -258,9 +258,12 @@ mod tests {
         let csp = get(res.headers(), "content-security-policy")
             .expect("the CSP header is stamped")
             .to_string();
-        let body: serde_json::Value =
-            serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap())
-                .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
         let nonce = body["nonce"].as_str().unwrap();
         assert_eq!(
             csp,
@@ -297,7 +300,10 @@ mod tests {
         assert!(get(res.headers(), "strict-transport-security").is_none());
         assert!(get(res.headers(), "content-security-policy").is_none());
         assert!(get(res.headers(), "referrer-policy").is_none());
-        assert_eq!(get(res.headers(), "x-content-type-options"), Some("nosniff"));
+        assert_eq!(
+            get(res.headers(), "x-content-type-options"),
+            Some("nosniff")
+        );
     }
 
     #[test]
@@ -313,7 +319,10 @@ mod tests {
             Some("default-src 'self' https://strict.example"),
             "the handler's CSP is authoritative; the middleware only fills gaps"
         );
-        assert_eq!(get(res.headers(), "x-content-type-options"), Some("nosniff"));
+        assert_eq!(
+            get(res.headers(), "x-content-type-options"),
+            Some("nosniff")
+        );
     }
 
     #[test]
@@ -329,7 +338,10 @@ mod tests {
             "a value that cannot be a header value is skipped fail-closed"
         );
         assert!(get(res.headers(), "x-injected").is_none());
-        assert_eq!(get(res.headers(), "x-content-type-options"), Some("nosniff"));
+        assert_eq!(
+            get(res.headers(), "x-content-type-options"),
+            Some("nosniff")
+        );
     }
 
     #[tokio::test]
@@ -350,7 +362,10 @@ mod tests {
             .await
             .expect("request serves");
         assert_eq!(res.status(), axum::http::StatusCode::OK);
-        assert_eq!(get(res.headers(), "x-content-type-options"), Some("nosniff"));
+        assert_eq!(
+            get(res.headers(), "x-content-type-options"),
+            Some("nosniff")
+        );
         assert_eq!(
             get(res.headers(), "strict-transport-security"),
             Some("max-age=31536000")

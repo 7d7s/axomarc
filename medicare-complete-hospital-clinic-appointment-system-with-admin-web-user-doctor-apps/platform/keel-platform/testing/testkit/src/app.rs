@@ -137,17 +137,18 @@ impl TestApp {
 
     /// The fake queue (wiring hint when unwired).
     pub fn queue(&self) -> &Arc<crate::fakes::QueueFake> {
-        self.queue.as_ref().unwrap_or_else(|| {
-            panic!("no queue fake wired (call TestApp::with_fake_queue)")
-        })
+        self.queue
+            .as_ref()
+            .unwrap_or_else(|| panic!("no queue fake wired (call TestApp::with_fake_queue)"))
     }
 
     /// Wave 7 P3: register a schedule item into the fake scheduler (before
     /// the first `run_due_schedules` tick).
     pub fn schedule(&mut self, item: ScheduleItem) -> Result<(), AppError> {
-        let registry = self.schedules.as_mut().unwrap_or_else(|| {
-            panic!("no scheduler wired (call TestApp::with_fake_scheduler)")
-        });
+        let registry = self
+            .schedules
+            .as_mut()
+            .unwrap_or_else(|| panic!("no scheduler wired (call TestApp::with_fake_scheduler)"));
         let registry = Arc::get_mut(registry)
             .expect("schedule registry is uniquely owned before the first tick");
         registry.register(item)
@@ -174,7 +175,8 @@ impl TestApp {
             .as_ref()
             .map(|clock| clock.now())
             .unwrap_or_else(OffsetDateTime::now_utc);
-        let runner = SchedulerRunner::with_state(registry, std::mem::take(&mut self.schedule_state));
+        let runner =
+            SchedulerRunner::with_state(registry, std::mem::take(&mut self.schedule_state));
         let fired = runner.tick(now, |item| {
             let mut def = JobDef::new(item.operation.clone());
             def.max_attempts = 1;
@@ -520,7 +522,10 @@ impl TestResponse {
     /// a field the view model does not declare cannot be asserted at all,
     /// and a view that received the wrong shape fails here rather than
     /// quietly in a template.
-    pub fn assert_view_model<M: kelson_views::ViewModel + DeserializeOwned>(self, key: &str) -> Self {
+    pub fn assert_view_model<M: kelson_views::ViewModel + DeserializeOwned>(
+        self,
+        key: &str,
+    ) -> Self {
         let view = self.view.as_ref().unwrap_or_else(|| {
             panic!(
                 "no view rendered for this response; body: {}",
@@ -570,12 +575,9 @@ impl TestResponse {
                 self.body_text()
             )
         });
-        engine.lint(&view.view).unwrap_or_else(|e| {
-            panic!(
-                "the view {:?} does not lint clean: {e}",
-                view.view
-            )
-        });
+        engine
+            .lint(&view.view)
+            .unwrap_or_else(|e| panic!("the view {:?} does not lint clean: {e}", view.view));
         self
     }
 
@@ -695,7 +697,11 @@ impl TestResponse {
     pub fn assert_database_count(self, model: &ModelDef, expected: usize) -> Self {
         let db = self.db_probe(model);
         let count = db_rows(db, model, &[]).len();
-        assert_eq!(count, expected, "database count mismatch for {}", model.table);
+        assert_eq!(
+            count, expected,
+            "database count mismatch for {}",
+            model.table
+        );
         self
     }
 
@@ -816,7 +822,11 @@ fn load_session(mw: &SessionMiddleware, cookie: &str) -> Option<Session> {
 /// Resolve the response's session: a `kelson_session` Set-Cookie on the
 /// RESPONSE is authoritative (login issues, logout clears); otherwise the
 /// request's own cookie carries an existing session forward.
-fn resolve_session(mw: &SessionMiddleware, request: &HeaderMap, response: &HeaderMap) -> Option<Session> {
+fn resolve_session(
+    mw: &SessionMiddleware,
+    request: &HeaderMap,
+    response: &HeaderMap,
+) -> Option<Session> {
     if let Some(cookie) = cookie_value(response, SESSION_COOKIE) {
         return load_session(mw, &cookie);
     }
@@ -856,7 +866,11 @@ fn json_path<'a>(value: &'a serde_json::Value, path: &str) -> Option<&'a serde_j
 /// Query the probe's store under its tenant: every predicate becomes an
 /// equality filter (AND), unbounded list, LIVE rows only (soft deletes
 /// excluded by the store).
-fn db_rows(db: &DbProbe, model: &ModelDef, predicates: &[(&str, serde_json::Value)]) -> Vec<Record> {
+fn db_rows(
+    db: &DbProbe,
+    model: &ModelDef,
+    predicates: &[(&str, serde_json::Value)],
+) -> Vec<Record> {
     let filters: Vec<FieldFilter> = predicates
         .iter()
         .map(|(field, value)| FieldFilter::eq(*field, value.clone()))
@@ -1008,9 +1022,7 @@ mod tests {
             )
             .route(
                 "/json",
-                get(|| async {
-                    axum::Json(json!({ "a": { "b": 42 }, "items": [10, 20] }))
-                }),
+                get(|| async { axum::Json(json!({ "a": { "b": 42 }, "items": [10, 20] })) }),
             )
             .route(
                 "/view",
@@ -1059,9 +1071,7 @@ mod tests {
                             .expect("utf8 actor");
                         let principal =
                             PrincipalId::from_uuid(uuid::Uuid::parse_str(actor).expect("uuid"));
-                        let mut session = manager
-                            .start(principal, None, mw.now())
-                            .unwrap();
+                        let mut session = manager.start(principal, None, mw.now()).unwrap();
                         session.data.insert("cart".into(), json!("7"));
                         manager.store().save(&session).unwrap();
                         let cookie = mw.issue_cookie(&session).unwrap();
@@ -1123,14 +1133,21 @@ mod tests {
     #[tokio::test]
     async fn redirect_asserts_exact_and_prefix() {
         let app = harness();
-        app.get("/redirect").send().await.assert_redirect("/dashboard").assert_redirect("/dash");
+        app.get("/redirect")
+            .send()
+            .await
+            .assert_redirect("/dashboard")
+            .assert_redirect("/dash");
     }
 
     #[tokio::test]
     #[should_panic(expected = "redirect mismatch")]
     async fn redirect_assert_panics_on_other_location() {
         let app = harness();
-        app.get("/redirect").send().await.assert_redirect("/elsewhere");
+        app.get("/redirect")
+            .send()
+            .await
+            .assert_redirect("/elsewhere");
     }
 
     // ---------------------------------------------------- Wave 7 P2: cookies
@@ -1138,7 +1155,9 @@ mod tests {
     #[tokio::test]
     async fn cookie_asserts_presence_and_value() {
         let app = harness();
-        app.get("/cookie").send().await
+        app.get("/cookie")
+            .send()
+            .await
             .assert_cookie("flavor", None)
             .assert_cookie("flavor", Some("oatmeal"));
     }
@@ -1154,7 +1173,10 @@ mod tests {
     #[should_panic(expected = "cookie flavor value mismatch")]
     async fn cookie_assert_panics_on_value_mismatch() {
         let app = harness();
-        app.get("/cookie").send().await.assert_cookie("flavor", Some("waffle"));
+        app.get("/cookie")
+            .send()
+            .await
+            .assert_cookie("flavor", Some("waffle"));
     }
 
     // ----------------------------------------------- Wave 7 P2: json content
@@ -1162,7 +1184,9 @@ mod tests {
     #[tokio::test]
     async fn json_path_walks_objects_and_arrays() {
         let app = harness();
-        app.get("/json").send().await
+        app.get("/json")
+            .send()
+            .await
             .assert_json_path("a.b", json!(42))
             .assert_json_path("items.1", json!(20));
     }
@@ -1171,14 +1195,20 @@ mod tests {
     #[should_panic(expected = "no JSON path")]
     async fn json_path_panics_when_absent() {
         let app = harness();
-        app.get("/json").send().await.assert_json_path("a.ghost", json!(42));
+        app.get("/json")
+            .send()
+            .await
+            .assert_json_path("a.ghost", json!(42));
     }
 
     #[tokio::test]
     #[should_panic(expected = "json path \"a.b\" mismatch")]
     async fn json_path_panics_on_mismatch() {
         let app = harness();
-        app.get("/json").send().await.assert_json_path("a.b", json!(43));
+        app.get("/json")
+            .send()
+            .await
+            .assert_json_path("a.b", json!(43));
     }
 
     // ---------------------------------------------- Wave 7 P2: html content
@@ -1186,7 +1216,9 @@ mod tests {
     #[tokio::test]
     async fn html_and_see_asserts_escape() {
         let app = harness();
-        app.get("/see").send().await
+        app.get("/see")
+            .send()
+            .await
             .assert_html_contains("Tom &amp; Jerry")
             .assert_see("Tom & Jerry")
             .assert_see("Jerry");
@@ -1196,7 +1228,10 @@ mod tests {
     #[should_panic(expected = "not in body")]
     async fn html_contains_panics_when_absent() {
         let app = harness();
-        app.get("/see").send().await.assert_html_contains("<b>nope</b>");
+        app.get("/see")
+            .send()
+            .await
+            .assert_html_contains("<b>nope</b>");
     }
 
     #[tokio::test]
@@ -1212,7 +1247,9 @@ mod tests {
     async fn session_login_issues_cookie_and_authenticates() {
         let principal = PrincipalId::new();
         let app = harness().acting_as(principal.to_string());
-        app.post("/login").send().await
+        app.post("/login")
+            .send()
+            .await
             .assert_status(200)
             .assert_cookie("kelson_session", None)
             .assert_session_has("cart")
@@ -1231,7 +1268,10 @@ mod tests {
             .next()
             .unwrap()
             .to_string();
-        app.get("/me").header("cookie", issued).send().await
+        app.get("/me")
+            .header("cookie", issued)
+            .send()
+            .await
             .assert_authenticated_as(principal)
             .assert_session_has("cart");
     }
@@ -1248,7 +1288,10 @@ mod tests {
             .next()
             .unwrap()
             .to_string();
-        app.post("/logout").header("cookie", issued).send().await
+        app.post("/logout")
+            .header("cookie", issued)
+            .send()
+            .await
             .assert_guest()
             .assert_session_missing("cart");
     }
@@ -1271,13 +1314,18 @@ mod tests {
     async fn session_missing_panics_when_the_key_is_there() {
         let principal = PrincipalId::new();
         let app = harness().acting_as(principal.to_string());
-        app.post("/login").send().await.assert_session_missing("cart");
+        app.post("/login")
+            .send()
+            .await
+            .assert_session_missing("cart");
     }
 
     #[tokio::test]
     async fn guest_assert_passes_anonymously() {
         let app = harness();
-        app.get("/json").send().await
+        app.get("/json")
+            .send()
+            .await
             .assert_guest()
             .assert_session_missing("cart");
     }
@@ -1316,7 +1364,9 @@ mod tests {
     #[tokio::test]
     async fn view_context_asserts_walk_dotted_keys() {
         let app = harness();
-        app.get("/view").send().await
+        app.get("/view")
+            .send()
+            .await
             .assert_view_has("title")
             .assert_view_has("user.name");
     }
@@ -1359,7 +1409,10 @@ mod tests {
     #[should_panic(expected = "carries no form errors")]
     async fn form_error_assertion_panics_when_the_view_has_no_errors() {
         let app = harness();
-        app.get("/view").send().await.assert_view_error("email", "required");
+        app.get("/view")
+            .send()
+            .await
+            .assert_view_error("email", "required");
     }
 
     #[tokio::test]
@@ -1454,7 +1507,9 @@ mod tests {
         let app = TestApp::new(bound_view_router(engine.clone())).with_views(recorder);
         // The assertions read the MODEL the view received - never the
         // HTML it rendered.
-        app.get("/page").send().await
+        app.get("/page")
+            .send()
+            .await
             .assert_view_model_has("title")
             .assert_view_model::<PageVm>("depth")
             .assert_view_lints_clean(&engine)
@@ -1480,7 +1535,9 @@ mod tests {
     async fn a_view_model_assert_refuses_an_undeclared_field() {
         let (engine, recorder) = bound_view_engine("@vm<h1>{{ vm.title }}</h1>");
         let app = TestApp::new(bound_view_router(engine)).with_views(recorder);
-        app.get("/page").send().await
+        app.get("/page")
+            .send()
+            .await
             .assert_view_model::<PageVm>("ghost");
     }
 
@@ -1531,7 +1588,10 @@ mod tests {
     #[should_panic(expected = "database count mismatch")]
     async fn database_count_panics_on_mismatch() {
         let app = harness().tenant(TenantId::new().to_string());
-        app.get("/json").send().await.assert_database_count(&patient_model(), 3);
+        app.get("/json")
+            .send()
+            .await
+            .assert_database_count(&patient_model(), 3);
     }
 
     #[tokio::test]

@@ -46,13 +46,25 @@ pub async fn run(req: CallRequest<'_>) -> Result<(), String> {
     // capabilities exactly like `POST /auth/login` installs them. Checks are
     // not bypassed — an operation requiring a capability outside the granted
     // set (or a missing membership) is denied identically to the HTTP edge.
-    crate::auth_routes::install_access_snapshot(req.state, principal, tenant);
-    let result = execute(req.state, &spec.operation, req.input.unwrap_or(""), principal, tenant)
-        .await
-        .map_err(|err| match &err.internal {
-            Some(detail) => format!("[{}] {detail}", err.code),
-            None => format!("{err}"),
-        })?;
+    // MNC-001: running the CLI in the environment is the local trust act, so
+    // the edge BOOTSTRAPS the membership edge if absent; the snapshot install
+    // itself stays store-gated like every other path.
+    crate::auth_routes::ensure_local_membership(req.state, principal, tenant)
+        .map_err(|err| err.to_string())?;
+    crate::auth_routes::install_access_snapshot(req.state, principal, tenant)
+        .map_err(|err| err.to_string())?;
+    let result = execute(
+        req.state,
+        &spec.operation,
+        req.input.unwrap_or(""),
+        principal,
+        tenant,
+    )
+    .await
+    .map_err(|err| match &err.internal {
+        Some(detail) => format!("[{}] {detail}", err.code),
+        None => format!("{err}"),
+    })?;
     let text = serde_json::to_string_pretty(&result)
         .map_err(|e| format!("result is not JSON-serializable: {e}"))?;
     println!("{text}");
@@ -76,8 +88,7 @@ pub fn console_command<'a>(
         }
     }
     Err(if available.is_empty() {
-        "no console commands declared — add a [[command]] entry to routes/console.toml"
-            .to_string()
+        "no console commands declared — add a [[command]] entry to routes/console.toml".to_string()
     } else {
         format!(
             "unknown console command {name:?} — declared: {}",
@@ -91,8 +102,8 @@ pub fn console_command<'a>(
 /// or, in dev/test only, the store's first active principal.
 fn resolve_operator(state: &AppState, explicit: Option<&str>) -> Result<PrincipalId, String> {
     if let Some(raw) = explicit {
-        let uuid = uuid::Uuid::parse_str(raw)
-            .map_err(|e| format!("invalid --principal {raw:?}: {e}"))?;
+        let uuid =
+            uuid::Uuid::parse_str(raw).map_err(|e| format!("invalid --principal {raw:?}: {e}"))?;
         let id = PrincipalId::from_uuid(uuid);
         let found = state
             .principals
@@ -112,8 +123,7 @@ fn resolve_operator(state: &AppState, explicit: Option<&str>) -> Result<Principa
         .first_active()
         .map_err(|e| format!("principal lookup failed: {e}"))?
         .ok_or_else(|| {
-            "no active principal yet — register a user first or pass --principal <uuid>"
-                .to_string()
+            "no active principal yet — register a user first or pass --principal <uuid>".to_string()
         })?;
     Ok(first.id)
 }
@@ -159,10 +169,7 @@ pub async fn execute(
     };
     let plan = handler.plan();
     let ctx = crate::shell::build_context(plan.plane, plan.profile.kind, principal, tenant)?;
-    let outcome = state
-        .bus
-        .dispatch(ctx, &operation, input, None)
-        .await?;
+    let outcome = state.bus.dispatch(ctx, &operation, input, None).await?;
     Ok(outcome.result)
 }
 
@@ -213,16 +220,20 @@ operation = "appointments.book"
 name = "list"
 operation = "appointments.list"
 "#;
-        let module = kelson_registry::RouteFileManifest::from_toml(raw, "routes/console.toml", None)
-            .expect("route file parses")
-            .into_module("routes_console");
+        let module =
+            kelson_registry::RouteFileManifest::from_toml(raw, "routes/console.toml", None)
+                .expect("route file parses")
+                .into_module("routes_console");
         let modules = [module];
 
         let spec = console_command(&modules, "book").expect("resolves");
         assert_eq!(spec.operation, "appointments.book");
 
         let err = console_command(&modules, "boo").expect_err("refuses");
-        assert!(err.contains("\"boo\"") && err.contains("book") && err.contains("list"), "{err}");
+        assert!(
+            err.contains("\"boo\"") && err.contains("book") && err.contains("list"),
+            "{err}"
+        );
 
         let err = console_command(&[], "book").expect_err("refuses");
         assert!(err.contains("routes/console.toml"), "{err}");
@@ -275,20 +286,18 @@ operation = "appointments.list"
         let tenant = state.default_tenant_id.expect("dev fallback tenant");
 
         // Snapshot present but without `appointments.list`: the capability
-        // check (not identity) is what denies.
-        state
-            .policy
-            .install_snapshot(kelson_policy::AccessSnapshot {
-                principal_id: principal.id,
-                tenant_id: tenant,
-                membership_active: true,
-                capabilities: Default::default(),
-                scope_paths: ["/".to_string()].into_iter().collect(),
-                authorization_revision: state.policy.revision(),
-                feature_revision: kelson_foundation::FeatureRevision(1),
-                module_revision: kelson_foundation::ModuleRevision(1),
-                computed_at: time::OffsetDateTime::now_utc(),
-            });
+        // check (not identity) is what denies. The edge is granted first and
+        // the membership bit is read back from the store.
+        crate::auth_routes::ensure_local_membership(&state, principal.id, tenant)
+            .expect("dev edge grants");
+        crate::auth_routes::install_snapshot_fields(
+            &state.policy,
+            &[],
+            state.memberships.as_ref(),
+            principal.id,
+            tenant,
+        )
+        .expect("snapshot installs");
         let err = execute(&state, "appointments.list", "{}", principal.id, tenant)
             .await
             .expect_err("denied");
@@ -297,19 +306,14 @@ operation = "appointments.list"
 
         // Grant the graph's capabilities (the login-equivalent install) and
         // the same dispatch runs for real.
-        state
-            .policy
-            .install_snapshot(kelson_policy::AccessSnapshot {
-                principal_id: principal.id,
-                tenant_id: tenant,
-                membership_active: true,
-                capabilities: state.granted_capabilities.iter().cloned().collect(),
-                scope_paths: ["/".to_string()].into_iter().collect(),
-                authorization_revision: state.policy.revision(),
-                feature_revision: kelson_foundation::FeatureRevision(1),
-                module_revision: kelson_foundation::ModuleRevision(1),
-                computed_at: time::OffsetDateTime::now_utc(),
-            });
+        crate::auth_routes::install_snapshot_fields(
+            &state.policy,
+            &state.granted_capabilities,
+            state.memberships.as_ref(),
+            principal.id,
+            tenant,
+        )
+        .expect("snapshot installs");
         let result = execute(&state, "appointments.list", "{}", principal.id, tenant)
             .await
             .expect("granted");

@@ -1,4 +1,4 @@
-﻿//! Boot topology for kelson-demo (11-SPEC §10/G03/G04).
+//! Boot topology for kelson-demo (11-SPEC §10/G03/G04).
 //! Providers boot in phase order: Foundation -> Kernel -> Platform -> Modules.
 //! DB probing happens BEFORE host boot (init must stay I/O-free); the probe
 //! result selects the postgres or in-memory backend (degraded boot, D-52).
@@ -9,16 +9,16 @@ use std::sync::{Arc, Mutex};
 use kelson_command::CommandBus;
 use kelson_config::FrozenConfig;
 use kelson_context::{ExecutionContext, PrincipalContext, ScopeSnapshot, TenantContext};
-use kelson_foundation::{
-    AppError, AuthorizationRevision, ExecutionProfileKind, OperationId, PrincipalId, TenantId,
-};
 use kelson_execution::{
     AuthorizationPort, BoxFuture, ExecutionBackend, ExecutionPlan, ExecutionUnit, IdempotencyPort,
     InMemoryBackend, InMemoryIdempotency, OperationHandler,
 };
+use kelson_foundation::{
+    AppError, AuthorizationRevision, ExecutionProfileKind, OperationId, PrincipalId, TenantId,
+};
 use kelson_lifecycle::{BootError, Phase, Provider, ServiceRegistry};
-use kelson_policy::{AccessSnapshot, PolicyAuthz, PolicyEngine};
 use kelson_mysql::DbPool;
+use kelson_policy::{PolicyAuthz, PolicyEngine};
 use kelson_postgres::{PgIdempotency, PostgresBackend};
 use serde_json::Value;
 use time::OffsetDateTime;
@@ -184,7 +184,10 @@ pub struct PlatformProvider {
     /// store + the registered `notification.send` def, present only when a
     /// database pool exists. `None` leaves `queue_via` fail-closed
     /// (`not_implemented`) — the D-52 degradation posture.
-    pub notification_queue: Option<(Arc<dyn kelson_jobs::JobStore>, Arc<kelson_jobs::JobRegistry>)>,
+    pub notification_queue: Option<(
+        Arc<dyn kelson_jobs::JobStore>,
+        Arc<kelson_jobs::JobRegistry>,
+    )>,
 }
 
 /// Wave 6 P5: the Wave 2 views engine behind the notification HTML port —
@@ -215,7 +218,10 @@ pub(crate) struct JobQueuePort {
 }
 
 impl JobQueuePort {
-    pub(crate) fn new(store: Arc<dyn kelson_jobs::JobStore>, registry: Arc<kelson_jobs::JobRegistry>) -> Self {
+    pub(crate) fn new(
+        store: Arc<dyn kelson_jobs::JobStore>,
+        registry: Arc<kelson_jobs::JobRegistry>,
+    ) -> Self {
         Self { store, registry }
     }
 }
@@ -277,10 +283,7 @@ impl Provider for PlatformProvider {
             hub = hub.with_view_renderer(Arc::new(ViewsNotificationRenderer(views.clone())));
         }
         if let Some((store, registry)) = &self.notification_queue {
-            hub = hub.with_queue(Box::new(JobQueuePort::new(
-                store.clone(),
-                registry.clone(),
-            )));
+            hub = hub.with_queue(Box::new(JobQueuePort::new(store.clone(), registry.clone())));
         }
         r.insert("notify.hub", Arc::new(hub))
     }
@@ -357,17 +360,40 @@ impl Provider for DemoModuleProvider {
             let principal =
                 PrincipalId::from_uuid(uuid::Uuid::parse_str(DEV_PRINCIPAL_UUID).unwrap());
             let tenant = TenantId::from_uuid(uuid::Uuid::parse_str(DEV_TENANT_UUID).unwrap());
-            policy.install_snapshot(AccessSnapshot {
-                principal_id: principal,
-                tenant_id: tenant,
-                membership_active: true,
-                capabilities: ["demo.echo".to_string()].into_iter().collect(),
-                scope_paths: ["LE1".to_string()].into_iter().collect(),
-                authorization_revision: policy.revision(),
-                feature_revision: kelson_foundation::FeatureRevision(1),
-                module_revision: kelson_foundation::ModuleRevision(1),
-                computed_at: OffsetDateTime::now_utc(),
-            });
+            // MNC-001: the dev snapshot is granted, not fabricated - the
+            // membership bit comes back out of the store like it does for a
+            // real login. Dev/test only (the provider flag is never set in
+            // prod), and the edge is idempotent across boots.
+            let memberships = r.get::<MembershipStoreRef>()?;
+            let boot = |e: AppError| BootError::ProviderFailed {
+                provider: "module.demo".into(),
+                source: e.to_string(),
+            };
+            if memberships
+                .0
+                .find(principal, tenant)
+                .map_err(boot)?
+                .is_none()
+            {
+                memberships
+                    .0
+                    .grant(kelson_identity::Membership {
+                        id: kelson_foundation::MembershipId::new(),
+                        principal_id: principal,
+                        tenant_id: tenant,
+                        status: kelson_identity::MembershipStatus::Active,
+                        joined_at: OffsetDateTime::now_utc(),
+                    })
+                    .map_err(boot)?;
+            }
+            crate::auth_routes::install_snapshot_fields(
+                &policy,
+                &["demo.echo".to_string()],
+                memberships.0.as_ref(),
+                principal,
+                tenant,
+            )
+            .map_err(boot)?;
         }
         Ok(())
     }
@@ -413,10 +439,8 @@ impl Provider for WasmModulesProvider {
             // the first declaration, which is the posture the seam takes for
             // a store it was never given.
             let notify = r.get::<kelson_notifications::NotifyHub>().ok();
-            let services = kelson_wasm::ModuleHostServices::new(
-                Arc::clone(&model.0),
-                Arc::clone(&tokens.0),
-            );
+            let services =
+                kelson_wasm::ModuleHostServices::new(Arc::clone(&model.0), Arc::clone(&tokens.0));
             let services = match notify {
                 Some(hub) => services.with_notifications(Arc::new(crate::HubSink(hub))),
                 None => services,
@@ -534,7 +558,10 @@ impl Provider for RealtimeProvider {
         Phase::Platform
     }
     fn init(&self, r: &mut ServiceRegistry) -> Result<(), BootError> {
-        r.insert("realtime.hub", Arc::new(kelson_realtime::BroadcastHub::new()))
+        r.insert(
+            "realtime.hub",
+            Arc::new(kelson_realtime::BroadcastHub::new()),
+        )
     }
 }
 
@@ -569,6 +596,12 @@ pub struct PrincipalStoreRef(pub Arc<dyn kelson_identity::PrincipalStore>);
 #[derive(Clone)]
 pub struct CredentialStoreRef(pub Arc<dyn kelson_identity::CredentialStore>);
 
+/// MNC-001: the (principal, tenant) membership edge carrier. Login and
+/// snapshot install read it; register grants. Backed by the fabric when the
+/// pool is up, in-memory on degraded boot (D-52).
+#[derive(Clone)]
+pub struct MembershipStoreRef(pub Arc<dyn kelson_identity::MembershipStore>);
+
 /// The token store *behind* `security.tokens`. `TokenService` holds its
 /// store privately, and the module seam needs the port rather than the
 /// service — a guest implementing `TokenStore` must reach the same rows PAT
@@ -592,6 +625,7 @@ pub struct CachePortRef(pub Arc<dyn kelson_caching::CachePort>);
 /// when the driver-selected pool is up; in-memory on degraded boot (D-52).
 pub struct IdentityProvider {
     pub pool: Option<DbPool>,
+    pub env: kelson_config::Environment,
 }
 
 impl Provider for IdentityProvider {
@@ -631,6 +665,31 @@ impl Provider for IdentityProvider {
             "identity.credentials",
             Arc::new(CredentialStoreRef(credentials)),
         )?;
+        // MNC-001: the membership edge. Durable on either driver when a pool
+        // is up; the in-memory port is a degraded-boot dev/test fallback and
+        // prod refuses it (a membership that vanishes on restart would
+        // silently re-open the tenant gate).
+        let memberships: Arc<dyn kelson_identity::MembershipStore> = match &self.pool {
+            Some(DbPool::Postgres(pool)) => {
+                Arc::new(kelson_postgres::PgMembershipStore::new(pool.clone()))
+            }
+            Some(DbPool::MySql(pool)) => {
+                Arc::new(kelson_mysql::MySqlMembershipStore::new(pool.clone()))
+            }
+            None if self.env.is_prod() => {
+                return Err(BootError::ProviderFailed {
+                    provider: "platform.identity".into(),
+                    source: "prod boot requires a database-backed MembershipStore (S-001): \
+                             in-memory membership edges are refused"
+                        .into(),
+                });
+            }
+            None => Arc::new(kelson_identity::InMemoryMembershipStore::new()),
+        };
+        r.insert(
+            "identity.memberships",
+            Arc::new(MembershipStoreRef(memberships)),
+        )?;
         r.insert(
             "security.token_store",
             Arc::new(TokenStoreRef(token_store.clone())),
@@ -661,13 +720,11 @@ impl Provider for StorageProvider {
         Phase::Platform
     }
     fn init(&self, r: &mut ServiceRegistry) -> Result<(), BootError> {
-        let registry =
-            crate::disk_registry(&self.disks, &self.root.join("storage").join("local")).map_err(
-                |e| BootError::ProviderFailed {
-                    provider: "platform.storage".into(),
-                    source: e.public_message.clone(),
-                },
-            )?;
+        let registry = crate::disk_registry(&self.disks, &self.root.join("storage").join("local"))
+            .map_err(|e| BootError::ProviderFailed {
+                provider: "platform.storage".into(),
+                source: e.public_message.clone(),
+            })?;
         let port = registry
             .get(registry.default_name())
             .map_err(|e| BootError::ProviderFailed {
@@ -769,7 +826,9 @@ mod error_render_tests {
             registry: registry.clone(),
         };
         let mut services = ServiceRegistry::new();
-        provider.init(&mut services).expect("provider init succeeds");
+        provider
+            .init(&mut services)
+            .expect("provider init succeeds");
 
         let published = services
             .get::<ErrorRenderRegistry>()
@@ -818,9 +877,8 @@ mod demo_module_dependency_tests {
         let demo_edges = deps
             .iter()
             .any(|d| matches!(*d, "module.appointments" | "module.oauth2"));
-        assert_eq!(
-            demo_edges,
-            false,
+        assert!(
+            !demo_edges,
             "Stage C.2 removed those providers, so naming them would be a dead edge"
         );
     }

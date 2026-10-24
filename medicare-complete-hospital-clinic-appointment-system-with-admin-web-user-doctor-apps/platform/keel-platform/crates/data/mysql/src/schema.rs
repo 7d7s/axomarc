@@ -179,7 +179,12 @@ impl Column {
 }
 
 fn name_field_width(columns: &[Column]) -> usize {
-    columns.iter().map(|c| c.name.chars().count()).max().unwrap_or(0) + 2
+    columns
+        .iter()
+        .map(|c| c.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        + 2
 }
 
 /// The shared column vocabulary of [`Table`] and [`Alter`].
@@ -258,7 +263,8 @@ impl Table {
 
     /// Table-level `UNIQUE (<a>, <b>)`.
     pub fn unique(&mut self, columns: &[&str]) {
-        self.constraints.push(format!("UNIQUE ({})", columns.join(", ")));
+        self.constraints
+            .push(format!("UNIQUE ({})", columns.join(", ")));
     }
 
     /// Table-level `PRIMARY KEY (<a>, <b>)` — for composite keys, where the

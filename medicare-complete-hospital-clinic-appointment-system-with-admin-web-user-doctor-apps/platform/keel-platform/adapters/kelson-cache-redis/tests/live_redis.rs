@@ -20,8 +20,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use kelson_caching::{CacheLock, CachePort};
 use kelson_cache_redis::RedisCache;
+use kelson_caching::{CacheLock, CachePort};
 
 /// The **shared cache contract** (LF-070): the Redis driver must satisfy
 /// exactly what the in-memory driver satisfies ✓ — one suite, two drivers ✓.

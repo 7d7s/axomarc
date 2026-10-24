@@ -67,7 +67,8 @@ impl CacheControlBuilder {
 
     /// `stale-while-revalidate=<secs>`.
     pub fn stale_while_revalidate(mut self, secs: u64) -> Self {
-        self.directives.push(format!("stale-while-revalidate={secs}"));
+        self.directives
+            .push(format!("stale-while-revalidate={secs}"));
         self
     }
 

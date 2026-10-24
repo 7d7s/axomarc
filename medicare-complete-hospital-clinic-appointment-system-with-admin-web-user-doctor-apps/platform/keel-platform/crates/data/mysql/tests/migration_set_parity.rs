@@ -40,8 +40,8 @@ const TWIN_ONLY: &[&str] = &[
 /// Every `*.sql` file in `dir`, sorted (BTreeSet order), by file name.
 fn sql_files(dir: &Path) -> BTreeSet<String> {
     let mut files = BTreeSet::new();
-    for entry in std::fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("{}: unreadable: {e}", dir.display()))
+    for entry in
+        std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: unreadable: {e}", dir.display()))
     {
         let entry = entry.unwrap_or_else(|e| panic!("{}: dir entry: {e}", dir.display()));
         let name = entry.file_name().to_string_lossy().into_owned();

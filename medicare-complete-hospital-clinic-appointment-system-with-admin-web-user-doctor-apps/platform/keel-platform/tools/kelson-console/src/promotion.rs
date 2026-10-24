@@ -26,7 +26,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use kelson_deployment::ports::{BoxFuture, ConfigPort, EventPort, HealthCheck, JobPort, MigrationPort, ModulePort};
+use kelson_deployment::ports::{
+    BoxFuture, ConfigPort, EventPort, HealthCheck, JobPort, MigrationPort, ModulePort,
+};
 use kelson_deployment::promote::ReleaseArtifact;
 use kelson_deployment::rollback::PromotionTarget;
 use kelson_foundation::AppError;
@@ -69,7 +71,11 @@ pub fn resolve(root: &Path, override_: Option<&str>, default: &str) -> PathBuf {
     match override_ {
         Some(p) => {
             let p = PathBuf::from(p);
-            if p.is_absolute() { p } else { root.join(p) }
+            if p.is_absolute() {
+                p
+            } else {
+                root.join(p)
+            }
         }
         None => root.join(default),
     }
@@ -78,8 +84,8 @@ pub fn resolve(root: &Path, override_: Option<&str>, default: &str) -> PathBuf {
 /// Read the promotion plan. Missing/undecodable is a hard error — an
 /// operator must not promote against an absent target.
 pub fn load_plan(path: &Path) -> Result<ReleaseArtifact, AppError> {
-    let raw = std::fs::read_to_string(path)
-        .map_err(|e| io(&format!("read {}", path.display()), e))?;
+    let raw =
+        std::fs::read_to_string(path).map_err(|e| io(&format!("read {}", path.display()), e))?;
     serde_json::from_str(&raw).map_err(|e| io(&format!("parse {}", path.display()), e))
 }
 
@@ -94,8 +100,8 @@ pub fn save_checkpoint(path: &Path, target: &PromotionTarget) -> Result<(), AppE
 
 /// Read the checkpoint `kelson rollback` restores.
 pub fn load_checkpoint(path: &Path) -> Result<PromotionTarget, AppError> {
-    let raw = std::fs::read_to_string(path)
-        .map_err(|e| io(&format!("read {}", path.display()), e))?;
+    let raw =
+        std::fs::read_to_string(path).map_err(|e| io(&format!("read {}", path.display()), e))?;
     serde_json::from_str(&raw).map_err(|e| io(&format!("parse {}", path.display()), e))
 }
 
@@ -281,9 +287,7 @@ async fn rollback_at(pool: DbPool, root: PathBuf, target: u32) -> Result<Vec<Str
                     }
                 };
                 let batches = distinct_batches(applied);
-                Ok::<u32, AppError>(
-                    batches.iter().filter(|b| **b > target as i32).count() as u32,
-                )
+                Ok::<u32, AppError>(batches.iter().filter(|b| **b > target as i32).count() as u32)
             })
         }
     })?;
@@ -657,7 +661,9 @@ pub fn post_traffic_probe(config: Arc<ConfigAdapter>) -> Probe {
                 .effective_hash()
                 .map_err(|e| format!("config re-derivation failed: {}", e.public_message))?;
             if live != fresh {
-                return Err(format!("live config hash {live} drifted from source {fresh}"));
+                return Err(format!(
+                    "live config hash {live} drifted from source {fresh}"
+                ));
             }
             Ok(true)
         })
@@ -691,9 +697,12 @@ pub fn promotion_probes(
 ) -> Vec<Arc<dyn HealthCheck>> {
     vec![
         Arc::new(post_deploy_probe(root.to_path_buf())),
-        Arc::new(post_migrate_probe(root.to_path_buf(), pool, expected_watermark)),
+        Arc::new(post_migrate_probe(
+            root.to_path_buf(),
+            pool,
+            expected_watermark,
+        )),
         Arc::new(post_traffic_probe(config)),
         Arc::new(canary_probe(event_store)),
     ]
 }
-

@@ -632,7 +632,11 @@ pub struct NotificationEnvelope {
 pub trait NotificationSink: Send + Sync {
     /// Deliver one notification the module declared, in the envelope the
     /// host determined.
-    fn deliver(&self, request: NotificationRequest, envelope: NotificationEnvelope) -> DeliveryFuture;
+    fn deliver(
+        &self,
+        request: NotificationRequest,
+        envelope: NotificationEnvelope,
+    ) -> DeliveryFuture;
 }
 
 /// `notify_enqueue(request)` — accepted for delivery, or a gate refusal.///
@@ -645,7 +649,11 @@ pub trait NotificationSink: Send + Sync {
 /// on the call and only performed once the whole call has succeeded, so a
 /// handler that notifies and then fails leaves nothing behind — the same
 /// all-or-nothing posture [`capability_write`] gives a mutation delta.
-pub fn notify_enqueue(sink: Option<&dyn NotificationSink>, request: &str, can_write: bool) -> String {
+pub fn notify_enqueue(
+    sink: Option<&dyn NotificationSink>,
+    request: &str,
+    can_write: bool,
+) -> String {
     if !can_write {
         return String::new();
     }
@@ -707,8 +715,6 @@ pub fn encode_envelope(ctx: &serde_json::Value, payload: &serde_json::Value) -> 
         ENVELOPE_INPUT: payload,
     })
 }
-
-
 
 // ---------------------------------------------------------------------------
 // Password hashing (ADR 0020 §6)

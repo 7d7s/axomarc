@@ -19,8 +19,7 @@ pub mod profile;
 pub mod runtime;
 
 pub use runtime::{
-    ConfigReloader, ConfigRuntime, ConfigSnapshot, ConfigSource, FileConfigSource,
-    HISTORY_MAX,
+    ConfigReloader, ConfigRuntime, ConfigSnapshot, ConfigSource, FileConfigSource, HISTORY_MAX,
 };
 
 use kelson_foundation::AppError;
@@ -185,7 +184,7 @@ pub enum DatabaseDriver {
 /// unchanged — the section adds a key, it does not move the old ones.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatabaseSection {
-/// Which driver boot selects (serde-default: `postgres`).
+    /// Which driver boot selects (serde-default: `postgres`).
     #[serde(default)]
     pub driver: DatabaseDriver,
     /// The connection settings themselves, flattened into `[database]`.
@@ -831,9 +830,8 @@ pub fn load_messages(
     root: &std::path::Path,
     section: &I18nSection,
 ) -> Result<kelson_foundation::MessageCatalog, AppError> {
-    kelson_foundation::validate_locale(&section.default).map_err(|e| {
-        AppError::validation(format!("i18n.default: {}", e.public_message))
-    })?;
+    kelson_foundation::validate_locale(&section.default)
+        .map_err(|e| AppError::validation(format!("i18n.default: {}", e.public_message)))?;
     let mut catalog = kelson_foundation::MessageCatalog::new(section.default.clone());
     for path in &section.paths {
         let dir = root.join(path);
@@ -1001,7 +999,10 @@ pub const CONFIG_SCHEMA: &[(&str, &[&str])] = &[
             "quota_bytes",
         ],
     ),
-    ("http", &["problem_json", "encrypt_cookies", "trusted_proxies"]),
+    (
+        "http",
+        &["problem_json", "encrypt_cookies", "trusted_proxies"],
+    ),
     ("i18n", &["default", "paths"]),
     ("identity", &["memory", "time", "parallelism"]),
     ("cache", &["driver", "redis_url"]),
@@ -1009,10 +1010,7 @@ pub const CONFIG_SCHEMA: &[(&str, &[&str])] = &[
     ("mail", &["default", "mailers"]),
     ("otp", &["provider", "code_ttl_secs", "max_attempts"]),
     ("security", &["headers", "signed_urls", "csrf", "cors"]),
-    (
-        "storage",
-        &["endpoint", "bucket", "default", "disks"],
-    ),
+    ("storage", &["endpoint", "bucket", "default", "disks"]),
     ("telemetry", &[]),
     ("views", &["paths", "cache_dir", "env"]),
 ];
@@ -1133,8 +1131,7 @@ impl PlatformConfig {
         // The profile the environment selects. The READ happens here - the
         // one sanctioned place for it - and the profile module only
         // interprets the value.
-        let selected_profile =
-            profile::selected_from_env(std::env::var(profile::PROFILE_ENV).ok());
+        let selected_profile = profile::selected_from_env(std::env::var(profile::PROFILE_ENV).ok());
         let mut cfg = match path {
             Some(p) => {
                 let raw = std::fs::read_to_string(p).map_err(|e| {
@@ -1389,7 +1386,10 @@ impl FrozenConfig {
     /// `[database].read_replica_url` — the optional read replica. `None` when
     /// the section is absent or no replica is configured (the default).
     pub fn read_replica_url(&self) -> Option<&str> {
-        self.0.database.as_ref().and_then(|s| s.read_replica_url.as_deref())
+        self.0
+            .database
+            .as_ref()
+            .and_then(|s| s.read_replica_url.as_deref())
     }
 
     pub fn auth(&self) -> &AuthConfig {
@@ -1903,20 +1903,14 @@ mod phase5_config_schema_tests {
         // toml tables iterate in sorted key order: root keys first, nested
         // keys under their section.
         assert_eq!(keys, vec!["app.nmae", "databse", "http.ciphr"]);
-        assert!(violations
-            .iter()
-            .any(|v| v.message().contains("databse")));
+        assert!(violations.iter().any(|v| v.message().contains("databse")));
 
         // Fail-closed at load(): the gate is not opt-in.
-        let dir = std::env::temp_dir().join(format!(
-            "kelson-config-schema-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("kelson-config-schema-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("bad.toml");
         std::fs::write(&path, raw).unwrap();
-        let err = PlatformConfig::load(Some(&path))
-            .expect_err("unknown keys refuse load");
+        let err = PlatformConfig::load(Some(&path)).expect_err("unknown keys refuse load");
         let msg = err.to_string();
         assert!(
             msg.contains(CONFIG_SCHEMA_CODE) && msg.contains("app.nmae") && msg.contains("databse"),
@@ -2139,8 +2133,7 @@ mod phase5_config_schema_tests {
 
         let source = crate::runtime::FileConfigSource::new(&path);
         let boot = PlatformConfig::load(Some(&path)).expect("the config loads");
-        let runtime = crate::runtime::ConfigRuntime::boot(source, boot)
-            .expect("the runtime boots");
+        let runtime = crate::runtime::ConfigRuntime::boot(source, boot).expect("the runtime boots");
 
         // The boot revision, held the way a boot consumer holds it.
         let boot_config = runtime.get().config.clone();
@@ -2434,10 +2427,7 @@ mod wave6_storage_config_tests {
 
         // Level-3 typo inside a named disk (the CONFIG_SCHEMA_MAPS walk).
         let raw = "[storage.disks.local]\nroot = \"storage/app\"\nrrot = \"x\"\n";
-        assert_eq!(
-            schema_violations(raw)[0].key,
-            "storage.disks.local.rrot"
-        );
+        assert_eq!(schema_violations(raw)[0].key, "storage.disks.local.rrot");
     }
 
     /// The typed parse is the fail-closed layer for disks: `driver` is
@@ -2589,23 +2579,39 @@ mod wave6_i18n_config_tests {
         // Malformed TOML.
         std::fs::write(lang.join("en.toml"), "welcome = \"unterminated\n").unwrap();
         let err = load_messages(&root, &I18nSection::default()).expect_err("malformed refuses");
-        assert!(err.public_message.contains("en.toml"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("en.toml"),
+            "{}",
+            err.public_message
+        );
 
         // Non-string leaf.
         std::fs::write(lang.join("en.toml"), "count = 3\n").unwrap();
         let err = load_messages(&root, &I18nSection::default()).expect_err("number refuses");
-        assert!(err.public_message.contains("must be a string"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("must be a string"),
+            "{}",
+            err.public_message
+        );
 
         // A file with no messages.
         std::fs::write(lang.join("en.toml"), "[validation]\n").unwrap();
         let err = load_messages(&root, &I18nSection::default()).expect_err("empty refuses");
-        assert!(err.public_message.contains("no messages"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("no messages"),
+            "{}",
+            err.public_message
+        );
 
         // Locale-named file that fails validation (space in the tag).
         std::fs::write(lang.join("en.toml"), "welcome = \"Hi\"\n").unwrap();
         std::fs::write(lang.join("bad locale.toml"), "welcome = \"Hi\"\n").unwrap();
         let err = load_messages(&root, &I18nSection::default()).expect_err("locale refuses");
-        assert!(err.public_message.contains("bad locale.toml"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("bad locale.toml"),
+            "{}",
+            err.public_message
+        );
         std::fs::remove_file(lang.join("bad locale.toml")).unwrap();
 
         // The configured default itself must be a valid tag.
@@ -2614,7 +2620,11 @@ mod wave6_i18n_config_tests {
             ..Default::default()
         };
         let err = load_messages(&root, &section).expect_err("bad default refuses");
-        assert!(err.public_message.contains("i18n.default"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("i18n.default"),
+            "{}",
+            err.public_message
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2636,7 +2646,10 @@ mod wave7_security_headers_config_tests {
             "opt-in posture: nothing is emitted until a deployment asks"
         );
         assert_eq!(headers.hsts_max_age_secs, 31_536_000);
-        assert!(!headers.hsts_include_subdomains, "includeSubDomains stays an opt");
+        assert!(
+            !headers.hsts_include_subdomains,
+            "includeSubDomains stays an opt"
+        );
         assert_eq!(headers.csp, "default-src 'self'");
         assert_eq!(headers.referrer_policy, "strict-origin-when-cross-origin");
     }
@@ -2684,8 +2697,7 @@ mod wave7_security_headers_config_tests {
             Vec::new(),
             "the declared section is clean"
         );
-        let violations =
-            schema_violations("[security.headres]\nenabled = true\n");
+        let violations = schema_violations("[security.headres]\nenabled = true\n");
         assert_eq!(violations.len(), 1, "{violations:?}");
         assert_eq!(violations[0].key, "security.headres");
     }
@@ -2780,10 +2792,8 @@ mod wave7_password_policy_config_tests {
             (false, false, true)
         );
 
-        let err = toml::from_str::<PlatformConfig>(
-            "[auth.password_policy]\nmin_lenght = 12\n",
-        )
-        .expect_err("a level-3 typo refuses the typed parse");
+        let err = toml::from_str::<PlatformConfig>("[auth.password_policy]\nmin_lenght = 12\n")
+            .expect_err("a level-3 typo refuses the typed parse");
         assert!(
             err.to_string().contains("unknown field"),
             "deny_unknown_fields names the typo: {err}"
@@ -2822,15 +2832,12 @@ mod wave7_signed_url_ttl_config_tests {
     /// parse (`deny_unknown_fields`, the `[security.headers]` pattern).
     #[test]
     fn signed_urls_section_parses_overrides_and_refuses_typos() {
-        let cfg: PlatformConfig =
-            toml::from_str("[security.signed_urls]\nmax_ttl_secs = 3600\n")
-                .expect("declared key parses");
+        let cfg: PlatformConfig = toml::from_str("[security.signed_urls]\nmax_ttl_secs = 3600\n")
+            .expect("declared key parses");
         assert_eq!(cfg.security.signed_urls.max_ttl_secs, 3600);
 
-        let err = toml::from_str::<PlatformConfig>(
-            "[security.signed_urls]\nmax_ttl_sec = 3600\n",
-        )
-        .expect_err("a level-3 typo refuses the typed parse");
+        let err = toml::from_str::<PlatformConfig>("[security.signed_urls]\nmax_ttl_sec = 3600\n")
+            .expect_err("a level-3 typo refuses the typed parse");
         assert!(
             err.to_string().contains("unknown field"),
             "deny_unknown_fields names the typo: {err}"
@@ -2861,7 +2868,10 @@ mod wave7_signed_url_ttl_config_tests {
         )
         .expect("declared key parses");
         let cors = cfg.security.cors.expect("the section is present");
-        assert_eq!(cors.allow_origins, vec!["https://app.example.com".to_string()]);
+        assert_eq!(
+            cors.allow_origins,
+            vec!["https://app.example.com".to_string()]
+        );
         assert!(cors.allow_credentials);
         assert_eq!(cors.max_age_secs, 3600, "the documented default");
         assert_eq!(
@@ -2947,26 +2957,26 @@ mod wave7_csrf_config_tests {
     #[test]
     fn csrf_skip_paths_default_to_empty() {
         let skip = PlatformConfig::default().security.csrf.skip_paths;
-        assert!(skip.is_empty(), "no route skips the guard by default: {skip:?}");
+        assert!(
+            skip.is_empty(),
+            "no route skips the guard by default: {skip:?}"
+        );
     }
 
     /// The skip paths survive a TOML override; a level-3 typo refuses the
     /// typed parse (`deny_unknown_fields`, the `[security.headers]` pattern).
     #[test]
     fn csrf_section_parses_overrides_and_refuses_typos() {
-        let cfg: PlatformConfig = toml::from_str(
-            "[security.csrf]\nskip_paths = [\"/webhooks/stripe\"]\n",
-        )
-        .expect("declared key parses");
+        let cfg: PlatformConfig =
+            toml::from_str("[security.csrf]\nskip_paths = [\"/webhooks/stripe\"]\n")
+                .expect("declared key parses");
         assert_eq!(
             cfg.security.csrf.skip_paths,
             vec!["/webhooks/stripe".to_string()]
         );
 
-        let err = toml::from_str::<PlatformConfig>(
-            "[security.csrf]\nskip_path = [\"/x\"]\n",
-        )
-        .expect_err("a level-3 typo refuses the typed parse");
+        let err = toml::from_str::<PlatformConfig>("[security.csrf]\nskip_path = [\"/x\"]\n")
+            .expect_err("a level-3 typo refuses the typed parse");
         assert!(
             err.to_string().contains("unknown field"),
             "deny_unknown_fields names the typo: {err}"

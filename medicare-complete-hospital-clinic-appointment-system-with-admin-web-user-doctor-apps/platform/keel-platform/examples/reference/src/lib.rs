@@ -9,13 +9,13 @@ use std::sync::{Arc, Mutex};
 
 use kelson_command::CommandBus;
 use kelson_context::{ExecutionContext, PrincipalContext, ScopeSnapshot, TenantContext};
-use kelson_foundation::{
-    AppError, AuthorizationRevision, ExecutionProfileKind, FeatureRevision, ModuleRevision,
-    OperationId, PrincipalId, TenantId,
-};
 use kelson_execution::{
     BoxFuture, ExecutionPlan, ExecutionUnit, IdempotencyKey, InMemoryBackend, InMemoryIdempotency,
     MutationRecord, OperationHandler, OutboxMessage,
+};
+use kelson_foundation::{
+    AppError, AuthorizationRevision, ExecutionProfileKind, FeatureRevision, ModuleRevision,
+    OperationId, PrincipalId, TenantId,
 };
 use kelson_lifecycle::{ApplicationHost, BootError, ModuleState, Phase, Provider, ServiceRegistry};
 use kelson_policy::{AccessSnapshot, PolicyAuthz, PolicyEngine};
@@ -184,10 +184,32 @@ impl Provider for KernelProvider {
     }
     fn init(&self, registry: &mut ServiceRegistry) -> Result<(), BootError> {
         let policy = Arc::new(PolicyEngine::new());
+        // S-001c: the reference app grants its operator edge through the
+        // same MembershipStore port a login uses, then derives the snapshot's
+        // membership bit from the store instead of asserting it.
+        let memberships = kelson_identity::InMemoryMembershipStore::new();
+        kelson_identity::store::MembershipStore::grant(
+            &memberships,
+            kelson_identity::Membership {
+                id: kelson_foundation::MembershipId::new(),
+                principal_id: self.principal,
+                tenant_id: self.tenant,
+                status: kelson_identity::MembershipStatus::Active,
+                joined_at: OffsetDateTime::now_utc(),
+            },
+        )
+        .expect("the reference edge grants");
+        let membership_active = kelson_identity::store::MembershipStore::active_for(
+            &memberships,
+            self.principal,
+            self.tenant,
+        )
+        .expect("the store answers")
+        .is_some();
         policy.install_snapshot(AccessSnapshot {
             principal_id: self.principal,
             tenant_id: self.tenant,
-            membership_active: true,
+            membership_active,
             capabilities: [
                 "appointments.book".to_string(),
                 "appointments.list".to_string(),
@@ -219,7 +241,9 @@ struct ModuleProvider {
 
 impl ModuleProvider {
     pub fn new() -> Self {
-        Self { state: Mutex::new(ModuleState::Discovered) }
+        Self {
+            state: Mutex::new(ModuleState::Discovered),
+        }
     }
 
     fn transition_to_validated(&self) {

@@ -67,9 +67,10 @@ impl SwappableCache {
     /// not count: the counter answers "how many times did the driver
     /// change", not "how many times was a driver activated".
     pub fn swap(&self, port: Arc<dyn CachePort>) -> Result<(), AppError> {
-        let mut current = self.current.write().map_err(|_| {
-            AppError::persistence("the swappable cache lock is poisoned")
-        })?;
+        let mut current = self
+            .current
+            .write()
+            .map_err(|_| AppError::persistence("the swappable cache lock is poisoned"))?;
         if Arc::ptr_eq(&*current, &port) {
             return Ok(());
         }
@@ -124,10 +125,7 @@ mod tests {
             self.entries.lock().unwrap().get(key).cloned()
         }
         fn put(&self, key: &str, value: Vec<u8>, _ttl: Option<u64>) {
-            self.entries
-                .lock()
-                .unwrap()
-                .insert(key.to_string(), value);
+            self.entries.lock().unwrap().insert(key.to_string(), value);
         }
         fn delete(&self, key: &str) {
             self.entries.lock().unwrap().remove(key);

@@ -43,9 +43,7 @@ use std::sync::Arc;
 
 use kelson_context::{ExecutionContext, ScopeSnapshot};
 use kelson_execution::{BoxFuture, ExecutionPlan, ExecutionUnit, OperationHandler};
-use kelson_foundation::{
-    codes, AppError, ErrorCategory, OperationId, Retryability, Severity,
-};
+use kelson_foundation::{codes, AppError, ErrorCategory, OperationId, Retryability, Severity};
 use kelson_registry::{ModuleBudget, ModuleManifest};
 use serde_json::Value;
 use wasmtime::{
@@ -142,7 +140,10 @@ impl ModuleHostServices {
     /// has no notification story at all keeps the two-store constructor it
     /// already had, and a module that notifies against it is refused loudly
     /// instead of being handed an empty inbox.
-    pub fn with_notifications(mut self, sink: Arc<dyn kelson_module_contract::NotificationSink>) -> Self {
+    pub fn with_notifications(
+        mut self,
+        sink: Arc<dyn kelson_module_contract::NotificationSink>,
+    ) -> Self {
         self.notify = Some(sink);
         self
     }
@@ -776,7 +777,10 @@ impl WasmHost {
         budget
             .validate_against(self.memory_bytes, self.fuel)
             .map_err(|violations| {
-                WasmError::Manifest(format!("budget is not tighten-only: {}", violations.join("; ")))
+                WasmError::Manifest(format!(
+                    "budget is not tighten-only: {}",
+                    violations.join("; ")
+                ))
             })?;
         Ok(CallBudget {
             fuel: budget.effective_fuel(self.fuel),
@@ -854,11 +858,7 @@ impl WasmHost {
     /// (fail-closed): a plugin never reaches dispatch in a half-trusted state.
     ///
     /// The host promotes the result with [`WasmPlugin::commit`].
-    pub fn prepare(
-        &self,
-        bytes: &[u8],
-        sidecar: &ModuleManifest,
-    ) -> Result<WasmPlugin, WasmError> {
+    pub fn prepare(&self, bytes: &[u8], sidecar: &ModuleManifest) -> Result<WasmPlugin, WasmError> {
         // Wave M2: resolve the manifest `[budget]` FIRST, before a byte is
         // compiled or instantiated. A budget that asks for more than the host
         // allows is a refusal with no guest involvement at all, so an
@@ -963,8 +963,9 @@ impl WasmHost {
                         "kelson_manifest",
                         budget.memory_bytes,
                     )?;
-                    String::from_utf8(raw)
-                        .map_err(|e| WasmError::Manifest(format!("kelson_manifest is not UTF-8: {e}")))?
+                    String::from_utf8(raw).map_err(|e| {
+                        WasmError::Manifest(format!("kelson_manifest is not UTF-8: {e}"))
+                    })?
                 }
                 // Symmetric with the arm above: `PluginPre::instantiate`
                 // type-checks the world's exports through `indices.load`, so a
@@ -984,7 +985,8 @@ impl WasmHost {
             }
         };
 
-        let parsed = ModuleManifest::from_json(&json).map_err(|v| WasmError::Manifest(v.message))?;
+        let parsed =
+            ModuleManifest::from_json(&json).map_err(|v| WasmError::Manifest(v.message))?;
         // `[budget]` is HOST policy, never guest state: a guest has no way to
         // declare it and no reason to. Comparing it here would refuse every
         // budgeted plugin as "drift", so both documents are normalized with
@@ -1315,8 +1317,7 @@ impl WasmPlugin {
             }
             if from == PluginState::Prepared as u8 {
                 return Err(WasmError::Lifecycle(
-                    "cannot drain a plugin that was never committed (state: prepared)"
-                        .to_string(),
+                    "cannot drain a plugin that was never committed (state: prepared)".to_string(),
                 ));
             }
             // Claim the retire. On failure re-read: `ready -> draining` is the
@@ -1406,7 +1407,8 @@ impl WasmPlugin {
             }
             match self.budget.max_concurrency {
                 Some(limit) if prev >= limit => {
-                    self.in_flight.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                    self.in_flight
+                        .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
                     return Err(WasmError::Saturated { limit });
                 }
                 _ => Some(InFlightSlot(&self.in_flight)),
@@ -1523,7 +1525,13 @@ fn dispatch_v1(
             ),
         )
         .map_err(|e| call_error("kelson_call", e))?;
-    let raw = read_result(&mut *store, &instance, packed, "kelson_call", budget.memory_bytes)?;
+    let raw = read_result(
+        &mut *store,
+        &instance,
+        packed,
+        "kelson_call",
+        budget.memory_bytes,
+    )?;
     String::from_utf8(raw).map_err(|e| WasmError::Call(format!("output is not UTF-8: {e}")))
 }
 
@@ -1673,60 +1681,63 @@ impl OperationHandler for WasmHandler {
         // precedent), so this is a fact the review approved rather than a
         // guess made per call.
         let envelope_context = self.plugin.manifest().envelope_context;
-        let result = (|| -> Result<(Value, Vec<kelson_module_contract::NotificationRequest>), AppError> {
-            let ctx_json = serde_json::to_value(ctx.as_ref())
-                .map_err(|e| AppError::internal(format!("wasm context encode: {e}")))?;
-            // A guest entrypoint has no `ctx` parameter, so the executing
-            // context travels INSIDE the document it is handed — the one
-            // shape both halves of the seam name. Sending the bare payload
-            // instead is how a module ends up reporting "execution context is
-            // not readable" for every call it makes.
-            let wire = if envelope_context {
-                kelson_module_contract::encode_envelope(&ctx_json, &input)
-            } else {
-                input
-            };
-            let input_json = serde_json::to_string(&wire)
-                .map_err(|e| AppError::internal(format!("wasm input encode: {e}")))?;
-            let output = plugin
-                .call(&local, &input_json, scope.as_ref(), profile)
-                .map_err(to_app_error)?;
-            // Commit the guest's side effects through the unit BEFORE
-            // returning the body, so body + deltas + audit land in the
-            // same unit the engine commits atomically. A malformed delta
-            // or audit record is a guest bug: fail closed (500) rather
-            // than silently dropping a declared write.
-            for (i, delta) in output.deltas.iter().enumerate() {
-                let record = decode_mutation(&local, i, delta)?;
-                unit.record_mutation(record);
-            }
-            for (i, entry) in output.audits.iter().enumerate() {
-                let record = decode_audit(&local, i, entry)?;
-                unit.record_audit(record);
-            }
-            let value: Value = serde_json::from_str(&output.body).map_err(|e| {
-                AppError::internal(format!("wasm plugin output for {local} is not JSON: {e}"))
-            })?;
-            // A guest answers EITHER with its own document OR with the failure
-            // it raised, and the two must not be confusable. Without this the
-            // host reads `"[KSN_VALIDATION] ..."` - a bare JSON string - as a
-            // successful body, so every rejection a module makes reaches the
-            // caller as a 200 with the message in it, and the engine then
-            // reports the op as having produced nothing at all. The error
-            // crosses WHOLE (code, category and severity included), so the
-            // caller sees exactly what the module refused and why.
-            if let Some(raw) = value
-                .as_object()
-                .and_then(|o| o.get(kelson_module_contract::ENVELOPE_ERR))
-            {
-                return Err(serde_json::from_value::<AppError>(raw.clone()).unwrap_or_else(|_| {
-                    AppError::internal(format!(
-                        "wasm plugin {local} reported a failure the host could not decode"
-                    ))
-                }));
-            }
-            Ok((value, output.notifications))
-        })();
+        let result =
+            (|| -> Result<(Value, Vec<kelson_module_contract::NotificationRequest>), AppError> {
+                let ctx_json = serde_json::to_value(ctx.as_ref())
+                    .map_err(|e| AppError::internal(format!("wasm context encode: {e}")))?;
+                // A guest entrypoint has no `ctx` parameter, so the executing
+                // context travels INSIDE the document it is handed — the one
+                // shape both halves of the seam name. Sending the bare payload
+                // instead is how a module ends up reporting "execution context is
+                // not readable" for every call it makes.
+                let wire = if envelope_context {
+                    kelson_module_contract::encode_envelope(&ctx_json, &input)
+                } else {
+                    input
+                };
+                let input_json = serde_json::to_string(&wire)
+                    .map_err(|e| AppError::internal(format!("wasm input encode: {e}")))?;
+                let output = plugin
+                    .call(&local, &input_json, scope.as_ref(), profile)
+                    .map_err(to_app_error)?;
+                // Commit the guest's side effects through the unit BEFORE
+                // returning the body, so body + deltas + audit land in the
+                // same unit the engine commits atomically. A malformed delta
+                // or audit record is a guest bug: fail closed (500) rather
+                // than silently dropping a declared write.
+                for (i, delta) in output.deltas.iter().enumerate() {
+                    let record = decode_mutation(&local, i, delta)?;
+                    unit.record_mutation(record);
+                }
+                for (i, entry) in output.audits.iter().enumerate() {
+                    let record = decode_audit(&local, i, entry)?;
+                    unit.record_audit(record);
+                }
+                let value: Value = serde_json::from_str(&output.body).map_err(|e| {
+                    AppError::internal(format!("wasm plugin output for {local} is not JSON: {e}"))
+                })?;
+                // A guest answers EITHER with its own document OR with the failure
+                // it raised, and the two must not be confusable. Without this the
+                // host reads `"[KSN_VALIDATION] ..."` - a bare JSON string - as a
+                // successful body, so every rejection a module makes reaches the
+                // caller as a 200 with the message in it, and the engine then
+                // reports the op as having produced nothing at all. The error
+                // crosses WHOLE (code, category and severity included), so the
+                // caller sees exactly what the module refused and why.
+                if let Some(raw) = value
+                    .as_object()
+                    .and_then(|o| o.get(kelson_module_contract::ENVELOPE_ERR))
+                {
+                    return Err(
+                        serde_json::from_value::<AppError>(raw.clone()).unwrap_or_else(|_| {
+                            AppError::internal(format!(
+                                "wasm plugin {local} reported a failure the host could not decode"
+                            ))
+                        }),
+                    );
+                }
+                Ok((value, output.notifications))
+            })();
         // Notifications are the one effect that leaves the process rather
         // than being written into the unit, so they are delivered HERE —
         // after the call and after its deltas have been accepted, never
@@ -1781,7 +1792,9 @@ fn decode_mutation(
             "wasm plugin capability {capability} delta #{index} invalid: {what}"
         ))
     };
-    let obj = delta.as_object().ok_or_else(|| bad("delta must be a JSON object"))?;
+    let obj = delta
+        .as_object()
+        .ok_or_else(|| bad("delta must be a JSON object"))?;
     let resource_type = obj
         .get("resource_type")
         .and_then(Value::as_str)
@@ -1793,9 +1806,9 @@ fn decode_mutation(
         .ok_or_else(|| bad("missing after image"))?;
     let resource_id = match obj.get("resource_id") {
         None | Some(Value::Null) => None,
-        Some(Value::String(s)) => Some(
-            uuid::Uuid::parse_str(s).map_err(|_| bad("resource_id is not a uuid"))?,
-        ),
+        Some(Value::String(s)) => {
+            Some(uuid::Uuid::parse_str(s).map_err(|_| bad("resource_id is not a uuid"))?)
+        }
         Some(_) => return Err(bad("resource_id must be a uuid string")),
     };
     let resource_version = obj
@@ -1829,7 +1842,9 @@ fn decode_audit(
             "wasm plugin capability {capability} audit #{index} invalid: {what}"
         ))
     };
-    let obj = entry.as_object().ok_or_else(|| bad("entry must be a JSON object"))?;
+    let obj = entry
+        .as_object()
+        .ok_or_else(|| bad("entry must be a JSON object"))?;
     let action = obj
         .get("action")
         .and_then(Value::as_str)
@@ -1909,9 +1924,7 @@ fn to_app_error(err: WasmError) -> AppError {
 }
 
 /// Build one handler per declared capability (the boot path).
-pub fn handlers(
-    plugin: Arc<WasmPlugin>,
-) -> Result<Vec<Arc<dyn OperationHandler>>, WasmError> {
+pub fn handlers(plugin: Arc<WasmPlugin>) -> Result<Vec<Arc<dyn OperationHandler>>, WasmError> {
     let names: Vec<String> = plugin.manifest().capabilities.keys().cloned().collect();
     let mut out: Vec<Arc<dyn OperationHandler>> = Vec::with_capacity(names.len());
     for name in &names {
@@ -1942,10 +1955,7 @@ impl WasmHandlerBundle {
     /// All-or-nothing: a bundle where one plugin is wired and another is not
     /// would serve one capability with rows and another without, and nothing
     /// would report which.
-    pub fn install_services(
-        &self,
-        services: ModuleHostServices,
-    ) -> Result<(), WasmError> {
+    pub fn install_services(&self, services: ModuleHostServices) -> Result<(), WasmError> {
         for plugin in &self.1 {
             plugin.install_services(services.clone())?;
         }
@@ -2018,7 +2028,6 @@ fn relax_public_routes(manifest: &ModuleManifest, capability: &str, plan: &mut E
 // of them - so the per-instance construction lives in its own module, and
 // this is where its declaration goes.
 mod instances;
-
 
 /// A capability whose manifest declares `delta = "optional"` may return
 /// having transitioned nothing, and the host has to believe that instead of

@@ -6,13 +6,13 @@ use std::sync::Arc;
 
 use kelson_command::CommandBus;
 use kelson_context::{ExecutionContext, PrincipalContext, ScopeSnapshot, TenantContext};
-use kelson_foundation::{
-    AppError, AuthorizationRevision, ExecutionProfileKind, FeatureRevision, ModuleRevision,
-    OperationId, PrincipalId, TenantId,
-};
 use kelson_execution::{
     BoxFuture, ExecutionPlan, ExecutionUnit, IdempotencyKey, InMemoryBackend, InMemoryIdempotency,
     MutationRecord, OperationHandler,
+};
+use kelson_foundation::{
+    AppError, AuthorizationRevision, ExecutionProfileKind, FeatureRevision, ModuleRevision,
+    OperationId, PrincipalId, TenantId,
 };
 use kelson_lifecycle::{BootError, Phase, Provider, ServiceRegistry};
 use kelson_policy::{AccessSnapshot, PolicyAuthz, PolicyEngine};
@@ -78,10 +78,32 @@ impl Provider for KernelProvider {
     }
     fn init(&self, r: &mut ServiceRegistry) -> Result<(), BootError> {
         let policy = Arc::new(PolicyEngine::new());
+        // S-001c: this scaffold grants its operator edge through the same
+        // MembershipStore port a login uses, then reads the membership bit
+        // back from it - the snapshot is never fabricated.
+        let memberships = kelson_identity::InMemoryMembershipStore::new();
+        kelson_identity::store::MembershipStore::grant(
+            &memberships,
+            kelson_identity::Membership {
+                id: kelson_foundation::MembershipId::new(),
+                principal_id: self.principal,
+                tenant_id: self.tenant,
+                status: kelson_identity::MembershipStatus::Active,
+                joined_at: OffsetDateTime::now_utc(),
+            },
+        )
+        .expect("the scaffold edge grants");
+        let membership_active = kelson_identity::store::MembershipStore::active_for(
+            &memberships,
+            self.principal,
+            self.tenant,
+        )
+        .expect("the store answers")
+        .is_some();
         policy.install_snapshot(AccessSnapshot {
             principal_id: self.principal,
             tenant_id: self.tenant,
-            membership_active: true,
+            membership_active,
             capabilities: [CAPABILITY.to_string()].into_iter().collect(),
             scope_paths: ["LE1".to_string()].into_iter().collect(),
             authorization_revision: policy.revision(),

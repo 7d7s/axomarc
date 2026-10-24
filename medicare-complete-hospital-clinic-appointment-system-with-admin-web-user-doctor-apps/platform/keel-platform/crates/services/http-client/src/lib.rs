@@ -733,7 +733,9 @@ where
         match running.join_next().await {
             Some(Ok((index, result))) => results[index] = Some(result),
             Some(Err(join_err)) => {
-                aborted = Some(AppError::internal(format!("http pool task failed: {join_err}")));
+                aborted = Some(AppError::internal(format!(
+                    "http pool task failed: {join_err}"
+                )));
             }
             None => break,
         }
@@ -827,8 +829,7 @@ impl HttpFake {
     pub fn assert_no_pending(&self) {
         let pending = self.mock.pending_count();
         assert_eq!(
-            pending,
-            0,
+            pending, 0,
             "HttpFake: {pending} queued response(s) were never consumed"
         );
     }
@@ -861,16 +862,14 @@ impl HttpFake {
                 recorded_summary(&calls)
             );
         };
-        let actual: serde_json::Value = serde_json::from_slice(&recorded.body).unwrap_or_else(|e| {
-            panic!(
-                "HttpFake: request {index} body is not JSON ({e}; {} bytes)",
-                recorded.body.len()
-            )
-        });
-        assert_eq!(
-            actual, expected,
-            "HttpFake: request {index} body mismatch"
-        );
+        let actual: serde_json::Value =
+            serde_json::from_slice(&recorded.body).unwrap_or_else(|e| {
+                panic!(
+                    "HttpFake: request {index} body is not JSON ({e}; {} bytes)",
+                    recorded.body.len()
+                )
+            });
+        assert_eq!(actual, expected, "HttpFake: request {index} body mismatch");
     }
 }
 
@@ -1009,7 +1008,9 @@ mod tests {
             let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let hits_server = hits.clone();
             let turns = std::sync::Arc::new(std::sync::Mutex::new(
-                turns.into_iter().collect::<std::collections::VecDeque<Turn>>(),
+                turns
+                    .into_iter()
+                    .collect::<std::collections::VecDeque<Turn>>(),
             ));
             std::thread::spawn(move || {
                 for stream in listener.incoming() {
@@ -1454,11 +1455,7 @@ mod tests {
             "the public message never carries the address: {}",
             err.public_message
         );
-        assert_eq!(
-            server.hit_count(),
-            0,
-            "a refused target is never contacted"
-        );
+        assert_eq!(server.hit_count(), 0, "a refused target is never contacted");
     }
 
     /// **F-23** — the DEFAULT policy is permissive: an existing deployment
@@ -1469,7 +1466,10 @@ mod tests {
         let server = Loopback::spawn(vec![], Turn::Reply(200, r#"{"ok":true}"#.into()));
         let client = ReqwestHttpClient::new(fast_config()).unwrap();
         let req = HttpRequest::json("GET", &server.url("/internal"), &()).unwrap();
-        let res = client.execute(&req).await.expect("the default policy is permissive");
+        let res = client
+            .execute(&req)
+            .await
+            .expect("the default policy is permissive");
         assert_eq!(res.status, 200);
         assert_eq!(server.hit_count(), 1);
     }
@@ -1492,7 +1492,10 @@ mod tests {
         config.egress.allowed_hosts = vec![host];
         let client = ReqwestHttpClient::new(config).unwrap();
         let req = HttpRequest::json("GET", &server.url("/internal"), &()).unwrap();
-        let res = client.execute(&req).await.expect("an allowed host is reachable");
+        let res = client
+            .execute(&req)
+            .await
+            .expect("an allowed host is reachable");
         assert_eq!(res.status, 200);
     }
 }

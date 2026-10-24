@@ -71,9 +71,10 @@ pub fn json_to_bind(value: &Json, field: &FieldDef) -> Result<Bind, AppError> {
             .ok_or_else(|| {
                 AppError::validation(format!("field {} expects a uuid string", field.name))
             }),
-        FieldType::Bool => value.as_bool().map(Bind::Bool).ok_or_else(|| {
-            AppError::validation(format!("field {} expects a boolean", field.name))
-        }),
+        FieldType::Bool => value
+            .as_bool()
+            .map(Bind::Bool)
+            .ok_or_else(|| AppError::validation(format!("field {} expects a boolean", field.name))),
         FieldType::Int32 | FieldType::Int64 => value.as_i64().map(Bind::Int).ok_or_else(|| {
             AppError::validation(format!("field {} expects an integer", field.name))
         }),
@@ -590,9 +591,8 @@ impl ModelRuntime {
         if let Some(id_field) = self.model.field_named("id") {
             if id_field.field_type == FieldType::Uuid {
                 let id = match supplied.get("id") {
-                    Some(Json::String(s)) => Uuid::parse_str(s).map_err(|_| {
-                        AppError::validation("id must be a valid uuid string")
-                    })?,
+                    Some(Json::String(s)) => Uuid::parse_str(s)
+                        .map_err(|_| AppError::validation("id must be a valid uuid string"))?,
                     Some(_) => return Err(AppError::validation("id must be a uuid string")),
                     None => Uuid::now_v7(),
                 };
@@ -800,11 +800,7 @@ impl ModelRuntime {
 
     /// Insert an already-prepared record: observers fire around the store
     /// write, in order.
-    fn insert_prepared(
-        &self,
-        store: &dyn ModelStore,
-        record: Record,
-    ) -> Result<Record, AppError> {
+    fn insert_prepared(&self, store: &dyn ModelStore, record: Record) -> Result<Record, AppError> {
         self.fire(ModelPhase::Creating, &record);
         let stored = store.insert(&self.model, &record)?;
         self.fire(ModelPhase::Created, &stored);
@@ -1203,10 +1199,7 @@ impl ModelRuntime {
             let filters = predicate();
             self.validate_predicates(&filters)?;
             let opts = ListOpts {
-                page: Some(PageReq {
-                    page: 1,
-                    per_page,
-                }),
+                page: Some(PageReq { page: 1, per_page }),
                 include_deleted: true,
                 sort: Some(("id".into(), false)),
                 limit: None,
@@ -1299,10 +1292,7 @@ impl ModelRuntime {
     /// Read chokepoint for `first`/`pluck`: globals FIRST, then field
     /// validation. `chunk`/`cursor` validate raw and delegate to `list`,
     /// so globals apply exactly once there — never double-applied.
-    fn prepare_filters(
-        &self,
-        filters: Vec<FieldFilter>,
-    ) -> Result<Vec<FieldFilter>, AppError> {
+    fn prepare_filters(&self, filters: Vec<FieldFilter>) -> Result<Vec<FieldFilter>, AppError> {
         let filters = self.apply_global_scopes(filters);
         self.validate_predicates(&filters)?;
         Ok(filters)
@@ -1499,9 +1489,7 @@ impl ModelRuntime {
         };
         match row.get(field) {
             Some(value) => Ok(Some(value.clone())),
-            None if self.prevent_accessing_missing_attributes => {
-                Err(self.missing_attribute(field))
-            }
+            None if self.prevent_accessing_missing_attributes => Err(self.missing_attribute(field)),
             None => Ok(None),
         }
     }
@@ -1562,10 +1550,7 @@ impl ModelRuntime {
                 tenant,
                 predicates.to_vec(),
                 &[],
-                Some(PageReq {
-                    page,
-                    per_page,
-                }),
+                Some(PageReq { page, per_page }),
             )?;
             if result.items.is_empty() {
                 return Ok(true);
@@ -1831,7 +1816,10 @@ impl ModelRuntime {
         attrs.remove("tenant_id");
         let mut changes = Record::new();
         for (key, value) in &attrs {
-            if matches!(key.as_str(), "id" | "tenant_id" | "created_at" | "updated_at") {
+            if matches!(
+                key.as_str(),
+                "id" | "tenant_id" | "created_at" | "updated_at"
+            ) {
                 continue;
             }
             if self.model.field_named(key).is_none() {
@@ -1878,9 +1866,7 @@ impl ModelRuntime {
                     .relations
                     .iter()
                     .find(|r| r.name == *name)
-                    .ok_or_else(|| {
-                        AppError::validation(format!("unknown relation {name:?}"))
-                    })?;
+                    .ok_or_else(|| AppError::validation(format!("unknown relation {name:?}")))?;
                 let target = registry.get(&rel.target).cloned().ok_or_else(|| {
                     AppError::validation(format!(
                         "relation {name:?} targets unknown model {}",
@@ -1977,7 +1963,8 @@ impl ModelRuntime {
             return self.load_morph_to(store, relation, parents, tenant, constraint);
         }
         let (relation, target, _) = self.resolve_relation(relation_name)?;
-        let related = self.collect_resolved(store, &relation, &target, parents, tenant, constraint)?;
+        let related =
+            self.collect_resolved(store, &relation, &target, parents, tenant, constraint)?;
         let single = matches!(
             relation.kind,
             RelationKind::BelongsTo | RelationKind::HasOne
@@ -2008,9 +1995,7 @@ impl ModelRuntime {
         tenant: Option<TenantId>,
         constraint: &EagerConstraint,
     ) -> Result<(), AppError> {
-        if !constraint.filters.is_empty()
-            || constraint.sort.is_some()
-            || constraint.limit.is_some()
+        if !constraint.filters.is_empty() || constraint.sort.is_some() || constraint.limit.is_some()
         {
             return Err(AppError::validation(format!(
                 "morph-to relation {:?} cannot take eager constraints (the target model varies per row)",
@@ -2195,9 +2180,10 @@ impl ModelRuntime {
             )));
         }
         let pivot = match &relation.through {
-            Some(name) => registry.get(name).cloned().ok_or_else(|| {
-                AppError::validation(format!("unknown pivot model {name:?}"))
-            })?,
+            Some(name) => registry
+                .get(name)
+                .cloned()
+                .ok_or_else(|| AppError::validation(format!("unknown pivot model {name:?}")))?,
             None => synthesize_pivot(&relation)?,
         };
         Ok((relation, target, pivot))
@@ -2495,9 +2481,7 @@ impl ModelRuntime {
                     })
                     .collect()
             }
-            RelationKind::ManyThrough
-            | RelationKind::ManyToMany
-            | RelationKind::MorphToMany => {
+            RelationKind::ManyThrough | RelationKind::ManyToMany | RelationKind::MorphToMany => {
                 // Query 1: join/pivot rows for all parent ids; Query 2:
                 // target rows for the far-side ids found on the join.
                 let through = match &relation.through {
@@ -2508,14 +2492,10 @@ impl ModelRuntime {
                 };
                 // FK on the join table pointing at the target model.
                 let far_fk = relation.target_key.clone().unwrap_or_else(|| {
-                    format!(
-                        "{}_id",
-                        target.table.to_lowercase().trim_end_matches('s')
-                    )
+                    format!("{}_id", target.table.to_lowercase().trim_end_matches('s'))
                 });
                 let parent_ids = distinct_values(parents, "id");
-                let mut join_filters =
-                    vec![FieldFilter::is_in(&relation.foreign_key, parent_ids)];
+                let mut join_filters = vec![FieldFilter::is_in(&relation.foreign_key, parent_ids)];
                 if relation.kind == RelationKind::MorphToMany {
                     // Pin the pivot rows to THIS owner's morph type.
                     let type_col = relation.morph_type.clone().ok_or_else(|| {
@@ -2602,9 +2582,7 @@ impl ModelRuntime {
             let value = match op {
                 AggregateOp::Count => Json::from(rows.len() as u64),
                 other => {
-                    let name = other
-                        .field()
-                        .expect("non-count aggregate carries a field");
+                    let name = other.field().expect("non-count aggregate carries a field");
                     let values: Vec<&Json> = rows
                         .iter()
                         .filter_map(|r| r.get(name))
@@ -2854,10 +2832,7 @@ impl ModelRuntime {
         let (sub_table, sub_key, outer_key, injected) = match relation.kind {
             RelationKind::BelongsTo => (
                 target.table.clone(),
-                relation
-                    .target_key
-                    .clone()
-                    .unwrap_or_else(|| "id".into()),
+                relation.target_key.clone().unwrap_or_else(|| "id".into()),
                 relation.foreign_key.clone(),
                 None,
             ),
@@ -3278,7 +3253,8 @@ mod tests {
             tenant: Option<TenantId>,
             include_deleted: bool,
         ) -> Result<Option<Record>, AppError> {
-            self.inner.find_for_update(model, id, tenant, include_deleted)
+            self.inner
+                .find_for_update(model, id, tenant, include_deleted)
         }
         fn insert_or_ignore(
             &self,
@@ -3376,7 +3352,9 @@ mod tests {
     #[test]
     fn insert_requires_tenant_and_generates_id() {
         assert!(rt().prepare_insert(&input("p"), None).is_err());
-        let rec = rt().prepare_insert(&input("p"), Some(TenantId::new())).unwrap();
+        let rec = rt()
+            .prepare_insert(&input("p"), Some(TenantId::new()))
+            .unwrap();
         assert!(Uuid::parse_str(rec["id"].as_str().unwrap()).is_ok());
         assert!(rec.contains_key("tenant_id"));
         assert!(rec.contains_key("created_at"));
@@ -3435,7 +3413,10 @@ mod tests {
         assert_eq!(booked.total, Some(1));
         let all = rt.list(&store, Some(tenant), vec![], &[], None).unwrap();
         assert_eq!(all.total, Some(2));
-        assert!(rt.public_record(&all.items[0]).unwrap().contains_key("summary"));
+        assert!(rt
+            .public_record(&all.items[0])
+            .unwrap()
+            .contains_key("summary"));
     }
 
     #[test]
@@ -3444,7 +3425,10 @@ mod tests {
         let tenant = TenantId::new();
         let row = rt().insert(&store, &input("gone"), Some(tenant)).unwrap();
         rt().delete(&store, rid(&row), Some(tenant)).unwrap();
-        assert!(rt().find(&store, rid(&row), Some(tenant)).unwrap().is_none());
+        assert!(rt()
+            .find(&store, rid(&row), Some(tenant))
+            .unwrap()
+            .is_none());
         assert!(store
             .find(&appointment_model(), rid(&row), Some(tenant), true)
             .unwrap()
@@ -3456,7 +3440,9 @@ mod tests {
         let rt = ModelRuntime::new(appointment_model()).with_mutator("patient", |v| {
             Ok(Json::String(v.as_str().unwrap_or("").trim().to_uppercase()))
         });
-        let rec = rt.prepare_insert(&input("  jane "), Some(TenantId::new())).unwrap();
+        let rec = rt
+            .prepare_insert(&input("  jane "), Some(TenantId::new()))
+            .unwrap();
         assert_eq!(rec["patient"], Json::String("JANE".into()));
     }
 
@@ -3486,7 +3472,8 @@ mod tests {
         let row = rt.insert(&store, &input("evt"), Some(tenant)).unwrap();
         let mut changes = Record::new();
         changes.insert("status".into(), Json::String("cancelled".into()));
-        rt.update(&store, rid(&row), Some(tenant), &changes).unwrap();
+        rt.update(&store, rid(&row), Some(tenant), &changes)
+            .unwrap();
         rt.delete(&store, rid(&row), Some(tenant)).unwrap();
         assert_eq!(
             *recorder.0.lock().unwrap(),
@@ -3563,8 +3550,8 @@ mod tests {
     /// `Text` field takes the untyped path instead of erroring out.
     #[test]
     fn record_to_columns_for_never_rejects_a_value_that_bound_before() {
-        let model = ModelDef::new("Reading", "readings")
-            .field(FieldDef::new("value", FieldType::Text));
+        let model =
+            ModelDef::new("Reading", "readings").field(FieldDef::new("value", FieldType::Text));
         let mut record = Record::new();
         record.insert("value".into(), Json::from(7));
         let (cols, binds) = record_to_columns_for(&record, &model).unwrap();
@@ -3600,7 +3587,11 @@ mod tests {
         let patient = ModelDef::new("Patient", "patients")
             .field(FieldDef::new("id", FieldType::Uuid).required().unique())
             .field(FieldDef::new("name", FieldType::Text).required())
-            .relation(RelationDef::has_many("appointments", "Appointment", "patient_id"));
+            .relation(RelationDef::has_many(
+                "appointments",
+                "Appointment",
+                "patient_id",
+            ));
         let appointment = ModelDef::new("Appointment", "appointments")
             .field(FieldDef::new("id", FieldType::Uuid).required().unique())
             .field(FieldDef::new("patient_id", FieldType::Uuid))
@@ -3726,7 +3717,11 @@ mod tests {
         let patient = ModelDef::new("Patient", "patients")
             .field(FieldDef::new("id", FieldType::Uuid).required().unique())
             .field(FieldDef::new("name", FieldType::Text).required())
-            .relation(RelationDef::has_many("appointments", "Appointment", "patient_id"));
+            .relation(RelationDef::has_many(
+                "appointments",
+                "Appointment",
+                "patient_id",
+            ));
         let appointment = ModelDef::new("Appointment", "appointments")
             .field(FieldDef::new("id", FieldType::Uuid).required().unique())
             .field(FieldDef::new("patient_id", FieldType::Uuid))
@@ -3905,7 +3900,11 @@ mod tests {
             .field(FieldDef::new("id", FieldType::Uuid).required().unique())
             .field(FieldDef::new("tenant_id", FieldType::Uuid).required())
             .field(FieldDef::new("name", FieldType::Text).required())
-            .relation(RelationDef::has_many("appointments", "Appointment", "patient_id"));
+            .relation(RelationDef::has_many(
+                "appointments",
+                "Appointment",
+                "patient_id",
+            ));
         let appointment = ModelDef::new("Appointment", "appointments")
             .tenant_scoped()
             .field(FieldDef::new("id", FieldType::Uuid).required().unique())
@@ -3930,7 +3929,9 @@ mod tests {
         let mut cross = Record::new();
         cross.insert("patient_id".into(), p["id"].clone());
         cross.insert("status".into(), Json::String("booked".into()));
-        appointment_rt.insert(&store, &cross, Some(foreign)).unwrap();
+        appointment_rt
+            .insert(&store, &cross, Some(foreign))
+            .unwrap();
         let page = patient_rt
             .list(
                 &store,
@@ -3940,7 +3941,10 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert!(page.items.is_empty(), "cross-tenant child leaked into EXISTS");
+        assert!(
+            page.items.is_empty(),
+            "cross-tenant child leaked into EXISTS"
+        );
 
         // Same-tenant child qualifies...
         let mut same = Record::new();
@@ -3969,7 +3973,10 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert!(page.items.is_empty(), "trashed child still satisfied EXISTS");
+        assert!(
+            page.items.is_empty(),
+            "trashed child still satisfied EXISTS"
+        );
     }
 
     #[test]
@@ -3977,23 +3984,39 @@ mod tests {
         let (patient_rt, appointment_rt, _store) = rel_fixture();
 
         let err = patient_rt.has("nope", vec![]).unwrap_err();
-        assert!(err.public_message.contains("no relation"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("no relation"),
+            "{}",
+            err.public_message
+        );
 
         let err = patient_rt
             .has("appointments", vec![FieldFilter::eq("bogus", 1)])
             .unwrap_err();
-        assert!(err.public_message.contains("unknown field"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("unknown field"),
+            "{}",
+            err.public_message
+        );
 
         // Nesting an existence term inside another is refused at build.
         let inner = appointment_rt.has("patient", vec![]).unwrap();
         let err = patient_rt.has("appointments", vec![inner]).unwrap_err();
-        assert!(err.public_message.contains("nest"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("nest"),
+            "{}",
+            err.public_message
+        );
 
         // A relation declared but no registry wired: filter build needs it.
         let bare_patient = ModelDef::new("Patient", "patients")
             .field(FieldDef::new("id", FieldType::Uuid).required().unique())
             .field(FieldDef::new("name", FieldType::Text).required())
-            .relation(RelationDef::has_many("appointments", "Appointment", "patient_id"));
+            .relation(RelationDef::has_many(
+                "appointments",
+                "Appointment",
+                "patient_id",
+            ));
         let err = ModelRuntime::new(bare_patient)
             .has("appointments", vec![])
             .unwrap_err();
@@ -4068,7 +4091,9 @@ mod tests {
         appointment_rt.insert(&store, &orphan, None).unwrap();
 
         let mut parents = vec![alice, bob];
-        patient_rt.with_count(&store, "appointments", &mut parents, None).unwrap();
+        patient_rt
+            .with_count(&store, "appointments", &mut parents, None)
+            .unwrap();
         patient_rt
             .with_sum(&store, "appointments", &mut parents, None, "visits")
             .unwrap();
@@ -4117,17 +4142,29 @@ mod tests {
         let err = patient_rt
             .with_count(&store, "nope", &mut parents, None)
             .unwrap_err();
-        assert!(err.public_message.contains("no relation"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("no relation"),
+            "{}",
+            err.public_message
+        );
 
         let err = patient_rt
             .with_sum(&store, "appointments", &mut parents, None, "status")
             .unwrap_err();
-        assert!(err.public_message.contains("numeric"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("numeric"),
+            "{}",
+            err.public_message
+        );
 
         let err = patient_rt
             .with_sum(&store, "appointments", &mut parents, None, "missing")
             .unwrap_err();
-        assert!(err.public_message.contains("not on model"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("not on model"),
+            "{}",
+            err.public_message
+        );
     }
 
     #[test]
@@ -4274,7 +4311,9 @@ mod tests {
         let (p1, p2) = comment_seed(&post_rt, &comment_rt, &user_rt, &store);
 
         let mut posts = vec![p1, p2];
-        post_rt.with(&store, &mut posts, None, "comments.author").unwrap();
+        post_rt
+            .with(&store, &mut posts, None, "comments.author")
+            .unwrap();
 
         let p1_comments = posts[0]["comments"].as_array().unwrap();
         assert_eq!(p1_comments.len(), 2);
@@ -4357,7 +4396,11 @@ mod tests {
         let (p1, _p2) = comment_seed(&post_rt, &comment_rt, &user_rt, &store);
         let mut posts = vec![p1];
         let err = post_rt.with(&store, &mut posts, None, " . ").unwrap_err();
-        assert!(err.public_message.contains("relation path"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("relation path"),
+            "{}",
+            err.public_message
+        );
     }
 
     /// Patient <-> Doctor through a pivot: the Patient side goes through a
@@ -4612,8 +4655,7 @@ mod tests {
     /// a morph map); `Post` morphMany's Comments and morphToMany's Tags
     /// through a synthesized `taggables` pivot.
     #[allow(clippy::type_complexity)]
-    fn morph_fixture()
-    -> (
+    fn morph_fixture() -> (
         ModelRuntime,
         ModelRuntime,
         ModelRuntime,
@@ -4708,7 +4750,10 @@ mod tests {
             .load_relation(&store, "imageable", &mut parents, None)
             .unwrap();
         // Stored aliases resolve through the morph map; a blank morph is Null.
-        assert_eq!(parents[0]["imageable"]["title"], Json::String("Hello".into()));
+        assert_eq!(
+            parents[0]["imageable"]["title"],
+            Json::String("Hello".into())
+        );
         assert_eq!(parents[1]["imageable"]["duration"], Json::from(120));
         assert_eq!(parents[2]["imageable"], Json::Null);
 
@@ -4798,7 +4843,13 @@ mod tests {
             2
         );
         post_rt
-            .attach(&store, "tags", p2["id"].clone(), vec![t2["id"].clone()], None)
+            .attach(
+                &store,
+                "tags",
+                p2["id"].clone(),
+                vec![t2["id"].clone()],
+                None,
+            )
             .unwrap();
 
         // A pivot row for ANOTHER owner type sharing the id must not leak.
@@ -4857,7 +4908,11 @@ mod tests {
         let (_post_rt, image_rt, _video_rt, _comment_rt, _tag_rt, store) = morph_fixture();
         // MorphTo has no single target: existence builders refuse it...
         let err = image_rt.has("imageable", vec![]).unwrap_err();
-        assert!(err.public_message.contains("morph-to"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("morph-to"),
+            "{}",
+            err.public_message
+        );
         // ...and per-level eager constraints cannot apply (targets vary).
         let mut images: Vec<Record> = Vec::new();
         let err = image_rt
@@ -4924,7 +4979,9 @@ mod tests {
             .unwrap();
         assert_eq!(rid(&again), rid(&a));
         assert_eq!(
-            rt().list(&store, Some(tenant), vec![], &[], None).unwrap().total,
+            rt().list(&store, Some(tenant), vec![], &[], None)
+                .unwrap()
+                .total,
             Some(1)
         );
 
@@ -4960,7 +5017,9 @@ mod tests {
         assert!(prepared.contains_key("id"));
         assert!(prepared.contains_key("created_at"));
         assert_eq!(
-            rt().list(&store, Some(tenant), vec![], &[], None).unwrap().total,
+            rt().list(&store, Some(tenant), vec![], &[], None)
+                .unwrap()
+                .total,
             Some(1)
         );
 
@@ -4968,7 +5027,11 @@ mod tests {
         let err = rt()
             .first(&store, Some(tenant), &[FieldFilter::eq("ghost_col", "x")])
             .unwrap_err();
-        assert!(err.public_message.contains("unknown field"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("unknown field"),
+            "{}",
+            err.public_message
+        );
     }
 
     #[test]
@@ -4991,7 +5054,9 @@ mod tests {
         assert_eq!(rid(&updated), rid(&a));
         assert_eq!(updated["status"], Json::String("cancelled".into()));
         assert_eq!(
-            rt().list(&store, Some(tenant), vec![], &[], None).unwrap().total,
+            rt().list(&store, Some(tenant), vec![], &[], None)
+                .unwrap()
+                .total,
             Some(1)
         );
 
@@ -5006,7 +5071,9 @@ mod tests {
             .unwrap();
         assert_eq!(created["patient"], Json::String("bob".into()));
         assert_eq!(
-            rt().list(&store, Some(tenant), vec![], &[], None).unwrap().total,
+            rt().list(&store, Some(tenant), vec![], &[], None)
+                .unwrap()
+                .total,
             Some(2)
         );
     }
@@ -5020,7 +5087,11 @@ mod tests {
 
         // Normal insert refuses the undeclared key...
         let err = rt().insert(&store, &guarded, Some(tenant)).unwrap_err();
-        assert!(err.public_message.contains("unknown field"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("unknown field"),
+            "{}",
+            err.public_message
+        );
         // ...force_create writes it through.
         let stored = rt().force_create(&store, &guarded, Some(tenant)).unwrap();
         assert_eq!(stored.get("extra"), Some(&Json::String("raw".into())));
@@ -5029,9 +5100,17 @@ mod tests {
         let err = rt()
             .force_create(&store, &Record::new(), Some(tenant))
             .unwrap_err();
-        assert!(err.public_message.contains("required"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("required"),
+            "{}",
+            err.public_message
+        );
         let err = rt().force_create(&store, &guarded, None).unwrap_err();
-        assert!(err.public_message.contains("tenant"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("tenant"),
+            "{}",
+            err.public_message
+        );
     }
 
     #[test]
@@ -5060,7 +5139,10 @@ mod tests {
         // Mutators, casts, and observers ran once per record.
         let phases = recorder.0.lock().unwrap().clone();
         assert_eq!(
-            phases.iter().filter(|p| **p == ModelPhase::Creating).count(),
+            phases
+                .iter()
+                .filter(|p| **p == ModelPhase::Creating)
+                .count(),
             3
         );
         assert_eq!(
@@ -5074,24 +5156,37 @@ mod tests {
         let err = rt
             .create_many(&store, &[input("d2"), bad], Some(tenant))
             .unwrap_err();
-        assert!(err.public_message.contains("unknown field"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("unknown field"),
+            "{}",
+            err.public_message
+        );
     }
 
     #[test]
     fn insert_get_id_and_insert_or_ignore() {
         let store = InMemoryModelStore::new();
         let tenant = TenantId::new();
-        let id1 = rt().insert_get_id(&store, &input("a"), Some(tenant)).unwrap();
-        let id2 = rt().insert_get_id(&store, &input("b"), Some(tenant)).unwrap();
+        let id1 = rt()
+            .insert_get_id(&store, &input("a"), Some(tenant))
+            .unwrap();
+        let id2 = rt()
+            .insert_get_id(&store, &input("b"), Some(tenant))
+            .unwrap();
         assert_ne!(id1, id2);
         assert!(rt().find(&store, id1, Some(tenant)).unwrap().is_some());
 
         // Conflicting id → ignored (Ok(None)), not an error.
         let mut dup = input("c");
         dup.insert("id".into(), Json::String(id1.to_string()));
-        assert!(rt().insert_or_ignore(&store, &dup, Some(tenant)).unwrap().is_none());
+        assert!(rt()
+            .insert_or_ignore(&store, &dup, Some(tenant))
+            .unwrap()
+            .is_none());
         assert_eq!(
-            rt().list(&store, Some(tenant), vec![], &[], None).unwrap().total,
+            rt().list(&store, Some(tenant), vec![], &[], None)
+                .unwrap()
+                .total,
             Some(2)
         );
         // A fresh row stores normally.
@@ -5100,7 +5195,9 @@ mod tests {
             .unwrap()
             .is_some());
         assert_eq!(
-            rt().list(&store, Some(tenant), vec![], &[], None).unwrap().total,
+            rt().list(&store, Some(tenant), vec![], &[], None)
+                .unwrap()
+                .total,
             Some(3)
         );
     }
@@ -5122,7 +5219,9 @@ mod tests {
         assert_eq!(rid(&merged), rid(&first));
         assert_eq!(merged["status"], Json::String("cancelled".into()));
         assert_eq!(
-            rt().list(&store, Some(tenant), vec![], &[], None).unwrap().total,
+            rt().list(&store, Some(tenant), vec![], &[], None)
+                .unwrap()
+                .total,
             Some(1)
         );
     }
@@ -5159,22 +5258,41 @@ mod tests {
 
         // Typed NOT_FOUND for a missing row...
         let err = rt()
-            .increment(&store, Uuid::now_v7(), Some(tenant), "visits", 1, &Record::new())
+            .increment(
+                &store,
+                Uuid::now_v7(),
+                Some(tenant),
+                "visits",
+                1,
+                &Record::new(),
+            )
             .unwrap_err();
         assert_eq!(err.code, "KSN_NOT_FOUND");
         // ...validation for undeclared, non-numeric, and immutable fields.
         let err = rt()
             .increment(&store, id, Some(tenant), "nope", 1, &Record::new())
             .unwrap_err();
-        assert!(err.public_message.contains("not on model"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("not on model"),
+            "{}",
+            err.public_message
+        );
         let err = rt()
             .increment(&store, id, Some(tenant), "patient", 1, &Record::new())
             .unwrap_err();
-        assert!(err.public_message.contains("not numeric"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("not numeric"),
+            "{}",
+            err.public_message
+        );
         let err = rt()
             .increment(&store, id, Some(tenant), "id", 1, &Record::new())
             .unwrap_err();
-        assert!(err.public_message.contains("immutable"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("immutable"),
+            "{}",
+            err.public_message
+        );
     }
 
     #[test]
@@ -5205,9 +5323,17 @@ mod tests {
             .is_none());
         // Unknown columns are refused.
         let err = rt().value(&store, Some(tenant), &[], "nope").unwrap_err();
-        assert!(err.public_message.contains("not on model"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("not on model"),
+            "{}",
+            err.public_message
+        );
         let err = rt().pluck(&store, Some(tenant), &[], "nope").unwrap_err();
-        assert!(err.public_message.contains("not on model"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("not on model"),
+            "{}",
+            err.public_message
+        );
 
         let mut all: Vec<String> = rt()
             .pluck(&store, Some(tenant), &[], "patient")
@@ -5256,7 +5382,9 @@ mod tests {
 
         // Callback errors propagate.
         let err = rt()
-            .chunk(&store, Some(tenant), &[], 2, |_, _| Err(AppError::validation("boom")))
+            .chunk(&store, Some(tenant), &[], 2, |_, _| {
+                Err(AppError::validation("boom"))
+            })
             .unwrap_err();
         assert!(err.public_message.contains("boom"));
 
@@ -5308,7 +5436,12 @@ mod tests {
             .unwrap();
         assert_eq!(rows.len(), 1);
         let empty: Vec<Record> = rt()
-            .cursor(&store, Some(tenant), &[FieldFilter::eq("patient", "ghost")], 2)
+            .cursor(
+                &store,
+                Some(tenant),
+                &[FieldFilter::eq("patient", "ghost")],
+                2,
+            )
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
@@ -5324,7 +5457,10 @@ mod tests {
         let a = rt().insert(&store, &i, Some(tenant)).unwrap();
         // Pin the source timestamps so the clone's are provably fresh.
         let mut past = Record::new();
-        past.insert("created_at".into(), Json::String("2000-01-01T00:00:00Z".into()));
+        past.insert(
+            "created_at".into(),
+            Json::String("2000-01-01T00:00:00Z".into()),
+        );
         store
             .update(&appointment_model(), rid(&a), Some(tenant), &past)
             .unwrap();
@@ -5336,25 +5472,34 @@ mod tests {
         // Fresh identity, fresh framework timestamps, except-fields removed.
         assert_ne!(clone["id"], a["id"]);
         assert!(!clone.contains_key("notes"));
-        assert_ne!(clone["created_at"], Json::String("2000-01-01T00:00:00Z".into()));
+        assert_ne!(
+            clone["created_at"],
+            Json::String("2000-01-01T00:00:00Z".into())
+        );
         assert!(clone.contains_key("updated_at"));
         assert_eq!(clone["patient"], Json::String("jane".into()));
 
         // ...and the clone is UNSAVED until persisted.
         assert_eq!(
-            rt().list(&store, Some(tenant), vec![], &[], None).unwrap().total,
+            rt().list(&store, Some(tenant), vec![], &[], None)
+                .unwrap()
+                .total,
             Some(1)
         );
         store.insert(&appointment_model(), &clone).unwrap();
         assert_eq!(
-            rt().list(&store, Some(tenant), vec![], &[], None).unwrap().total,
+            rt().list(&store, Some(tenant), vec![], &[], None)
+                .unwrap()
+                .total,
             Some(2)
         );
 
         // A record whose row no longer exists raises typed NOT_FOUND.
         let mut bogus = Record::new();
         bogus.insert("id".into(), Json::String(Uuid::now_v7().to_string()));
-        let err = rt().replicate(&store, &bogus, Some(tenant), &[], true).unwrap_err();
+        let err = rt()
+            .replicate(&store, &bogus, Some(tenant), &[], true)
+            .unwrap_err();
         assert_eq!(err.code, "KSN_NOT_FOUND");
     }
 
@@ -5364,7 +5509,11 @@ mod tests {
         let patient = ModelDef::new("Patient", "patients")
             .field(FieldDef::new("id", FieldType::Uuid).required().unique())
             .field(FieldDef::new("name", FieldType::Text).required())
-            .relation(RelationDef::has_many("appointments", "Appointment", "patient_id"));
+            .relation(RelationDef::has_many(
+                "appointments",
+                "Appointment",
+                "patient_id",
+            ));
         let appointment = ModelDef::new("Appointment", "appointments")
             .field(FieldDef::new("id", FieldType::Uuid).required().unique())
             .field(FieldDef::new("patient_id", FieldType::Uuid))
@@ -5381,9 +5530,7 @@ mod tests {
         p.insert("appointments".into(), Json::Array(vec![])); // pretend loaded
 
         // detach=true strips the payload → the clone prepares cleanly...
-        let clone = patient_rt
-            .replicate(&store, &p, None, &[], true)
-            .unwrap();
+        let clone = patient_rt.replicate(&store, &p, None, &[], true).unwrap();
         assert!(!clone.contains_key("appointments"));
         assert_ne!(clone["id"], p["id"]);
 
@@ -5391,7 +5538,11 @@ mod tests {
         let err = patient_rt
             .replicate(&store, &p, None, &[], false)
             .unwrap_err();
-        assert!(err.public_message.contains("unknown field"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("unknown field"),
+            "{}",
+            err.public_message
+        );
     }
 
     #[test]
@@ -5409,7 +5560,10 @@ mod tests {
             .unwrap();
 
         // fresh: a NEW record, snapshot untouched.
-        let fresh = rt().fresh(&store, &snapshot, Some(tenant)).unwrap().unwrap();
+        let fresh = rt()
+            .fresh(&store, &snapshot, Some(tenant))
+            .unwrap()
+            .unwrap();
         assert_eq!(fresh["patient"], Json::String("jane-renamed".into()));
         assert_eq!(snapshot["patient"], Json::String("jane".into()));
 
@@ -5419,9 +5573,14 @@ mod tests {
 
         // Deleted meanwhile: refresh → typed NOT_FOUND, fresh → None.
         rt().delete(&store, rid(&a), Some(tenant)).unwrap();
-        let err = rt().refresh(&store, &mut snapshot, Some(tenant)).unwrap_err();
+        let err = rt()
+            .refresh(&store, &mut snapshot, Some(tenant))
+            .unwrap_err();
         assert_eq!(err.code, "KSN_NOT_FOUND");
-        assert!(rt().fresh(&store, &snapshot, Some(tenant)).unwrap().is_none());
+        assert!(rt()
+            .fresh(&store, &snapshot, Some(tenant))
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -5430,7 +5589,11 @@ mod tests {
         let patient = ModelDef::new("Patient", "patients")
             .field(FieldDef::new("id", FieldType::Uuid).required().unique())
             .field(FieldDef::new("name", FieldType::Text).required())
-            .relation(RelationDef::has_many("appointments", "Appointment", "patient_id"));
+            .relation(RelationDef::has_many(
+                "appointments",
+                "Appointment",
+                "patient_id",
+            ));
         let appointment = ModelDef::new("Appointment", "appointments")
             .field(FieldDef::new("id", FieldType::Uuid).required().unique())
             .field(FieldDef::new("patient_id", FieldType::Uuid))
@@ -5477,7 +5640,10 @@ mod tests {
 
         // Pin updated_at to the past, then touch.
         let mut past = Record::new();
-        past.insert("updated_at".into(), Json::String("2000-01-01T00:00:00Z".into()));
+        past.insert(
+            "updated_at".into(),
+            Json::String("2000-01-01T00:00:00Z".into()),
+        );
         rt().update(&store, rid(&a), Some(tenant), &past).unwrap();
         let touched = rt().touch(&store, rid(&a), Some(tenant)).unwrap();
         assert_ne!(
@@ -5485,7 +5651,9 @@ mod tests {
             Some(&Json::String("2000-01-01T00:00:00Z".into()))
         );
         // Missing row → typed NOT_FOUND.
-        let err = rt().touch(&store, Uuid::now_v7(), Some(tenant)).unwrap_err();
+        let err = rt()
+            .touch(&store, Uuid::now_v7(), Some(tenant))
+            .unwrap_err();
         assert_eq!(err.code, "KSN_NOT_FOUND");
 
         // Models without an updated_at column are refused.
@@ -5495,7 +5663,11 @@ mod tests {
         let err = ModelRuntime::new(plain)
             .touch(&store, Uuid::now_v7(), None)
             .unwrap_err();
-        assert!(err.public_message.contains("no updated_at"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("no updated_at"),
+            "{}",
+            err.public_message
+        );
     }
 
     #[test]
@@ -5504,7 +5676,11 @@ mod tests {
         let patient = ModelDef::new("Patient", "patients")
             .field(FieldDef::new("id", FieldType::Uuid).required().unique())
             .field(FieldDef::new("name", FieldType::Text).required())
-            .relation(RelationDef::has_many("appointments", "Appointment", "patient_id"));
+            .relation(RelationDef::has_many(
+                "appointments",
+                "Appointment",
+                "patient_id",
+            ));
         let appointment = ModelDef::new("Appointment", "appointments")
             .field(FieldDef::new("id", FieldType::Uuid).required().unique())
             .field(FieldDef::new("patient_id", FieldType::Uuid))
@@ -5712,7 +5888,10 @@ mod tests {
             .field(FieldDef::new("body", FieldType::Text))
             .hide(["body"]);
         let rt = ModelRuntime::new(doc).with_accessor("label", |r| {
-            Json::String(format!("doc:{}", r.get("title").and_then(|v| v.as_str()).unwrap_or("?")))
+            Json::String(format!(
+                "doc:{}",
+                r.get("title").and_then(|v| v.as_str()).unwrap_or("?")
+            ))
         });
         let mut doc_in = Record::new();
         doc_in.insert("title".into(), Json::String("t1".into()));
@@ -5724,11 +5903,7 @@ mod tests {
         assert!(public.contains_key("title"));
         assert_eq!(public["label"], Json::String("doc:t1".into()));
         // Per-call make_visible opts one key back in.
-        let shown = rt
-            .wire(&stored)
-            .make_visible(["body"])
-            .to_record()
-            .unwrap();
+        let shown = rt.wire(&stored).make_visible(["body"]).to_record().unwrap();
         assert_eq!(shown["body"], Json::String("hidden".into()));
 
         // Manifest visible: a non-empty list narrows the stored fields;
@@ -5790,11 +5965,7 @@ mod tests {
         let mut n = Record::new();
         n.insert("title".into(), Json::String("t".into()));
         let stored = rt.insert(&store, &n, None).unwrap();
-        let err = rt
-            .wire(&stored)
-            .append(["nope"])
-            .to_record()
-            .unwrap_err();
+        let err = rt.wire(&stored).append(["nope"]).to_record().unwrap_err();
         assert!(
             err.public_message.contains("not an accessor"),
             "{}",
@@ -5817,7 +5988,11 @@ mod tests {
         let patient = ModelDef::new("Patient", "patients")
             .field(FieldDef::new("id", FieldType::Uuid).required().unique())
             .field(FieldDef::new("name", FieldType::Text).required())
-            .relation(RelationDef::has_many("appointments", "Appointment", "patient_id"));
+            .relation(RelationDef::has_many(
+                "appointments",
+                "Appointment",
+                "patient_id",
+            ));
         let appointment = ModelDef::new("Appointment", "appointments")
             .field(FieldDef::new("id", FieldType::Uuid).required().unique())
             .field(FieldDef::new("patient_id", FieldType::Uuid))
@@ -5837,10 +6012,7 @@ mod tests {
         let strict = ModelRuntime::new(patient)
             .with_registry(registry)
             .prevent_lazy_loading();
-        let mut rows = lenient
-            .list(&store, None, vec![], &[], None)
-            .unwrap()
-            .items;
+        let mut rows = lenient.list(&store, None, vec![], &[], None).unwrap().items;
 
         // The lazy path refuses with the Phase 5 code...
         let err = strict
@@ -5853,7 +6025,9 @@ mod tests {
         assert_eq!(err.code, codes::LAZY_LOAD_PREVENTED);
 
         // ...while the declared eager path stays legal under the flag...
-        strict.with(&store, &mut rows, None, "appointments").unwrap();
+        strict
+            .with(&store, &mut rows, None, "appointments")
+            .unwrap();
         assert!(rows[0]["appointments"].as_array().is_some());
 
         // ...and the lenient runtime still lazy-loads.
@@ -5876,8 +6050,8 @@ mod tests {
         rt.push(&store, &mut lenient, Some(tenant)).unwrap();
 
         // Strict: refused with a validation error naming the attribute.
-        let strict = ModelRuntime::new(appointment_model())
-            .prevent_silently_discarding_attributes();
+        let strict =
+            ModelRuntime::new(appointment_model()).prevent_silently_discarding_attributes();
         let mut strict_row = row.clone();
         strict_row.insert("bogus".into(), Json::Bool(true));
         let err = strict
@@ -6125,17 +6299,16 @@ mod tests {
         // Untouched fields stay clean.
         assert!(!tracking.is_dirty("patient"));
         assert!(!tracking.was_changed("patient"));
-        assert!(tracking
-            .dirty_fields()
-            .contains(&"status".to_string()));
-        assert!(tracking
-            .changed_fields()
-            .contains(&"status".to_string()));
+        assert!(tracking.dirty_fields().contains(&"status".to_string()));
+        assert!(tracking.changed_fields().contains(&"status".to_string()));
         assert_eq!(
             tracking.stored().get("status").and_then(Json::as_str),
             Some("cancelled")
         );
-        assert_eq!(stored.get("status").and_then(Json::as_str), Some("cancelled"));
+        assert_eq!(
+            stored.get("status").and_then(Json::as_str),
+            Some("cancelled")
+        );
     }
 
     // ---------------------------------------- Wave 3 Phase 6: soft-delete trio
@@ -6217,9 +6390,7 @@ mod tests {
         rt.force_delete(&store, id, Some(tenant)).unwrap();
         assert!(rt.find_trashed(&store, id, Some(tenant)).unwrap().is_none());
         assert_eq!(
-            rt.force_delete(&store, id, Some(tenant))
-                .unwrap_err()
-                .code,
+            rt.force_delete(&store, id, Some(tenant)).unwrap_err().code,
             kelson_foundation::codes::NOT_FOUND
         );
     }
@@ -6313,13 +6484,11 @@ mod tests {
     fn without_global_scopes_all_lifts_the_soft_delete_veil() {
         let store = InMemoryModelStore::new();
         let tenant = TenantId::new();
-        let rt = ModelRuntime::new(appointment_model()).with_global_scope(
-            "only_booked",
-            |mut f| {
+        let rt =
+            ModelRuntime::new(appointment_model()).with_global_scope("only_booked", |mut f| {
                 f.push(FieldFilter::eq("status", "booked"));
                 f
-            },
-        );
+            });
         let row = rt.insert(&store, &input("p"), Some(tenant)).unwrap();
         let id = rid(&row);
         rt.delete(&store, id, Some(tenant)).unwrap();
@@ -6377,9 +6546,7 @@ mod tests {
         // chunk=1 walks every match across passes (clamped to the 200-row
         // page cap, page 1 each pass as purged rows vanish).
         assert_eq!(rt.prune(&store, None, 1).unwrap(), 3);
-        let page = store
-            .list(&model, None, &[], &ListOpts::default())
-            .unwrap();
+        let page = store.list(&model, None, &[], &ListOpts::default()).unwrap();
         assert_eq!(page.items.len(), 1, "the live row survives");
         // An exhausted sweep purges nothing (no infinite zero-progress loop).
         assert_eq!(rt.prune(&store, None, 50).unwrap(), 0);
@@ -6414,7 +6581,10 @@ mod tests {
 
         // Explicitly supplied timestamps still pass under the flag.
         let mut explicit = input("c");
-        explicit.insert("created_at".into(), Json::String("2020-01-01T00:00:00Z".into()));
+        explicit.insert(
+            "created_at".into(),
+            Json::String("2020-01-01T00:00:00Z".into()),
+        );
         let explicit = bare.insert(&store, &explicit, Some(tenant)).unwrap();
         assert_eq!(
             explicit.get("created_at").and_then(Json::as_str),

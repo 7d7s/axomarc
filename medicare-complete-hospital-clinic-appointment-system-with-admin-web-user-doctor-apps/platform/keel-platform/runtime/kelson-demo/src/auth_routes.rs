@@ -148,26 +148,65 @@ pub(crate) fn resolve_tenant(state: &AppState, raw: Option<&str>) -> Result<Tena
 /// can authorize subsequent dispatches without re-hydration. Wave 1: the
 /// field-level installer is shared with the graph edge's JWT hydration path
 /// (EdgeAuth), which holds the policy engine + capability list directly.
-pub(crate) fn install_access_snapshot(state: &AppState, principal: PrincipalId, tenant: TenantId) {
+///
+/// MNC-001 trust boundary: the snapshot is installed ONLY when an ACTIVE
+/// membership row exists for this (principal, tenant) pair. No authenticated
+/// principal enters a tenant the membership store has never granted.
+pub(crate) fn install_access_snapshot(
+    state: &AppState,
+    principal: PrincipalId,
+    tenant: TenantId,
+) -> Result<(), AppError> {
     install_snapshot_fields(
         &state.policy,
         &state.granted_capabilities,
+        state.memberships.as_ref(),
         principal,
         tenant,
-    );
+    )
+}
+
+/// Local-dispatch bootstrap (`kelson call`, the REPL): grant the dev/test
+/// operator's membership edge when it does not exist yet. Running the CLI in
+/// the environment IS the local trust act; the HTTP edge never grants here —
+/// only `POST /auth/register` does.
+pub(crate) fn ensure_local_membership(
+    state: &AppState,
+    principal: PrincipalId,
+    tenant: TenantId,
+) -> Result<(), AppError> {
+    if state.memberships.find(principal, tenant)?.is_some() {
+        return Ok(());
+    }
+    state.memberships.grant(kelson_identity::Membership {
+        id: kelson_foundation::MembershipId::new(),
+        principal_id: principal,
+        tenant_id: tenant,
+        status: kelson_identity::MembershipStatus::Active,
+        joined_at: OffsetDateTime::now_utc(),
+    })?;
+    Ok(())
 }
 
 /// Field-level snapshot installer (policy engine + granted capabilities).
-pub(crate) fn install_snapshot_fields(
+/// The membership bit is NOT a caller claim: it is read from the store for
+/// this exact `(principal, tenant)` pair, and an inactive pair refuses the
+/// install. Every caller therefore goes through the same grant-backed gate.
+pub fn install_snapshot_fields(
     policy: &kelson_policy::PolicyEngine,
     granted_capabilities: &[String],
+    memberships: &dyn kelson_identity::MembershipStore,
     principal: PrincipalId,
     tenant: TenantId,
-) {
+) -> Result<(), AppError> {
+    let membership_active = memberships.active_for(principal, tenant)?.is_some();
+    if !membership_active {
+        return Err(AppError::denied("no active membership for this tenant"));
+    }
     policy.install_snapshot(AccessSnapshot {
         principal_id: principal,
         tenant_id: tenant,
-        membership_active: true,
+        membership_active,
         capabilities: granted_capabilities.iter().cloned().collect(),
         scope_paths: ["/".to_string()].into_iter().collect(),
         authorization_revision: policy.revision(),
@@ -175,6 +214,7 @@ pub(crate) fn install_snapshot_fields(
         module_revision: ModuleRevision(1),
         computed_at: OffsetDateTime::now_utc(),
     });
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -273,7 +313,7 @@ fn finish_login(
     remember: bool,
     incoming: Option<&ResolvedSession>,
 ) -> Result<(AuthData, Option<axum::http::HeaderValue>), AppError> {
-    install_access_snapshot(state, principal, tenant);
+    install_access_snapshot(state, principal, tenant)?;
     // Session-fixation defense: any session the client presented BEFORE
     // authenticating (possibly attacker-planted) is destroyed before the
     // fresh authenticated session id is issued.
@@ -290,17 +330,13 @@ fn finish_login(
     };
     let mut cookie = None;
     if let Some(mw) = &state.sessions {
-        let session = mw
-            .manager
-            .start(principal, Some(tenant), mw.now())?;
+        let session = mw.manager.start(principal, Some(tenant), mw.now())?;
         if remember {
             // Bag first: the cookie value is id-only, so ordering is free.
             mw.manager
                 .put(&session.id, "remember", serde_json::json!(true))?;
-            cookie = Some(mw.issue_cookie_with_max_age(
-                &session,
-                mw.manager.policy().remember_ttl,
-            )?);
+            cookie =
+                Some(mw.issue_cookie_with_max_age(&session, mw.manager.policy().remember_ttl)?);
         } else {
             cookie = Some(mw.issue_cookie(&session)?);
         }
@@ -368,6 +404,16 @@ async fn register(
             expires_at: None,
         })?;
         let tenant = resolve_tenant(&state, body.tenant.as_deref())?;
+        // MNC-001: self-service registration CREATES the membership edge
+        // into the (dev/default) tenant it names — the only HTTP path that
+        // grants. Later logins are gated on this row.
+        state.memberships.grant(kelson_identity::Membership {
+            id: kelson_foundation::MembershipId::new(),
+            principal_id: principal.id,
+            tenant_id: tenant,
+            status: kelson_identity::MembershipStatus::Active,
+            joined_at: now,
+        })?;
         finish_login(
             &state,
             principal.id,
@@ -410,14 +456,20 @@ async fn login(
             None => {
                 // Equalized timing: verify against a dummy hash so unknown
                 // principals do not answer faster than bad passwords.
-                let _ = kelson_identity::verify_password(&Secret::new(&body.password), &dummy_hash(&state));
+                let _ = kelson_identity::verify_password(
+                    &Secret::new(&body.password),
+                    &dummy_hash(&state),
+                );
                 return Err(unauthenticated());
             }
         };
         let credential = match state.credentials.password_for(principal.id)? {
             Some(c) => c,
             None => {
-                let _ = kelson_identity::verify_password(&Secret::new(&body.password), &dummy_hash(&state));
+                let _ = kelson_identity::verify_password(
+                    &Secret::new(&body.password),
+                    &dummy_hash(&state),
+                );
                 return Err(unauthenticated());
             }
         };
@@ -442,6 +494,17 @@ async fn login(
             return Err(AppError::denied("principal is suspended"));
         }
         let tenant = resolve_tenant(&state, body.tenant.as_deref())?;
+        // MNC-001 trust boundary: a verified credential is NOT a tenant
+        // entry right — entry needs an ACTIVE membership edge. Answer the
+        // same uniform 401 as a bad password so a non-member of a tenant
+        // learns nothing, and install no snapshot.
+        if state
+            .memberships
+            .active_for(principal.id, tenant)?
+            .is_none()
+        {
+            return Err(unauthenticated());
+        }
         // Wave 7 P5 — argon2 rehash-on-login: the stored verifier's factors
         // are embedded in its PHC string; when they drift from the current
         // `[identity]` config, this successful login re-hashes the password
@@ -450,9 +513,12 @@ async fn login(
         // same healing step.
         if let Some(stored) = kelson_identity::password_params_of(credential.secret_hash.expose()) {
             if stored != state.password_params {
-                let healed = hash_password_with(&state.password_params, &Secret::new(&body.password))
-                    .map(Secret::new)
-                    .and_then(|fresh| state.credentials.replace_password_hash(principal.id, fresh));
+                let healed =
+                    hash_password_with(&state.password_params, &Secret::new(&body.password))
+                        .map(Secret::new)
+                        .and_then(|fresh| {
+                            state.credentials.replace_password_hash(principal.id, fresh)
+                        });
                 if let Err(err) = healed {
                     tracing::warn!(
                         %err,
@@ -597,10 +663,9 @@ async fn confirm(
         mw.manager.put(
             &resolved.session.id,
             "confirmed_at",
-            serde_json::json!(
-                now.format(&time::format_description::well_known::Rfc3339)
-                    .unwrap_or_default()
-            ),
+            serde_json::json!(now
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_default()),
         )?;
         Ok(serde_json::json!({ "confirmed": true }))
     })();
@@ -648,8 +713,12 @@ async fn deliver_token_mail(state: &AppState, to: &str, subject: &str, body: &st
     let subject = subject.to_string();
     match tokio::task::spawn_blocking(move || port.send(&msg, &subject)).await {
         Ok(Ok(())) => tracing::info!(target: "auth::mail", %to, "token mail delivered"),
-        Ok(Err(error)) => tracing::warn!(target: "auth::mail", %to, %error, "token mail delivery failed"),
-        Err(error) => tracing::warn!(target: "auth::mail", %to, %error, "token mail delivery task failed"),
+        Ok(Err(error)) => {
+            tracing::warn!(target: "auth::mail", %to, %error, "token mail delivery failed")
+        }
+        Err(error) => {
+            tracing::warn!(target: "auth::mail", %to, %error, "token mail delivery task failed")
+        }
     }
 }
 

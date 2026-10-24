@@ -4,7 +4,9 @@
 
 use std::sync::Arc;
 
-use kelson_foundation::{codes, AppError, ConcurrencyStrategy, ErrorCategory, Retryability, Severity};
+use kelson_foundation::{
+    codes, AppError, ConcurrencyStrategy, ErrorCategory, Retryability, Severity,
+};
 use serde_json::Value;
 use time::OffsetDateTime;
 

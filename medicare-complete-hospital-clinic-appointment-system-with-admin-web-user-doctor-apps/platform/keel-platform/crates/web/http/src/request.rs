@@ -4,7 +4,7 @@
 //! helper is a pure function over the inbound `HeaderMap` — no session, no
 //! state, no silent defaults: a header that is absent is reported as absent.
 
-use axum::http::{HeaderMap, header};
+use axum::http::{header, HeaderMap};
 
 /// Explicit JSON client (the `expects_json` half of the web-plane contract).
 ///

@@ -60,8 +60,9 @@ pub fn keyset_predicate(
 /// page is expected to be driven by a non-null sort column.
 pub fn json_sorts_after(value: &Json, anchor: &Json) -> bool {
     match (value, anchor) {
-        (Json::Number(a), Json::Number(b)) => a.as_f64().unwrap_or(f64::NEG_INFINITY)
-            > b.as_f64().unwrap_or(f64::NEG_INFINITY),
+        (Json::Number(a), Json::Number(b)) => {
+            a.as_f64().unwrap_or(f64::NEG_INFINITY) > b.as_f64().unwrap_or(f64::NEG_INFINITY)
+        }
         (Json::String(a), Json::String(b)) => a > b,
         _ => false,
     }
@@ -72,8 +73,9 @@ pub fn json_sorts_after(value: &Json, anchor: &Json) -> bool {
 /// the anchor is the rows with a *smaller* value).
 pub fn json_sorts_before(value: &Json, anchor: &Json) -> bool {
     match (value, anchor) {
-        (Json::Number(a), Json::Number(b)) => a.as_f64().unwrap_or(f64::NEG_INFINITY)
-            < b.as_f64().unwrap_or(f64::NEG_INFINITY),
+        (Json::Number(a), Json::Number(b)) => {
+            a.as_f64().unwrap_or(f64::NEG_INFINITY) < b.as_f64().unwrap_or(f64::NEG_INFINITY)
+        }
         (Json::String(a), Json::String(b)) => a < b,
         _ => false,
     }
@@ -406,7 +408,11 @@ pub trait ModelStore: Send + Sync {
     /// ignores any other unique violation via target-less
     /// `ON CONFLICT DO NOTHING`). Returns the stored row, or `None` when the
     /// insert was ignored.
-    fn insert_or_ignore(&self, model: &ModelDef, record: &Record) -> Result<Option<Record>, AppError>;
+    fn insert_or_ignore(
+        &self,
+        model: &ModelDef,
+        record: &Record,
+    ) -> Result<Option<Record>, AppError>;
 
     /// Filter-keyed UPDATE (pivot sync, batch edits): applies `changes` to
     /// every row matching tenant+filters (live rows only); returns the
@@ -565,7 +571,11 @@ impl<T: ModelStore + ?Sized> ModelStore for Arc<T> {
         (**self).find_for_update(model, id, tenant, include_deleted)
     }
 
-    fn insert_or_ignore(&self, model: &ModelDef, record: &Record) -> Result<Option<Record>, AppError> {
+    fn insert_or_ignore(
+        &self,
+        model: &ModelDef,
+        record: &Record,
+    ) -> Result<Option<Record>, AppError> {
         (**self).insert_or_ignore(model, record)
     }
 
@@ -723,7 +733,9 @@ impl FilterPlan<'_> {
         let mut group: Option<bool> = None;
         for term in &self.terms {
             let (hit, or) = match term {
-                PlannedTerm::Cmp { field, op, value } => (cmp_matches(row, field, *op, value), false),
+                PlannedTerm::Cmp { field, op, value } => {
+                    (cmp_matches(row, field, *op, value), false)
+                }
                 PlannedTerm::Exists {
                     outer_key,
                     negated,
@@ -948,8 +960,11 @@ pub fn validate_list_opts(model: &ModelDef, opts: &ListOpts) -> Result<(), AppEr
 /// `list` and the runtime's eager assembly.
 pub fn sort_records(rows: &mut [Record], field: &str, desc: bool) {
     rows.sort_by(|a, b| {
-        let ord = json_order(a.get(field).unwrap_or(&Json::Null), b.get(field).unwrap_or(&Json::Null))
-            .unwrap_or(std::cmp::Ordering::Equal);
+        let ord = json_order(
+            a.get(field).unwrap_or(&Json::Null),
+            b.get(field).unwrap_or(&Json::Null),
+        )
+        .unwrap_or(std::cmp::Ordering::Equal);
         if desc {
             ord.reverse()
         } else {
@@ -1103,9 +1118,9 @@ impl ModelStore for InMemoryModelStore {
             // backends do: an unknown column or a value that does not fit the
             // field is a validation error, never a silently empty page.
             let _ = keyset_predicate(model, after)?;
-            let (column, anchor) = after.first().ok_or_else(|| {
-                AppError::validation("a keyset anchor needs at least one column")
-            })?;
+            let (column, anchor) = after
+                .first()
+                .ok_or_else(|| AppError::validation("a keyset anchor needs at least one column"))?;
             let desc = opts.sort.as_ref().map(|(_, d)| *d).unwrap_or(false);
             let anchor = anchor.clone();
             matched.retain(|row| {
@@ -1308,9 +1323,9 @@ impl ModelStore for InMemoryModelStore {
     ) -> Result<bool, AppError> {
         let plan = self.filter_plan(tenant, filters)?;
         self.with_table(&model.table, |rows| {
-            Ok(rows.iter().any(|r| {
-                tenant_matches(model, r, tenant) && !is_deleted(r) && plan.matches(r)
-            }))
+            Ok(rows
+                .iter()
+                .any(|r| tenant_matches(model, r, tenant) && !is_deleted(r) && plan.matches(r)))
         })
     }
 
@@ -1346,7 +1361,11 @@ impl ModelStore for InMemoryModelStore {
         self.find(model, id, tenant, include_deleted)
     }
 
-    fn insert_or_ignore(&self, model: &ModelDef, record: &Record) -> Result<Option<Record>, AppError> {
+    fn insert_or_ignore(
+        &self,
+        model: &ModelDef,
+        record: &Record,
+    ) -> Result<Option<Record>, AppError> {
         let id = uuid_str(record, "id")
             .ok_or_else(|| AppError::validation("record needs a uuid id before insert"))?;
         let record_tenant = uuid_str(record, "tenant_id").map(TenantId::from_uuid);
@@ -1545,7 +1564,10 @@ mod tests {
     fn widget(tenant: TenantId, name: &str) -> Record {
         let mut r = Record::new();
         r.insert("id".into(), Json::String(Uuid::now_v7().to_string()));
-        r.insert("tenant_id".into(), Json::String(tenant.as_uuid().to_string()));
+        r.insert(
+            "tenant_id".into(),
+            Json::String(tenant.as_uuid().to_string()),
+        );
         r.insert("name".into(), Json::String(name.into()));
         r
     }
@@ -1558,16 +1580,30 @@ mod tests {
         let row = store.insert(&model, &widget(tenant, "one")).unwrap();
         let id = uuid_str(&row, "id").unwrap();
 
-        assert!(store.find(&model, id, Some(tenant), false).unwrap().is_some());
-        assert!(store.find(&model, id, Some(TenantId::new()), false).unwrap().is_none());
+        assert!(store
+            .find(&model, id, Some(tenant), false)
+            .unwrap()
+            .is_some());
+        assert!(store
+            .find(&model, id, Some(TenantId::new()), false)
+            .unwrap()
+            .is_none());
 
-        let page = store.list(&model, Some(tenant), &[], &ListOpts::default()).unwrap();
+        let page = store
+            .list(&model, Some(tenant), &[], &ListOpts::default())
+            .unwrap();
         assert_eq!(page.total, Some(1));
 
         assert!(store.delete(&model, id, Some(tenant)).unwrap());
         // Soft-deleted: invisible without trash toggle, visible with it.
-        assert!(store.find(&model, id, Some(tenant), false).unwrap().is_none());
-        assert!(store.find(&model, id, Some(tenant), true).unwrap().is_some());
+        assert!(store
+            .find(&model, id, Some(tenant), false)
+            .unwrap()
+            .is_none());
+        assert!(store
+            .find(&model, id, Some(tenant), true)
+            .unwrap()
+            .is_some());
     }
 
     #[test]
@@ -1587,7 +1623,9 @@ mod tests {
         let model = widget_model();
         let tenant = TenantId::new();
         for i in 0..5 {
-            store.insert(&model, &widget(tenant, &format!("w{i}"))).unwrap();
+            store
+                .insert(&model, &widget(tenant, &format!("w{i}")))
+                .unwrap();
         }
         let filtered = store
             .list(
@@ -1605,7 +1643,10 @@ mod tests {
                 Some(tenant),
                 &[],
                 &ListOpts {
-                    page: Some(PageReq { page: 2, per_page: 2 }),
+                    page: Some(PageReq {
+                        page: 2,
+                        per_page: 2,
+                    }),
                     ..Default::default()
                 },
             )
@@ -1626,7 +1667,9 @@ mod tests {
         first.insert("extra".into(), Json::Bool(true));
         let merged = store.upsert(&model, &first, &["name".into()]).unwrap();
         assert_eq!(merged.get("extra"), Some(&Json::Bool(true)));
-        let all = store.list(&model, Some(tenant), &[], &ListOpts::default()).unwrap();
+        let all = store
+            .list(&model, Some(tenant), &[], &ListOpts::default())
+            .unwrap();
         assert_eq!(all.total, Some(1));
         let _ = key;
     }
@@ -1662,7 +1705,10 @@ mod tests {
     fn meter(tenant: TenantId, label: &str, reading: i64) -> Record {
         let mut r = Record::new();
         r.insert("id".into(), Json::String(Uuid::now_v7().to_string()));
-        r.insert("tenant_id".into(), Json::String(tenant.as_uuid().to_string()));
+        r.insert(
+            "tenant_id".into(),
+            Json::String(tenant.as_uuid().to_string()),
+        );
         r.insert("label".into(), Json::String(label.into()));
         r.insert("reading".into(), Json::from(reading));
         r
@@ -1759,11 +1805,19 @@ mod tests {
         let err = store
             .aggregate(&model, Some(a), &[], AggregateOp::sum("label"))
             .unwrap_err();
-        assert!(err.public_message.contains("numeric"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("numeric"),
+            "{}",
+            err.public_message
+        );
         let err = store
             .aggregate(&model, Some(a), &[], AggregateOp::max("missing"))
             .unwrap_err();
-        assert!(err.public_message.contains("not on model"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("not on model"),
+            "{}",
+            err.public_message
+        );
     }
 
     #[test]
@@ -1777,11 +1831,9 @@ mod tests {
         assert!(store.exists(&model, Some(a), &[]).unwrap());
         // Tenant isolation and filter misses.
         assert!(!store.exists(&model, Some(b), &[]).unwrap());
-        assert!(
-            !store
-                .exists(&model, Some(a), &[FieldFilter::eq("label", "zz")])
-                .unwrap()
-        );
+        assert!(!store
+            .exists(&model, Some(a), &[FieldFilter::eq("label", "zz")])
+            .unwrap());
 
         let found = store
             .find_by(&model, Some(a), &[FieldFilter::eq("label", "m0")], false)
@@ -1790,22 +1842,21 @@ mod tests {
             found.as_ref().and_then(|r| r.get("label")),
             Some(&Json::String("m0".into()))
         );
-        assert!(store.find_by(&model, Some(b), &[], false).unwrap().is_none());
+        assert!(store
+            .find_by(&model, Some(b), &[], false)
+            .unwrap()
+            .is_none());
 
         // Soft-deleted rows: invisible live, visible with the trash toggle.
         let id = uuid_str(found.as_ref().unwrap(), "id").unwrap();
         store.delete(&model, id, Some(a)).unwrap();
-        assert!(
-            !store
-                .exists(&model, Some(a), &[FieldFilter::eq("label", "m0")])
-                .unwrap()
-        );
-        assert!(
-            store
-                .find_by(&model, Some(a), &[FieldFilter::eq("label", "m0")], true)
-                .unwrap()
-                .is_some()
-        );
+        assert!(!store
+            .exists(&model, Some(a), &[FieldFilter::eq("label", "m0")])
+            .unwrap());
+        assert!(store
+            .find_by(&model, Some(a), &[FieldFilter::eq("label", "m0")], true)
+            .unwrap()
+            .is_some());
     }
 
     #[test]
@@ -1855,20 +1906,29 @@ mod tests {
 
         // The same label in ANOTHER tenant still inserts (tenant-scoped
         // uniqueness, mirroring the upsert conflict matching).
-        assert!(store.insert_or_ignore(&model, &meter(b, "gate", 3))
+        assert!(store
+            .insert_or_ignore(&model, &meter(b, "gate", 3))
             .unwrap()
             .is_some());
 
-        let page = store.list(&model, Some(a), &[], &ListOpts::default()).unwrap();
+        let page = store
+            .list(&model, Some(a), &[], &ListOpts::default())
+            .unwrap();
         assert_eq!(page.total, Some(1));
-        let page = store.list(&model, Some(b), &[], &ListOpts::default()).unwrap();
+        let page = store
+            .list(&model, Some(b), &[], &ListOpts::default())
+            .unwrap();
         assert_eq!(page.total, Some(1));
 
         // A record without an id is still refused up front.
         let mut no_id = meter(a, "x", 1);
         no_id.remove("id");
         let err = store.insert_or_ignore(&model, &no_id).unwrap_err();
-        assert!(err.public_message.contains("uuid id"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("uuid id"),
+            "{}",
+            err.public_message
+        );
     }
 
     #[test]
@@ -1890,17 +1950,26 @@ mod tests {
         }
         // Nothing was cleared by the refused calls.
         assert_eq!(
-            store.list(&model, Some(a), &[], &ListOpts::default()).unwrap().total,
+            store
+                .list(&model, Some(a), &[], &ListOpts::default())
+                .unwrap()
+                .total,
             Some(1)
         );
 
         store.truncate(&model, "test").unwrap();
         assert_eq!(
-            store.list(&model, Some(a), &[], &ListOpts::default()).unwrap().total,
+            store
+                .list(&model, Some(a), &[], &ListOpts::default())
+                .unwrap()
+                .total,
             Some(0)
         );
         assert_eq!(
-            store.list(&model, Some(b), &[], &ListOpts::default()).unwrap().total,
+            store
+                .list(&model, Some(b), &[], &ListOpts::default())
+                .unwrap()
+                .total,
             Some(0)
         );
         assert!(store.truncate(&model, "dev").is_ok());
@@ -1984,19 +2053,23 @@ mod tests {
         assert_eq!(affected.len(), 1);
         assert!(is_deleted(&affected[0]));
         assert_eq!(
-            store.list(&model, Some(a), &[], &ListOpts::default()).unwrap().total,
+            store
+                .list(&model, Some(a), &[], &ListOpts::default())
+                .unwrap()
+                .total,
             Some(1)
         );
         // Cross-tenant row untouched.
         assert_eq!(
-            store.list(&model, Some(b), &[], &ListOpts::default()).unwrap().total,
+            store
+                .list(&model, Some(b), &[], &ListOpts::default())
+                .unwrap()
+                .total,
             Some(1)
         );
 
         // Empty filters refused.
-        let err = store
-            .delete_filtered(&model, Some(a), &[])
-            .unwrap_err();
+        let err = store.delete_filtered(&model, Some(a), &[]).unwrap_err();
         assert!(
             err.public_message.contains("at least one filter"),
             "{}",
@@ -2011,16 +2084,16 @@ mod tests {
             .delete_filtered(&log, None, &[FieldFilter::eq("msg", "doomed")])
             .unwrap();
         assert_eq!(affected.len(), 1);
-        assert_eq!(
-            affected[0].get("msg"),
-            Some(&Json::String("doomed".into()))
-        );
+        assert_eq!(affected[0].get("msg"), Some(&Json::String("doomed".into())));
         assert!(store
             .find(&log, uuid_str(&doomed, "id").unwrap(), None, true)
             .unwrap()
             .is_none());
         assert_eq!(
-            store.list(&log, None, &[], &ListOpts::default()).unwrap().total,
+            store
+                .list(&log, None, &[], &ListOpts::default())
+                .unwrap()
+                .total,
             Some(1)
         );
     }
@@ -2048,7 +2121,10 @@ mod tests {
         let live = store.insert(&model, &meter(a, "live", 1)).unwrap();
         let live_id = uuid_str(&live, "id").unwrap();
         assert!(store.force_delete(&model, live_id, Some(a)).unwrap());
-        assert!(store.find(&model, live_id, Some(a), true).unwrap().is_none());
+        assert!(store
+            .find(&model, live_id, Some(a), true)
+            .unwrap()
+            .is_none());
 
         // Tenant isolation holds for force deletes too.
         assert!(!store.force_delete(&model, foreign_id, Some(a)).unwrap());
@@ -2082,7 +2158,10 @@ mod tests {
             .is_some());
         dyn_store.truncate(&model, "dev").unwrap();
         assert_eq!(
-            dyn_store.list(&model, Some(tenant), &[], &ListOpts::default()).unwrap().total,
+            dyn_store
+                .list(&model, Some(tenant), &[], &ListOpts::default())
+                .unwrap()
+                .total,
             Some(0)
         );
     }
@@ -2116,7 +2195,14 @@ mod tests {
 
         // Missing, foreign-tenant, and trashed rows are all Ok(None).
         assert!(store
-            .increment(&model, Uuid::now_v7(), Some(a), "reading", 1, &Record::new())
+            .increment(
+                &model,
+                Uuid::now_v7(),
+                Some(a),
+                "reading",
+                1,
+                &Record::new()
+            )
             .unwrap()
             .is_none());
         assert!(store
@@ -2133,15 +2219,27 @@ mod tests {
         let err = store
             .increment(&model, foreign_id, Some(b), "missing", 1, &Record::new())
             .unwrap_err();
-        assert!(err.public_message.contains("not on model"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("not on model"),
+            "{}",
+            err.public_message
+        );
         let err = store
             .increment(&model, foreign_id, Some(b), "label", 1, &Record::new())
             .unwrap_err();
-        assert!(err.public_message.contains("not numeric"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("not numeric"),
+            "{}",
+            err.public_message
+        );
         let err = store
             .increment(&model, foreign_id, Some(b), "id", 1, &Record::new())
             .unwrap_err();
-        assert!(err.public_message.contains("immutable"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("immutable"),
+            "{}",
+            err.public_message
+        );
     }
 
     /// Correlated-existence fixture: `votes.widget_id -> widgets.id`.
@@ -2158,7 +2256,10 @@ mod tests {
     fn vote(tenant: TenantId, widget_id: &Json, kind: &str) -> Record {
         let mut r = Record::new();
         r.insert("id".into(), Json::String(Uuid::now_v7().to_string()));
-        r.insert("tenant_id".into(), Json::String(tenant.as_uuid().to_string()));
+        r.insert(
+            "tenant_id".into(),
+            Json::String(tenant.as_uuid().to_string()),
+        );
         r.insert("widget_id".into(), widget_id.clone());
         r.insert("kind".into(), Json::String(kind.into()));
         r
@@ -2310,7 +2411,11 @@ mod tests {
         let err = store
             .list(&widgets, None, &[outer], &ListOpts::default())
             .unwrap_err();
-        assert!(err.public_message.contains("nest"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("nest"),
+            "{}",
+            err.public_message
+        );
     }
 
     #[test]
@@ -2402,7 +2507,12 @@ mod tests {
             .field(FieldDef::new("id", FieldType::Uuid).required())
             .field(FieldDef::new("name", FieldType::Text))
             .field(FieldDef::new("score", FieldType::Int64));
-        for (name, score) in [("a", Some(1i64)), ("b", Some(5)), ("c", Some(10)), ("d", None)] {
+        for (name, score) in [
+            ("a", Some(1i64)),
+            ("b", Some(5)),
+            ("c", Some(10)),
+            ("d", None),
+        ] {
             let mut r = Record::new();
             r.insert("id".into(), Json::String(Uuid::now_v7().to_string()));
             r.insert("name".into(), Json::String(name.into()));
@@ -2429,12 +2539,18 @@ mod tests {
                 .collect()
         };
         // Numeric ordering; the score-less row "d" never matches a range.
-        assert_eq!(names(vec![FieldFilter::lt("score", Json::from(5i64))]), ["a"]);
+        assert_eq!(
+            names(vec![FieldFilter::lt("score", Json::from(5i64))]),
+            ["a"]
+        );
         assert_eq!(
             names(vec![FieldFilter::lte("score", Json::from(5i64))]),
             ["a", "b"]
         );
-        assert_eq!(names(vec![FieldFilter::gt("score", Json::from(5i64))]), ["c"]);
+        assert_eq!(
+            names(vec![FieldFilter::gt("score", Json::from(5i64))]),
+            ["c"]
+        );
         assert_eq!(
             names(vec![FieldFilter::gte("score", Json::from(5i64))]),
             ["b", "c"]
@@ -2483,6 +2599,9 @@ mod tests {
             .hard_deletes()
             .field(FieldDef::new("id", FieldType::Uuid).required())
             .field(FieldDef::new("msg", FieldType::Text));
-        assert!(store.restore(&hard, Uuid::now_v7(), None).unwrap().is_none());
+        assert!(store
+            .restore(&hard, Uuid::now_v7(), None)
+            .unwrap()
+            .is_none());
     }
 }

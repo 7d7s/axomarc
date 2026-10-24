@@ -147,10 +147,7 @@ pub trait ViewModel: Serialize {
 }
 
 /// The declared field at a path, if the schema declares one.
-pub fn schema_field<'a>(
-    schema: &'a [FieldSchema],
-    path: &str,
-) -> Option<&'a FieldSchema> {
+pub fn schema_field<'a>(schema: &'a [FieldSchema], path: &str) -> Option<&'a FieldSchema> {
     schema.iter().find(|field| field.path == path)
 }
 
@@ -266,11 +263,7 @@ pub fn view_model_value<M: ViewModel + ?Sized>(model: &M) -> Result<Value, ViewE
 /// The check is fail-closed: a required field that is absent (or null) is
 /// an error, and a present field whose value does not match its declared
 /// kind is an error.
-pub fn check_schema(
-    value: &Value,
-    schema: &[FieldSchema],
-    view: &str,
-) -> Result<(), ViewError> {
+pub fn check_schema(value: &Value, schema: &[FieldSchema], view: &str) -> Result<(), ViewError> {
     for field in schema {
         let found = value_at(value, field.path);
         match found {

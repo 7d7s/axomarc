@@ -153,9 +153,7 @@ impl Parser {
                     .map(|s| format!("@{s}"))
                     .collect::<Vec<_>>()
                     .join(" or ");
-                return Err(self.err(&format!(
-                    "unexpected end of template; expected {expected}"
-                )));
+                return Err(self.err(&format!("unexpected end of template; expected {expected}")));
             }
             if self.starts("{!!") {
                 Self::flush(&mut text, &mut nodes);
@@ -397,9 +395,8 @@ impl Parser {
                 Ok(Some(Node::Production { body, fallback }))
             }
             "foreach" => {
-                let (vars, source) =
-                    parse_foreach_arg(&arg_required(arg, name, &self.loc())?)
-                        .map_err(|e| self.err(&e))?;
+                let (vars, source) = parse_foreach_arg(&arg_required(arg, name, &self.loc())?)
+                    .map_err(|e| self.err(&e))?;
                 let body = self.parse_nodes(&["endforeach"], es)?;
                 self.expect_end("endforeach")?;
                 Ok(Some(Node::ForEach {
@@ -410,9 +407,8 @@ impl Parser {
                 }))
             }
             "forelse" => {
-                let (vars, source) =
-                    parse_foreach_arg(&arg_required(arg, name, &self.loc())?)
-                        .map_err(|e| self.err(&e))?;
+                let (vars, source) = parse_foreach_arg(&arg_required(arg, name, &self.loc())?)
+                    .map_err(|e| self.err(&e))?;
                 let body = self.parse_nodes(&["empty", "endforelse"], es)?;
                 let (stop, _) = self.read_directive()?;
                 let empty = if stop == "empty" {
@@ -503,8 +499,10 @@ impl Parser {
                         "label" => {
                             let value = unquote(value);
                             if value.is_empty() {
-                                return Err(self.err("@command label=\"\" would render a blank \
-                                                    submit button"));
+                                return Err(self.err(
+                                    "@command label=\"\" would render a blank \
+                                                    submit button",
+                                ));
                             }
                             label = Some(value);
                         }
@@ -539,20 +537,18 @@ impl Parser {
                 Ok(Some(Node::Js { expr }))
             }
             "class" => {
-                let entries =
-                    parse_attr_entries(&arg_required(arg, name, &self.loc())?)
-                        .map_err(|e| self.err(&e))?;
+                let entries = parse_attr_entries(&arg_required(arg, name, &self.loc())?)
+                    .map_err(|e| self.err(&e))?;
                 Ok(Some(Node::Class { entries }))
             }
             "style" => {
-                let entries =
-                    parse_attr_entries(&arg_required(arg, name, &self.loc())?)
-                        .map_err(|e| self.err(&e))?;
+                let entries = parse_attr_entries(&arg_required(arg, name, &self.loc())?)
+                    .map_err(|e| self.err(&e))?;
                 Ok(Some(Node::Style { entries }))
             }
             "checked" | "selected" | "disabled" | "readonly" | "required" => {
-                let cond = parse_cond(&arg_required(arg, name, &self.loc())?)
-                    .map_err(|e| self.err(&e))?;
+                let cond =
+                    parse_cond(&arg_required(arg, name, &self.loc())?).map_err(|e| self.err(&e))?;
                 Ok(Some(Node::AttrIf {
                     attr: name.to_string(),
                     cond,
@@ -569,9 +565,7 @@ impl Parser {
             "endsection" | "show" | "endif" | "elseif" | "else" | "endunless" | "endisset"
             | "endempty" | "endauth" | "endguest" | "endenv" | "endproduction" | "endforeach"
             | "endfor" | "endforelse" | "endonce" | "endpush" | "slot" | "endslot"
-            | "endcomponent" | "enderror" => {
-                Err(self.err(&format!("unexpected @{name}")))
-            }
+            | "endcomponent" | "enderror" => Err(self.err(&format!("unexpected @{name}"))),
             _ => Ok(Some(Node::Directive {
                 name: name.to_string(),
                 arg,
@@ -581,7 +575,11 @@ impl Parser {
 
     /// Location tag for diagnostics (1-based line of the current position).
     fn loc(&self) -> String {
-        let line = self.chars[..self.pos].iter().filter(|c| **c == '\n').count() + 1;
+        let line = self.chars[..self.pos]
+            .iter()
+            .filter(|c| **c == '\n')
+            .count()
+            + 1;
         format!("line {line}")
     }
 
@@ -624,7 +622,13 @@ impl Parser {
         only_if_exists: bool,
         when: bool,
     ) -> Result<Option<Node>, ViewError> {
-        let name = if when { "includeWhen" } else if only_if_exists { "includeIf" } else { "include" };
+        let name = if when {
+            "includeWhen"
+        } else if only_if_exists {
+            "includeIf"
+        } else {
+            "include"
+        };
         let parts = split_args(&arg_required(arg, name, &self.loc())?);
         let (cond, tpl_part, data_part) = if when {
             let cond_src = parts
@@ -759,11 +763,7 @@ fn arg_required(arg: Option<String>, name: &str, loc: &str) -> Result<String, Vi
     arg.ok_or_else(|| ViewError::new(VIEW_PARSE, format!("@{name} requires arguments ({loc})")))
 }
 
-fn parse_string_arg(
-    arg: Option<String>,
-    name: &str,
-    loc: &str,
-) -> Result<String, ViewError> {
+fn parse_string_arg(arg: Option<String>, name: &str, loc: &str) -> Result<String, ViewError> {
     let raw = arg_required(arg, name, loc)?;
     let value = unquote(raw.trim());
     if value.is_empty() {
@@ -868,7 +868,9 @@ fn split_all_top(s: &str, sep: char) -> Vec<String> {
 fn unquote(s: &str) -> String {
     let t = s.trim();
     let bytes = t.chars().collect::<Vec<char>>();
-    if bytes.len() >= 2 && (bytes[0] == '"' || bytes[0] == '\'') && bytes[bytes.len() - 1] == bytes[0]
+    if bytes.len() >= 2
+        && (bytes[0] == '"' || bytes[0] == '\'')
+        && bytes[bytes.len() - 1] == bytes[0]
     {
         let q = bytes[0];
         let mut out = String::new();
@@ -963,7 +965,10 @@ fn parse_foreach_arg(s: &str) -> Result<(LoopVars, Operand), String> {
         let source = parse_operand_str(clean_var(left.trim()))?;
         let right = right.trim();
         let (key, item) = match split_top(right, "=>") {
-            Some((k, v)) => (Some(clean_var(k.trim()).to_string()), clean_var(v.trim()).to_string()),
+            Some((k, v)) => (
+                Some(clean_var(k.trim()).to_string()),
+                clean_var(v.trim()).to_string(),
+            ),
             None => (None, clean_var(right).to_string()),
         };
         if item.is_empty() {
@@ -978,7 +983,10 @@ fn parse_foreach_arg(s: &str) -> Result<(LoopVars, Operand), String> {
             .trim_end_matches(')')
             .trim();
         let (key, item) = match split_top(l, ",") {
-            Some((k, v)) => (Some(clean_var(k.trim()).to_string()), clean_var(v.trim()).to_string()),
+            Some((k, v)) => (
+                Some(clean_var(k.trim()).to_string()),
+                clean_var(v.trim()).to_string(),
+            ),
             None => (None, clean_var(l).to_string()),
         };
         let source = parse_operand_str(clean_var(right.trim()))?;
@@ -998,8 +1006,7 @@ fn parse_for_arg(s: &str) -> Result<ForSpec, String> {
         if var.is_empty() {
             return Err("for requires a loop variable".into());
         }
-        let (from_s, to_s) =
-            split_top(right.trim(), "..").ok_or("expected a range like 0..10")?;
+        let (from_s, to_s) = split_top(right.trim(), "..").ok_or("expected a range like 0..10")?;
         let from = parse_operand_str(from_s.trim())?;
         let to = parse_operand_str(to_s.trim())?;
         return Ok(ForSpec::Range { var, from, to });
@@ -1008,8 +1015,7 @@ fn parse_for_arg(s: &str) -> Result<ForSpec, String> {
     if parts.len() != 3 {
         return Err("expected (i in 0..10) or (i = 0; i < 10; i++)".into());
     }
-    let (var, init) =
-        split_top(parts[0].trim(), "=").ok_or("expected i = <value>")?;
+    let (var, init) = split_top(parts[0].trim(), "=").ok_or("expected i = <value>")?;
     let var = clean_var(var.trim()).to_string();
     let init = parse_operand_str(init.trim())?;
     let cond = parts[1].trim().to_string();
@@ -1152,11 +1158,17 @@ mod tests {
     #[test]
     fn parses_foreach_forms() {
         let t = parse_ok("@foreach(items as item){{ item }}@endforeach");
-        assert!(matches!(&t.nodes[0], Node::ForEach { vars, .. } if vars.item == "item" && vars.key.is_none()));
+        assert!(
+            matches!(&t.nodes[0], Node::ForEach { vars, .. } if vars.item == "item" && vars.key.is_none())
+        );
         let t = parse_ok("@foreach($items as $k => $v)x@endforeach");
-        assert!(matches!(&t.nodes[0], Node::ForEach { vars, .. } if vars.item == "v" && vars.key.as_deref() == Some("k")));
+        assert!(
+            matches!(&t.nodes[0], Node::ForEach { vars, .. } if vars.item == "v" && vars.key.as_deref() == Some("k"))
+        );
         let t = parse_ok("@foreach((key, item) in items)x@endforeach");
-        assert!(matches!(&t.nodes[0], Node::ForEach { vars, .. } if vars.item == "item" && vars.key.as_deref() == Some("key")));
+        assert!(
+            matches!(&t.nodes[0], Node::ForEach { vars, .. } if vars.item == "item" && vars.key.as_deref() == Some("key"))
+        );
     }
 
     #[test]
@@ -1171,7 +1183,9 @@ mod tests {
     #[test]
     fn parses_for_range_and_cstyle() {
         let t = parse_ok("@for(i in 0..3){{ i }}@endfor");
-        assert!(matches!(&t.nodes[0], Node::For { spec: ForSpec::Range { var, .. }, .. } if var == "i"));
+        assert!(
+            matches!(&t.nodes[0], Node::For { spec: ForSpec::Range { var, .. }, .. } if var == "i")
+        );
         let t = parse_ok("@for($i = 0; $i < 10; $i++){{ i }}@endfor");
         assert!(matches!(
             &t.nodes[0],
@@ -1183,7 +1197,9 @@ mod tests {
     fn parses_sections_yield_parent_show() {
         let t = parse_ok("@extends(\"layouts.app\")@section(\"title\")Page@endsection@yield(\"title\")@parent@section(\"side\")s@show");
         assert_eq!(t.extends.as_deref(), Some("layouts.app"));
-        assert!(matches!(&t.nodes[0], Node::Section { name, show, .. } if name == "title" && !show));
+        assert!(
+            matches!(&t.nodes[0], Node::Section { name, show, .. } if name == "title" && !show)
+        );
         assert!(matches!(&t.nodes[1], Node::Yield { name, .. } if name == "title"));
         assert!(matches!(&t.nodes[2], Node::Parent));
         assert!(matches!(&t.nodes[3], Node::Section { name, show, .. } if name == "side" && *show));
@@ -1203,9 +1219,17 @@ mod tests {
     #[test]
     fn parses_include_variants() {
         let t = parse_ok("@include(\"partials.nav\", [\"active\" => active])");
-        assert!(matches!(&t.nodes[0], Node::Include { name, data, .. } if name == "partials.nav" && data.len() == 1));
+        assert!(
+            matches!(&t.nodes[0], Node::Include { name, data, .. } if name == "partials.nav" && data.len() == 1)
+        );
         let t = parse_ok("@includeIf(\"maybe\")");
-        assert!(matches!(&t.nodes[0], Node::Include { only_if_exists: true, .. }));
+        assert!(matches!(
+            &t.nodes[0],
+            Node::Include {
+                only_if_exists: true,
+                ..
+            }
+        ));
         let t = parse_ok("@includeWhen(flag, \"cond\")");
         assert!(matches!(&t.nodes[0], Node::Include { when: Some(_), .. }));
     }
@@ -1215,7 +1239,13 @@ mod tests {
         let t = parse_ok(
             "@component(\"alert\", [\"level\" => level])@slot(\"title\")T@endslot body @endcomponent",
         );
-        let Node::Component { name, slots, body, data } = &t.nodes[0] else {
+        let Node::Component {
+            name,
+            slots,
+            body,
+            data,
+        } = &t.nodes[0]
+        else {
             panic!("expected component");
         };
         assert_eq!(name, "alert");
@@ -1229,7 +1259,9 @@ mod tests {
 
     #[test]
     fn parses_attribute_helpers() {
-        let t = parse_ok("@class([\"btn\", \"active\" => is_on])@style([\"color: red\" => hot])@checked(done)");
+        let t = parse_ok(
+            "@class([\"btn\", \"active\" => is_on])@style([\"color: red\" => hot])@checked(done)",
+        );
         assert!(matches!(&t.nodes[0], Node::Class { entries } if entries.len() == 2));
         assert!(matches!(&t.nodes[1], Node::Style { entries } if entries.len() == 1));
         assert!(matches!(&t.nodes[2], Node::AttrIf { attr, .. } if attr == "checked"));
@@ -1248,7 +1280,13 @@ mod tests {
         assert!(matches!(&t.nodes[7], Node::Error { field, .. } if field == "email"));
         assert!(matches!(&t.nodes[8], Node::Isset { .. }));
         assert!(matches!(&t.nodes[9], Node::Empty { .. }));
-        assert!(matches!(&t.nodes[10], Node::Auth { fallback: Some(_), .. }));
+        assert!(matches!(
+            &t.nodes[10],
+            Node::Auth {
+                fallback: Some(_),
+                ..
+            }
+        ));
         assert!(matches!(&t.nodes[11], Node::Guest { .. }));
         assert!(matches!(&t.nodes[12], Node::Env { name, .. } if name == "dev"));
         assert!(matches!(&t.nodes[13], Node::Production { .. }));

@@ -27,8 +27,8 @@ use std::sync::Arc;
 
 use std::sync::Mutex;
 
-use kelson_foundation::AppError;
 use kelson_execution::OperationHandler;
+use kelson_foundation::AppError;
 use kelson_lifecycle::{BootError, ModuleState, Phase, Provider, ServiceRegistry};
 use kelson_models::{
     FieldDef, FieldFilter, FieldType, ModelDef, ModelRuntime, ModelStore, ModelStoreRef, Record,
@@ -198,9 +198,7 @@ impl OauthClientStore {
         if client_id.is_empty() || secret.is_empty() {
             return Err(AppError::unauthenticated());
         }
-        let row = self
-            .row(client_id)?
-            .ok_or_else(AppError::unauthenticated)?;
+        let row = self.row(client_id)?.ok_or_else(AppError::unauthenticated)?;
         let stored = row
             .get("secret_hash")
             .and_then(|v| v.as_str())
@@ -239,9 +237,7 @@ impl OauthClientStore {
         }
         let current = from_record(&self.runtime.get(&*self.backend, id, None)?)?;
         changes.insert("version".into(), json!(current.version + 1));
-        let stored = self
-            .runtime
-            .update(&*self.backend, id, None, &changes)?;
+        let stored = self.runtime.update(&*self.backend, id, None, &changes)?;
         from_record(&stored)
     }
 
@@ -281,7 +277,9 @@ pub struct ModuleProvider {
 
 impl ModuleProvider {
     pub fn new() -> Self {
-        Self { state: Mutex::new(ModuleState::Discovered) }
+        Self {
+            state: Mutex::new(ModuleState::Discovered),
+        }
     }
 
     pub fn state(&self) -> ModuleState {

@@ -236,10 +236,7 @@ impl std::fmt::Debug for JobRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JobRegistry")
             .field("defs", &self.defs)
-            .field(
-                "migrators",
-                &self.migrators.keys().collect::<Vec<_>>(),
-            )
+            .field("migrators", &self.migrators.keys().collect::<Vec<_>>())
             .finish()
     }
 }
@@ -278,9 +275,7 @@ impl JobRegistry {
             }
         }
         if let Some(rate) = def.rate_limit {
-            if rate.capacity == 0
-                || !rate.refill_per_sec.is_finite()
-                || rate.refill_per_sec <= 0.0
+            if rate.capacity == 0 || !rate.refill_per_sec.is_finite() || rate.refill_per_sec <= 0.0
             {
                 return Err(AppError::validation(format!(
                     "job {} rate_limit needs capacity >= 1 and refill_per_sec > 0",
@@ -404,7 +399,8 @@ impl JobRegistry {
 pub trait JobMigrator: Send + Sync {
     fn job_name(&self) -> &str;
     fn current_version(&self) -> u32;
-    fn migrate(&self, from: u32, payload: serde_json::Value) -> Result<serde_json::Value, AppError>;
+    fn migrate(&self, from: u32, payload: serde_json::Value)
+        -> Result<serde_json::Value, AppError>;
 }
 
 /// Construct a `DurableJob` from an explicit `JobDef` (used by the scheduler
@@ -658,13 +654,7 @@ pub trait JobStoreAdmin: Send + Sync {
     }
 
     /// P0 crash recovery: fenced kill — see [`JobStoreAdmin::defer_claim`].
-    fn kill_claim(
-        &self,
-        id: Uuid,
-        attempt: u32,
-        owner: &str,
-        error: &str,
-    ) -> Result<(), AppError> {
+    fn kill_claim(&self, id: Uuid, attempt: u32, owner: &str, error: &str) -> Result<(), AppError> {
         let _ = (attempt, owner);
         self.kill(id, error)
     }
@@ -906,7 +896,9 @@ impl JobStoreAdmin for InMemoryJobStore {
 
     fn delete_dead(&self, id: Uuid) -> Result<bool, AppError> {
         let mut jobs = self.jobs.lock().unwrap();
-        let Some(idx) = jobs.iter().position(|j| j.id == id && j.status == JobStatus::Dead)
+        let Some(idx) = jobs
+            .iter()
+            .position(|j| j.id == id && j.status == JobStatus::Dead)
         else {
             return Ok(false);
         };
@@ -1095,7 +1087,10 @@ impl MemoryBatchLedger {
 
 impl BatchLedger for MemoryBatchLedger {
     fn save(&self, record: &BatchRecord) -> Result<(), AppError> {
-        self.records.lock().unwrap().insert(record.id, record.clone());
+        self.records
+            .lock()
+            .unwrap()
+            .insert(record.id, record.clone());
         Ok(())
     }
 
@@ -1412,7 +1407,9 @@ impl<'a> BatchOps<'a> {
 pub enum ChainStatus {
     Running,
     /// The member at `position` is the one that killed the chain.
-    Halted { position: usize },
+    Halted {
+        position: usize,
+    },
     /// Every member ran to success.
     Completed,
 }
@@ -1495,7 +1492,11 @@ impl ChainRuntime {
 
     /// Position of the currently-armed step (for observability).
     pub fn position(&self, chain_id: Uuid) -> Option<usize> {
-        self.chains.lock().unwrap().get(&chain_id).map(|arm| arm.position)
+        self.chains
+            .lock()
+            .unwrap()
+            .get(&chain_id)
+            .map(|arm| arm.position)
     }
 
     /// Wave 6 P8: the chain's liveness record — `Running`,
@@ -1906,10 +1907,7 @@ impl JobMiddlewareStacks {
                 "job middleware must register before the first dispatch",
             ));
         }
-        self.module
-            .entry(job.to_string())
-            .or_default()
-            .push(layer);
+        self.module.entry(job.to_string()).or_default().push(layer);
         Ok(())
     }
 
@@ -2003,8 +2001,8 @@ mod tests {
         );
         assert_eq!(platform_job.causation_id, None);
 
-        let request_job = build_from_def(&def, json!({}), now)
-            .with_origin(Some(correlation), Some(correlation));
+        let request_job =
+            build_from_def(&def, json!({}), now).with_origin(Some(correlation), Some(correlation));
         assert_eq!(
             request_job.correlation_id,
             Some(correlation),
@@ -2237,7 +2235,10 @@ mod tests {
         // Simulate the backoff elapsing.
         {
             let mut jobs = store.jobs.lock().unwrap();
-            let job = jobs.iter_mut().find(|j| j.id == id).expect("the job is there");
+            let job = jobs
+                .iter_mut()
+                .find(|j| j.id == id)
+                .expect("the job is there");
             job.available_at = OffsetDateTime::now_utc();
         }
 
@@ -2464,7 +2465,8 @@ mod tests {
             .maybe_run_completion(&registry, &done, OffsetDateTime::now_utc())
             .expect_err("the callback failure must reach the caller");
         assert!(
-            err.public_message.contains("batch.callback.that.does.not.exist")
+            err.public_message
+                .contains("batch.callback.that.does.not.exist")
                 || err.public_message.contains("not registered"),
             "the error names the missing callback: {}",
             err.public_message
@@ -2576,7 +2578,12 @@ mod tests {
         store.complete(claimed.id).unwrap();
         let progress = ops.status(batch).unwrap();
         assert_eq!(
-            (progress.total, progress.pending, progress.succeeded, progress.running),
+            (
+                progress.total,
+                progress.pending,
+                progress.succeeded,
+                progress.running
+            ),
             (3, 2, 1, 0),
             "the finished member leaves pending"
         );
@@ -2627,7 +2634,10 @@ mod tests {
             "the dead member returns to pending"
         );
         let progress = ops.status(batch).unwrap();
-        assert_eq!((progress.pending, progress.dead, progress.running), (1, 0, 1));
+        assert_eq!(
+            (progress.pending, progress.dead, progress.running),
+            (1, 0, 1)
+        );
     }
 
     /// Wave 6 P9 (B-32): dispatch writes the membership, the last member
@@ -2654,7 +2664,10 @@ mod tests {
             .expect("record written at dispatch");
         assert_eq!(record.name, "one");
         assert_eq!(record.members, vec![member.id]);
-        assert!(record.finished_at.is_none(), "open until the last member lands");
+        assert!(
+            record.finished_at.is_none(),
+            "open until the last member lands"
+        );
 
         let mut open_member = job(0, 3);
         open_member.status = JobStatus::Pending;
@@ -2803,9 +2816,7 @@ mod tests {
             "exhausted: next token in 1/refill_per_sec"
         );
         assert!(
-            bucket
-                .checkout(t0 + Duration::milliseconds(999))
-                .is_some(),
+            bucket.checkout(t0 + Duration::milliseconds(999)).is_some(),
             "still refilling"
         );
         assert_eq!(
@@ -2838,19 +2849,14 @@ mod tests {
         let store = InMemoryJobStore::new();
         let def = JobDef::new("demo.job");
         let now = OffsetDateTime::now_utc();
-        let id = store
-            .enqueue(build_from_def(&def, json!({}), now))
-            .unwrap();
+        let id = store.enqueue(build_from_def(&def, json!({}), now)).unwrap();
 
         let claimed = store.claim("w1").unwrap().unwrap();
         assert_eq!(claimed.attempt, 1, "claim consumes an attempt");
 
         // Hold into the past: the attempt comes back and the cycle restarts.
         store.defer(id, now - Duration::seconds(1)).unwrap();
-        let back = store
-            .list(Some(JobStatus::Pending), 10)
-            .unwrap()
-            .remove(0);
+        let back = store.list(Some(JobStatus::Pending), 10).unwrap().remove(0);
         assert_eq!(back.attempt, 0, "Hold returns the attempt");
         assert!(back.claimed_by.is_none(), "claim cleared");
         assert!(back.claimed_at.is_none(), "claim cleared");
@@ -2877,10 +2883,7 @@ mod tests {
         store
             .kill(running.id, RETRY_LIMIT_ABORT)
             .expect("kill is terminal");
-        let dead = store
-            .list(Some(JobStatus::Dead), 10)
-            .unwrap()
-            .remove(0);
+        let dead = store.list(Some(JobStatus::Dead), 10).unwrap().remove(0);
         assert_eq!(dead.last_error.as_deref(), Some(RETRY_LIMIT_ABORT));
         assert!(dead.finished_at.is_some(), "kill stamps finished_at");
         assert!(store.kill(id, "again").is_err(), "already terminal");
@@ -3249,7 +3252,10 @@ mod tests {
 
         // And the batch still completes through the runtime.
         assert!(
-            runtime.member_finished(id, claimed.id, false).unwrap().is_none(),
+            runtime
+                .member_finished(id, claimed.id, false)
+                .unwrap()
+                .is_none(),
             "the batch is not finished while a member is outstanding"
         );
         let done = runtime
@@ -3551,11 +3557,13 @@ mod tests {
         let migrated = registry.apply_migrations(claimed).unwrap();
         assert_eq!(migrated.schema_version, 2, "stamped current");
         assert_eq!(
-            migrated.payload["locale"], json!("en"),
+            migrated.payload["locale"],
+            json!("en"),
             "v2 field defaulted by the migration"
         );
         assert_eq!(
-            migrated.payload["to"], json!("a@test.dev"),
+            migrated.payload["to"],
+            json!("a@test.dev"),
             "v1 content preserved"
         );
     }
@@ -3565,12 +3573,19 @@ mod tests {
     fn job_build_stamps_current_version() {
         let registry = versioned_registry();
         let job = registry
-            .build("mail.send", json!({"to": "b@test.dev"}), OffsetDateTime::now_utc())
+            .build(
+                "mail.send",
+                json!({"to": "b@test.dev"}),
+                OffsetDateTime::now_utc(),
+            )
             .unwrap();
         assert_eq!(job.schema_version, 2);
         let same = registry.apply_migrations(job.clone()).unwrap();
         assert_eq!(same.schema_version, 2);
-        assert_eq!(same.payload, job.payload, "current jobs pass through untouched");
+        assert_eq!(
+            same.payload, job.payload,
+            "current jobs pass through untouched"
+        );
     }
 
     /// No migrator for the type → identity (unversioned job types keep
@@ -3605,7 +3620,9 @@ mod tests {
     fn job_migrator_registration_is_guarded() {
         let mut registry = versioned_registry();
         assert!(
-            registry.register_migrator(Arc::new(LocaleMigrator)).is_err(),
+            registry
+                .register_migrator(Arc::new(LocaleMigrator))
+                .is_err(),
             "duplicate migrator refused"
         );
         struct ZeroMigrator;

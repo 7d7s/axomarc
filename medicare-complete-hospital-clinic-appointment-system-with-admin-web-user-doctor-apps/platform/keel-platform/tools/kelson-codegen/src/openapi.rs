@@ -431,7 +431,10 @@ rules = ["one_of:personal,work"]
         assert_eq!(schema["type"], "object");
         assert_eq!(schema["properties"]["title"]["maxLength"], 120);
         assert_eq!(schema["properties"]["body"]["minLength"], 10);
-        assert_eq!(schema["properties"]["kind"]["enum"], json!(["personal", "work"]));
+        assert_eq!(
+            schema["properties"]["kind"]["enum"],
+            json!(["personal", "work"])
+        );
         let required = schema["required"].as_array().expect("required list");
         assert!(required.contains(&json!("title")));
         assert!(!required.contains(&json!("body")));
@@ -502,7 +505,10 @@ rules = ["string", "max:16"]
 
         // nullable widens the type to a 3.1 type array; without it the
         // declared (or default) type stays a plain string.
-        assert_eq!(json!(["string", "null"]), schema["properties"]["note"]["type"]);
+        assert_eq!(
+            json!(["string", "null"]),
+            schema["properties"]["note"]["type"]
+        );
         assert_eq!(json!("string"), schema["properties"]["kind"]["type"]);
 
         let required = schema["required"].as_array().expect("required list");

@@ -353,7 +353,10 @@ mod tests {
             .map(|l| l.spec.handler.as_str())
             .collect();
         assert!(handlers_a.contains(&"a-only") && handlers_a.contains(&"global"));
-        assert!(!handlers_a.contains(&"b-only"), "B's listener never in A's view");
+        assert!(
+            !handlers_a.contains(&"b-only"),
+            "B's listener never in A's view"
+        );
         let handlers_b: Vec<&str> = reg
             .listeners_scoped(&b, "E")
             .iter()
@@ -469,7 +472,8 @@ mod tests {
             idempotent: true,
             tenant: Some(b.id),
         };
-        reg.register(listener.clone(), Arc::new(NoopHandler)).unwrap();
+        reg.register(listener.clone(), Arc::new(NoopHandler))
+            .unwrap();
         listener.handler = "a-only".to_string();
         listener.tenant = Some(a.id);
         reg.register(listener, Arc::new(NoopHandler)).unwrap();

@@ -278,19 +278,36 @@ pub fn host_call(
             let m = method.as_bytes();
             let a = args.as_bytes();
             match port {
-                Port::ModelRead => model_read(m.as_ptr() as u32, m.len() as u32, a.as_ptr() as u32, a.len() as u32),
-                Port::ModelWrite => {
-                    model_write(m.as_ptr() as u32, m.len() as u32, a.as_ptr() as u32, a.len() as u32)
-                }
-                Port::TokenRead => {
-                    token_read(m.as_ptr() as u32, m.len() as u32, a.as_ptr() as u32, a.len() as u32)
-                }
-                Port::TokenWrite => {
-                    token_write(m.as_ptr() as u32, m.len() as u32, a.as_ptr() as u32, a.len() as u32)
-                }
-                Port::PasswordHash => {
-                    password_hash(m.as_ptr() as u32, m.len() as u32, a.as_ptr() as u32, a.len() as u32)
-                }
+                Port::ModelRead => model_read(
+                    m.as_ptr() as u32,
+                    m.len() as u32,
+                    a.as_ptr() as u32,
+                    a.len() as u32,
+                ),
+                Port::ModelWrite => model_write(
+                    m.as_ptr() as u32,
+                    m.len() as u32,
+                    a.as_ptr() as u32,
+                    a.len() as u32,
+                ),
+                Port::TokenRead => token_read(
+                    m.as_ptr() as u32,
+                    m.len() as u32,
+                    a.as_ptr() as u32,
+                    a.len() as u32,
+                ),
+                Port::TokenWrite => token_write(
+                    m.as_ptr() as u32,
+                    m.len() as u32,
+                    a.as_ptr() as u32,
+                    a.len() as u32,
+                ),
+                Port::PasswordHash => password_hash(
+                    m.as_ptr() as u32,
+                    m.len() as u32,
+                    a.as_ptr() as u32,
+                    a.len() as u32,
+                ),
             }
         };
         let ptr = (out >> 32) as i32;
@@ -327,7 +344,9 @@ pub fn call<T: serde::Serialize>(
     args: &T,
 ) -> Result<serde_json::Value, kelson_foundation::AppError> {
     let payload = serde_json::to_string(args).map_err(|e| {
-        kelson_foundation::AppError::internal(format!("module sdk: arguments are not encodable: {e}"))
+        kelson_foundation::AppError::internal(format!(
+            "module sdk: arguments are not encodable: {e}"
+        ))
     })?;
     host_call(port, method, &payload)
 }
@@ -437,15 +456,12 @@ fn emit(import: &str, action: &str, payload: &serde_json::Value) -> bool {
 
 /// Where native builds put a record the SDK would otherwise have to refuse.
 #[cfg(not(target_arch = "wasm32"))]
-static NATIVE_RECORD_SINK: OnceLock<fn(&str, &str, &serde_json::Value) -> bool> =
-    OnceLock::new();
+static NATIVE_RECORD_SINK: OnceLock<fn(&str, &str, &serde_json::Value) -> bool> = OnceLock::new();
 
 /// Give native records somewhere to go. Installs once; a later call is
 /// refused (`false`) rather than replacing what the first caller chose.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn install_native_record_sink(
-    sink: fn(&str, &str, &serde_json::Value) -> bool,
-) -> bool {
+pub fn install_native_record_sink(sink: fn(&str, &str, &serde_json::Value) -> bool) -> bool {
     NATIVE_RECORD_SINK.set(sink).is_ok()
 }
 
@@ -473,19 +489,15 @@ pub fn dispatch(
     op: &str,
     input: &[u8],
 ) -> Result<Value, kelson_foundation::AppError> {
-    let raw = std::str::from_utf8(input).map_err(|_| {
-        kelson_foundation::AppError::validation("module sdk: input is not UTF-8")
-    })?;
+    let raw = std::str::from_utf8(input)
+        .map_err(|_| kelson_foundation::AppError::validation("module sdk: input is not UTF-8"))?;
     let envelope: Value = serde_json::from_str(raw)
         .map_err(|_| kelson_foundation::AppError::validation("module sdk: input is not JSON"))?;
 
     let (ctx_json, payload) = match envelope.get(ENVELOPE_CTX) {
         Some(ctx) => (
             ctx.clone(),
-            envelope
-                .get(ENVELOPE_INPUT)
-                .cloned()
-                .unwrap_or(Value::Null),
+            envelope.get(ENVELOPE_INPUT).cloned().unwrap_or(Value::Null),
         ),
         // An envelope without a context is still dispatchable: the payload is
         // the whole document. A module that needs a principal checks for one.
@@ -541,10 +553,7 @@ pub fn dispatch(
 ///   queues outbox work is not yet fully ported, and that is recorded in the
 ///   SDK rather than hidden by an empty success.
 #[cfg(target_arch = "wasm32")]
-fn replay_effects(
-    action: &str,
-    unit: &unit::GuestUnit,
-) -> Result<(), kelson_foundation::AppError> {
+fn replay_effects(action: &str, unit: &unit::GuestUnit) -> Result<(), kelson_foundation::AppError> {
     let refused = |what: &str, index: usize| {
         kelson_foundation::AppError::internal(format!(
             "module sdk: the host refused the {what} this handler recorded at index {index}"
@@ -587,7 +596,9 @@ fn replay_effects(
 /// synchronous work wrapped in `BoxFuture`. Polling once per wake is the
 /// whole of the executor this crate needs — and it is honest about being
 /// that, rather than pretending to be a runtime it is not.
-fn poll(future: kelson_execution::BoxFuture<'static, Result<Value, kelson_foundation::AppError>>) -> Result<Value, kelson_foundation::AppError> {
+fn poll(
+    future: kelson_execution::BoxFuture<'static, Result<Value, kelson_foundation::AppError>>,
+) -> Result<Value, kelson_foundation::AppError> {
     use std::future::Future;
     use std::pin::pin;
     use std::task::{Context, Poll, Waker};
@@ -721,14 +732,13 @@ pub fn hash_password(secret: &str) -> Result<String, kelson_foundation::AppError
         secret: secret.to_string(),
     };
     let value = call(Port::PasswordHash, "hash", &args)?;
-    serde_json::from_value::<kelson_module_contract::PasswordHashResult>(value).map(
-        |answer| answer.hash,
-    )
-    .map_err(|e| {
-        kelson_foundation::AppError::internal(format!(
-            "module sdk: host hash answer is not decodable: {e}"
-        ))
-    })
+    serde_json::from_value::<kelson_module_contract::PasswordHashResult>(value)
+        .map(|answer| answer.hash)
+        .map_err(|e| {
+            kelson_foundation::AppError::internal(format!(
+                "module sdk: host hash answer is not decodable: {e}"
+            ))
+        })
 }
 
 /// Verify a secret against a stored PHC string through `host.password_hash`.
@@ -744,12 +754,11 @@ pub fn verify_password(secret: &str, hash: &str) -> Result<bool, kelson_foundati
         hash: hash.to_string(),
     };
     let value = call(Port::PasswordHash, "verify", &args)?;
-    serde_json::from_value::<kelson_module_contract::PasswordVerifyResult>(value).map(
-        |answer| answer.valid,
-    )
-    .map_err(|e| {
-        kelson_foundation::AppError::internal(format!(
-            "module sdk: host verify answer is not decodable: {e}"
-        ))
-    })
+    serde_json::from_value::<kelson_module_contract::PasswordVerifyResult>(value)
+        .map(|answer| answer.valid)
+        .map_err(|e| {
+            kelson_foundation::AppError::internal(format!(
+                "module sdk: host verify answer is not decodable: {e}"
+            ))
+        })
 }

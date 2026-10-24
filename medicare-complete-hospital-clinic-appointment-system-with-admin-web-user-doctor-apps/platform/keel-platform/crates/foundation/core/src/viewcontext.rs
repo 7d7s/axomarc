@@ -17,8 +17,8 @@
 
 use serde_json::Value;
 
-use crate::translate::MessageCatalog;
 use crate::head::HeadStore;
+use crate::translate::MessageCatalog;
 
 /// The reserved key the resolved locale is under.
 pub const LOCALE_KEY: &str = "_locale";
@@ -167,7 +167,11 @@ mod tests {
             .with_errors(json!({}))
             .with_csrf(Some("token-1".to_string()))
             .apply(&mut context);
-        assert_eq!(context["patient"], json!("Ada"), "the app's own data survives");
+        assert_eq!(
+            context["patient"],
+            json!("Ada"),
+            "the app's own data survives"
+        );
         assert_eq!(context[LOCALE_KEY], json!("en"));
         assert_eq!(context[LANG_KEY]["greeting"], json!("Hello"));
         assert_eq!(context[AUTH_KEY], json!("principal-1"));
@@ -188,7 +192,11 @@ mod tests {
         ViewContext::localized(&catalog(), "en")
             .with_errors(json!({}))
             .apply(&mut context);
-        assert_eq!(context[LOCALE_KEY], json!("en"), "the request's locale wins");
+        assert_eq!(
+            context[LOCALE_KEY],
+            json!("en"),
+            "the request's locale wins"
+        );
         assert_eq!(
             context[ERRORS_KEY]["email"],
             json!("required"),

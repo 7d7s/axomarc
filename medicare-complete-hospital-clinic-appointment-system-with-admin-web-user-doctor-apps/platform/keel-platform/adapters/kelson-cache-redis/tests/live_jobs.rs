@@ -15,8 +15,8 @@
 #![cfg(feature = "redis-tests")]
 
 use kelson_cache_redis::RedisJobStore;
-use kelson_jobs::{build_from_def, JobDef, JobStatus, JobStore, JobStoreAdmin, TenantJobStore};
 use kelson_foundation::TenantId;
+use kelson_jobs::{build_from_def, JobDef, JobStatus, JobStore, JobStoreAdmin, TenantJobStore};
 use time::OffsetDateTime;
 
 fn redis_url() -> Option<String> {
@@ -83,7 +83,9 @@ fn two_workers_never_claim_the_same_job() {
     let Some(store) = store(&format!("keel:test:jobs:{}:", uuid::Uuid::now_v7())) else {
         return;
     };
-    store.enqueue(job("live.exclusive")).expect("the job enqueues");
+    store
+        .enqueue(job("live.exclusive"))
+        .expect("the job enqueues");
 
     let first = store.claim("worker-a").expect("the first claim");
     let second = store.claim("worker-b").expect("the second claim");
@@ -146,7 +148,11 @@ fn a_failure_requeues_and_an_exhausted_job_is_dead_lettered() {
         .iter()
         .find(|j| j.id == id)
         .expect("the failed job is visible to the admin");
-    assert_eq!(failed.last_error.as_deref(), Some("boom"), "the error is recorded");
+    assert_eq!(
+        failed.last_error.as_deref(),
+        Some("boom"),
+        "the error is recorded"
+    );
 
     // A job that may not be retried is dead-lettered.
     let mut def = JobDef::new("live.dead");

@@ -77,7 +77,10 @@ impl BridgedForm {
     /// Validate the submission **on the shared definition**: populate the
     /// fields, run the declared rules, and — on failure — fill the
     /// form-level error with the field messages the re-render reads.
-    pub fn validate_with_data(&mut self, submitted: &serde_json::Map<String, serde_json::Value>) -> bool {
+    pub fn validate_with_data(
+        &mut self,
+        submitted: &serde_json::Map<String, serde_json::Value>,
+    ) -> bool {
         self.populate(submitted);
         let form_vm = FormVm {
             action: self.action.clone(),
@@ -118,7 +121,12 @@ mod tests {
     use super::*;
     use crate::builtins::ValidationRule;
 
-    fn field(name: &str, field_type: &str, required: bool, rules: Vec<ValidationRule>) -> FormField {
+    fn field(
+        name: &str,
+        field_type: &str,
+        required: bool,
+        rules: Vec<ValidationRule>,
+    ) -> FormField {
         FormField {
             name: name.to_string(),
             label: name.to_string(),
@@ -132,7 +140,9 @@ mod tests {
         }
     }
 
-    fn submitted(pairs: &[(&str, serde_json::Value)]) -> serde_json::Map<String, serde_json::Value> {
+    fn submitted(
+        pairs: &[(&str, serde_json::Value)],
+    ) -> serde_json::Map<String, serde_json::Value> {
         pairs
             .iter()
             .map(|(k, v)| (k.to_string(), v.clone()))
@@ -145,20 +155,36 @@ mod tests {
             "/submit",
             "POST",
             vec![
-                field("name", "text", true, vec![ValidationRule::Required, ValidationRule::MinLength(2)]),
-                field("email", "email", true, vec![ValidationRule::Required, ValidationRule::Email]),
+                field(
+                    "name",
+                    "text",
+                    true,
+                    vec![ValidationRule::Required, ValidationRule::MinLength(2)],
+                ),
+                field(
+                    "email",
+                    "email",
+                    true,
+                    vec![ValidationRule::Required, ValidationRule::Email],
+                ),
             ],
         );
 
         // The valid submission passes on the same definition the render
         // reads, and carries no form-level error.
         let mut form = form.clone();
-        let ok = submitted(&[("name", "John".into()), ("email", "john@example.com".into())]);
+        let ok = submitted(&[
+            ("name", "John".into()),
+            ("email", "john@example.com".into()),
+        ]);
         assert!(form.validate_with_data(&ok));
         assert!(form.error.is_none());
 
         // The wire plane's input contract echoes the submission.
-        let input = form.clone().validate().expect("the input describes the form");
+        let input = form
+            .clone()
+            .validate()
+            .expect("the input describes the form");
         assert_eq!(input.get("name").and_then(|v| v.as_str()), Some("John"));
 
         // A missing required field fails and fills the form-level error

@@ -21,12 +21,12 @@ use std::sync::Arc;
 
 use kelson_appointments_contract::*;
 use kelson_context::ExecutionContext;
+use kelson_execution::{
+    BoxFuture, ExecutionPlan, ExecutionUnit, MutationRecord, OperationHandler, OutboxMessage,
+};
 use kelson_foundation::{
     codes, AppError, ErrorCategory, ExecutionProfileKind, OperationId, Retryability, Severity,
     TenantId,
-};
-use kelson_execution::{
-    BoxFuture, ExecutionPlan, ExecutionUnit, MutationRecord, OperationHandler, OutboxMessage,
 };
 #[cfg(test)]
 use kelson_lifecycle::{BootError, Phase, Provider, ServiceRegistry};
@@ -286,10 +286,11 @@ impl OperationHandler for ListHandler {
             match page_req {
                 Some(req) => {
                     let page = self.store.list_paged(tenant, req)?;
-                    let has_more = page.total.map_or(
-                        page.items.len() as u64 >= page.per_page as u64,
-                        |total| u64::from(page.page) * u64::from(page.per_page) < total,
-                    );
+                    let has_more = page
+                        .total
+                        .map_or(page.items.len() as u64 >= page.per_page as u64, |total| {
+                            u64::from(page.page) * u64::from(page.per_page) < total
+                        });
                     Ok(json!({
                         "appointments": page.items,
                         "page": {
@@ -357,8 +358,10 @@ impl OperationHandler for AvailabilityHandler {
 mod tests {
     use super::*;
     use kelson_context::{PrincipalContext, ScopeSnapshot, TenantContext};
-    use kelson_foundation::{AuthorizationRevision, FeatureRevision, ModuleRevision, PrincipalId};
     use kelson_execution::{Engine, IdempotencyKey, InMemoryBackend, InMemoryIdempotency};
+    use kelson_foundation::{AuthorizationRevision, FeatureRevision, ModuleRevision, PrincipalId};
+    use kelson_identity::store::MembershipStore;
+    use kelson_identity::{Membership, MembershipStatus};
     use kelson_policy::{AccessSnapshot, PolicyAuthz, PolicyEngine};
     use time::OffsetDateTime;
 
@@ -377,11 +380,27 @@ mod tests {
         });
         let principal = PrincipalId::new();
         let tenant = TenantId::new();
+        // S-001c: the fixture GRANTS the edge and reads the membership bit
+        // back out of the store - the snapshot is never fabricated.
+        let memberships = kelson_identity::InMemoryMembershipStore::new();
+        memberships
+            .grant(Membership {
+                id: kelson_foundation::MembershipId::new(),
+                principal_id: principal,
+                tenant_id: tenant,
+                status: MembershipStatus::Active,
+                joined_at: OffsetDateTime::now_utc(),
+            })
+            .expect("the fixture edge grants");
+        let membership_active = memberships
+            .active_for(principal, tenant)
+            .expect("the store answers")
+            .is_some();
         let policies = Arc::new(PolicyEngine::new());
         policies.install_snapshot(AccessSnapshot {
             principal_id: principal,
             tenant_id: tenant,
-            membership_active: true,
+            membership_active,
             capabilities: capabilities.iter().map(|c| c.to_string()).collect(),
             scope_paths: ["/".to_string()].into_iter().collect(),
             authorization_revision: policies.revision(),
@@ -508,7 +527,11 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.code, codes::VALIDATION);
-        assert_eq!(store.count(tenant).unwrap(), 0, "failed validation writes nothing");
+        assert_eq!(
+            store.count(tenant).unwrap(),
+            0,
+            "failed validation writes nothing"
+        );
     }
 
     #[tokio::test]
@@ -679,20 +702,33 @@ mod tests {
             .unwrap();
         assert!(replay.receipt.replayed);
         assert_eq!(replay.result, first.result);
-        assert_eq!(store.count(tenant).unwrap(), 1, "replay does not double-book");
+        assert_eq!(
+            store.count(tenant).unwrap(),
+            1,
+            "replay does not double-book"
+        );
     }
 
     #[test]
     fn manifest_compiles_into_the_platform_graph() {
         let manifest = kelson_registry::ModuleManifest::from_toml(include_str!("../module.toml"))
             .expect("manifest parses");
-        let graph = kelson_registry::PlatformGraph::compile(vec![manifest]).expect("graph compiles");
-        assert_eq!(graph.operations.len(), 4, "book + cancel + list + availability");
+        let graph =
+            kelson_registry::PlatformGraph::compile(vec![manifest]).expect("graph compiles");
+        assert_eq!(
+            graph.operations.len(),
+            4,
+            "book + cancel + list + availability"
+        );
         assert!(graph.operations.contains_key("appointments.book"));
         assert!(graph.operations.contains_key("appointments.cancel"));
         assert!(graph.operations.contains_key("appointments.list"));
         assert_eq!(graph.events.len(), 2, "booked + cancelled events");
-        assert_eq!(graph.modules[0].routes.len(), 5, "book + cancel + list + availability + history alias");
+        assert_eq!(
+            graph.modules[0].routes.len(),
+            6,
+            "book + cancel + list + availability + book-page (MVA-004) + history alias"
+        );
     }
 
     /// Test provider for the Platform phase: registers the in-memory
@@ -800,9 +836,15 @@ mod tests {
         let context = ctx_lang(principal, tenant, "fr");
         let handler = BookHandler::new(store.clone());
 
-        let outcome = book(&engine, &context, &handler, "A. Patient", "2026-09-01T10:00Z")
-            .await
-            .expect("booking succeeds");
+        let outcome = book(
+            &engine,
+            &context,
+            &handler,
+            "A. Patient",
+            "2026-09-01T10:00Z",
+        )
+        .await
+        .expect("booking succeeds");
         assert_eq!(outcome.result["status"], "booked");
 
         // The event names the module declares are the ones it registered:
@@ -821,7 +863,7 @@ mod tests {
 /// normalization the drift comparison applies to both sides. Generating it
 /// from the sidecar rather than typing it is what keeps a route or an input
 /// list from being added to one half and forgotten in the other.
-const MANIFEST_JSON: &str = r#"{"module":{"name":"appointments","version":"0.1.0","maturity":"L0","plane":"tenant","description":"Clinic appointments: book, cancel, list","api":1},"capabilities":{"availability":{"profile":"READ","delta":"required","audit":"required","idempotency":"required","inputs":["date"]},"book":{"profile":"COMMAND","delta":"required","audit":"required","idempotency":"required","inputs":["patient","slot","photo"]},"cancel":{"profile":"COMMAND","delta":"required","audit":"required","idempotency":"required","inputs":["password"]},"list":{"profile":"READ","delta":"required","audit":"required","idempotency":"required","inputs":["page"]}},"dependencies":{"contracts":[]},"routes":[{"method":"POST","path":"/api/v1/appointments","operation":"book","capability":"book","version":"v1","name":"book","resource":null,"only":[],"except":[],"middleware":[],"public":false,"deprecated":false,"response":"json","bindings":[],"plane":null,"group":null,"constraints":[],"singleton":false,"fallback":false,"excluded_middleware":[],"view":null,"domain":null,"subdomain":null},{"method":"DELETE","path":"/api/v1/appointments/{id}","operation":"cancel","capability":"cancel","version":"v1","name":"cancel","resource":null,"only":[],"except":[],"middleware":[],"public":false,"deprecated":false,"response":"json","bindings":[{"param":"id","model":"Appointment","with_trashed":false}],"plane":null,"group":null,"constraints":[],"singleton":false,"fallback":false,"excluded_middleware":[],"view":null,"domain":null,"subdomain":null},{"method":"GET","path":"/api/v1/appointments","operation":"list","capability":"list","version":"v1","name":"list","resource":null,"only":[],"except":[],"middleware":[],"public":false,"deprecated":false,"response":"json","bindings":[],"plane":null,"group":null,"constraints":[],"singleton":false,"fallback":false,"excluded_middleware":[],"view":null,"domain":null,"subdomain":null},{"method":"GET","path":"/api/v1/appointments/availability","operation":"availability","capability":"availability","version":"v1","name":"availability","resource":null,"only":[],"except":[],"middleware":[],"public":true,"deprecated":false,"response":"json","bindings":[],"plane":null,"group":null,"constraints":[],"singleton":false,"fallback":false,"excluded_middleware":[],"view":null,"domain":null,"subdomain":null},{"method":"GET","path":"/api/v1/appointments/history","operation":"list","capability":"list","version":"v1","name":"history","resource":null,"only":[],"except":[],"middleware":[],"public":false,"deprecated":true,"response":"json","bindings":[],"plane":null,"group":null,"constraints":[],"singleton":false,"fallback":false,"excluded_middleware":[],"view":null,"domain":null,"subdomain":null}],"events":[{"name":"appointment.booked","stream":"data"},{"name":"appointment.cancelled","stream":"data"}],"workflows":[],"validation":[{"operation":"book","field":"patient","rules":["required","max:120"],"custom":null,"attribute":null,"messages":{}},{"operation":"book","field":"slot","rules":["required","date","before:2030-01-01","unique:Appointment"],"custom":null,"attribute":null,"messages":{}},{"operation":"book","field":"photo","rules":["image","mimes:jpg,png","extensions:jpg,png","dimensions:min_w=100"],"custom":null,"attribute":null,"messages":{}},{"operation":"cancel","field":"password","rules":["current_password"],"custom":null,"attribute":null,"messages":{}}],"route_groups":[],"console_commands":[],"channels":[],"url":{"defaults":{}},"config":null,"budget":{"max_memory_mb":null,"max_fuel":null,"max_concurrency":null,"execution_timeout_ms":null}}"#;
+const MANIFEST_JSON: &str = r#"{"module":{"name":"appointments","version":"0.1.0","maturity":"L0","plane":"tenant","description":"Clinic appointments: book, cancel, list","api":1},"capabilities":{"availability":{"profile":"READ","delta":"required","audit":"required","idempotency":"required","inputs":["date"]},"book":{"profile":"COMMAND","delta":"required","audit":"required","idempotency":"required","inputs":["patient","slot","photo"]},"cancel":{"profile":"COMMAND","delta":"required","audit":"required","idempotency":"required","inputs":["password"]},"list":{"profile":"READ","delta":"required","audit":"required","idempotency":"required","inputs":["page"]}},"dependencies":{"contracts":[]},"routes":[{"method":"POST","path":"/api/v1/appointments","operation":"book","capability":"book","version":"v1","name":"book","resource":null,"only":[],"except":[],"middleware":[],"public":false,"deprecated":false,"response":"json","bindings":[],"plane":null,"group":null,"constraints":[],"singleton":false,"fallback":false,"excluded_middleware":[],"view":null,"domain":null,"subdomain":null},{"method":"DELETE","path":"/api/v1/appointments/{id}","operation":"cancel","capability":"cancel","version":"v1","name":"cancel","resource":null,"only":[],"except":[],"middleware":[],"public":false,"deprecated":false,"response":"json","bindings":[{"param":"id","model":"Appointment","with_trashed":false}],"plane":null,"group":null,"constraints":[],"singleton":false,"fallback":false,"excluded_middleware":[],"view":null,"domain":null,"subdomain":null},{"method":"GET","path":"/api/v1/appointments","operation":"list","capability":"list","version":"v1","name":"list","resource":null,"only":[],"except":[],"middleware":[],"public":false,"deprecated":false,"response":"json","bindings":[],"plane":null,"group":null,"constraints":[],"singleton":false,"fallback":false,"excluded_middleware":[],"view":null,"domain":null,"subdomain":null},{"method":"GET","path":"/api/v1/appointments/availability","operation":"availability","capability":"availability","version":"v1","name":"availability","resource":null,"only":[],"except":[],"middleware":[],"public":true,"deprecated":false,"response":"json","bindings":[],"plane":null,"group":null,"constraints":[],"singleton":false,"fallback":false,"excluded_middleware":[],"view":null,"domain":null,"subdomain":null},{"method":"GET","path":"/appointments/book","operation":"availability","capability":"availability","version":"v1","name":"book-page","resource":null,"only":[],"except":[],"middleware":[],"public":true,"deprecated":false,"response":"html","bindings":[],"plane":"web","group":null,"constraints":[],"singleton":false,"fallback":false,"excluded_middleware":[],"view":"pages.book-appointment","view_model":"BookAppointmentVm","domain":null,"subdomain":null},{"method":"GET","path":"/api/v1/appointments/history","operation":"list","capability":"list","version":"v1","name":"history","resource":null,"only":[],"except":[],"middleware":[],"public":false,"deprecated":true,"response":"json","bindings":[],"plane":null,"group":null,"constraints":[],"singleton":false,"fallback":false,"excluded_middleware":[],"view":null,"domain":null,"subdomain":null}],"events":[{"name":"appointment.booked","stream":"data"},{"name":"appointment.cancelled","stream":"data"}],"workflows":[],"validation":[{"operation":"book","field":"patient","rules":["required","max:120"],"custom":null,"attribute":null,"messages":{}},{"operation":"book","field":"slot","rules":["required","date","before:2030-01-01","unique:Appointment"],"custom":null,"attribute":null,"messages":{}},{"operation":"book","field":"photo","rules":["image","mimes:jpg,png","extensions:jpg,png","dimensions:min_w=100"],"custom":null,"attribute":null,"messages":{}},{"operation":"cancel","field":"password","rules":["current_password"],"custom":null,"attribute":null,"messages":{}}],"route_groups":[],"console_commands":[],"channels":[],"url":{"defaults":{}},"config":null,"budget":{"max_memory_mb":null,"max_fuel":null,"max_concurrency":null,"execution_timeout_ms":null}}"#;
 
 /// Build the handlers a dispatch session sees, behind the seam's
 /// host-backed store: every row this guest reads or writes travels through a

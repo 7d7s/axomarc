@@ -70,7 +70,10 @@ pub fn make_traceparent(trace_id: TraceId, span_id: SpanId, sampled: bool) -> St
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
-    format!("00-{trace_hex}-{span_hex}-{}", if sampled { "01" } else { "00" })
+    format!(
+        "00-{trace_hex}-{span_hex}-{}",
+        if sampled { "01" } else { "00" }
+    )
 }
 
 #[cfg(test)]
@@ -90,7 +93,9 @@ mod tests {
     #[test]
     fn rejects_malformed() {
         assert!(parse_traceparent("garbage").is_none());
-        assert!(parse_traceparent("00-00000000000000000000000000000000-0000000000000000-00").is_none());
+        assert!(
+            parse_traceparent("00-00000000000000000000000000000000-0000000000000000-00").is_none()
+        );
         assert!(parse_traceparent("01-abcdef-12-00").is_none());
         assert!(parse_traceparent("00-xyz-12-00").is_none());
     }

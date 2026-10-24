@@ -631,14 +631,18 @@ async fn db_pool(root: &Path) -> anyhow::Result<DbPool> {
         anyhow::anyhow!("no database configured in {}", config_path(root).display())
     })?;
     match cfg.database_driver() {
-        kelson_config::DatabaseDriver::Postgres => kelson_postgres::create_pool(&db.url, db.max_connections)
-            .await
-            .map(DbPool::Postgres)
-            .map_err(|e| anyhow::anyhow!("{e}")),
-        kelson_config::DatabaseDriver::MySql => kelson_mysql::create_pool(&db.url, db.max_connections)
-            .await
-            .map(DbPool::MySql)
-            .map_err(|e| anyhow::anyhow!("{e}")),
+        kelson_config::DatabaseDriver::Postgres => {
+            kelson_postgres::create_pool(&db.url, db.max_connections)
+                .await
+                .map(DbPool::Postgres)
+                .map_err(|e| anyhow::anyhow!("{e}"))
+        }
+        kelson_config::DatabaseDriver::MySql => {
+            kelson_mysql::create_pool(&db.url, db.max_connections)
+                .await
+                .map(DbPool::MySql)
+                .map_err(|e| anyhow::anyhow!("{e}"))
+        }
     }
 }
 
@@ -722,12 +726,7 @@ fn main() -> ExitCode {
             name,
             path,
             plane,
-        } => route_list(
-            &format,
-            name.as_deref(),
-            path.as_deref(),
-            plane.as_deref(),
-        ),
+        } => route_list(&format, name.as_deref(), path.as_deref(), plane.as_deref()),
         Cmd::ViewCache => view_cache(),
         Cmd::ViewClear => view_clear(),
         Cmd::Optimize => optimize(),
@@ -782,7 +781,12 @@ fn main() -> ExitCode {
         Cmd::DbSchemaDump => rt(db_schema_dump()),
         Cmd::StorageLink { force } => storage_link(force),
         Cmd::Test { pg } => run_tests(pg),
-        Cmd::Call { name, input, principal, tenant } => call_command(
+        Cmd::Call {
+            name,
+            input,
+            principal,
+            tenant,
+        } => call_command(
             &name,
             input.as_deref(),
             principal.as_deref(),
@@ -831,7 +835,10 @@ fn main() -> ExitCode {
         Cmd::Security => security_check(),
         Cmd::Observe { what } => observe::dispatch(what),
         Cmd::Promote { plan, dry_run } => rt(promote(plan, dry_run)),
-        Cmd::Rollback { checkpoint, dry_run } => rt(rollback(checkpoint, dry_run)),
+        Cmd::Rollback {
+            checkpoint,
+            dry_run,
+        } => rt(rollback(checkpoint, dry_run)),
         other => gate_pending(&other),
     };
     match result {
@@ -996,10 +1003,7 @@ fn about_report(root: &Path, db_version: Option<&str>) -> anyhow::Result<String>
     // Driver selection mirrors the runtime: REDIS_URL present + reachable
     // picks redis for the cache port (kelson-demo run) and the job store
     // (kelson-worker, which falls back to the database queue, then memory).
-    let has_db = cfg
-        .database
-        .as_ref()
-        .is_some_and(|db| !db.url.is_empty());
+    let has_db = cfg.database.as_ref().is_some_and(|db| !db.url.is_empty());
     let redis = std::env::var("REDIS_URL").is_ok();
     out.push_str(&format!(
         "  Cache driver        {}\n",
@@ -1052,13 +1056,17 @@ fn about_report(root: &Path, db_version: Option<&str>) -> anyhow::Result<String>
 
     match external_deps(root) {
         Some((external, _, _)) => {
-            let state = if external > 25 {
+            // MVA-009: the budget is the analyzer's single source of truth
+            // (`cargo xtask dep-rules` enforces the same constant) — the
+            // report and the gate can no longer drift apart.
+            let cap = kelson_analyzer::external_cap(root);
+            let state = if external > cap {
                 "OVER BUDGET"
             } else {
                 "within budget"
             };
             out.push_str(&format!(
-                "  Dependencies        {external}/25 direct external ({state})\n"
+                "  Dependencies        {external}/{cap} direct external ({state})\n"
             ));
         }
         None => out.push_str("  Dependencies        (workspace Cargo.toml unreadable)\n"),
@@ -1112,10 +1120,9 @@ fn flag_snapshot(
 ) -> anyhow::Result<(usize, std::collections::BTreeSet<String>)> {
     let registry = Arc::new(kelson_feature_flags::platform_registry());
     let registered = registry.definitions().len();
-    let store: Arc<dyn kelson_feature_flags::FlagStore> =
-        Arc::new(kelson_feature_flags::FileFlagStore::new(
-            kelson_feature_flags::default_flags_path(root),
-        ));
+    let store: Arc<dyn kelson_feature_flags::FlagStore> = Arc::new(
+        kelson_feature_flags::FileFlagStore::new(kelson_feature_flags::default_flags_path(root)),
+    );
     let capabilities = std::collections::BTreeSet::new();
     let input = kelson_feature_flags::FlagInput {
         environment,
@@ -1200,6 +1207,23 @@ fn check() -> anyhow::Result<ExitCode> {
         },
         Err(e) => {
             println!("  [!!] GRAPH-MANIFEST: package index: {e}");
+            failures += 1;
+        }
+    }
+
+    // E1/C07: the build-time template lint over every configured root.
+    match views_engine(&root) {
+        Ok(engine) => match engine.lint_roots_all() {
+            Ok(n) => {
+                println!("  [ok] MVVC template lint: {n} template(s), no un-namespaced root reads")
+            }
+            Err(e) => {
+                println!("  [!!] {e}");
+                failures += 1;
+            }
+        },
+        Err(e) => {
+            println!("  [!!] MVVC-LINT-ROOT-READ: views engine unavailable: {e:#}");
             failures += 1;
         }
     }
@@ -1319,7 +1343,9 @@ fn graph_report() -> anyhow::Result<ExitCode> {
     // not checked" are distinguishable.
     match kelson_registry::PackageIndex::load(&root) {
         Ok(index) => match index.verify_pinned_boot(&root) {
-            Ok(0) => println!("  pins  (none declared — WASM modules run at their indexed version)"),
+            Ok(0) => {
+                println!("  pins  (none declared — WASM modules run at their indexed version)")
+            }
             Ok(n) => println!("  pins  {n} verified against the index"),
             Err(e) => {
                 println!("  [!!] MODULE-PIN-MISMATCH: {e}");
@@ -1368,8 +1394,7 @@ fn pkg_list() -> anyhow::Result<ExitCode> {
 /// mismatch) exits non-zero so CI can gate on it, while still printing the
 /// full index for diagnosis.
 fn pkg_list_at(root: &Path) -> anyhow::Result<ExitCode> {
-    let index =
-        kelson_registry::PackageIndex::load(root).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let index = kelson_registry::PackageIndex::load(root).map_err(|e| anyhow::anyhow!("{}", e))?;
     if index.package.is_empty() {
         println!("  (no packages - kelson pkg:add <path> to register one)");
         return Ok(ExitCode::SUCCESS);
@@ -1641,8 +1666,7 @@ fn publish_at(
     let mdir = pkg_dir.join("database").join("migrations");
     if mdir.is_dir() {
         let mut sources = Vec::new();
-        walk_files(&mdir, &mut sources)
-            .map_err(|e| anyhow::anyhow!("{}: {e}", mdir.display()))?;
+        walk_files(&mdir, &mut sources).map_err(|e| anyhow::anyhow!("{}: {e}", mdir.display()))?;
         sources.sort();
         let target_dir = root.join("database").join("migrations");
         let mut existing: Vec<(i64, String)> = Vec::new();
@@ -1662,10 +1686,9 @@ fn publish_at(
         }
         let mut seen: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
         for src in &sources {
-            let file_name = src
-                .file_name()
-                .and_then(|n| n.to_str())
-                .ok_or_else(|| anyhow::anyhow!("migration file name is not UTF-8: {}", src.display()))?;
+            let file_name = src.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
+                anyhow::anyhow!("migration file name is not UTF-8: {}", src.display())
+            })?;
             let (version, desc) = migration_source_parts(file_name)?;
             if let Some(prev) = seen.insert(version, file_name.to_string()) {
                 anyhow::bail!(
@@ -1682,7 +1705,13 @@ fn publish_at(
             }
             let bytes =
                 std::fs::read(src).map_err(|e| anyhow::anyhow!("{}: {e}", src.display()))?;
-            materialize(root, &target_dir.join(&target_name), &bytes, force, &mut outcome)?;
+            materialize(
+                root,
+                &target_dir.join(&target_name),
+                &bytes,
+                force,
+                &mut outcome,
+            )?;
         }
     }
 
@@ -1690,8 +1719,7 @@ fn publish_at(
     let pdir = pkg_dir.join("public");
     if pdir.is_dir() {
         let mut files = Vec::new();
-        walk_files(&pdir, &mut files)
-            .map_err(|e| anyhow::anyhow!("{}: {e}", pdir.display()))?;
+        walk_files(&pdir, &mut files).map_err(|e| anyhow::anyhow!("{}: {e}", pdir.display()))?;
         files.sort();
         for src in files {
             let rel = src
@@ -1781,9 +1809,9 @@ fn migration_source_parts(name: &str) -> anyhow::Result<(i64, String)> {
             "migration {name} must start with an integer version prefix (sqlx orders migrations by it, e.g. 20260901000001_{name})"
         );
     }
-    let version: i64 = version_raw
-        .parse()
-        .map_err(|_| anyhow::anyhow!("migration {name}: version prefix {version_raw} does not fit i64"))?;
+    let version: i64 = version_raw.parse().map_err(|_| {
+        anyhow::anyhow!("migration {name}: version prefix {version_raw} does not fit i64")
+    })?;
     let desc = rest
         .strip_suffix(".sql")
         .ok_or_else(|| anyhow::anyhow!("migration {name} must end in .sql"))?;
@@ -1839,9 +1867,7 @@ fn route_rows(
     };
     let contains = |filter: Option<&str>, value: &str| match filter {
         None => true,
-        Some(needle) => value
-            .to_lowercase()
-            .contains(&needle.to_lowercase()),
+        Some(needle) => value.to_lowercase().contains(&needle.to_lowercase()),
     };
     let mut rows = Vec::new();
     for m in &graph.modules {
@@ -1924,8 +1950,7 @@ fn route_list_at(
             } else {
                 println!(
                     "  {:<6} {:<4} {:<34} -> {:<26} {:<7}  {:<12} {:<10} NAME",
-                    "METHOD", "PLANE", "PATH", "MODULE.OPERATION", "VERSION",
-                    "GROUP", "DEPRECATED"
+                    "METHOD", "PLANE", "PATH", "MODULE.OPERATION", "VERSION", "GROUP", "DEPRECATED"
                 );
                 for row in &rows {
                     let target = format!("{}.{}", row.module, row.operation);
@@ -2056,8 +2081,11 @@ fn mcp_tools(format: &str) -> anyhow::Result<ExitCode> {
     let tools = kelson_ai_mcp::tools_from_graph(&graph);
     match format {
         "json" => {
-            let manifest =
-                kelson_ai_mcp::generate_manifest("keel-platform", env!("CARGO_PKG_VERSION"), &tools);
+            let manifest = kelson_ai_mcp::generate_manifest(
+                "keel-platform",
+                env!("CARGO_PKG_VERSION"),
+                &tools,
+            );
             println!("{}", serde_json::to_string_pretty(&manifest)?);
         }
         "table" => {
@@ -2206,7 +2234,10 @@ async fn diagnose_database_text(root: &Path) -> String {
                 Ok(state) => {
                     out.push_str(&format!("the version: {}\n", state.version));
                     out.push_str(&format!("the required: {}\n", state.required_version));
-                    out.push_str(&format!("the applied: {} migrations\n", state.applied.len()));
+                    out.push_str(&format!(
+                        "the applied: {} migrations\n",
+                        state.applied.len()
+                    ));
                     out.push_str(&format!(
                         "the pending: {}\n",
                         if state.pending.is_empty() {
@@ -2239,9 +2270,7 @@ async fn diagnose_database_text(root: &Path) -> String {
             // still worth reporting.
             match applied_versions(&DbPool::Postgres(p.clone())).await {
                 versions if versions.is_empty() => out.push_str("the applied: none\n"),
-                versions => {
-                    out.push_str(&format!("the applied: {} migrations\n", versions.len()))
-                }
+                versions => out.push_str(&format!("the applied: {} migrations\n", versions.len())),
             }
         }
     }
@@ -2297,7 +2326,10 @@ url = "postgres://user:db-password@localhost:5432/keel"
         // The environment section carries the effective config, with the
         // database password masked (a bundle goes into a ticket).
         assert!(text.contains("database:"), "{text}");
-        assert!(!text.contains("db-password"), "the password must be masked: {text}");
+        assert!(
+            !text.contains("db-password"),
+            "the password must be masked: {text}"
+        );
         // The route artifact is absent in the temp root: the bundle says so
         // rather than failing.
         assert!(text.contains("the artifact could not be read"), "{text}");
@@ -2334,7 +2366,9 @@ fn configured_port(root: &Path) -> u16 {
             let rest = line.strip_prefix("listen")?;
             let rest = rest.trim_start().strip_prefix('=')?.trim();
             let value = rest.trim_matches(|c| c == '"' || c == '\'');
-            value.rsplit_once(':').and_then(|(_, port)| port.parse().ok())
+            value
+                .rsplit_once(':')
+                .and_then(|(_, port)| port.parse().ok())
         })
         .expect("the config declares a listen port")
 }
@@ -2374,8 +2408,8 @@ mod container_tests {
     #[test]
     fn the_container_image_agrees_with_the_runtime() {
         let root = workspace_root().expect("the workspace root");
-        let dockerfile = std::fs::read_to_string(root.join("Dockerfile"))
-            .expect("the Dockerfile is readable");
+        let dockerfile =
+            std::fs::read_to_string(root.join("Dockerfile")).expect("the Dockerfile is readable");
 
         // 1. The builder's Rust version is the pinned one.
         let pinned = pinned_toolchain(&root);
@@ -2455,8 +2489,12 @@ async fn migrate() -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
     let pool = db_pool(&root).await?;
     let pair_applied = match &pool {
-        DbPool::Postgres(p) => kelson_postgres::run_migrations(p, &root).await.map_err(db_err)?,
-        DbPool::MySql(p) => kelson_mysql::run_migrations(p, &root).await.map_err(db_err)?,
+        DbPool::Postgres(p) => kelson_postgres::run_migrations(p, &root)
+            .await
+            .map_err(db_err)?,
+        DbPool::MySql(p) => kelson_mysql::run_migrations(p, &root)
+            .await
+            .map_err(db_err)?,
     };
     for name in &pair_applied {
         println!("  + {name}");
@@ -2470,14 +2508,18 @@ async fn migrate() -> anyhow::Result<ExitCode> {
 async fn applied_versions(pool: &DbPool) -> Vec<i64> {
     match pool {
         DbPool::Postgres(p) => {
-            sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success ORDER BY version")
-                .fetch_all(p)
-                .await
+            sqlx::query_scalar(
+                "SELECT version FROM _sqlx_migrations WHERE success ORDER BY version",
+            )
+            .fetch_all(p)
+            .await
         }
         DbPool::MySql(p) => {
-            sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success ORDER BY version")
-                .fetch_all(p)
-                .await
+            sqlx::query_scalar(
+                "SELECT version FROM _sqlx_migrations WHERE success ORDER BY version",
+            )
+            .fetch_all(p)
+            .await
         }
     }
     .unwrap_or_default()
@@ -2702,7 +2744,11 @@ async fn migrate_plan() -> anyhow::Result<ExitCode> {
     println!(
         "  driver: {}   source: {}",
         if postgres { "postgres" } else { "mysql" },
-        if postgres { "database/migrations" } else { "database/migrations-mysql" }
+        if postgres {
+            "database/migrations"
+        } else {
+            "database/migrations-mysql"
+        }
     );
 
     // (label, pending SQL) in apply order.
@@ -2829,8 +2875,12 @@ async fn migrate_fresh() -> anyhow::Result<ExitCode> {
         }
     }
     let pair_applied = match &pool {
-        DbPool::Postgres(p) => kelson_postgres::run_migrations(p, &root).await.map_err(db_err)?,
-        DbPool::MySql(p) => kelson_mysql::run_migrations(p, &root).await.map_err(db_err)?,
+        DbPool::Postgres(p) => kelson_postgres::run_migrations(p, &root)
+            .await
+            .map_err(db_err)?,
+        DbPool::MySql(p) => kelson_mysql::run_migrations(p, &root)
+            .await
+            .map_err(db_err)?,
     };
     for name in &pair_applied {
         println!("  + {name}");
@@ -2913,9 +2963,8 @@ struct PromotionWiring {
 /// last pg-only code path in either console (the refusal helper is deleted
 /// with it).
 fn wire_promotion(root: &Path, db: &DbPool) -> anyhow::Result<PromotionWiring> {
-    let config = Arc::new(
-        promotion::ConfigAdapter::boot(root).map_err(|e| anyhow::anyhow!("{e}"))?,
-    );
+    let config =
+        Arc::new(promotion::ConfigAdapter::boot(root).map_err(|e| anyhow::anyhow!("{e}"))?);
     let events = Arc::new(promotion::EventAdapter::new(db.clone()));
     let modules = promotion::ModulePinAdapter::new(root);
     // No application `JobRegistry`: the CLI does not link application
@@ -2961,17 +3010,16 @@ async fn promote(plan: Option<String>, dry_run: bool) -> anyhow::Result<ExitCode
         wiring.config.clone(),
         wiring.events.clone(),
     );
-    let pipeline =
-        kelson_deployment::promote::PromotionPipeline::new(
-            wiring.executor.clone(),
-            probes,
-            // **F-10**: the promotion's concurrency lock — a file on the
-            // release volume ✓, so a second operator (or a second host that
-            // can see the release ✓) is told the promotion is running ✓
-            // instead of interleaving with it ✓.
-            std::sync::Arc::new(kelson_deployment::lock::FilePromotionLock::new(&root)),
-        )
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let pipeline = kelson_deployment::promote::PromotionPipeline::new(
+        wiring.executor.clone(),
+        probes,
+        // **F-10**: the promotion's concurrency lock — a file on the
+        // release volume ✓, so a second operator (or a second host that
+        // can see the release ✓) is told the promotion is running ✓
+        // instead of interleaving with it ✓.
+        std::sync::Arc::new(kelson_deployment::lock::FilePromotionLock::new(&root)),
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     if dry_run {
         println!("plan:       {}", plan_path.display());
@@ -3001,21 +3049,22 @@ async fn promote(plan: Option<String>, dry_run: bool) -> anyhow::Result<ExitCode
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    println!("promoted {} ({:?}); checkpoint retained at {}",
-        artifact.release, state, checkpoint_path.display());
+    println!(
+        "promoted {} ({:?}); checkpoint retained at {}",
+        artifact.release,
+        state,
+        checkpoint_path.display()
+    );
     Ok(ExitCode::SUCCESS)
 }
 
 /// `kelson rollback` (§7.1): restore every dimension to the saved checkpoint.
 async fn rollback(checkpoint: Option<String>, dry_run: bool) -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
-    let checkpoint_path = promotion::resolve(
-        &root,
-        checkpoint.as_deref(),
-        promotion::CHECKPOINT_PATH,
-    );
-    let target = promotion::load_checkpoint(&checkpoint_path)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let checkpoint_path =
+        promotion::resolve(&root, checkpoint.as_deref(), promotion::CHECKPOINT_PATH);
+    let target =
+        promotion::load_checkpoint(&checkpoint_path).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     if dry_run {
         println!("checkpoint: {}", checkpoint_path.display());
@@ -3060,7 +3109,9 @@ async fn migrate_reset() -> anyhow::Result<ExitCode> {
     let cfg = load_config(&root)?;
     refuse_destructive_outside_dev_test("migrate:reset", cfg.app.env)?;
     if std::env::var_os("KEEL_FORCE").is_none()
-        && !confirm("migrate:reset reverts EVERY applied pair migration (schema objects drop). Continue?")
+        && !confirm(
+            "migrate:reset reverts EVERY applied pair migration (schema objects drop). Continue?",
+        )
     {
         anyhow::bail!("aborted (set KEEL_FORCE=1 to skip the prompt in scripts)");
     }
@@ -3132,10 +3183,12 @@ async fn migrate_refresh(steps: u32) -> anyhow::Result<ExitCode> {
                 .map_err(db_err)?;
             let outcome = match kelson_postgres::pairs::rollback(&mut *conn, &root, steps).await {
                 Err(e) => Err(e),
-                Ok(reverted) => match kelson_postgres::run_migrations_held(&mut conn, &root).await {
-                    Ok(pair_applied) => Ok((reverted, pair_applied)),
-                    Err(e) => Err(e),
-                },
+                Ok(reverted) => {
+                    match kelson_postgres::run_migrations_held(&mut conn, &root).await {
+                        Ok(pair_applied) => Ok((reverted, pair_applied)),
+                        Err(e) => Err(e),
+                    }
+                }
             };
             let released = kelson_postgres::release_migration_lock(&mut conn).await;
             let outcome = outcome.map_err(db_err)?;
@@ -3213,10 +3266,7 @@ fn refuse_seed_outside_dev_test(env: Environment) -> anyhow::Result<()> {
 /// as `kelson seed` ✓, extracted so every gate is unit-testable ✓ (the
 /// destructive migrations drop the schema ✓, the queue purge drops the
 /// jobs ✓, and neither may run in staging or production ✓).
-fn refuse_destructive_outside_dev_test(
-    command: &str,
-    env: Environment,
-) -> anyhow::Result<()> {
+fn refuse_destructive_outside_dev_test(command: &str, env: Environment) -> anyhow::Result<()> {
     if env.is_prod() || matches!(env, Environment::Staging) {
         anyhow::bail!("{command} refuses to run outside dev/test");
     }
@@ -3363,7 +3413,10 @@ fn config_reload_at(root: &Path) -> anyhow::Result<ExitCode> {
     let json = cfg.cache_json();
     let hash = kelson_registry::config_hash(&json);
     let elapsed = started.elapsed();
-    println!("config valid (schema gate passed) in {}ms", elapsed.as_millis());
+    println!(
+        "config valid (schema gate passed) in {}ms",
+        elapsed.as_millis()
+    );
     println!("  effective hash: {hash}");
     let path = kelson_registry::config_cache_path(root);
     match kelson_registry::ConfigCacheArtifact::load(&path)
@@ -3371,12 +3424,18 @@ fn config_reload_at(root: &Path) -> anyhow::Result<ExitCode> {
     {
         None => {
             let rel = path.strip_prefix(root).unwrap_or(&path);
-            println!("  pin: absent ({}) — boot and reloads read the live config", rel.display());
+            println!(
+                "  pin: absent ({}) — boot and reloads read the live config",
+                rel.display()
+            );
         }
         Some(artifact) => {
             let rel = path.strip_prefix(root).unwrap_or(&path);
             if artifact.config_hash == hash {
-                println!("  pin: {rel} matches — running servers already serve this revision", rel = rel.display());
+                println!(
+                    "  pin: {rel} matches — running servers already serve this revision",
+                    rel = rel.display()
+                );
             } else {
                 println!(
                     "  pin: {} is STALE (pinned {}, live {hash}) — re-run config:cache to re-pin, or config:clear to drop it",
@@ -3406,8 +3465,19 @@ fn config_clear_at(root: &Path) -> anyhow::Result<ExitCode> {
 
 /// Known top-level config sections for `kelson config:show` lookups.
 const CONFIG_SECTIONS: &[&str] = &[
-    "app", "database", "auth", "otp", "storage", "limits", "telemetry", "views", "http", "mail",
-    "i18n", "security", "identity",
+    "app",
+    "database",
+    "auth",
+    "otp",
+    "storage",
+    "limits",
+    "telemetry",
+    "views",
+    "http",
+    "mail",
+    "i18n",
+    "security",
+    "identity",
 ];
 
 /// Wave 4 Phase 5: print one config section with every secret redacted
@@ -3492,7 +3562,12 @@ fn env_summary_text(root: &Path) -> anyhow::Result<String> {
     let disks = if cfg.storage.disks.is_empty() {
         "(none)".to_string()
     } else {
-        cfg.storage.disks.keys().cloned().collect::<Vec<_>>().join(",")
+        cfg.storage
+            .disks
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(",")
     };
     out.push_str(&format!(
         "storage: endpoint={} bucket={} default={} disks={}\n",
@@ -3563,12 +3638,8 @@ fn cache_forget(key: &str) -> anyhow::Result<ExitCode> {
 /// Testable core of cache:forget against an explicit workspace root.
 fn cache_forget_at(root: &Path, key: &str) -> anyhow::Result<ExitCode> {
     match key {
-        "routes" => {
-            forget_artifact(root, kelson_registry::route_cache_path(root), key)
-        }
-        "config" => {
-            forget_artifact(root, kelson_registry::config_cache_path(root), key)
-        }
+        "routes" => forget_artifact(root, kelson_registry::route_cache_path(root), key),
+        "config" => forget_artifact(root, kelson_registry::config_cache_path(root), key),
         _ => {
             let Some(name) = key.strip_prefix("views:") else {
                 anyhow::bail!(
@@ -3618,11 +3689,21 @@ fn view_cache() -> anyhow::Result<ExitCode> {
 
 fn view_cache_at(root: &Path) -> anyhow::Result<ExitCode> {
     let engine = views_engine(root)?;
+    // E1/C07: the build-time template lint runs before anything is
+    // precompiled. A bound template that reads a root key outside `vm.*`
+    // is a broken build, not a page that renders blank.
+    let linted = engine
+        .lint_roots_all()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("view:cache: {linted} templates linted (bound root reads, C07)");
     let cached = engine
         .precompile_all()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     match engine.config().cache_dir.as_ref() {
-        Some(dir) => println!("view:cache: {cached} templates compiled into {}", dir.display()),
+        Some(dir) => println!(
+            "view:cache: {cached} templates compiled into {}",
+            dir.display()
+        ),
         None => println!(
             "view:cache: {cached} templates compiled (no [views] cache_dir; disk cache disabled)"
         ),
@@ -3640,9 +3721,7 @@ fn view_clear() -> anyhow::Result<ExitCode> {
 
 fn view_clear_at(root: &Path) -> anyhow::Result<ExitCode> {
     let engine = views_engine(root)?;
-    let cleared = engine
-        .clear_cache()
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let cleared = engine.clear_cache().map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("view:clear: {cleared} compiled views cleared");
     Ok(ExitCode::SUCCESS)
 }
@@ -3704,14 +3783,37 @@ fn optimize_clear_at(root: &Path) -> anyhow::Result<ExitCode> {
 /// `application -> web`, so each consumer maps the plain-data section
 /// itself (same rules: relative paths resolve against the workspace root,
 /// empty paths fall back to resources/views).
+///
+/// MVA-002 (one roots truth): this engine must resolve EXACTLY the template
+/// set the boot's engine does — the config paths, the platform-shipped view
+/// root riding last (deduped, same as the boot), and the indexed package
+/// view namespaces installed through the engine's shared installer.
 fn views_engine(root: &Path) -> anyhow::Result<kelson_views::ViewsEngine> {
     let cfg = load_config(root)?;
     let env = cfg.app.env.as_str();
-    Ok(kelson_views::ViewsEngine::new(views_config(
-        &cfg.views,
-        root,
-        env,
-    )))
+    let mut views_cfg = views_config(&cfg.views, root, env);
+    let shipped = root.join("runtime/kelson-demo/views");
+    if !views_cfg.paths.contains(&shipped) && shipped.is_dir() {
+        views_cfg.paths.push(shipped);
+    }
+    let engine = kelson_views::ViewsEngine::new(views_cfg);
+    for missing in engine.missing_roots() {
+        eprintln!(
+            "warning: configured view root does not exist: {}",
+            missing.display()
+        );
+    }
+    let mut namespaces = std::collections::HashMap::new();
+    if let Ok(index) = kelson_registry::PackageIndex::load(root) {
+        for entry in &index.package {
+            namespaces.insert(
+                entry.name.clone(),
+                kelson_registry::PackageIndex::entry_dir(root, entry).join("views"),
+            );
+        }
+    }
+    engine.install_package_view_namespaces(namespaces);
+    Ok(engine)
 }
 
 fn views_config(
@@ -4142,8 +4244,8 @@ fn schedule_test() -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
     let registry = schedule_registry(&root).map_err(db_err)?;
     let state = kelson_scheduling::load_state(&root).map_err(db_err)?;
-    let plan = schedule_test_plan(&registry, &state, time::OffsetDateTime::now_utc())
-        .map_err(db_err)?;
+    let plan =
+        schedule_test_plan(&registry, &state, time::OffsetDateTime::now_utc()).map_err(db_err)?;
     for line in schedule_test_lines(&plan) {
         println!("{line}");
     }
@@ -4509,15 +4611,17 @@ async fn db_schema_dump() -> anyhow::Result<ExitCode> {
         }
         DbPool::MySql(pool) => {
             let (database, tables) = fetch_mysql_schema_tables(&pool).await?;
-            (render_mysql_schema_snapshot(&database, &tables), tables.len())
+            (
+                render_mysql_schema_snapshot(&database, &tables),
+                tables.len(),
+            )
         }
     };
     let path = root.join("database").join("schema.sql");
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&path, &snapshot)
-        .map_err(|e| anyhow::anyhow!("schema snapshot write: {e}"))?;
+    std::fs::write(&path, &snapshot).map_err(|e| anyhow::anyhow!("schema snapshot write: {e}"))?;
     let rel = path.strip_prefix(&root).unwrap_or(&path);
     println!(
         "  + {} ({} table(s), normalized DDL)",
@@ -5208,9 +5312,8 @@ fn storage_link_at(root: &Path, force: bool) -> anyhow::Result<()> {
     }
     // A dangling link is useless: make sure the disk root exists first
     // (LocalDisk::new would create it at boot anyway).
-    std::fs::create_dir_all(&target).map_err(|e| {
-        anyhow::anyhow!("cannot create storage root {}: {e}", target.display())
-    })?;
+    std::fs::create_dir_all(&target)
+        .map_err(|e| anyhow::anyhow!("cannot create storage root {}: {e}", target.display()))?;
     make_symlink(&target, &link).map_err(|e| {
         #[cfg(windows)]
         let msg = format!(
@@ -5429,8 +5532,8 @@ fn build(profile_raw: &str) -> anyhow::Result<ExitCode> {
 
 fn release_manifest(verify: bool) -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
-    let Some(manifest) = kelson_deployment::read_manifest(&root)
-        .map_err(|e| anyhow::anyhow!("{e}"))?
+    let Some(manifest) =
+        kelson_deployment::read_manifest(&root).map_err(|e| anyhow::anyhow!("{e}"))?
     else {
         if verify {
             // "Nothing to check" is not "everything checked out", and a CI
@@ -5486,7 +5589,9 @@ fn release_verify(
                 // digests, so passing here would assert an integrity nobody
                 // ever checked.
                 failed += 1;
-                println!("  [!!] {name} - manifest records no digest (cannot tell) - run `kelson build`");
+                println!(
+                    "  [!!] {name} - manifest records no digest (cannot tell) - run `kelson build`"
+                );
             }
         }
     }
@@ -5516,7 +5621,8 @@ fn flag_list() -> anyhow::Result<ExitCode> {
     let root = workspace_root()?;
     let registry = kelson_feature_flags::platform_registry();
     let store = flag_store(&root);
-    let states = kelson_feature_flags::FlagStore::all(&store).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let states =
+        kelson_feature_flags::FlagStore::all(&store).map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("platform flags ({}):", registry.definitions().len());
     for def in registry.definitions() {
         let state = states.iter().find(|st| st.name == def.name);
@@ -5991,7 +6097,8 @@ impl kelson_execution::OperationHandler for BenchCommand {
         _ctx: Arc<kelson_context::ExecutionContext>,
         input: serde_json::Value,
         unit: &mut dyn kelson_execution::ExecutionUnit,
-    ) -> kelson_execution::BoxFuture<'static, Result<serde_json::Value, kelson_foundation::AppError>> {
+    ) -> kelson_execution::BoxFuture<'static, Result<serde_json::Value, kelson_foundation::AppError>>
+    {
         unit.record_mutation(kelson_execution::MutationRecord {
             resource_type: "bench.note".into(),
             resource_id: Some(uuid::Uuid::now_v7()),
@@ -6030,7 +6137,8 @@ impl kelson_execution::OperationHandler for BenchRead {
         _ctx: Arc<kelson_context::ExecutionContext>,
         _input: serde_json::Value,
         _unit: &mut dyn kelson_execution::ExecutionUnit,
-    ) -> kelson_execution::BoxFuture<'static, Result<serde_json::Value, kelson_foundation::AppError>> {
+    ) -> kelson_execution::BoxFuture<'static, Result<serde_json::Value, kelson_foundation::AppError>>
+    {
         Box::pin(async move { Ok(serde_json::json!({ "items": [] })) })
     }
 }
@@ -6040,10 +6148,28 @@ fn bench_policy(
     tenant: kelson_foundation::TenantId,
 ) -> Arc<kelson_policy::PolicyEngine> {
     let policies = Arc::new(kelson_policy::PolicyEngine::new());
+    // S-001c: the bench grants its operator edge through the identity port
+    // and derives the membership bit from the store - never a literal flag.
+    let memberships = kelson_identity::InMemoryMembershipStore::new();
+    kelson_identity::store::MembershipStore::grant(
+        &memberships,
+        kelson_identity::Membership {
+            id: kelson_foundation::MembershipId::new(),
+            principal_id: principal,
+            tenant_id: tenant,
+            status: kelson_identity::MembershipStatus::Active,
+            joined_at: time::OffsetDateTime::now_utc(),
+        },
+    )
+    .expect("the bench edge grants");
+    let membership_active =
+        kelson_identity::store::MembershipStore::active_for(&memberships, principal, tenant)
+            .expect("the store answers")
+            .is_some();
     policies.install_snapshot(kelson_policy::AccessSnapshot {
         principal_id: principal,
         tenant_id: tenant,
-        membership_active: true,
+        membership_active,
         capabilities: ["bench.write".to_string()].into_iter().collect(),
         scope_paths: ["/".to_string()].into_iter().collect(),
         authorization_revision: policies.revision(),
@@ -6205,7 +6331,8 @@ fn benchmark(save_baseline: bool, budget: f64, iterations: usize) -> anyhow::Res
         "startup".into(),
         median_micros(iterations.min(100), || {
             let start = std::time::Instant::now();
-            let cfg = kelson_config::PlatformConfig::load(Some(&config_file)).expect("config loads");
+            let cfg =
+                kelson_config::PlatformConfig::load(Some(&config_file)).expect("config loads");
             std::hint::black_box(&cfg);
             start.elapsed()
         }),
@@ -6225,8 +6352,16 @@ fn benchmark(save_baseline: bool, budget: f64, iterations: usize) -> anyhow::Res
     );
     let command = BenchCommand::new();
     let read = BenchRead::new();
-    let command_ctx = bench_ctx(kelson_foundation::ExecutionProfileKind::Command, principal, tenant);
-    let read_ctx = bench_ctx(kelson_foundation::ExecutionProfileKind::Read, principal, tenant);
+    let command_ctx = bench_ctx(
+        kelson_foundation::ExecutionProfileKind::Command,
+        principal,
+        tenant,
+    );
+    let read_ctx = bench_ctx(
+        kelson_foundation::ExecutionProfileKind::Read,
+        principal,
+        tenant,
+    );
     let counter = std::sync::atomic::AtomicUsize::new(0);
 
     phases.insert(
@@ -6348,10 +6483,9 @@ fn benchmark(save_baseline: bool, budget: f64, iterations: usize) -> anyhow::Res
         };
 
         write(1);
-        let runtime = kelson_config::ConfigRuntime::from_source(kelson_config::FileConfigSource::new(
-            &path,
-        ))
-        .expect("bench config boots");
+        let runtime =
+            kelson_config::ConfigRuntime::from_source(kelson_config::FileConfigSource::new(&path))
+                .expect("bench config boots");
         runtime.subscribe(BenchReload);
 
         let mut ops = 1u64;
@@ -6557,9 +6691,7 @@ fn upgrade_report() -> anyhow::Result<ExitCode> {
                     "[!!] migration {name} changed since the release was built. `keel_migrations` \n     records only its name, so `kelson migrate` will NOT reapply it — the \n     database still holds the bytes that were originally applied."
                 );
             }
-            println!(
-                "     applied-vs-pending against the database: run `kelson migrate:status`"
-            );
+            println!("     applied-vs-pending against the database: run `kelson migrate:status`");
         } else {
             println!(
                 "[??] release manifest records no migrations (built before the migration \n     manifest was tracked) — rebuild with `kelson build`"
@@ -6614,13 +6746,14 @@ fn upgrade_report() -> anyhow::Result<ExitCode> {
         migrations.len()
     );
 
-    // Dependency governance (D-62).
+    // Dependency governance (D-62). MVA-009: one cap — the analyzer's.
     match external_deps(&root) {
         Some((external, total, git_deps)) => {
-            if external > 25 {
-                println!("[!!] direct external dependencies: {external} (budget 25, D-62)");
+            let cap = kelson_analyzer::external_cap(&root);
+            if external > cap {
+                println!("[!!] direct external dependencies: {external} (budget {cap}, D-62)");
             } else {
-                println!("[ok] direct external dependencies: {external}/25 (D-62; {total} workspace entries incl. platform crates)");
+                println!("[ok] direct external dependencies: {external}/{cap} (D-62; {total} workspace entries incl. platform crates)");
             }
             for dep in &git_deps {
                 println!("[!!] git dependency: {dep} (pin to a released version)");
@@ -6825,15 +6958,16 @@ fn security_check() -> anyhow::Result<ExitCode> {
         println!("[ok] no execution traces recorded yet");
     }
 
-    // 4. Dependency governance (D-62, blueprint 51).
+    // 4. Dependency governance (D-62, blueprint 51). MVA-009: one cap.
     match external_deps(&root) {
         Some((external, _total, git_deps)) => {
-            if external > 25 {
+            let cap = kelson_analyzer::external_cap(&root);
+            if external > cap {
                 failures.push(format!(
-                    "direct external dependencies {external} exceed the 25 budget (D-62)"
+                    "direct external dependencies {external} exceed the {cap} budget (D-62)"
                 ));
             } else {
-                println!("[ok] direct external dependencies: {external}/25 (D-62)");
+                println!("[ok] direct external dependencies: {external}/{cap} (D-62)");
             }
             for dep in &git_deps {
                 failures.push(format!(
@@ -6948,7 +7082,9 @@ fn run_profile(
         .current_dir(root)
         .status()
         .map_err(|e| anyhow::anyhow!("cannot spawn {program}: {e}"))?;
-    Ok(ExitCode::from(status.code().unwrap_or(1).clamp(0, 255) as u8))
+    Ok(ExitCode::from(
+        status.code().unwrap_or(1).clamp(0, 255) as u8
+    ))
 }
 
 /// Pure samply command line: `samply record <path-to-built-binary>`.
@@ -7038,9 +7174,7 @@ fn serve(worker: bool) -> anyhow::Result<ExitCode> {
 /// absent file means no commands — `kelson call` then fails with the
 /// declaration hint. kelson-demo re-resolves against the compiled graph whose
 /// GRAPH-ROUTEFILE-OP gate refuses unknown operations at boot.
-fn console_route_commands(
-    root: &Path,
-) -> anyhow::Result<Vec<kelson_registry::ConsoleCommandSpec>> {
+fn console_route_commands(root: &Path) -> anyhow::Result<Vec<kelson_registry::ConsoleCommandSpec>> {
     let path = root.join("routes").join("console.toml");
     if !path.exists() {
         return Ok(Vec::new());
@@ -7219,7 +7353,12 @@ mod tests {
     /// function of the environment.
     #[test]
     fn the_destructive_commands_refuse_outside_dev_and_test() {
-        for command in ["migrate:fresh", "migrate:reset", "migrate:refresh", "queue:clear"] {
+        for command in [
+            "migrate:fresh",
+            "migrate:reset",
+            "migrate:refresh",
+            "queue:clear",
+        ] {
             assert!(
                 refuse_destructive_outside_dev_test(command, Environment::Dev).is_ok(),
                 "{command} runs in dev"
@@ -7274,7 +7413,11 @@ mod tests {
         match cli.cmd {
             Cmd::Call { name, input, .. } => {
                 assert_eq!(name, "demo.command");
-                assert_eq!(input.as_deref(), Some(payload), "the payload is not re-split");
+                assert_eq!(
+                    input.as_deref(),
+                    Some(payload),
+                    "the payload is not re-split"
+                );
             }
             _ => panic!("expected call"),
         }
@@ -7365,9 +7508,14 @@ mod tests {
 
         let manifest =
             kelson_registry::ModuleManifest::from_toml(&manifest_raw).expect("manifest parses");
-        let graph = kelson_registry::PlatformGraph::compile(vec![manifest]).expect("graph compiles");
+        let graph =
+            kelson_registry::PlatformGraph::compile(vec![manifest]).expect("graph compiles");
         // Full CRUD (Phase Q): create + list + read + update + delete.
-        assert_eq!(graph.operations.len(), 5, "create + list + read + update + delete");
+        assert_eq!(
+            graph.operations.len(),
+            5,
+            "create + list + read + update + delete"
+        );
         assert_eq!(graph.modules[0].routes.len(), 5);
 
         let list_url = graph
@@ -7445,7 +7593,8 @@ mod tests {
                 if with_starter { "starter" } else { "project" }
             );
             assert_eq!(
-                disk, embedded,
+                disk,
+                embedded,
                 "{} template differs between disk and the compiled-in copy",
                 if with_starter { "starter" } else { "project" }
             );
@@ -7495,7 +7644,10 @@ mod tests {
             template_source(None, true),
         ] {
             for (rel, body) in source.files().expect("template reads") {
-                assert!(!body.contains('\r'), "{rel} still carries a carriage return");
+                assert!(
+                    !body.contains('\r'),
+                    "{rel} still carries a carriage return"
+                );
             }
         }
     }
@@ -7519,8 +7671,14 @@ mod tests {
             "//fileserver/kelson",
             "a verbatim UNC path keeps the leading double slash once stripped"
         );
-        assert_eq!(toml_path(Path::new(r"\\server\share\x")), "//server/share/x");
-        assert_eq!(toml_path(Path::new("/posix/src/kelson")), "/posix/src/kelson");
+        assert_eq!(
+            toml_path(Path::new(r"\\server\share\x")),
+            "//server/share/x"
+        );
+        assert_eq!(
+            toml_path(Path::new("/posix/src/kelson")),
+            "/posix/src/kelson"
+        );
     }
 
     /// Wave 1 route-cache cycle: route:cache writes the pinned artifact
@@ -7557,7 +7715,10 @@ operation = "index"
         .unwrap();
 
         // route:cache -> artifact present with one resolved plan.
-        assert_eq!(route_cache_at(&dir).expect("route cache runs"), ExitCode::SUCCESS);
+        assert_eq!(
+            route_cache_at(&dir).expect("route cache runs"),
+            ExitCode::SUCCESS
+        );
         let path = kelson_registry::route_cache_path(&dir);
         assert!(path.exists(), "artifact written");
         let artifact = kelson_registry::RouteCacheArtifact::load(&path)
@@ -7592,7 +7753,10 @@ middleware = ["ghost"]
         assert!(err.to_string().contains("GRAPH-MW-UNKNOWN"), "{err}");
 
         // route:clear -> artifact gone (boot falls back to live resolution).
-        assert_eq!(route_clear_at(&dir).expect("route clear runs"), ExitCode::SUCCESS);
+        assert_eq!(
+            route_clear_at(&dir).expect("route clear runs"),
+            ExitCode::SUCCESS
+        );
         assert!(!path.exists(), "artifact removed");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -7681,11 +7845,15 @@ middleware = ["ghost"]
             optimize_clear_at(&dir).expect("optimize:clear runs"),
             ExitCode::SUCCESS
         );
-        assert!(!kelson_registry::route_cache_path(&dir).exists(), "route cold");
-        assert!(!kelson_registry::config_cache_path(&dir).exists(), "config cold");
-        let remaining = std::fs::read_dir(&view_dir)
-            .map(|d| d.count())
-            .unwrap_or(0);
+        assert!(
+            !kelson_registry::route_cache_path(&dir).exists(),
+            "route cold"
+        );
+        assert!(
+            !kelson_registry::config_cache_path(&dir).exists(),
+            "config cold"
+        );
+        let remaining = std::fs::read_dir(&view_dir).map(|d| d.count()).unwrap_or(0);
         assert_eq!(remaining, 0, "view cache cold");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -7777,8 +7945,11 @@ middleware = ["ghost"]
         assert_eq!(f[0].code, "EAC-002");
         assert!(!f[0].advisory, "it errors at apply time, so it is fatal");
         assert!(
-            plan_scan("-- no-transaction\nCREATE INDEX CONCURRENTLY i ON t (a);", true)
-                .is_empty(),
+            plan_scan(
+                "-- no-transaction\nCREATE INDEX CONCURRENTLY i ON t (a);",
+                true
+            )
+            .is_empty(),
             "sqlx keys on that exact first line"
         );
 
@@ -7800,7 +7971,11 @@ middleware = ["ghost"]
         assert_eq!(f.len(), 1, "{f:?}");
         assert_eq!(f[0].code, "EAC-004");
         assert!(
-            plan_scan("ALTER TABLE t ADD COLUMN a int, CHECK (b IS NOT NULL);", true).is_empty(),
+            plan_scan(
+                "ALTER TABLE t ADD COLUMN a int, CHECK (b IS NOT NULL);",
+                true
+            )
+            .is_empty(),
             "an inline CHECK naming another column is not the column's declaration"
         );
     }
@@ -7813,8 +7988,8 @@ middleware = ["ghost"]
     #[test]
     fn migrate_plan_reaches_for_no_mutation_path() {
         let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let src = std::fs::read_to_string(manifest.join("src").join("main.rs"))
-            .expect("read own source");
+        let src =
+            std::fs::read_to_string(manifest.join("src").join("main.rs")).expect("read own source");
         let start = src
             .find("async fn migrate_plan()")
             .expect("migrate_plan is present");
@@ -7848,7 +8023,10 @@ middleware = ["ghost"]
     /// printed before and no script's argument list changes meaning.
     #[test]
     fn release_verify_is_an_opt_in_flag() {
-        match Cli::try_parse_from(["kelson", "release"]).expect("release parses").cmd {
+        match Cli::try_parse_from(["kelson", "release"])
+            .expect("release parses")
+            .cmd
+        {
             Cmd::Release { verify } => assert!(!verify, "verify is opt-in"),
             _ => panic!("release maps to Release"),
         }
@@ -7869,7 +8047,10 @@ middleware = ["ghost"]
         let cli = Cli::try_parse_from(["kelson", "promote"]).expect("promote parses");
         match cli.cmd {
             Cmd::Promote { plan, dry_run } => {
-                assert_eq!(plan, None, "plan defaults to storage/framework/promotion.json");
+                assert_eq!(
+                    plan, None,
+                    "plan defaults to storage/framework/promotion.json"
+                );
                 assert!(!dry_run, "--dry-run defaults to off");
             }
             _ => panic!("promote maps to Promote"),
@@ -7887,7 +8068,10 @@ middleware = ["ghost"]
 
         let cli = Cli::try_parse_from(["kelson", "rollback"]).expect("rollback parses");
         match cli.cmd {
-            Cmd::Rollback { checkpoint, dry_run } => {
+            Cmd::Rollback {
+                checkpoint,
+                dry_run,
+            } => {
                 assert_eq!(
                     checkpoint, None,
                     "checkpoint defaults to storage/framework/promotion.checkpoint.json"
@@ -7901,7 +8085,10 @@ middleware = ["ghost"]
             Cli::try_parse_from(["kelson", "rollback", "--checkpoint", "cp.json", "--dry-run"])
                 .expect("explicit checkpoint parses");
         match cli.cmd {
-            Cmd::Rollback { checkpoint, dry_run } => {
+            Cmd::Rollback {
+                checkpoint,
+                dry_run,
+            } => {
                 assert_eq!(checkpoint.as_deref(), Some("cp.json"));
                 assert!(dry_run, "--dry-run is honored");
             }
@@ -7930,8 +8117,7 @@ middleware = ["ghost"]
                 3u32,
             )]),
         };
-        let artifact =
-            kelson_deployment::promote::ReleaseArtifact::new("1.4.0", target.clone());
+        let artifact = kelson_deployment::promote::ReleaseArtifact::new("1.4.0", target.clone());
 
         let plan_path = dir.join("promotion.json");
         let raw = serde_json::to_string_pretty(&artifact).expect("plan serializes");
@@ -8000,7 +8186,9 @@ middleware = ["ghost"]
     fn db_commands_parse_with_documented_names() {
         assert!(
             matches!(
-                Cli::try_parse_from(["kelson", "db:show"]).expect("db:show parses").cmd,
+                Cli::try_parse_from(["kelson", "db:show"])
+                    .expect("db:show parses")
+                    .cmd,
                 Cmd::DbShow
             ),
             "db:show maps to DbShow"
@@ -8159,7 +8347,10 @@ middleware = ["ghost"]
             "CREATE TABLE `zebras` (\n  `id` bigint NOT NULL,\n  `label` varchar(191) DEFAULT NULL\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;\n\n"
         );
         // The counter value is gone; the dialect line still names the rule.
-        assert!(!out.contains("AUTO_INCREMENT=42"), "counter stripped:\n{out}");
+        assert!(
+            !out.contains("AUTO_INCREMENT=42"),
+            "counter stripped:\n{out}"
+        );
     }
 
     /// B-31 Phase E: an empty database still produces a valid, honest
@@ -8246,7 +8437,10 @@ middleware = ["ghost"]
         let out = render_queue_monitor(&empty, now);
         assert!(!out.contains("oldest"), "{out}");
         assert_eq!(format_age(time::Duration::seconds(45)), "45s");
-        assert_eq!(format_age(time::Duration::minutes(3) + time::Duration::seconds(20)), "3m20s");
+        assert_eq!(
+            format_age(time::Duration::minutes(3) + time::Duration::seconds(20)),
+            "3m20s"
+        );
         assert_eq!(
             format_age(time::Duration::hours(2) + time::Duration::minutes(5)),
             "2h5m"
@@ -8530,7 +8724,10 @@ middleware = ["ghost"]
             vec!["billing".to_string()],
             "views are reported, never copied"
         );
-        assert!(!root.join("views").exists(), "no views directory is written");
+        assert!(
+            !root.join("views").exists(),
+            "no views directory is written"
+        );
         assert!(outcome.conflicts.is_empty());
         let written = outcome.written.len();
         assert_eq!(written, 3, "migration + config + asset: {outcome:?}");
@@ -8580,8 +8777,7 @@ middleware = ["ghost"]
         publish_at(&root, "billing", false, PublishScope::All).expect("publishes");
 
         // Drift one published artifact -> conflict, skipped, FAILURE.
-        let mig = root
-            .join("database/migrations/20260901000001_billing_create_invoices.sql");
+        let mig = root.join("database/migrations/20260901000001_billing_create_invoices.sql");
         std::fs::write(&mig, "-- edited by the operator\n").unwrap();
         let outcome = publish_at(&root, "billing", false, PublishScope::All).expect("runs");
         assert_eq!(outcome.conflicts.len(), 1, "{outcome:?}");
@@ -8651,16 +8847,14 @@ middleware = ["ghost"]
         assert_eq!(outcome.exit_code(), ExitCode::SUCCESS);
 
         // Idempotent no-op.
-        let again =
-            publish_at(&root, "billing", false, PublishScope::ConfigOnly).expect("reruns");
+        let again = publish_at(&root, "billing", false, PublishScope::ConfigOnly).expect("reruns");
         assert!(again.written.is_empty());
         assert_eq!(again.unchanged, 1);
 
         // Conflict + --force on the published copy.
         let cfg = root.join("config/packages/billing.toml");
         std::fs::write(&cfg, "[limits]\ndefault_monthly_operations = 99\n").unwrap();
-        let outcome =
-            publish_at(&root, "billing", false, PublishScope::ConfigOnly).expect("runs");
+        let outcome = publish_at(&root, "billing", false, PublishScope::ConfigOnly).expect("runs");
         assert_eq!(outcome.conflicts.len(), 1, "{outcome:?}");
         assert_eq!(outcome.exit_code(), ExitCode::FAILURE);
         assert!(
@@ -8669,11 +8863,9 @@ middleware = ["ghost"]
         );
         let outcome = publish_at(&root, "billing", true, PublishScope::ConfigOnly).expect("runs");
         assert!(outcome.conflicts.is_empty());
-        assert!(
-            std::fs::read_to_string(&cfg)
-                .unwrap()
-                .contains("default_monthly_operations = 11")
-        );
+        assert!(std::fs::read_to_string(&cfg)
+            .unwrap()
+            .contains("default_monthly_operations = 11"));
 
         // A package without [config] refuses config-only publish.
         let tax = root.join("packages").join("tax");
@@ -8719,7 +8911,10 @@ middleware = ["ghost"]
         match storage_link_at(&root, true) {
             Ok(()) => {
                 let meta = std::fs::symlink_metadata(&link).expect("link exists");
-                assert!(meta.file_type().is_symlink(), "--force replaces with a link");
+                assert!(
+                    meta.file_type().is_symlink(),
+                    "--force replaces with a link"
+                );
                 assert_eq!(std::fs::read_link(&link).unwrap(), target);
             }
             Err(e) => eprintln!("skipping symlink assertion: {e}"),
@@ -8740,14 +8935,13 @@ middleware = ["ghost"]
             refuse_seed_outside_dev_test(Environment::Test).is_ok(),
             "test may seed"
         );
-        let staging = refuse_seed_outside_dev_test(Environment::Staging)
-            .expect_err("staging refuses");
+        let staging =
+            refuse_seed_outside_dev_test(Environment::Staging).expect_err("staging refuses");
         assert!(
             staging.to_string().contains("outside dev/test"),
             "{staging}"
         );
-        let prod =
-            refuse_seed_outside_dev_test(Environment::Prod).expect_err("production refuses");
+        let prod = refuse_seed_outside_dev_test(Environment::Prod).expect_err("production refuses");
         assert!(prod.to_string().contains("outside dev/test"), "{prod}");
     }
 
@@ -8944,7 +9138,8 @@ middleware = ["ghost"]
             Cmd::ScheduleWork { every } => assert_eq!(every, 60, "spec default tick"),
             _ => panic!("schedule:work maps to ScheduleWork"),
         }
-        let cli = Cli::try_parse_from(["kelson", "schedule:work", "--every", "15"]).expect("parses");
+        let cli =
+            Cli::try_parse_from(["kelson", "schedule:work", "--every", "15"]).expect("parses");
         match cli.cmd {
             Cmd::ScheduleWork { every } => assert_eq!(every, 15, "--every overrides"),
             _ => panic!("--every maps to ScheduleWork"),
@@ -8962,7 +9157,11 @@ middleware = ["ghost"]
     #[test]
     fn schedule_test_plan_is_pure_and_skips_disabled() {
         let mut registry = kelson_scheduling::ScheduleRegistry::new();
-        for (name, enabled) in [("due-interval", true), ("recently-fired", true), ("disabled", false)] {
+        for (name, enabled) in [
+            ("due-interval", true),
+            ("recently-fired", true),
+            ("disabled", false),
+        ] {
             registry
                 .register(kelson_scheduling::ScheduleItem {
                     name: name.to_string(),
@@ -8975,7 +9174,10 @@ middleware = ["ghost"]
                 .expect("registers");
         }
         let now = time::macros::datetime!(2026-03-01 12:00:00 UTC);
-        let state = vec![("recently-fired".to_string(), now - time::Duration::seconds(5))];
+        let state = vec![(
+            "recently-fired".to_string(),
+            now - time::Duration::seconds(5),
+        )];
         let plan = schedule_test_plan(&registry, &state, now).expect("plans");
         assert_eq!(
             plan.registered,
@@ -8986,11 +9188,7 @@ middleware = ["ghost"]
         assert_eq!(plan.due[0].0, "due-interval");
 
         let lines = schedule_test_lines(&plan);
-        assert!(
-            lines[0].contains("3 registered, 1 due now"),
-            "{:?}",
-            lines
-        );
+        assert!(lines[0].contains("3 registered, 1 due now"), "{:?}", lines);
         assert!(
             lines
                 .iter()
@@ -8999,7 +9197,9 @@ middleware = ["ghost"]
             lines
         );
         assert!(
-            lines.iter().any(|l| l.contains("not due: recently-fired, disabled")),
+            lines
+                .iter()
+                .any(|l| l.contains("not due: recently-fired, disabled")),
             "{:?}",
             lines
         );
@@ -9058,8 +9258,8 @@ middleware = ["ghost"]
         assert_eq!(claimed.name, "demo.echo");
 
         // Same runner, interval not elapsed: nothing fires.
-        let second = schedule_tick(&runner, &store, &root, now + time::Duration::seconds(1))
-            .expect("tick");
+        let second =
+            schedule_tick(&runner, &store, &root, now + time::Duration::seconds(1)).expect("tick");
         assert!(second.is_empty(), "interval not elapsed");
 
         // State was persisted: a fresh runner seeded from disk does not
@@ -9067,10 +9267,9 @@ middleware = ["ghost"]
         let state = kelson_scheduling::load_state(&root).expect("state loads");
         assert_eq!(state.len(), 1);
         assert_eq!(state[0].0, "due-interval");
-        let fresh =
-            kelson_scheduling::SchedulerRunner::with_state(Arc::new(registry()), state);
-        let third = schedule_tick(&fresh, &store, &root, now + time::Duration::seconds(10))
-            .expect("tick");
+        let fresh = kelson_scheduling::SchedulerRunner::with_state(Arc::new(registry()), state);
+        let third =
+            schedule_tick(&fresh, &store, &root, now + time::Duration::seconds(10)).expect("tick");
         assert!(third.is_empty(), "persisted state prevents re-fire");
     }
 
@@ -9138,11 +9337,10 @@ cache_dir = "storage/framework/views"
         );
 
         // Boot gate: matching pin accepted, drift refused with a pointer.
-        kelson_registry::config_cache_check(&dir, &artifact.config_hash)
-            .expect("pin accepted");
+        kelson_registry::config_cache_check(&dir, &artifact.config_hash).expect("pin accepted");
         let stale = kelson_registry::config_hash(&serde_json::json!({"app": {}}));
-        let err = kelson_registry::config_cache_check(&dir, &stale)
-            .expect_err("stale pin refuses boot");
+        let err =
+            kelson_registry::config_cache_check(&dir, &stale).expect_err("stale pin refuses boot");
         assert!(
             err.contains(kelson_registry::CONFIG_CACHE_CODE) && err.contains("config:cache"),
             "{err}"
@@ -9152,8 +9350,11 @@ cache_dir = "storage/framework/views"
         // stale (the live drift path, end to end).
         let cfg_path = dir.join("config").join("dev.toml");
         let raw = std::fs::read_to_string(&cfg_path).unwrap();
-        std::fs::write(&cfg_path, raw.replace(r#"name = "kelson""#, r#"name = "renamed""#))
-            .unwrap();
+        std::fs::write(
+            &cfg_path,
+            raw.replace(r#"name = "kelson""#, r#"name = "renamed""#),
+        )
+        .unwrap();
         let fresh = load_config(&dir)
             .expect("edited config loads")
             .freeze()
@@ -9198,8 +9399,11 @@ cache_dir = "storage/framework/views"
         // report is advisory; the refusal lives in the boot gate).
         let cfg_path = dir.join("config").join("dev.toml");
         let raw = std::fs::read_to_string(&cfg_path).unwrap();
-        std::fs::write(&cfg_path, raw.replace(r#"name = "kelson""#, r#"name = "renamed""#))
-            .unwrap();
+        std::fs::write(
+            &cfg_path,
+            raw.replace(r#"name = "kelson""#, r#"name = "renamed""#),
+        )
+        .unwrap();
         assert_eq!(
             config_reload_at(&dir).expect("reload runs on drift"),
             ExitCode::SUCCESS
@@ -9227,7 +9431,10 @@ cache_dir = "storage/framework/views"
         assert_eq!(parsed["jwt_secret"], "[REDACTED]");
 
         let db = config_show_text(&dir, "database", true).expect("database renders");
-        assert!(db.contains("[REDACTED]") && !db.contains("db-password"), "{db}");
+        assert!(
+            db.contains("[REDACTED]") && !db.contains("db-password"),
+            "{db}"
+        );
 
         let err = config_show_text(&dir, "nope", false).expect_err("unknown section");
         assert!(err.to_string().contains("known sections"), "{err}");
@@ -9275,10 +9482,7 @@ cache_dir = "storage/framework/views"
         // selects no preset).
         assert!(text.contains("profile: (none)"), "{text}");
         // Wave 6 P3: the i18n surface (default locale + message roots).
-        assert!(
-            text.contains("i18n: default=en paths=lang"),
-            "{text}"
-        );
+        assert!(text.contains("i18n: default=en paths=lang"), "{text}");
 
         config_cache_at(&dir).expect("config cache runs");
         let text = env_summary_text(&dir).expect("summary renders");
@@ -9325,7 +9529,10 @@ cache_dir = "storage/framework/views"
         std::fs::create_dir_all(&views_dir).unwrap();
         std::fs::write(views_dir.join("alpha.html"), "<p>a</p>").unwrap();
         std::fs::write(views_dir.join("beta.html"), "<p>b</p>").unwrap();
-        assert_eq!(view_cache_at(&dir).expect("view cache runs"), ExitCode::SUCCESS);
+        assert_eq!(
+            view_cache_at(&dir).expect("view cache runs"),
+            ExitCode::SUCCESS
+        );
         let cache_dir = dir.join("storage").join("framework").join("views");
         let count = || std::fs::read_dir(&cache_dir).unwrap().count();
         assert_eq!(count(), 2, "both templates compiled");
@@ -9405,11 +9612,17 @@ capability = "index"
         assert_eq!(all.len(), 3);
         let web = route_rows(&graph, None, None, Some("web")).expect("web plane filter");
         assert_eq!(web.len(), 1);
-        assert_eq!(web[0].path, "/admin/notes", "group prefix merged into the row");
+        assert_eq!(
+            web[0].path, "/admin/notes",
+            "group prefix merged into the row"
+        );
         assert_eq!(web[0].plane, "web", "group plane inherited at parse time");
         assert_eq!(web[0].group, "web-pages");
         assert_eq!(web[0].method, "POST");
-        assert!(web[0].deprecated, "deprecation column reflects the manifest");
+        assert!(
+            web[0].deprecated,
+            "deprecation column reflects the manifest"
+        );
         let api = route_rows(&graph, None, None, Some("api")).expect("api plane filter");
         assert_eq!(api.len(), 2);
         assert!(api.iter().all(|r| !r.deprecated));
@@ -9425,8 +9638,7 @@ capability = "index"
         assert!(empty.is_empty());
 
         // A typo'd plane refuses instead of silently listing nothing.
-        route_rows(&graph, None, None, Some("graphql"))
-            .expect_err("unknown plane refuses");
+        route_rows(&graph, None, None, Some("graphql")).expect_err("unknown plane refuses");
 
         // Both printers accept the filtered row set end to end.
         assert_eq!(
@@ -9527,14 +9739,19 @@ deprecated = true
         assert!(text.contains("Cache driver"), "{text}");
         assert!(text.contains("Queue driver"), "{text}");
         assert!(text.contains("Session driver"), "{text}");
-        let registered = kelson_feature_flags::platform_registry().definitions().len();
+        let registered = kelson_feature_flags::platform_registry()
+            .definitions()
+            .len();
         assert!(text.contains(&format!("{registered} registered")), "{text}");
         assert!(
             text.contains("Graph               1 modules, 2 routes, 1 operations"),
             "{text}"
         );
         assert!(
-            text.contains("0/25 direct external (within budget)"),
+            text.contains(&format!(
+                "0/{} direct external (within budget)",
+                kelson_analyzer::EXTERNAL_CAP
+            )),
             "{text}"
         );
         assert!(!text.contains("db-password"), "secrets never rendered");
@@ -9559,7 +9776,9 @@ deprecated = true
         // The feature must be a *cargo* arg, so it has to precede any `--`
         // that hands the rest to the binary.
         assert!(
-            args.iter().position(|a| *a == "--").is_none_or(|dd| dd > feat),
+            args.iter()
+                .position(|a| *a == "--")
+                .is_none_or(|dd| dd > feat),
             "the demo feature is passed to cargo, not to kelson-demo"
         );
     }
@@ -9630,23 +9849,40 @@ deprecated = true
         let views = dir.join("resources").join("views");
         std::fs::create_dir_all(views.join("pages")).unwrap();
         std::fs::create_dir_all(views.join("errors")).unwrap();
-        std::fs::write(views.join("pages").join("hello.html"), "<p>hello {{ name }}</p>").unwrap();
+        std::fs::write(
+            views.join("pages").join("hello.html"),
+            "<p>hello {{ name }}</p>",
+        )
+        .unwrap();
         std::fs::write(views.join("errors").join("404.html"), "<h1>404</h1>").unwrap();
 
-        assert_eq!(view_cache_at(&dir).expect("view cache runs"), ExitCode::SUCCESS);
+        assert_eq!(
+            view_cache_at(&dir).expect("view cache runs"),
+            ExitCode::SUCCESS
+        );
         let cache_dir = dir.join("storage").join("framework").join("views");
         let count = |label: &str| {
             std::fs::read_dir(&cache_dir)
                 .unwrap_or_else(|e| panic!("{label}: cache dir readable: {e}"))
                 .count()
         };
-        assert_eq!(count("after cache"), 2, "one compiled artifact per template");
+        assert_eq!(
+            count("after cache"),
+            2,
+            "one compiled artifact per template"
+        );
 
         // Idempotent: drift overwrites the same entry instead of piling up.
-        assert_eq!(view_cache_at(&dir).expect("view cache reruns"), ExitCode::SUCCESS);
+        assert_eq!(
+            view_cache_at(&dir).expect("view cache reruns"),
+            ExitCode::SUCCESS
+        );
         assert_eq!(count("after rerun"), 2, "no duplicate artifacts");
 
-        assert_eq!(view_clear_at(&dir).expect("view clear runs"), ExitCode::SUCCESS);
+        assert_eq!(
+            view_clear_at(&dir).expect("view clear runs"),
+            ExitCode::SUCCESS
+        );
         assert_eq!(count("after clear"), 0, "compiled artifacts removed");
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -549,7 +549,20 @@ pub fn platform_registry() -> FlagRegistry {
             name: "app.sessions".into(),
             description: "opt-in server sessions (REQUEST lifetime backing; D-66)".into(),
             default_stage: RolloutStage::Disabled,
-            rules: vec![],
+            // MVA-003: the web-plane MVVC cycle (@csrf mints, CsrfGuard
+            // passes, @command posts) needs a session backing. The dev/test
+            // environments are ON by rule; staging/prod stay opt-in through
+            // the store exactly as before.
+            rules: vec![
+                FlagRule::Environment {
+                    name: "dev".into(),
+                    enable: true,
+                },
+                FlagRule::Environment {
+                    name: "test".into(),
+                    enable: true,
+                },
+            ],
         })
         .expect("static definition");
     registry
@@ -557,7 +570,18 @@ pub fn platform_registry() -> FlagRegistry {
             name: "app.realtime".into(),
             description: "opt-in realtime WS/SSE endpoints (L42/L43)".into(),
             default_stage: RolloutStage::Disabled,
-            rules: vec![],
+            // MVA-003/MVA-008: the live wire needs its transport mounted —
+            // dev/test ON by rule, staging/prod opt-in.
+            rules: vec![
+                FlagRule::Environment {
+                    name: "dev".into(),
+                    enable: true,
+                },
+                FlagRule::Environment {
+                    name: "test".into(),
+                    enable: true,
+                },
+            ],
         })
         .expect("static definition");
     registry
@@ -681,6 +705,37 @@ mod tests {
         );
         let inp_prod = input("prod", PrincipalId::new());
         assert!(!evaluate(&d, None, &inp_prod), "prod env deny rule wins");
+    }
+
+    #[test]
+    fn sessions_and_realtime_are_on_in_dev_and_test_off_in_prod() {
+        // MVA-003: the web-plane MVVC cycle needs server sessions, and the
+        // live wire needs its realtime transport, mounted in the dev/test
+        // profiles by rule — while staging/prod keep them store-opt-in.
+        let registry = platform_registry();
+        for name in ["app.sessions", "app.realtime"] {
+            let def = registry.get(name).expect("platform flag is registered");
+            assert!(
+                evaluate(def, None, &input("dev", PrincipalId::new())),
+                "{name} must be ON in the dev profile"
+            );
+            assert!(
+                evaluate(def, None, &input("test", PrincipalId::new())),
+                "{name} must be ON in the test profile"
+            );
+            assert!(
+                !evaluate(def, None, &input("prod", PrincipalId::new())),
+                "{name} stays OFF in prod without a store override"
+            );
+        }
+        // A rule-less flag is untouched by the environment posture.
+        let metrics = registry
+            .get("app.metrics")
+            .expect("metrics flag registered");
+        assert!(
+            !evaluate(metrics, None, &input("dev", PrincipalId::new())),
+            "a flag with no rules stays off in dev"
+        );
     }
 
     #[test]

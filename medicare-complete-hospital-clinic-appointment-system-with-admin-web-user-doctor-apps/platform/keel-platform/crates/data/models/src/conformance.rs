@@ -246,7 +246,10 @@ pub fn crud_roundtrip<S: ModelStore>(store: &S, tenant: TenantId) {
         "foreign tenant cannot read the row even with the trash toggle"
     );
     assert!(
-        store.find(runtime.model(), id, None, true).unwrap().is_none(),
+        store
+            .find(runtime.model(), id, None, true)
+            .unwrap()
+            .is_none(),
         "a tenant-scoped model queried without a tenant matches nothing"
     );
 }
@@ -339,7 +342,11 @@ pub fn soft_delete_restore<S: ModelStore>(store: &S, tenant: TenantId) {
             None,
         )
         .expect("list succeeds");
-    assert_eq!(page.total, Some(1), "restored row is visible in default reads");
+    assert_eq!(
+        page.total,
+        Some(1),
+        "restored row is visible in default reads"
+    );
 
     assert!(
         store
@@ -410,9 +417,7 @@ pub fn update_on_a_trashed_row_writes_and_stays_trashed<S: ModelStore>(
     let mut changes = Record::new();
     changes.insert("status".into(), json!("cancelled"));
     assert!(
-        runtime
-            .update(store, id, Some(tenant), &changes)
-            .is_err(),
+        runtime.update(store, id, Some(tenant), &changes).is_err(),
         "the runtime's update reads the trashed row as 'not found'"
     );
 
@@ -429,10 +434,7 @@ pub fn update_on_a_trashed_row_writes_and_stays_trashed<S: ModelStore>(
 
 /// **Trash contract:** deleting twice is a no-op — the second delete reports
 /// "nothing done" and does **not** re-stamp `deleted_at`.
-pub fn delete_twice_is_a_noop_and_does_not_restamp<S: ModelStore>(
-    store: &S,
-    tenant: TenantId,
-) {
+pub fn delete_twice_is_a_noop_and_does_not_restamp<S: ModelStore>(store: &S, tenant: TenantId) {
     let runtime = ModelRuntime::new(appointments_model());
     let patient = marker("trash-delete-patient");
     let slot = marker("trash-delete-slot");
@@ -473,10 +475,7 @@ pub fn delete_twice_is_a_noop_and_does_not_restamp<S: ModelStore>(
 /// **Trash contract:** the read paths and the batch write honour the veil —
 /// a trashed row is invisible to a default read, visible with
 /// `include_deleted`, and skipped by the batch write.
-pub fn reads_and_batch_writes_honour_the_trash_veil<S: ModelStore>(
-    store: &S,
-    tenant: TenantId,
-) {
+pub fn reads_and_batch_writes_honour_the_trash_veil<S: ModelStore>(store: &S, tenant: TenantId) {
     let runtime = ModelRuntime::new(appointments_model());
     let patient = marker("trash-read-patient");
     let slot = marker("trash-read-slot");
@@ -594,7 +593,9 @@ pub fn find_by_and_find_for_update<S: ModelStore>(store: &S, tenant: TenantId) {
         .expect("row is lockable");
     assert_eq!(record_id(&locked), id);
 
-    runtime.delete(store, id, Some(tenant)).expect("delete succeeds");
+    runtime
+        .delete(store, id, Some(tenant))
+        .expect("delete succeeds");
     assert!(
         store
             .find_by(
@@ -763,12 +764,12 @@ pub fn cursor_keyset_pagination<S: ModelStore>(store: &S, tenant: TenantId) {
             },
         )
         .expect("keyset list succeeds");
+    assert_eq!(page2.items.len(), 2, "the limit still caps the page size");
     assert_eq!(
-        page2.items.len(),
-        2,
-        "the limit still caps the page size"
+        page2.items[0]["slot"],
+        json!(slots[2]),
+        "the page starts after the anchor"
     );
-    assert_eq!(page2.items[0]["slot"], json!(slots[2]), "the page starts after the anchor");
     assert_eq!(page2.items[1]["slot"], json!(slots[3]));
     assert_eq!(
         page2.total,
@@ -988,7 +989,14 @@ pub fn increment_counter<S: ModelStore>(store: &S, tenant: TenantId) {
         "extra assignments land in the same statement"
     );
     let again = store
-        .increment(runtime.model(), id, Some(tenant), "version", 1, &Record::new())
+        .increment(
+            runtime.model(),
+            id,
+            Some(tenant),
+            "version",
+            1,
+            &Record::new(),
+        )
         .expect("second increment executes")
         .expect("live row increments");
     assert_eq!(again["version"], json!(3));
@@ -1009,7 +1017,11 @@ pub fn increment_counter<S: ModelStore>(store: &S, tenant: TenantId) {
     );
 
     let second = runtime
-        .insert(store, &booking(&marker("inc-b"), &marker("inc-slot-b"), 1), Some(tenant))
+        .insert(
+            store,
+            &booking(&marker("inc-b"), &marker("inc-slot-b"), 1),
+            Some(tenant),
+        )
         .expect("insert succeeds");
     runtime
         .delete(store, record_id(&second), Some(tenant))
@@ -1030,7 +1042,14 @@ pub fn increment_counter<S: ModelStore>(store: &S, tenant: TenantId) {
     );
 
     let err = store
-        .increment(runtime.model(), id, Some(tenant), "patient", 1, &Record::new())
+        .increment(
+            runtime.model(),
+            id,
+            Some(tenant),
+            "patient",
+            1,
+            &Record::new(),
+        )
         .expect_err("counting a text field is refused");
     assert_eq!(err.category, ErrorCategory::Validation);
 }
@@ -1082,7 +1101,11 @@ pub fn batch_update_and_delete_filtered<S: ModelStore>(store: &S, tenant: Tenant
     let deleted = store
         .delete_filtered(runtime.model(), Some(tenant), &filter)
         .expect("batch delete succeeds");
-    assert_eq!(deleted.len(), 3, "batch delete returns every soft-marked row");
+    assert_eq!(
+        deleted.len(),
+        3,
+        "batch delete returns every soft-marked row"
+    );
     assert_eq!(sorted_ids(&deleted), ids);
     for row in &deleted {
         assert!(
@@ -1243,11 +1266,7 @@ pub fn upsert_merges_on_plain_unique<S: ModelStore>(
 
 /// `insert_or_ignore`: the same id or the same unique field within the
 /// tenant is dropped (`Ok(None)`), a different tenant is not a conflict.
-pub fn insert_or_ignore_dedupes<S: ModelStore>(
-    store: &S,
-    tenant_a: TenantId,
-    tenant_b: TenantId,
-) {
+pub fn insert_or_ignore_dedupes<S: ModelStore>(store: &S, tenant_a: TenantId, tenant_b: TenantId) {
     let runtime = ModelRuntime::new(scope_nodes_model());
     let path = marker("ignore-path");
 

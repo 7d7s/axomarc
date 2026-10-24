@@ -168,11 +168,9 @@ impl ScheduleItem {
         let offset_secs = self.offset_secs()?;
         if let Some(expr) = &self.cron {
             let parsed = CronExpr::parse(expr)?;
-            return parsed
-                .next_after(from, offset_secs)
-                .ok_or_else(|| {
-                    AppError::validation(format!("cron expression never fires: `{expr}`"))
-                });
+            return parsed.next_after(from, offset_secs).ok_or_else(|| {
+                AppError::validation(format!("cron expression never fires: `{expr}`"))
+            });
         }
         if offset_secs == 0 {
             return self.spec.next_run(from);
@@ -182,9 +180,8 @@ impl ScheduleItem {
             // Daily / Weekly: the same wall clock, in the item's zone.
             _ => {
                 let expr = wall_clock_cron(&self.spec)?;
-                expr.next_after(from, offset_secs).ok_or_else(|| {
-                    AppError::validation("schedule never fires in this timezone")
-                })
+                expr.next_after(from, offset_secs)
+                    .ok_or_else(|| AppError::validation("schedule never fires in this timezone"))
             }
         }
     }
@@ -205,9 +202,7 @@ impl ScheduleItem {
 /// zoned items; UTC items keep [`ScheduleSpec::next_run`]).
 fn wall_clock_cron(spec: &ScheduleSpec) -> Result<CronExpr, AppError> {
     match spec {
-        ScheduleSpec::Daily { hour, minute } => {
-            CronExpr::parse(&format!("{minute} {hour} * * *"))
-        }
+        ScheduleSpec::Daily { hour, minute } => CronExpr::parse(&format!("{minute} {hour} * * *")),
         ScheduleSpec::Weekly { day, hour, minute } => CronExpr::parse(&format!(
             "{minute} {hour} * * {}",
             weekday_to_sunday_zero(*day)
@@ -514,7 +509,10 @@ impl SchedulerRunner {
     /// Wave 6 P4: seed the full persisted snapshot (last-fired + failures)
     /// so a restart keeps previously recorded failures.
     pub fn with_state_doc(registry: Arc<ScheduleRegistry>, doc: SchedulerStateDoc) -> Self {
-        let SchedulerStateDoc { last_fired, failures } = doc;
+        let SchedulerStateDoc {
+            last_fired,
+            failures,
+        } = doc;
         let state = last_fired
             .into_iter()
             .map(|entry| (entry.name, entry.at))
@@ -985,20 +983,21 @@ mod tests {
     #[test]
     fn zoned_items_run_in_the_item_wall_clock() {
         // Daily 13:00 IST — from 10:00 UTC (15:30 IST): tomorrow's slot.
-        let mut daily = item("standup", ScheduleSpec::Daily {
-            hour: 13,
-            minute: 0,
-        });
+        let mut daily = item(
+            "standup",
+            ScheduleSpec::Daily {
+                hour: 13,
+                minute: 0,
+            },
+        );
         daily.timezone = Some("Asia/Kolkata".into());
         assert_eq!(
-            daily.next_run(datetime!(2026-09-30 10:00:00 UTC))
-                .unwrap(),
+            daily.next_run(datetime!(2026-09-30 10:00:00 UTC)).unwrap(),
             datetime!(2026-10-01 07:30:00 UTC)
         );
         // From 04:00 UTC (09:30 IST): the same day's slot.
         assert_eq!(
-            daily.next_run(datetime!(2026-09-30 04:00:00 UTC))
-                .unwrap(),
+            daily.next_run(datetime!(2026-09-30 04:00:00 UTC)).unwrap(),
             datetime!(2026-09-30 07:30:00 UTC)
         );
 
@@ -1007,18 +1006,21 @@ mod tests {
         cron.cron = Some("0 13 * * *".into());
         cron.timezone = Some("Asia/Kolkata".into());
         assert_eq!(
-            cron.next_run(datetime!(2026-09-30 04:00:00 UTC))
-                .unwrap(),
+            cron.next_run(datetime!(2026-09-30 04:00:00 UTC)).unwrap(),
             datetime!(2026-09-30 07:30:00 UTC)
         );
 
         // The UTC item keeps the original spec math untouched.
-        let utc_daily = item("utc-daily", ScheduleSpec::Daily {
-            hour: 13,
-            minute: 0,
-        });
+        let utc_daily = item(
+            "utc-daily",
+            ScheduleSpec::Daily {
+                hour: 13,
+                minute: 0,
+            },
+        );
         assert_eq!(
-            utc_daily.next_run(datetime!(2026-09-30 10:00:00 UTC))
+            utc_daily
+                .next_run(datetime!(2026-09-30 10:00:00 UTC))
                 .unwrap(),
             datetime!(2026-09-30 13:00:00 UTC)
         );
@@ -1079,7 +1081,9 @@ mod tests {
             .unwrap();
         assert!(fired.is_empty());
         // Granted again: fires.
-        let fired = runner.tick(t0 + Duration::seconds(120), |_| Ok(())).unwrap();
+        let fired = runner
+            .tick(t0 + Duration::seconds(120), |_| Ok(()))
+            .unwrap();
         assert_eq!(fired, vec!["close-day".to_string()]);
 
         let key = "acquire:schedule:overlap:close-day".to_string();
@@ -1140,7 +1144,9 @@ mod tests {
         reg.register_hooks("close-day", hooks).unwrap();
 
         let runner = SchedulerRunner::new(Arc::new(reg));
-        let fired = runner.tick(datetime!(2026-08-19 10:00:00 UTC), |_| Ok(())).unwrap();
+        let fired = runner
+            .tick(datetime!(2026-08-19 10:00:00 UTC), |_| Ok(()))
+            .unwrap();
         assert_eq!(fired, vec!["close-day".to_string()]);
         assert_eq!(
             calls.lock().unwrap().as_slice(),
@@ -1161,9 +1167,9 @@ mod tests {
 
         let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let mut hooks = ScheduleHooks::default();
-        hooks.before.push(Arc::new(|_| {
-            Err(AppError::validation("gate closed"))
-        }));
+        hooks
+            .before
+            .push(Arc::new(|_| Err(AppError::validation("gate closed"))));
         let seen2 = seen.clone();
         hooks.on_failure.push(Arc::new(move |i, e| {
             seen2
@@ -1226,9 +1232,7 @@ mod tests {
         assert_eq!(runner.state().len(), 1);
 
         // `bad` is retried next tick (still due, state untouched).
-        let fired = runner
-            .tick(t0 + Duration::seconds(30), |_| Ok(()))
-            .unwrap();
+        let fired = runner.tick(t0 + Duration::seconds(30), |_| Ok(())).unwrap();
         assert_eq!(fired, vec!["bad".to_string()]);
     }
 
@@ -1302,7 +1306,11 @@ mod tests {
         assert_eq!(due_b.len(), 1);
         assert_eq!(due_b[0].tenant, Some(b));
 
-        assert_eq!(reg.due(&[], now).unwrap().len(), 3, "platform view sees all");
+        assert_eq!(
+            reg.due(&[], now).unwrap().len(),
+            3,
+            "platform view sees all"
+        );
         assert_eq!(reg.items_for(a).len(), 1);
         assert_eq!(reg.items_for(b).len(), 1);
     }

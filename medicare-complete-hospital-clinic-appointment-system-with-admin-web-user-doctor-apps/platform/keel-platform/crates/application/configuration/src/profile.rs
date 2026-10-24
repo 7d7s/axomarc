@@ -78,15 +78,13 @@ pub(crate) fn apply_named(
         .map_err(|e| AppError::validation(format!("the config file does not parse: {e}")))?;
     // The selector: the environment wins (a deployment overrides its own
     // file), and the file's `app.profile` is the fallback.
-    let name = name
-        .map(str::to_string)
-        .or_else(|| {
-            file_value
-                .get("app")
-                .and_then(|app| app.get("profile"))
-                .and_then(|p| p.as_str())
-                .map(str::to_string)
-        });
+    let name = name.map(str::to_string).or_else(|| {
+        file_value
+            .get("app")
+            .and_then(|app| app.get("profile"))
+            .and_then(|p| p.as_str())
+            .map(str::to_string)
+    });
     let Some(name) = name else {
         return Ok(file_raw);
     };
@@ -119,16 +117,17 @@ pub(crate) fn apply_named(
     }
 
     let profile: toml::Value = toml::from_str(&raw).map_err(|e| {
-        AppError::validation(format!("the profile {name:?} does not parse ({}): {e}", path.display()))
+        AppError::validation(format!(
+            "the profile {name:?} does not parse ({}): {e}",
+            path.display()
+        ))
     })?;
     let file = file_value;
 
     // The file wins per key: the profile fills only the keys the file
     // omits.
-    toml::to_string(&crate::package_defaults::merge_file_over(
-        &profile, file,
-    ))
-    .map_err(|e| AppError::validation(format!("the profile merge failed: {e}")))
+    toml::to_string(&crate::package_defaults::merge_file_over(&profile, file))
+        .map_err(|e| AppError::validation(format!("the profile merge failed: {e}")))
 }
 
 #[cfg(test)]
@@ -161,11 +160,7 @@ mod tests {
             "[app]\nname = \"from-the-profile\"\nlisten = \"127.0.0.1:9000\"\n",
         )
         .unwrap();
-        std::fs::write(
-            config_path(&dir),
-            "[app]\nname = \"from-the-file\"\n",
-        )
-        .unwrap();
+        std::fs::write(config_path(&dir), "[app]\nname = \"from-the-file\"\n").unwrap();
 
         let merged = apply_named(
             &config_path(&dir),
@@ -191,10 +186,15 @@ mod tests {
     #[test]
     fn a_named_profile_that_is_missing_refuses_the_load() {
         let dir = scratch("missing");
-        let err = apply_named(&config_path(&dir), Some("absent"), "[app]\nname = \"x\"\n".to_string())
-            .expect_err("a missing profile refuses the load");
+        let err = apply_named(
+            &config_path(&dir),
+            Some("absent"),
+            "[app]\nname = \"x\"\n".to_string(),
+        )
+        .expect_err("a missing profile refuses the load");
         assert!(
-            err.public_message.contains("was selected but its file could not be read"),
+            err.public_message
+                .contains("was selected but its file could not be read"),
             "{}",
             err.public_message
         );
@@ -209,8 +209,12 @@ mod tests {
             "[app]\nnam = \"typo\"\n",
         )
         .unwrap();
-        let err = apply_named(&config_path(&dir), Some("bad"), "[app]\nname = \"x\"\n".to_string())
-            .expect_err("an unknown key in a profile is refused");
+        let err = apply_named(
+            &config_path(&dir),
+            Some("bad"),
+            "[app]\nname = \"x\"\n".to_string(),
+        )
+        .expect_err("an unknown key in a profile is refused");
         assert!(
             err.public_message.contains("unknown key"),
             "{}",

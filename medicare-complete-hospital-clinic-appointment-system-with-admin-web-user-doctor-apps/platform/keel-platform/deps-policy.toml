@@ -1,0 +1,440 @@
+# Per-crate dependency policy (MVVC contract C16, gate E5).
+#
+# The allow-lists below are a reviewed freeze of the surface the live tree
+# actually ships, not a target: any NEW external or platform dependency is a
+# DEP-EXTERNAL-NOT-ALLOWED / DEP-CLASS-POSTURE refusal until this file is
+# changed deliberately in the same review. Dev-dependencies are not listed;
+# their direction stays under the class matrix (G07).
+#
+# Known target gaps are recorded here rather than hidden:
+# - kelson-views -> kelson-http is V08/C16: the wire-plane trait must move
+#   behind the `live-transport` feature (P3). Remove it from this list then.
+# - kelson-demo and kelson-console carry the composition-root surface; their
+#   lists shrink with P3/P4, never by accident.
+#
+# `external_cap` is DEPENDENCY-POLICY v2 (D-62), read by the analyzer instead
+# of a literal in code (G-10).
+
+[policy]
+external_cap = 26
+
+
+[allow."kelson-cache-memory"]
+member = "adapters/kelson-cache-memory"
+externals = ["moka"]
+platform = ["kelson-caching"]
+
+[allow."kelson-cache-redis"]
+member = "adapters/kelson-cache-redis"
+externals = ["redis", "serde_json", "time", "tracing", "uuid"]
+platform = ["kelson-caching", "kelson-foundation", "kelson-jobs"]
+
+[allow."kelson-mail-smtp"]
+member = "adapters/kelson-mail-smtp"
+externals = ["lettre", "serde", "serde_json", "time", "uuid"]
+platform = ["kelson-foundation", "kelson-jobs", "kelson-notifications", "kelson-storage"]
+
+[allow."kelson-push-fcm"]
+member = "adapters/kelson-push-fcm"
+externals = ["reqwest", "serde", "serde_json"]
+platform = ["kelson-foundation", "kelson-notifications"]
+
+[allow."kelson-ratelimit-redis"]
+member = "adapters/kelson-ratelimit-redis"
+externals = ["redis", "tracing"]
+platform = ["kelson-foundation"]
+
+[allow."kelson-search-pgvector"]
+member = "adapters/kelson-search-pgvector"
+externals = ["serde_json", "sqlx", "tokio"]
+platform = ["kelson-foundation", "kelson-search"]
+
+[allow."kelson-session-postgres"]
+member = "adapters/kelson-session-postgres"
+externals = ["serde_json", "sqlx", "time", "tokio", "tracing", "uuid"]
+platform = ["kelson-foundation", "kelson-session"]
+
+[allow."kelson-session-redis"]
+member = "adapters/kelson-session-redis"
+externals = ["redis", "serde_json", "time", "tracing", "uuid"]
+platform = ["kelson-foundation", "kelson-session"]
+
+[allow."kelson-sms-msg91"]
+member = "adapters/kelson-sms-msg91"
+externals = ["reqwest", "serde", "serde_json"]
+platform = ["kelson-foundation", "kelson-notifications"]
+
+[allow."kelson-storage-local"]
+member = "adapters/kelson-storage-local"
+externals = []
+platform = ["kelson-foundation", "kelson-storage"]
+
+[allow."kelson-storage-s3"]
+member = "adapters/kelson-storage-s3"
+externals = []
+platform = ["kelson-foundation", "kelson-storage"]
+
+[allow."kelson-webhooks"]
+member = "adapters/kelson-webhooks"
+externals = ["serde", "serde_json", "sha2", "time", "uuid"]
+platform = ["kelson-foundation", "kelson-http-client"]
+
+[allow."kelson-mod-appointments"]
+member = "applications/appointments"
+externals = ["serde", "serde_json", "uuid"]
+platform = ["kelson-appointments-contract", "kelson-context", "kelson-execution", "kelson-foundation", "kelson-lifecycle", "kelson-models", "kelson-module-sdk", "kelson-notifications", "kelson-query"]
+
+[allow."kelson-mod-counter"]
+member = "applications/counter"
+externals = ["serde", "serde_json", "uuid"]
+platform = ["kelson-context", "kelson-execution", "kelson-foundation", "kelson-models", "kelson-module-sdk"]
+
+[allow."kelson-mod-echo"]
+member = "applications/echo"
+externals = ["serde", "serde_json"]
+platform = ["kelson-context", "kelson-execution", "kelson-foundation", "kelson-module-sdk"]
+
+[allow."kelson-mod-oauth2"]
+member = "applications/oauth2"
+externals = ["serde", "serde_json", "time", "uuid"]
+platform = ["kelson-context", "kelson-execution", "kelson-foundation", "kelson-lifecycle", "kelson-models", "kelson-module-sdk", "kelson-oauth2-contract", "kelson-tokens"]
+
+[allow."kelson-ai-agents"]
+member = "crates/ai/agents"
+externals = ["serde", "serde_json"]
+platform = ["kelson-ai", "kelson-ai-tools", "kelson-context", "kelson-execution", "kelson-foundation"]
+
+[allow."kelson-ai"]
+member = "crates/ai/client"
+externals = ["serde", "serde_json"]
+platform = ["kelson-foundation"]
+
+[allow."kelson-ai-mcp"]
+member = "crates/ai/mcp"
+externals = ["serde_json"]
+platform = ["kelson-ai-tools", "kelson-foundation", "kelson-registry"]
+
+[allow."kelson-ai-tools"]
+member = "crates/ai/tools"
+externals = ["serde", "serde_json"]
+platform = ["kelson-ai", "kelson-contracts", "kelson-foundation"]
+
+[allow."kelson-config"]
+member = "crates/application/configuration"
+externals = ["rand", "serde", "serde_json", "toml"]
+platform = ["kelson-foundation", "kelson-registry"]
+
+[allow."kelson-registry"]
+member = "crates/application/registry"
+externals = ["serde", "serde_json", "sha2", "toml"]
+platform = ["kelson-foundation", "kelson-validation"]
+
+[allow."kelson-event"]
+member = "crates/async/events"
+externals = ["serde", "serde_json", "time", "tracing", "uuid"]
+platform = ["kelson-foundation", "kelson-registry"]
+
+[allow."kelson-jobs"]
+member = "crates/async/jobs"
+externals = ["serde", "serde_json", "time", "uuid"]
+platform = ["kelson-foundation"]
+
+[allow."kelson-scheduling"]
+member = "crates/async/scheduler"
+externals = ["serde", "serde_json", "time"]
+platform = ["kelson-foundation"]
+
+[allow."kelson-workflow"]
+member = "crates/async/workflows"
+externals = ["serde"]
+platform = ["kelson-foundation"]
+
+[allow."kelson-appointments-contract"]
+member = "crates/data/appointments"
+externals = ["serde", "serde_json", "uuid"]
+platform = ["kelson-foundation", "kelson-lifecycle", "kelson-models", "kelson-notifications", "kelson-query"]
+
+[allow."kelson-models"]
+member = "crates/data/models"
+externals = ["async-trait", "serde", "serde_json", "time", "uuid"]
+platform = ["kelson-foundation", "kelson-identity", "kelson-query"]
+
+[allow."kelson-mysql"]
+member = "crates/data/mysql"
+externals = ["async-trait", "chrono", "serde_json", "sqlx", "time", "tokio", "tracing", "uuid"]
+platform = ["kelson-context", "kelson-event", "kelson-execution", "kelson-foundation", "kelson-identity", "kelson-integrity", "kelson-jobs", "kelson-models", "kelson-notifications", "kelson-query", "kelson-session", "kelson-tokens", "kelson-transaction"]
+
+[allow."kelson-oauth2-contract"]
+member = "crates/data/oauth2"
+externals = ["serde", "serde_json", "time", "uuid"]
+platform = ["kelson-execution", "kelson-foundation", "kelson-identity", "kelson-lifecycle", "kelson-models", "kelson-tokens"]
+
+[allow."kelson-postgres"]
+member = "crates/data/postgres"
+externals = ["serde_json", "sqlx", "time", "tokio", "tracing", "uuid"]
+platform = ["kelson-context", "kelson-event", "kelson-execution", "kelson-foundation", "kelson-identity", "kelson-integrity", "kelson-jobs", "kelson-models", "kelson-notifications", "kelson-query", "kelson-session", "kelson-tokens", "kelson-transaction"]
+
+[allow."kelson-deployment"]
+member = "crates/enterprise/deployment"
+externals = ["serde", "serde_json", "sha2", "time", "uuid"]
+platform = ["kelson-foundation"]
+
+[allow."kelson-feature-flags"]
+member = "crates/enterprise/feature-flags"
+externals = ["serde", "serde_json", "sha2", "time", "uuid"]
+platform = ["kelson-context", "kelson-foundation"]
+
+[allow."kelson-tenancy"]
+member = "crates/enterprise/tenancy"
+externals = ["serde", "serde_json", "thiserror", "time", "uuid"]
+platform = ["kelson-caching", "kelson-context", "kelson-event", "kelson-foundation", "kelson-jobs", "kelson-scheduling", "kelson-storage"]
+
+[allow."kelson-command"]
+member = "crates/execution/command"
+externals = ["serde", "serde_json", "time"]
+platform = ["kelson-context", "kelson-execution", "kelson-foundation"]
+
+[allow."kelson-execution"]
+member = "crates/execution/engine"
+externals = ["serde", "serde_json", "time", "uuid"]
+platform = ["kelson-context", "kelson-contracts", "kelson-foundation"]
+
+[allow."kelson-query"]
+member = "crates/execution/query"
+externals = ["serde", "serde_json", "time", "uuid"]
+platform = ["kelson-foundation"]
+
+[allow."kelson-transaction"]
+member = "crates/execution/transaction"
+externals = []
+platform = ["kelson-foundation"]
+
+[allow."kelson-wasm"]
+member = "crates/extension/wasm"
+externals = ["rand", "serde_json", "tracing", "uuid", "wasmtime"]
+platform = ["kelson-context", "kelson-execution", "kelson-foundation", "kelson-module-contract", "kelson-registry"]
+
+[allow."kelson-context"]
+member = "crates/foundation/context"
+externals = ["serde", "serde_json", "time", "uuid"]
+platform = ["kelson-foundation"]
+
+[allow."kelson-contracts"]
+member = "crates/foundation/contracts"
+externals = ["serde", "serde_json", "toml"]
+platform = ["kelson-context", "kelson-foundation"]
+
+[allow."kelson-foundation"]
+member = "crates/foundation/core"
+externals = ["rand", "serde", "serde_json", "time", "uuid"]
+platform = []
+
+[allow."kelson-lifecycle"]
+member = "crates/foundation/lifecycle"
+externals = ["serde", "serde_json"]
+platform = ["kelson-foundation"]
+
+[allow."kelson-validation"]
+member = "crates/foundation/validation"
+externals = ["serde_json", "time", "uuid"]
+platform = ["kelson-foundation"]
+
+[allow."kelson-framework"]
+member = "crates/framework"
+externals = []
+platform = ["kelson-caching", "kelson-config", "kelson-context", "kelson-deployment", "kelson-event", "kelson-execution", "kelson-feature-flags", "kelson-foundation", "kelson-http", "kelson-identity", "kelson-integrity", "kelson-jobs", "kelson-lifecycle", "kelson-mysql", "kelson-observability", "kelson-policy", "kelson-postgres", "kelson-realtime", "kelson-registry", "kelson-scheduling", "kelson-search", "kelson-session", "kelson-storage", "kelson-telemetry", "kelson-tenancy", "kelson-views", "kelson-wasm"]
+
+[allow."kelson-module-contract"]
+member = "crates/module/contract"
+externals = ["serde", "serde_json", "time", "uuid"]
+platform = ["kelson-foundation", "kelson-identity", "kelson-models", "kelson-tokens"]
+
+[allow."kelson-module-sdk"]
+member = "crates/module/sdk"
+externals = ["serde", "serde_json", "time", "uuid"]
+platform = ["kelson-context", "kelson-execution", "kelson-foundation", "kelson-models", "kelson-module-contract", "kelson-query", "kelson-tokens"]
+
+[allow."kelson-audit"]
+member = "crates/observability/audit"
+externals = ["serde", "serde_json", "time", "uuid"]
+platform = ["kelson-foundation", "kelson-telemetry"]
+
+[allow."kelson-buffer"]
+member = "crates/observability/buffer"
+externals = ["serde", "serde_json", "sha2", "time", "uuid"]
+platform = ["kelson-foundation", "kelson-telemetry"]
+
+[allow."kelson-export"]
+member = "crates/observability/export"
+externals = ["rand", "reqwest", "serde", "serde_json", "time", "uuid"]
+platform = ["kelson-buffer", "kelson-foundation", "kelson-telemetry"]
+
+[allow."kelson-observability"]
+member = "crates/observability/logging"
+externals = ["moka", "serde", "serde_json", "time", "toml", "tracing", "tracing-subscriber", "uuid"]
+platform = ["kelson-buffer", "kelson-export", "kelson-foundation", "kelson-lifecycle", "kelson-metrics", "kelson-pipeline", "kelson-telemetry", "kelson-tracing"]
+
+[allow."kelson-metrics"]
+member = "crates/observability/metrics"
+externals = ["moka", "serde", "serde_json", "time"]
+platform = ["kelson-foundation"]
+
+[allow."kelson-pipeline"]
+member = "crates/observability/pipeline"
+externals = ["moka", "serde", "serde_json", "sha2", "time"]
+platform = ["kelson-foundation", "kelson-telemetry"]
+
+[allow."kelson-telemetry"]
+member = "crates/observability/telemetry"
+externals = ["serde", "serde_json", "sha2", "time", "uuid"]
+platform = ["kelson-foundation"]
+
+[allow."kelson-tracing"]
+member = "crates/observability/tracing"
+externals = ["rand", "serde", "serde_json", "time", "uuid"]
+platform = ["kelson-foundation", "kelson-telemetry"]
+
+[allow."kelson-elevation"]
+member = "crates/security/elevation"
+externals = ["serde", "time"]
+platform = ["kelson-foundation"]
+
+[allow."kelson-identity"]
+member = "crates/security/identity"
+externals = ["argon2", "rand", "serde", "time", "uuid"]
+platform = ["kelson-foundation"]
+
+[allow."kelson-integrity"]
+member = "crates/security/integrity"
+externals = ["serde", "serde_json", "sha2", "time", "uuid"]
+platform = ["kelson-foundation"]
+
+[allow."kelson-ownership"]
+member = "crates/security/ownership"
+externals = ["serde", "uuid"]
+platform = ["kelson-context", "kelson-foundation", "kelson-scope"]
+
+[allow."kelson-policy"]
+member = "crates/security/policies"
+externals = ["serde", "serde_json", "time", "uuid"]
+platform = ["kelson-context", "kelson-contracts", "kelson-foundation"]
+
+[allow."kelson-scope"]
+member = "crates/security/scopes"
+externals = ["serde", "time", "uuid"]
+platform = ["kelson-context", "kelson-foundation"]
+
+[allow."kelson-session"]
+member = "crates/security/sessions"
+externals = ["rand", "serde", "serde_json", "sha2", "time", "uuid"]
+platform = ["kelson-foundation"]
+
+[allow."kelson-tokens"]
+member = "crates/security/tokens"
+externals = ["aes-gcm", "rand", "serde", "sha2", "time", "uuid"]
+platform = ["kelson-foundation", "kelson-identity"]
+
+[allow."kelson-caching"]
+member = "crates/services/cache"
+externals = ["serde_json"]
+platform = ["kelson-foundation"]
+
+[allow."kelson-http-client"]
+member = "crates/services/http-client"
+externals = ["reqwest", "serde", "serde_json", "time", "tokio"]
+platform = ["kelson-foundation", "kelson-storage"]
+
+[allow."kelson-process"]
+member = "crates/services/kelson-process"
+externals = ["serde", "serde_json", "time"]
+platform = ["kelson-foundation"]
+
+[allow."kelson-notifications"]
+member = "crates/services/notifications"
+externals = ["serde", "serde_json", "sha2", "time", "uuid"]
+platform = ["kelson-foundation", "kelson-storage"]
+
+[allow."kelson-realtime"]
+member = "crates/services/realtime"
+externals = ["axum", "serde", "serde_json", "time", "tokio", "tokio-stream"]
+platform = ["kelson-foundation"]
+
+[allow."kelson-search"]
+member = "crates/services/search"
+externals = ["serde", "serde_json"]
+platform = ["kelson-foundation"]
+
+[allow."kelson-storage"]
+member = "crates/services/storage"
+externals = ["serde"]
+platform = ["kelson-foundation"]
+
+[allow."kelson-http"]
+member = "crates/web/http"
+externals = ["axum", "rand", "serde", "serde_json", "sha2", "time", "tower-http", "tracing", "uuid"]
+platform = ["kelson-command", "kelson-context", "kelson-foundation", "kelson-registry", "kelson-session", "kelson-storage", "kelson-tokens"]
+
+[allow."kelson-views"]
+member = "crates/web/views"
+externals = ["regex", "serde", "serde_json", "sha2", "time", "toml"]
+platform = ["kelson-foundation", "kelson-http", "kelson-realtime"]
+
+[allow."kelson-example-minimal"]
+member = "examples/minimal"
+externals = ["serde_json", "time", "tokio", "uuid"]
+platform = ["kelson-command", "kelson-context", "kelson-execution", "kelson-foundation", "kelson-identity", "kelson-lifecycle", "kelson-observability", "kelson-policy"]
+
+[allow."kelson-example-reference"]
+member = "examples/reference"
+externals = ["serde_json", "time", "tokio", "uuid"]
+platform = ["kelson-ai-mcp", "kelson-command", "kelson-context", "kelson-execution", "kelson-foundation", "kelson-identity", "kelson-lifecycle", "kelson-observability", "kelson-policy", "kelson-registry", "kelson-search"]
+
+[allow."kelson-demo"]
+member = "runtime/kelson-demo"
+externals = ["axum", "serde", "serde_json", "time", "tokio", "tokio-stream", "tower", "tower-http", "tracing", "uuid"]
+platform = ["kelson-appointments-contract", "kelson-cache-memory", "kelson-cache-redis", "kelson-caching", "kelson-command", "kelson-config", "kelson-context", "kelson-execution", "kelson-feature-flags", "kelson-foundation", "kelson-http", "kelson-identity", "kelson-jobs", "kelson-lifecycle", "kelson-mail-smtp", "kelson-metrics", "kelson-models", "kelson-module-contract", "kelson-mysql", "kelson-notifications", "kelson-oauth2-contract", "kelson-observability", "kelson-policy", "kelson-postgres", "kelson-query", "kelson-ratelimit-redis", "kelson-realtime", "kelson-registry", "kelson-scheduling", "kelson-scope", "kelson-session", "kelson-storage", "kelson-storage-local", "kelson-storage-s3", "kelson-tenancy", "kelson-tokens", "kelson-validation", "kelson-views", "kelson-wasm"]
+
+[allow."kelson-worker"]
+member = "runtime/kelson-worker"
+externals = ["clap", "serde_json", "time", "tokio", "tracing"]
+platform = ["kelson-cache-memory", "kelson-cache-redis", "kelson-caching", "kelson-config", "kelson-event", "kelson-foundation", "kelson-jobs", "kelson-lifecycle", "kelson-mail-smtp", "kelson-mysql", "kelson-notifications", "kelson-observability", "kelson-postgres", "kelson-scheduling", "kelson-storage", "kelson-storage-local", "kelson-storage-s3"]
+
+[allow."kelson-templates"]
+member = "templates"
+externals = []
+platform = []
+
+[allow."kelson-module-marker"]
+member = "testing/module-marker"
+externals = []
+platform = []
+
+[allow."kelson-testkit"]
+member = "testing/testkit"
+externals = ["axum", "serde", "serde_json", "time", "tower", "uuid"]
+platform = ["kelson-caching", "kelson-event", "kelson-execution", "kelson-foundation", "kelson-http", "kelson-http-client", "kelson-jobs", "kelson-models", "kelson-notifications", "kelson-registry", "kelson-scheduling", "kelson-search", "kelson-session", "kelson-storage", "kelson-views"]
+
+[allow."kelson-arch-validation"]
+member = "tests/architecture"
+externals = []
+platform = []
+
+[allow."kelson-analyzer"]
+member = "tools/kelson-analyzer"
+externals = ["serde", "toml"]
+platform = []
+
+[allow."kelson-codegen"]
+member = "tools/kelson-codegen"
+externals = ["serde_json"]
+platform = ["kelson-registry", "kelson-validation"]
+
+[allow."kelson-console"]
+member = "tools/kelson-console"
+externals = ["anyhow", "clap", "serde", "serde_json", "sqlx", "time", "tokio", "toml", "uuid"]
+platform = ["kelson-ai-mcp", "kelson-ai-tools", "kelson-analyzer", "kelson-codegen", "kelson-config", "kelson-context", "kelson-contracts", "kelson-deployment", "kelson-event", "kelson-execution", "kelson-feature-flags", "kelson-foundation", "kelson-http", "kelson-identity", "kelson-integrity", "kelson-jobs", "kelson-mysql", "kelson-observability", "kelson-policy", "kelson-postgres", "kelson-registry", "kelson-scheduling", "kelson-templates", "kelson-views"]
+
+[allow."xtask"]
+member = "xtask"
+externals = ["toml"]
+platform = ["kelson-analyzer"]

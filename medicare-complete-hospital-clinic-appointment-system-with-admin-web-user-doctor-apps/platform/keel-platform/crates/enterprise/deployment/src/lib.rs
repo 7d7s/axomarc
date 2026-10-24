@@ -213,9 +213,7 @@ pub fn artifact_path(root: &Path, name: &str, profile: BuildProfile) -> PathBuf 
     if cfg!(windows) {
         file.push_str(".exe");
     }
-    root.join("target")
-        .join(profile.target_dir())
-        .join(file)
+    root.join("target").join(profile.target_dir()).join(file)
 }
 
 /// Digest of a built binary, or an error naming what could not be read.
@@ -224,8 +222,9 @@ pub fn artifact_path(root: &Path, name: &str, profile: BuildProfile) -> PathBuf 
 /// digest never taken is worse than one that records none, because it would
 /// verify successfully against bytes nobody hashed.
 pub fn artifact_digest(path: &Path) -> Result<String, AppError> {
-    let bytes = std::fs::read(path)
-        .map_err(|e| AppError::internal(format!("artifact {}: cannot hash: {e}", path.display())))?;
+    let bytes = std::fs::read(path).map_err(|e| {
+        AppError::internal(format!("artifact {}: cannot hash: {e}", path.display()))
+    })?;
     Ok(sha256_hex(&bytes))
 }
 
@@ -236,7 +235,11 @@ pub enum ArtifactVerdict {
     Match { name: String },
     /// The binary exists but does not hash to the recorded digest — the case
     /// this whole feature exists to catch.
-    Mismatch { name: String, expected: String, actual: String },
+    Mismatch {
+        name: String,
+        expected: String,
+        actual: String,
+    },
     /// The binary the manifest names is not where this profile builds it.
     Missing { name: String, path: PathBuf },
     /// The manifest records no digest, so there is nothing to compare against.
@@ -263,14 +266,18 @@ pub fn verify_artifacts(root: &Path, manifest: &ReleaseManifest) -> Vec<Artifact
         .iter()
         .map(|a| {
             let Some(expected) = a.sha256.clone() else {
-                return ArtifactVerdict::Undigested { name: a.name.clone() };
+                return ArtifactVerdict::Undigested {
+                    name: a.name.clone(),
+                };
             };
             let path = artifact_path(root, &a.name, a.profile);
             match std::fs::read(&path) {
                 Ok(bytes) => {
                     let actual = sha256_hex(&bytes);
                     if actual == expected {
-                        ArtifactVerdict::Match { name: a.name.clone() }
+                        ArtifactVerdict::Match {
+                            name: a.name.clone(),
+                        }
                     } else {
                         ArtifactVerdict::Mismatch {
                             name: a.name.clone(),
@@ -370,7 +377,9 @@ pub fn shipped_migrations(root: &Path) -> Result<Vec<ShippedMigration>, AppError
             )));
         }
         let sql = std::fs::read_to_string(&up).map_err(|e| {
-            AppError::internal(format!("shipped migration {base}: cannot read .up.sql: {e}"))
+            AppError::internal(format!(
+                "shipped migration {base}: cannot read .up.sql: {e}"
+            ))
         })?;
         out.push(ShippedMigration {
             name: base.to_string(),
@@ -477,8 +486,7 @@ mod tests {
                     version: "0.1.0".into(),
                     profile: BuildProfile::Release,
                     sha256: Some(
-                        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-                            .into(),
+                        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
                     ),
                 })
                 .collect(),
@@ -488,8 +496,7 @@ mod tests {
             rustc: "1.85.0".into(),
             migrations: vec![ShippedMigration {
                 name: "20260101000000_create_widgets".into(),
-                sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-                    .into(),
+                sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
             }],
         }
     }
@@ -523,7 +530,8 @@ mod tests {
 
     #[test]
     fn manifest_roundtrip() {
-        let root = std::env::temp_dir().join(format!("kelson-deploy-test-{}", uuid::Uuid::now_v7()));
+        let root =
+            std::env::temp_dir().join(format!("kelson-deploy-test-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&root).unwrap();
         let written = write_manifest(&root, &sample_manifest()).unwrap();
         assert!(written.exists());
@@ -536,7 +544,8 @@ mod tests {
 
     #[test]
     fn missing_manifest_is_none_not_error() {
-        let root = std::env::temp_dir().join(format!("kelson-deploy-none-{}", uuid::Uuid::now_v7()));
+        let root =
+            std::env::temp_dir().join(format!("kelson-deploy-none-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&root).unwrap();
         assert!(read_manifest(&root).unwrap().is_none());
         std::fs::remove_dir_all(&root).ok();
@@ -580,17 +589,13 @@ mod tests {
         let root = Path::new("/ws");
         assert_eq!(
             artifact_path(root, "kelson", BuildProfile::Release),
-            Path::new("/ws/target/release").join(format!(
-                "kelson{}",
-                if cfg!(windows) { ".exe" } else { "" }
-            ))
+            Path::new("/ws/target/release")
+                .join(format!("kelson{}", if cfg!(windows) { ".exe" } else { "" }))
         );
         assert_eq!(
             artifact_path(root, "kelson", BuildProfile::Dev),
-            Path::new("/ws/target/debug").join(format!(
-                "kelson{}",
-                if cfg!(windows) { ".exe" } else { "" }
-            ))
+            Path::new("/ws/target/debug")
+                .join(format!("kelson{}", if cfg!(windows) { ".exe" } else { "" }))
         );
     }
 
@@ -636,10 +641,7 @@ mod tests {
         let back = read_manifest(&root).unwrap().unwrap();
         assert_eq!(
             back.artifacts[0].sha256,
-            Some(
-                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-                    .to_string()
-            )
+            Some("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string())
         );
         std::fs::remove_dir_all(&root).ok();
     }
@@ -703,10 +705,7 @@ mod tests {
         );
 
         // Only a genuine match counts as ok.
-        assert!(ArtifactVerdict::Match {
-            name: "x".into()
-        }
-        .ok());
+        assert!(ArtifactVerdict::Match { name: "x".into() }.ok());
         for bad in [
             ArtifactVerdict::Mismatch {
                 name: "x".into(),
@@ -717,9 +716,7 @@ mod tests {
                 name: "x".into(),
                 path: PathBuf::from("x"),
             },
-            ArtifactVerdict::Undigested {
-                name: "x".into(),
-            },
+            ArtifactVerdict::Undigested { name: "x".into() },
         ] {
             assert!(!bad.ok(), "{bad:?} must not count as verified");
         }
@@ -771,7 +768,12 @@ mod tests {
     #[test]
     fn a_migration_edited_after_the_release_changes_its_hash() {
         let root = std::env::temp_dir().join(format!("kelson-ship-drift-{}", uuid::Uuid::now_v7()));
-        write_pair(&root, "20260101000000_widgets", "CREATE TABLE t (a int);", "DROP TABLE t;");
+        write_pair(
+            &root,
+            "20260101000000_widgets",
+            "CREATE TABLE t (a int);",
+            "DROP TABLE t;",
+        );
         let released = shipped_migrations(&root).unwrap();
         write_pair(
             &root,
@@ -780,7 +782,10 @@ mod tests {
             "DROP TABLE t;",
         );
         let edited = shipped_migrations(&root).unwrap();
-        assert_eq!(released[0].name, edited[0].name, "the name alone would not notice");
+        assert_eq!(
+            released[0].name, edited[0].name,
+            "the name alone would not notice"
+        );
         assert_ne!(
             released[0].sha256, edited[0].sha256,
             "the content hash does"
@@ -825,7 +830,8 @@ mod tests {
     /// should not have their manifest rejected by a newer console.
     #[test]
     fn a_manifest_without_the_migrations_field_still_reads() {
-        let root = std::env::temp_dir().join(format!("kelson-ship-legacy-{}", uuid::Uuid::now_v7()));
+        let root =
+            std::env::temp_dir().join(format!("kelson-ship-legacy-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&root).unwrap();
         let mut legacy = serde_json::to_value(sample_manifest()).unwrap();
         legacy
@@ -836,8 +842,13 @@ mod tests {
         let path = manifest_path(&root);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, serde_json::to_string_pretty(&legacy).unwrap()).unwrap();
-        let read = read_manifest(&root).unwrap().expect("legacy manifest reads");
-        assert!(read.migrations.is_empty(), "defaults to no shipped migrations");
+        let read = read_manifest(&root)
+            .unwrap()
+            .expect("legacy manifest reads");
+        assert!(
+            read.migrations.is_empty(),
+            "defaults to no shipped migrations"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -850,15 +861,24 @@ mod tests {
 
     #[test]
     fn drift_is_empty_when_the_release_matches_the_tree() {
-        let set = vec![ship("20260101000000_a", "aa"), ship("20260102000000_b", "bb")];
+        let set = vec![
+            ship("20260101000000_a", "aa"),
+            ship("20260102000000_b", "bb"),
+        ];
         let drift = migration_drift(&set, &set.clone());
         assert!(drift.is_empty());
     }
 
     #[test]
     fn drift_classifies_added_removed_and_changed_by_name() {
-        let released = vec![ship("20260101000000_kept", "aa"), ship("20260102000000_gone", "bb")];
-        let current = vec![ship("20260101000000_kept", "aa"), ship("20260103000000_new", "cc")];
+        let released = vec![
+            ship("20260101000000_kept", "aa"),
+            ship("20260102000000_gone", "bb"),
+        ];
+        let current = vec![
+            ship("20260101000000_kept", "aa"),
+            ship("20260103000000_new", "cc"),
+        ];
         let drift = migration_drift(&released, &current);
         assert_eq!(drift.added, ["20260103000000_new"]);
         assert_eq!(drift.removed, ["20260102000000_gone"]);
@@ -877,7 +897,10 @@ mod tests {
         let drift = migration_drift(&released, &current);
         assert_eq!(drift.changed, ["20260101000000_widgets"]);
         assert!(drift.added.is_empty(), "the name did not change");
-        assert!(drift.removed.is_empty(), "so it is neither added nor removed");
+        assert!(
+            drift.removed.is_empty(),
+            "so it is neither added nor removed"
+        );
     }
 
     /// The report must be stable between runs, so an operator diffing two

@@ -96,10 +96,7 @@ impl Insert {
         self
     }
 
-    pub fn build(
-        &self,
-        dialect: &dyn crate::dialect::Dialect,
-    ) -> Result<CompiledWrite, AppError> {
+    pub fn build(&self, dialect: &dyn crate::dialect::Dialect) -> Result<CompiledWrite, AppError> {
         if self.columns.is_empty() {
             return Err(AppError::validation("INSERT needs at least one column"));
         }
@@ -116,16 +113,12 @@ impl Insert {
             }
         }
         if let Some((col, tenant)) = &self.tenant_check {
-            let pos = self
-                .columns
-                .iter()
-                .position(|c| c == col)
-                .ok_or_else(|| {
-                    AppError::validation(format!(
-                        "tenant_scope column {} is not an inserted column",
-                        col.as_str()
-                    ))
-                })?;
+            let pos = self.columns.iter().position(|c| c == col).ok_or_else(|| {
+                AppError::validation(format!(
+                    "tenant_scope column {} is not an inserted column",
+                    col.as_str()
+                ))
+            })?;
             let expected = Value::Uuid(*tenant.as_uuid());
             for (idx, row) in self.rows.iter().enumerate() {
                 if row[pos] != expected {
@@ -264,7 +257,10 @@ mod tests {
             ])
             .build(&crate::dialect::POSTGRES)
             .unwrap();
-        assert_eq!(q.sql, "INSERT INTO appointments (id, patient) VALUES ($1, $2)");
+        assert_eq!(
+            q.sql,
+            "INSERT INTO appointments (id, patient) VALUES ($1, $2)"
+        );
         assert_eq!(q.params.len(), 2);
     }
 
@@ -314,7 +310,8 @@ mod tests {
             .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert!(
-            q.sql.ends_with("ON CONFLICT (tenant_id, name) DO UPDATE SET value = EXCLUDED.value"),
+            q.sql
+                .ends_with("ON CONFLICT (tenant_id, name) DO UPDATE SET value = EXCLUDED.value"),
             "id stays untouched on merge: {}",
             q.sql
         );
@@ -355,7 +352,9 @@ mod tests {
 
     #[test]
     fn build_errors() {
-        assert!(Insert::into_table(id("t")).build(&crate::dialect::POSTGRES).is_err());
+        assert!(Insert::into_table(id("t"))
+            .build(&crate::dialect::POSTGRES)
+            .is_err());
         assert!(Insert::into_table(id("t"))
             .columns(vec![id("a")])
             .build(&crate::dialect::POSTGRES)

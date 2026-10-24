@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use clap::Parser;
 use kelson_config::{Environment, FrozenConfig, PlatformConfig};
-use kelson_foundation::{codes, AppError, ErrorCategory, Retryability, Severity};
 use kelson_event::{ListenerRegistry, OutboxPump, OutboxStore, OutboxStoreService};
+use kelson_foundation::{codes, AppError, ErrorCategory, Retryability, Severity};
 use kelson_jobs::{
     BatchRuntime, BoxFuture, ChainRuntime, Control, DurableJob, InMemoryJobStore, JobDef,
     JobHandler, JobMiddlewareStacks, JobRegistry, JobStatus, JobStore, JobStoreAdmin,
@@ -233,9 +233,7 @@ impl JobHandler for DemoJobHandler {
 ///
 /// With the boundary in place the failed attempt is an ordinary failure:
 /// the backoff and the retry budget apply, and the worker keeps claiming.
-fn panic_boundary(
-    fut: BoxFuture<'_, Result<(), AppError>>,
-) -> BoxFuture<'_, Result<(), AppError>> {
+fn panic_boundary(fut: BoxFuture<'_, Result<(), AppError>>) -> BoxFuture<'_, Result<(), AppError>> {
     Box::pin(PanicBoundary { inner: fut })
 }
 
@@ -315,7 +313,9 @@ async fn deadline_guard(
 /// adapters -> application; an unknown chain member, a duplicate name, or an
 /// smtp mailer without a host refuses boot (the chain builder owns those
 /// checks, `MailChain::new`).
-fn mail_chain(section: &kelson_config::MailSection) -> Result<kelson_mail_smtp::MailChain, AppError> {
+fn mail_chain(
+    section: &kelson_config::MailSection,
+) -> Result<kelson_mail_smtp::MailChain, AppError> {
     use kelson_mail_smtp::{MailerSpec, TransportKind};
     let specs = section
         .mailers
@@ -490,9 +490,8 @@ impl JobHandler for NotificationDeliveryHandler {
     fn handle<'a>(&'a self, job: &'a DurableJob) -> BoxFuture<'a, Result<(), AppError>> {
         Box::pin(async move {
             let delivery: kelson_notifications::QueuedNotificationDelivery =
-                serde_json::from_value(job.payload.clone()).map_err(|e| {
-                    AppError::validation(format!("notification.send payload: {e}"))
-                })?;
+                serde_json::from_value(job.payload.clone())
+                    .map_err(|e| AppError::validation(format!("notification.send payload: {e}")))?;
             self.hub.deliver_queued(delivery).await
         })
     }
@@ -541,7 +540,9 @@ impl DispatchCtx<'_> {
         let job = match self.defs.apply_migrations(job) {
             Ok(job) => job,
             Err(e) => {
-                let next = self.store.fail_claim(id, claim_attempt, &claim_owner, &e.public_message)?;
+                let next =
+                    self.store
+                        .fail_claim(id, claim_attempt, &claim_owner, &e.public_message)?;
                 if next == JobStatus::Dead {
                     if let Some(run) = self.batches.finish_by_job(id, true)? {
                         tracing::warn!(batch_id = %run.id, batch = %run.name, ok = run.ok(), "batch finished with dead member");
@@ -568,7 +569,9 @@ impl DispatchCtx<'_> {
                     None => Err(AppError::not_found(format!(
                         "no handler registered for {name}"
                     ))),
-                    Some(handler) => deadline_guard(&job, panic_boundary(handler.handle(&job))).await,
+                    Some(handler) => {
+                        deadline_guard(&job, panic_boundary(handler.handle(&job))).await
+                    }
                 };
                 if let Some(err) = stack.after(&job, &ran).await {
                     tracing::warn!(
@@ -582,7 +585,8 @@ impl DispatchCtx<'_> {
             }
             Ok(Control::Hold(delay)) => {
                 let at = OffsetDateTime::now_utc() + delay;
-                self.admin.defer_claim(id, claim_attempt, &claim_owner, at)?;
+                self.admin
+                    .defer_claim(id, claim_attempt, &claim_owner, at)?;
                 tracing::info!(
                     job_id = %id,
                     job = %name,
@@ -592,7 +596,8 @@ impl DispatchCtx<'_> {
                 return Ok(None);
             }
             Ok(Control::Abort(reason)) => {
-                self.admin.kill_claim(id, claim_attempt, &claim_owner, reason)?;
+                self.admin
+                    .kill_claim(id, claim_attempt, &claim_owner, reason)?;
                 // Terminal, like a dead failure: close the batch/chain books.
                 if let Some(run) = self.batches.finish_by_job(id, true)? {
                     tracing::warn!(batch_id = %run.id, batch = %run.name, "batch member killed by admission");
@@ -632,7 +637,9 @@ impl DispatchCtx<'_> {
                 );
             }
             Err(e) => {
-                let next = self.store.fail_claim(id, claim_attempt, &claim_owner, &e.public_message)?;
+                let next =
+                    self.store
+                        .fail_claim(id, claim_attempt, &claim_owner, &e.public_message)?;
                 if next == JobStatus::Dead {
                     if let Some(run) = self.batches.finish_by_job(id, true)? {
                         tracing::warn!(batch_id = %run.id, batch = %run.name, ok = run.ok(), "batch finished with dead member");
@@ -658,27 +665,20 @@ impl DispatchCtx<'_> {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let cfg_path = std::env::var("KEEL_CONFIG").unwrap_or_else(|_| "config/dev.toml".into());
-    let cfg =
-        PlatformConfig::load(Some(std::path::Path::new(&cfg_path)))?.freeze();
+    let cfg = PlatformConfig::load(Some(std::path::Path::new(&cfg_path)))?.freeze();
 
     // Sentinel (S5): the telemetry runtime replaces S1 `init_logging` as the
     // single logging init point. Layering: compiled defaults <- `[telemetry]`
     // section <- env overlay; the S1 env conventions stay honored (RUST_LOG,
     // KEEL_LOG_FILE, environment-driven console format).
-    let mut telemetry_config =
-        kelson_observability::TelemetryConfig::from_section(cfg.telemetry());
-    if cfg
-        .telemetry()
-        .and_then(|s| s.get("format"))
-        .is_none()
-    {
-        telemetry_config.format = if cfg.app().env.is_prod()
-            || matches!(cfg.app().env, Environment::Staging)
-        {
-            "json".into()
-        } else {
-            "pretty".into()
-        };
+    let mut telemetry_config = kelson_observability::TelemetryConfig::from_section(cfg.telemetry());
+    if cfg.telemetry().and_then(|s| s.get("format")).is_none() {
+        telemetry_config.format =
+            if cfg.app().env.is_prod() || matches!(cfg.app().env, Environment::Staging) {
+                "json".into()
+            } else {
+                "pretty".into()
+            };
     }
     if let Ok(level) = std::env::var("RUST_LOG") {
         telemetry_config.level = level;
@@ -839,12 +839,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     job_defs.register(notification_def)?;
     let job_defs = Arc::new(job_defs);
     let guard_port = schedule_cache_port();
-    let scheduler = Arc::new(
-        SchedulerRunner::new(schedules.clone())
-            .with_lock(Arc::new(CacheScheduleLock {
-                cache: kelson_caching::CacheService::new(guard_port.clone()),
-            })),
-    );
+    let scheduler = Arc::new(SchedulerRunner::new(schedules.clone()).with_lock(Arc::new(
+        CacheScheduleLock {
+            cache: kelson_caching::CacheService::new(guard_port.clone()),
+        },
+    )));
     // Wave 6 P8: admission + middleware composition — the built-ins (unique
     // / rate-limit / retry-limit) compose lazily per job name from each
     // registered def; module middleware registers before first dispatch.
@@ -1058,7 +1057,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kelson_config::{MailerConfig, MailerTransport, MailSection};
+    use kelson_config::{MailSection, MailerConfig, MailerTransport};
 
     fn section(default: &str) -> MailSection {
         MailSection {
@@ -1124,13 +1123,21 @@ mod tests {
         );
 
         let err = mail_chain(&section(" , ")).expect_err("empty chain refuses boot");
-        assert!(err.public_message.contains("empty"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("empty"),
+            "{}",
+            err.public_message
+        );
 
         let mut bad = section("relay");
         bad.mailers
             .insert("relay".into(), mailer(MailerTransport::Smtp, ""));
         let err = mail_chain(&bad).expect_err("smtp without host refuses boot");
-        assert!(err.public_message.contains("no host"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("no host"),
+            "{}",
+            err.public_message
+        );
     }
 
     /// The def + handler register exactly once each — the boot-time guard
@@ -1206,7 +1213,11 @@ mod tests {
             },
         );
         let err = disk_registry(&bad, &root).expect_err("root missing");
-        assert!(err.public_message.contains("root"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("root"),
+            "{}",
+            err.public_message
+        );
 
         // s3 without `bucket` refuses boot.
         let mut bad = kelson_config::StorageConfig::default();
@@ -1243,7 +1254,11 @@ mod tests {
             },
         );
         let err = disk_registry(&bad, &root).expect_err("unknown default");
-        assert!(err.public_message.contains("nope"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("nope"),
+            "{}",
+            err.public_message
+        );
     }
 
     // ------------------------------------------- Wave 6 P6: notification drain
@@ -1443,12 +1458,16 @@ mod tests {
             tenant_id: None,
             locale: None,
         };
-        port.send(&msg, "subject and body").expect("simple path delegates");
+        port.send(&msg, "subject and body")
+            .expect("simple path delegates");
         let bad_msg = NotifyMessage {
             to: "nope".into(),
             ..msg.clone()
         };
-        assert!(port.send(&bad_msg, "s").is_err(), "recipient validation first");
+        assert!(
+            port.send(&bad_msg, "s").is_err(),
+            "recipient validation first"
+        );
     }
 
     // ------------------------------- Wave 6 P8: dispatch admission + middleware
@@ -1631,10 +1650,7 @@ mod tests {
                 "p8.schema_job"
             }
 
-            fn handle<'a>(
-                &'a self,
-                job: &'a DurableJob,
-            ) -> BoxFuture<'a, Result<(), AppError>> {
+            fn handle<'a>(&'a self, job: &'a DurableJob) -> BoxFuture<'a, Result<(), AppError>> {
                 let seen = self.seen.clone();
                 let payload = job.payload.clone();
                 Box::pin(async move {
@@ -1733,8 +1749,7 @@ mod tests {
 
         // A peer worker holds the key.
         assert!(
-            lock.try_acquire(&key, time::Duration::seconds(60))
-                .unwrap(),
+            lock.try_acquire(&key, time::Duration::seconds(60)).unwrap(),
             "the peer takes the lock"
         );
         store
@@ -1759,10 +1774,7 @@ mod tests {
             pending[0].available_at > OffsetDateTime::now_utc(),
             "requeued on the unique-poll cadence"
         );
-        assert!(
-            trace.lock().unwrap().is_empty(),
-            "the locked job never ran"
-        );
+        assert!(trace.lock().unwrap().is_empty(), "the locked job never ran");
 
         // Released: a fresh claim of the same type runs.
         lock.release(&key).unwrap();
@@ -1885,7 +1897,8 @@ mod tests {
 
         let store = Arc::new(InMemoryJobStore::new());
         let mut defs = JobRegistry::new();
-        defs.register(JobDef::new("known.job")).expect("def registers");
+        defs.register(JobDef::new("known.job"))
+            .expect("def registers");
         let mut handlers = WorkerRegistry::new();
         handlers
             .register(Arc::new(DemoJobHandler))
@@ -1921,7 +1934,9 @@ mod tests {
             batches: &batches,
             chains: &chains,
         };
-        ctx.once("soak-worker").await.expect("the dispatch pass runs");
+        ctx.once("soak-worker")
+            .await
+            .expect("the dispatch pass runs");
 
         let row = store.get(id).expect("the store reads").expect("the row");
         assert_ne!(
@@ -1945,7 +1960,9 @@ mod tests {
         );
 
         // It is visible to the admin as a failed attempt, not as work done.
-        let listed = store.list(Some(JobStatus::Pending), 10).expect("the admin list runs");
+        let listed = store
+            .list(Some(JobStatus::Pending), 10)
+            .expect("the admin list runs");
         assert_eq!(listed.len(), 1, "the re-queued job is visible to the admin");
     }
 
@@ -1955,11 +1972,8 @@ mod tests {
     #[tokio::test]
     async fn a_job_that_passes_its_deadline_fails_the_attempt() {
         let now = OffsetDateTime::now_utc();
-        let mut job = kelson_jobs::build_from_def(
-            &JobDef::new("deadline.probe"),
-            serde_json::json!({}),
-            now,
-        );
+        let mut job =
+            kelson_jobs::build_from_def(&JobDef::new("deadline.probe"), serde_json::json!({}), now);
         // A deadline already in the past: the guard must refuse the run.
         job.deadline = now - time::Duration::seconds(1);
         let slow: BoxFuture<'static, Result<(), kelson_foundation::AppError>> = Box::pin(async {
@@ -2023,8 +2037,7 @@ mod tests {
             "the panic is recorded as the job's failure, not lost"
         );
         assert!(
-            !row
-                .last_error
+            !row.last_error
                 .as_deref()
                 .unwrap_or_default()
                 .contains("exploded"),
@@ -2039,17 +2052,20 @@ mod tests {
     async fn a_panicking_handler_does_not_consume_the_next_jobs_attempt() {
         let store = Arc::new(InMemoryJobStore::new());
         let mut defs = JobRegistry::new();
-        defs.register(JobDef::new("p8.panicking")).expect("the def registers");
-        defs.register(JobDef::new("p8.after")).expect("the def registers");
+        defs.register(JobDef::new("p8.panicking"))
+            .expect("the def registers");
+        defs.register(JobDef::new("p8.after"))
+            .expect("the def registers");
         let mut handlers = WorkerRegistry::new();
         handlers
             .register(Arc::new(PanickingHandler))
             .expect("the handler registers");
-        handlers.register(Arc::new(TraceHandler {
-            name: "p8.after".into(),
-            trace: Arc::new(Mutex::new(Vec::new())),
-        }))
-        .expect("the handler registers");
+        handlers
+            .register(Arc::new(TraceHandler {
+                name: "p8.after".into(),
+                trace: Arc::new(Mutex::new(Vec::new())),
+            }))
+            .expect("the handler registers");
         let stacks = JobMiddlewareStacks::new(Arc::new(MemoryUniqueLock::new()));
         let batches = BatchRuntime::new(store.clone());
         let chains = ChainRuntime::new(store.clone());
@@ -2067,7 +2083,10 @@ mod tests {
             .expect("the dispatch pass runs")
             .expect("a job was claimed");
         assert_eq!(first.name, "p8.panicking");
-        let panicking = store.get(first.id).expect("the store reads").expect("the row");
+        let panicking = store
+            .get(first.id)
+            .expect("the store reads")
+            .expect("the row");
         assert!(
             panicking.last_error.is_some(),
             "the panicking job is a failed attempt"
@@ -2135,7 +2154,8 @@ mod tests {
 
         let store = Arc::new(InMemoryJobStore::new());
         let mut defs = JobRegistry::new();
-        defs.register(JobDef::new("soak.job")).expect("def registers");
+        defs.register(JobDef::new("soak.job"))
+            .expect("def registers");
 
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut handlers = WorkerRegistry::new();
@@ -2222,7 +2242,10 @@ mod tests {
 
         // 3. The queue is empty afterwards.
         assert!(
-            store.claim("soak-worker").expect("the claim runs").is_none(),
+            store
+                .claim("soak-worker")
+                .expect("the claim runs")
+                .is_none(),
             "the queue is drained — nothing was left behind"
         );
 

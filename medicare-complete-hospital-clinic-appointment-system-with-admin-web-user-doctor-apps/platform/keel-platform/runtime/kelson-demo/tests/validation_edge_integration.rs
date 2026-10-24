@@ -1,4 +1,4 @@
-﻿//! `kelson` validation edge integration.
+//! `kelson` validation edge integration.
 //! Wave 4 Phase 4 validation edge (19-PARITY database rules + per-field
 //! messages + custom rules): the manifest's `unique`/`exists` grammar runs
 //! against the `model.probes` registry (default column = final field segment,
@@ -68,7 +68,6 @@ rules = []
 custom = "wave4_phase4_edge_rule"
 "#;
 
-
 struct App {
     router: axum::Router,
     state: kelson_demo::routes::AppState,
@@ -93,11 +92,15 @@ fn app() -> App {
         "{}{EXTRA_VALIDATION}",
         include_str!("../../../applications/appointments/module.toml")
     );
-    let manifest = kelson_registry::ModuleManifest::from_toml(&raw).expect("fixture manifest parses");
+    let manifest =
+        kelson_registry::ModuleManifest::from_toml(&raw).expect("fixture manifest parses");
     let graph =
         kelson_registry::PlatformGraph::compile(vec![manifest]).expect("fixture graph compiles");
     let router = kelson_demo::routes::router(state.clone())
-        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &graph))
+        .merge(kelson_demo::graph_routes::graph_router(
+            state.clone(),
+            &graph,
+        ))
         .merge(kelson_demo::auth_routes::router(state.clone()));
     let router = state
         .sessions
@@ -338,7 +341,11 @@ async fn exists_rule_honors_the_explicit_column_token() {
 #[tokio::test]
 async fn exists_rule_against_an_unregistered_model_fails_closed_503() {
     let app = app();
-    let cookie = register(&app, &format!("p4fatal-{}@clinic.test", uuid::Uuid::now_v7())).await;
+    let cookie = register(
+        &app,
+        &format!("p4fatal-{}@clinic.test", uuid::Uuid::now_v7()),
+    )
+    .await;
 
     let res = send(
         &app,
@@ -367,7 +374,11 @@ async fn exists_rule_against_an_unregistered_model_fails_closed_503() {
 #[tokio::test]
 async fn wildcard_fields_expand_per_element() {
     let app = app();
-    let cookie = register(&app, &format!("p4wild-{}@clinic.test", uuid::Uuid::now_v7())).await;
+    let cookie = register(
+        &app,
+        &format!("p4wild-{}@clinic.test", uuid::Uuid::now_v7()),
+    )
+    .await;
 
     let mixed = send(
         &app,
@@ -465,12 +476,7 @@ async fn message_overrides_render_the_attribute_placeholder() {
         ),
     )
     .await;
-    assert_eq!(
-        res.status,
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "{}",
-        res.body
-    );
+    assert_eq!(res.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", res.body);
     assert_field_message(&res, "_code", "the Access code is mandatory");
     let fields = res.fields();
     assert_eq!(
@@ -488,7 +494,11 @@ async fn message_overrides_render_the_attribute_placeholder() {
 #[tokio::test]
 async fn registered_custom_rule_rejects_and_accepts_values() {
     let app = app();
-    let cookie = register(&app, &format!("p4custom-{}@clinic.test", uuid::Uuid::now_v7())).await;
+    let cookie = register(
+        &app,
+        &format!("p4custom-{}@clinic.test", uuid::Uuid::now_v7()),
+    )
+    .await;
 
     let rejected = send(
         &app,

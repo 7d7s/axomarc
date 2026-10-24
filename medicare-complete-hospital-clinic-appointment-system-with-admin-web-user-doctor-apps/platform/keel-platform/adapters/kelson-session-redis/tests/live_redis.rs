@@ -53,7 +53,10 @@ fn a_session_round_trips_through_redis() {
         .expect("the session loads")
         .expect("the session is there");
     assert_eq!(loaded.id, session.id, "the id survives");
-    assert_eq!(loaded.principal, session.principal, "the principal survives");
+    assert_eq!(
+        loaded.principal, session.principal,
+        "the principal survives"
+    );
     assert_eq!(
         loaded.data.get("cart"),
         Some(&serde_json::json!("cart-42")),
@@ -62,7 +65,10 @@ fn a_session_round_trips_through_redis() {
 
     store.delete(&session.id).expect("the session deletes");
     assert!(
-        store.load(&session.id).expect("the load after delete").is_none(),
+        store
+            .load(&session.id)
+            .expect("the load after delete")
+            .is_none(),
         "a deleted session is gone"
     );
 }

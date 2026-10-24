@@ -70,9 +70,9 @@ impl LocalDisk {
     /// driver's control has no reason to contain one, and "resolve the
     /// target" is never the driver's decision.
     fn refuse_link_components(&self, candidate: &Path) -> Result<(), AppError> {
-        let relative = candidate.strip_prefix(&self.root).map_err(|_| {
-            AppError::validation("storage key escapes the disk root")
-        })?;
+        let relative = candidate
+            .strip_prefix(&self.root)
+            .map_err(|_| AppError::validation("storage key escapes the disk root"))?;
         let mut current = self.root.clone();
         for component in relative.components() {
             current.push(component);
@@ -110,9 +110,7 @@ impl LocalDisk {
             match std::fs::canonicalize(&ancestor) {
                 Ok(real) => {
                     if !real.starts_with(&self.root) {
-                        return Err(AppError::validation(
-                            "storage path escapes the disk root",
-                        ));
+                        return Err(AppError::validation("storage path escapes the disk root"));
                     }
                     let mut out = real;
                     for part in tail.iter().rev() {
@@ -148,9 +146,7 @@ impl LocalDisk {
         kelson_storage::validate_dir_prefix(prefix)?;
         let path = self.root.join(prefix.trim_end_matches('/'));
         if !path.starts_with(&self.root) {
-            return Err(AppError::validation(
-                "storage prefix escapes the disk root",
-            ));
+            return Err(AppError::validation("storage prefix escapes the disk root"));
         }
         // **F-24**: the same link rule as an object path ✓.
         self.refuse_link_components(&path)?;
@@ -283,8 +279,9 @@ impl StoragePort for LocalDisk {
         let mut out = Vec::new();
         let mut stack = vec![dir];
         while let Some(dir) = stack.pop() {
-            let entries = std::fs::read_dir(&dir)
-                .map_err(|e| AppError::persistence(format!("cannot list {}: {e}", dir.display())))?;
+            let entries = std::fs::read_dir(&dir).map_err(|e| {
+                AppError::persistence(format!("cannot list {}: {e}", dir.display()))
+            })?;
             for entry in entries {
                 let entry = entry.map_err(|e| {
                     AppError::persistence(format!("cannot list {}: {e}", dir.display()))
@@ -353,9 +350,8 @@ impl StoragePort for LocalDisk {
                 AppError::persistence(format!("cannot create {}: {e}", parent.display()))
             })?;
         }
-        let file = std::fs::File::create(&path).map_err(|e| {
-            AppError::persistence(format!("cannot create {}: {e}", path.display()))
-        })?;
+        let file = std::fs::File::create(&path)
+            .map_err(|e| AppError::persistence(format!("cannot create {}: {e}", path.display())))?;
         Ok(Box::new(FileWriter {
             file,
             path,

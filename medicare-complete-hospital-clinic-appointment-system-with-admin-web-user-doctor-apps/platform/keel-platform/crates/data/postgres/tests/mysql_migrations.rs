@@ -138,7 +138,11 @@ async fn mysql_migration_the_guarded_runner_resumes_after_a_failed_step() {
         .await
         .expect("the resumed run succeeds");
     assert_eq!(verdict.resumed_steps, vec![0], "step 0 is not re-applied");
-    assert_eq!(verdict.applied_steps, vec![1], "the run continues at step 1");
+    assert_eq!(
+        verdict.applied_steps,
+        vec![1],
+        "the run continues at step 1"
+    );
 
     for probe in [name, source] {
         sqlx::raw_sql(&format!("DROP TABLE IF EXISTS {probe}"))
@@ -210,7 +214,11 @@ async fn mysql_migration_the_online_change_adds_a_column_without_rebuilding() {
             .expect("the probe row inserts");
     }
 
-    let change = OnlineChange::new(&name, "ADD COLUMN note VARCHAR(32) NOT NULL DEFAULT ''", "id");
+    let change = OnlineChange::new(
+        &name,
+        "ADD COLUMN note VARCHAR(32) NOT NULL DEFAULT ''",
+        "id",
+    );
     let report = online::apply_online(&pool, &change)
         .await
         .expect("the online change applies");
@@ -260,8 +268,8 @@ async fn mysql_migration_the_online_change_copies_the_rows_and_swaps_atomically(
     // A MODIFY is NOT instant: the copy path must run - the shadow table is
     // built, the rows are copied in chunks, and the names are swapped in
     // ONE statement.
-    let change = OnlineChange::new(&name, "MODIFY COLUMN amount BIGINT UNSIGNED NOT NULL", "id")
-        .chunk(10);
+    let change =
+        OnlineChange::new(&name, "MODIFY COLUMN amount BIGINT UNSIGNED NOT NULL", "id").chunk(10);
     let report = online::apply_online(&pool, &change)
         .await
         .expect("the online change applies");
@@ -290,7 +298,10 @@ async fn mysql_migration_the_online_change_copies_the_rows_and_swaps_atomically(
     .fetch_one(&pool)
     .await
     .expect("the leftovers are counted");
-    assert_eq!(leftovers, 0, "the shadow and the retired table must be gone");
+    assert_eq!(
+        leftovers, 0,
+        "the shadow and the retired table must be gone"
+    );
 
     sqlx::raw_sql(&format!("DROP TABLE {name}"))
         .execute(&pool)
@@ -312,7 +323,10 @@ async fn mysql_migration_a_runner_that_loses_the_lock_waits_and_re_checks() {
 
     // The other runner starts while the lock is held. It cannot take the
     // lock (the 10s fail-closed deadline), so it WAITS for the holder.
-    let mut waiter = Box::pin(kelson_mysql::run_migrations(&pool, std::path::Path::new(".")));
+    let mut waiter = Box::pin(kelson_mysql::run_migrations(
+        &pool,
+        std::path::Path::new("."),
+    ));
     let polled = tokio::time::timeout(std::time::Duration::from_millis(800), &mut waiter).await;
     assert!(
         polled.is_err(),

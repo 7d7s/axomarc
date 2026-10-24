@@ -3,8 +3,8 @@
 //! after every listener succeeded. At-least-once: a failed event simply
 //! stays unpublished and is redelivered on the next pass.
 
-use kelson_foundation::AppError;
 use kelson_event::{BoxFuture, OutboxEvent, OutboxStore};
+use kelson_foundation::AppError;
 use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
@@ -48,9 +48,7 @@ impl OutboxStore for PgOutboxStore {
                         topic: row.try_get("topic").map_err(pg)?,
                         tenant_id: tenant_id.map(kelson_foundation::TenantId::from_uuid),
                         payload: row.try_get("payload").map_err(pg)?,
-                        idempotency_key: kelson_event::IdempotencyKey(
-                            key.unwrap_or_default(),
-                        ),
+                        idempotency_key: kelson_event::IdempotencyKey(key.unwrap_or_default()),
                         published: row.try_get("published").map_err(pg)?,
                         created_at: row.try_get("created_at").map_err(pg)?,
                     })

@@ -48,7 +48,9 @@ pub enum BuiltinMw {
     /// HMAC over the request path+query before auth runs, and consume the
     /// `once` marker of a one-time signed URL through the token store.
     Signed,
-    Throttle { group: String },
+    Throttle {
+        group: String,
+    },
 }
 
 /// Parse a builtin id: "auth" | "verified" | "confirmed" | "signed" |
@@ -127,11 +129,7 @@ impl MiddlewareCatalog {
         let mut groups = BTreeMap::new();
         groups.insert(
             "api".into(),
-            vec![
-                "throttle:api".into(),
-                "auth".into(),
-                "verified".into(),
-            ],
+            vec!["throttle:api".into(), "auth".into(), "verified".into()],
         );
         let mut throttle = BTreeMap::new();
         throttle.insert("api".into(), ThrottleGroupConfig::default());
@@ -150,8 +148,7 @@ impl MiddlewareCatalog {
         if !path.exists() {
             return Ok(Self::builtin());
         }
-        let raw = std::fs::read_to_string(&path)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let raw = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         Self::from_toml(&raw).map_err(|e| format!("{}: {e}", path.display()))
     }
 
@@ -339,13 +336,18 @@ mod tests {
         assert_eq!(
             chain,
             vec![
-                BuiltinMw::Throttle { group: "api".into() },
+                BuiltinMw::Throttle {
+                    group: "api".into()
+                },
                 BuiltinMw::Auth,
                 BuiltinMw::Verified,
             ]
         );
         // Non-tenant planes get no implicit chain.
-        assert!(catalog.resolve_chain(false, false, &[], &[]).unwrap().is_empty());
+        assert!(catalog
+            .resolve_chain(false, false, &[], &[])
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -354,7 +356,9 @@ mod tests {
         let chain = catalog.resolve_chain(true, true, &[], &[]).unwrap();
         assert_eq!(
             chain,
-            vec![BuiltinMw::Throttle { group: "api".into() }]
+            vec![BuiltinMw::Throttle {
+                group: "api".into()
+            }]
         );
     }
 
@@ -373,11 +377,15 @@ mod tests {
         assert_eq!(
             chain,
             vec![
-                BuiltinMw::Throttle { group: "api".into() },
+                BuiltinMw::Throttle {
+                    group: "api".into()
+                },
                 BuiltinMw::Auth,
                 BuiltinMw::Verified,
                 BuiltinMw::Auth,
-                BuiltinMw::Throttle { group: "ops".into() },
+                BuiltinMw::Throttle {
+                    group: "ops".into()
+                },
                 BuiltinMw::Verified,
             ]
         );
@@ -408,7 +416,9 @@ mod tests {
         assert_eq!(
             chain,
             vec![
-                BuiltinMw::Throttle { group: "api".into() },
+                BuiltinMw::Throttle {
+                    group: "api".into()
+                },
                 BuiltinMw::Auth,
                 BuiltinMw::Verified,
                 BuiltinMw::Confirmed,
@@ -457,11 +467,7 @@ refill_per_sec = 0.5
         assert_eq!(catalog.throttle_config("heavy").capacity, 5);
 
         // Group referencing an unknown alias fails the load (fail closed).
-        std::fs::write(
-            dir.join("middleware.toml"),
-            "[groups]\napi = [\"ghost\"]\n",
-        )
-        .unwrap();
+        std::fs::write(dir.join("middleware.toml"), "[groups]\napi = [\"ghost\"]\n").unwrap();
         assert!(MiddlewareCatalog::load(&dir).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -476,7 +482,9 @@ refill_per_sec = 0.5
         assert_eq!(
             chain,
             vec![
-                BuiltinMw::Throttle { group: "api".into() },
+                BuiltinMw::Throttle {
+                    group: "api".into()
+                },
                 BuiltinMw::Auth,
             ]
         );

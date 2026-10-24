@@ -181,13 +181,12 @@ pub async fn ops_dashboard(
     Query(query): Query<OpsQuery>,
 ) -> Response {
     if !state.dashboard_enabled {
-        let err =
-            kelson_foundation::AppError::not_found("dashboard disabled (enable flag app.dashboard)");
+        let err = kelson_foundation::AppError::not_found(
+            "dashboard disabled (enable flag app.dashboard)",
+        );
         return state.error_json(&err).into_response();
     }
-    if let Err(err) =
-        crate::graph_routes::resolve_identity(&state, &headers, session.as_deref())
-    {
+    if let Err(err) = crate::graph_routes::resolve_identity(&state, &headers, session.as_deref()) {
         return state.error_json(&err).into_response();
     }
     let body = json!({
@@ -213,10 +212,12 @@ pub async fn ops_dashboard(
     );
     let mut context = body.clone();
     kelson_foundation::ViewContext::localized(&state.messages, &locale)
-        .with_head(kelson_foundation::HeadBuilder::new()
-            .title("Operations Dashboard")
-            .meta("description", "System operations overview")
-            .build())
+        .with_head(
+            kelson_foundation::HeadBuilder::new()
+                .title("Operations Dashboard")
+                .meta("description", "System operations overview")
+                .build(),
+        )
         .apply(&mut context);
     match state.views.as_ref() {
         Some(engine) if engine.exists(OPS_VIEW) => match engine.render(OPS_VIEW, context) {
@@ -312,10 +313,17 @@ fn jobs_section(state: &AppState) -> Value {
 /// (`<root>/public` -> `<root>`); registration is programmatic (docs/13),
 /// so an absent registry reports that honestly instead of a bare empty list.
 fn schedule_section(state: &AppState) -> Value {
-    let state_half = match state.static_files.as_ref().and_then(|sf| sf.root().parent()) {
+    let state_half = match state
+        .static_files
+        .as_ref()
+        .and_then(|sf| sf.root().parent())
+    {
         None => note("schedule state unavailable (no storage root)"),
         Some(root) => match kelson_scheduling::load_state_doc(root) {
-            Err(err) => note(format!("schedule state unavailable ({})", err.public_message)),
+            Err(err) => note(format!(
+                "schedule state unavailable ({})",
+                err.public_message
+            )),
             Ok(doc) if doc.last_fired.is_empty() && doc.failures.is_empty() => json!({
                 "ok": true,
                 "note": "no schedule state yet",
@@ -523,18 +531,14 @@ mod tests {
             "appointments.list"
         );
         // No registry + no state file yet: both schedule panes say so.
-        assert!(
-            sections["schedule"]["state"]["note"]
-                .as_str()
-                .unwrap()
-                .contains("no schedule state yet")
-        );
-        assert!(
-            sections["schedule"]["registry"]["note"]
-                .as_str()
-                .unwrap()
-                .contains("no schedules registered")
-        );
+        assert!(sections["schedule"]["state"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("no schedule state yet"));
+        assert!(sections["schedule"]["registry"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("no schedules registered"));
 
         // The shipped view renders the page with the refresh contract.
         let engine = kelson_views::ViewsEngine::new(kelson_views::ViewsConfig {
@@ -574,27 +578,21 @@ mod tests {
 
         let sections = collect_ops_sections(&state, None);
         assert_eq!(sections["queue"]["ok"], false);
-        assert!(
-            sections["queue"]["note"]
-                .as_str()
-                .unwrap()
-                .contains("degraded boot")
-        );
+        assert!(sections["queue"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("degraded boot"));
         assert_eq!(sections["jobs"]["ok"], false);
         assert_eq!(sections["inspect"]["ok"], false);
         assert_eq!(sections["inspect"]["note"], "trace store unavailable");
-        assert!(
-            sections["schedule"]["state"]["note"]
-                .as_str()
-                .unwrap()
-                .contains("no schedule state yet")
-        );
-        assert!(
-            sections["schedule"]["registry"]["note"]
-                .as_str()
-                .unwrap()
-                .contains("no schedules registered")
-        );
+        assert!(sections["schedule"]["state"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("no schedule state yet"));
+        assert!(sections["schedule"]["registry"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("no schedules registered"));
 
         // The page still renders — degradation is inline, never a 500.
         let html = render_ops(sections);
@@ -642,10 +640,8 @@ mod tests {
     /// `@lang` silently degraded here.
     #[tokio::test]
     async fn the_dashboard_carries_the_locale_and_the_messages() {
-        let dir = std::env::temp_dir().join(format!(
-            "kelson-demo-ops-locale-{}",
-            uuid::Uuid::now_v7()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("kelson-demo-ops-locale-{}", uuid::Uuid::now_v7()));
         let views = dir.join("views").join("dashboard");
         std::fs::create_dir_all(&views).expect("dashboard fixture dir");
         std::fs::write(
@@ -687,12 +683,10 @@ mod tests {
             .expect("body reads");
         let html = String::from_utf8_lossy(&body);
         assert!(html.contains("class=\"locale\""), "locale absent: {html}");
-        assert!(
-            html.contains(">en<"),
-            "the locale reaches the view: {html}"
-        );
+        assert!(html.contains(">en<"), "the locale reaches the view: {html}");
         assert!(
             html.contains("class=\"lang\""),
             "the message map reaches the view: {html}"
         );
-    }}
+    }
+}

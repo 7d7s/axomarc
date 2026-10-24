@@ -15,9 +15,23 @@
 //! request.
 
 use crate::ast::{ForSpec, Node};
-use crate::engine::{ViewError, VIEW_RENDER};
-use crate::expr::{Cond, Operand, Segment};
+use crate::engine::ViewError;
+use crate::expr::{Cond, Expr, Operand, Segment};
 use crate::viewmodel::{governing_field, key_path, FieldSchema, VM_NAMESPACE};
+
+/// E1 failure code: a `vm.*` path the governing view model does not declare.
+pub const LINT_UNDECLARED_PATH: &str = "MVVC-LINT-UNDECLARED-PATH";
+
+/// E1 failure code (C07): a bound template reads a root context key outside
+/// `vm.*` — a typo outside the namespace must not render blank.
+pub const LINT_ROOT_READ: &str = "MVVC-LINT-ROOT-READ";
+
+/// The context keys the framework reserves (contract §2, C09). A bound
+/// template may read these from the root; every other root read is a
+/// violation.
+pub const RESERVED_CONTEXT_KEYS: &[&str] = &[
+    "_errors", "_locale", "_lang", "_auth", "_csrf", "_head", "_tenant",
+];
 
 /// The binder declaration a template carries.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,20 +73,176 @@ pub fn vm_paths(nodes: &[Node]) -> Vec<String> {
 /// The rule is the render's rule minus the value: a path the model does
 /// not declare is refused; a path nested under a declared object or list
 /// is allowed.
-pub fn check_paths(
-    schema: &[FieldSchema],
-    paths: &[String],
-    view: &str,
-) -> Result<(), ViewError> {
+pub fn check_paths(schema: &[FieldSchema], paths: &[String], view: &str) -> Result<(), ViewError> {
     for path in paths {
         if governing_field(schema, path).is_none() {
             return Err(ViewError::new(
-                VIEW_RENDER,
+                LINT_UNDECLARED_PATH,
                 format!("the view model for {view:?} does not declare the path {path:?}"),
             ));
         }
     }
     Ok(())
+}
+
+/// Every root read a bound template makes outside `vm.*`, the reserved
+/// context keys and its own loop bindings (C07).
+///
+/// Loop variables are tracked structurally rather than by name matching at
+/// the leaf, so `@foreach(rows as row){{ row.name }}` reads no root while
+/// `{{ row.name }}` outside the loop does.
+pub fn root_reads(nodes: &[Node]) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_root_reads(nodes, &mut Vec::new(), &mut out);
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Refuse each root read outside the namespace (C07).
+pub fn check_root_reads(paths: &[String], view: &str) -> Result<(), ViewError> {
+    let Some(path) = paths.first() else {
+        return Ok(());
+    };
+    Err(ViewError::new(
+        LINT_ROOT_READ,
+        format!(
+            "the bound view {view:?} reads the root context path {path:?}: only `vm.*` \
+             and the reserved keys are readable in a @vm template"
+        ),
+    ))
+}
+
+fn collect_root_reads(nodes: &[Node], locals: &mut Vec<String>, out: &mut Vec<String>) {
+    for node in nodes {
+        match node {
+            Node::Echo(expr) | Node::Raw(expr) => push_root_expr(expr, locals, out),
+            Node::Js { expr } => push_root_expr(expr, locals, out),
+            Node::Isset { path, .. } => push_root_path(path, locals, out),
+            Node::Empty { operand, .. } => push_root_operand(operand, locals, out),
+            Node::If { branches, .. } => {
+                for (cond, _) in branches {
+                    push_root_cond(cond, locals, out);
+                }
+            }
+            Node::AttrIf { cond, .. } => push_root_cond(cond, locals, out),
+            Node::Class { entries } | Node::Style { entries } => {
+                for entry in entries {
+                    if let Some(cond) = &entry.cond {
+                        push_root_cond(cond, locals, out);
+                    }
+                }
+            }
+            Node::ForEach {
+                vars,
+                source,
+                body,
+                empty,
+            } => {
+                push_root_operand(source, locals, out);
+                let mut inner = locals.clone();
+                inner.push(vars.item.clone());
+                if let Some(key) = &vars.key {
+                    inner.push(key.clone());
+                }
+                collect_root_reads(body, &mut inner, out);
+                if let Some(empty) = empty {
+                    collect_root_reads(empty, locals, out);
+                }
+                continue;
+            }
+            Node::For { spec, body } => {
+                let mut inner = locals.clone();
+                match spec {
+                    ForSpec::Range { var, from, to } => {
+                        push_root_operand(from, locals, out);
+                        push_root_operand(to, locals, out);
+                        inner.push(var.clone());
+                    }
+                    ForSpec::CStyle {
+                        var, init, bound, ..
+                    } => {
+                        push_root_operand(init, locals, out);
+                        push_root_operand(bound, locals, out);
+                        inner.push(var.clone());
+                    }
+                }
+                collect_root_reads(body, &mut inner, out);
+                continue;
+            }
+            Node::Include { data, when, .. } => {
+                for (_, operand) in data {
+                    push_root_operand(operand, locals, out);
+                }
+                if let Some(cond) = when {
+                    push_root_cond(cond, locals, out);
+                }
+            }
+            Node::Component { data, .. } => {
+                for (_, operand) in data {
+                    push_root_operand(operand, locals, out);
+                }
+            }
+            _ => {}
+        }
+        for body in bodies(node) {
+            collect_root_reads(body, locals, out);
+        }
+    }
+}
+
+fn push_root_expr(expr: &Expr, locals: &[String], out: &mut Vec<String>) {
+    if expr.literal.is_some() {
+        return;
+    }
+    push_root_path(&expr.path, locals, out);
+}
+
+fn push_root_path(path: &[Segment], locals: &[String], out: &mut Vec<String>) {
+    let Some(Segment::Key(first)) = path.first() else {
+        return;
+    };
+    if first == VM_NAMESPACE
+        || RESERVED_CONTEXT_KEYS.contains(&first.as_str())
+        || locals.iter().any(|local| local == first)
+    {
+        return;
+    }
+    // A bare non-namespaced identifier is a root read; keep the dotted form
+    // so the diagnostic names what the template actually asked for.
+    let dotted = key_path(&path[1..]);
+    out.push(if dotted.is_empty() {
+        first.clone()
+    } else {
+        format!("{first}.{dotted}")
+    });
+}
+
+fn push_root_operand(op: &Operand, locals: &[String], out: &mut Vec<String>) {
+    if let Operand::Path(path) = op {
+        push_root_path(path, locals, out);
+    }
+}
+
+fn push_root_cond(cond: &Cond, locals: &[String], out: &mut Vec<String>) {
+    match cond {
+        Cond::Or(parts) | Cond::And(parts) => {
+            for part in parts {
+                push_root_cond(part, locals, out);
+            }
+        }
+        Cond::Not(inner) => push_root_cond(inner, locals, out),
+        Cond::Cmp { left, right, .. } => {
+            push_root_operand(left, locals, out);
+            push_root_operand(right, locals, out);
+        }
+        Cond::Truthy(op) => push_root_operand(op, locals, out),
+        Cond::Custom { args, .. } => {
+            for arg in args {
+                push_root_operand(arg, locals, out);
+            }
+        }
+    }
 }
 
 /// The node bodies a node carries (the templates nested inside it).
@@ -238,7 +408,8 @@ mod tests {
 
     #[test]
     fn the_directive_is_found_in_a_nested_body() {
-        let declaration = vm_declaration(&nodes("@if(x)@vm@endif")).expect("the directive is found");
+        let declaration =
+            vm_declaration(&nodes("@if(x)@vm@endif")).expect("the directive is found");
         assert_eq!(declaration.view, None);
         let named = vm_declaration(&nodes("@if(x)@vm(\"other.view\")@endif")).expect("found");
         assert_eq!(named.view, Some("other.view".to_string()));
@@ -267,7 +438,40 @@ mod tests {
         assert!(check_paths(schema, &["title".to_string()], "page").is_ok());
         let error = check_paths(schema, &["ghost".to_string()], "page")
             .expect_err("an undeclared path is refused");
-        assert_eq!(error.code, VIEW_RENDER);
+        assert_eq!(error.code, LINT_UNDECLARED_PATH);
         assert!(error.message.contains("ghost"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_bound_template_reads_no_root_outside_the_reserved_keys() {
+        let reads = root_reads(&nodes(
+            "@vm{{ vm.title }}{{ _lang.hello }}{{ _csrf }}@guest{{ _auth.user }}@endguest",
+        ));
+        assert!(reads.is_empty(), "{reads:?}");
+    }
+
+    #[test]
+    fn a_root_read_outside_the_namespace_is_found_and_refused() {
+        let reads = root_reads(&nodes("@vm{{ user.name }}@if(errors.any){{ vm.x }}@endif"));
+        assert_eq!(reads, vec!["errors.any", "user.name"]);
+        let error = check_root_reads(&reads, "page").expect_err("a root read is refused");
+        assert_eq!(error.code, LINT_ROOT_READ);
+        assert!(error.message.contains("errors.any"), "{}", error.message);
+    }
+
+    #[test]
+    fn loop_bindings_are_local_not_root_reads() {
+        let reads = root_reads(&nodes(
+            "@vm@foreach(vm.rows as i => row){{ row.name }}{{ i }}@endforeach@for(j in 0..3){{ j }}@endfor",
+        ));
+        assert!(reads.is_empty(), "{reads:?}");
+    }
+
+    #[test]
+    fn a_loop_variable_is_not_local_outside_its_loop() {
+        let reads = root_reads(&nodes(
+            "@vm@foreach(vm.rows as row){{ row.name }}@endforeach{{ row.name }}",
+        ));
+        assert_eq!(reads, vec!["row.name"]);
     }
 }

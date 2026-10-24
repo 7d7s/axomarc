@@ -34,11 +34,13 @@ pub fn router(state: AppState) -> Router {
 }
 
 /// Session + operator capability gate (module lifecycle control is never public — same shape as the telemetry incident gate).
-fn authorize(state: &AppState, principal: PrincipalId, tenant: Option<TenantId>) -> Result<(), AppError> {
+fn authorize(
+    state: &AppState,
+    principal: PrincipalId,
+    tenant: Option<TenantId>,
+) -> Result<(), AppError> {
     let Some(tenant) = tenant else {
-        return Err(AppError::denied(
-            "module control requires a tenant session",
-        ));
+        return Err(AppError::denied("module control requires a tenant session"));
     };
     let Some(snapshot) = state.policy.snapshot(principal, tenant) else {
         return Err(AppError::denied("no active access snapshot"));
@@ -159,14 +161,11 @@ async fn activate(
     // Session cookie first, then bearer PAT — the same resolution every other
     // non-graph edge uses, so an operator script holding a token reaches the
     // module surface the way the console does.
-    let (principal, tenant) = match crate::graph_routes::resolve_identity(
-        &state,
-        &headers,
-        session.as_deref(),
-    ) {
-        Ok(resolved) => resolved,
-        Err(err) => return state.error_response(&err, &headers, None),
-    };
+    let (principal, tenant) =
+        match crate::graph_routes::resolve_identity(&state, &headers, session.as_deref()) {
+            Ok(resolved) => resolved,
+            Err(err) => return state.error_response(&err, &headers, None),
+        };
     if let Err(err) = authorize(&state, principal, tenant) {
         return state.error_response(&err, &headers, None);
     }

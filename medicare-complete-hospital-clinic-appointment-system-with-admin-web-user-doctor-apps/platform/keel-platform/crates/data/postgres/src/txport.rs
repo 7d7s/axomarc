@@ -71,9 +71,7 @@ impl TxHandle for PgTxHandle {
                 .tx
                 .take()
                 .ok_or_else(|| AppError::internal("tx already completed"))?;
-            tx.commit()
-                .await
-                .map_err(|e| tx_error("commit", &e))
+            tx.commit().await.map_err(|e| tx_error("commit", &e))
         })
     }
 
@@ -83,9 +81,7 @@ impl TxHandle for PgTxHandle {
                 .tx
                 .take()
                 .ok_or_else(|| AppError::internal("tx already completed"))?;
-            tx.rollback()
-                .await
-                .map_err(|e| tx_error("rollback", &e))
+            tx.rollback().await.map_err(|e| tx_error("rollback", &e))
         })
     }
 }
@@ -96,11 +92,7 @@ impl TransactionPort for PostgresTransactions {
         options: &'a TxOptions,
     ) -> BoxFuture<'a, Result<Box<dyn TxHandle>, AppError>> {
         Box::pin(async move {
-            let mut tx = self
-                .pool
-                .begin()
-                .await
-                .map_err(|e| tx_error("begin", &e))?;
+            let mut tx = self.pool.begin().await.map_err(|e| tx_error("begin", &e))?;
 
             // Isolation must be set before the first statement of the transaction.
             match options.isolation {

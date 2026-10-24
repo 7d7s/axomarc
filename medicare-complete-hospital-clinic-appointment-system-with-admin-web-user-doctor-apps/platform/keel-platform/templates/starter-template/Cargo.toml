@@ -17,6 +17,7 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+kelson-identity = { workspace = true }
 kelson-policy = { workspace = true }
 kelson-registry = { workspace = true }
 tokio = { workspace = true }

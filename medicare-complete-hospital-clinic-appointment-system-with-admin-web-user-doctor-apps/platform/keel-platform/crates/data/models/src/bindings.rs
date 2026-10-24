@@ -26,7 +26,11 @@ pub trait RouteBindingResolver: Send + Sync {
     /// resolves soft-deleted rows too. The default FAILS CLOSED — it
     /// delegates to [`Self::resolve`], so a resolver that does not opt in
     /// (e.g. one wired to a hard-delete store) never exposes trashed rows.
-    fn resolve_trashed(&self, tenant: Option<TenantId>, id: Uuid) -> Result<Option<Record>, AppError> {
+    fn resolve_trashed(
+        &self,
+        tenant: Option<TenantId>,
+        id: Uuid,
+    ) -> Result<Option<Record>, AppError> {
         self.resolve(tenant, id)
     }
 }

@@ -176,10 +176,7 @@ pub trait SessionStore: Send + Sync {
     /// in after the owner recovers the account.
     ///
     /// Stores without enumeration return 0 (the same posture as `sweep`).
-    fn delete_principal_sessions(
-        &self,
-        _principal: PrincipalId,
-    ) -> Result<usize, AppError> {
+    fn delete_principal_sessions(&self, _principal: PrincipalId) -> Result<usize, AppError> {
         Ok(0)
     }
 }
@@ -222,10 +219,7 @@ impl SessionStore for InMemorySessionStore {
         self.inner.read().unwrap().len()
     }
 
-    fn delete_principal_sessions(
-        &self,
-        principal: PrincipalId,
-    ) -> Result<usize, AppError> {
+    fn delete_principal_sessions(&self, principal: PrincipalId) -> Result<usize, AppError> {
         let mut map = self.inner.write().unwrap();
         let doomed: Vec<SessionId> = map
             .iter()

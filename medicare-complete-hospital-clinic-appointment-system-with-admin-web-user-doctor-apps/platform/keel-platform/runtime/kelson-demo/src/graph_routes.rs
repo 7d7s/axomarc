@@ -32,16 +32,16 @@ use axum::response::IntoResponse;
 use axum::routing::{MethodFilter, MethodRouter};
 use axum::{Json, Router};
 use kelson_context::{ExecutionContext, PrincipalContext, ScopeSnapshot, TenantContext};
+use kelson_execution::IdempotencyKey;
 use kelson_foundation::{
     AuthorizationRevision, ExecutionProfileKind, OperationId, PrincipalId, SecurityPlane, TenantId,
 };
-use kelson_execution::IdempotencyKey;
 use kelson_http::{
     AuthVia, ChainRuntime, EdgeAuthPort, Envelope, Guard, ResolvedPrincipal, ResolvedSession,
 };
 use kelson_registry::{
-    BindingSpec, CachePolicy, CacheSpec, ModuleManifest, PlatformGraph, RoutePlan, RouteSpec,
-    ResponseKind, RoutePlane,
+    BindingSpec, CachePolicy, CacheSpec, ModuleManifest, PlatformGraph, ResponseKind, RoutePlan,
+    RoutePlane, RouteSpec,
 };
 use time::OffsetDateTime;
 
@@ -132,6 +132,10 @@ pub struct RouteDispatch {
     pub response: ResponseKind,
     /// Dot-path view name for `response = "html"` routes (`pages.welcome`).
     pub view: Option<String>,
+    /// The view model `view` is bound to (MVA-005): set means the page
+    /// renders schema-checked through the registered binding, absent means
+    /// the plain unbound render of Wave 2.
+    pub view_model: Option<String>,
     /// True for GET-registered routes: they carry ETags and answer
     /// conditional GETs with 304 (Wave 2 HTTP caching).
     pub is_get: bool,
@@ -181,9 +185,7 @@ fn declared_methods(method: &str) -> Option<Vec<&'static str>> {
         "DELETE" => vec!["DELETE"],
         "HEAD" => vec!["HEAD"],
         "OPTIONS" => vec!["OPTIONS"],
-        "ANY" => vec![
-            "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS",
-        ],
+        "ANY" => vec!["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         _ => return None,
     })
 }
@@ -232,10 +234,17 @@ pub struct RouteEntry {
 }
 
 /// Find the cached dispatch plan for one manifest route (route-cache hit).
-fn cached_plan<'a>(plans: &'a [RoutePlan], module: &str, spec: &RouteSpec) -> Option<&'a RoutePlan> {
+fn cached_plan<'a>(
+    plans: &'a [RoutePlan],
+    module: &str,
+    spec: &RouteSpec,
+) -> Option<&'a RoutePlan> {
     let method = spec.method.to_ascii_uppercase();
     plans.iter().find(|p| {
-        p.module == module && p.method == method && p.path == spec.path && p.operation == spec.operation
+        p.module == module
+            && p.method == method
+            && p.path == spec.path
+            && p.operation == spec.operation
     })
 }
 
@@ -306,6 +315,7 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
     let edge_auth: Arc<dyn EdgeAuthPort> = Arc::new(EdgeAuth {
         tokens: state.tokens.clone(),
         principals: state.principals.clone(),
+        memberships: state.memberships.clone(),
         jwt: state.jwt.clone(),
         policy: state.policy.clone(),
         granted_capabilities: state.granted_capabilities.clone(),
@@ -352,7 +362,11 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
                 tracing::warn!(module = module.name(), method = %spec.method, path = %spec.path, "graph route skipped: unsupported method");
                 continue;
             };
-            let operation_id = if spec.from_route_file { spec.operation.clone() } else { format!("{}.{}", module.name(), spec.operation) };
+            let operation_id = if spec.from_route_file {
+                spec.operation.clone()
+            } else {
+                format!("{}.{}", module.name(), spec.operation)
+            };
             let Ok(operation) = OperationId::parse(&operation_id) else {
                 tracing::warn!(operation = %operation_id, "graph route skipped: invalid operation id");
                 continue;
@@ -387,9 +401,21 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
                 Some(plan) => plan.validation.clone(),
                 None => {
                     // A route-file route carries no rules of its own; inherit the declaring module's.
-                    let owner = spec.from_route_file.then(|| graph.operations.get(&operation_id)).flatten().and_then(|o| graph.modules.iter().find(|m| m.name() == o.as_str()));
-                    owner.into_iter().chain(std::iter::once(module)).flat_map(|m| m.validation.iter())
-                        .filter(|s| s.operation == spec.operation || spec.operation.ends_with(&format!(".{}", s.operation))).cloned().collect()
+                    let owner = spec
+                        .from_route_file
+                        .then(|| graph.operations.get(&operation_id))
+                        .flatten()
+                        .and_then(|o| graph.modules.iter().find(|m| m.name() == o.as_str()));
+                    owner
+                        .into_iter()
+                        .chain(std::iter::once(module))
+                        .flat_map(|m| m.validation.iter())
+                        .filter(|s| {
+                            s.operation == spec.operation
+                                || spec.operation.ends_with(&format!(".{}", s.operation))
+                        })
+                        .cloned()
+                        .collect()
                 }
             };
             let validator = match compile_validator(&validation_entries) {
@@ -407,11 +433,23 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
                 .map(|plan| plan.constraints.clone())
                 .unwrap_or_else(|| spec.resolved_constraints.clone());
 
-            let profile = module.capabilities.get(&spec.operation).map(|c| c.profile)
-                .unwrap_or_else(|| graph.operations.get(&operation_id)
-                    .and_then(|owner| graph.modules.iter().find(|m| m.name() == owner.as_str()))
-                    .and_then(|m| spec.operation.strip_prefix(&format!("{}.", m.name())).and_then(|cap| m.capabilities.get(cap)))
-                    .map(|c| c.profile).unwrap_or(ExecutionProfileKind::Command));
+            let profile = module
+                .capabilities
+                .get(&spec.operation)
+                .map(|c| c.profile)
+                .unwrap_or_else(|| {
+                    graph
+                        .operations
+                        .get(&operation_id)
+                        .and_then(|owner| graph.modules.iter().find(|m| m.name() == owner.as_str()))
+                        .and_then(|m| {
+                            spec.operation
+                                .strip_prefix(&format!("{}.", m.name()))
+                                .and_then(|cap| m.capabilities.get(cap))
+                        })
+                        .map(|c| c.profile)
+                        .unwrap_or(ExecutionProfileKind::Command)
+                });
             let dispatch = Arc::new(RouteDispatch {
                 operation,
                 profile,
@@ -434,6 +472,7 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
                     .unwrap_or_default(),
                 response: spec.response,
                 view: spec.view.clone(),
+                view_model: spec.view_model.clone(),
                 is_get: spec.method.eq_ignore_ascii_case("get"),
                 cache: spec.cache,
             });
@@ -510,7 +549,14 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
                     kelson_http::security_headers_fn,
                 ));
             }
-            if spec.fallback { if fallback_route.is_some() { panic!("module {}: route {} {} is a second fallback route; the merged edge router attaches at most one", module.name(), spec.method, spec.path); } fallback_route = Some(route); } else { router = router.route(&path, route); }
+            if spec.fallback {
+                if fallback_route.is_some() {
+                    panic!("module {}: route {} {} is a second fallback route; the merged edge router attaches at most one", module.name(), spec.method, spec.path);
+                }
+                fallback_route = Some(route);
+            } else {
+                router = router.route(&path, route);
+            }
             tracing::info!(method = %spec.method, path = %spec.path, operation = %operation_id, "graph route registered");
         }
     }
@@ -544,7 +590,11 @@ pub fn graph_router(state: AppState, graph: &PlatformGraph) -> Router {
         kelson_foundation::codes::MODULE_NOT_SERVING,
         StatusCode::SERVICE_UNAVAILABLE,
     );
-    if let Some(fb) = fallback_route { router.fallback_service(fb) } else { router }
+    if let Some(fb) = fallback_route {
+        router.fallback_service(fb)
+    } else {
+        router
+    }
 }
 
 // ------------------------------------------- Wave 2 routing edge (19-PARITY)
@@ -617,8 +667,7 @@ impl RouteGate {
         Self {
             dispatch,
             domain: non_empty(spec.domain.as_deref()),
-            subdomain: non_empty(spec.subdomain.as_deref())
-                .map(|label| label.to_ascii_lowercase()),
+            subdomain: non_empty(spec.subdomain.as_deref()).map(|label| label.to_ascii_lowercase()),
             constraints,
         }
     }
@@ -635,7 +684,10 @@ fn non_empty(value: Option<&str>) -> Option<String> {
 /// authority may come as a comma list when a proxy appended its own, so only
 /// the first entry counts; a missing header answers empty (no route matches).
 fn host_label(headers: &HeaderMap) -> String {
-    let Some(raw) = headers.get(header::HOST).and_then(|value| value.to_str().ok()) else {
+    let Some(raw) = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+    else {
         return String::new();
     };
     let authority = raw.split(',').next().unwrap_or(raw).trim();
@@ -726,7 +778,10 @@ async fn route_gate(
                     // An already-matched route always carries its captures;
                     // if they cannot be read, refuse rather than dispatch a
                     // constraint nobody checked.
-                    tracing::warn!(?error, "route captures unreadable; treating as a route miss");
+                    tracing::warn!(
+                        ?error,
+                        "route captures unreadable; treating as a route miss"
+                    );
                     return route_miss(&state, &gate, &parts.headers, parts.uri.path());
                 }
             };
@@ -797,6 +852,7 @@ pub(crate) fn not_found_response(
         route_plane: RoutePlane::Web,
         response: ResponseKind::Json,
         view: None,
+        view_model: None,
         is_get: true,
         cache: None,
     };
@@ -818,7 +874,11 @@ pub fn route_inventory(graph: &PlatformGraph) -> Vec<RouteEntry> {
                 module: module.name().to_string(),
                 method: spec.method.to_ascii_uppercase(),
                 path: spec.path.clone(),
-                operation: if spec.from_route_file { spec.operation.clone() } else { format!("{}.{}", module.name(), spec.operation) },
+                operation: if spec.from_route_file {
+                    spec.operation.clone()
+                } else {
+                    format!("{}.{}", module.name(), spec.operation)
+                },
                 capability: spec.capability.clone(),
             });
         }
@@ -837,6 +897,7 @@ pub fn route_inventory(graph: &PlatformGraph) -> Vec<RouteEntry> {
 pub(crate) struct EdgeAuth {
     pub(crate) tokens: Arc<kelson_tokens::TokenService>,
     pub(crate) principals: Arc<dyn kelson_identity::PrincipalStore>,
+    pub(crate) memberships: Arc<dyn kelson_identity::MembershipStore>,
     pub(crate) jwt: Option<Arc<kelson_http::JwtHs256>>,
     pub(crate) policy: Arc<kelson_policy::PolicyEngine>,
     pub(crate) granted_capabilities: Vec<String>,
@@ -854,19 +915,28 @@ impl EdgeAuthPort for EdgeAuth {
                 // (F-7). An empty list means no narrowing was granted,
                 // so the credential acts as the principal (the old
                 // behaviour) rather than as nothing.
-                abilities: (!auth_token.abilities.is_empty())
-                    .then(|| auth_token.abilities.clone()),
+                abilities: (!auth_token.abilities.is_empty()).then(|| auth_token.abilities.clone()),
             }),
             Err(_) => {
                 let (principal, tenant) = resolve_jwt_token(self.jwt.as_deref(), token)?;
                 let tenant = tenant.or(self.default_tenant_id);
                 if let Some(tenant) = tenant {
-                    crate::auth_routes::install_snapshot_fields(
+                    // MNC-001: a stateless JWT hydrates a snapshot ONLY with
+                    // an ACTIVE membership edge — the same entry right the
+                    // session login demands. The installer reads the edge
+                    // from the store; no edge, no resolution (the caller
+                    // answers its uniform 401 like any bad token).
+                    if crate::auth_routes::install_snapshot_fields(
                         &self.policy,
                         &self.granted_capabilities,
+                        self.memberships.as_ref(),
                         principal,
                         tenant,
-                    );
+                    )
+                    .is_err()
+                    {
+                        return None;
+                    }
                 }
                 Some(ResolvedPrincipal {
                     principal,
@@ -1032,9 +1102,7 @@ impl kelson_http::BearerVerifier for DemoBearerVerifier {
 /// LF-049's separation made concrete — the guard answers "who is this
 /// request and how was it proven" (and with which **abilities** ✓), while the
 /// provider (the identity stores) answers "what is this principal" ✓.
-pub(crate) fn guard(
-    state: &AppState,
-) -> kelson_http::BearerGuard<DemoBearerVerifier> {
+pub(crate) fn guard(state: &AppState) -> kelson_http::BearerGuard<DemoBearerVerifier> {
     kelson_http::BearerGuard::new(
         Arc::new(DemoBearerVerifier {
             tokens: state.tokens.clone(),
@@ -1050,9 +1118,7 @@ pub(crate) const TOKEN_COOKIE: &str = "kelson_token";
 /// The host's **cookie guard**: a personal access token in a cookie (the SPA
 /// mode). It is NOT stateless bearer auth — a cookie is sent cross-site by a
 /// browser, so the CSRF double-submit proof still applies ✓.
-pub(crate) fn cookie_guard(
-    state: &AppState,
-) -> kelson_http::CookieTokenGuard<DemoBearerVerifier> {
+pub(crate) fn cookie_guard(state: &AppState) -> kelson_http::CookieTokenGuard<DemoBearerVerifier> {
     kelson_http::CookieTokenGuard::new(
         Arc::new(DemoBearerVerifier {
             tokens: state.tokens.clone(),
@@ -1148,14 +1214,21 @@ fn error_view_response(
     // framework's ONE assembler, so an error page reads the same
     // reserved keys a success page reads.
     kelson_foundation::ViewContext::localized(&state.messages, locale)
-        .with_head(kelson_foundation::HeadBuilder::new()
-            .title("Error")
-            .meta("description", "An error occurred")
-            .build())
+        .with_head(
+            kelson_foundation::HeadBuilder::new()
+                .title("Error")
+                .meta("description", "An error occurred")
+                .build(),
+        )
         .apply(&mut context);
     let html = engine.render(&name, context).ok()?;
     Some(
-        (status, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response(),
+        (
+            status,
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            html,
+        )
+            .into_response(),
     )
 }
 
@@ -1174,9 +1247,7 @@ fn dispatch_error(
     err: &kelson_foundation::AppError,
 ) -> axum::response::Response {
     let (status, envelope) = state.error_envelope(err);
-    let accept = headers
-        .get(header::ACCEPT)
-        .and_then(|v| v.to_str().ok());
+    let accept = headers.get(header::ACCEPT).and_then(|v| v.to_str().ok());
 
     if dispatch.route_plane == RoutePlane::Web
         && !expects_json(headers)
@@ -1239,20 +1310,37 @@ fn html_response(
         (dispatch_error(state, dispatch, headers, path, &err), None)
     };
     let Some(engine) = state.views.as_ref() else {
-        return fail(kelson_foundation::AppError::internal("views are not configured"));
+        return fail(kelson_foundation::AppError::internal(
+            "views are not configured",
+        ));
     };
     let Some(name) = dispatch.view.as_deref().filter(|n| !n.is_empty()) else {
         return fail(kelson_foundation::AppError::internal(
             "route declares response = html but no view",
         ));
     };
-    let mut context = if result.is_object() {
+    // MVA-005: a route that DECLARED a view model takes the schema-checked
+    // path — the operation result is the model data and rides in under the
+    // reserved `vm` namespace (the binding was verified at boot). Every
+    // other html route keeps the Wave-2 posture: the result IS the context.
+    let declared = dispatch
+        .view_model
+        .as_deref()
+        .is_some_and(|m| !m.trim().is_empty());
+    let mut context = if declared {
+        serde_json::json!({ kelson_views::VM_NAMESPACE.to_string(): result })
+    } else if result.is_object() {
         result
     } else {
         serde_json::json!({ "data": result })
     };
     reserved.apply(&mut context);
-    match engine.render(name, context) {
+    let rendered = if declared {
+        engine.render_declared(name, context)
+    } else {
+        engine.render(name, context)
+    };
+    match rendered {
         Ok(html) => {
             // The caching step hashes exactly these bytes, so hand them back
             // instead of re-reading the body off the transport later.
@@ -1265,10 +1353,20 @@ fn html_response(
                 .into_response();
             (response, Some(bytes))
         }
-        Err(view) => fail(kelson_foundation::AppError::internal(format!(
-            "view {name} failed: {}",
-            view.message
-        ))),
+        Err(view) => {
+            // The refusal reason is operator-facing telemetry; the response
+            // stays the redacted internal envelope.
+            tracing::warn!(
+                view = %name,
+                code = %view.code,
+                reason = %view.message,
+                "declared view render refused"
+            );
+            fail(kelson_foundation::AppError::internal(format!(
+                "view {name} failed: {}",
+                view.message
+            )))
+        }
     }
 }
 
@@ -1344,10 +1442,12 @@ fn render_success(
                 .with_auth(view_auth)
                 .with_errors(serde_json::json!({}))
                 .with_csrf(csrf_token(state, session.as_ref()))
-                .with_head(kelson_foundation::HeadBuilder::new()
-                    .title("Kelson")
-                    .meta("description", "Kelson application")
-                    .build());
+                .with_head(
+                    kelson_foundation::HeadBuilder::new()
+                        .title("Kelson")
+                        .meta("description", "Kelson application")
+                        .build(),
+                );
             Ok(html_response(
                 state, dispatch, headers, path, reserved, result,
             ))
@@ -1388,10 +1488,7 @@ fn render_success(
                                     .entry("meta")
                                     .or_insert_with(|| serde_json::json!({}));
                                 if let Some(meta) = meta.as_object_mut() {
-                                    meta.insert(
-                                        "deprecated".to_string(),
-                                        serde_json::json!(true),
-                                    );
+                                    meta.insert("deprecated".to_string(), serde_json::json!(true));
                                 }
                             }
                         }
@@ -1447,9 +1544,7 @@ fn redirect_response(
                     .ok()
                     .and_then(|raw| StatusCode::from_u16(raw).ok())
                     .filter(|status| status.is_redirection())
-                    .ok_or_else(|| {
-                        AppError::validation("redirect status must be a 3xx code")
-                    })?,
+                    .ok_or_else(|| AppError::validation("redirect status must be a 3xx code"))?,
                 None => StatusCode::FOUND,
             };
             let flash = map.get("flash").and_then(|v| v.as_object()).cloned();
@@ -1492,12 +1587,9 @@ fn store_flash(
         return;
     };
     for (key, value) in flash {
-        if let Err(error) = kelson_http::flash_put(
-            &middleware.manager,
-            &session.session.id,
-            key,
-            value.clone(),
-        ) {
+        if let Err(error) =
+            kelson_http::flash_put(&middleware.manager, &session.session.id, key, value.clone())
+        {
             tracing::warn!(
                 target: "kelson::redirect",
                 key = %key,
@@ -1517,9 +1609,9 @@ fn download_response(
     result: serde_json::Value,
 ) -> Result<axum::response::Response, kelson_foundation::AppError> {
     use kelson_foundation::AppError;
-    let map = result.as_object().ok_or_else(|| {
-        AppError::validation("download result must be an object with `key`")
-    })?;
+    let map = result
+        .as_object()
+        .ok_or_else(|| AppError::validation("download result must be an object with `key`"))?;
     let bucket = map
         .get("bucket")
         .and_then(|v| v.as_str())
@@ -1573,7 +1665,11 @@ fn download_response(
 /// content sniffing, and never `text/html` (that would be an XSS footgun
 /// for a user-supplied file).
 fn content_type_for(filename: &str) -> String {
-    let extension = filename.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let extension = filename
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
     match extension.as_str() {
         "txt" | "log" => "text/plain; charset=utf-8",
         "html" | "htm" => "text/html; charset=utf-8",
@@ -1724,7 +1820,10 @@ async fn graph_dispatch(
 ) -> axum::response::Response {
     // Admission inserts RequestId/TraceId extensions; degrade gracefully when
     // tests hit the router without the admission pipeline.
-    let request_id = req.extensions().get::<kelson_foundation::RequestId>().copied();
+    let request_id = req
+        .extensions()
+        .get::<kelson_foundation::RequestId>()
+        .copied();
     let trace_id = req
         .extensions()
         .get::<kelson_foundation::TraceId>()
@@ -1747,8 +1846,21 @@ async fn graph_dispatch(
     let host_tenant_id = host_tenant.as_ref().map(|host| host.0.id);
     // Wave 2: redirect routes carry flash data onto the caller's session.
     let resolved_session = req.extensions().get::<ResolvedSession>().cloned();
-    // Wave 2: `_auth` view convention + error-view path context.
-    let authenticated = resolved.is_some();
+    // Views edge convention: `_auth` is the principal id when an auth stage
+    // installed one — OR when the caller holds a verified session on a
+    // public route whose chain skipped the auth stage (Laravel posture: the
+    // session guard resolves users on public web-group pages). SOFT
+    // IDENTITY, display only: the dispatch principal below stays anonymous
+    // unless the chain authenticated it, so no operation gains rights from
+    // this value.
+    let view_auth = resolved
+        .as_ref()
+        .map(|r| r.principal.to_string())
+        .or_else(|| {
+            resolved_session
+                .as_ref()
+                .map(|rs| rs.session.principal.to_string())
+        });
 
     let uri = req.uri().clone();
     let path = uri.path().to_string();
@@ -1904,8 +2016,7 @@ async fn graph_dispatch(
             // Form fields arrive as strings; JSON-shaped payloads parse back
             // into typed values so rules and handlers see the same input
             // they would from a JSON body (non-JSON text stays a string).
-            let value =
-                serde_json::from_str(&raw).unwrap_or(serde_json::Value::String(raw));
+            let value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::String(raw));
             obj.insert(key, value);
         }
         let metas: Vec<kelson_validation::UploadMeta> = stored
@@ -1939,7 +2050,8 @@ async fn graph_dispatch(
         match serde_json::from_slice(&body) {
             Ok(value) => (value, Vec::new()),
             Err(_) => {
-                let err = kelson_foundation::AppError::validation("request body must be valid JSON");
+                let err =
+                    kelson_foundation::AppError::validation("request body must be valid JSON");
                 return dispatch_error(&state, &dispatch, &headers, &path, &err);
             }
         }
@@ -2036,10 +2148,7 @@ async fn graph_dispatch(
                 }
             }
         }
-        obj.insert(
-            "_bindings".into(),
-            serde_json::Value::Object(bindings_map),
-        );
+        obj.insert("_bindings".into(), serde_json::Value::Object(bindings_map));
     }
 
     // Wave 1 FormRequest wiring: manifest validation runs collect-all over
@@ -2116,9 +2225,8 @@ async fn graph_dispatch(
         .map(IdempotencyKey);
 
     let now = OffsetDateTime::now_utc();
-    // Views edge convention: `_auth` is the principal id when an auth stage
-    // installed one; anonymous callers stay guests (@guest renders).
-    let view_auth = authenticated.then(|| principal.to_string());
+    // (`view_auth` was resolved at the top of dispatch: the auth-stage
+    // principal, or soft session identity on public routes.)
     let mut builder = ExecutionContext::builder(dispatch.profile, now)
         .plane(dispatch.plane)
         .trace_id(trace_id)
@@ -2397,7 +2505,9 @@ operation = "index"
             .expect("artifact writes");
 
         // Matching artifact -> boot proceeds from the cache.
-        let cached = route_cache_check(&dir).expect("cache accepted").expect("plans present");
+        let cached = route_cache_check(&dir)
+            .expect("cache accepted")
+            .expect("plans present");
         assert_eq!(cached.len(), 1);
 
         // Manifest drift -> boot refused with a pointer to route:cache.
@@ -2419,7 +2529,10 @@ operation = "index"
         let path = kelson_registry::route_cache_path(&dir);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "{ not json").unwrap();
-        assert!(route_cache_check(&dir).is_err(), "corrupt artifact is a boot error");
+        assert!(
+            route_cache_check(&dir).is_err(),
+            "corrupt artifact is a boot error"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -2447,10 +2560,7 @@ operation = "list"
 "#;
 
     fn command_manifest_dir() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "kelson-demo-command-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("kelson-demo-command-{}", std::process::id()));
         let app_dir = dir.join("applications").join("kennel");
         std::fs::create_dir_all(&app_dir).unwrap();
         std::fs::write(app_dir.join("module.toml"), COMMAND_MODULE).unwrap();
@@ -2472,7 +2582,9 @@ operation = "list"
         let registry = engine
             .command_registry()
             .expect("the command registry installs on the views engine");
-        let book = registry.route("book").expect("the POST-declared op is bindable");
+        let book = registry
+            .route("book")
+            .expect("the POST-declared op is bindable");
         assert_eq!(book.verb, "POST");
         assert_eq!(book.path, "/appointments");
 
@@ -2528,11 +2640,14 @@ operation = "list"
         )));
         let principals: Arc<dyn kelson_identity::PrincipalStore> =
             Arc::new(kelson_identity::InMemoryPrincipalStore::new());
+        let memberships: Arc<dyn kelson_identity::MembershipStore> =
+            Arc::new(kelson_identity::InMemoryMembershipStore::new());
         let jwt = kelson_http::JwtHs256::new(b"edge-auth-unit-secret-0123456789".to_vec());
         let policy = Arc::new(kelson_policy::PolicyEngine::new());
         let auth = EdgeAuth {
             tokens: tokens.clone(),
             principals,
+            memberships: memberships.clone(),
             jwt: Some(Arc::new(jwt.clone())),
             policy: policy.clone(),
             granted_capabilities: vec!["appointments.list".into()],
@@ -2552,7 +2667,9 @@ operation = "list"
                 Some(format!("tenant:{tenant}")),
             )
             .expect("pat issues");
-        let resolved = auth.resolve_bearer(&issued.plaintext).expect("pat resolves");
+        let resolved = auth
+            .resolve_bearer(&issued.plaintext)
+            .expect("pat resolves");
         assert_eq!(resolved.principal, principal);
         assert_eq!(resolved.tenant, Some(tenant));
         assert_eq!(resolved.via, AuthVia::Bearer);
@@ -2562,6 +2679,8 @@ operation = "list"
         );
 
         // JWT: resolves and hydrates the access snapshot at resolution time.
+        // MNC-001 gate: with NO membership edge the JWT does not resolve (the
+        // credential is not a tenant entry right).
         let claims = kelson_http::JwtClaims {
             sub: principal.to_string(),
             tenant: Some(tenant.to_string()),
@@ -2570,6 +2689,19 @@ operation = "list"
             jti: None,
         };
         let token = jwt.sign(&claims);
+        assert!(
+            auth.resolve_bearer(&token).is_none(),
+            "a JWT for a principal with no active membership edge refuses"
+        );
+        memberships
+            .grant(kelson_identity::Membership {
+                id: kelson_foundation::MembershipId::new(),
+                principal_id: principal,
+                tenant_id: tenant,
+                status: kelson_identity::MembershipStatus::Active,
+                joined_at: OffsetDateTime::now_utc(),
+            })
+            .expect("membership edge granted");
         let resolved = auth.resolve_bearer(&token).expect("jwt resolves");
         assert_eq!(resolved.principal, principal);
         assert_eq!(resolved.tenant, Some(tenant));
@@ -2607,6 +2739,7 @@ operation = "list"
             route_plane: RoutePlane::Api,
             response,
             view: None,
+            view_model: None,
             is_get,
             cache,
         }
@@ -2651,11 +2784,19 @@ operation = "list"
     #[test]
     fn redirect_refuses_non_3xx_statuses_and_header_injection() {
         let state = response_state("redirect-reject");
-        let err = redirect_response(&state, None, serde_json::json!({ "to": "/x", "status": 200 }))
-            .expect_err("200 is not a redirect");
+        let err = redirect_response(
+            &state,
+            None,
+            serde_json::json!({ "to": "/x", "status": 200 }),
+        )
+        .expect_err("200 is not a redirect");
         assert!(err.public_message.contains("3xx"), "{}", err.public_message);
-        let err = redirect_response(&state, None, serde_json::json!({ "to": "/x", "status": 999 }))
-            .expect_err("999 is not a status code");
+        let err = redirect_response(
+            &state,
+            None,
+            serde_json::json!({ "to": "/x", "status": 999 }),
+        )
+        .expect_err("999 is not a status code");
         assert!(err.public_message.contains("3xx"), "{}", err.public_message);
         let err = redirect_response(
             &state,
@@ -2663,13 +2804,24 @@ operation = "list"
             serde_json::json!({ "to": "https://evil.test/\r\nSet-Cookie: pwn=1" }),
         )
         .expect_err("CRLF would split the response");
-        assert!(err.public_message.contains("valid URL"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("valid URL"),
+            "{}",
+            err.public_message
+        );
         let err = redirect_response(&state, None, serde_json::json!({ "target": "/x" }))
             .expect_err("`to` is the key");
-        assert!(err.public_message.contains("`to`"), "{}", err.public_message);
-        let err = redirect_response(&state, None, serde_json::json!(""))
-            .expect_err("empty target");
-        assert!(err.public_message.contains("empty"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("`to`"),
+            "{}",
+            err.public_message
+        );
+        let err = redirect_response(&state, None, serde_json::json!("")).expect_err("empty target");
+        assert!(
+            err.public_message.contains("empty"),
+            "{}",
+            err.public_message
+        );
     }
 
     #[tokio::test]
@@ -2719,7 +2871,11 @@ operation = "list"
         let state = response_state("download");
         state
             .storage
-            .put("exports", "reports/appointments.csv", b"slot,patient\n09:00,ada\n".to_vec())
+            .put(
+                "exports",
+                "reports/appointments.csv",
+                b"slot,patient\n09:00,ada\n".to_vec(),
+            )
             .expect("object stores");
 
         let response = download_response(
@@ -2766,7 +2922,11 @@ operation = "list"
         // Missing key: a download route never guesses what to hand over.
         let err = download_response(&state, serde_json::json!({ "bucket": "exports" }))
             .expect_err("no key");
-        assert!(err.public_message.contains("`key`"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("`key`"),
+            "{}",
+            err.public_message
+        );
         // Unknown object: the storage error surfaces as the route's error.
         let err = download_response(
             &state,
@@ -2818,7 +2978,8 @@ operation = "list"
         assert_eq!(body.iter().filter(|byte| **byte == b'\n').count(), 3);
 
         // Anything else is a single record (availability-style objects).
-        let response = stream_response(serde_json::json!({ "date": "2026-01-05" })).expect("builds");
+        let response =
+            stream_response(serde_json::json!({ "date": "2026-01-05" })).expect("builds");
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("body reads");
@@ -2847,8 +3008,14 @@ operation = "list"
             cache_control_value(&spec(CachePolicy::Private, Some(120), None)),
             "private, max-age=120"
         );
-        assert_eq!(cache_control_value(&spec(CachePolicy::NoStore, None, None)), "no-store");
-        assert_eq!(cache_control_value(&spec(CachePolicy::NoCache, None, None)), "no-cache");
+        assert_eq!(
+            cache_control_value(&spec(CachePolicy::NoStore, None, None)),
+            "no-store"
+        );
+        assert_eq!(
+            cache_control_value(&spec(CachePolicy::NoCache, None, None)),
+            "no-cache"
+        );
     }
 
     #[tokio::test]
@@ -2871,7 +3038,11 @@ operation = "list"
         assert_eq!(response.status(), StatusCode::OK);
         let etag = header_of(&response, header::ETAG).expect("ETag advertised");
         assert!(etag.starts_with('\"') && etag.ends_with('\"'), "{etag}");
-        assert_eq!(etag, kelson_http::etag_for(body), "ETag covers the served bytes");
+        assert_eq!(
+            etag,
+            kelson_http::etag_for(body),
+            "ETag covers the served bytes"
+        );
         assert_eq!(
             header_of(&response, header::CACHE_CONTROL).as_deref(),
             Some("public, max-age=60")
@@ -2948,7 +3119,10 @@ operation = "list"
             (StatusCode::OK, "payload").into_response(),
             Some(b"body"),
         );
-        assert!(header_of(&response, header::ETAG).is_none(), "POST is not revalidated");
+        assert!(
+            header_of(&response, header::ETAG).is_none(),
+            "POST is not revalidated"
+        );
         assert_eq!(
             header_of(&response, header::CACHE_CONTROL).as_deref(),
             Some("no-store")

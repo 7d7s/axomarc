@@ -169,7 +169,8 @@ fn fixture() -> Fixture {
         "{}{EXTRA_ROUTES}",
         include_str!("../../../applications/appointments/module.toml")
     );
-    let manifest = kelson_registry::ModuleManifest::from_toml(&raw).expect("fixture manifest parses");
+    let manifest =
+        kelson_registry::ModuleManifest::from_toml(&raw).expect("fixture manifest parses");
     let graph =
         kelson_registry::PlatformGraph::compile(vec![manifest]).expect("fixture graph compiles");
     Fixture {
@@ -182,7 +183,10 @@ fn fixture() -> Fixture {
 fn router_for(fx: &Fixture) -> axum::Router {
     let state = fx.state.clone();
     let router = kelson_demo::routes::router(state.clone())
-        .merge(kelson_demo::graph_routes::graph_router(state.clone(), &fx.graph))
+        .merge(kelson_demo::graph_routes::graph_router(
+            state.clone(),
+            &fx.graph,
+        ))
         .merge(kelson_demo::auth_routes::router(state.clone()));
     state
         .sessions
@@ -322,7 +326,9 @@ async fn verb_mismatch_is_405_with_allow() {
 
     // The same path still answers its declared verbs...
     assert_eq!(
-        send(&router, request(Method::GET, "/wave2/get")).await.status,
+        send(&router, request(Method::GET, "/wave2/get"))
+            .await
+            .status,
         StatusCode::OK
     );
     // ...while an undeclared path is a miss, never a 405.
@@ -342,21 +348,33 @@ async fn domain_gate_matches_before_the_auth_chain() {
     let router = router_for(&fx);
 
     // Wrong host on the public route: the route does not exist for it.
-    let reply = send(&router, request_from(Method::GET, "/wave2/domain", Some("portal.example.com")))
-        .await;
+    let reply = send(
+        &router,
+        request_from(Method::GET, "/wave2/domain", Some("portal.example.com")),
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::NOT_FOUND);
     // Right host: the handler runs.
-    let reply =
-        send(&router, request_from(Method::GET, "/wave2/domain", Some("api.example.com"))).await;
+    let reply = send(
+        &router,
+        request_from(Method::GET, "/wave2/domain", Some("api.example.com")),
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::OK);
 
     // Authenticated variant: the host gate short-circuits BEFORE `auth`, so
     // a wrong host is 404 (no route) rather than 401 (no identity).
-    let reply = send(&router, request_from(Method::GET, "/wave2/gated", Some("portal.example.com")))
-        .await;
+    let reply = send(
+        &router,
+        request_from(Method::GET, "/wave2/gated", Some("portal.example.com")),
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::NOT_FOUND);
-    let reply =
-        send(&router, request_from(Method::GET, "/wave2/gated", Some("api.example.com"))).await;
+    let reply = send(
+        &router,
+        request_from(Method::GET, "/wave2/gated", Some("api.example.com")),
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "auth runs on match");
 }
 
@@ -402,7 +420,11 @@ async fn subdomain_gate_404s_the_wrong_host_and_feeds_the_tenant() {
     // Wrong host: the route does not match at all.
     let reply = send(
         &router,
-        request_from(Method::GET, &format!("/wave2/hosted/{id}"), Some("globex.example.com")),
+        request_from(
+            Method::GET,
+            &format!("/wave2/hosted/{id}"),
+            Some("globex.example.com"),
+        ),
     )
     .await;
     assert_eq!(reply.status, StatusCode::NOT_FOUND);
@@ -411,14 +433,22 @@ async fn subdomain_gate_404s_the_wrong_host_and_feeds_the_tenant() {
     // resolution, so the tenant-scoped binding finds the appointment.
     let reply = send(
         &router,
-        request_from(Method::GET, &format!("/wave2/hosted/{id}"), Some("acme.example.com")),
+        request_from(
+            Method::GET,
+            &format!("/wave2/hosted/{id}"),
+            Some("acme.example.com"),
+        ),
     )
     .await;
     assert_eq!(reply.status, StatusCode::OK);
 
     // Control: the same appointment under the configured default tenant is
     // a miss (404) — the hit above came from the host-fed tenant alone.
-    let reply = send(&router, request(Method::GET, &format!("/wave2/default/{id}"))).await;
+    let reply = send(
+        &router,
+        request(Method::GET, &format!("/wave2/default/{id}")),
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::NOT_FOUND);
 }
 
@@ -507,10 +537,6 @@ async fn constraint_mismatch_is_a_route_miss_for_every_kind() {
     )
     .await;
     assert_eq!(miss.status, StatusCode::NOT_FOUND);
-    let unauthorized = send(
-        &router,
-        request(Method::GET, "/wave2/constrained-gated/42"),
-    )
-    .await;
+    let unauthorized = send(&router, request(Method::GET, "/wave2/constrained-gated/42")).await;
     assert_eq!(unauthorized.status, StatusCode::UNAUTHORIZED);
 }

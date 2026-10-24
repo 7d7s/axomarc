@@ -248,11 +248,7 @@ mod tests {
         let mut registry = ViewRegistry::new();
         registry.register(ViewBinding::new::<OpsVm>("dashboard.ops"));
         registry.register(ViewBinding::new::<OtherVm>("dashboard.ops"));
-        assert_eq!(
-            registry.len(),
-            1,
-            "the last registration for a view wins"
-        );
+        assert_eq!(registry.len(), 1, "the last registration for a view wins");
         assert!(
             registry
                 .binding("dashboard.ops")

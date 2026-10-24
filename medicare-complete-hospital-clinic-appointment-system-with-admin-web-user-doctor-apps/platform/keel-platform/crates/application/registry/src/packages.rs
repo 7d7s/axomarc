@@ -130,9 +130,8 @@ impl PackageIndex {
         entry: &PackageEntry,
     ) -> Result<ModuleManifest, String> {
         let path = Self::entry_dir(root, entry).join("module.toml");
-        let raw = std::fs::read_to_string(&path).map_err(|e| {
-            format!("package {}: {}: {e}", entry.name, path.display())
-        })?;
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|e| format!("package {}: {}: {e}", entry.name, path.display()))?;
         ModuleManifest::from_toml(&raw)
             .map_err(|v| format!("package {}: {}: {}", entry.name, path.display(), v.message))
     }
@@ -184,7 +183,11 @@ impl PackageIndex {
         let manifest_path = Self::resolve_path(root, &entry.manifest);
         let binary_path = Self::resolve_path(root, &entry.path);
         let raw = std::fs::read_to_string(&manifest_path).map_err(|e| {
-            format!("wasm plugin {}: {}: {e}", entry.name, manifest_path.display())
+            format!(
+                "wasm plugin {}: {}: {e}",
+                entry.name,
+                manifest_path.display()
+            )
         })?;
         let manifest = ModuleManifest::from_toml(&raw).map_err(|v| {
             format!(
@@ -293,10 +296,10 @@ impl PackageIndex {
             match installed.get(name.as_str()) {
                 None => {
                     return Err(format!(
-                        "module pin `{name}` -> {version}: no WASM plugin named `{name}` is installed \
+                    "module pin `{name}` -> {version}: no WASM plugin named `{name}` is installed \
                          (index lists {})",
-                        installed.len()
-                    ))
+                    installed.len()
+                ))
                 }
                 Some(&got) if got != version => {
                     return Err(format!(
@@ -326,9 +329,7 @@ impl PackageIndex {
     /// True when the resolved directory is already indexed (same package
     /// added twice under two names is refused).
     pub fn contains_dir(&self, root: &Path, dir: &Path) -> bool {
-        self.package
-            .iter()
-            .any(|e| Self::entry_dir(root, e) == dir)
+        self.package.iter().any(|e| Self::entry_dir(root, e) == dir)
     }
 
     /// Append an entry (registration order is the merge/display order).
@@ -441,7 +442,11 @@ mod tests {
 
         // Malformed manifest: refused too (never skipped silently).
         index.package.pop();
-        write_manifest(&root.join("packages/broken"), "broken", "this is not toml ==");
+        write_manifest(
+            &root.join("packages/broken"),
+            "broken",
+            "this is not toml ==",
+        );
         index.append(PackageEntry {
             name: "broken".into(),
             version: "0.1.0".into(),

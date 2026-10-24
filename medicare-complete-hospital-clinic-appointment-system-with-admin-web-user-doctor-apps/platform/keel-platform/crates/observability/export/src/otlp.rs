@@ -5,7 +5,9 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use kelson_telemetry::{Event, ExportError, ExportOk, Exporter, Level, SpanStatus, TelemetryPayload};
+use kelson_telemetry::{
+    Event, ExportError, ExportOk, Exporter, Level, SpanStatus, TelemetryPayload,
+};
 
 pub struct OtlpExporterConfig {
     /// Collector base URL, e.g. `http://localhost:4318`.

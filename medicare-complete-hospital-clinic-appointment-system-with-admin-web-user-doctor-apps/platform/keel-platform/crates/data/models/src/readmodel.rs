@@ -145,20 +145,26 @@ pub trait ReadModelStore: Send + Sync + std::fmt::Debug {
         &self,
         read_model: &ReadModelDef,
         tenant: Option<TenantId>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output=Result<ReadModelRefreshResult, AppError>> + Send + '_>>;
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<ReadModelRefreshResult, AppError>> + Send + '_>,
+    >;
 
     /// Refresh all tenants for a read model.
     fn refresh_all_tenants(
         &self,
         read_model: &ReadModelDef,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output=Result<ReadModelRefreshResult, AppError>> + Send + '_>>;
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<ReadModelRefreshResult, AppError>> + Send + '_>,
+    >;
 
     /// Get the staleness surface for a read model (for a specific tenant).
     fn staleness(
         &self,
         read_model: &ReadModelDef,
         tenant: Option<TenantId>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output=Result<ReadModelStaleness, AppError>> + Send + '_>>;
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<ReadModelStaleness, AppError>> + Send + '_>,
+    >;
 
     /// Query the materialised read model.
     fn query(
@@ -167,7 +173,13 @@ pub trait ReadModelStore: Send + Sync + std::fmt::Debug {
         tenant: Option<TenantId>,
         filters: &[FieldFilter],
         opts: &ListOpts,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output=Result<kelson_query::Page<Record>, AppError>> + Send + '_>>;
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<kelson_query::Page<Record>, AppError>>
+                + Send
+                + '_,
+        >,
+    >;
 
     /// Find a single row in the materialised read model.
     fn find(
@@ -175,7 +187,9 @@ pub trait ReadModelStore: Send + Sync + std::fmt::Debug {
         read_model: &ReadModelDef,
         id: uuid::Uuid,
         tenant: Option<TenantId>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output=Result<Option<Record>, AppError>> + Send + '_>>;
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Option<Record>, AppError>> + Send + '_>,
+    >;
 }
 
 /// The result of a refresh operation.

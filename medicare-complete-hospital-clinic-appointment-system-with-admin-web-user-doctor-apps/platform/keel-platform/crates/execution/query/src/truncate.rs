@@ -26,10 +26,7 @@ impl Truncate {
     /// Compile the statement WITHOUT an environment gate. Use only behind a
     /// gate you own (tests, migrations teardown); production paths must call
     /// [`Truncate::build_gated`].
-    pub fn build(
-        &self,
-        dialect: &dyn crate::dialect::Dialect,
-    ) -> Result<CompiledWrite, AppError> {
+    pub fn build(&self, dialect: &dyn crate::dialect::Dialect) -> Result<CompiledWrite, AppError> {
         Ok(CompiledWrite {
             sql: format!("TRUNCATE TABLE {}", self.table.as_str()),
             params: Vec::new(),
@@ -70,7 +67,9 @@ mod tests {
 
     #[test]
     fn truncate_shape() {
-        let q = Truncate::table(id("audit_logs")).build(&crate::dialect::POSTGRES).unwrap();
+        let q = Truncate::table(id("audit_logs"))
+            .build(&crate::dialect::POSTGRES)
+            .unwrap();
         assert_eq!(q.sql, "TRUNCATE TABLE audit_logs");
         assert!(q.params.is_empty());
     }
@@ -78,7 +77,9 @@ mod tests {
     #[test]
     fn truncate_ident_is_validated() {
         assert!(Ident::new("audit_logs; DROP TABLE users").is_err());
-        assert!(Truncate::table(Ident::new("a.b").unwrap()).build(&crate::dialect::POSTGRES).is_ok());
+        assert!(Truncate::table(Ident::new("a.b").unwrap())
+            .build(&crate::dialect::POSTGRES)
+            .is_ok());
     }
 
     #[test]
@@ -88,9 +89,7 @@ mod tests {
         assert!(t.build_gated("test", &crate::dialect::POSTGRES).is_ok());
 
         for env in ["staging", "prod", "production", "", "DEV"] {
-            let err = t
-                .build_gated(env, &crate::dialect::POSTGRES)
-                .unwrap_err();
+            let err = t.build_gated(env, &crate::dialect::POSTGRES).unwrap_err();
             assert!(
                 err.public_message.contains("dev/test"),
                 "env {env:?} must be refused, got: {}",

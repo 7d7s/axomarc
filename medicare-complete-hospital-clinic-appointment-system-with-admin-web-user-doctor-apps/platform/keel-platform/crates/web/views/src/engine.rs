@@ -146,10 +146,7 @@ impl ViewsConfig {
                 .paths
                 .map(|p| p.into_iter().map(PathBuf::from).collect())
                 .unwrap_or(defaults.paths),
-            cache_dir: file
-                .cache_dir
-                .map(PathBuf::from)
-                .or(defaults.cache_dir),
+            cache_dir: file.cache_dir.map(PathBuf::from).or(defaults.cache_dir),
             env: file.env.unwrap_or(defaults.env),
         })
     }
@@ -176,6 +173,11 @@ struct DiskEntry {
 /// registries. Shared behind an Arc at the web edge (Send + Sync).
 pub struct ViewsEngine {
     config: ViewsConfig,
+    /// Configured roots that did not exist when the engine was built
+    /// (MVA-001: a dead root is invisible to the walker — `collect_view_names`
+    /// reads what it can and reports nothing — so the gap is measured once
+    /// here and named loudly by every consumer: boot warns, the CLI warns).
+    missing_roots: Vec<PathBuf>,
     directives: Mutex<BTreeMap<String, Arc<DirectiveHandler>>>,
     conditionals: Mutex<BTreeMap<String, Arc<ConditionalHandler>>>,
     hooks: Mutex<BTreeMap<String, Vec<Arc<HookHandler>>>>,
@@ -195,8 +197,15 @@ pub struct ViewsEngine {
 
 impl ViewsEngine {
     pub fn new(config: ViewsConfig) -> Self {
+        let missing_roots = config
+            .paths
+            .iter()
+            .filter(|p| !p.exists())
+            .cloned()
+            .collect();
         Self {
             config,
+            missing_roots,
             directives: Mutex::new(BTreeMap::new()),
             conditionals: Mutex::new(BTreeMap::new()),
             hooks: Mutex::new(BTreeMap::new()),
@@ -210,6 +219,13 @@ impl ViewsEngine {
 
     pub fn config(&self) -> &ViewsConfig {
         &self.config
+    }
+
+    /// The configured roots that did not exist at engine build (MVA-001).
+    /// Consumers warn each one loudly — a typo'd or phantom root must never
+    /// warm an empty template set in silence.
+    pub fn missing_roots(&self) -> &[PathBuf] {
+        &self.missing_roots
     }
 
     // ------------------------------------------------------- registries
@@ -256,6 +272,28 @@ impl ViewsEngine {
         F: Fn(&str, &str) -> Option<PathBuf> + Send + Sync + 'static,
     {
         *self.resolver.lock().unwrap() = Some(Arc::new(resolver));
+    }
+
+    /// Install the package view namespaces (Wave 8 B-25) from
+    /// (namespace -> views root) pairs — the ONE resolution rule (dots map
+    /// to directories, a bare name gets `.html`, a non-file refuses). The
+    /// boot and the CLI both build the pairs from the package index and
+    /// delegate here, so the two engines can never drift on semantics.
+    pub fn install_package_view_namespaces(&self, roots: HashMap<String, PathBuf>) {
+        if roots.is_empty() {
+            return;
+        }
+        self.set_resolver(move |ns, name| {
+            let base = roots.get(ns)?;
+            let rel = name.replace('.', "/");
+            let file = if rel.ends_with(".html") {
+                rel
+            } else {
+                format!("{rel}.html")
+            };
+            let candidate = base.join(file);
+            candidate.is_file().then_some(candidate)
+        });
     }
 
     /// Wave 7 P2: install the observation seam (testkit `ViewRecorder`).
@@ -365,9 +403,8 @@ impl ViewsEngine {
     /// parse). Content-hash pinned: drift reparses from source.
     pub fn template(&self, name: &str) -> Result<Template, ViewError> {
         let path = self.resolve(name)?;
-        let source = std::fs::read_to_string(&path).map_err(|e| {
-            ViewError::new(VIEW_CACHE, format!("{}: {e}", path.display()))
-        })?;
+        let source = std::fs::read_to_string(&path)
+            .map_err(|e| ViewError::new(VIEW_CACHE, format!("{}: {e}", path.display())))?;
         let source_hash = hex_hash(source.as_bytes());
 
         if let Some(memo) = self.memo.lock().unwrap().get(name) {
@@ -412,9 +449,8 @@ impl ViewsEngine {
 
         if let Some(cache_path) = &cache_path {
             if let Some(dir) = cache_path.parent() {
-                std::fs::create_dir_all(dir).map_err(|e| {
-                    ViewError::new(VIEW_CACHE, format!("{}: {e}", dir.display()))
-                })?;
+                std::fs::create_dir_all(dir)
+                    .map_err(|e| ViewError::new(VIEW_CACHE, format!("{}: {e}", dir.display())))?;
             }
             let (secs, nanos) = mtime
                 .map(|d| (d.as_secs() as i64, d.subsec_nanos()))
@@ -503,11 +539,38 @@ impl ViewsEngine {
                 "the context must be a JSON object to carry a view model",
             ));
         };
-        object.insert(
-            crate::viewmodel::VM_NAMESPACE.to_string(),
-            value,
-        );
+        object.insert(crate::viewmodel::VM_NAMESPACE.to_string(), value);
         self.render_with_context(name, context)
+    }
+
+    /// Render a view for a route that DECLARED a view model in its
+    /// manifest (MVA-005, the schema-checked path for `route.view` pages).
+    ///
+    /// The view must have a registered binding — the boot verifies every
+    /// declaration against the registry, so a refusal here means the
+    /// declaration pointed at nothing. Then the template's `@vm` paths are
+    /// linted against the binding's declared schema BEFORE any byte is
+    /// emitted: the data rides in from the handler, the declaration binds
+    /// the SHAPE, and an undeclared read refuses exactly like the binder
+    /// does for `render_bound`.
+    pub fn render_declared(&self, name: &str, context: Value) -> Result<String, ViewError> {
+        let Some(registry) = self.registry() else {
+            return Err(ViewError::new(
+                VIEW_RENDER,
+                format!(
+                    "the view {name:?} has no view registry: a route-declared view model \
+                     cannot be checked"
+                ),
+            ));
+        };
+        if registry.binding(name).is_none() {
+            return Err(ViewError::new(
+                VIEW_RENDER,
+                format!("the view {name:?} has no registered view model: the route declares one"),
+            ));
+        }
+        self.lint(name)?;
+        self.render(name, context)
     }
 
     /// Spawn a **stateful session** on a live view (D-6, F-10a / S-11).
@@ -594,7 +657,11 @@ impl ViewsEngine {
             ));
         };
         let paths = crate::lint::vm_paths(&template.nodes);
-        crate::lint::check_paths(binding.schema, &paths, governing)
+        crate::lint::check_paths(binding.schema, &paths, governing)?;
+        // C07/E1: a bound template may not read outside the namespace at
+        // all — a root typo used to render blank, which reads as "no data".
+        let roots = crate::lint::root_reads(&template.nodes);
+        crate::lint::check_root_reads(&roots, governing)
     }
 
     /// Lint every discoverable template. Returns the number of templates
@@ -609,6 +676,32 @@ impl ViewsEngine {
         let mut count = 0;
         for name in &names {
             self.lint(name)?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    /// The build-time half of E1 that needs no registered model: a bound
+    /// template may not read a root key outside `vm.*` and the reserved
+    /// context keys (C07). `view:cache` and `kelson check` run without an
+    /// application's host-side registry (C17), so they run this; the
+    /// declared-path half runs where the registry is installed (the
+    /// runtime's proof suite).
+    pub fn lint_roots_all(&self) -> Result<usize, ViewError> {
+        let mut names = Vec::new();
+        for root in &self.config.paths {
+            collect_view_names(root, root, &mut names);
+        }
+        names.sort();
+        names.dedup();
+        let mut count = 0;
+        for name in &names {
+            let template = self.template(name)?;
+            if let Some(declaration) = crate::lint::vm_declaration(&template.nodes) {
+                let governing = declaration.view.as_deref().unwrap_or(name);
+                let roots = crate::lint::root_reads(&template.nodes);
+                crate::lint::check_root_reads(&roots, governing)?;
+            }
             count += 1;
         }
         Ok(count)
@@ -648,9 +741,8 @@ impl ViewsEngine {
         let mut count = 0;
         for file in files {
             if file.extension().and_then(|e| e.to_str()) == Some("json") {
-                std::fs::remove_file(&file).map_err(|e| {
-                    ViewError::new(VIEW_CACHE, format!("{}: {e}", file.display()))
-                })?;
+                std::fs::remove_file(&file)
+                    .map_err(|e| ViewError::new(VIEW_CACHE, format!("{}: {e}", file.display())))?;
                 count += 1;
             }
         }
@@ -665,9 +757,8 @@ impl ViewsEngine {
         let mut removed_disk = false;
         if let Some(path) = self.cache_path(name) {
             if path.is_file() {
-                std::fs::remove_file(&path).map_err(|e| {
-                    ViewError::new(VIEW_CACHE, format!("{}: {e}", path.display()))
-                })?;
+                std::fs::remove_file(&path)
+                    .map_err(|e| ViewError::new(VIEW_CACHE, format!("{}: {e}", path.display())))?;
                 removed_disk = true;
             }
         }
@@ -763,11 +854,84 @@ mod tests {
     }
 
     #[test]
+    fn missing_configured_roots_are_named_not_swallowed() {
+        // MVA-001: a phantom root must surface on `missing_roots()` while the
+        // live roots keep resolving and counting — never a silent empty set.
+        let (dir, _engine) = engine_with(&[]);
+        let live = dir.join("resources").join("views");
+        std::fs::write(live.join("page.html"), "<p>{{ x }}</p>").unwrap();
+        let phantom = dir.join("resources").join("views-typo");
+        let engine = ViewsEngine::new(ViewsConfig {
+            paths: vec![live, phantom.clone()],
+            cache_dir: None,
+            env: "testing".into(),
+        });
+        assert_eq!(engine.missing_roots(), &[phantom]);
+        assert_eq!(render(&engine, "page", json!({ "x": 1 })), "<p>1</p>");
+        assert_eq!(engine.precompile_all().unwrap(), 1);
+        assert_eq!(engine.lint_all().unwrap(), 1);
+    }
+
+    #[test]
+    fn package_view_namespaces_install_through_the_shared_rule() {
+        // MVA-002: boot and CLI install from this one resolver rule.
+        let (dir, engine) = engine_with(&[]);
+        let pkg = dir.join("packages").join("billing").join("views");
+        std::fs::create_dir_all(pkg.join("mail")).unwrap();
+        std::fs::write(pkg.join("welcome.html"), "<w/>").unwrap();
+        std::fs::write(pkg.join("mail").join("receipt.html"), "<r/>").unwrap();
+        engine.install_package_view_namespaces(HashMap::from([("billing".to_string(), pkg)]));
+        let resolved = engine
+            .resolve("billing::welcome")
+            .expect("namespaced view resolves");
+        assert!(resolved.ends_with("welcome.html"));
+        assert!(engine
+            .resolve("billing::mail.receipt")
+            .expect("dotted names map to directories")
+            .ends_with("receipt.html"));
+        assert!(engine.resolve("billing::nope").is_err());
+        assert!(engine.resolve("shipping::welcome").is_err());
+    }
+
+    #[test]
+    fn empty_package_namespace_map_installs_nothing() {
+        let (_dir, engine) = engine_with(&[]);
+        engine.install_package_view_namespaces(HashMap::new());
+        assert!(engine.resolve("billing::welcome").is_err());
+    }
+
+    #[test]
+    fn render_declared_is_the_schema_checked_manifest_path() {
+        // MVA-005: a route that declares a view_model renders through the
+        // registered binding — no registry, no binding, no render; the
+        // template's @vm paths are checked against the declared schema
+        // before the first byte leaves the engine.
+        let (_dir, engine) = engine_with(&[
+            ("counter", "@vm<count>{{ vm.count }}</count>"),
+            ("loose", "@vm<x>{{ vm.count }}</x>"),
+            ("greedy", "@vm<count>{{ vm.count }} {{ vm.nope }}</count>"),
+        ]);
+        assert!(engine.render_declared("counter", json!({})).is_err());
+        let mut registry = crate::registry::ViewRegistry::new();
+        registry.register(crate::registry::ViewBinding::new::<CounterVm>("counter"));
+        engine.set_registry(Arc::new(registry));
+        let html = engine
+            .render_declared("counter", json!({ "vm": { "count": 3 } }))
+            .expect("the declared page renders bound");
+        assert_eq!(html, "<count>3</count>");
+        assert!(
+            engine.render_declared("loose", json!({})).is_err(),
+            "a view with no binding cannot serve a declared route"
+        );
+        assert!(
+            engine.render_declared("greedy", json!({})).is_err(),
+            "an undeclared read refuses the declared page"
+        );
+    }
+
+    #[test]
     fn escaping_security_facet() {
-        let (_dir, engine) = engine_with(&[(
-            "page",
-            "{{ text }}|{!! raw !!}|{{ missing }}",
-        )]);
+        let (_dir, engine) = engine_with(&[("page", "{{ text }}|{!! raw !!}|{{ missing }}")]);
         let out = render(
             &engine,
             "page",
@@ -852,8 +1016,14 @@ mod tests {
             let _ = args;
             ctx.get("role").and_then(|v| v.as_str()) == Some("admin")
         });
-        assert_eq!(render(&engine, "page", json!({ "role": "admin" })).trim(), "A");
-        assert_eq!(render(&engine, "page", json!({ "role": "user" })).trim(), "");
+        assert_eq!(
+            render(&engine, "page", json!({ "role": "admin" })).trim(),
+            "A"
+        );
+        assert_eq!(
+            render(&engine, "page", json!({ "role": "user" })).trim(),
+            ""
+        );
         // Unregistered custom conditionals fail closed (false).
         let (_dir2, engine2) = engine_with(&[("page", "@if(mystery()) X @endif")]);
         assert_eq!(render(&engine2, "page", json!({})).trim(), "");
@@ -862,14 +1032,8 @@ mod tests {
     #[test]
     fn loops_foreach_forelse_for() {
         let (_dir, engine) = engine_with(&[
-            (
-                "each",
-                "@foreach(items as item)[{{ item }}]@endforeach",
-            ),
-            (
-                "kv",
-                "@foreach(map as k => v){{ k }}={{ v }};@endforeach",
-            ),
+            ("each", "@foreach(items as item)[{{ item }}]@endforeach"),
+            ("kv", "@foreach(map as k => v){{ k }}={{ v }};@endforeach"),
             (
                 "orelse",
                 "@forelse(items as item)[{{ item }}]@empty none @endforelse",
@@ -877,7 +1041,10 @@ mod tests {
             ("range", "@for(i in 0..3){{ i }}@endfor"),
             ("cstyle", "@for($i = 0; $i < 4; $i += 2){{ i }}@endfor"),
         ]);
-        assert_eq!(render(&engine, "each", json!({ "items": ["a", "b"] })), "[a][b]");
+        assert_eq!(
+            render(&engine, "each", json!({ "items": ["a", "b"] })),
+            "[a][b]"
+        );
         assert_eq!(
             render(&engine, "kv", json!({ "map": { "x": 1, "y": 2 } })),
             "x=1;y=2;"
@@ -886,10 +1053,7 @@ mod tests {
             render(&engine, "orelse", json!({ "items": [] })).trim(),
             "none"
         );
-        assert_eq!(
-            render(&engine, "orelse", json!({ "items": ["a"] })),
-            "[a]"
-        );
+        assert_eq!(render(&engine, "orelse", json!({ "items": ["a"] })), "[a]");
         assert_eq!(render(&engine, "range", json!({})), "012");
         assert_eq!(render(&engine, "cstyle", json!({})), "02");
     }
@@ -1033,20 +1197,22 @@ mod tests {
         let (_dir, engine) = engine_with(&[("page", "@command(\"cancel\", label=\"Cancel it\")")]);
         engine_with_commands(&engine, &[("cancel", "POST", "/appointments/cancel")]);
 
-        let out = render(
-            &engine,
-            "page",
-            json!({ "_csrf": "tok&en" }),
-        );
+        let out = render(&engine, "page", json!({ "_csrf": "tok&en" }));
         assert!(
             out.starts_with(
                 "<form method=\"POST\" action=\"/appointments/cancel\" class=\"kelson-command\">"
             ),
             "{out}"
         );
-        assert!(out.contains("name=\"_token\" value=\"tok&amp;en\""), "{out}");
+        assert!(
+            out.contains("name=\"_token\" value=\"tok&amp;en\""),
+            "{out}"
+        );
         assert!(!out.contains("_method"), "{out}");
-        assert!(out.contains("<button type=\"submit\">Cancel it</button></form>"), "{out}");
+        assert!(
+            out.contains("<button type=\"submit\">Cancel it</button></form>"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -1077,10 +1243,7 @@ mod tests {
         engine_with_commands(&engine, &[("cancel", "DELETE", "/c")]);
         let out = render(&engine, "page", json!({ "_csrf": "tok" }));
         assert!(out.contains("<form method=\"POST\" action=\"/c\""), "{out}");
-        assert!(
-            out.contains("name=\"_method\" value=\"DELETE\""),
-            "{out}"
-        );
+        assert!(out.contains("name=\"_method\" value=\"DELETE\""), "{out}");
 
         // A GET-declared operation refuses: a command form cannot submit
         // a read-only verb.
@@ -1113,9 +1276,10 @@ mod tests {
     impl crate::viewmodel::ViewModel for CounterVm {
         const VIEW: &'static str = "counter";
         fn schema() -> &'static [crate::viewmodel::FieldSchema] {
-            crate::view_schema![
-                crate::viewmodel::FieldSchema::required("count", crate::viewmodel::FieldKind::Int),
-            ]
+            crate::view_schema![crate::viewmodel::FieldSchema::required(
+                "count",
+                crate::viewmodel::FieldKind::Int
+            ),]
         }
     }
 
@@ -1197,7 +1361,11 @@ mod tests {
             .live_session("counter", CounterVm { count: 0 })
             .expect_err("a session without a registry has nothing to check against");
         assert_eq!(error.code, VIEW_RENDER);
-        assert!(error.message.contains("no view registry"), "{}", error.message);
+        assert!(
+            error.message.contains("no view registry"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]
@@ -1366,7 +1534,10 @@ mod tests {
         const VIEW: &'static str = "page";
         fn schema() -> &'static [crate::viewmodel::FieldSchema] {
             crate::view_schema![
-                crate::viewmodel::FieldSchema::required("title", crate::viewmodel::FieldKind::String),
+                crate::viewmodel::FieldSchema::required(
+                    "title",
+                    crate::viewmodel::FieldKind::String
+                ),
                 crate::viewmodel::FieldSchema::required("depth", crate::viewmodel::FieldKind::Int),
             ]
         }
@@ -1383,8 +1554,7 @@ mod tests {
 
     #[test]
     fn a_bound_path_resolves_through_the_model() {
-        let (_dir, engine) =
-            bound_engine("@vm<h1>{{ vm.title }}</h1><span>{{ vm.depth }}</span>");
+        let (_dir, engine) = bound_engine("@vm<h1>{{ vm.title }}</h1><span>{{ vm.depth }}</span>");
         let out = engine
             .render_bound(
                 "page",
@@ -1475,7 +1645,7 @@ mod tests {
         let error = engine
             .lint("page")
             .expect_err("an undeclared path is refused by the lint");
-        assert_eq!(error.code, VIEW_RENDER);
+        assert_eq!(error.code, crate::lint::LINT_UNDECLARED_PATH);
         assert!(
             error.message.contains("ghost"),
             "the refusal names the path: {}",

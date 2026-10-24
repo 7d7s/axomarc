@@ -16,8 +16,8 @@ use std::sync::{Arc, Mutex};
 use kelson_foundation::AppError;
 
 use crate::ports::{
-    BoxFuture, ConfigPort, EventPort, HealthCheck, JobPort, MigrationPort, ModulePort, PromotionLease,
-    PromotionLock, PromotionLockHolder,
+    BoxFuture, ConfigPort, EventPort, HealthCheck, JobPort, MigrationPort, ModulePort,
+    PromotionLease, PromotionLock, PromotionLockHolder,
 };
 use crate::rollback::{PromotionTarget, RollbackExecutor};
 
@@ -147,9 +147,7 @@ impl MigrationPort for FakeMigrations {
         let reachable = *self.reachable.lock().unwrap();
         let current = *self.watermark.lock().unwrap();
         *self.watermark.lock().unwrap() = reachable;
-        Box::pin(async move {
-            Ok((current + 1..=reachable).map(|b| format!("m{b}")).collect())
-        })
+        Box::pin(async move { Ok((current + 1..=reachable).map(|b| format!("m{b}")).collect()) })
     }
 
     fn rollback_to(&self, target: u32) -> BoxFuture<'_, Result<Vec<String>, AppError>> {
@@ -160,7 +158,10 @@ impl MigrationPort for FakeMigrations {
             if target >= current {
                 return Ok(Vec::new());
             }
-            Ok((target + 1..=current).rev().map(|b| format!("m{b}")).collect())
+            Ok((target + 1..=current)
+                .rev()
+                .map(|b| format!("m{b}"))
+                .collect())
         })
     }
 }
@@ -192,7 +193,8 @@ impl ModulePort for FakeModules {
             .filter(|(k, v)| before.get(k.as_str()) != Some(*v))
             .count();
         *self.pins.lock().unwrap() = pins.clone();
-        self.trace.push(&format!("modules.pin_versions({})", pins.len()));
+        self.trace
+            .push(&format!("modules.pin_versions({})", pins.len()));
         Box::pin(async move { Ok(changed) })
     }
 }

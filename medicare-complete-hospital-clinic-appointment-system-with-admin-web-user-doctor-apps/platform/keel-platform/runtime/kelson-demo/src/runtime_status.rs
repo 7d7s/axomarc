@@ -111,12 +111,18 @@ impl RuntimeStatus {
         modules: std::collections::HashMap<String, kelson_lifecycle::ModuleState>,
     ) -> serde_json::Value {
         let artifact = self.artifact_digest.lock().unwrap().clone();
-        let base = self.content_digest.lock().unwrap().clone().unwrap_or_default();
+        let base = self
+            .content_digest
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_default();
         let digest = kelson_tokens::sha256_hex(&format!("{base}\n{artifact}"));
         // A HashMap iterates in arbitrary order; sort by name so two calls with
         // the same states produce byte-identical output (the proof captures and
         // compares this surface).
-        let mut pinned: Vec<(String, kelson_lifecycle::ModuleState)> = modules.into_iter().collect();
+        let mut pinned: Vec<(String, kelson_lifecycle::ModuleState)> =
+            modules.into_iter().collect();
         pinned.sort_by(|a, b| a.0.cmp(&b.0));
         let module_pins: Vec<serde_json::Value> = pinned
             .into_iter()
@@ -151,10 +157,17 @@ impl RuntimeStatus {
 /// 64-hex digest. What matters is that the value is *derived* from the same
 /// canonical sources the reload path hashes, so a later activation moves it
 /// for a reason rather than by construction.
-pub fn boot_status(root: &std::path::Path, config: &kelson_config::PlatformConfig) -> Arc<RuntimeStatus> {
+pub fn boot_status(
+    root: &std::path::Path,
+    config: &kelson_config::PlatformConfig,
+) -> Arc<RuntimeStatus> {
     let manifests = kelson_registry::manifests_hash(root).unwrap_or_default();
     let cfg_hash = kelson_config::runtime::hash_of(config).unwrap_or_default();
-    Arc::new(RuntimeStatus::at_boot(&manifests, &cfg_hash, &artifacts_digest(root)))
+    Arc::new(RuntimeStatus::at_boot(
+        &manifests,
+        &cfg_hash,
+        &artifacts_digest(root),
+    ))
 }
 
 /// Canonical digest of the runtime inputs: config hash, then manifest digest.
@@ -198,15 +211,17 @@ pub async fn status_meta(
     axum::extract::State(s): axum::extract::State<crate::routes::AppState>,
 ) -> axum::Json<serde_json::Value> {
     let modules = s.modules.read().unwrap().snapshot();
-    axum::Json(serde_json::to_value(s.runtime.body(
-        "kelson-demo",
-        env!("CARGO_PKG_VERSION"),
-        modules,
-    ))
-    .unwrap_or_else(|_| serde_json::json!({"ok": false})))
+    axum::Json(
+        serde_json::to_value(
+            s.runtime
+                .body("kelson-demo", env!("CARGO_PKG_VERSION"), modules),
+        )
+        .unwrap_or_else(|_| serde_json::json!({"ok": false})),
+    )
 }
 
-#[cfg(test)] #[allow(clippy::items_after_test_module)] // the digest helpers sit below the suite on purpose: every citation into this file points above `mod tests`, and moving either would invalidate them
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)] // the digest helpers sit below the suite on purpose: every citation into this file points above `mod tests`, and moving either would invalidate them
 mod tests {
     use super::*;
 
@@ -229,8 +244,8 @@ mod tests {
     #[test]
     fn activation_advances_generation_once_and_changes_the_digest() {
         let status = RuntimeStatus::at_boot("m1", "c1", "");
-        let id_before = status.body("n", "0.1.0", Default::default())["process_instance_id"]
-            .to_string();
+        let id_before =
+            status.body("n", "0.1.0", Default::default())["process_instance_id"].to_string();
         let digest_before =
             status.body("n", "0.1.0", Default::default())["active_content_digest"].to_string();
 
@@ -250,10 +265,12 @@ mod tests {
 
         status.note_activation("c2", "m1");
         let after_two = status.body("n", "0.1.0", Default::default());
-        assert_eq!(after_two["generation"], 3, "a no-op re-activation still counts once");
         assert_eq!(
-            after_two["active_content_digest"],
-            after_one["active_content_digest"],
+            after_two["generation"], 3,
+            "a no-op re-activation still counts once"
+        );
+        assert_eq!(
+            after_two["active_content_digest"], after_one["active_content_digest"],
             "idempotent inputs give an idempotent digest"
         );
         assert_eq!(
@@ -269,8 +286,8 @@ mod tests {
     #[test]
     fn a_manifest_only_change_moves_the_digest() {
         let status = RuntimeStatus::at_boot("m1", "c1", "");
-        let before = status.body("n", "0.1.0", Default::default())["active_content_digest"]
-            .to_string();
+        let before =
+            status.body("n", "0.1.0", Default::default())["active_content_digest"].to_string();
         status.note_activation("c1", "m2");
         let after = status.body("n", "0.1.0", Default::default());
         assert_eq!(after["generation"], 2);
@@ -300,11 +317,10 @@ mod tests {
     #[test]
     fn a_module_activation_advances_generation_and_moves_the_digest() {
         let status = RuntimeStatus::at_boot("m1", "c1", "art-v1");
-        let id_before = status.body("n", "0.1.0", Default::default())["process_instance_id"]
-            .to_string();
-        let before = status
-            .body("n", "0.1.0", Default::default())["active_content_digest"]
-            .to_string();
+        let id_before =
+            status.body("n", "0.1.0", Default::default())["process_instance_id"].to_string();
+        let before =
+            status.body("n", "0.1.0", Default::default())["active_content_digest"].to_string();
 
         assert_eq!(status.generation(), 1, "boot generation");
         status
@@ -331,10 +347,11 @@ mod tests {
     fn a_stale_generation_is_refused_and_changes_nothing() {
         let status = RuntimeStatus::at_boot("m1", "c1", "art-v1");
 
-        status.note_module_activation(1, "art-v2").expect("first wins");
-        let won = status
-            .body("n", "0.1.0", Default::default())["active_content_digest"]
-            .to_string();
+        status
+            .note_module_activation(1, "art-v2")
+            .expect("first wins");
+        let won =
+            status.body("n", "0.1.0", Default::default())["active_content_digest"].to_string();
 
         let err = status
             .note_module_activation(1, "art-v3")
@@ -365,9 +382,8 @@ mod tests {
         status
             .note_module_activation(1, "art-v2")
             .expect("accept the activation");
-        let after_activation = status
-            .body("n", "0.1.0", Default::default())["active_content_digest"]
-            .to_string();
+        let after_activation =
+            status.body("n", "0.1.0", Default::default())["active_content_digest"].to_string();
 
         status.note_activation("c2", "m1");
         let after_reload = status.body("n", "0.1.0", Default::default());
@@ -484,7 +500,9 @@ impl RuntimeStatus {
                 Ordering::SeqCst,
                 Ordering::SeqCst,
             )
-            .map_err(|now| format!("staged against generation {expected_generation}, now serving {now}"))?;
+            .map_err(|now| {
+                format!("staged against generation {expected_generation}, now serving {now}")
+            })?;
         *self.artifact_digest.lock().unwrap() = artifact_digest.to_string();
         tracing::info!(
             generation = expected_generation + 1,

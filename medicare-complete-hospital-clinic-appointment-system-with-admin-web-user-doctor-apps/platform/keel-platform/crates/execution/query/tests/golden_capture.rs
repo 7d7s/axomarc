@@ -51,7 +51,10 @@ fn the_postgres_rendering_matches_the_golden_catalogue() {
         .unwrap();
     out.push(entry("select_columns", &q.sql, &q.params));
 
-    let q = Select::from_table(id("users")).distinct().build(&POSTGRES).unwrap();
+    let q = Select::from_table(id("users"))
+        .distinct()
+        .build(&POSTGRES)
+        .unwrap();
     out.push(entry("select_distinct", &q.sql, &q.params));
 
     let q = Select::from_table(id("users"))
@@ -162,14 +165,22 @@ fn the_postgres_rendering_matches_the_golden_catalogue() {
         .build(&POSTGRES)
         .unwrap();
     let q = Select::from_table(id("users"))
-        .where_exists(Select::from_table(id("orders")).select(vec![id("user_id")]).where_eq(id("status"), v("paid")))
+        .where_exists(
+            Select::from_table(id("orders"))
+                .select(vec![id("user_id")])
+                .where_eq(id("status"), v("paid")),
+        )
         .build(&POSTGRES)
         .unwrap();
     out.push(entry("select_where_exists", &q.sql, &q.params));
     let _ = sub;
 
     let q = Select::from_table(id("users"))
-        .where_not_exists(Select::from_table(id("orders")).select(vec![id("user_id")]).where_eq(id("status"), v("paid")))
+        .where_not_exists(
+            Select::from_table(id("orders"))
+                .select(vec![id("user_id")])
+                .where_eq(id("status"), v("paid")),
+        )
         .build(&POSTGRES)
         .unwrap();
     out.push(entry("select_where_not_exists", &q.sql, &q.params));
@@ -188,7 +199,10 @@ fn the_postgres_rendering_matches_the_golden_catalogue() {
     out.push(entry("select_or_where", &q.sql, &q.params));
 
     let q = Select::from_table(id("users"))
-        .group(|g| g.where_eq(id("a"), v("1")).or_where(id("b"), Operator::Eq, v("2")))
+        .group(|g| {
+            g.where_eq(id("a"), v("1"))
+                .or_where(id("b"), Operator::Eq, v("2"))
+        })
         .build(&POSTGRES)
         .unwrap();
     out.push(entry("select_where_group", &q.sql, &q.params));
@@ -217,7 +231,10 @@ fn the_postgres_rendering_matches_the_golden_catalogue() {
         .unwrap();
     out.push(entry("select_order_by", &q.sql, &q.params));
 
-    let q = Select::from_table(id("users")).count().build(&POSTGRES).unwrap();
+    let q = Select::from_table(id("users"))
+        .count()
+        .build(&POSTGRES)
+        .unwrap();
     out.push(entry("select_count", &q.sql, &q.params));
 
     let q = Select::from_table(id("users"))
@@ -245,10 +262,16 @@ fn the_postgres_rendering_matches_the_golden_catalogue() {
         .unwrap();
     out.push(entry("select_union_all", &q.sql, &q.params));
 
-    let q = Select::from_table(id("users")).lock_for_update().build(&POSTGRES).unwrap();
+    let q = Select::from_table(id("users"))
+        .lock_for_update()
+        .build(&POSTGRES)
+        .unwrap();
     out.push(entry("select_lock_for_update", &q.sql, &q.params));
 
-    let q = Select::from_table(id("users")).shared_lock().build(&POSTGRES).unwrap();
+    let q = Select::from_table(id("users"))
+        .shared_lock()
+        .build(&POSTGRES)
+        .unwrap();
     out.push(entry("select_shared_lock", &q.sql, &q.params));
 
     let q = Select::from_table(id("users"))
@@ -270,20 +293,16 @@ fn the_postgres_rendering_matches_the_golden_catalogue() {
     out.push(entry("select_with_cte", &q.sql, &q.params));
 
     let q = Select::from_table(id("tree"))
-        .with_recursive_cte(
-            "tree",
-            vec![id("id"), id("parent_id")],
-            |cte| {
-                cte.table(id("nodes"))
-                    .select(vec![id("id"), id("parent_id")])
-                    .where_null(id("parent_id"))
-                    .union_all(
-                        Select::from_table(id("nodes"))
-                            .select(vec![id("id"), id("parent_id")])
-                            .join_inner(id("tree"), id("nodes.parent_id"), id("tree.id")),
-                    )
-            },
-        )
+        .with_recursive_cte("tree", vec![id("id"), id("parent_id")], |cte| {
+            cte.table(id("nodes"))
+                .select(vec![id("id"), id("parent_id")])
+                .where_null(id("parent_id"))
+                .union_all(
+                    Select::from_table(id("nodes"))
+                        .select(vec![id("id"), id("parent_id")])
+                        .join_inner(id("tree"), id("nodes.parent_id"), id("tree.id")),
+                )
+        })
         .select(vec![id("id")])
         .build(&POSTGRES)
         .unwrap();
@@ -400,7 +419,8 @@ fn the_postgres_rendering_matches_the_golden_catalogue() {
     out.push(entry("truncate", &q.sql, &q.params));
 
     let text = format!("{}\n", out.join("\n"));
-    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden_postgres.txt");
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden_postgres.txt");
 
     if std::env::var("KELSON_REGEN_GOLDEN").is_ok() {
         std::fs::write(&fixture, &text).expect("the golden file is written");
@@ -409,9 +429,7 @@ fn the_postgres_rendering_matches_the_golden_catalogue() {
     }
 
     let expected = std::fs::read_to_string(&fixture).unwrap_or_else(|e| {
-        panic!(
-            "the golden fixture is missing ({e}); re-record it with KELSON_REGEN_GOLDEN=1"
-        )
+        panic!("the golden fixture is missing ({e}); re-record it with KELSON_REGEN_GOLDEN=1")
     });
     if expected != text {
         let exp_lines: Vec<&str> = expected.lines().collect();

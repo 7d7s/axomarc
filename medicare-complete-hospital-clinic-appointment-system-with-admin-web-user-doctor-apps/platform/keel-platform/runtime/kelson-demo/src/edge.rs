@@ -13,8 +13,8 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use axum::extract::{Request, State};
-use axum::http::header::HeaderValue;
 use axum::http::header;
+use axum::http::header::HeaderValue;
 use axum::middleware::Next;
 use axum::response::Response;
 use kelson_http::{CookieCipher, CookieQueue};
@@ -156,7 +156,10 @@ fn flush_cookies(cfg: &EdgeConfig, queue: &CookieQueue, response: &mut Response)
         };
         let mut sealed = cookie;
         sealed.value = value;
-        let rendered = sealed.render().ok().and_then(|raw| HeaderValue::from_str(&raw).ok());
+        let rendered = sealed
+            .render()
+            .ok()
+            .and_then(|raw| HeaderValue::from_str(&raw).ok());
         let Some(header_value) = rendered else {
             tracing::warn!(
                 target: "kelson::cookies",
@@ -340,7 +343,10 @@ mod tests {
             .and_then(|v| v.to_str().ok())
             .expect("one Set-Cookie")
             .to_string();
-        assert!(!raw.contains("evening"), "plaintext never reaches the wire: {raw}");
+        assert!(
+            !raw.contains("evening"),
+            "plaintext never reaches the wire: {raw}"
+        );
         let value = raw
             .split('=')
             .nth(1)

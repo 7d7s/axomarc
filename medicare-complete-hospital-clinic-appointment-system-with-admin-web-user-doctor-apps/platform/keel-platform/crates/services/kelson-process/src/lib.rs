@@ -249,7 +249,9 @@ impl ProcessRunner for FakeProcessRunner {
         self.seen.lock().unwrap().push(request.clone());
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
-            return Err(persistence("the fake process runner has no queued response"));
+            return Err(persistence(
+                "the fake process runner has no queued response",
+            ));
         }
         // The queued response may itself be an error ✓ (a host can script a
         // failing run ✓).

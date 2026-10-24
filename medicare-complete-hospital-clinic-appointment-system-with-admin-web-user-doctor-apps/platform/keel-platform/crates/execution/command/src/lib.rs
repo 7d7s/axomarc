@@ -10,8 +10,8 @@ pub mod typed;
 pub use typed::{Json, TypedHandleFn, TypedHandler, TypedInput, TypedOutput};
 
 use kelson_context::ExecutionContext;
-use kelson_foundation::{AppError, OperationId};
 use kelson_execution::{Engine, IdempotencyKey, OperationHandler, OperationOutcome};
+use kelson_foundation::{AppError, OperationId};
 use serde_json::Value;
 
 pub struct CommandBus {

@@ -343,7 +343,8 @@ mod tests {
 
     #[test]
     fn adds_workspace_member_idempotently() {
-        let dir = std::env::temp_dir().join(format!("kelson-codegen-member-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("kelson-codegen-member-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(

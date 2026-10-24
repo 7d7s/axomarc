@@ -349,10 +349,8 @@ fn define_wasi(linker: &mut Linker<CallState>) -> Result<(), WasmError> {
                 {
                     return ERRNO_FAULT;
                 }
-                let ptr =
-                    u32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]) as usize;
-                let len =
-                    u32::from_le_bytes([entry[4], entry[5], entry[6], entry[7]]) as usize;
+                let ptr = u32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]) as usize;
+                let len = u32::from_le_bytes([entry[4], entry[5], entry[6], entry[7]]) as usize;
                 let mut chunk = vec![0u8; len];
                 if memory.read(&mut caller, ptr, &mut chunk).is_err() {
                     return ERRNO_FAULT;
@@ -459,8 +457,7 @@ fn define_wasi(linker: &mut Linker<CallState>) -> Result<(), WasmError> {
         linker,
         "wasi_snapshot_preview1",
         "clock_time_get",
-        |mut caller: Caller<'_, CallState>, clock_id: i32, _precision: i64, out: u32|
-         -> i32 {
+        |mut caller: Caller<'_, CallState>, clock_id: i32, _precision: i64, out: u32| -> i32 {
             static PROCESS_START: OnceLock<std::time::Instant> = OnceLock::new();
             let nanos: u64 = if clock_id == 0 || clock_id == 4 {
                 SystemTime::now()
@@ -553,34 +550,30 @@ fn define_host(linker: &mut Linker<CallState>) -> Result<(), WasmError> {
     // Verdict = action is in the sidecar-verified capability set (a plugin
     // can never elevate itself), AND a non-empty path must sit inside the
     // execution's resolved scope chain (fail-closed when no scope).
-    wrap!(
-        linker,
-        "host",
-        "capability_check",
-        |mut caller: Caller<'_, CallState>,
-         action_ptr: u32,
-         action_len: u32,
-         path_ptr: u32,
-         path_len: u32|
-         -> i32 {
-            let (action, path) = {
-                let Some(memory) = memory_of(&mut caller) else {
-                    return 0;
-                };
-                let Some(action) = read_guest_str(&memory, &mut caller, action_ptr, action_len)
-                else {
-                    return 0;
-                };
-                let Some(path) = read_guest_str(&memory, &mut caller, path_ptr, path_len)
-                else {
-                    return 0;
-                };
-                (action, path)
+    wrap!(linker, "host", "capability_check", |mut caller: Caller<
+        '_,
+        CallState,
+    >,
+                                               action_ptr: u32,
+                                               action_len: u32,
+                                               path_ptr: u32,
+                                               path_len: u32|
+     -> i32 {
+        let (action, path) = {
+            let Some(memory) = memory_of(&mut caller) else {
+                return 0;
             };
-            let state = caller.data();
-            i32::from(state.host_capability_check(&action, &path))
-        },
-    )?;
+            let Some(action) = read_guest_str(&memory, &mut caller, action_ptr, action_len) else {
+                return 0;
+            };
+            let Some(path) = read_guest_str(&memory, &mut caller, path_ptr, path_len) else {
+                return 0;
+            };
+            (action, path)
+        };
+        let state = caller.data();
+        i32::from(state.host_capability_check(&action, &path))
+    },)?;
 
     // host.capability_write(action, delta) -> 1 recorded / 0 refused.
     // Records a mutation delta for the handler to commit through the
@@ -590,65 +583,57 @@ fn define_host(linker: &mut Linker<CallState>) -> Result<(), WasmError> {
     // sidecar-verified declared set (no self-elevation), the delta parses
     // as a JSON object (the handler validates the shape), and the
     // per-call buffer is not full.
-    wrap!(
-        linker,
-        "host",
-        "capability_write",
-        |mut caller: Caller<'_, CallState>,
-         action_ptr: u32,
-         action_len: u32,
-         delta_ptr: u32,
-         delta_len: u32|
-         -> i32 {
-            let (action, delta) = {
-                let Some(memory) = memory_of(&mut caller) else {
-                    return 0;
-                };
-                let Some(action) = read_guest_str(&memory, &mut caller, action_ptr, action_len)
-                else {
-                    return 0;
-                };
-                let Some(delta) = read_guest_str(&memory, &mut caller, delta_ptr, delta_len)
-                else {
-                    return 0;
-                };
-                (action, delta)
+    wrap!(linker, "host", "capability_write", |mut caller: Caller<
+        '_,
+        CallState,
+    >,
+                                               action_ptr: u32,
+                                               action_len: u32,
+                                               delta_ptr: u32,
+                                               delta_len: u32|
+     -> i32 {
+        let (action, delta) = {
+            let Some(memory) = memory_of(&mut caller) else {
+                return 0;
             };
-            i32::from(caller.data_mut().host_capability_write(&action, &delta))
-        },
-    )?;
+            let Some(action) = read_guest_str(&memory, &mut caller, action_ptr, action_len) else {
+                return 0;
+            };
+            let Some(delta) = read_guest_str(&memory, &mut caller, delta_ptr, delta_len) else {
+                return 0;
+            };
+            (action, delta)
+        };
+        i32::from(caller.data_mut().host_capability_write(&action, &delta))
+    },)?;
 
     // host.capability_audit(action, record) -> 1 recorded / 0 refused.
     // Audit is append-only, so EVERY profile may record (including
     // ReadOnly); the action must still be declared and the record must
     // parse as a JSON object. Same buffer bound as writes.
-    wrap!(
-        linker,
-        "host",
-        "capability_audit",
-        |mut caller: Caller<'_, CallState>,
-         action_ptr: u32,
-         action_len: u32,
-         record_ptr: u32,
-         record_len: u32|
-         -> i32 {
-            let (action, record) = {
-                let Some(memory) = memory_of(&mut caller) else {
-                    return 0;
-                };
-                let Some(action) = read_guest_str(&memory, &mut caller, action_ptr, action_len)
-                else {
-                    return 0;
-                };
-                let Some(record) = read_guest_str(&memory, &mut caller, record_ptr, record_len)
-                else {
-                    return 0;
-                };
-                (action, record)
+    wrap!(linker, "host", "capability_audit", |mut caller: Caller<
+        '_,
+        CallState,
+    >,
+                                               action_ptr: u32,
+                                               action_len: u32,
+                                               record_ptr: u32,
+                                               record_len: u32|
+     -> i32 {
+        let (action, record) = {
+            let Some(memory) = memory_of(&mut caller) else {
+                return 0;
             };
-            i32::from(caller.data_mut().host_capability_audit(&action, &record))
-        },
-    )?;
+            let Some(action) = read_guest_str(&memory, &mut caller, action_ptr, action_len) else {
+                return 0;
+            };
+            let Some(record) = read_guest_str(&memory, &mut caller, record_ptr, record_len) else {
+                return 0;
+            };
+            (action, record)
+        };
+        i32::from(caller.data_mut().host_capability_audit(&action, &record))
+    },)?;
 
     // --- the module seam (ADR 0020) -------------------------------------
     //
@@ -662,113 +647,105 @@ fn define_host(linker: &mut Linker<CallState>) -> Result<(), WasmError> {
     // host.model_read(method, args) -> packed SeamResult JSON, or 0 when
     // the guest cannot receive an answer. Reads carry no capability gate:
     // tenant scoping is `ModelStore`'s own job, enforced in the arguments.
-    wrap!(
-        linker,
-        "host",
-        "model_read",
-        |mut caller: Caller<'_, CallState>,
-         method_ptr: u32,
-         method_len: u32,
-         args_ptr: u32,
-         args_len: u32|
-         -> i64 {
-            let Some((method, args)) =
-                seam_args(&mut caller, method_ptr, method_len, args_ptr, args_len)
-            else {
-                return 0;
-            };
-            let answer = {
-                let state = caller.data();
-                kelson_module_contract::model_read(state.services.model_store(), &method, &args)
-            };
-            reply(&mut caller, &answer)
-        },
-    )?;
+    wrap!(linker, "host", "model_read", |mut caller: Caller<
+        '_,
+        CallState,
+    >,
+                                         method_ptr: u32,
+                                         method_len: u32,
+                                         args_ptr: u32,
+                                         args_len: u32|
+     -> i64 {
+        let Some((method, args)) =
+            seam_args(&mut caller, method_ptr, method_len, args_ptr, args_len)
+        else {
+            return 0;
+        };
+        let answer = {
+            let state = caller.data();
+            kelson_module_contract::model_read(state.services.model_store(), &method, &args)
+        };
+        reply(&mut caller, &answer)
+    },)?;
 
     // host.model_write(method, args) -> packed SeamResult JSON, or 0 for a
     // read-only guest. The gate is the same enabling condition
     // `capability_write` checks, read here rather than repeated per method.
-    wrap!(
-        linker,
-        "host",
-        "model_write",
-        |mut caller: Caller<'_, CallState>,
-         method_ptr: u32,
-         method_len: u32,
-         args_ptr: u32,
-         args_len: u32|
-         -> i64 {
-            let Some((method, args)) =
-                seam_args(&mut caller, method_ptr, method_len, args_ptr, args_len)
-            else {
-                return 0;
-            };
-            let answer = {
-                let state = caller.data();
-                kelson_module_contract::model_write(
-                    state.services.model_store(),
-                    &method,
-                    &args,
-                    state.profile.can_write(),
-                )
-            };
-            reply(&mut caller, &answer)
-        },
-    )?;
+    wrap!(linker, "host", "model_write", |mut caller: Caller<
+        '_,
+        CallState,
+    >,
+                                          method_ptr: u32,
+                                          method_len: u32,
+                                          args_ptr: u32,
+                                          args_len: u32|
+     -> i64 {
+        let Some((method, args)) =
+            seam_args(&mut caller, method_ptr, method_len, args_ptr, args_len)
+        else {
+            return 0;
+        };
+        let answer = {
+            let state = caller.data();
+            kelson_module_contract::model_write(
+                state.services.model_store(),
+                &method,
+                &args,
+                state.profile.can_write(),
+            )
+        };
+        reply(&mut caller, &answer)
+    },)?;
 
     // host.token_read(method, args) -> packed SeamResult JSON.
-    wrap!(
-        linker,
-        "host",
-        "token_read",
-        |mut caller: Caller<'_, CallState>,
-         method_ptr: u32,
-         method_len: u32,
-         args_ptr: u32,
-         args_len: u32|
-         -> i64 {
-            let Some((method, args)) =
-                seam_args(&mut caller, method_ptr, method_len, args_ptr, args_len)
-            else {
-                return 0;
-            };
-            let answer = {
-                let state = caller.data();
-                kelson_module_contract::token_read(state.services.token_store(), &method, &args)
-            };
-            reply(&mut caller, &answer)
-        },
-    )?;
+    wrap!(linker, "host", "token_read", |mut caller: Caller<
+        '_,
+        CallState,
+    >,
+                                         method_ptr: u32,
+                                         method_len: u32,
+                                         args_ptr: u32,
+                                         args_len: u32|
+     -> i64 {
+        let Some((method, args)) =
+            seam_args(&mut caller, method_ptr, method_len, args_ptr, args_len)
+        else {
+            return 0;
+        };
+        let answer = {
+            let state = caller.data();
+            kelson_module_contract::token_read(state.services.token_store(), &method, &args)
+        };
+        reply(&mut caller, &answer)
+    },)?;
 
     // host.token_write(method, args) -> packed SeamResult JSON, gated the
     // same way `model_write` is.
-    wrap!(
-        linker,
-        "host",
-        "token_write",
-        |mut caller: Caller<'_, CallState>,
-         method_ptr: u32,
-         method_len: u32,
-         args_ptr: u32,
-         args_len: u32|
-         -> i64 {
-            let Some((method, args)) =
-                seam_args(&mut caller, method_ptr, method_len, args_ptr, args_len)
-            else {
-                return 0;
-            };
-            let answer = {
-                let state = caller.data();
-                kelson_module_contract::token_write(
-                    state.services.token_store(),
-                    &method,
-                    &args,
-                    state.profile.can_write(),
-                )
-            };
-            reply(&mut caller, &answer)
-        },
-    )?;
+    wrap!(linker, "host", "token_write", |mut caller: Caller<
+        '_,
+        CallState,
+    >,
+                                          method_ptr: u32,
+                                          method_len: u32,
+                                          args_ptr: u32,
+                                          args_len: u32|
+     -> i64 {
+        let Some((method, args)) =
+            seam_args(&mut caller, method_ptr, method_len, args_ptr, args_len)
+        else {
+            return 0;
+        };
+        let answer = {
+            let state = caller.data();
+            kelson_module_contract::token_write(
+                state.services.token_store(),
+                &method,
+                &args,
+                state.profile.can_write(),
+            )
+        };
+        reply(&mut caller, &answer)
+    },)?;
 
     // host.notify_enqueue(request) -> 1 accepted / 0 refused (ADR 0020 §5).
     // Buffers one [`NotificationRequest`] for the handler to deliver after
@@ -776,23 +753,24 @@ fn define_host(linker: &mut Linker<CallState>) -> Result<(), WasmError> {
     // rows through an async store port and a handler that notifies and then
     // fails must leave nothing behind. Gated like `model_write`: a
     // read-only guest cannot make the host notify anyone.
-    wrap!(
-        linker,
-        "host",
-        "notify_enqueue",
-        |mut caller: Caller<'_, CallState>, ptr: u32, len: u32| -> i32 {
-            let request = {
-                let Some(memory) = memory_of(&mut caller) else {
-                    return 0;
-                };
-                let Some(request) = read_guest_str(&memory, &mut caller, ptr, len) else {
-                    return 0;
-                };
-                request
+    wrap!(linker, "host", "notify_enqueue", |mut caller: Caller<
+        '_,
+        CallState,
+    >,
+                                             ptr: u32,
+                                             len: u32|
+     -> i32 {
+        let request = {
+            let Some(memory) = memory_of(&mut caller) else {
+                return 0;
             };
-            i32::from(caller.data_mut().host_notify_enqueue(&request))
-        },
-    )?;
+            let Some(request) = read_guest_str(&memory, &mut caller, ptr, len) else {
+                return 0;
+            };
+            request
+        };
+        i32::from(caller.data_mut().host_notify_enqueue(&request))
+    },)?;
 
     // host.password_hash(method, args) -> packed SeamResult JSON (ADR 0020 §6).
     // argon2 runs HERE: its baseline needs 19 MiB and billions of
@@ -803,35 +781,33 @@ fn define_host(linker: &mut Linker<CallState>) -> Result<(), WasmError> {
     // ask a bounded number of times. A refusal answers the empty string, the
     // same silence every other gate gives a guest that was not supposed to
     // be able to ask.
-    wrap!(
-        linker,
-        "host",
-        "password_hash",
-        |mut caller: Caller<'_, CallState>,
-         method_ptr: u32,
-         method_len: u32,
-         args_ptr: u32,
-         args_len: u32|
-         -> i64 {
-            let Some((method, args)) =
-                seam_args(&mut caller, method_ptr, method_len, args_ptr, args_len)
-            else {
-                return 0;
-            };
-            if !caller.data().profile.can_write() {
+    wrap!(linker, "host", "password_hash", |mut caller: Caller<
+        '_,
+        CallState,
+    >,
+                                            method_ptr: u32,
+                                            method_len: u32,
+                                            args_ptr: u32,
+                                            args_len: u32|
+     -> i64 {
+        let Some((method, args)) =
+            seam_args(&mut caller, method_ptr, method_len, args_ptr, args_len)
+        else {
+            return 0;
+        };
+        if !caller.data().profile.can_write() {
+            return 0;
+        }
+        {
+            let state = caller.data_mut();
+            if state.password_hashes >= MAX_CALL_HASHES {
                 return 0;
             }
-            {
-                let state = caller.data_mut();
-                if state.password_hashes >= MAX_CALL_HASHES {
-                    return 0;
-                }
-                state.password_hashes += 1;
-            }
-            let answer = kelson_module_contract::password_hash(&method, &args);
-            reply(&mut caller, &answer)
-        },
-    )?;
+            state.password_hashes += 1;
+        }
+        let answer = kelson_module_contract::password_hash(&method, &args);
+        reply(&mut caller, &answer)
+    },)?;
 
     Ok(())
 }

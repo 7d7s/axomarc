@@ -111,7 +111,9 @@ impl Mailable {
             }
         }
         if self.text.is_none() && self.html.is_none() {
-            return Err(AppError::validation("mail: a text or html body is required"));
+            return Err(AppError::validation(
+                "mail: a text or html body is required",
+            ));
         }
         for att in &self.attachments {
             if att.filename.is_empty() || att.content_type.is_empty() {
@@ -120,9 +122,7 @@ impl Mailable {
                 ));
             }
             if att.object.key.is_empty() {
-                return Err(AppError::validation(
-                    "mail: attachment object key is empty",
-                ));
+                return Err(AppError::validation("mail: attachment object key is empty"));
             }
         }
         Ok(())
@@ -464,7 +464,11 @@ impl NotificationStore for InMemoryNotificationStore {
                 .iter()
                 .filter(|row| row.principal_id == principal)
                 .collect();
-            mine.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| b.id.cmp(&a.id)));
+            mine.sort_by(|a, b| {
+                b.created_at
+                    .cmp(&a.created_at)
+                    .then_with(|| b.id.cmp(&a.id))
+            });
             let total = mine.len() as u64;
             let unread = mine.iter().filter(|row| row.read_at.is_none()).count() as u64;
             let page = mine
@@ -491,8 +495,7 @@ impl NotificationStore for InMemoryNotificationStore {
             let mut rows = self.rows.lock().unwrap();
             let mut updated = 0u64;
             for row in rows.iter_mut() {
-                if row.principal_id == principal && row.read_at.is_none() && ids.contains(&row.id)
-                {
+                if row.principal_id == principal && row.read_at.is_none() && ids.contains(&row.id) {
                     row.read_at = Some(now);
                     updated += 1;
                 }
@@ -621,12 +624,7 @@ impl NotifyHub {
 
     /// Wave 7 P1: record one successful dispatch through the attached tap
     /// (`None` tap = no-op).
-    fn observe(
-        &self,
-        principal: Option<PrincipalId>,
-        notification_type: &str,
-        channel: Channel,
-    ) {
+    fn observe(&self, principal: Option<PrincipalId>, notification_type: &str, channel: Channel) {
         if let Some(tap) = self.tap.as_ref() {
             tap.on_dispatch(&DispatchRecord {
                 principal,
@@ -1057,7 +1055,10 @@ fn push_nudge(n: &dyn NotificationDef) -> (String, BTreeMap<String, String>) {
         .unwrap_or_else(|| n.type_key())
         .to_string();
     let mut vars = BTreeMap::new();
-    if let Some(cursor) = payload.get("delta_cursor").and_then(serde_json::Value::as_str) {
+    if let Some(cursor) = payload
+        .get("delta_cursor")
+        .and_then(serde_json::Value::as_str)
+    {
         vars.insert("delta_cursor".to_string(), cursor.to_string());
     }
     (signal, vars)
@@ -1232,7 +1233,10 @@ mod tests {
         let payload = serde_json::to_value(&m).expect("serializes");
         let raw = payload.to_string();
         assert!(raw.contains("invoice.pdf"));
-        assert!(!raw.contains("\"bytes\""), "payload carries refs, not bytes");
+        assert!(
+            !raw.contains("\"bytes\""),
+            "payload carries refs, not bytes"
+        );
 
         let back: Mailable = serde_json::from_value(payload).expect("deserializes");
         assert_eq!(back, m);
@@ -1352,11 +1356,7 @@ mod tests {
     struct EchoRenderer;
 
     impl NotificationViewRenderer for EchoRenderer {
-        fn render(
-            &self,
-            template: &str,
-            context: serde_json::Value,
-        ) -> Result<String, AppError> {
+        fn render(&self, template: &str, context: serde_json::Value) -> Result<String, AppError> {
             Ok(format!(
                 "<view:{template}>{}</view>",
                 context["patient"].as_str().unwrap_or("")
@@ -1367,11 +1367,7 @@ mod tests {
     struct BrokenRenderer;
 
     impl NotificationViewRenderer for BrokenRenderer {
-        fn render(
-            &self,
-            _template: &str,
-            _context: serde_json::Value,
-        ) -> Result<String, AppError> {
+        fn render(&self, _template: &str, _context: serde_json::Value) -> Result<String, AppError> {
             Err(AppError::internal("view exploded"))
         }
     }
@@ -1425,10 +1421,7 @@ mod tests {
             let mail = &sent[0];
             assert_eq!(mail.to, vec!["ada@example.com".to_string()]);
             assert_eq!(mail.subject, "Booked for Ada");
-            assert_eq!(
-                mail.text.as_deref(),
-                Some("2 appointment(s) for Ada")
-            );
+            assert_eq!(mail.text.as_deref(), Some("2 appointment(s) for Ada"));
             assert_eq!(
                 mail.html.as_deref(),
                 Some("<view:notifications.appointment.booked>Ada</view>"),
@@ -1470,7 +1463,10 @@ mod tests {
         assert_eq!(page.unread, 1);
         let row = &page.rows[0];
         assert_eq!(row.kind, "appointment.booked");
-        assert_eq!(row.data, serde_json::json!({ "patient": "Ada", "slots": 2 }));
+        assert_eq!(
+            row.data,
+            serde_json::json!({ "patient": "Ada", "slots": 2 })
+        );
         assert!(row.read_at.is_none());
         assert_eq!(row.principal_id, ctx.principal_id);
     }
@@ -1501,8 +1497,7 @@ mod tests {
         }
 
         // Renderer present but the template render errors -> dispatch errors.
-        let mut hub = NotifyHub::empty()
-            .with_view_renderer(std::sync::Arc::new(BrokenRenderer));
+        let mut hub = NotifyHub::empty().with_view_renderer(std::sync::Arc::new(BrokenRenderer));
         hub.mail = Some(Box::new(RecordingMail::default()));
         let err = hub
             .dispatch_notification(&note, Channel::Email, Some("ada@example.com"), &ctx)
@@ -1520,7 +1515,12 @@ mod tests {
         hub.mail = Some(Box::new(RecordingMail::default()));
         let ctx = ctx_for(PrincipalId::new());
         let err = hub
-            .dispatch_notification(&AttachmentsNotification, Channel::Email, Some("ops@example.com"), &ctx)
+            .dispatch_notification(
+                &AttachmentsNotification,
+                Channel::Email,
+                Some("ops@example.com"),
+                &ctx,
+            )
             .await
             .expect_err("attachments refuse");
         assert_eq!(err.code, kelson_foundation::codes::NOT_IMPLEMENTED);
@@ -1543,12 +1543,20 @@ mod tests {
                 .dispatch_notification(&note, channel, None, &ctx)
                 .await
                 .expect_err("target required");
-            assert_eq!(err.code, kelson_foundation::codes::VALIDATION, "{channel:?}");
+            assert_eq!(
+                err.code,
+                kelson_foundation::codes::VALIDATION,
+                "{channel:?}"
+            );
             let err = hub
                 .dispatch_notification(&note, channel, Some("  "), &ctx)
                 .await
                 .expect_err("blank target refused");
-            assert_eq!(err.code, kelson_foundation::codes::VALIDATION, "{channel:?}");
+            assert_eq!(
+                err.code,
+                kelson_foundation::codes::VALIDATION,
+                "{channel:?}"
+            );
         }
 
         let err = hub
@@ -1814,11 +1822,7 @@ mod tests {
     struct ContextCapture(std::sync::Arc<Mutex<Option<serde_json::Value>>>);
 
     impl NotificationViewRenderer for ContextCapture {
-        fn render(
-            &self,
-            _template: &str,
-            context: serde_json::Value,
-        ) -> Result<String, AppError> {
+        fn render(&self, _template: &str, context: serde_json::Value) -> Result<String, AppError> {
             *self.0.lock().unwrap() = Some(context);
             Ok("<captured/>".into())
         }
@@ -1967,7 +1971,10 @@ mod tests {
         assert_eq!(OnDemandAudit::ACTION, "notification.on_demand");
         assert_eq!(audit.type_key, "appointment.booked");
         assert_eq!(audit.channel, Channel::Email);
-        assert_eq!(audit.target_hash, OnDemandAudit::hash_target("ada@example.com"));
+        assert_eq!(
+            audit.target_hash,
+            OnDemandAudit::hash_target("ada@example.com")
+        );
         assert_eq!(audit.target_hash.len(), 64, "sha256 hex");
         assert_ne!(audit.target_hash, "ada@example.com");
         assert_eq!(
@@ -1982,7 +1989,10 @@ mod tests {
         );
 
         let detail = audit.detail().to_string();
-        assert!(detail.contains(&audit.target_hash), "detail carries the hash");
+        assert!(
+            detail.contains(&audit.target_hash),
+            "detail carries the hash"
+        );
         assert!(
             !detail.contains("ada@example.com"),
             "the raw target never escapes the dispatch"
@@ -1994,14 +2004,19 @@ mod tests {
     /// routing channel.
     #[tokio::test]
     async fn on_demand_refuses_the_database_channel_and_blank_targets() {
-        let hub = NotifyHub::empty()
-            .with_store(std::sync::Arc::new(InMemoryNotificationStore::new()));
+        let hub =
+            NotifyHub::empty().with_store(std::sync::Arc::new(InMemoryNotificationStore::new()));
         let note = BookedNotification {
             patient: "Ada",
             slots: 1,
         };
         let err = hub
-            .dispatch_on_demand(&note, Channel::Database, "ada@example.com", &OnDemandContext::default())
+            .dispatch_on_demand(
+                &note,
+                Channel::Database,
+                "ada@example.com",
+                &OnDemandContext::default(),
+            )
             .await
             .expect_err("database channel needs a principal");
         assert_eq!(err.code, kelson_foundation::codes::VALIDATION);
@@ -2053,7 +2068,10 @@ mod tests {
         {
             let sent = mail_log.lock().unwrap();
             assert_eq!(sent[0].subject, "Rendez-vous réservé pour Ada");
-            assert_eq!(sent[0].text.as_deref(), Some("Rendez-vous réservé pour Ada"));
+            assert_eq!(
+                sent[0].text.as_deref(),
+                Some("Rendez-vous réservé pour Ada")
+            );
         }
         let sent = sms_log.lock().unwrap();
         assert_eq!(sent[0].template, "Rendez-vous réservé pour Ada");
@@ -2097,10 +2115,7 @@ mod tests {
             "the pre-rendered target rides the envelope"
         );
 
-        let future = QueuedNotificationDelivery {
-            v: 99,
-            ..envelope
-        };
+        let future = QueuedNotificationDelivery { v: 99, ..envelope };
         let err = consumer
             .deliver_queued(future)
             .await
@@ -2141,7 +2156,11 @@ mod tests {
             context[kelson_foundation::LANG_KEY]["notifications.appointment_booked"],
             serde_json::json!("Rendez-vous réservé pour {patient}")
         );
-        assert_eq!(context["patient"], serde_json::json!("Ada"), "P5 payload fields intact");
+        assert_eq!(
+            context["patient"],
+            serde_json::json!("Ada"),
+            "P5 payload fields intact"
+        );
 
         // No catalog = the P5 context, byte for byte.
         let bare = ContextCapture::default();

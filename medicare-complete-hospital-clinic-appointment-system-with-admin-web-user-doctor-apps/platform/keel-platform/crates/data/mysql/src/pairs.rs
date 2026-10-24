@@ -118,7 +118,10 @@ pub fn scan_pairs(root: &Path) -> Result<Vec<PairMigration>, AppError> {
     let mut down_bases: Vec<String> = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|e| {
-            AppError::persistence(format!("pair migrations: cannot list {}: {e}", dir.display()))
+            AppError::persistence(format!(
+                "pair migrations: cannot list {}: {e}",
+                dir.display()
+            ))
         })?;
         let path = entry.path();
         if !path.is_file() {
@@ -137,10 +140,7 @@ pub fn scan_pairs(root: &Path) -> Result<Vec<PairMigration>, AppError> {
     up_files.sort();
     let mut out = Vec::with_capacity(up_files.len());
     for up in up_files {
-        let name = up
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default();
+        let name = up.file_name().and_then(|n| n.to_str()).unwrap_or_default();
         let base = name.strip_suffix(".up.sql").unwrap_or_default();
         let down_path = up.with_file_name(format!("{base}.down.sql"));
         let down_sql = std::fs::read_to_string(&down_path).map_err(|e| {
@@ -148,9 +148,8 @@ pub fn scan_pairs(root: &Path) -> Result<Vec<PairMigration>, AppError> {
                 "pair {base}: missing .down.sql (a pair that cannot roll back never applies): {e}"
             ))
         })?;
-        let up_sql = std::fs::read_to_string(&up).map_err(|e| {
-            AppError::persistence(format!("pair {base}: cannot read .up.sql: {e}"))
-        })?;
+        let up_sql = std::fs::read_to_string(&up)
+            .map_err(|e| AppError::persistence(format!("pair {base}: cannot read .up.sql: {e}")))?;
         out.push(PairMigration {
             migration: base.to_string(),
             up_sql,
@@ -280,12 +279,15 @@ where
     let next_batch = applied.iter().map(|(_, b)| *b).max().unwrap_or(0) + 1;
     let mut done = Vec::with_capacity(queued.len());
     for pair in queued {
-        sqlx::raw_sql(&pair.up_sql).execute(&mut *conn).await.map_err(|e| {
-            AppError::persistence(format!(
-                "{} (up): {e} ({NONTRANSACTIONAL_NOTE})",
-                pair.migration
-            ))
-        })?;
+        sqlx::raw_sql(&pair.up_sql)
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| {
+                AppError::persistence(format!(
+                    "{} (up): {e} ({NONTRANSACTIONAL_NOTE})",
+                    pair.migration
+                ))
+            })?;
         sqlx::query(&format!(
             "INSERT INTO {PAIRS_TABLE} (migration, batch) VALUES (?, ?)"
         ))
@@ -293,9 +295,7 @@ where
         .bind(next_batch)
         .execute(&mut *conn)
         .await
-        .map_err(|e| {
-            AppError::persistence(format!("{} (up): record: {e}", pair.migration))
-        })?;
+        .map_err(|e| AppError::persistence(format!("{} (up): record: {e}", pair.migration)))?;
         done.push(pair.migration.clone());
     }
     Ok(done)
@@ -336,17 +336,13 @@ where
             .execute(&mut *conn)
             .await
             .map_err(|e| {
-                AppError::persistence(format!(
-                    "{name} (down): {e} ({NONTRANSACTIONAL_NOTE})"
-                ))
+                AppError::persistence(format!("{name} (down): {e} ({NONTRANSACTIONAL_NOTE})"))
             })?;
-        sqlx::query(&format!(
-            "DELETE FROM {PAIRS_TABLE} WHERE migration = ?"
-        ))
-        .bind(&name)
-        .execute(&mut *conn)
-        .await
-        .map_err(|e| AppError::persistence(format!("{name} (down): record: {e}")))?;
+        sqlx::query(&format!("DELETE FROM {PAIRS_TABLE} WHERE migration = ?"))
+            .bind(&name)
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| AppError::persistence(format!("{name} (down): record: {e}")))?;
         done.push(name);
     }
     Ok(done)

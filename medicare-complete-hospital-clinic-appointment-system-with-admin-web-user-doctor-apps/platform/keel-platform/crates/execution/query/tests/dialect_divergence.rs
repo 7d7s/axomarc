@@ -14,8 +14,8 @@
 //!    **refused**, not silently dropped.
 
 use kelson_query::{
-    ConflictPolicy, Delete, DialectId, Direction, Ident, Insert, Operator, Select, Truncate, Update,
-    Value, MYSQL, POSTGRES,
+    ConflictPolicy, Delete, DialectId, Direction, Ident, Insert, Operator, Select, Truncate,
+    Update, Value, MYSQL, POSTGRES,
 };
 
 fn id(raw: &str) -> Ident {
@@ -268,20 +268,16 @@ fn catalogue(dialect: &dyn kelson_query::Dialect) -> Vec<(String, String)> {
     push(
         "select_with_recursive_cte",
         Select::from_table(id("tree"))
-            .with_recursive_cte(
-                "tree",
-                vec![id("id"), id("parent_id")],
-                |cte| {
-                    cte.table(id("nodes"))
-                        .select(vec![id("id"), id("parent_id")])
-                        .where_null(id("parent_id"))
-                        .union_all(
-                            Select::from_table(id("nodes"))
-                                .select(vec![id("id"), id("parent_id")])
-                                .join_inner(id("tree"), id("nodes.parent_id"), id("tree.id")),
-                        )
-                },
-            )
+            .with_recursive_cte("tree", vec![id("id"), id("parent_id")], |cte| {
+                cte.table(id("nodes"))
+                    .select(vec![id("id"), id("parent_id")])
+                    .where_null(id("parent_id"))
+                    .union_all(
+                        Select::from_table(id("nodes"))
+                            .select(vec![id("id"), id("parent_id")])
+                            .join_inner(id("tree"), id("nodes.parent_id"), id("tree.id")),
+                    )
+            })
             .select(vec![id("id")])
             .build(dialect)
             .unwrap()
@@ -361,7 +357,10 @@ fn the_mysql_rendering_carries_no_postgres_only_construct() {
 fn the_postgres_rendering_carries_no_mysql_only_construct() {
     // The mirror: MySQL's row alias and its duplicate-key clause must not
     // reach Postgres.
-    const MY_ONLY: &[(&str, &str)] = &[("the row alias", "AS new"), ("ON DUPLICATE KEY", "ON DUPLICATE KEY")];
+    const MY_ONLY: &[(&str, &str)] = &[
+        ("the row alias", "AS new"),
+        ("ON DUPLICATE KEY", "ON DUPLICATE KEY"),
+    ];
     let mut leaks: Vec<String> = Vec::new();
     for (name, sql) in catalogue(&POSTGRES) {
         for (label, needle) in MY_ONLY {
@@ -404,7 +403,10 @@ fn the_two_dialects_differ_where_they_must() {
             );
         }
     }
-    assert!(with_binds > 0, "the catalogue must contain binding statements");
+    assert!(
+        with_binds > 0,
+        "the catalogue must contain binding statements"
+    );
     assert_eq!(
         differing_with_binds, with_binds,
         "every binding statement must differ by dialect"

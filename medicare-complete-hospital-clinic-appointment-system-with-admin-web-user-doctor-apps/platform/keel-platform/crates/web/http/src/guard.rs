@@ -278,8 +278,15 @@ mod tests {
 
     #[test]
     fn a_valid_bearer_resolves_with_its_strategy() {
-        let expected = guarded(PrincipalId::new(), Some(TenantId::new()), GuardStrategy::Token);
-        let guard = BearerGuard::new(Arc::new(Fixed(Some(expected.clone()))), GuardStrategy::Token);
+        let expected = guarded(
+            PrincipalId::new(),
+            Some(TenantId::new()),
+            GuardStrategy::Token,
+        );
+        let guard = BearerGuard::new(
+            Arc::new(Fixed(Some(expected.clone()))),
+            GuardStrategy::Token,
+        );
         let resolved = guard
             .resolve(&headers_with_bearer("pat-value"), None)
             .expect("the credential verifies");
@@ -324,7 +331,9 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             header::COOKIE,
-            "kelson_session=abc; kelson_token=pat-value".parse().unwrap(),
+            "kelson_session=abc; kelson_token=pat-value"
+                .parse()
+                .unwrap(),
         );
         let resolved = guard
             .resolve(&headers, None)
@@ -334,7 +343,10 @@ mod tests {
             resolved.principal_id, expected.principal_id,
             "the same principal is resolved"
         );
-        assert_eq!(resolved.abilities, expected.abilities, "the abilities travel");
+        assert_eq!(
+            resolved.abilities, expected.abilities,
+            "the abilities travel"
+        );
         assert_eq!(
             resolved.strategy,
             GuardStrategy::TokenCookie,

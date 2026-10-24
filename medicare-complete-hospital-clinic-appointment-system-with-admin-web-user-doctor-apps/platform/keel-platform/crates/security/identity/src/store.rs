@@ -1,13 +1,22 @@
-//! Identity store ports (S7): `PrincipalStore` + `CredentialStore`.
+//! Identity store ports (S7): `PrincipalStore` + `CredentialStore` +
+//! `MembershipStore`.
 //! The HTTP auth flows (register/login/reset) resolve identity through these
 //! ports; `kelson-postgres` implements them on the `principals`/`credentials`
 //! tables, and the in-memory impls serve degraded boot and tests.
+//!
+//! `MembershipStore` (MNC-001) is the tenant-isolation edge: a principal may
+//! authenticate into a tenant ONLY when an ACTIVE membership row exists for
+//! that (principal, tenant) pair. Register grants one; login demands one; no
+//! code path may install an access snapshot with a membership the store has
+//! never seen.
 
 use std::sync::RwLock;
 
-use kelson_foundation::{AppError, PrincipalId};
+use kelson_foundation::{AppError, MembershipId, PrincipalId, TenantId};
 
-use crate::{Credential, CredentialKind, Principal, PrincipalStatus, Secret};
+use crate::{
+    Credential, CredentialKind, Membership, MembershipStatus, Principal, PrincipalStatus, Secret,
+};
 
 /// Principal persistence port. Emails/phones are unique identities.
 pub trait PrincipalStore: Send + Sync {
@@ -36,6 +45,28 @@ pub trait CredentialStore: Send + Sync {
         principal: PrincipalId,
         new_hash: Secret,
     ) -> Result<(), AppError>;
+}
+
+/// Membership persistence port (MNC-001): the (principal, tenant) edge.
+/// One row per pair — a principal joining the same tenant twice is a
+/// conflict, not a second edge.
+pub trait MembershipStore: Send + Sync {
+    fn grant(&self, membership: Membership) -> Result<Membership, AppError>;
+    /// The edge row for this exact pair, whatever its status.
+    fn find(
+        &self,
+        principal: PrincipalId,
+        tenant: TenantId,
+    ) -> Result<Option<Membership>, AppError>;
+    /// The edge ONLY when it is ACTIVE — the shape every authz gate reads.
+    fn active_for(
+        &self,
+        principal: PrincipalId,
+        tenant: TenantId,
+    ) -> Result<Option<Membership>, AppError> {
+        Ok(self.find(principal, tenant)?.filter(Membership::is_active))
+    }
+    fn update_status(&self, id: MembershipId, status: MembershipStatus) -> Result<(), AppError>;
 }
 
 /// Verify a plaintext password against a stored credential. Returns false
@@ -190,6 +221,57 @@ impl CredentialStore for InMemoryCredentialStore {
     }
 }
 
+/// Degraded-boot / test store: memberships keyed by (principal, tenant).
+#[derive(Debug, Default)]
+pub struct InMemoryMembershipStore {
+    inner: RwLock<Vec<Membership>>,
+}
+
+impl InMemoryMembershipStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl MembershipStore for InMemoryMembershipStore {
+    fn grant(&self, membership: Membership) -> Result<Membership, AppError> {
+        let mut rows = self.inner.write().unwrap();
+        if rows.iter().any(|m| {
+            m.principal_id == membership.principal_id && m.tenant_id == membership.tenant_id
+        }) {
+            return Err(AppError::conflict(format!(
+                "membership exists for principal {} in tenant {}",
+                membership.principal_id, membership.tenant_id
+            )));
+        }
+        rows.push(membership.clone());
+        Ok(membership)
+    }
+
+    fn find(
+        &self,
+        principal: PrincipalId,
+        tenant: TenantId,
+    ) -> Result<Option<Membership>, AppError> {
+        Ok(self
+            .inner
+            .read()
+            .unwrap()
+            .iter()
+            .find(|m| m.principal_id == principal && m.tenant_id == tenant)
+            .cloned())
+    }
+
+    fn update_status(&self, id: MembershipId, status: MembershipStatus) -> Result<(), AppError> {
+        let mut rows = self.inner.write().unwrap();
+        let Some(row) = rows.iter_mut().find(|m| m.id == id) else {
+            return Err(AppError::not_found(format!("membership {id}")));
+        };
+        row.status = status;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,5 +364,46 @@ mod tests {
             ..cred
         };
         assert!(!verify_credential(&otp, &pw).unwrap());
+    }
+
+    #[test]
+    fn membership_grant_uniqueness_and_active_gate() {
+        let store = InMemoryMembershipStore::new();
+        let principal = PrincipalId::new();
+        let tenant = kelson_foundation::TenantId::new();
+        let edge = store
+            .grant(Membership {
+                id: MembershipId::new(),
+                principal_id: principal,
+                tenant_id: tenant,
+                status: MembershipStatus::Active,
+                joined_at: OffsetDateTime::now_utc(),
+            })
+            .unwrap();
+        assert!(store.active_for(principal, tenant).unwrap().is_some());
+        assert!(store
+            .active_for(principal, kelson_foundation::TenantId::new())
+            .unwrap()
+            .is_none());
+        assert!(store
+            .grant(Membership {
+                id: MembershipId::new(),
+                principal_id: principal,
+                tenant_id: tenant,
+                status: MembershipStatus::Active,
+                joined_at: OffsetDateTime::now_utc(),
+            })
+            .is_err());
+        store
+            .update_status(edge.id, MembershipStatus::Revoked)
+            .unwrap();
+        assert!(
+            store.active_for(principal, tenant).unwrap().is_none(),
+            "a revoked edge keeps the row (find) but never satisfies the gate"
+        );
+        assert!(store.find(principal, tenant).unwrap().is_some());
+        assert!(store
+            .update_status(MembershipId::new(), MembershipStatus::Active)
+            .is_err());
     }
 }

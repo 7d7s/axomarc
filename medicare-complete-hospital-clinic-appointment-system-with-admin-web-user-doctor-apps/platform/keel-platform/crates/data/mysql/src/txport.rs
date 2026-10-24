@@ -91,10 +91,7 @@ pub struct MySqlTxHandle {
 /// return `rows_affected` (CLIENT_FOUND_ROWS counts matched rows - the same
 /// contract as the pg twin, negotiated at connect time, independent of
 /// protocol).
-async fn raw_exec(
-    conn: &mut sqlx::mysql::MySqlConnection,
-    sql: &str,
-) -> Result<u64, AppError> {
+async fn raw_exec(conn: &mut sqlx::mysql::MySqlConnection, sql: &str) -> Result<u64, AppError> {
     // Receiver form via `sqlx::Executor` - see the module docs note on why
     // `raw_sql(sql).execute(conn)` cannot be boxed into a `BoxFuture`.
     let result = conn
@@ -126,9 +123,7 @@ impl TxHandle for MySqlTxHandle {
                 .tx
                 .take()
                 .ok_or_else(|| AppError::internal("tx already completed"))?;
-            tx.commit()
-                .await
-                .map_err(|e| tx_error("commit", &e))
+            tx.commit().await.map_err(|e| tx_error("commit", &e))
         })
     }
 
@@ -138,9 +133,7 @@ impl TxHandle for MySqlTxHandle {
                 .tx
                 .take()
                 .ok_or_else(|| AppError::internal("tx already completed"))?;
-            tx.rollback()
-                .await
-                .map_err(|e| tx_error("rollback", &e))
+            tx.rollback().await.map_err(|e| tx_error("rollback", &e))
         })
     }
 }
@@ -155,10 +148,7 @@ async fn begin_tx(
     pool: &MySqlPool,
     options: &TxOptions,
 ) -> Result<sqlx::Transaction<'static, sqlx::MySql>, AppError> {
-    let mut conn = pool
-        .acquire()
-        .await
-        .map_err(|e| tx_error("begin", &e))?;
+    let mut conn = pool.acquire().await.map_err(|e| tx_error("begin", &e))?;
 
     // Isolation must be set before the first statement of the transaction -
     // on MySQL before BEGIN itself, on the same connection the transaction
@@ -186,19 +176,15 @@ async fn begin_tx(
         .await
         .map_err(|e| tx_error("isolation", &e))?;
 
-    let tx: sqlx::Transaction<'static, sqlx::MySql> =
-        sqlx::Transaction::begin(conn, None)
-            .await
-            .map_err(|e| tx_error("begin", &e))?;
+    let tx: sqlx::Transaction<'static, sqlx::MySql> = sqlx::Transaction::begin(conn, None)
+        .await
+        .map_err(|e| tx_error("begin", &e))?;
     Ok(tx)
 }
 
 /// Whole body of [`TransactionPort::begin`] as one async fn: the boxed
 /// trait method awaits it with ZERO awaits of its own (see `exec_impl`).
-async fn begin_impl(
-    pool: &MySqlPool,
-    options: &TxOptions,
-) -> Result<Box<dyn TxHandle>, AppError> {
+async fn begin_impl(pool: &MySqlPool, options: &TxOptions) -> Result<Box<dyn TxHandle>, AppError> {
     let tx = begin_tx(pool, options).await?;
     let handle: Box<dyn TxHandle> = Box::new(MySqlTxHandle { tx: Some(tx) });
     Ok(handle)

@@ -31,7 +31,6 @@ impl PgCredentialStore {
     }
 }
 
-
 fn pg(e: impl std::fmt::Display) -> AppError {
     AppError::persistence(format!("identity: {e}"))
 }

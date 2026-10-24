@@ -123,7 +123,10 @@ impl SharedConn {
     /// Run a command with the shared connection; on any error, drop the
     /// connection, reconnect once and retry. Deterministic command errors
     /// simply fail twice.
-    pub fn with<R>(&self, mut f: impl FnMut(&mut redis::Connection) -> redis::RedisResult<R>) -> Result<R, AppError> {
+    pub fn with<R>(
+        &self,
+        mut f: impl FnMut(&mut redis::Connection) -> redis::RedisResult<R>,
+    ) -> Result<R, AppError> {
         let mut guard = self.conn.lock().expect("redis conn poisoned");
         if guard.is_none() {
             let conn = self
@@ -236,7 +239,9 @@ impl CachePort for RedisCache {
 
     fn delete(&self, key: &str) {
         let key = self.key(key);
-        let _ = self.conn.with(|c| redis::cmd("DEL").arg(&key).query::<u64>(c));
+        let _ = self
+            .conn
+            .with(|c| redis::cmd("DEL").arg(&key).query::<u64>(c));
     }
 
     fn invalidate_prefix(&self, prefix: &str) {
@@ -260,9 +265,9 @@ impl CachePort for RedisCache {
                 }
             };
             if !keys.is_empty() {
-                let res =
-                    self.conn
-                        .with(|c| redis::cmd("DEL").arg(&keys).query::<u64>(c));
+                let res = self
+                    .conn
+                    .with(|c| redis::cmd("DEL").arg(&keys).query::<u64>(c));
                 if let Err(e) = res {
                     tracing::warn!(error = %e.public_message, "redis prefix delete failed");
                 }
@@ -297,12 +302,10 @@ impl CachePort for RedisCache {
 
     fn delete_if_equals(&self, key: &str, expected: &[u8]) -> bool {
         let key = self.key(key);
-        match self.conn.with(|c| {
-            self.cas
-                .key(&key)
-                .arg(expected.to_vec())
-                .invoke::<i64>(c)
-        }) {
+        match self
+            .conn
+            .with(|c| self.cas.key(&key).arg(expected.to_vec()).invoke::<i64>(c))
+        {
             Ok(v) => v == 1,
             Err(e) => {
                 tracing::warn!(error = %e.public_message, "redis CAS delete failed; refusing release");
@@ -396,8 +399,12 @@ impl RedisJobStore {
     fn write_item(&self, job: &DurableJob) -> Result<(), AppError> {
         let raw = serde_json::to_string(job)
             .map_err(|e| AppError::persistence(format!("job serialize: {e}")))?;
-        self.conn
-            .with(|c| redis::cmd("SET").arg(self.item_key(job.id)).arg(&raw).query::<()>(c))
+        self.conn.with(|c| {
+            redis::cmd("SET")
+                .arg(self.item_key(job.id))
+                .arg(&raw)
+                .query::<()>(c)
+        })
     }
 
     fn list_from(&self, zset: &str, limit: usize) -> Result<Vec<DurableJob>, AppError> {
@@ -413,7 +420,9 @@ impl RedisJobStore {
         })?;
         let mut out = Vec::new();
         for m in members {
-            let Some(id) = id_from_member(&m) else { continue };
+            let Some(id) = id_from_member(&m) else {
+                continue;
+            };
             if let Some(job) = self.read_item(id)? {
                 out.push(job);
             }
@@ -512,7 +521,10 @@ impl RedisJobStore {
         let m = member(job.priority, id);
         self.write_item(&job)?;
         self.conn.with(|c| {
-            redis::cmd("ZREM").arg(self.zset("running")).arg(&m).query::<u64>(c)
+            redis::cmd("ZREM")
+                .arg(self.zset("running"))
+                .arg(&m)
+                .query::<u64>(c)
         })?;
         self.conn.with(|c| {
             redis::cmd("ZADD")
@@ -565,9 +577,17 @@ impl RedisJobStore {
             }
         }
         self.write_item(&job)?;
-        self.conn
-            .with(|c| redis::cmd("ZREM").arg(self.zset("running")).arg(&m).query::<u64>(c))?;
-        let target = if next == JobStatus::Pending { "pending" } else { "dead" };
+        self.conn.with(|c| {
+            redis::cmd("ZREM")
+                .arg(self.zset("running"))
+                .arg(&m)
+                .query::<u64>(c)
+        })?;
+        let target = if next == JobStatus::Pending {
+            "pending"
+        } else {
+            "dead"
+        };
         self.conn.with(|c| {
             redis::cmd("ZADD")
                 .arg(self.zset(target))
@@ -665,8 +685,12 @@ impl JobStoreAdmin for RedisJobStore {
         job.finished_at = None;
         let m = member(job.priority, id);
         self.write_item(&job)?;
-        self.conn
-            .with(|c| redis::cmd("ZREM").arg(self.zset("dead")).arg(&m).query::<u64>(c))?;
+        self.conn.with(|c| {
+            redis::cmd("ZREM")
+                .arg(self.zset("dead"))
+                .arg(&m)
+                .query::<u64>(c)
+        })?;
         self.conn.with(|c| {
             redis::cmd("ZADD")
                 .arg(self.zset("pending"))

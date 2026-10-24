@@ -74,8 +74,17 @@ mod tests {
 
     #[test]
     fn decisions_protect_critical_events() {
-        assert_eq!(decide(ShedLevel::DropEphemeral, true, false), DropDecision::DroppedEphemeral);
-        assert_eq!(decide(ShedLevel::DropEphemeral, false, true), DropDecision::Enqueue);
-        assert_eq!(decide(ShedLevel::ShedNonCritical, false, false), DropDecision::Enqueue);
+        assert_eq!(
+            decide(ShedLevel::DropEphemeral, true, false),
+            DropDecision::DroppedEphemeral
+        );
+        assert_eq!(
+            decide(ShedLevel::DropEphemeral, false, true),
+            DropDecision::Enqueue
+        );
+        assert_eq!(
+            decide(ShedLevel::ShedNonCritical, false, false),
+            DropDecision::Enqueue
+        );
     }
 }

@@ -7,7 +7,9 @@
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
-use kelson_foundation::{codes, AppError, Envelope, ErrorCategory, Retryability, Sealer, Secret, Severity};
+use kelson_foundation::{
+    codes, AppError, Envelope, ErrorCategory, Retryability, Sealer, Secret, Severity,
+};
 use rand::RngCore;
 
 /// Algorithm identifier recorded in [`Envelope::alg`].
@@ -177,11 +179,7 @@ impl Sealer for RotatingSealer {
         if envelope.key_id == self.current_id {
             return self.current.open(envelope);
         }
-        match self
-            .retired
-            .iter()
-            .find(|(id, _)| *id == envelope.key_id)
-        {
+        match self.retired.iter().find(|(id, _)| *id == envelope.key_id) {
             Some((_, sealer)) => sealer.open(envelope),
             None => Err(AppError::new(
                 codes::ELEVATION,

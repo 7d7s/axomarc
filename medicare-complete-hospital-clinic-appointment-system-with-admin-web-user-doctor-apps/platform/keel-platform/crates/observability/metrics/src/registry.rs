@@ -105,11 +105,13 @@ impl MetricsRegistry {
 
     pub fn observe_ms(&self, name: &str, value_ms: f64) {
         let mut guard = self.histograms.lock().expect("histograms poisoned");
-        let state = guard.entry(name.to_string()).or_insert_with(|| HistogramState {
-            buckets: self.bound_ms.iter().map(|b| (*b, 0)).collect(),
-            sum: 0.0,
-            count: 0,
-        });
+        let state = guard
+            .entry(name.to_string())
+            .or_insert_with(|| HistogramState {
+                buckets: self.bound_ms.iter().map(|b| (*b, 0)).collect(),
+                sum: 0.0,
+                count: 0,
+            });
         state.sum += value_ms;
         state.count += 1;
         for (bound, count) in state.buckets.iter_mut() {
@@ -191,7 +193,11 @@ mod tests {
             .iter()
             .filter(|(k, _)| k.labels.contains_key("__overflow__"))
             .count();
-        assert!(overflowed >= 1, "expected overflow collapse, got {:?}", s.counters.len());
+        assert!(
+            overflowed >= 1,
+            "expected overflow collapse, got {:?}",
+            s.counters.len()
+        );
         assert!(s.counters.len() <= 4);
     }
 }

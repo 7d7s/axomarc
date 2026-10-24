@@ -143,7 +143,10 @@ impl ErrorRenderRegistry {
     /// Custom renderer output for a code, when one registered.
     pub fn detail(&self, err: &AppError) -> Option<serde_json::Value> {
         let inner = self.read();
-        inner.renderers.get(&err.code).and_then(|render| render(err))
+        inner
+            .renderers
+            .get(&err.code)
+            .and_then(|render| render(err))
     }
 }
 
@@ -175,12 +178,7 @@ pub fn problem_json(
     );
     problem.insert(
         "title".into(),
-        serde_json::Value::String(
-            status
-                .canonical_reason()
-                .unwrap_or("Error")
-                .to_string(),
-        ),
+        serde_json::Value::String(status.canonical_reason().unwrap_or("Error").to_string()),
     );
     problem.insert("status".into(), serde_json::json!(status.as_u16()));
     problem.insert(
@@ -224,7 +222,10 @@ mod tests {
         assert!(!plan.reportable, "client mistakes do not report");
 
         let validation = AppError::validation("bad");
-        assert_eq!(reg.status_for(&validation), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            reg.status_for(&validation),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
         assert!(!reg.plan(&validation).reportable);
     }
 
@@ -280,15 +281,22 @@ mod tests {
         assert!(!wants_problem(Some("application/json"), true));
         // Any explicit mention of `application/json` keeps the Envelope, even
         // at a lower q-value than a neighbouring HTML preference.
-        assert!(!wants_problem(Some("text/html, application/json;q=0.9"), true));
-        assert!(wants_problem(Some("text/html, application/problem+json;q=0.9"), true));
+        assert!(!wants_problem(
+            Some("text/html, application/json;q=0.9"),
+            true
+        ));
+        assert!(wants_problem(
+            Some("text/html, application/problem+json;q=0.9"),
+            true
+        ));
     }
 
     #[test]
     fn problem_body_is_rfc7807_shaped_with_platform_extensions() {
         let status = StatusCode::NOT_FOUND;
         let err = AppError::not_found("Appointment").with_meta("lookup", "tenant-scoped");
-        let body = ErrorBody::from_app_error(&err).with_detail(json!({ "resource": "appointment" }));
+        let body =
+            ErrorBody::from_app_error(&err).with_detail(json!({ "resource": "appointment" }));
 
         let problem = problem_json(status, &body, Some("/api/v1/appointments/x"));
         assert_eq!(problem["type"], json!("urn:kelson:error:KSN_NOT_FOUND"));
@@ -300,7 +308,10 @@ mod tests {
         assert_eq!(problem["code"], json!("KSN_NOT_FOUND"));
         assert_eq!(problem["meta"]["lookup"], json!("tenant-scoped"));
         assert_eq!(problem["meta"]["resource"], json!("appointment"));
-        assert!(problem.get("debug").is_none(), "debug never renders unasked");
+        assert!(
+            problem.get("debug").is_none(),
+            "debug never renders unasked"
+        );
     }
 
     #[test]

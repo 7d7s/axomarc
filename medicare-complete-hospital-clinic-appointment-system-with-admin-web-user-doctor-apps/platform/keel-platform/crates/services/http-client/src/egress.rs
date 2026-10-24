@@ -126,26 +126,24 @@ impl reqwest::dns::Resolve for PolicyResolver {
             // A literal address needs no lookup ✓.
             if let Ok(ip) = host.parse::<IpAddr>() {
                 if policy.refuse_private_targets && EgressPolicy::refuses_address(&ip) {
-                    return Err(Box::<dyn std::error::Error + Send + Sync>::from(
-                        format!("egress policy refused {host}"),
-                    ));
+                    return Err(Box::<dyn std::error::Error + Send + Sync>::from(format!(
+                        "egress policy refused {host}"
+                    )));
                 }
-                return Ok(Box::new(
-                    vec![std::net::SocketAddr::new(ip, 0)].into_iter(),
-                )
+                return Ok(Box::new(vec![std::net::SocketAddr::new(ip, 0)].into_iter())
                     as reqwest::dns::Addrs);
             }
-            let addrs = resolve_host(&host, 0)
-                .await
-                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+            let addrs = resolve_host(&host, 0).await.map_err(
+                |e| -> Box<dyn std::error::Error + Send + Sync> {
                     Box::new(std::io::Error::other(e.public_message))
-                })?;
+                },
+            )?;
             if policy.refuse_private_targets {
                 for ip in &addrs {
                     if EgressPolicy::refuses_address(ip) {
-                        return Err(Box::<dyn std::error::Error + Send + Sync>::from(
-                            format!("egress policy refused {host}"),
-                        ));
+                        return Err(Box::<dyn std::error::Error + Send + Sync>::from(format!(
+                            "egress policy refused {host}"
+                        )));
                     }
                 }
             }
@@ -155,8 +153,7 @@ impl reqwest::dns::Resolve for PolicyResolver {
                     .map(|ip| std::net::SocketAddr::new(ip, 0))
                     .collect::<Vec<_>>()
                     .into_iter(),
-            )
-                as reqwest::dns::Addrs)
+            ) as reqwest::dns::Addrs)
         })
     }
 }
@@ -185,7 +182,11 @@ mod tests {
                 "{ip} must be refused"
             );
         }
-        for ip in ["93.184.216.34", "8.8.8.8", "2606:2800:220:1:248:1893:25c8:1946"] {
+        for ip in [
+            "93.184.216.34",
+            "8.8.8.8",
+            "2606:2800:220:1:248:1893:25c8:1946",
+        ] {
             assert!(
                 !EgressPolicy::refuses_address(&ip.parse().unwrap()),
                 "{ip} must be reachable"

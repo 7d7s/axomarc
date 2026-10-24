@@ -12,6 +12,7 @@
 pub mod batchledger;
 pub mod bridge;
 pub mod jobstore;
+pub mod membershipstore;
 pub mod modelstore;
 pub mod notificationstore;
 pub mod outboxstore;
@@ -27,6 +28,7 @@ pub mod txport;
 
 pub use batchledger::PgBatchLedger;
 pub use jobstore::PgJobStore;
+pub use membershipstore::PgMembershipStore;
 pub use modelstore::PgModelStore;
 pub use notificationstore::PgNotificationStore;
 pub use outboxstore::PgOutboxStore;
@@ -188,8 +190,8 @@ pub async fn seed_tenant(pool: &PgPool, id: Uuid, slug: &str, name: &str) -> Res
 /// Two pools: tenant (`kelson_tenant` role, RLS enforced) and platform
 /// (`kelson_platform` role, break-glass, NO RLS policies applied).
 pub struct TenantGuardedPool {
-    tenant_pool: PgPool,      // connects as kelson_tenant (RLS enforced)
-    platform_pool: PgPool,    // connects as kelson_platform (break-glass, NO RLS)
+    tenant_pool: PgPool,   // connects as kelson_tenant (RLS enforced)
+    platform_pool: PgPool, // connects as kelson_platform (break-glass, NO RLS)
 }
 
 /// Boxed async task bound to a borrowed transaction: the callback passed to
@@ -226,12 +228,14 @@ impl TenantGuardedPool {
     ///     sqlx::query("SELECT 1").fetch_all(&mut *tx).await.map_err(...)
     /// })).await?
     /// ```
-    pub async fn with_tenant<T, F>(&self, tenant_id: kelson_foundation::TenantId, f: F) -> Result<T, AppError>
+    pub async fn with_tenant<T, F>(
+        &self,
+        tenant_id: kelson_foundation::TenantId,
+        f: F,
+    ) -> Result<T, AppError>
     where
         T: Send,
-        F: for<'a, 'b> FnOnce(
-            &'a mut sqlx::Transaction<'b, sqlx::Postgres>,
-        ) -> TxnTask<'a, T>
+        F: for<'a, 'b> FnOnce(&'a mut sqlx::Transaction<'b, sqlx::Postgres>) -> TxnTask<'a, T>
             + Send,
     {
         let mut conn = self
@@ -285,9 +289,7 @@ impl TenantGuardedPool {
     pub async fn platform<T, F>(&self, f: F) -> Result<T, AppError>
     where
         T: Send,
-        F: for<'a, 'b> FnOnce(
-            &'a mut sqlx::Transaction<'b, sqlx::Postgres>,
-        ) -> TxnTask<'a, T>
+        F: for<'a, 'b> FnOnce(&'a mut sqlx::Transaction<'b, sqlx::Postgres>) -> TxnTask<'a, T>
             + Send,
     {
         let mut conn = self

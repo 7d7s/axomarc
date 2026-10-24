@@ -96,12 +96,20 @@ impl ConstraintSpec {
         let kind = ConstraintKind::from_token(self.kind.trim())?;
         let pattern = match kind {
             ConstraintKind::Pattern => {
-                let raw = self.pattern.as_deref().filter(|p| !p.is_empty()).ok_or_else(|| {
-                    format!("constraint on {{{}}}: kind = \"pattern\" requires a pattern", self.param)
-                })?;
-                Some(ConstraintPattern::parse(raw).map_err(|e| {
-                    format!("constraint on {{{}}}: {e}", self.param)
-                })?)
+                let raw = self
+                    .pattern
+                    .as_deref()
+                    .filter(|p| !p.is_empty())
+                    .ok_or_else(|| {
+                        format!(
+                            "constraint on {{{}}}: kind = \"pattern\" requires a pattern",
+                            self.param
+                        )
+                    })?;
+                Some(
+                    ConstraintPattern::parse(raw)
+                        .map_err(|e| format!("constraint on {{{}}}: {e}", self.param))?,
+                )
             }
             _ => {
                 if self.pattern.is_some() {
@@ -225,7 +233,10 @@ pub struct Repeat {
 
 impl Repeat {
     fn once() -> Self {
-        Self { min: 1, max: Some(1) }
+        Self {
+            min: 1,
+            max: Some(1),
+        }
     }
 }
 
@@ -260,7 +271,10 @@ impl ConstraintPattern {
         if terms.is_empty() {
             return Err("empty pattern".to_string());
         }
-        Ok(Self { source: src.to_string(), terms })
+        Ok(Self {
+            source: src.to_string(),
+            terms,
+        })
     }
 
     /// Full-string match against the mini-grammar.
@@ -332,7 +346,13 @@ fn parse_repeat(chars: &[char], i: usize) -> Result<(Repeat, usize), String> {
         return Err("repeat {n,m} needs a number".to_string());
     }
     if j < chars.len() && chars[j] == '}' {
-        return Ok((Repeat { min, max: Some(min) }, j + 1));
+        return Ok((
+            Repeat {
+                min,
+                max: Some(min),
+            },
+            j + 1,
+        ));
     }
     if j < chars.len() && chars[j] == ',' {
         j += 1;
@@ -452,13 +472,31 @@ mod tests {
     #[test]
     fn uuid_kind_matrix() {
         let c = resolved("uuid", None);
-        assert!(constraint_matches(&c, "6f9619ff-8b86-d011-b42d-00c04fc964ff"));
-        assert!(constraint_matches(&c, "6F9619FF-8B86-D011-B42D-00C04FC964FF"));
+        assert!(constraint_matches(
+            &c,
+            "6f9619ff-8b86-d011-b42d-00c04fc964ff"
+        ));
+        assert!(constraint_matches(
+            &c,
+            "6F9619FF-8B86-D011-B42D-00C04FC964FF"
+        ));
         assert!(!constraint_matches(&c, ""));
-        assert!(!constraint_matches(&c, "6f9619ff-8b86-d011-b42d-00c04fc964f")); // 35
-        assert!(!constraint_matches(&c, "6f9619ff-8b86-d011-b42d-00c04fc964fff")); // 37
-        assert!(!constraint_matches(&c, "6f9619ff88b86d011b42d00c04fc964ff9")); // no dashes
-        assert!(!constraint_matches(&c, "6f9619ff-8b86-d011-b42d-00c04fc964fg")); // non-hex
+        assert!(!constraint_matches(
+            &c,
+            "6f9619ff-8b86-d011-b42d-00c04fc964f"
+        )); // 35
+        assert!(!constraint_matches(
+            &c,
+            "6f9619ff-8b86-d011-b42d-00c04fc964fff"
+        )); // 37
+        assert!(!constraint_matches(
+            &c,
+            "6f9619ff88b86d011b42d00c04fc964ff9"
+        )); // no dashes
+        assert!(!constraint_matches(
+            &c,
+            "6f9619ff-8b86-d011-b42d-00c04fc964fg"
+        )); // non-hex
     }
 
     #[test]
@@ -617,15 +655,15 @@ mod tests {
     #[test]
     fn pattern_parse_errors() {
         for bad in [
-            "",          // empty
-            "a[",        // unterminated class
-            "a[]",       // empty class
-            "a[z-a]",    // inverted range
-            "a{",        // unterminated repeat
-            "a{x}",      // non-numeric repeat
-            "a{2,1}",    // max < min
-            "a}",        // stray close
-            "a\\",     // trailing backslash
+            "",       // empty
+            "a[",     // unterminated class
+            "a[]",    // empty class
+            "a[z-a]", // inverted range
+            "a{",     // unterminated repeat
+            "a{x}",   // non-numeric repeat
+            "a{2,1}", // max < min
+            "a}",     // stray close
+            "a\\",    // trailing backslash
         ] {
             let err = ConstraintPattern::parse(bad).unwrap_err();
             assert!(!err.is_empty(), "pattern {bad:?} must fail with a message");

@@ -173,15 +173,15 @@ fn read_input(ptr: i32, len: i32) -> &'static [u8] {
 /// captures: different artifact bytes, different answer, untouched kernel.
 #[no_mangle]
 pub extern "C" fn kelson_call(op_ptr: i32, op_len: i32, in_ptr: i32, in_len: i32) -> i64 {
-    let Some(op) = core::str::from_utf8(read_input(op_ptr, op_len)).ok().filter(|s| !s.is_empty())
+    let Some(op) = core::str::from_utf8(read_input(op_ptr, op_len))
+        .ok()
+        .filter(|s| !s.is_empty())
     else {
         // An operation that is not UTF-8, not in the arena, or empty is not a
         // call to answer: refuse with no body rather than guess.
         return 0;
     };
     let received = read_input(in_ptr, in_len).len();
-    let body = format!(
-        r#"{{"marker":"{MARKER}","operation":"{op}","received":{received}}}"#
-    );
+    let body = format!(r#"{{"marker":"{MARKER}","operation":"{op}","received":{received}}}"#);
     respond(&body)
 }

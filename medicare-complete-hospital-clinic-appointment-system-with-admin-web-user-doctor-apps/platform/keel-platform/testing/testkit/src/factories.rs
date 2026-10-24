@@ -1,8 +1,8 @@
 //! Factory primitives (L20): explicit, composable fixtures. Defaults always
 //! build; every override is visible at the call site.
 
-use kelson_foundation::{AppError, CorrelationId, ExecutionId, TenantId};
 use kelson_event::OutboxEvent;
+use kelson_foundation::{AppError, CorrelationId, ExecutionId, TenantId};
 use kelson_jobs::{DurableJob, JobStatus};
 use kelson_models::{ModelDef, ModelStore, Record};
 use serde_json::{json, Value};

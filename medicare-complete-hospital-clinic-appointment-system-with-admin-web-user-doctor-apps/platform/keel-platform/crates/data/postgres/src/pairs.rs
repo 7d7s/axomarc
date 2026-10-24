@@ -71,7 +71,10 @@ pub fn scan_pairs(root: &Path) -> Result<Vec<PairMigration>, AppError> {
     let mut down_bases: Vec<String> = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|e| {
-            AppError::persistence(format!("pair migrations: cannot list {}: {e}", dir.display()))
+            AppError::persistence(format!(
+                "pair migrations: cannot list {}: {e}",
+                dir.display()
+            ))
         })?;
         let path = entry.path();
         if !path.is_file() {
@@ -90,10 +93,7 @@ pub fn scan_pairs(root: &Path) -> Result<Vec<PairMigration>, AppError> {
     up_files.sort();
     let mut out = Vec::with_capacity(up_files.len());
     for up in up_files {
-        let name = up
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default();
+        let name = up.file_name().and_then(|n| n.to_str()).unwrap_or_default();
         let base = name.strip_suffix(".up.sql").unwrap_or_default();
         let down_path = up.with_file_name(format!("{base}.down.sql"));
         let down_sql = std::fs::read_to_string(&down_path).map_err(|e| {
@@ -101,9 +101,8 @@ pub fn scan_pairs(root: &Path) -> Result<Vec<PairMigration>, AppError> {
                 "pair {base}: missing .down.sql (a pair that cannot roll back never applies): {e}"
             ))
         })?;
-        let up_sql = std::fs::read_to_string(&up).map_err(|e| {
-            AppError::persistence(format!("pair {base}: cannot read .up.sql: {e}"))
-        })?;
+        let up_sql = std::fs::read_to_string(&up)
+            .map_err(|e| AppError::persistence(format!("pair {base}: cannot read .up.sql: {e}")))?;
         out.push(PairMigration {
             migration: base.to_string(),
             up_sql,
@@ -235,9 +234,10 @@ where
             .begin()
             .await
             .map_err(|e| AppError::persistence(format!("{} (up): begin: {e}", pair.migration)))?;
-        sqlx::raw_sql(&pair.up_sql).execute(&mut *tx).await.map_err(|e| {
-            AppError::persistence(format!("{} (up): {e}", pair.migration))
-        })?;
+        sqlx::raw_sql(&pair.up_sql)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| AppError::persistence(format!("{} (up): {e}", pair.migration)))?;
         sqlx::query(&format!(
             "INSERT INTO {PAIRS_TABLE} (migration, batch) VALUES ($1, $2)"
         ))
@@ -245,12 +245,10 @@ where
         .bind(next_batch)
         .execute(&mut *tx)
         .await
-        .map_err(|e| {
-            AppError::persistence(format!("{} (up): record: {e}", pair.migration))
-        })?;
-        tx.commit().await.map_err(|e| {
-            AppError::persistence(format!("{} (up): commit: {e}", pair.migration))
-        })?;
+        .map_err(|e| AppError::persistence(format!("{} (up): record: {e}", pair.migration)))?;
+        tx.commit()
+            .await
+            .map_err(|e| AppError::persistence(format!("{} (up): commit: {e}", pair.migration)))?;
         done.push(pair.migration.clone());
     }
     Ok(done)
@@ -294,16 +292,14 @@ where
             .execute(&mut *tx)
             .await
             .map_err(|e| AppError::persistence(format!("{name} (down): {e}")))?;
-        sqlx::query(&format!(
-            "DELETE FROM {PAIRS_TABLE} WHERE migration = $1"
-        ))
-        .bind(&name)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| AppError::persistence(format!("{name} (down): record: {e}")))?;
-        tx.commit().await.map_err(|e| {
-            AppError::persistence(format!("{name} (down): commit: {e}"))
-        })?;
+        sqlx::query(&format!("DELETE FROM {PAIRS_TABLE} WHERE migration = $1"))
+            .bind(&name)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| AppError::persistence(format!("{name} (down): record: {e}")))?;
+        tx.commit()
+            .await
+            .map_err(|e| AppError::persistence(format!("{name} (down): commit: {e}")))?;
         done.push(name);
     }
     Ok(done)
@@ -482,10 +478,8 @@ mod tests {
             .collect();
         assert_eq!(queued, ["20260901_a", "20260903_c"]);
         // Everything applied -> nothing queued (idempotent second run).
-        let all_applied: Vec<(String, i32)> = scanned
-            .iter()
-            .map(|p| (p.migration.clone(), 2))
-            .collect();
+        let all_applied: Vec<(String, i32)> =
+            scanned.iter().map(|p| (p.migration.clone(), 2)).collect();
         assert!(pending_pairs(&all_applied, &scanned).is_empty());
     }
 }

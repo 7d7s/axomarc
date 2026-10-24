@@ -139,11 +139,7 @@ pub struct AppError {
     pub internal: Option<String>,
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub meta: serde_json::Map<String, serde_json::Value>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        skip_deserializing
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none", skip_deserializing)]
     pub correlation: Option<CorrelationId>,
 }
 

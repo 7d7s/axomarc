@@ -61,9 +61,7 @@ fn authorize(
         .snapshot(principal, tenant)
         .ok_or_else(|| AppError::denied("no active access snapshot"))?;
     if !snapshot.capabilities.contains(capability) {
-        return Err(AppError::denied(format!(
-            "missing capability {capability}"
-        )));
+        return Err(AppError::denied(format!("missing capability {capability}")));
     }
     Ok(())
 }
@@ -106,16 +104,11 @@ async fn status(
     session: Option<Extension<ResolvedSession>>,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let (batch, ledger, store) = match prepare(
-        &state,
-        &headers,
-        session.as_deref(),
-        &id,
-        "batches.status",
-    ) {
-        Ok(prepared) => prepared,
-        Err(err) => return error_response(&state, &headers, &err),
-    };
+    let (batch, ledger, store) =
+        match prepare(&state, &headers, session.as_deref(), &id, "batches.status") {
+            Ok(prepared) => prepared,
+            Err(err) => return error_response(&state, &headers, &err),
+        };
     match BatchOps::new(ledger.as_ref(), store.as_ref()).status(batch) {
         Ok(progress) => (
             axum::http::StatusCode::OK,
@@ -134,16 +127,11 @@ async fn cancel(
     session: Option<Extension<ResolvedSession>>,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let (batch, ledger, store) = match prepare(
-        &state,
-        &headers,
-        session.as_deref(),
-        &id,
-        "batches.cancel",
-    ) {
-        Ok(prepared) => prepared,
-        Err(err) => return error_response(&state, &headers, &err),
-    };
+    let (batch, ledger, store) =
+        match prepare(&state, &headers, session.as_deref(), &id, "batches.cancel") {
+            Ok(prepared) => prepared,
+            Err(err) => return error_response(&state, &headers, &err),
+        };
     match BatchOps::new(ledger.as_ref(), store.as_ref()).cancel(batch) {
         Ok(outcome) => (
             axum::http::StatusCode::OK,
@@ -162,16 +150,11 @@ async fn retry(
     session: Option<Extension<ResolvedSession>>,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let (batch, ledger, store) = match prepare(
-        &state,
-        &headers,
-        session.as_deref(),
-        &id,
-        "batches.retry",
-    ) {
-        Ok(prepared) => prepared,
-        Err(err) => return error_response(&state, &headers, &err),
-    };
+    let (batch, ledger, store) =
+        match prepare(&state, &headers, session.as_deref(), &id, "batches.retry") {
+            Ok(prepared) => prepared,
+            Err(err) => return error_response(&state, &headers, &err),
+        };
     match BatchOps::new(ledger.as_ref(), store.as_ref()).retry(batch) {
         Ok(outcome) => (
             axum::http::StatusCode::OK,

@@ -50,7 +50,9 @@ fn job_from_row(row: sqlx::postgres::PgRow) -> Result<DurableJob, AppError> {
     let correlation: Option<Uuid> = row.try_get("correlation_id").map_err(pg)?;
     Ok(DurableJob {
         id: row.try_get("id").map_err(pg)?,
-        execution_id: kelson_foundation::ExecutionId::from_uuid(row.try_get("execution_id").map_err(pg)?),
+        execution_id: kelson_foundation::ExecutionId::from_uuid(
+            row.try_get("execution_id").map_err(pg)?,
+        ),
         name: row.try_get("name").map_err(pg)?,
         payload: row.try_get("payload").map_err(pg)?,
         queue: row.try_get("queue").map_err(pg)?,
@@ -493,13 +495,7 @@ impl JobStoreAdmin for PgJobStore {
         })
     }
 
-    fn kill_claim(
-        &self,
-        id: Uuid,
-        attempt: u32,
-        owner: &str,
-        error: &str,
-    ) -> Result<(), AppError> {
+    fn kill_claim(&self, id: Uuid, attempt: u32, owner: &str, error: &str) -> Result<(), AppError> {
         let owner = owner.to_string();
         let error = error.to_string();
         let pool = self.pool.clone();
@@ -538,13 +534,14 @@ async fn scoped_miss(
     tenant: Uuid,
     conflict: impl FnOnce() -> AppError,
 ) -> Result<AppError, AppError> {
-    let visible: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM jobs_queue WHERE id = $1 AND tenant_id = $2)")
-            .bind(id)
-            .bind(tenant)
-            .fetch_one(pool)
-            .await
-            .map_err(pg)?;
+    let visible: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM jobs_queue WHERE id = $1 AND tenant_id = $2)",
+    )
+    .bind(id)
+    .bind(tenant)
+    .fetch_one(pool)
+    .await
+    .map_err(pg)?;
     Ok(if visible {
         conflict()
     } else {

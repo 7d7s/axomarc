@@ -19,8 +19,8 @@ pub mod casts;
 pub mod conformance;
 pub mod probes;
 pub mod prune;
-pub mod runtime;
 pub mod readmodel;
+pub mod runtime;
 pub mod store;
 
 pub use bindings::{resolve_binding, RouteBindingRegistry, RouteBindingResolver, RouteBindingsRef};
@@ -28,8 +28,8 @@ pub use casts::{Cast, EncryptedCast};
 pub use probes::{ModelProbe, ProbeRegistry, ProbeRegistryRef, StoreProbe};
 pub use prune::{PruneRegistry, PruneRegistryRef};
 pub use readmodel::{
-    ReadModelData, ReadModelDef, ReadModelRefreshResult, ReadModelRegistry, ReadModelState,
-    ReadModelStaleness, ReadModelStore, RefreshPolicy,
+    ReadModelData, ReadModelDef, ReadModelRefreshResult, ReadModelRegistry, ReadModelStaleness,
+    ReadModelState, ReadModelStore, RefreshPolicy,
 };
 pub use runtime::{
     json_to_bind, json_value_to_bind, parse_timestamp, record_to_columns, record_to_columns_for,
@@ -885,7 +885,11 @@ mod tests {
             .field(FieldDef::new("id", FieldType::Uuid))
             .field(FieldDef::new("amount", FieldType::Decimal).cast("decimal:x"));
         let err = ModelRegistry::new().register(bad).unwrap_err();
-        assert!(err.public_message.contains("cast"), "{}", err.public_message);
+        assert!(
+            err.public_message.contains("cast"),
+            "{}",
+            err.public_message
+        );
 
         // Well-formed builtins and custom names pass; manifest lists record.
         let ok = ModelDef::new("Ledger", "ledgers")
@@ -997,10 +1001,8 @@ mod tests {
     #[test]
     fn morph_map_aliases_must_target_registered_models() {
         let mut reg = ModelRegistry::new();
-        reg.register(
-            ModelDef::new("Post", "posts").field(FieldDef::new("id", FieldType::Uuid)),
-        )
-        .unwrap();
+        reg.register(ModelDef::new("Post", "posts").field(FieldDef::new("id", FieldType::Uuid)))
+            .unwrap();
         reg.register_morph("post", "Post").unwrap();
         assert!(reg.validate_graph().is_ok());
         reg.register_morph("ghost", "Missing").unwrap();

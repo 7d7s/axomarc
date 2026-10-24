@@ -182,7 +182,10 @@ fn cache_control_for(file_name: &str) -> String {
 /// conservative: an unlucky long word without a digit never pins a stale
 /// copy, while every real hash does.
 pub fn is_fingerprinted(file_name: &str) -> bool {
-    let stem = file_name.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(file_name);
+    let stem = file_name
+        .rsplit_once('.')
+        .map(|(stem, _)| stem)
+        .unwrap_or(file_name);
     stem.split(['-', '.']).any(|part| {
         part.len() >= 8
             && part.bytes().all(|b| b.is_ascii_alphanumeric())
@@ -199,8 +202,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("kelson-static-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(dir.join("assets")).expect("fixture dirs");
         std::fs::create_dir_all(dir.join("docs")).expect("fixture dirs");
-        std::fs::write(dir.join("assets").join("app-B7f3k9Jh.css"), "body{}")
-            .expect("css writes");
+        std::fs::write(dir.join("assets").join("app-B7f3k9Jh.css"), "body{}").expect("css writes");
         std::fs::write(dir.join("index.html"), "<!doctype html><title>app</title>")
             .expect("shell writes");
         std::fs::write(dir.join("docs").join("guide.md"), "# guide").expect("doc writes");
@@ -235,7 +237,10 @@ mod tests {
     fn traversal_is_refused_before_the_filesystem() {
         let (dir, files) = fixture();
         // A real secret one level above the root, reachable only via `..`.
-        let secret = dir.parent().expect("temp parent").join("kelson-static-secret.txt");
+        let secret = dir
+            .parent()
+            .expect("temp parent")
+            .join("kelson-static-secret.txt");
         std::fs::write(&secret, "hunter2").expect("secret writes");
 
         for attempt in [
@@ -257,7 +262,10 @@ mod tests {
     #[test]
     fn symlink_escapes_fail_closed() {
         let (dir, files) = fixture();
-        let outside = dir.parent().expect("temp parent").join("kelson-static-outside.txt");
+        let outside = dir
+            .parent()
+            .expect("temp parent")
+            .join("kelson-static-outside.txt");
         std::fs::write(&outside, "outside").expect("outside writes");
         let link = dir.join("escape.txt");
         #[cfg(windows)]
@@ -280,7 +288,9 @@ mod tests {
         std::fs::create_dir_all(dir.join("shell-only")).expect("shell dir");
         std::fs::write(dir.join("shell-only").join("index.html"), "ok").expect("shell writes");
 
-        assert!(files.resolve(&Method::POST, "/assets/app-B7f3k9Jh.css").is_none());
+        assert!(files
+            .resolve(&Method::POST, "/assets/app-B7f3k9Jh.css")
+            .is_none());
         assert!(files.resolve(&Method::PUT, "/index.html").is_none());
         assert!(files.resolve(&Method::GET, "/missing.css").is_none());
         assert!(files.resolve(&Method::GET, "/bare").is_none());
@@ -325,8 +335,14 @@ mod tests {
     #[test]
     fn content_type_table_covers_the_usual_build_outputs() {
         assert_eq!(content_type_of("app.js"), "text/javascript; charset=utf-8");
-        assert_eq!(content_type_of("manifest.json"), "application/json; charset=utf-8");
-        assert_eq!(content_type_of("site.webmanifest"), "application/manifest+json");
+        assert_eq!(
+            content_type_of("manifest.json"),
+            "application/json; charset=utf-8"
+        );
+        assert_eq!(
+            content_type_of("site.webmanifest"),
+            "application/manifest+json"
+        );
         assert_eq!(content_type_of("logo.svg"), "image/svg+xml");
         assert_eq!(content_type_of("font.woff2"), "font/woff2");
         assert_eq!(content_type_of("unknown.bin"), "application/octet-stream");

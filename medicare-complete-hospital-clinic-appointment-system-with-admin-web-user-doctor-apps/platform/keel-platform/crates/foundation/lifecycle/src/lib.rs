@@ -26,12 +26,12 @@ pub enum Phase {
 }
 
 /// Module lifecycle states (docs/15-EXTENSION §Modules).
-/// 
+///
 /// The seven states represent the full lifecycle of a module from discovery
 /// to disablement. The first five (`Discovered` through `Ready`) are the
 /// normal boot progression; `Degraded` and `Disabled` are operational
 /// states that can be entered at runtime.
-/// 
+///
 /// - `Discovered` — module.toml found on disk (graph compiler input)
 /// - `Validated` — manifest passes GRAPH gates (ABI, capability, etc.)
 /// - `Registered` — ModuleProvider registered in ServiceRegistry
@@ -40,7 +40,7 @@ pub enum Phase {
 /// - `Degraded` — module serving but with reduced capability (e.g. a
 ///   dependency unavailable, circuit breaker open)
 /// - `Disabled` — module explicitly disabled; all operations refused
-/// 
+///
 /// Transitions: Discovered -> Validated -> Registered -> Initialized -> Ready
 /// From Ready: can transition to Degraded or Disabled.
 /// From Degraded: can transition back to Ready (recovery) or Disabled.
@@ -61,7 +61,7 @@ impl ModuleState {
     pub fn is_serving(self) -> bool {
         matches!(self, Self::Ready | Self::Degraded)
     }
-    
+
     /// Whether this state allows transitioning to the given state.
     pub fn can_transition_to(self, target: Self) -> bool {
         use ModuleState::*;
@@ -81,7 +81,7 @@ impl ModuleState {
             _ => false,
         }
     }
-    
+
     /// Transition to a new state, returning an error if the transition is invalid.
     pub fn transition(&mut self, target: Self) -> Result<(), &'static str> {
         if self.can_transition_to(target) {
@@ -116,14 +116,14 @@ impl<'de> serde::Deserialize<'de> for ModuleState {
         D: serde::Deserializer<'de>,
     {
         struct ModuleStateVisitor;
-        
+
         impl<'de> serde::de::Visitor<'de> for ModuleStateVisitor {
             type Value = ModuleState;
-            
+
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
                 formatter.write_str("a module lifecycle state")
             }
-            
+
             fn visit_str<E>(self, value: &str) -> Result<ModuleState, E>
             where
                 E: serde::de::Error,
@@ -136,13 +136,21 @@ impl<'de> serde::Deserialize<'de> for ModuleState {
                     "Ready" => Ok(ModuleState::Ready),
                     "Degraded" => Ok(ModuleState::Degraded),
                     "Disabled" => Ok(ModuleState::Disabled),
-                    _ => Err(serde::de::Error::unknown_variant(value, &[
-                        "Discovered", "Validated", "Registered", "Initialized", 
-                        "Ready", "Degraded", "Disabled"
-                    ])),
+                    _ => Err(serde::de::Error::unknown_variant(
+                        value,
+                        &[
+                            "Discovered",
+                            "Validated",
+                            "Registered",
+                            "Initialized",
+                            "Ready",
+                            "Degraded",
+                            "Disabled",
+                        ],
+                    )),
                 }
             }
-            
+
             fn visit_u64<E>(self, value: u64) -> Result<ModuleState, E>
             where
                 E: serde::de::Error,
@@ -155,11 +163,14 @@ impl<'de> serde::Deserialize<'de> for ModuleState {
                     4 => Ok(ModuleState::Ready),
                     5 => Ok(ModuleState::Degraded),
                     6 => Ok(ModuleState::Disabled),
-                    _ => Err(serde::de::Error::invalid_value(serde::de::Unexpected::Unsigned(value), &"0-6")),
+                    _ => Err(serde::de::Error::invalid_value(
+                        serde::de::Unexpected::Unsigned(value),
+                        &"0-6",
+                    )),
                 }
             }
         }
-        
+
         deserializer.deserialize_any(ModuleStateVisitor)
     }
 }
@@ -181,7 +192,8 @@ impl ModuleRegistry {
 
     /// Insert a module at Discovered. Overwrites any prior entry.
     pub fn discover(&mut self, name: &str) {
-        self.states.insert(name.to_string(), ModuleState::Discovered);
+        self.states
+            .insert(name.to_string(), ModuleState::Discovered);
     }
 
     /// Advance a module one step along the boot path.
@@ -214,9 +226,7 @@ impl ModuleRegistry {
                 self.states.insert(name.to_string(), ModuleState::Degraded);
                 Ok(())
             }
-            _ => Err(format!(
-                "module {name}: cannot degrade from {from:?}"
-            )),
+            _ => Err(format!("module {name}: cannot degrade from {from:?}")),
         }
     }
 
@@ -232,9 +242,7 @@ impl ModuleRegistry {
                 self.states.insert(name.to_string(), ModuleState::Ready);
                 Ok(())
             }
-            _ => Err(format!(
-                "module {name}: cannot recover from {from:?}"
-            )),
+            _ => Err(format!("module {name}: cannot recover from {from:?}")),
         }
     }
 
@@ -250,9 +258,7 @@ impl ModuleRegistry {
                 self.states.insert(name.to_string(), ModuleState::Disabled);
                 Ok(())
             }
-            _ => Err(format!(
-                "module {name}: cannot disable from {from:?}"
-            )),
+            _ => Err(format!("module {name}: cannot disable from {from:?}")),
         }
     }
 
@@ -624,16 +630,21 @@ impl ApplicationHost {
         // Track the module through the boot path (docs/15-EXTENSION).
         self.modules.write().unwrap().discover(&name);
         self.advance_module(&name, ModuleState::Validated)?;
-        provider.init(&mut self.registry).map_err(|e| BootError::ProviderFailed {
-            provider: name.clone(),
-            source: e.to_string(),
-        })?;
+        provider
+            .init(&mut self.registry)
+            .map_err(|e| BootError::ProviderFailed {
+                provider: name.clone(),
+                source: e.to_string(),
+            })?;
         self.advance_module(&name, ModuleState::Registered)?;
         self.advance_module(&name, ModuleState::Initialized)?;
-        provider.boot(&self.registry).await.map_err(|e| BootError::ProviderFailed {
-            provider: name.clone(),
-            source: e.to_string(),
-        })?;
+        provider
+            .boot(&self.registry)
+            .await
+            .map_err(|e| BootError::ProviderFailed {
+                provider: name.clone(),
+                source: e.to_string(),
+            })?;
         self.advance_module(&name, ModuleState::Ready)?;
 
         // Add to providers list
@@ -732,10 +743,13 @@ mod tests {
     fn host_clock_is_injectable() {
         let wall = ApplicationHost::new();
         let seen = wall.clock().now();
-        assert!(seen.unix_timestamp() > 0, "default host clock reads wall time");
+        assert!(
+            seen.unix_timestamp() > 0,
+            "default host clock reads wall time"
+        );
 
-        let frozen = ApplicationHost::new()
-            .with_clock(Arc::new(kelson_foundation::FixedClock::new(seen)));
+        let frozen =
+            ApplicationHost::new().with_clock(Arc::new(kelson_foundation::FixedClock::new(seen)));
         assert_eq!(
             frozen.clock().now(),
             seen,
@@ -813,7 +827,8 @@ mod tests {
         fn boot<'s>(
             &'s self,
             _: &'s ServiceRegistry,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), BootError>> + Send + 's>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), BootError>> + Send + 's>>
+        {
             Box::pin(async move {
                 BOOT_LOG.lock().unwrap().push("a".into());
                 Ok(())
@@ -839,7 +854,8 @@ mod tests {
         fn boot<'s>(
             &'s self,
             _: &'s ServiceRegistry,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), BootError>> + Send + 's>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), BootError>> + Send + 's>>
+        {
             Box::pin(async move {
                 BOOT_LOG.lock().unwrap().push("b".into());
                 Ok(())
@@ -945,11 +961,11 @@ mod tests {
         let mut s = ModuleState::Ready;
         assert!(s.transition(ModuleState::Degraded).is_ok());
         assert_eq!(s, ModuleState::Degraded);
-        
+
         // Recovery from Degraded
         assert!(s.transition(ModuleState::Ready).is_ok());
         assert_eq!(s, ModuleState::Ready);
-        
+
         // Then disable
         assert!(s.transition(ModuleState::Disabled).is_ok());
         assert_eq!(s, ModuleState::Disabled);
@@ -960,10 +976,10 @@ mod tests {
         let mut s = ModuleState::Degraded;
         assert!(s.transition(ModuleState::Ready).is_ok());
         assert_eq!(s, ModuleState::Ready);
-        
+
         assert!(s.transition(ModuleState::Degraded).is_ok());
         assert_eq!(s, ModuleState::Degraded);
-        
+
         assert!(s.transition(ModuleState::Disabled).is_ok());
         assert_eq!(s, ModuleState::Disabled);
     }
@@ -983,11 +999,11 @@ mod tests {
         // Can't skip states
         assert!(s.transition(ModuleState::Registered).is_err());
         assert!(s.transition(ModuleState::Ready).is_err());
-        
+
         s = ModuleState::Validated;
         assert!(s.transition(ModuleState::Initialized).is_err());
         assert!(s.transition(ModuleState::Disabled).is_err());
-        
+
         s = ModuleState::Ready;
         assert!(s.transition(ModuleState::Validated).is_err());
     }
@@ -1006,7 +1022,7 @@ mod tests {
     #[test]
     fn module_state_serde_roundtrip() {
         use serde_json;
-        
+
         for state in [
             ModuleState::Discovered,
             ModuleState::Validated,
@@ -1046,9 +1062,12 @@ mod tests {
     fn module_registry_degrade_and_recover() {
         let mut reg = ModuleRegistry::new();
         reg.discover("notifications");
-        reg.advance("notifications", ModuleState::Validated).unwrap();
-        reg.advance("notifications", ModuleState::Registered).unwrap();
-        reg.advance("notifications", ModuleState::Initialized).unwrap();
+        reg.advance("notifications", ModuleState::Validated)
+            .unwrap();
+        reg.advance("notifications", ModuleState::Registered)
+            .unwrap();
+        reg.advance("notifications", ModuleState::Initialized)
+            .unwrap();
         reg.advance("notifications", ModuleState::Ready).unwrap();
 
         reg.degrade("notifications").unwrap();

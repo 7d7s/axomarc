@@ -593,11 +593,7 @@ impl Select {
     }
 
     /// Sort by a validated raw expression.
-    pub fn order_by_expr(
-        mut self,
-        expression: crate::expr::SqlExpr,
-        direction: Direction,
-    ) -> Self {
+    pub fn order_by_expr(mut self, expression: crate::expr::SqlExpr, direction: Direction) -> Self {
         self.expr_order.push((expression, direction));
         self
     }
@@ -1176,7 +1172,8 @@ impl Select {
 
     /// Oldest-first on `created_at`.
     pub fn oldest(mut self) -> Self {
-        self.order.push((static_ident("created_at"), Direction::Asc));
+        self.order
+            .push((static_ident("created_at"), Direction::Asc));
         self
     }
 
@@ -1602,7 +1599,9 @@ mod tests {
 
     #[test]
     fn simple_select_star() {
-        let q = Select::from_table(id("users")).build(&crate::dialect::POSTGRES).unwrap();
+        let q = Select::from_table(id("users"))
+            .build(&crate::dialect::POSTGRES)
+            .unwrap();
         assert_eq!(q.sql, "SELECT * FROM users");
         assert!(q.params.is_empty());
     }
@@ -1722,7 +1721,10 @@ mod tests {
     fn nested_group_renders_parenthesized() {
         let q = Select::from_table(id("t"))
             .where_eq(id("tenant_id"), 1i64)
-            .group(|g| g.where_eq(id("a"), 2i64).or_where(id("b"), Operator::Eq, 3i64))
+            .group(|g| {
+                g.where_eq(id("a"), 2i64)
+                    .or_where(id("b"), Operator::Eq, 3i64)
+            })
             .build(&crate::dialect::POSTGRES)
             .unwrap();
         assert_eq!(
@@ -1820,7 +1822,10 @@ mod tests {
             .where_year(id("created_at"), 2026i64)
             .build(&crate::dialect::POSTGRES)
             .unwrap();
-        assert_eq!(q.sql, "SELECT * FROM t WHERE EXTRACT(YEAR FROM created_at) = $1");
+        assert_eq!(
+            q.sql,
+            "SELECT * FROM t WHERE EXTRACT(YEAR FROM created_at) = $1"
+        );
 
         let q = Select::from_table(id("t"))
             .where_month(id("created_at"), 9i64)
@@ -1835,7 +1840,10 @@ mod tests {
             .where_day(id("created_at"), 29i64)
             .build(&crate::dialect::POSTGRES)
             .unwrap();
-        assert_eq!(q.sql, "SELECT * FROM t WHERE EXTRACT(DAY FROM created_at) = $1");
+        assert_eq!(
+            q.sql,
+            "SELECT * FROM t WHERE EXTRACT(DAY FROM created_at) = $1"
+        );
 
         let q = Select::from_table(id("t"))
             .where_time(id("starts_at"), "09:30:00")
@@ -1859,10 +1867,16 @@ mod tests {
 
     #[test]
     fn latest_oldest_default_and_overridden_columns() {
-        let q = Select::from_table(id("posts")).latest().build(&crate::dialect::POSTGRES).unwrap();
+        let q = Select::from_table(id("posts"))
+            .latest()
+            .build(&crate::dialect::POSTGRES)
+            .unwrap();
         assert_eq!(q.sql, "SELECT * FROM posts ORDER BY created_at DESC");
 
-        let q = Select::from_table(id("posts")).oldest().build(&crate::dialect::POSTGRES).unwrap();
+        let q = Select::from_table(id("posts"))
+            .oldest()
+            .build(&crate::dialect::POSTGRES)
+            .unwrap();
         assert_eq!(q.sql, "SELECT * FROM posts ORDER BY created_at ASC");
 
         let q = Select::from_table(id("posts"))
@@ -1998,13 +2012,22 @@ mod tests {
             .unwrap();
         assert_eq!(q.sql, "SELECT SUM(total) AS total_sum FROM invoices");
 
-        let q = Select::from_table(id("invoices")).avg(id("total")).build(&crate::dialect::POSTGRES).unwrap();
+        let q = Select::from_table(id("invoices"))
+            .avg(id("total"))
+            .build(&crate::dialect::POSTGRES)
+            .unwrap();
         assert_eq!(q.sql, "SELECT AVG(total) FROM invoices");
 
-        let q = Select::from_table(id("invoices")).min(id("total")).build(&crate::dialect::POSTGRES).unwrap();
+        let q = Select::from_table(id("invoices"))
+            .min(id("total"))
+            .build(&crate::dialect::POSTGRES)
+            .unwrap();
         assert_eq!(q.sql, "SELECT MIN(total) FROM invoices");
 
-        let q = Select::from_table(id("invoices")).max(id("total")).build(&crate::dialect::POSTGRES).unwrap();
+        let q = Select::from_table(id("invoices"))
+            .max(id("total"))
+            .build(&crate::dialect::POSTGRES)
+            .unwrap();
         assert_eq!(q.sql, "SELECT MAX(total) FROM invoices");
 
         let q = Select::from_table(id("bookings"))
@@ -2116,7 +2139,10 @@ mod tests {
             "SELECT EXISTS (SELECT * FROM doctors WHERE specialty = $1)"
         );
 
-        let q = Select::from_table(id("doctors")).doesnt_exist().build(&crate::dialect::POSTGRES).unwrap();
+        let q = Select::from_table(id("doctors"))
+            .doesnt_exist()
+            .build(&crate::dialect::POSTGRES)
+            .unwrap();
         assert_eq!(q.sql, "SELECT NOT EXISTS (SELECT * FROM doctors)");
     }
 

@@ -261,7 +261,8 @@ mod tests {
         let last = bytes.len() - 1;
         bytes[last] = if bytes[last] == b'A' { b'B' } else { b'A' };
         let tampered = String::from_utf8(bytes).unwrap();
-        let err = Cursor::decode(&tampered, "slot", secret).expect_err("tampered cursor is refused");
+        let err =
+            Cursor::decode(&tampered, "slot", secret).expect_err("tampered cursor is refused");
         assert_eq!(err.category, kelson_foundation::ErrorCategory::Validation);
     }
 

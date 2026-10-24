@@ -27,7 +27,8 @@ impl Delete {
     }
 
     fn push(&mut self, condition: Condition) {
-        self.conditions.push((Junction::And, Clause::Pred(condition)));
+        self.conditions
+            .push((Junction::And, Clause::Pred(condition)));
     }
 
     pub fn where_eq(mut self, column: Ident, value: impl Into<Value>) -> Self {
@@ -41,12 +42,7 @@ impl Delete {
 
     /// Filter with an explicit operator and one value (the semantic-filter
     /// parity path: `Ne`, `Gt`, ... arrive here from `filter_condition`).
-    pub fn where_op(
-        mut self,
-        column: Ident,
-        operator: Operator,
-        value: impl Into<Value>,
-    ) -> Self {
+    pub fn where_op(mut self, column: Ident, operator: Operator, value: impl Into<Value>) -> Self {
         self.push(Condition {
             column,
             operator,
@@ -99,10 +95,7 @@ impl Delete {
         self
     }
 
-    pub fn build(
-        &self,
-        dialect: &dyn crate::dialect::Dialect,
-    ) -> Result<CompiledWrite, AppError> {
+    pub fn build(&self, dialect: &dyn crate::dialect::Dialect) -> Result<CompiledWrite, AppError> {
         if self.conditions.is_empty() && !self.allow_unfiltered {
             return Err(AppError::validation(
                 "DELETE without WHERE refused (call allow_unfiltered to override)",
@@ -176,8 +169,13 @@ mod tests {
 
     #[test]
     fn unfiltered_delete_refused() {
-        let err = Delete::from_table(id("t")).build(&crate::dialect::POSTGRES).unwrap_err();
+        let err = Delete::from_table(id("t"))
+            .build(&crate::dialect::POSTGRES)
+            .unwrap_err();
         assert!(err.public_message.contains("WHERE"));
-        assert!(Delete::from_table(id("t")).allow_unfiltered().build(&crate::dialect::POSTGRES).is_ok());
+        assert!(Delete::from_table(id("t"))
+            .allow_unfiltered()
+            .build(&crate::dialect::POSTGRES)
+            .is_ok());
     }
 }

@@ -5,8 +5,8 @@
 pub mod store;
 
 pub use store::{
-    verify_credential, CredentialStore, InMemoryCredentialStore, InMemoryPrincipalStore,
-    PrincipalStore,
+    verify_credential, CredentialStore, InMemoryCredentialStore, InMemoryMembershipStore,
+    InMemoryPrincipalStore, MembershipStore, PrincipalStore,
 };
 
 use kelson_foundation::{ActorId, AppError, MembershipId, PrincipalId, TenantId};
@@ -192,10 +192,7 @@ impl PasswordParams {
 /// Hash with explicit factors. The PHC string embeds them, so verification
 /// (which reads the STORED factors from the encoding) and drift detection
 /// (`password_params_of`) both work regardless of who hashed it.
-pub fn hash_password_with(
-    params: &PasswordParams,
-    password: &Secret,
-) -> Result<String, AppError> {
+pub fn hash_password_with(params: &PasswordParams, password: &Secret) -> Result<String, AppError> {
     use argon2::{password_hash::SaltString, PasswordHasher};
     let salt = SaltString::generate(&mut rand::thread_rng());
     params
@@ -272,14 +269,16 @@ mod tests {
             "$2y$10$abcdefghijklmnopqrstuv",
             "$argon2id$v=19$m=notanumber,t=2,p=1$c29tZXNhbHQ$aaaa",
         ] {
-            let err = verify_password(&pw, corrupt)
-                .expect_err("a malformed verifier row is refused");
+            let err =
+                verify_password(&pw, corrupt).expect_err("a malformed verifier row is refused");
             assert_eq!(
                 err.public_message, "internal error",
                 "the public refusal is the generic one: {corrupt:?}"
             );
             assert!(
-                err.internal.unwrap_or_default().contains("bad hash encoding"),
+                err.internal
+                    .unwrap_or_default()
+                    .contains("bad hash encoding"),
                 "the detail is kept for the operator: {corrupt:?}"
             );
         }
@@ -315,7 +314,11 @@ mod tests {
             Some(PasswordParams::default())
         );
         assert_eq!(
-            (PasswordParams::default().memory, PasswordParams::default().time, PasswordParams::default().parallelism),
+            (
+                PasswordParams::default().memory,
+                PasswordParams::default().time,
+                PasswordParams::default().parallelism
+            ),
             (19_456, 2, 1),
             "the documented [identity] defaults stay pinned to argon2's baseline"
         );

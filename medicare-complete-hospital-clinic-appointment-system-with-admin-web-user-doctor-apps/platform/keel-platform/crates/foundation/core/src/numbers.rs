@@ -41,8 +41,8 @@ fn rules_for(locale: &str) -> NumberRules {
             percent_gap: true,
         },
         "ar" => NumberRules {
-            decimal: '٫',  // ARABIC DECIMAL SEPARATOR
-            group: '٬',    // ARABIC THOUSANDS SEPARATOR
+            decimal: '٫', // ARABIC DECIMAL SEPARATOR
+            group: '٬',   // ARABIC THOUSANDS SEPARATOR
             symbol_before: false,
             symbol_gap: true,
             percent_sign: "٪", // ARABIC PERCENT SIGN
@@ -168,7 +168,10 @@ pub fn format_precision(value: f64, decimals: usize, locale: &str) -> String {
     }
     let rules = rules_for(locale);
     let (sign, magnitude) = split_sign(value);
-    format!("{sign}{}", localize(&fixed_text(magnitude, decimals), &rules))
+    format!(
+        "{sign}{}",
+        localize(&fixed_text(magnitude, decimals), &rules)
+    )
 }
 
 /// Bound `value` into `[min, max]`. `NaN` inputs and a degenerate range
@@ -176,11 +179,7 @@ pub fn format_precision(value: f64, decimals: usize, locale: &str) -> String {
 /// return `NaN` (never a panic inside the TCB); `±inf` clamps to the
 /// matching bound like the standard library does.
 pub fn clamp(value: f64, min: f64, max: f64) -> f64 {
-    if value.is_nan()
-        || min > max
-        || !min.is_finite()
-        || !max.is_finite()
-    {
+    if value.is_nan() || min > max || !min.is_finite() || !max.is_finite() {
         return f64::NAN;
     }
     if value < min {

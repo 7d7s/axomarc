@@ -8,9 +8,9 @@ use kelson_foundation::{AuthorizationRevision, FeatureRevision, PrincipalId, Ten
 /// Wave 4 Phase 6: value-level `CacheService` (remember/tags/locks) over the
 /// unchanged port — see the module docs.
 pub mod conformance;
-pub mod swappable;
 pub mod plugins;
 pub mod service;
+pub mod swappable;
 pub use conformance::cache_contract;
 pub use plugins::{CacheCapabilities, CacheDriver, CacheDriverRegistry};
 pub use service::{CacheGuard, CacheService, TaggedCache};
@@ -133,8 +133,7 @@ impl TenantCachePort for TenantCacheShard {
             .put_if_absent(&Self::k(tenant, key), value, ttl_secs)
     }
     fn delete_if_equals(&self, tenant: TenantId, key: &str, expected: &[u8]) -> bool {
-        self.inner
-            .delete_if_equals(&Self::k(tenant, key), expected)
+        self.inner.delete_if_equals(&Self::k(tenant, key), expected)
     }
 }
 
@@ -169,10 +168,11 @@ impl CacheLock {
     /// Try to acquire. Returns None when already held (never blocks).
     pub fn try_acquire(&self, name: &str, ttl_secs: u64) -> Option<LockToken> {
         let token = kelson_foundation::id::lock_token();
-        let ok =
-            self.port
-                .store()
-                .put_if_absent(&lock_key(name), token.as_bytes().to_vec(), Some(ttl_secs));
+        let ok = self.port.store().put_if_absent(
+            &lock_key(name),
+            token.as_bytes().to_vec(),
+            Some(ttl_secs),
+        );
         ok.then(|| LockToken {
             name: name.to_string(),
             token,
@@ -261,7 +261,9 @@ mod tests {
 
     #[test]
     fn cache_lock_acquire_release_and_exclusivity() {
-        let lock = CacheLock::new(std::sync::Arc::new(crate::swappable::SwappableCache::new(std::sync::Arc::new(FakePort::default()))));
+        let lock = CacheLock::new(std::sync::Arc::new(crate::swappable::SwappableCache::new(
+            std::sync::Arc::new(FakePort::default()),
+        )));
         let first = lock.try_acquire("billing.close", 30).unwrap();
         assert!(
             lock.try_acquire("billing.close", 30).is_none(),
@@ -380,7 +382,9 @@ mod tests {
     #[test]
     fn a_lock_lease_expires_so_a_crashed_holder_never_blocks_the_slot() {
         let port = std::sync::Arc::new(FakeClockPort::default());
-        let lock = CacheLock::new(std::sync::Arc::new(crate::swappable::SwappableCache::new(port.clone())));
+        let lock = CacheLock::new(std::sync::Arc::new(crate::swappable::SwappableCache::new(
+            port.clone(),
+        )));
         let crashed = lock.try_acquire("billing.close", 30).unwrap();
         assert!(
             lock.try_acquire("billing.close", 30).is_none(),
@@ -407,7 +411,9 @@ mod tests {
     #[test]
     fn the_lease_is_enforced_by_the_store_not_by_the_holders_clock() {
         let port = std::sync::Arc::new(FakeClockPort::default());
-        let lock = CacheLock::new(std::sync::Arc::new(crate::swappable::SwappableCache::new(port.clone())));
+        let lock = CacheLock::new(std::sync::Arc::new(crate::swappable::SwappableCache::new(
+            port.clone(),
+        )));
         lock.try_acquire("report.build", 30).unwrap();
         assert_eq!(
             port.expiry_of(&lock_key("report.build")),
@@ -428,7 +434,9 @@ mod tests {
 
     #[test]
     fn with_lock_runs_and_releases() {
-        let lock = CacheLock::new(std::sync::Arc::new(crate::swappable::SwappableCache::new(std::sync::Arc::new(FakePort::default()))));
+        let lock = CacheLock::new(std::sync::Arc::new(crate::swappable::SwappableCache::new(
+            std::sync::Arc::new(FakePort::default()),
+        )));
         let ran = lock.with_lock("report.build", 30, || 42);
         assert_eq!(ran, Some(42));
         assert!(
@@ -470,7 +478,11 @@ mod tests {
 
         shard.put(a, "patient:1", b"alpha".to_vec(), None);
         assert_eq!(shard.get(a, "patient:1"), Some(b"alpha".to_vec()));
-        assert_eq!(shard.get(b, "patient:1"), None, "cross-tenant read must miss");
+        assert_eq!(
+            shard.get(b, "patient:1"),
+            None,
+            "cross-tenant read must miss"
+        );
 
         // B writes the same logical key — A still reads its own value.
         shard.put(b, "patient:1", b"beta".to_vec(), None);
@@ -621,4 +633,3 @@ mod tests {
         assert_eq!(shard.get(a, "lock:billing"), Some(b"a-token".to_vec()));
     }
 }
-

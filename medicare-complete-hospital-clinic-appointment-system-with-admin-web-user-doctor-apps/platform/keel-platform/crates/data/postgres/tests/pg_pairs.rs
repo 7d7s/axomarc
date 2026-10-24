@@ -6,10 +6,10 @@
 #![cfg(feature = "pg-tests")]
 
 use kelson_postgres::pairs::{
-    apply_pending, applied, install, pairs_dir, reset, rollback, PAIRS_TABLE,
+    applied, apply_pending, install, pairs_dir, reset, rollback, PAIRS_TABLE,
 };
 use kelson_postgres::{
-    acquire_migration_lock_within, create_pool, release_migration_lock, MIGRATION_LOCK_KEY, PgPool,
+    acquire_migration_lock_within, create_pool, release_migration_lock, PgPool, MIGRATION_LOCK_KEY,
 };
 use std::time::Duration;
 
@@ -56,11 +56,10 @@ fn write_pair(root: &std::path::Path, base: &str, table: &str) {
 }
 
 async fn table_exists(pool: &PgPool, table: &str) -> bool {
-    let reg: Option<String> =
-        sqlx::query_scalar(&format!("SELECT to_regclass('{table}')::text"))
-            .fetch_one(pool)
-            .await
-            .expect("to_regclass runs");
+    let reg: Option<String> = sqlx::query_scalar(&format!("SELECT to_regclass('{table}')::text"))
+        .fetch_one(pool)
+        .await
+        .expect("to_regclass runs");
     reg.is_some()
 }
 
@@ -110,20 +109,23 @@ async fn pair_migrations_apply_rollback_and_reset_with_batches() {
     let applied_now = apply_pending(&pool, &root).await.expect("apply");
     assert_eq!(
         applied_now,
-        [
-            "20260930000001_alpha",
-            "20260930000002_beta"
-        ],
+        ["20260930000001_alpha", "20260930000002_beta"],
         "filename order"
     );
     assert!(table_exists(&pool, alpha).await, "alpha table created");
     assert!(table_exists(&pool, beta).await, "beta table created");
     let rows = applied(&pool).await.expect("applied rows");
     assert_eq!(rows.len(), 2);
-    assert!(rows.iter().all(|(_, batch)| *batch == 1), "single batch: {rows:?}");
+    assert!(
+        rows.iter().all(|(_, batch)| *batch == 1),
+        "single batch: {rows:?}"
+    );
 
     // Second run: nothing pending (idempotent).
-    assert!(apply_pending(&pool, &root).await.expect("re-apply").is_empty());
+    assert!(apply_pending(&pool, &root)
+        .await
+        .expect("re-apply")
+        .is_empty());
 
     // A later pair lands in the next batch.
     write_pair(&root, "20260930000003_gamma", gamma);
@@ -131,7 +133,8 @@ async fn pair_migrations_apply_rollback_and_reset_with_batches() {
     assert_eq!(applied_now, ["20260930000003_gamma"]);
     let rows = applied(&pool).await.expect("applied rows");
     assert!(
-        rows.iter().any(|(m, b)| m == "20260930000003_gamma" && *b == 2),
+        rows.iter()
+            .any(|(m, b)| m == "20260930000003_gamma" && *b == 2),
         "gamma is batch 2: {rows:?}"
     );
 
@@ -145,10 +148,7 @@ async fn pair_migrations_apply_rollback_and_reset_with_batches() {
     // rollback --step 1 again: batch 1 reverts beta before alpha (reverse
     // filename order), and both tables disappear.
     let reverted = rollback(&pool, &root, 1).await.expect("rollback batch 1");
-    assert_eq!(
-        reverted,
-        ["20260930000002_beta", "20260930000001_alpha"]
-    );
+    assert_eq!(reverted, ["20260930000002_beta", "20260930000001_alpha"]);
     assert!(!table_exists(&pool, alpha).await, "alpha dropped");
     assert!(!table_exists(&pool, beta).await, "beta dropped");
     assert!(applied(&pool).await.expect("applied rows").is_empty());
@@ -213,9 +213,13 @@ async fn advisory_lock_serializes_runs_and_fails_closed_on_timeout() {
         .await
         .expect("holder unlock");
     assert!(released, "holder owned the lock");
-    acquire_migration_lock_within(&mut waiter, Duration::from_secs(2), Duration::from_millis(50))
-        .await
-        .expect("waiter acquires once the lock is free");
+    acquire_migration_lock_within(
+        &mut waiter,
+        Duration::from_secs(2),
+        Duration::from_millis(50),
+    )
+    .await
+    .expect("waiter acquires once the lock is free");
     release_migration_lock(&mut waiter)
         .await
         .expect("waiter release");
@@ -287,6 +291,7 @@ fn mysql_pair_guard() -> std::sync::MutexGuard<'static, ()> {
 /// filename order -> reset: the pg round trip, byte-for-byte, over MySQL,
 /// with every bookkeeping assertion scoped to THIS test's migration prefix
 /// (rows from other suites share the table).
+#[allow(clippy::await_holding_lock)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_pair_migrations_apply_rollback_and_reset_with_batches() {
     let _guard = mysql_pair_guard();
@@ -340,7 +345,10 @@ async fn mysql_pair_migrations_apply_rollback_and_reset_with_batches() {
         ["20260930000001_alpha", "20260930000002_beta"],
         "filename order"
     );
-    assert!(mysql_table_exists(&pool, alpha).await, "alpha table created");
+    assert!(
+        mysql_table_exists(&pool, alpha).await,
+        "alpha table created"
+    );
     assert!(mysql_table_exists(&pool, beta).await, "beta table created");
     let rows = own(&kelson_mysql::pairs::applied(&pool).await.expect("applied"));
     assert_eq!(rows.len(), 2, "two rows recorded: {rows:?}");
@@ -351,12 +359,10 @@ async fn mysql_pair_migrations_apply_rollback_and_reset_with_batches() {
     let first_batch = rows[0].1;
 
     // Second run: nothing pending (idempotent).
-    assert!(
-        kelson_mysql::pairs::apply_pending(&pool, &root)
-            .await
-            .expect("re-apply")
-            .is_empty()
-    );
+    assert!(kelson_mysql::pairs::apply_pending(&pool, &root)
+        .await
+        .expect("re-apply")
+        .is_empty());
 
     // A later pair lands in the next batch.
     write_pair(&root, "20260930000003_gamma", gamma);
@@ -376,19 +382,25 @@ async fn mysql_pair_migrations_apply_rollback_and_reset_with_batches() {
         .await
         .expect("rollback step 1");
     assert_eq!(reverted, ["20260930000003_gamma"]);
-    assert!(!mysql_table_exists(&pool, gamma).await, "gamma table dropped");
-    assert!(mysql_table_exists(&pool, alpha).await, "older batch untouched");
-    assert_eq!(own(&kelson_mysql::pairs::applied(&pool).await.expect("applied")).len(), 2);
+    assert!(
+        !mysql_table_exists(&pool, gamma).await,
+        "gamma table dropped"
+    );
+    assert!(
+        mysql_table_exists(&pool, alpha).await,
+        "older batch untouched"
+    );
+    assert_eq!(
+        own(&kelson_mysql::pairs::applied(&pool).await.expect("applied")).len(),
+        2
+    );
 
     // rollback --step 1 again: batch 1 reverts beta before alpha (reverse
     // filename order), and both tables disappear.
     let reverted = kelson_mysql::pairs::rollback(&pool, &root, 1)
         .await
         .expect("rollback batch 1");
-    assert_eq!(
-        reverted,
-        ["20260930000002_beta", "20260930000001_alpha"]
-    );
+    assert_eq!(reverted, ["20260930000002_beta", "20260930000001_alpha"]);
     assert!(!mysql_table_exists(&pool, alpha).await, "alpha dropped");
     assert!(!mysql_table_exists(&pool, beta).await, "beta dropped");
     assert!(own(&kelson_mysql::pairs::applied(&pool).await.expect("applied")).is_empty());
@@ -398,7 +410,9 @@ async fn mysql_pair_migrations_apply_rollback_and_reset_with_batches() {
         .await
         .expect("re-apply");
     assert_eq!(applied_now.len(), 3, "all three pending again");
-    let reverted = kelson_mysql::pairs::reset(&pool, &root).await.expect("reset");
+    let reverted = kelson_mysql::pairs::reset(&pool, &root)
+        .await
+        .expect("reset");
     assert_eq!(
         reverted,
         [
@@ -487,6 +501,7 @@ fn mysql_pair_scan_orders_files_and_refuses_broken_shipments() {
 /// never records pair 2. That last bit is the fail-closed half — an
 /// unrecorded pair re-applies next run and fails visibly rather than being
 /// silently considered done.
+#[allow(clippy::await_holding_lock)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_pair_apply_fails_stopped_and_reports_what_already_ran() {
     let _guard = mysql_pair_guard();
@@ -585,6 +600,7 @@ async fn mysql_pair_apply_fails_stopped_and_reports_what_already_ran() {
 /// `run_migrations` and is returned by name, a second run is a no-op, and
 /// `pairs::rollback` — the entry point behind `migrate:rollback` — takes
 /// the table back off the schema and the row out of the bookkeeping.
+#[allow(clippy::await_holding_lock)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mysql_run_migrations_refuses_broken_shipments_then_applies_and_rolls_back() {
     let _guard = mysql_pair_guard();
@@ -644,12 +660,10 @@ async fn mysql_run_migrations_refuses_broken_shipments_then_applies_and_rolls_ba
         "bookkeeping row present: {rows:?}"
     );
     // Idempotent: a second run applies nothing (and re-checks the singles).
-    assert!(
-        kelson_mysql::run_migrations(&pool, &root)
-            .await
-            .expect("re-run")
-            .is_empty()
-    );
+    assert!(kelson_mysql::run_migrations(&pool, &root)
+        .await
+        .expect("re-run")
+        .is_empty());
 
     // (c) `migrate:rollback`'s entry point reverts it.
     let reverted = kelson_mysql::pairs::rollback(&pool, &root, 1)

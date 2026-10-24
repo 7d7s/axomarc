@@ -15,8 +15,8 @@
 use std::sync::Arc;
 
 use kelson_context::ExecutionContext;
-use kelson_foundation::AppError;
 use kelson_execution::{BoxFuture, ExecutionPlan, ExecutionUnit, OperationHandler};
+use kelson_foundation::AppError;
 use serde_json::Value;
 
 /// Typed request boundary: raw JSON -> validated business input.
@@ -56,7 +56,11 @@ where
 /// Boxed typed handle function (keeps `TypedHandler<I, O>` nameable for
 /// type aliases and newtype wrappers in modules).
 pub type TypedHandleFn<I, O> = Arc<
-    dyn Fn(Arc<ExecutionContext>, I, &mut dyn ExecutionUnit) -> BoxFuture<'static, Result<O, AppError>>
+    dyn Fn(
+            Arc<ExecutionContext>,
+            I,
+            &mut dyn ExecutionUnit,
+        ) -> BoxFuture<'static, Result<O, AppError>>
         + Send
         + Sync,
 >;
@@ -77,7 +81,11 @@ where
 {
     pub fn new<F>(plan: ExecutionPlan, handler: F) -> Self
     where
-        F: Fn(Arc<ExecutionContext>, I, &mut dyn ExecutionUnit) -> BoxFuture<'static, Result<O, AppError>>
+        F: Fn(
+                Arc<ExecutionContext>,
+                I,
+                &mut dyn ExecutionUnit,
+            ) -> BoxFuture<'static, Result<O, AppError>>
             + Send
             + Sync
             + 'static,
@@ -121,11 +129,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kelson_foundation::{codes, ExecutionProfileKind, OperationId};
     use kelson_execution::{
         AuthorizationPort, AuthzDecision, AuthzRequest, Engine, InMemoryBackend,
         InMemoryIdempotency,
     };
+    use kelson_foundation::{codes, ExecutionProfileKind, OperationId};
 
     #[derive(serde::Deserialize)]
     struct EchoIn {
@@ -181,7 +189,11 @@ mod tests {
                 ExecutionProfileKind::Read,
             ),
             |_ctx, input: Json<EchoIn>, _unit| {
-                Box::pin(async move { Ok(Json(EchoOut { echoed: input.0.msg })) })
+                Box::pin(async move {
+                    Ok(Json(EchoOut {
+                        echoed: input.0.msg,
+                    }))
+                })
             },
         )
     }
@@ -203,7 +215,12 @@ mod tests {
     #[tokio::test]
     async fn typed_handler_rejects_bad_shapes_with_validation_errors() {
         let err = engine()
-            .execute(context(), &handler(), serde_json::json!({ "nope": 1 }), None)
+            .execute(
+                context(),
+                &handler(),
+                serde_json::json!({ "nope": 1 }),
+                None,
+            )
             .await
             .unwrap_err();
         assert_eq!(err.code, codes::VALIDATION);
@@ -211,9 +228,7 @@ mod tests {
 
     #[test]
     fn json_output_serializes() {
-        let out = Json(EchoOut {
-            echoed: "x".into(),
-        });
+        let out = Json(EchoOut { echoed: "x".into() });
         assert_eq!(out.into_value(), serde_json::json!({ "echoed": "x" }));
     }
 }

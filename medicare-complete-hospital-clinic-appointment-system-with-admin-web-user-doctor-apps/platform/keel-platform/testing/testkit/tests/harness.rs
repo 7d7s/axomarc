@@ -10,7 +10,7 @@ use time::{Duration, OffsetDateTime};
 
 use kelson_testkit::{
     assert_delta, assert_event, sample_event, sample_job, AuditRecorder, CacheFake, CachePort,
-    EventFactory, EventFake, Factory, FakeMail, FakeQueue, FakeStorage, HttpFake, HttpClientPort,
+    EventFactory, EventFake, Factory, FakeMail, FakeQueue, FakeStorage, HttpClientPort, HttpFake,
     HttpRequest, HttpResponse, InMemoryBackend, InMemoryOutbox, JobFactory, JobStore,
     NotificationFake, QueueFake, StorageFake, StoragePort, TestApp,
 };
@@ -125,7 +125,11 @@ fn the_fakes_record_their_side_effects_in_order() {
     // A duplicate attempt is visible as a count, not a silent overwrite ✓.
     assert_eq!(queue.count("first.job"), 1);
     queue.enqueue(sample_job("first.job"));
-    assert_eq!(queue.count("first.job"), 2, "a duplicate attempt is counted");
+    assert_eq!(
+        queue.count("first.job"),
+        2,
+        "a duplicate attempt is counted"
+    );
 }
 
 /// **LF-093**: the parallel result equals the serial one. The same work, run
@@ -305,13 +309,20 @@ async fn wave7_response_assertion_matrix_surface() {
             .route("/page", get(|| async { "<p>Tom &amp; Jerry</p>" })),
     );
 
-    app.get("/go").send().await
+    app.get("/go")
+        .send()
+        .await
         .assert_redirect("/next")
         .assert_redirect("/n");
-    app.get("/page").send().await
+    app.get("/page")
+        .send()
+        .await
         .assert_html_contains("Tom &amp; Jerry")
         .assert_see("Tom & Jerry");
-    app.get("/ping").send().await.assert_json_path("pong", json!(true));
+    app.get("/ping")
+        .send()
+        .await
+        .assert_json_path("pong", json!(true));
 }
 
 // ------------------------------------------------------------- Wave 7 P3
@@ -379,9 +390,7 @@ fn wave7_test_infrastructure_surface() {
     let mem = InMemoryModelStore::new();
     let store: &dyn ModelStore = &mem;
     let tenant = TenantId::new();
-    let row = NoteFactory
-        .create(store, tenant)
-        .expect("row persists");
+    let row = NoteFactory.create(store, tenant).expect("row persists");
     assert_eq!(row["body"], json!("standalone note"));
     assert_eq!(row["tenant_id"], json!(tenant.to_string()));
     assert!(row["id"]
@@ -421,8 +430,8 @@ fn wave8_str_helpers_surface() {
 #[test]
 fn wave8_number_and_date_helpers_surface() {
     use kelson_foundation::{
-        clamp, format_cents, format_currency, format_date_with, format_percent,
-        format_precision, in_tz, now_in, parse_date_with, timezone_offset_secs, MoneyCents,
+        clamp, format_cents, format_currency, format_date_with, format_percent, format_precision,
+        in_tz, now_in, parse_date_with, timezone_offset_secs, MoneyCents,
     };
 
     assert_eq!(format_currency(1234.56, "USD", "en"), "$1,234.56");

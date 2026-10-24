@@ -106,7 +106,9 @@ async fn upload(
     let multipart = match multipart {
         Ok(mp) => mp,
         Err(err) => {
-            let err = kelson_foundation::AppError::validation(format!("multipart request required: {err}"));
+            let err = kelson_foundation::AppError::validation(format!(
+                "multipart request required: {err}"
+            ));
             return state.error_json(&err).into_response();
         }
     };

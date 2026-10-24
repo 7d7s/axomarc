@@ -26,6 +26,7 @@ pub mod cost;
 pub mod explain;
 pub mod guarded;
 pub mod jobstore;
+pub mod membershipstore;
 pub mod modelstore;
 pub mod notificationstore;
 pub mod online;
@@ -51,6 +52,7 @@ pub use guarded::{
     STEPS_TABLE,
 };
 pub use jobstore::MySqlJobStore;
+pub use membershipstore::MySqlMembershipStore;
 pub use modelstore::MySqlModelStore;
 pub use notificationstore::MySqlNotificationStore;
 pub use online::{apply_online, qualifies_for_instant, OnlineChange, OnlineReport, Strategy};
@@ -63,8 +65,8 @@ pub use sqlx::mysql::{MySqlPool, MySqlPoolOptions};
 pub use store::MySqlIdempotency;
 pub use tokenstore::MySqlTokenStore;
 pub use tx::MySqlBackend;
+pub use txport::{MySqlTransactions, MySqlTxHandle};
 pub use upgrade::{assert_current, schema_state, upgrade_pairs, SchemaState};
-pub use txport::{MySqlTxHandle, MySqlTransactions};
 
 use kelson_foundation::AppError;
 use uuid::Uuid;
@@ -313,7 +315,12 @@ pub async fn run_migrations_held(
 /// Dev seeder: tenant row (platform plane writes — run with a platform
 /// context). The `WHERE NOT EXISTS` guard keeps the Postgres conflict
 /// target exact: a duplicate id skips, a slug collision still errors.
-pub async fn seed_tenant(pool: &MySqlPool, id: Uuid, slug: &str, name: &str) -> Result<(), AppError> {
+pub async fn seed_tenant(
+    pool: &MySqlPool,
+    id: Uuid,
+    slug: &str,
+    name: &str,
+) -> Result<(), AppError> {
     sqlx::query(
         "INSERT INTO tenants (id, slug, name, status, plan, created_at)
          SELECT ?, ?, ?, 'active', 'standard', NOW(6)

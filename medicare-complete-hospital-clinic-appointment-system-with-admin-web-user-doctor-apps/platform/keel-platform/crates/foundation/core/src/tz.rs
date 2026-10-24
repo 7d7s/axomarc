@@ -29,8 +29,8 @@ pub fn timezone_offset_secs(name: &str) -> Option<i32> {
         "Asia/Dubai" | "Asia/Muscat" | "Asia/Bahrain" | "Asia/Riyadh" | "Asia/Qatar"
         | "Asia/Kuwait" | "Asia/Baghdad" => 4 * HOUR,
         // South-East Asia — no DST.
-        "Asia/Bangkok" | "Asia/Jakarta" | "Asia/Ho_Chi_Minh" | "Asia/Saigon"
-        | "Asia/Vientiane" | "Asia/Phnom_Penh" => 7 * HOUR,
+        "Asia/Bangkok" | "Asia/Jakarta" | "Asia/Ho_Chi_Minh" | "Asia/Saigon" | "Asia/Vientiane"
+        | "Asia/Phnom_Penh" => 7 * HOUR,
         "Asia/Singapore" | "Asia/Kuala_Lumpur" | "Asia/Shanghai" | "Asia/Hong_Kong"
         | "Asia/Taipei" | "Asia/Macau" | "Australia/Perth" => 8 * HOUR,
         "Asia/Tokyo" | "Asia/Seoul" => 9 * HOUR,
@@ -44,23 +44,31 @@ pub fn timezone_offset_secs(name: &str) -> Option<i32> {
         "Africa/Nairobi" | "Africa/Addis_Ababa" => 3 * HOUR,
         // Europe — standard time (GMT / CET+1 / EET+2; summer time +1 not modeled).
         "Europe/London" | "Europe/Dublin" | "Europe/Lisbon" => 0,
-        "Europe/Berlin" | "Europe/Paris" | "Europe/Madrid" | "Europe/Rome"
-        | "Europe/Amsterdam" | "Europe/Brussels" | "Europe/Vienna" | "Europe/Prague"
-        | "Europe/Warsaw" | "Europe/Stockholm" | "Europe/Oslo" | "Europe/Copenhagen"
-        | "Europe/Zurich" | "Europe/Budapest" => HOUR,
+        "Europe/Berlin" | "Europe/Paris" | "Europe/Madrid" | "Europe/Rome" | "Europe/Amsterdam"
+        | "Europe/Brussels" | "Europe/Vienna" | "Europe/Prague" | "Europe/Warsaw"
+        | "Europe/Stockholm" | "Europe/Oslo" | "Europe/Copenhagen" | "Europe/Zurich"
+        | "Europe/Budapest" => HOUR,
         "Europe/Helsinki" | "Europe/Athens" | "Europe/Bucharest" | "Europe/Kyiv"
-        | "Europe/Kiev" | "Europe/Sofia" | "Europe/Riga" | "Europe/Tallinn"
-        | "Europe/Vilnius" => 2 * HOUR,
+        | "Europe/Kiev" | "Europe/Sofia" | "Europe/Riga" | "Europe/Tallinn" | "Europe/Vilnius" => {
+            2 * HOUR
+        }
         // Moscow/Istanbul/Kaliningrad — no DST at these offsets.
         "Europe/Moscow" | "Europe/Istanbul" | "Europe/Kaliningrad" => 3 * HOUR,
         // Americas — standard time (EST−5 / CST−6 / MST−7 / PST−8; summer
         // time +1 not modeled). Phoenix and Mexico City have no DST today.
         "America/New_York" | "America/Toronto" | "America/Montreal" | "America/Havana"
         | "America/Lima" | "America/Bogota" | "America/Caracas" | "America/Halifax" => -5 * HOUR,
-        "America/Chicago" | "America/Mexico_City" | "America/Winnipeg"
-        | "America/Guatemala" | "America/Panama" => -6 * HOUR,
-        "America/Denver" | "America/Phoenix" | "America/Edmonton" | "America/Tegucigalpa"
-        | "America/El_Salvador" | "America/Managua" => -7 * HOUR,
+        "America/Chicago"
+        | "America/Mexico_City"
+        | "America/Winnipeg"
+        | "America/Guatemala"
+        | "America/Panama" => -6 * HOUR,
+        "America/Denver"
+        | "America/Phoenix"
+        | "America/Edmonton"
+        | "America/Tegucigalpa"
+        | "America/El_Salvador"
+        | "America/Managua" => -7 * HOUR,
         "America/Los_Angeles" | "America/Vancouver" | "America/Tijuana" => -8 * HOUR,
         "America/Anchorage" => -9 * HOUR,
         "Pacific/Honolulu" => -10 * HOUR,

@@ -21,7 +21,13 @@ fn render_labels(labels: &std::collections::BTreeMap<String, String>) -> String 
     }
     let inner: Vec<String> = labels
         .iter()
-        .map(|(k, v)| format!("{}=\"{}\"", sanitize_name(k), v.replace('\\', "\\\\").replace('"', "\\\"")))
+        .map(|(k, v)| {
+            format!(
+                "{}=\"{}\"",
+                sanitize_name(k),
+                v.replace('\\', "\\\\").replace('"', "\\\"")
+            )
+        })
         .collect();
     format!("{{{}}}", inner.join(","))
 }
@@ -48,9 +54,7 @@ pub fn render_prometheus(snapshot: &MetricsSnapshot) -> String {
         let name = sanitize_name(name);
         out.push_str(&format!("# TYPE {name} histogram\n"));
         for (bound, count) in &hist.buckets {
-            out.push_str(&format!(
-                "{name}_bucket{{le=\"{bound}\"}} {count}\n"
-            ));
+            out.push_str(&format!("{name}_bucket{{le=\"{bound}\"}} {count}\n"));
         }
         out.push_str(&format!("{name}_bucket{{le=\"+Inf\"}} {}\n", hist.count));
         out.push_str(&format!("{name}_sum {}\n", hist.sum));

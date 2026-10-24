@@ -19,8 +19,8 @@ use serde_json::{Map, Value};
 use crate::ast::{ForSpec, Node, Template};
 use crate::engine::{ViewError, ViewsEngine, VIEW_LOOP, VIEW_RENDER};
 use crate::expr::{
-    apply_filter, compare_values, html_escape, is_empty_value, is_truthy, lit_value,
-    resolve_path, to_display, trans_filter, Cond, Expr, Operand, Segment,
+    apply_filter, compare_values, html_escape, is_empty_value, is_truthy, lit_value, resolve_path,
+    to_display, trans_filter, Cond, Expr, Operand, Segment,
 };
 use crate::viewmodel::{governing_field, key_path, value_kind, FieldSchema, VM_NAMESPACE};
 use crate::MAX_LOOP_ITERATIONS;
@@ -168,12 +168,13 @@ impl<'e> Renderer<'e> {
                 format!("the view {view:?} has no registered view model: @vm cannot bind"),
             ));
         };
-        if self.lookup(&[Segment::Key(VM_NAMESPACE.to_string())]).is_null() {
+        if self
+            .lookup(&[Segment::Key(VM_NAMESPACE.to_string())])
+            .is_null()
+        {
             return Err(ViewError::new(
                 VIEW_RENDER,
-                format!(
-                    "the view model for {view:?} is missing from the context: @vm cannot bind"
-                ),
+                format!("the view model for {view:?} is missing from the context: @vm cannot bind"),
             ));
         }
         self.bound = Some(binding.schema);
@@ -276,7 +277,9 @@ impl<'e> Renderer<'e> {
                 }
             }
         }
-        resolve_path(&self.root, path).cloned().unwrap_or(Value::Null)
+        resolve_path(&self.root, path)
+            .cloned()
+            .unwrap_or(Value::Null)
     }
 
     /// Resolve a path, enforcing the bound view model's declaration.
@@ -356,10 +359,8 @@ impl<'e> Renderer<'e> {
                 // Wave 6 P3: catalog-backed key lookup through the injected
                 // `_lang` flat map (scope-aware, the `@lang` source).
                 trans_filter(value, filter, |key| {
-                    let found = self.lookup(&[
-                        Segment::Key("_lang".into()),
-                        Segment::Key(key.to_string()),
-                    ]);
+                    let found =
+                        self.lookup(&[Segment::Key("_lang".into()), Segment::Key(key.to_string())]);
                     if matches!(found, Value::String(_)) {
                         Some(found)
                     } else {
@@ -440,7 +441,8 @@ impl<'e> Renderer<'e> {
             return Ok(String::new());
         }
         let rendered = self.render_section_at(name, 0)?;
-        self.section_cache.insert(name.to_string(), rendered.clone());
+        self.section_cache
+            .insert(name.to_string(), rendered.clone());
         Ok(rendered)
     }
 
@@ -492,19 +494,31 @@ impl<'e> Renderer<'e> {
                 }
                 Node::Auth { body, fallback } => {
                     let authed = is_truthy(&self.lookup(&[Segment::Key("_auth".into())]));
-                    let branch = if authed { Some(body) } else { fallback.as_ref() };
+                    let branch = if authed {
+                        Some(body)
+                    } else {
+                        fallback.as_ref()
+                    };
                     if let Some(b) = branch {
                         self.render_nodes(b)?;
                     }
                 }
                 Node::Guest { body, fallback } => {
                     let authed = is_truthy(&self.lookup(&[Segment::Key("_auth".into())]));
-                    let branch = if authed { fallback.as_ref() } else { Some(body) };
+                    let branch = if authed {
+                        fallback.as_ref()
+                    } else {
+                        Some(body)
+                    };
                     if let Some(b) = branch {
                         self.render_nodes(b)?;
                     }
                 }
-                Node::Env { name, body, fallback } => {
+                Node::Env {
+                    name,
+                    body,
+                    fallback,
+                } => {
                     let hit = self.engine.config().env == *name;
                     let branch = if hit { Some(body) } else { fallback.as_ref() };
                     if let Some(b) = branch {
@@ -518,7 +532,12 @@ impl<'e> Renderer<'e> {
                         self.render_nodes(b)?;
                     }
                 }
-                Node::ForEach { vars, source, body, empty } => {
+                Node::ForEach {
+                    vars,
+                    source,
+                    body,
+                    empty,
+                } => {
                     let value = self.eval_operand(source)?;
                     let mut items: Vec<(Value, Value)> = Vec::new();
                     match &value {
@@ -572,7 +591,10 @@ impl<'e> Renderer<'e> {
                 }
                 Node::Push { stack, body } => {
                     let captured = self.render_capture(body)?;
-                    self.stacks.entry(stack.clone()).or_default().push_str(&captured);
+                    self.stacks
+                        .entry(stack.clone())
+                        .or_default()
+                        .push_str(&captured);
                 }
                 Node::Stack { name } => {
                     if let Some(content) = self.stacks.get(name) {
@@ -601,10 +623,8 @@ impl<'e> Renderer<'e> {
                     ));
                 }
                 Node::Error { field, body } => {
-                    let message = self.lookup(&[
-                        Segment::Key("_errors".into()),
-                        Segment::Key(field.clone()),
-                    ]);
+                    let message =
+                        self.lookup(&[Segment::Key("_errors".into()), Segment::Key(field.clone())]);
                     if !message.is_null() {
                         let mut frame = Map::new();
                         frame.insert("message".into(), message);
@@ -615,10 +635,8 @@ impl<'e> Renderer<'e> {
                     }
                 }
                 Node::Lang { key } => {
-                    let value = self.lookup(&[
-                        Segment::Key("_lang".into()),
-                        Segment::Key(key.clone()),
-                    ]);
+                    let value =
+                        self.lookup(&[Segment::Key("_lang".into()), Segment::Key(key.clone())]);
                     match value {
                         Value::String(s) => self.out.push_str(&s),
                         _ => self.out.push_str(key),
@@ -672,7 +690,12 @@ impl<'e> Renderer<'e> {
                         self.out.push_str(&rendered);
                     }
                 }
-                Node::Include { name, data, only_if_exists, when } => {
+                Node::Include {
+                    name,
+                    data,
+                    only_if_exists,
+                    when,
+                } => {
                     if let Some(cond) = when {
                         if !self.eval_cond(cond)? {
                             continue 'outer;
@@ -709,7 +732,12 @@ impl<'e> Renderer<'e> {
                     self.scopes.pop();
                     result?;
                 }
-                Node::Component { name, data, slots, body } => {
+                Node::Component {
+                    name,
+                    data,
+                    slots,
+                    body,
+                } => {
                     if self.depth >= MAX_DEPTH {
                         return Err(ViewError::new(
                             VIEW_RENDER,
@@ -810,7 +838,13 @@ impl<'e> Renderer<'e> {
                     i += 1.0;
                 }
             }
-            ForSpec::CStyle { var, init, op, bound, step } => {
+            ForSpec::CStyle {
+                var,
+                init,
+                op,
+                bound,
+                step,
+            } => {
                 if *step == 0.0 {
                     return Err(ViewError::new(
                         VIEW_LOOP,
@@ -872,10 +906,7 @@ mod tests {
     use serde_json::json;
 
     fn render_str(template: &str, ctx: Value) -> Result<String, ViewError> {
-        let dir = std::env::temp_dir().join(format!(
-            "kelson-views-render-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("kelson-views-render-{}", std::process::id()));
         let views = dir.join("resources").join("views");
         std::fs::create_dir_all(&views).unwrap();
         let config = crate::engine::ViewsConfig {

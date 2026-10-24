@@ -7,14 +7,14 @@
 use std::time::Instant;
 
 use kelson_foundation::{AppError, TenantId};
-use kelson_query::Page;
 use kelson_models::store::{FieldFilter, ListOpts, Record};
+use kelson_query::Page;
 use sqlx::{Column, MySql, Pool, Row};
 use std::future::Future;
 use std::pin::Pin;
 
 use kelson_models::readmodel::{
-    ReadModelDef, ReadModelRefreshResult, ReadModelStaleness, ReadModelStore, ReadModelState,
+    ReadModelDef, ReadModelRefreshResult, ReadModelStaleness, ReadModelState, ReadModelStore,
 };
 
 /// MySQL-backed materialised read model store.
@@ -39,15 +39,19 @@ impl ReadModelStore for MySqlReadModelStore {
         let pool = self.pool.clone();
         let table = read_model.table.clone();
         let query = read_model.query.clone();
-        let tenant_where = match tenant {
-            Some(t) => format!("tenant_id = '{}'", t.as_uuid()),
-            None => "1=1".to_string(),
+        let Some(tenant) = tenant else {
+            return Box::pin(async {
+                Err(AppError::validation(
+                    "read model refresh requires a tenant scope (S-012: cross-tenant refresh is refused)",
+                ))
+            });
         };
+        let tenant_where = format!("tenant_id = '{}'", tenant.as_uuid());
 
         Box::pin(async move {
             let start = Instant::now();
 
-            // Delete existing rows for this tenant (or all if no tenant)
+            // Delete existing rows for this tenant
             let delete_sql = format!("DELETE FROM `{}` WHERE {}", table, tenant_where);
             sqlx::query(&delete_sql)
                 .execute(&pool)
@@ -64,7 +68,7 @@ impl ReadModelStore for MySqlReadModelStore {
             let duration_ms = start.elapsed().as_millis() as u64;
             Ok(ReadModelRefreshResult {
                 rows_materialised: result.rows_affected(),
-                tenants_refreshed: if tenant.is_some() { 1 } else { 0 },
+                tenants_refreshed: 1,
                 duration_ms,
                 success: true,
                 error: None,
@@ -125,10 +129,14 @@ impl ReadModelStore for MySqlReadModelStore {
         let pool = self.pool.clone();
         let table = read_model.table.clone();
         let name = read_model.name.clone();
-        let tenant_where = match tenant {
-            Some(t) => format!("tenant_id = '{}'", t.as_uuid()),
-            None => "1=1".to_string(),
+        let Some(tenant) = tenant else {
+            return Box::pin(async {
+                Err(AppError::validation(
+                    "read model staleness requires a tenant scope (S-012: unscoped reads are refused)",
+                ))
+            });
         };
+        let tenant_where = format!("tenant_id = '{}'", tenant.as_uuid());
 
         Box::pin(async move {
             // Get the max updated_at or created_at from the materialised table
@@ -146,10 +154,7 @@ impl ReadModelStore for MySqlReadModelStore {
                 Some(r) => {
                     let age: Option<i64> = r.try_get("age").ok();
                     let last: Option<String> = r.try_get("last_refreshed").ok();
-                    (
-                        age.map(|a| a as u64),
-                        last,
-                    )
+                    (age.map(|a| a as u64), last)
                 }
                 None => (None, None),
             };
@@ -179,10 +184,14 @@ impl ReadModelStore for MySqlReadModelStore {
     ) -> Pin<Box<dyn Future<Output = Result<Page<Record>, AppError>> + Send + '_>> {
         let pool = self.pool.clone();
         let table = read_model.table.clone();
-        let tenant_where = match tenant {
-            Some(t) => format!("tenant_id = '{}'", t.as_uuid()),
-            None => "1=1".to_string(),
+        let Some(tenant) = tenant else {
+            return Box::pin(async {
+                Err(AppError::validation(
+                    "read model query requires a tenant scope (S-012: unscoped reads are refused)",
+                ))
+            });
         };
+        let tenant_where = format!("tenant_id = '{}'", tenant.as_uuid());
         let filters = filters.to_vec();
         let opts = opts.clone();
 
@@ -209,16 +218,26 @@ impl ReadModelStore for MySqlReadModelStore {
                     kelson_models::store::FieldFilter::Exists(_) => continue, // Skip EXISTS for now
                 };
                 let value_str = serde_json::to_string(&value).unwrap_or_default();
-                where_parts.push(format!("`{}` {} '{}'", field, op_str, value_str.replace("'", "''")));
+                where_parts.push(format!(
+                    "`{}` {} '{}'",
+                    field,
+                    op_str,
+                    value_str.replace("'", "''")
+                ));
             }
 
             let where_clause = where_parts.join(" AND ");
             let order_by = opts
                 .sort
                 .as_ref()
-                .map(|(col, desc)| format!("ORDER BY `{}` {}", col, if *desc { "DESC" } else { "ASC" }))
+                .map(|(col, desc)| {
+                    format!("ORDER BY `{}` {}", col, if *desc { "DESC" } else { "ASC" })
+                })
                 .unwrap_or_default();
-            let limit = opts.limit.map(|l| format!("LIMIT {}", l)).unwrap_or_default();
+            let limit = opts
+                .limit
+                .map(|l| format!("LIMIT {}", l))
+                .unwrap_or_default();
 
             let sql = format!(
                 "SELECT * FROM `{}` WHERE {} {} {}",
@@ -236,7 +255,9 @@ impl ReadModelStore for MySqlReadModelStore {
                     let mut record = Record::new();
                     for column in row.columns() {
                         let name = column.name();
-                        let value = row.try_get::<serde_json::Value, _>(name).unwrap_or(serde_json::Value::Null);
+                        let value = row
+                            .try_get::<serde_json::Value, _>(name)
+                            .unwrap_or(serde_json::Value::Null);
                         record.insert(name.to_string(), value);
                     }
                     record
@@ -244,7 +265,12 @@ impl ReadModelStore for MySqlReadModelStore {
                 .collect();
 
             let total = records.len() as u64;
-            Ok(Page { items: records, page: 1, per_page: 100, total: Some(total) })
+            Ok(Page {
+                items: records,
+                page: 1,
+                per_page: 100,
+                total: Some(total),
+            })
         })
     }
 
@@ -256,10 +282,14 @@ impl ReadModelStore for MySqlReadModelStore {
     ) -> Pin<Box<dyn Future<Output = Result<Option<Record>, AppError>> + Send + '_>> {
         let pool = self.pool.clone();
         let table = read_model.table.clone();
-        let tenant_where = match tenant {
-            Some(t) => format!("tenant_id = '{}'", t.as_uuid()),
-            None => "1=1".to_string(),
+        let Some(tenant) = tenant else {
+            return Box::pin(async {
+                Err(AppError::validation(
+                    "read model find requires a tenant scope (S-012: unscoped reads are refused)",
+                ))
+            });
         };
+        let tenant_where = format!("tenant_id = '{}'", tenant.as_uuid());
 
         Box::pin(async move {
             let sql = format!(
@@ -278,7 +308,9 @@ impl ReadModelStore for MySqlReadModelStore {
                     let mut record = Record::new();
                     for column in r.columns() {
                         let name = column.name();
-                        let value = r.try_get::<serde_json::Value, _>(name).unwrap_or(serde_json::Value::Null);
+                        let value = r
+                            .try_get::<serde_json::Value, _>(name)
+                            .unwrap_or(serde_json::Value::Null);
                         record.insert(name.to_string(), value);
                     }
                     Ok(Some(record))

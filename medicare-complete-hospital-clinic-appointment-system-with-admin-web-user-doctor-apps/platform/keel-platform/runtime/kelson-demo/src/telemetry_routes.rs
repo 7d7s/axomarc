@@ -107,9 +107,11 @@ async fn incident_control(
         return error_response(&state, &headers, &AppError::unauthenticated());
     };
     let Ok(runtime) = runtime(&state) else {
-        return error_response(&state, &headers, &AppError::internal(
-            "telemetry runtime not wired in this host",
-        ));
+        return error_response(
+            &state,
+            &headers,
+            &AppError::internal("telemetry runtime not wired in this host"),
+        );
     };
     if let Err(err) = authorize(&state, &session, &runtime) {
         return error_response(&state, &headers, &err);
@@ -125,7 +127,11 @@ async fn incident_control(
         match serde_json::from_slice(&body) {
             Ok(request) => request,
             Err(_) => {
-                return error_response(&state, &headers, &AppError::validation("request body must be valid JSON"));
+                return error_response(
+                    &state,
+                    &headers,
+                    &AppError::validation("request body must be valid JSON"),
+                );
             }
         }
     };
@@ -141,9 +147,11 @@ async fn incident_control(
             let incident = match plane.start_with_flags(Some(&operator), request.flags) {
                 Ok(incident) => incident,
                 Err(_) => {
-                    return error_response(&state, &headers, &AppError::internal(
-                        "incident control plane write failed",
-                    ));
+                    return error_response(
+                        &state,
+                        &headers,
+                        &AppError::internal("incident control plane write failed"),
+                    );
                 }
             };
             let outcome = if active_id == Some(incident.id) {
@@ -202,11 +210,17 @@ async fn incident_control(
                 ),
             )
                 .into_response(),
-            Err(_) => error_response(&state, &headers, &AppError::internal("incident control plane write failed")),
+            Err(_) => error_response(
+                &state,
+                &headers,
+                &AppError::internal("incident control plane write failed"),
+            ),
         },
-        other => error_response(&state, &headers, &AppError::validation(format!(
-            "unknown action {other:?} (expected start|stop)"
-        ))),
+        other => error_response(
+            &state,
+            &headers,
+            &AppError::validation(format!("unknown action {other:?} (expected start|stop)")),
+        ),
     }
 }
 
@@ -221,9 +235,11 @@ async fn status(
         return error_response(&state, &headers, &AppError::unauthenticated());
     };
     let Ok(runtime) = runtime(&state) else {
-        return error_response(&state, &headers, &AppError::internal(
-            "telemetry runtime not wired in this host",
-        ));
+        return error_response(
+            &state,
+            &headers,
+            &AppError::internal("telemetry runtime not wired in this host"),
+        );
     };
     if let Err(err) = authorize(&state, &session, &runtime) {
         return error_response(&state, &headers, &err);
@@ -274,7 +290,10 @@ pub async fn telemetry_context(
     mut req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    let request_id = req.extensions().get::<kelson_foundation::RequestId>().copied();
+    let request_id = req
+        .extensions()
+        .get::<kelson_foundation::RequestId>()
+        .copied();
     let ctx = context_for(req.headers(), request_id);
     req.extensions_mut().insert(ctx);
     next.run(req).await

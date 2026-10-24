@@ -9,6 +9,7 @@ pub mod clock;
 pub mod datetime;
 pub mod delta;
 pub mod error;
+pub mod head;
 pub mod id;
 pub mod inflect;
 pub mod locale;
@@ -19,7 +20,6 @@ pub mod profile;
 pub mod revision;
 pub mod secret;
 pub mod strings;
-pub mod head;
 pub mod telemetry;
 pub mod translate;
 pub mod tz;
@@ -32,10 +32,11 @@ pub use datetime::{
 };
 pub use delta::{DeltaKind, DeltaStone, StreamRef};
 pub use error::{codes, AppError, ErrorCategory, Retryability, Severity};
+pub use head::{HeadBuilder, HeadStore};
 pub use id::{
-    ulid, uuid, ActorId, AuditId, CorrelationId, CorrelationId as CausationIdAlias, DeltaId, EventId,
-    ExecutionId, IncidentId, LeaseId, MembershipId, OperationId, OutboxId, PrincipalId, RequestId,
-    ScopeNodeId, SpanId, StreamId, TenantId, TraceId,
+    ulid, uuid, ActorId, AuditId, CorrelationId, CorrelationId as CausationIdAlias, DeltaId,
+    EventId, ExecutionId, IncidentId, LeaseId, MembershipId, OperationId, OutboxId, PrincipalId,
+    RequestId, ScopeNodeId, SpanId, StreamId, TenantId, TraceId,
 };
 pub use inflect::{plural, singular};
 pub use locale::{Deadline, Locale, TimeZone};
@@ -58,10 +59,7 @@ pub use translate::{
     CHOICE_BUCKETS,
 };
 pub use tz::timezone_offset_secs;
-pub use viewcontext::{
-    ViewContext, AUTH_KEY, CSRF_KEY, ERRORS_KEY, LANG_KEY, LOCALE_KEY,
-};
-pub use head::{HeadStore, HeadBuilder};
+pub use viewcontext::{ViewContext, AUTH_KEY, CSRF_KEY, ERRORS_KEY, LANG_KEY, LOCALE_KEY};
 
 #[cfg(test)]
 mod tests {

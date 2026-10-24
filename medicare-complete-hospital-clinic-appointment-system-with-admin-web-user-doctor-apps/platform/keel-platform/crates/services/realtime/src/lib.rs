@@ -194,11 +194,7 @@ impl PresenceHub {
 /// subscriber's identity for presence bookkeeping; any error refuses the
 /// connect.
 pub trait ChannelAuthorizer: Send + Sync {
-    fn authorize(
-        &self,
-        channel: &str,
-        token: Option<&str>,
-    ) -> Result<PresenceMember, AppError>;
+    fn authorize(&self, channel: &str, token: Option<&str>) -> Result<PresenceMember, AppError>;
 }
 
 /// Shared transport state: the hub events publish through, the presence
@@ -250,11 +246,7 @@ fn is_presence_channel(channel: &str) -> bool {
 /// `presence.join` to everyone already on the channel. Returns the roster
 /// change so callers can mirror the leave path.
 fn presence_join(state: &RealtimeState, channel: &str, member: &PresenceMember) {
-    if is_presence_channel(channel)
-        && state
-            .presence
-            .join(channel, member.clone())
-    {
+    if is_presence_channel(channel) && state.presence.join(channel, member.clone()) {
         state.hub.publish_value(
             channel,
             "presence.join",
@@ -267,9 +259,7 @@ fn presence_join(state: &RealtimeState, channel: &str, member: &PresenceMember) 
 /// Leave a presence channel (disconnect path): unregister + broadcast
 /// `presence.leave`. Idempotent — a no-op when the member is gone.
 fn presence_leave(state: &RealtimeState, channel: &str, member_id: &str, display_name: &str) {
-    if is_presence_channel(channel)
-        && state.presence.leave(channel, member_id)
-    {
+    if is_presence_channel(channel) && state.presence.leave(channel, member_id) {
         state.hub.publish_value(
             channel,
             "presence.leave",

@@ -90,11 +90,10 @@ async fn list(
     session: Option<Extension<ResolvedSession>>,
     uri: axum::http::Uri,
 ) -> axum::response::Response {
-    let (principal, _tenant) =
-        match resolve_identity(&state, &headers, session.as_deref()) {
-            Ok(identity) => identity,
-            Err(err) => return error_response(&state, &headers, &err),
-        };
+    let (principal, _tenant) = match resolve_identity(&state, &headers, session.as_deref()) {
+        Ok(identity) => identity,
+        Err(err) => return error_response(&state, &headers, &err),
+    };
 
     let pairs = crate::graph_routes::query_pairs(uri.query());
     let pair_refs: Vec<(&str, &str)> = pairs
@@ -149,17 +148,13 @@ fn authorize_mark_read(
     principal: PrincipalId,
     tenant: Option<TenantId>,
 ) -> Result<(), AppError> {
-    let tenant = tenant.ok_or_else(|| {
-        AppError::denied("notification read-marking requires a tenant session")
-    })?;
+    let tenant = tenant
+        .ok_or_else(|| AppError::denied("notification read-marking requires a tenant session"))?;
     let snapshot = state
         .policy
         .snapshot(principal, tenant)
         .ok_or_else(|| AppError::denied("no active access snapshot"))?;
-    if !snapshot
-        .capabilities
-        .contains(FRAMEWORK_CAPABILITIES[0])
-    {
+    if !snapshot.capabilities.contains(FRAMEWORK_CAPABILITIES[0]) {
         return Err(AppError::denied(format!(
             "missing capability {}",
             FRAMEWORK_CAPABILITIES[0]
@@ -174,11 +169,10 @@ async fn mark_read(
     session: Option<Extension<ResolvedSession>>,
     body: axum::body::Bytes,
 ) -> axum::response::Response {
-    let (principal, tenant) =
-        match resolve_identity(&state, &headers, session.as_deref()) {
-            Ok(identity) => identity,
-            Err(err) => return error_response(&state, &headers, &err),
-        };
+    let (principal, tenant) = match resolve_identity(&state, &headers, session.as_deref()) {
+        Ok(identity) => identity,
+        Err(err) => return error_response(&state, &headers, &err),
+    };
     if let Err(err) = authorize_mark_read(&state, principal, tenant) {
         return error_response(&state, &headers, &err);
     }

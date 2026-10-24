@@ -488,8 +488,12 @@ mod tests {
             )],
         )
         .unwrap();
-        c.define("fr", "inbox.count", "one=Un message | other={count} messages")
-            .unwrap();
+        c.define(
+            "fr",
+            "inbox.count",
+            "one=Un message | other={count} messages",
+        )
+        .unwrap();
         c.define(
             "ar",
             "inbox.count",
@@ -512,10 +516,7 @@ mod tests {
         assert_eq!(one.text, "One message");
         assert_eq!(one.locale_used.as_deref(), Some("en"));
         assert_eq!(trans_choice(&c, "en", "inbox.count", 0).text, "0 messages");
-        assert_eq!(
-            trans_choice(&c, "en", "inbox.count", 7).text,
-            "7 messages"
-        );
+        assert_eq!(trans_choice(&c, "en", "inbox.count", 7).text, "7 messages");
         // ar: zero/two/few/many/other all reachable.
         let ar = |n: i64| trans_choice(&c, "ar", "inbox.count", n).text;
         assert_eq!(ar(0), "لا رسائل");
@@ -599,7 +600,10 @@ mod tests {
         let c = std::sync::Arc::new(catalog());
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
         let mut handles = Vec::new();
-        for (locale, key) in [("hi", "appointment.booked"), ("en-IN", "appointment.patience")] {
+        for (locale, key) in [
+            ("hi", "appointment.booked"),
+            ("en-IN", "appointment.patience"),
+        ] {
             let c = c.clone();
             let barrier = barrier.clone();
             handles.push(std::thread::spawn(move || {

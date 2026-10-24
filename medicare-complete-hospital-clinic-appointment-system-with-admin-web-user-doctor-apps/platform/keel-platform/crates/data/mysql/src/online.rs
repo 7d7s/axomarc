@@ -179,19 +179,14 @@ where
     let retired = change.retired();
 
     // 1. the shadow table, with the same structure.
-    sqlx::raw_sql(&format!(
-        "DROP TABLE IF EXISTS {shadow}"
-    ))
-    .execute(&mut *conn)
-    .await
-    .map_err(|e| AppError::persistence(format!("online change: drop the stale shadow: {e}")))?;
-    sqlx::raw_sql(&format!(
-        "CREATE TABLE {shadow} LIKE {}",
-        change.table
-    ))
-    .execute(&mut *conn)
-    .await
-    .map_err(|e| AppError::persistence(format!("online change: create the shadow: {e}")))?;
+    sqlx::raw_sql(&format!("DROP TABLE IF EXISTS {shadow}"))
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| AppError::persistence(format!("online change: drop the stale shadow: {e}")))?;
+    sqlx::raw_sql(&format!("CREATE TABLE {shadow} LIKE {}", change.table))
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| AppError::persistence(format!("online change: create the shadow: {e}")))?;
 
     // 2. the change, applied to the shadow.
     sqlx::raw_sql(&format!("ALTER TABLE {shadow} {}", change.alter))
@@ -227,14 +222,12 @@ where
             ),
         };
         let affected = match &last_key {
-            Some(last) => {
-                sqlx::query(&statement)
-                    .bind(last)
-                    .execute(&mut *conn)
-                    .await
-                    .map_err(|e| AppError::persistence(format!("online change: copy: {e}")))?
-                    .rows_affected()
-            }
+            Some(last) => sqlx::query(&statement)
+                .bind(last)
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| AppError::persistence(format!("online change: copy: {e}")))?
+                .rows_affected(),
             None => sqlx::raw_sql(&statement)
                 .execute(&mut *conn)
                 .await
@@ -281,7 +274,9 @@ where
     sqlx::raw_sql(&format!("DROP TABLE IF EXISTS {retired}"))
         .execute(&mut *conn)
         .await
-        .map_err(|e| AppError::persistence(format!("online change: drop the retired table: {e}")))?;
+        .map_err(|e| {
+            AppError::persistence(format!("online change: drop the retired table: {e}"))
+        })?;
 
     Ok(OnlineReport {
         table: change.table.clone(),
@@ -307,10 +302,9 @@ async fn column_names(
     .map_err(|e| AppError::persistence(format!("online change: read the columns: {e}")))?;
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
-        out.push(
-            row.try_get::<String, _>(0)
-                .map_err(|e| AppError::persistence(format!("online change: decode the column: {e}")))?,
-        );
+        out.push(row.try_get::<String, _>(0).map_err(|e| {
+            AppError::persistence(format!("online change: decode the column: {e}"))
+        })?);
     }
     Ok(out)
 }
@@ -351,10 +345,7 @@ pub async fn primary_key_of(
 }
 
 /// How many rows a table holds.
-async fn count_rows(
-    conn: &mut sqlx::MySqlConnection,
-    table: &str,
-) -> Result<u64, AppError> {
+async fn count_rows(conn: &mut sqlx::MySqlConnection, table: &str) -> Result<u64, AppError> {
     let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
         .fetch_one(conn)
         .await
@@ -372,10 +363,13 @@ async fn max_key(
     // so the resume point is CAST to text: the comparison in the copy is
     // then a text comparison against the same column, which MySQL coerces
     // back to the column's type.
-    let value: String = sqlx::query_scalar(&format!("SELECT CAST(MAX({key}) AS CHAR) FROM {table}"))
-        .fetch_one(conn)
-        .await
-        .map_err(|e| AppError::persistence(format!("online change: read the resume point: {e}")))?;
+    let value: String =
+        sqlx::query_scalar(&format!("SELECT CAST(MAX({key}) AS CHAR) FROM {table}"))
+            .fetch_one(conn)
+            .await
+            .map_err(|e| {
+                AppError::persistence(format!("online change: read the resume point: {e}"))
+            })?;
     Ok(value)
 }
 
@@ -388,7 +382,9 @@ mod tests {
         // Only "add a column" is INSTANT in MySQL 8.0. Extending a VARCHAR
         // and adding an index are INPLACE (they rebuild under a lock that
         // permits reads but not writes), so they take the copy path.
-        assert!(qualifies_for_instant("ADD COLUMN email VARCHAR(255) NOT NULL DEFAULT ''"));
+        assert!(qualifies_for_instant(
+            "ADD COLUMN email VARCHAR(255) NOT NULL DEFAULT ''"
+        ));
         assert!(qualifies_for_instant("  add column x INT"));
         assert!(!qualifies_for_instant("ADD INDEX idx (x)"));
         assert!(!qualifies_for_instant("MODIFY COLUMN email VARCHAR(512)"));

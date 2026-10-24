@@ -145,7 +145,11 @@ pub fn split_statements(sql: &str) -> Vec<String> {
                     // A `--` comment needs whitespace after it to be a
                     // comment (MySQL's rule); `--x` is a minus sign.
                     let after = bytes.get(i + 2).copied();
-                    if after.is_none() || after == Some(' ') || after == Some('\t') || after == Some('\n') {
+                    if after.is_none()
+                        || after == Some(' ')
+                        || after == Some('\t')
+                        || after == Some('\n')
+                    {
                         while i < bytes.len() && bytes[i] != '\n' {
                             i += 1;
                         }

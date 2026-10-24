@@ -168,7 +168,9 @@ impl ListenerRegistry {
         // Identity is scope-qualified: the same event → handler pair may be
         // registered once per tenant (plus once as a global listener).
         if self.listeners.iter().any(|l| {
-            l.spec.event == spec.event && l.spec.handler == spec.handler && l.spec.tenant == spec.tenant
+            l.spec.event == spec.event
+                && l.spec.handler == spec.handler
+                && l.spec.tenant == spec.tenant
         }) {
             return Err(AppError::validation(format!(
                 "listener registered twice: {} -> {}",
@@ -773,10 +775,7 @@ mod tests {
     #[test]
     fn outbox_event_serde_defaults_empty_key_for_pre_migration_rows() {
         let mut legacy = serde_json::to_value(event("legacy")).unwrap();
-        legacy
-            .as_object_mut()
-            .unwrap()
-            .remove("idempotency_key");
+        legacy.as_object_mut().unwrap().remove("idempotency_key");
         let row: OutboxEvent = serde_json::from_value(legacy).unwrap();
         assert!(row.idempotency_key.is_empty());
         assert!(IdempotencyKey::default().is_empty());
@@ -964,7 +963,10 @@ mod tests {
         let third = pump.run_once().await.unwrap();
         assert_eq!(third.fetched, 1);
         assert_eq!(third.dispatched, 0);
-        assert_eq!(third.skipped_duplicate, 1, "now the key is known, duplicate skipped");
+        assert_eq!(
+            third.skipped_duplicate, 1,
+            "now the key is known, duplicate skipped"
+        );
         assert_eq!(outbox.unpublished(), 0);
     }
 

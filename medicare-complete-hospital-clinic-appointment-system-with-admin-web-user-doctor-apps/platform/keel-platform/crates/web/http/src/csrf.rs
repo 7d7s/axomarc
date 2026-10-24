@@ -53,10 +53,7 @@ impl CsrfGuard {
     /// routes only, so an api-plane route keeps its byte-identical
     /// token-authenticated answer. Runs inside the security-headers layer,
     /// so a 403 rejection still carries the deployment's posture.
-    pub fn apply_route(
-        self,
-        route: axum::routing::MethodRouter,
-    ) -> axum::routing::MethodRouter {
+    pub fn apply_route(self, route: axum::routing::MethodRouter) -> axum::routing::MethodRouter {
         route.layer(axum::middleware::from_fn_with_state(self, csrf_fn))
     }
 }

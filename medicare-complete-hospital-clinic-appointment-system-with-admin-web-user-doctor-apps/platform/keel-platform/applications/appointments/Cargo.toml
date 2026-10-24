@@ -38,6 +38,7 @@ uuid = { workspace = true }
 crate-type = ["cdylib"]
 
 [dev-dependencies]
+kelson-identity = { workspace = true }
 kelson-policy = { workspace = true }
 kelson-registry = { workspace = true }
 tokio = { workspace = true }
