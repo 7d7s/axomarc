@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ _head.title }}</title>
+  <meta name="description" content="{{ _head.metas.description }}">
+</head>
+<body>
+  <main class="mvc-book-form">
+    <h1>Book an appointment</h1>
+    @if(accepted)
+    <section class="accepted">
+      <p class="patient">{{ accepted.patient }}</p>
+      <p class="slot">{{ accepted.slot }}</p>
+      <p class="note">accepted â€” this page proves the form bridge; the booking command is the MVA-004 page's lane.</p>
+    </section>
+    @else
+    @if(form.csrf_token)
+    <form method="{{ form.method }}" action="{{ form.action }}" class="bridged-form" enctype="application/x-www-form-urlencoded">
+      <input type="hidden" name="_token" value="{{ form.csrf_token }}">
+      @foreach(form.fields as field)
+      <div class="field field-{{ field.name }}">
+        <label for="{{ field.name }}">{{ field.label }}@if(field.required)<span class="required">*</span>@endif</label>
+        <input id="{{ field.name }}" name="{{ field.name }}" type="{{ field.field_type }}" value="{{ field.value }}">
+        @if(field.error)<span class="field-error">{{ field.error }}</span>@endif
+      </div>
+      @endforeach
+      @if(form.error)<p class="form-error">{{ form.error }}</p>@endif
+      <button type="submit">Book</button>
+    </form>
+    @else
+    <p class="sign-in">Sign in to book â€” a form token is minted against your session.</p>
+    @endif
+    @endif
+  </main>
+</body>
+</html>

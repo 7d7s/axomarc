@@ -5,6 +5,10 @@
 //! MVA-005), the boot registers the binding below (and refuses boot if a
 //! declaration points at nothing), and the template reads only through the
 //! `@vm` binder.
+//!
+//! MVA-008 adds [`WaitingRoomVm`]: the live view's state. Its binding is
+//! the FIRST one registered with [`kelson_views::ViewBinding::live`] —
+//! opt-in per view, so the live loop can only ever attach to this page.
 
 use kelson_views::{FieldKind, FieldSchema, ViewModel};
 
@@ -23,6 +27,24 @@ impl ViewModel for BookAppointmentVm {
         kelson_views::view_schema![
             FieldSchema::required("date", FieldKind::String),
             FieldSchema::required("appointments_booked", FieldKind::Int),
+        ]
+    }
+}
+
+/// MVA-008: the live waiting-room's state — the state IS this view
+/// model. A session holds one of these; every applied `change` advances
+/// the session's revision and the wire publishes the diff of exactly
+/// this declared shape.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WaitingRoomVm {
+    pub waiting: u64,
+}
+
+impl ViewModel for WaitingRoomVm {
+    const VIEW: &'static str = "pages.mvc-live";
+    fn schema() -> &'static [FieldSchema] {
+        kelson_views::view_schema![
+            FieldSchema::required("waiting", FieldKind::Int),
         ]
     }
 }

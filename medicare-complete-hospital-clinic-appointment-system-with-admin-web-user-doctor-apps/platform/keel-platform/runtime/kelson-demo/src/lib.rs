@@ -14,6 +14,8 @@ pub mod graph_routes;
 pub mod host;
 pub mod hot_reload;
 pub mod i18n;
+pub mod mvvc_live;
+pub mod mvvc_pages;
 pub mod notification_routes;
 pub mod routes;
 pub mod runtime_status;
@@ -934,6 +936,24 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .to_argon2()
         .map_err(|error| error.public_message)?;
 
+    // MVA-007 + MVA-008: the runtime's own MVVC consumers. The read-model
+    // registry registers the `appointments_daily` def always and installs
+    // its projection store only when this boot has a model backend (a
+    // backend-less boot keeps the declaration and the report page refuses
+    // honestly). The live edge hosts the waiting-room session over the SAME
+    // views engine the request path renders through — `None` without views
+    // (no engine to re-render a live state through), and its transports
+    // only mount when `app.realtime` is on (dev/test rule; prod opt-in).
+    let read_models = Arc::new(crate::mvvc_pages::demo_read_models(
+        host.registry()
+            .get::<kelson_models::ModelStoreRef>()
+            .ok()
+            .map(|store| store.0.clone()),
+    ));
+    let live = views
+        .as_ref()
+        .map(|engine| Arc::new(crate::mvvc_live::LiveEdge::new(engine.clone())));
+
     let state = routes::AppState {
         bus: Arc::new(routes::DispatchBus::new(bus)),
         health: health.clone(),
@@ -991,6 +1011,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         dashboard_enabled,
         telemetry: Some(telemetry_runtime.clone()),
         views,
+        read_models,
+        live,
         messages,
         error_renders,
         debug: cfg.app().debug,
@@ -1501,6 +1523,13 @@ pub fn install_view_registry(engine: &kelson_views::ViewsEngine) {
     registry.register(kelson_views::ViewBinding::new::<app_vm::BookAppointmentVm>(
         app_vm::BookAppointmentVm::VIEW,
     ));
+    // MVA-008: the first LIVE binding — `WaitingRoomVm` declares itself
+    // live, so only this page can ever attach a live session (opt-in per
+    // view; every other binding keeps rendering request-scoped).
+    registry.register(
+        kelson_views::ViewBinding::new::<app_vm::WaitingRoomVm>(app_vm::WaitingRoomVm::VIEW)
+            .live(),
+    );
     engine.set_registry(std::sync::Arc::new(registry));
 }
 
@@ -1886,6 +1915,11 @@ fn build_app_state_inner(
     let appt_store: HarnessAppStore = Arc::new(
         kelson_appointments_contract::AppointmentStore::new(appt_backend.clone()),
     );
+    // MVA-007: the harness shares production's posture — the def always
+    // registers, and the projection store installs because this harness has
+    // the model backend (the same backend `appt_store` writes through, so
+    // the report reads what a book dispatched).
+    let read_models = Arc::new(crate::mvvc_pages::demo_read_models(Some(appt_backend.clone())));
 
     // Wave 6 P3/P5/P6: the harness catalog (`<storage_root>/lang`, absent
     // = the empty default catalog) and a fresh in-memory inbox store, plus
@@ -2055,7 +2089,11 @@ fn build_app_state_inner(
     // Wave 8 B-25: the harness mirrors the production posture — an index
     // under the storage root registers package view namespaces too.
     register_package_view_namespaces(storage_root, &views_engine);
-    let views = Some(Arc::new(views_engine));
+    let views_arc = Arc::new(views_engine);
+    let views = Some(views_arc.clone());
+    // MVA-008: the harness hosts the live edge over the SAME engine the
+    // request path renders through.
+    let live = Some(Arc::new(crate::mvvc_live::LiveEdge::new(views_arc)));
     // Wave 2 static assets: the harness resolves <storage_root>/public —
     // tests opt into the fallback through `static_assets::with_static_files`
     // exactly as `run()` does for production.
@@ -2192,6 +2230,8 @@ fn build_app_state_inner(
             .expect("telemetry runtime constructs"),
         ),
         views,
+        read_models,
+        live,
         messages,
         error_renders,
         debug: false,

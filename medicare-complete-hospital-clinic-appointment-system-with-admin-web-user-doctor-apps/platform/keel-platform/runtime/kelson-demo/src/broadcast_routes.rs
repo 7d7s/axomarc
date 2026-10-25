@@ -27,8 +27,9 @@ use crate::routes::AppState;
 
 /// Short-TTL window of a broadcast channel token (19-PARITY "short-TTL
 /// signed channel token"). The subscription path re-verifies at every
-/// connect, so a leaked token simply dies on its own.
-const CHANNEL_TOKEN_TTL_SECS: i64 = 300;
+/// connect, so a leaked token simply dies on its own. Shared with the
+/// live edge's subscription issuance (MVA-008) — one TTL, one rule.
+pub(crate) const CHANNEL_TOKEN_TTL_SECS: i64 = 300;
 
 /// Resolved broadcast channel authorization entry (Wave 6 P7): the channel
 /// name plus every capability string a caller's snapshot must carry.

@@ -1291,6 +1291,45 @@ fn dispatch_error(
         .into_response()
 }
 
+/// MVA-007: the per-page head an HTML dispatch authors.
+///
+/// The title derives from the view the route declared —
+/// `pages.book-appointment` → "Book Appointment · Kelson" — so the page's
+/// identity is its own declaration and the edge can never ship another
+/// page's hard-coded title again. A dispatch without a view keeps the
+/// framework's fallback title (the render still refuses before head
+/// assembly anyway; this is belt and braces, never a half-page).
+pub(crate) fn page_head(view: Option<&str>) -> kelson_foundation::HeadStore {
+    let title = view
+        .and_then(|declared| declared.rsplit('.').next())
+        .map(titled_leaf)
+        .unwrap_or_else(|| String::from("Kelson"));
+    kelson_foundation::HeadBuilder::new()
+        .title(title)
+        .meta("description", "Kelson application")
+        .build()
+}
+
+/// A view leaf's page title: `book-appointment` → "Book Appointment".
+fn titled_leaf(leaf: &str) -> String {
+    let words: Vec<String> = leaf
+        .split(['-', '_'])
+        .filter(|word| !word.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect();
+    if words.is_empty() {
+        String::from("Kelson")
+    } else {
+        format!("{} · Kelson", words.join(" "))
+    }
+}
+
 /// Wave 2 HTML route: render `route.view` with the operation result as the
 /// template context (an object result IS the context; scalars and arrays nest
 /// under `data`). The reserved context (`_errors`, `_locale`, `_lang`,
@@ -1378,7 +1417,7 @@ fn html_response(
 /// the server secret, so a form the view renders can be verified against
 /// the session that rendered it (and only that session). A guest - no
 /// session - has no token, and the view renders no `@csrf` field.
-fn csrf_token(state: &AppState, session: Option<&ResolvedSession>) -> Option<String> {
+pub(crate) fn csrf_token(state: &AppState, session: Option<&ResolvedSession>) -> Option<String> {
     let resolved = session?;
     let middleware = state.sessions.as_ref()?;
     Some(kelson_http::session_csrf_token(
@@ -1442,12 +1481,11 @@ fn render_success(
                 .with_auth(view_auth)
                 .with_errors(serde_json::json!({}))
                 .with_csrf(csrf_token(state, session.as_ref()))
-                .with_head(
-                    kelson_foundation::HeadBuilder::new()
-                        .title("Kelson")
-                        .meta("description", "Kelson application")
-                        .build(),
-                );
+                // MVA-007: the per-page head. The dispatch declared the
+                // view, and the view IS the page's identity — the head
+                // derives its title from that declaration instead of one
+                // hard-coded title riding every page the edge serves.
+                .with_head(page_head(dispatch.view.as_deref()));
             Ok(html_response(
                 state, dispatch, headers, path, reserved, result,
             ))
@@ -2751,6 +2789,35 @@ operation = "list"
             .get(name)
             .and_then(|v| v.to_str().ok())
             .map(str::to_string)
+    }
+
+    // ------------------------------------------------ MVA-007 per-page head
+
+    /// The route edge's head is the page's OWN identity: derived from the
+    /// view the dispatch declared, with the framework title only as the
+    /// fallback for a dispatch that declared none.
+    #[test]
+    fn the_route_edge_head_derives_from_the_declared_view() {
+        let head = page_head(Some("pages.book-appointment"));
+        assert_eq!(
+            head.title(),
+            Some("Book Appointment · Kelson"),
+            "the view leaf titles its own page"
+        );
+
+        let mut dispatch = dispatch(ResponseKind::Html, true, None);
+        dispatch.view = Some("pages.mvc-report".into());
+        assert_eq!(
+            page_head(dispatch.view.as_deref()).title(),
+            Some("Mvc Report · Kelson"),
+            "each declared view authors its own head"
+        );
+
+        assert_eq!(
+            page_head(None).title(),
+            Some("Kelson"),
+            "no declaration keeps the fallback title"
+        );
     }
 
     #[test]

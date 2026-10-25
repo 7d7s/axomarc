@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ _head.title }}</title>
+  <meta name="description" content="{{ _head.metas.description }}">
+</head>
+<body>
+  @vm
+  <main class="mvc-live">
+    <h1>Waiting room</h1>
+    <p class="waiting">{{ vm.waiting }}</p>
+    <p class="hint">live updates arrive on the session's authorized channel.</p>
+  </main>
+</body>
+</html>

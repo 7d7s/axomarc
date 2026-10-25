@@ -68,7 +68,7 @@ kelson-identity = { workspace = true }
 kelson-storage = { workspace = true }
 kelson-storage-local = { workspace = true }
 kelson-storage-s3 = { workspace = true }
-kelson-views = { workspace = true }
+kelson-views = { workspace = true, features = ["live-transport"] }
 # Stage C.2: the modules' CONTRACT halves, statically linked into the
 # kernel. The behaviour lives in the guests and reaches this process only
 # over the seam; what is linked here is the schema, the store and the

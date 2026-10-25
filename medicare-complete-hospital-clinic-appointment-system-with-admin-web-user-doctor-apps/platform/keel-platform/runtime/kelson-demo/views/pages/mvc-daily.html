@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ _head.title }}</title>
+  <meta name="description" content="{{ _head.metas.description }}">
+</head>
+<body>
+  <main class="mvc-daily">
+    <h1>Appointments daily report</h1>
+    <p class="model">{{ model }}</p>
+    <p class="staleness">{{ staleness.state }} Â· age {{ staleness.age_seconds }}s Â· refreshed {{ staleness.last_refreshed_at }}</p>
+    @forelse(rows as row)
+    <section class="row">
+      <span class="patient">{{ row.patient }}</span>
+      <span class="slot">{{ row.slot }}</span>
+      <span class="status">{{ row.status }}</span>
+    </section>
+    @empty
+    <p class="empty">no appointments projected</p>
+    @endforelse
+    <p class="total">{{ total }}</p>
+  </main>
+</body>
+</html>

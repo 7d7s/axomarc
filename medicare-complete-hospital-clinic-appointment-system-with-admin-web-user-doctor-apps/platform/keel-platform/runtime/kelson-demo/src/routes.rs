@@ -153,6 +153,18 @@ pub struct AppState {
     /// harnesses that opt out: HTML routes and web-plane error views then
     /// degrade to JSON envelopes instead of failing the request.
     pub views: Option<Arc<kelson_views::ViewsEngine>>,
+    // --- MVVC runtime consumers (MVA-007 / MVA-008) ------------------------
+    /// Declared read models + their installed stores (MVA-007). The
+    /// reference boot registers `appointments_daily`; the store installs
+    /// only when the boot has a model backend to project from — a boot
+    /// without one keeps the declaration and the report page refuses
+    /// honestly instead of rendering rows it never materialised.
+    pub read_models: Arc<kelson_models::ReadModelRegistry>,
+    /// The live edge this boot hosts (MVA-008): hub, session registry,
+    /// wire and the typed waiting-room sessions. `None` on a boot
+    /// without views (no engine to re-render a live state through) — the
+    /// live routes then fail closed and no transport mounts.
+    pub live: Option<Arc<crate::mvvc_live::LiveEdge>>,
     // --- Wave 6 P3 i18n ----------------------------------------------------
     /// Boot-loaded message catalog (`lang/<locale>.toml`, `[i18n] paths`).
     /// Feeds the view `_locale`/`_lang` injections, localized
@@ -421,7 +433,18 @@ pub struct RoutesBody {
 }
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    // MVA-008: the realtime transports mount only when this boot had the
+    // `app.realtime` flag (dev/test default; prod off) AND installed the
+    // live edge — a boot without views has no hub to stream from, and a
+    // flag-off boot must expose no transport at all.
+    let realtime = state
+        .flags
+        .read()
+        .unwrap()
+        .iter()
+        .any(|flag| flag == "app.realtime");
+    let live = state.live.clone();
+    let router = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/meta/boot", get(boot_meta))
@@ -434,8 +457,27 @@ pub fn router(state: AppState) -> Router {
         // Wave 8 ADR 0009: the operational half — same `dashboard_enabled`
         // gate, shared identity resolution, views-or-JSON rendering.
         .route("/_dashboard/ops", get(crate::dashboard::ops_dashboard))
+        // MVA-007: the read-model page and the bridged form page.
+        .merge(crate::mvvc_pages::router())
+        // MVA-008: the live page + session/channel endpoints.
+        .merge(crate::mvvc_live::router())
         .route("/api/v1/demo/echo", post(demo_echo))
-        .with_state(state)
+        .with_state(state.clone());
+    if realtime {
+        if let Some(edge) = live {
+            // The SAME host-side channel-token authorizer the broadcast
+            // surface issues against: a token grants exactly its channel.
+            return router.merge(kelson_realtime::realtime_router_authorized(
+                edge.hub.clone(),
+                state.presence.clone(),
+                Arc::new(crate::broadcast_routes::ChannelTokenAuthorizer {
+                    tokens: state.tokens.clone(),
+                    principals: state.principals.clone(),
+                }),
+            ));
+        }
+    }
+    router
 }
 
 // ----------------------------------------------------------- S10 endpoints
