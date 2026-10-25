@@ -7,8 +7,11 @@
 //   kelson sdk:openapi
 
 const API = {
+  // MNC-005: register answers a uniform 202 and mints NO session (it also
+  // never reveals whether the address was taken) — the cookie comes from
+  // the explicit sign-in that follows.
   register: (email, password) =>
-    post("/auth/register", { email, password, tenant: "dev", mode: "session" }),
+    post("/auth/register", { email, password, tenant: "dev" }),
   login: (email, password) =>
     post("/auth/login", { identifier: email, password, tenant: "dev", mode: "session" }),
   logout: () => post("/auth/logout", {}),
@@ -46,8 +49,13 @@ async function refresh() {
 }
 
 $("register").onclick = async () => {
-  const out = await API.register($("email").value, $("password").value);
-  if (out.ok) showApp(); else alert(JSON.stringify(out));
+  const email = $("email").value;
+  const password = $("password").value;
+  const out = await API.register(email, password);
+  if (!out.ok) return alert(JSON.stringify(out));
+  // Registration is two steps now: sign in to get the session.
+  const signed = await API.login(email, password);
+  if (signed.ok) showApp(); else alert(JSON.stringify(signed));
 };
 
 $("login").onclick = async () => {

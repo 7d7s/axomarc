@@ -9,15 +9,30 @@ const uniqueEmail = (tag: string) =>
 
 const password = 'correct-horse-99';
 
-test('register issues a session and /auth/me resolves the principal', async ({
+// MNC-005: `/auth/register` answers ONE uniform 202 — it mints no session
+// and never reveals whether the address was taken. The session is what the
+// explicit sign-in that follows issues.
+test('register answers 202 with no session, and sign-in issues it', async ({
   request,
 }) => {
+  const email = uniqueEmail('register');
   const reg = await request.post('/auth/register', {
-    data: { email: uniqueEmail('register'), password, tenant: 'dev' },
+    data: { email, password, tenant: 'dev' },
   });
-  expect(reg.ok(), await reg.text()).toBeTruthy();
+  expect(reg.status(), await reg.text()).toBe(202);
   const regBody = await reg.json();
   expect(regBody.ok).toBe(true);
+  expect(regBody.data.sent).toBe(true);
+
+  // Registration alone leaves the caller anonymous.
+  const anon = await request.get('/auth/me');
+  expect(anon.status()).toBe(401);
+
+  // The explicit sign-in is what issues the session.
+  const login = await request.post('/auth/login', {
+    data: { identifier: email, password, tenant: 'dev' },
+  });
+  expect(login.ok(), await login.text()).toBeTruthy();
 
   const me = await request.get('/auth/me');
   expect(me.ok()).toBeTruthy();
@@ -26,14 +41,15 @@ test('register issues a session and /auth/me resolves the principal', async ({
   expect(meBody.data.principal).toBeTruthy();
 });
 
-test('login rejects a bad password with the envelope error', async ({
+test('register answers 202 and a bad password still hits the same 401', async ({
   request,
 }) => {
   const email = uniqueEmail('badlogin');
   const reg = await request.post('/auth/register', {
     data: { email, password, tenant: 'dev' },
   });
-  expect(reg.ok(), await reg.text()).toBeTruthy();
+  // MNC-005: uniform 202 — the register step says nothing about the address.
+  expect(reg.status(), await reg.text()).toBe(202);
 
   const res = await request.post('/auth/login', {
     data: { identifier: email, password: 'wrong-password', tenant: 'dev' },
@@ -51,7 +67,7 @@ test('login with the right password resolves the same principal', async ({
   const reg = await request.post('/auth/register', {
     data: { email, password, tenant: 'dev' },
   });
-  expect(reg.ok(), await reg.text()).toBeTruthy();
+  expect(reg.status(), await reg.text()).toBe(202);
 
   const login = await request.post('/auth/login', {
     data: { identifier: email, password, tenant: 'dev' },

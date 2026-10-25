@@ -116,14 +116,38 @@ async fn delete(router: &axum::Router, uri: &str, cookie: Option<&str>) -> Reply
     send(router, builder.body(Body::empty()).expect("request builds")).await
 }
 
+/// Register and sign in (MNC-005: `/auth/register` answers the uniform
+/// 202 with no session — the cookie is what the explicit sign-in issues).
 async fn register(router: &axum::Router, email: &str) -> String {
-    let body =
-        serde_json::json!({ "email": email, "password": "Correct-horse-99", "tenant": "dev" });
+    let password = "Correct-horse-99";
     let req = Request::builder()
         .method(Method::POST)
         .uri("/auth/register")
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(body.to_string()))
+        .body(Body::from(
+            serde_json::json!({ "email": email, "password": password, "tenant": "dev" })
+                .to_string(),
+        ))
+        .expect("request builds");
+    let reply = send(router, req).await;
+    assert_eq!(reply.status, StatusCode::ACCEPTED, "{}", reply.body);
+    assert!(
+        !reply
+            .set_cookies
+            .iter()
+            .any(|c| c.starts_with("kelson_session=")),
+        "MNC-005: register mints no session: {:?}",
+        reply.set_cookies
+    );
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/auth/login")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::json!({ "identifier": email, "password": password, "tenant": "dev" })
+                .to_string(),
+        ))
         .expect("request builds");
     let reply = send(router, req).await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
@@ -132,7 +156,7 @@ async fn register(router: &axum::Router, email: &str) -> String {
         .iter()
         .find(|c| c.starts_with("kelson_session="))
         .map(|c| c.split(';').next().expect("cookie pair").to_string())
-        .expect("session cookie issued")
+        .expect("session cookie issued at sign-in")
 }
 
 fn urlencode(raw: &str) -> String {

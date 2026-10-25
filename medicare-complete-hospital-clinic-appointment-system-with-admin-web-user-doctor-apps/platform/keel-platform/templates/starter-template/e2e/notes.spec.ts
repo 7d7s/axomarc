@@ -18,10 +18,16 @@ const password = 'correct-horse-99';
 test('create then list round-trips a note under a session', async ({
   request,
 }) => {
+  const email = uniqueEmail();
   const reg = await request.post('/auth/register', {
-    data: { email: uniqueEmail(), password, tenant: 'dev' },
+    data: { email, password, tenant: 'dev' },
   });
-  expect(reg.ok(), await reg.text()).toBeTruthy();
+  // MNC-005: register mints no session (uniform 202) — sign in first.
+  expect(reg.status(), await reg.text()).toBe(202);
+  const login = await request.post('/auth/login', {
+    data: { identifier: email, password, tenant: 'dev' },
+  });
+  expect(login.ok(), await login.text()).toBeTruthy();
 
   const created = await request.post(notesPath, {
     data: { body: 'playwright smoke note' },

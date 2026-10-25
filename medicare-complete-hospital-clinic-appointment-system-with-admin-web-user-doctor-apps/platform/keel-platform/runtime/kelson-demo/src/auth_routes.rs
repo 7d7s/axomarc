@@ -397,10 +397,92 @@ fn finish_login(
     Ok((data, cookie))
 }
 
+/// MNC-005 (enumeration half): what registration reports.
+///
+/// One shape for every address — the body carries nothing that varies with
+/// whether the account existed a moment ago (no principal id, no token, no
+/// cookie). Dev/test fetch their verification token from
+/// `POST /auth/verify-request`, which is enumeration-safe on its own terms.
+#[derive(Debug, Serialize)]
+struct RegisterData {
+    sent: bool,
+}
+
+/// MNC-005: issue the address's verification token and hand the mail to the
+/// runtime — OFF the response path.
+///
+/// The handler never awaits this: SMTP latency and transport failure stay
+/// out of the answer, so the mail channel cannot become a second oracle (a
+/// slow send for a taken address would have said so on its own). Failure is
+/// logged and changes nothing — the caller has already been told the same
+/// thing either way, and `POST /auth/verify-request` re-issues on demand.
+///
+/// Both sides of the register branch queue this: the address owner gets the
+/// same mail and the same work happens, whichever branch ran.
+fn queue_verification_mail(state: &AppState, email: &str, principal: PrincipalId) {
+    let issued = match state.tokens.issue(
+        principal,
+        kelson_tokens::TokenPurpose::Verify,
+        VERIFY_TTL,
+        None,
+    ) {
+        Ok(issued) => issued,
+        Err(error) => {
+            // Server-side only: the response is already on its uniform way.
+            tracing::warn!(target: "auth::mail", %email, %error, "verification token not issued");
+            return;
+        }
+    };
+    let Some(port) = state.mail.clone() else {
+        tracing::debug!(target: "auth::mail", %email, "no mail port configured; verification not delivered");
+        return;
+    };
+    let msg = kelson_notifications::NotifyMessage {
+        channel: kelson_notifications::Channel::Email,
+        to: email.to_string(),
+        template: format!(
+            "Confirm this address is yours.\n\n\
+             Verification token (single use, valid {} minutes):\n\n{}",
+            VERIFY_TTL.whole_minutes(),
+            issued.plaintext
+        ),
+        vars: std::collections::BTreeMap::new(),
+        tenant_id: state.default_tenant_id,
+        locale: None,
+    };
+    let subject = String::from("Verify your email address");
+    tokio::spawn(async move {
+        match tokio::task::spawn_blocking(move || port.send(&msg, &subject)).await {
+            Ok(Ok(())) => tracing::info!(target: "auth::mail", "verification mail delivered"),
+            Ok(Err(error)) => {
+                tracing::warn!(target: "auth::mail", %error, "verification mail delivery failed")
+            }
+            Err(error) => {
+                tracing::warn!(target: "auth::mail", %error, "verification mail task failed")
+            }
+        }
+    });
+}
+
+/// MNC-005 (enumeration half): registration answers ONE answer.
+///
+/// The old contract spoke the answer out loud: a fresh address landed
+/// `200` with a session, a taken one landed `409 "an account with this
+/// email already exists"` — and instantly, where the create path paid an
+/// Argon2 hash, so the clock said it even if the body had not. Three
+/// channels, one account oracle.
+///
+/// Now every caller-controlled input is settled BEFORE the branch (a bad
+/// password, malformed address or unknown tenant answers identically
+/// either way), the Argon2 work is paid once on BOTH sides, the mail
+/// leaves off the response path, and the answer is a single
+/// `202 Accepted` carrying the same body and no session — the session is
+/// what `/auth/login` issues, and that step reveals nothing the caller
+/// did not already know. Registration is two steps now; only the first is
+/// free of information.
 async fn register(
     State(state): State<AppState>,
     headers: HeaderMap,
-    session: Option<axum::extract::Extension<ResolvedSession>>,
     Json(body): Json<RegisterBody>,
 ) -> impl IntoResponse {
     if !state.registration_open {
@@ -415,64 +497,81 @@ async fn register(
         let err = AppError::cap_limit("too many registration attempts; retry later");
         return envelope(&state, &err).into_response();
     }
-    let result = (|| -> Result<(AuthData, Option<axum::http::HeaderValue>), AppError> {
+    let accepted = (|| -> Result<PrincipalId, AppError> {
+        // Everything the CALLER controls settles here — before the branch,
+        // so validation itself can never tell a taken address from a free
+        // one by answering differently.
         let email = validate_email(&body.email)?;
         validate_password(&body.password, &state.password_policy)?;
-        if state.principals.by_email(&email)?.is_some() {
-            return Err(AppError::conflict(
-                "an account with this email already exists",
-            ));
-        }
-        let now = OffsetDateTime::now_utc();
-        let principal = state.principals.create(Principal {
-            id: PrincipalId::new(),
-            status: PrincipalStatus::Active,
-            email: Some(email.clone()),
-            phone: None,
-            email_verified_at: None,
-            created_at: now,
-        })?;
-        let hash = hash_password_with(&state.password_params, &Secret::new(&body.password))?;
-        state.credentials.create(kelson_identity::Credential {
-            id: uuid::Uuid::now_v7(),
-            principal_id: principal.id,
-            kind: kelson_identity::CredentialKind::PasswordArgon2,
-            secret_hash: Secret::new(hash),
-            created_at: now,
-            expires_at: None,
-        })?;
         let tenant = resolve_tenant(&state, body.tenant.as_deref())?;
-        // MNC-001: self-service registration CREATES the membership edge
-        // into the (dev/default) tenant it names — the only HTTP path that
-        // grants. Later logins are gated on this row.
-        state.memberships.grant(kelson_identity::Membership {
-            id: kelson_foundation::MembershipId::new(),
-            principal_id: principal.id,
-            tenant_id: tenant,
-            status: kelson_identity::MembershipStatus::Active,
-            joined_at: now,
-        })?;
-        finish_login(
-            &state,
-            principal.id,
-            tenant,
-            body.mode.as_deref() == Some("token"),
-            false,
-            session.as_deref(),
-        )
-    })();
-    match result {
-        Ok((data, cookie)) => {
-            let mut res = (
-                StatusCode::OK,
-                Json(serde_json::to_value(Envelope::ok(data)).unwrap_or_default()),
-            )
-                .into_response();
-            if let Some(cookie) = cookie {
-                res.headers_mut().append(header::SET_COOKIE, cookie);
+        // The hash is computed ONCE, before the branch: the free-address
+        // path stores it, the taken-address path pays the same Argon2 work
+        // and drops it (the dummy-hash equalization login already uses,
+        // under the CURRENT `[identity]` factors). What remains after the
+        // branch is store work — milliseconds against Argon2's, and the
+        // same kind on both sides.
+        let hash = hash_password_with(&state.password_params, &Secret::new(&body.password))?;
+        tracing::debug!(
+            target: "auth::register",
+            mode = body.mode.as_deref().unwrap_or("session"),
+            "registration settled its inputs"
+        );
+        let now = OffsetDateTime::now_utc();
+        let (owner, existing) = match state.principals.by_email(&email)? {
+            Some(existing) => (existing, true),
+            None => {
+                let principal = state.principals.create(Principal {
+                    id: PrincipalId::new(),
+                    status: PrincipalStatus::Active,
+                    email: Some(email.clone()),
+                    phone: None,
+                    email_verified_at: None,
+                    created_at: now,
+                })?;
+                state.credentials.create(kelson_identity::Credential {
+                    id: uuid::Uuid::now_v7(),
+                    principal_id: principal.id,
+                    kind: kelson_identity::CredentialKind::PasswordArgon2,
+                    secret_hash: Secret::new(hash),
+                    created_at: now,
+                    expires_at: None,
+                })?;
+                // MNC-001: self-service registration CREATES the membership
+                // edge into the (dev/default) tenant it names — the only
+                // HTTP path that grants. Later logins are gated on it.
+                state.memberships.grant(kelson_identity::Membership {
+                    id: kelson_foundation::MembershipId::new(),
+                    principal_id: principal.id,
+                    tenant_id: tenant,
+                    status: kelson_identity::MembershipStatus::Active,
+                    joined_at: now,
+                })?;
+                (principal, false)
             }
-            res
-        }
+        };
+        queue_verification_mail(&state, &email, owner.id);
+        // The two branches may differ in the SERVER'S log — ops needs that
+        // truth. They may not differ anywhere the caller can see.
+        tracing::info!(
+            target: "auth::register",
+            principal = %owner.id,
+            existing,
+            "registration request accepted"
+        );
+        Ok(owner.id)
+    })();
+    match accepted {
+        Ok(_principal) => (
+            StatusCode::ACCEPTED,
+            Json(
+                serde_json::to_value(Envelope::ok(RegisterData { sent: true })).unwrap_or_default(),
+            ),
+        )
+            .into_response(),
+        // An infrastructure failure on the create path still answers as
+        // itself: none of these branches on whether the address existed
+        // (the branch only runs when it did not), so no error here is an
+        // existence signal.
         Err(err) => envelope(&state, &err).into_response(),
     }
 }

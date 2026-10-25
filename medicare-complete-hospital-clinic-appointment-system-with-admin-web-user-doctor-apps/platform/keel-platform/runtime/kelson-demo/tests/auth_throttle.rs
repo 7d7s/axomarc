@@ -181,9 +181,13 @@ async fn registration_is_throttled_per_email() {
     let email = format!("{}-reg@example.test", uuid::Uuid::now_v7());
     for i in 0..5 {
         let (status, code) = status_and_code(&app, register_req(&email, None)).await;
+        // MNC-005: every attempt reaches the credential work and is
+        // accepted with the ONE uniform answer — the first creates the
+        // account, the rest take the taken-address branch, and neither
+        // shows in the response.
         assert!(
-            code == "KSN_CONFLICT" || code == "AUTH_UNAUTHENTICATED" || status == StatusCode::OK,
-            "attempt {i} should reach the credential work ({status}, {code})"
+            status == StatusCode::ACCEPTED && code.is_empty(),
+            "attempt {i} should reach the credential work and answer 202 ({status}, {code})"
         );
     }
     let (status, code) = status_and_code(&app, register_req(&email, None)).await;

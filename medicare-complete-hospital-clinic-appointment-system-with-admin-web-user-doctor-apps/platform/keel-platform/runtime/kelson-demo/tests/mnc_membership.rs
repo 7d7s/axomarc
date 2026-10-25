@@ -71,10 +71,12 @@ async fn register_grants_and_login_on_the_same_tenant_lands() {
     let email = format!("mnc-home-{}@clinic.test", uuid::Uuid::now_v7());
     let (status, _body, cookies) =
         post(&router, "/auth/register", register_body(&email, "dev")).await;
-    assert_eq!(status, StatusCode::OK, "register: {status}");
+    // MNC-005: register grants the edge but mints NO session — a session
+    // would be an answer the address did not ask for.
+    assert_eq!(status, StatusCode::ACCEPTED, "register: {status}");
     assert!(
-        cookies.iter().any(|c| c.starts_with("kelson_session=")),
-        "register mints a session"
+        !cookies.iter().any(|c| c.starts_with("kelson_session=")),
+        "register mints no session: {cookies:?}"
     );
 
     let (status, body, cookies) =
@@ -94,7 +96,7 @@ async fn a_credential_is_not_a_tenant_entry() {
     let (_state, router) = app();
     let email = format!("mnc-cross-{}@clinic.test", uuid::Uuid::now_v7());
     let (status, _, _) = post(&router, "/auth/register", register_body(&email, "dev")).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::ACCEPTED);
 
     let foreign = uuid::Uuid::now_v7().to_string();
     let (status, body, cookies) =
@@ -114,11 +116,15 @@ async fn a_suspended_membership_refuses_login() {
     let (state, router) = app();
     let email = format!("mnc-revoked-{}@clinic.test", uuid::Uuid::now_v7());
     let (status, body, _) = post(&router, "/auth/register", register_body(&email, "dev")).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let principal = PrincipalId::from_uuid(
-        uuid::Uuid::parse_str(body["data"]["principal_id"].as_str().expect("principal id"))
-            .expect("uuid"),
-    );
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    // MNC-005: the response names no principal — a caller cannot read one
+    // out of it, so the test reaches for it in the STORE instead.
+    let principal = state
+        .principals
+        .by_email(&email)
+        .expect("store answers")
+        .expect("register created the principal")
+        .id;
     let tenant = state.default_tenant_id.expect("dev fallback tenant");
 
     let edge = state

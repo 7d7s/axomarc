@@ -123,7 +123,36 @@ fn json_req(
     }
 }
 
+/// MNC-005 (enumeration half): register answers ONE uniform 202 — no
+/// session and no existence signal — so the session a test wants comes
+/// from the explicit sign-in that follows. This helper runs that whole
+/// two-step flow and returns the SIGN-IN reply: its `AuthData`
+/// (`principal_id`/`tenant_id`) and session cookie are what the callers
+/// below read, and it pins the register contract (202, `ok`, no cookie)
+/// before it proceeds. Cases that assert on the register response itself
+/// use [`register_only`].
 async fn register(app: &App, email: &str) -> Reply {
+    let accepted = register_only(app, email).await;
+    assert_eq!(
+        accepted.status,
+        StatusCode::ACCEPTED,
+        "register: {}",
+        accepted.body
+    );
+    assert_eq!(accepted.body["ok"], true, "{}", accepted.body);
+    assert!(
+        accepted.session_cookie().is_none(),
+        "MNC-005: register mints no session: {:?}",
+        accepted.set_cookies
+    );
+    let signed_in = login(app, email, "Correct-horse-99", Some("dev")).await;
+    assert_eq!(signed_in.status, StatusCode::OK, "login: {}", signed_in.body);
+    signed_in
+}
+
+/// The raw `/auth/register` response, for the cases that assert on the
+/// register contract itself (status, body, cookies).
+async fn register_only(app: &App, email: &str) -> Reply {
     let body =
         serde_json::json!({ "email": email, "password": "Correct-horse-99", "tenant": "dev" });
     send(
@@ -627,10 +656,12 @@ async fn login_throttling_returns_429_after_burst() {
     let email = format!("throttle-{}@clinic.test", uuid::Uuid::now_v7());
     register(&app, &email).await;
     // MNC-005: registration spends one token of the SAME per-identity
-    // credential budget as login, so after the register above four failed
-    // logins ride through and the fifth is refused (the 6th token).
+    // credential budget as login, and the sign-in the helper performs
+    // (register itself mints no session) spends a second — so after those
+    // two, three failed logins ride through and the next is refused (the
+    // 6th token).
     let mut last;
-    for _ in 0..4 {
+    for _ in 0..3 {
         last = login(&app, &email, "bad-password-1", Some("dev"))
             .await
             .status;
@@ -2199,15 +2230,39 @@ async fn pat_bearer_still_authenticates_with_jwt_enabled() {
     // verifier is wired (default model is never displaced).
     let app = app_with_jwt(JWT_IT_SECRET);
     let email = format!("patjwt-{}@clinic.test", uuid::Uuid::now_v7());
-    let body = serde_json::json!({
-        "email": email,
-        "password": "Correct-horse-99",
-        "tenant": "dev",
-        "mode": "token"
-    });
+    // MNC-005: register no longer issues any credential (uniform 202, no
+    // session, no token) — the PAT is what the sign-in issues under
+    // `mode = "token"`, exactly as for a returning API client.
     let reg = send(
         &app,
-        json_req(Method::POST, "/auth/register", body, None, None),
+        json_req(
+            Method::POST,
+            "/auth/register",
+            serde_json::json!({
+                "email": email,
+                "password": "Correct-horse-99",
+                "tenant": "dev",
+            }),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(reg.status, StatusCode::ACCEPTED, "{}", reg.body);
+    let reg = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/auth/login",
+            serde_json::json!({
+                "identifier": email,
+                "password": "Correct-horse-99",
+                "tenant": "dev",
+                "mode": "token"
+            }),
+            None,
+            None,
+        ),
     )
     .await;
     assert_eq!(reg.status, StatusCode::OK, "{}", reg.body);
@@ -3298,8 +3353,26 @@ async fn binding_miss_malformed_and_cross_tenant_are_404() {
         ),
     )
     .await;
-    assert_eq!(reg_b.status, StatusCode::OK, "{}", reg_b.body);
-    let cookie_b = reg_b.session_cookie().unwrap();
+    // MNC-005: register grants the membership edge it names but mints no
+    // session — the tenant-B session comes from the sign-in below.
+    assert_eq!(reg_b.status, StatusCode::ACCEPTED, "{}", reg_b.body);
+    let signed_b = send(
+        &app,
+        json_req(
+            Method::POST,
+            "/auth/login",
+            serde_json::json!({
+                "identifier": email_b,
+                "password": "Correct-horse-99",
+                "tenant": tenant_b.to_string(),
+            }),
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(signed_b.status, StatusCode::OK, "{}", signed_b.body);
+    let cookie_b = signed_b.session_cookie().unwrap();
     let cross = send(
         &app,
         json_req(
@@ -7145,7 +7218,28 @@ async fn password_reset_and_verification_requests_deliver_token_mail() {
     };
 
     let email = format!("token-mail-{}@clinic.test", uuid::Uuid::now_v7());
-    assert_eq!(register(&app, &email).await.status, StatusCode::OK);
+    // MNC-005: register answers the uniform 202 and queues its OWN
+    // verification mail off the response path — so every count below is
+    // scoped by recipient/subject and never raced by that async delivery.
+    let accepted = register_only(&app, &email).await;
+    assert_eq!(accepted.status, StatusCode::ACCEPTED, "{}", accepted.body);
+    let mailed_to = |to: &str| -> Vec<kelson_notifications::Mailable> {
+        mail.captured()
+            .into_iter()
+            .filter(|m| m.to.iter().any(|address| address == to))
+            .collect()
+    };
+    let mut from_register = Vec::new();
+    for _ in 0..200 {
+        from_register = mailed_to(&email);
+        if !from_register.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert_eq!(from_register.len(), 1, "{from_register:?}");
+    assert_eq!(from_register[0].subject, "Verify your email address");
+    assert!(!from_register[0].text.as_deref().unwrap_or("").is_empty());
 
     // Password reset: one mail, addressed, carrying the issued token.
     let request = send(
@@ -7166,16 +7260,21 @@ async fn password_reset_and_verification_requests_deliver_token_mail() {
         .expect("dev token in non-prod")
         .to_string();
     let sent = mail.captured();
-    assert_eq!(sent.len(), 1, "{sent:?}");
-    assert_eq!(sent[0].to, vec![email.clone()]);
-    assert!(!sent[0].subject.is_empty());
+    let resets: Vec<&kelson_notifications::Mailable> = sent
+        .iter()
+        .filter(|m| m.subject == "Reset your password")
+        .collect();
+    assert_eq!(resets.len(), 1, "{sent:?}");
+    assert_eq!(resets[0].to, vec![email.clone()]);
+    assert!(!resets[0].subject.is_empty());
     assert!(
-        sent[0].text.as_deref().unwrap_or("").contains(&dev),
+        resets[0].text.as_deref().unwrap_or("").contains(&dev),
         "the delivered mail carries the redemption token: {:?}",
-        sent[0].text
+        resets[0].text
     );
 
-    // Email verification: a second, separate mail with its own token.
+    // Email verification: a second, separate mail with its own token
+    // (register's own queued one makes two now).
     let verify = send(
         &app,
         json_req(
@@ -7193,22 +7292,28 @@ async fn password_reset_and_verification_requests_deliver_token_mail() {
         .expect("dev token in non-prod")
         .to_string();
     let sent = mail.captured();
-    assert_eq!(sent.len(), 2, "{sent:?}");
+    let verifies: Vec<&kelson_notifications::Mailable> = sent
+        .iter()
+        .filter(|m| m.subject == "Verify your email address")
+        .collect();
+    assert_eq!(verifies.len(), 2, "{sent:?}");
     assert!(
-        sent[1].text.as_deref().unwrap_or("").contains(&verify_dev),
-        "the verification mail carries its own token: {:?}",
-        sent[1].text
+        verifies
+            .iter()
+            .any(|m| m.text.as_deref().unwrap_or("").contains(&verify_dev)),
+        "the verification mail carries its own token: {sent:?}"
     );
     assert_ne!(dev, verify_dev);
 
     // Enumeration safety holds on the delivery side: an unknown address
     // reports sent and delivers nothing.
+    let ghost_email = format!("ghost-{}@clinic.test", uuid::Uuid::now_v7());
     let ghost = send(
         &app,
         json_req(
             Method::POST,
             "/auth/password-reset/request",
-            serde_json::json!({ "email": format!("ghost-{}@clinic.test", uuid::Uuid::now_v7()) }),
+            serde_json::json!({ "email": ghost_email }),
             None,
             None,
         ),
@@ -7217,7 +7322,10 @@ async fn password_reset_and_verification_requests_deliver_token_mail() {
     assert_eq!(ghost.status, StatusCode::OK, "{}", ghost.body);
     assert_eq!(ghost.data()["sent"], serde_json::json!(true));
     assert!(ghost.data()["dev_token"].is_null());
-    assert_eq!(mail.captured().len(), 2);
+    assert!(
+        mailed_to(&ghost_email).is_empty(),
+        "an unknown address is mailed nothing"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }

@@ -145,10 +145,40 @@ fn json_req(method: Method, uri: &str, body: Value, cookie: Option<&str>) -> Req
     }
 }
 
+/// Register and sign in (MNC-005: register answers the uniform 202 with
+/// no session and no existence signal; the session is what the explicit
+/// sign-in on the SAME tenant issues — the reply returned here).
 async fn register(app: &App, email: &str, tenant: &str) -> Reply {
-    let body =
-        serde_json::json!({ "email": email, "password": "Correct-horse-99", "tenant": tenant });
-    send(app, json_req(Method::POST, "/auth/register", body, None)).await
+    let accepted = send(
+        app,
+        json_req(
+            Method::POST,
+            "/auth/register",
+            serde_json::json!({ "email": email, "password": "Correct-horse-99", "tenant": tenant }),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(accepted.status, StatusCode::ACCEPTED, "{}", accepted.body);
+    assert!(
+        accepted.session_cookie().is_none(),
+        "MNC-005: register mints no session: {:?}",
+        accepted.set_cookies
+    );
+    send(
+        app,
+        json_req(
+            Method::POST,
+            "/auth/login",
+            serde_json::json!({
+                "identifier": email,
+                "password": "Correct-horse-99",
+                "tenant": tenant,
+            }),
+            None,
+        ),
+    )
+    .await
 }
 
 fn listed_ids(list: &Reply) -> Vec<String> {

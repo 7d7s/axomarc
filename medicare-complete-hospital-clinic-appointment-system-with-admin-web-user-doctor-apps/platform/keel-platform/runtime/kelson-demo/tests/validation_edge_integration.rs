@@ -183,6 +183,8 @@ fn json_req(method: Method, uri: &str, body: Value, cookie: Option<&str>) -> Req
     }
 }
 
+/// Register and sign in (MNC-005: register answers the uniform 202 with
+/// no session; the cookie comes from the explicit sign-in).
 async fn register(app: &App, email: &str) -> String {
     let res = send(
         app,
@@ -190,6 +192,23 @@ async fn register(app: &App, email: &str) -> String {
             Method::POST,
             "/auth/register",
             json!({ "email": email, "password": "Correct-horse-99", "tenant": "dev" }),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::ACCEPTED, "{}", res.body);
+    assert!(
+        !res.set_cookies
+            .iter()
+            .any(|c| c.starts_with("kelson_session=")),
+        "MNC-005: register mints no session"
+    );
+    let res = send(
+        app,
+        json_req(
+            Method::POST,
+            "/auth/login",
+            json!({ "identifier": email, "password": "Correct-horse-99", "tenant": "dev" }),
             None,
         ),
     )
