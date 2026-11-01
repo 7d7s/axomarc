@@ -80,7 +80,7 @@ jobs:
         with:
           node-version: "20"
       - run: npm ci
-      - run: npm run build:wasm
+      - run: npm run build
       - run: npm test
 
   wasm-build:
@@ -213,7 +213,7 @@ jobs:
         with:
           node-version: "20"
       - run: npm ci
-      - run: npm run build:wasm
+      - run: npm run build
       - run: npm run test:timing-properties
 
   timing-oracle:
@@ -228,7 +228,7 @@ jobs:
         with:
           node-version: "20"
       - run: npm ci
-      - run: npm run build:wasm
+      - run: npm run build
       - run: npm run test:timing-oracle
 
   timing-abi:
@@ -243,7 +243,7 @@ jobs:
         with:
           node-version: "20"
       - run: npm ci
-      - run: npm run build:wasm
+      - run: npm run build
       - run: npm run verify:wasm
       - run: npm run test:timing-abi
 
@@ -259,7 +259,7 @@ jobs:
         with:
           node-version: "20"
       - run: npm ci
-      - run: npm run build:wasm
+      - run: npm run build
       - run: npm run test:timing-overflow
 
   timing-memory:
@@ -274,7 +274,7 @@ jobs:
         with:
           node-version: "20"
       - run: npm ci
-      - run: npm run build:wasm
+      - run: npm run build
       - name: The arena tiles exactly and the memory stays at 17 pages
         run: npm run verify:wasm
       - run: npm run test:timing-memory
@@ -331,5 +331,5 @@ jobs:
         with:
           node-version: "20"
       - run: npm ci
-      - run: npm run build:wasm
+      - run: npm run build
       - run: npm run test:api-compatibility
