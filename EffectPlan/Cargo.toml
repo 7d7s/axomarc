@@ -1,0 +1,31 @@
+[workspace]
+members = ["engine"]
+resolver = "2"
+
+# Profiles must live at the workspace root: Cargo ignores profile sections in
+# member packages, so declaring them in engine/Cargo.toml would silently ship
+# the wrong code generation settings.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Alternative profiles for the measured size/perf comparison.
+[profile.release-s]
+inherits = "release"
+opt-level = "s"
+
+[profile.release-3]
+inherits = "release"
+opt-level = 3
+
+[profile.release-3-fat]
+inherits = "release-3"
+lto = "fat"
+
+# The native benchmark must not be handicapped by the size-tuned release
+# profile, so it inherits the optimised one.
+[profile.bench]
+inherits = "release-3"

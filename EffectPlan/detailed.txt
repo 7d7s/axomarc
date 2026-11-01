@@ -1,0 +1,4245 @@
+# EFFECTPLAN
+# RFC 0001 — Ultra-Lightweight Deterministic Tool-Effect Planner
+
+**Version:** 0.2.0  
+**Status:** Proposed — architecture revision  
+**Product:** EffectPlan  
+**Package:** `@effectplan/core` (provisional; registry and trademark clearance required)  
+**Category:** AI developer infrastructure / deterministic execution planning  
+**Implementation:** Rust compiled to WebAssembly  
+**Public interface:** TypeScript / JavaScript  
+**Distribution:** One npm package  
+**Maximum unpacked package size:** 50,000 bytes  
+**Runtime dependencies:** Zero  
+**Network requirement:** None  
+**Model requirement:** None
+
+---
+
+# 1. EXECUTIVE DECISION
+
+## 1.1 What we are building
+
+EffectPlan is a tiny, deterministic, high-performance library that analyzes the declared resource effects of AI tool calls and produces a dependency graph for safe concurrent execution.
+
+It allows an AI application or agent runtime to understand which operations can run independently and which must wait for other operations.
+
+Example:
+
+An agent requests:
+
+- Read `src/a.ts`.
+- Write `src/b.ts`.
+- Update `src/a.ts`.
+- Read `src/c.ts`.
+
+EffectPlan identifies the resource conflicts and returns the required dependencies.
+
+The host application remains responsible for executing operations.
+
+## 1.2 Product objective
+
+Build a reusable software primitive that:
+
+1. Identifies resource-level conflicts between tool invocations.
+2. Preserves the required ordering of conflicting operations.
+3. Allows independent operations to be scheduled concurrently.
+4. Uses argument-dependent resource identities rather than broad tool-level safety flags.
+5. Produces deterministic, explainable execution plans.
+6. Operates locally without models, network access or hosted services.
+7. Fits inside a single npm package of no more than 50,000 bytes unpacked.
+
+## 1.3 Product positioning
+
+**EffectPlan — Resource-aware execution planning for AI tools.**
+
+AI systems generate operation requests. EffectPlan calculates their dependencies using deterministic software.
+
+It does not decide what an agent should do. It helps the host runtime determine which requested operations may be scheduled together under their declared effect contracts.
+
+## 1.4 Architectural decision
+
+```text
+Developer Application
+        |
+        v
+@effectplan/core
+        |
+        +-- TypeScript public API
+        |
+        +-- Typed-array input encoder
+        |
+        +-- WebAssembly loader
+        |
+        v
+Single Rust WASM Engine
+        |
+        +-- Input validation
+        +-- Resource indexing
+        +-- Conflict detection
+        +-- Dependency graph
+        +-- Graph verification
+        |
+        v
+Compact Execution Plan
+```
+
+## 1.5 Non-negotiable product constraints
+
+- Exactly one public npm package.
+- Exactly one WASM engine binary.
+- No NAPI-RS.
+- No platform-specific native addon packages.
+- No `wasm-bindgen` runtime dependency.
+- No `serde` in the WASM engine.
+- No runtime allocator in the Rust engine.
+- No runtime dependencies in the npm package.
+- No external services.
+- No mandatory telemetry.
+- No model-provider integration.
+- No framework requirement.
+- No hidden tool execution.
+- No unproven performance or security guarantees.
+
+---
+
+# 2. 50 KB DEFINITION AND PACKAGE BUDGET
+
+## 2.1 What 50 KB means
+
+For this RFC, the size limit is defined as:
+
+**The sum of all unpacked files included in the published npm package MUST NOT exceed 50,000 bytes.**
+
+This includes:
+
+- JavaScript wrapper.
+- WebAssembly binary.
+- TypeScript declarations.
+- Package metadata.
+- README.
+- License.
+
+It excludes:
+
+- Rust source code.
+- TypeScript source code.
+- Tests.
+- Fixtures.
+- Documentation source.
+- Benchmark tooling.
+- Development dependencies.
+- CI configurations.
+
+These remain in the source repository but are excluded from the published tarball.
+
+## 2.2 Release budget
+
+| Component | Maximum budget |
+|---|---:|
+| `effectplan.wasm` | 40,000 bytes |
+| JavaScript wrapper and loader | 5,000 bytes |
+| TypeScript declarations | 1,500 bytes |
+| Package metadata, README and license | 3,500 bytes |
+| **Total** | **50,000 bytes** |
+
+These are allocation limits, not measured binary sizes.
+
+The WASM binary target must be demonstrated by an actual optimized build.
+
+If the WASM engine cannot fit within its allocation, the implementation must be optimized or reduced before release.
+
+The total package may not exceed the hard limit.
+
+## 2.3 Package size enforcement
+
+Every release candidate must run a package-size verification script.
+
+The build must:
+
+1. Produce the distributable WASM.
+2. Compile and minify the JavaScript wrapper.
+3. Generate declarations.
+4. Assemble the npm package.
+5. Run `npm pack --dry-run --json`.
+6. Calculate total unpacked file size.
+7. Fail if the size exceeds 50,000 bytes.
+
+The release must retain the file-by-file size report.
+
+Compressed tarball size is reported separately.
+
+## 2.4 Runtime memory is a separate budget
+
+The installed package may be under 50,000 bytes while using more memory during execution.
+
+This is expected.
+
+The package-size limit must never be confused with WASM linear memory, JavaScript heap allocation or input buffer size.
+
+Initial runtime limits:
+
+- Maximum operations: 4,096.
+- Maximum explicit resource accesses: 32,768.
+- Maximum resource namespace length: 256 bytes.
+- Maximum resource identifier length: 1,024 bytes.
+- Maximum total input identifier bytes: 1 MiB.
+- Maximum planning memory: 3 MiB for the default supported batch limits.
+
+These defaults must be validated by benchmark and memory tests.
+
+A host may configure lower limits.
+
+---
+
+# 3. FUNCTIONAL SCOPE
+
+## 3.1 Version 0.1 functionality
+
+EffectPlan must support:
+
+- Effect contract validation.
+- Resource identity validation.
+- Read/write resource declarations.
+- Argument-dependent resource identity extraction by the host.
+- Pure operations.
+- Resource-aware operations.
+- Exclusive operations.
+- Unknown operations.
+- Resource conflict detection.
+- Dependency graph construction.
+- Dependency explanations.
+- Ready-operation scheduling.
+- Completion and failure state tracking.
+- Deterministic output.
+- Strict input limits.
+- One compact WASM execution engine.
+
+## 3.2 Explicit non-goals
+
+EffectPlan is not:
+
+- An AI model.
+- An agent framework.
+- An agent orchestration platform.
+- An MCP server.
+- A tool execution runtime.
+- A distributed locking system.
+- A database transaction coordinator.
+- A workflow engine.
+- A retry framework.
+- An authorization system.
+- A filesystem sandbox.
+- An SSRF prevention utility.
+- A hosted observability platform.
+- A replacement for framework-native scheduling.
+
+## 3.3 Core responsibility boundary
+
+EffectPlan analyzes declared effects.
+
+The host is responsible for:
+
+- Tool authorization.
+- Effect declaration correctness.
+- Actual resource canonicalization.
+- Tool execution.
+- Cancellation.
+- Timeouts.
+- Transactions.
+- External API behavior.
+- Rollback or compensation.
+- Persistence.
+- Distributed coordination.
+
+EffectPlan must never imply that its plan proves the actual implementation behaves as declared.
+
+---
+
+# 4. EFFECT CONTRACT MODEL
+
+## 4.1 Effect classifications
+
+```typescript
+export type EffectMode =
+  | "pure"
+  | "resources"
+  | "exclusive"
+  | "unknown";
+```
+
+| Mode | Meaning | Scheduling |
+|---|---|---|
+| `pure` | No externally observable resource effects are declared | May overlap subject to the global barrier model |
+| `resources` | Explicit reads and writes are declared | Resource-aware planning |
+| `exclusive` | Operation must not overlap another operation | Global exclusive barrier |
+| `unknown` | Actual effects cannot be established | Conservative global exclusive barrier |
+
+Default behavior for missing effects is `unknown`.
+
+Strict policy may reject unknown effects instead of planning them.
+
+## 4.2 Resource model
+
+```typescript
+export interface ResourceRef {
+  readonly namespace: string;
+  readonly id: string;
+}
+
+export type AccessMode = "read" | "write";
+
+export interface ResourceAccess {
+  readonly resource: ResourceRef;
+  readonly mode: AccessMode;
+}
+```
+
+Examples:
+
+```typescript
+const fileResource: ResourceRef = {
+  namespace: "filesystem",
+  id: "project-42:/src/index.ts"
+};
+
+const orderResource: ResourceRef = {
+  namespace: "database",
+  id: "tenant-7:orders:order-123"
+};
+```
+
+Resource identity is the exact pair:
+
+`namespace + id`
+
+The engine MUST NOT independently interpret or normalize either field.
+
+Examples of transformations the engine must not perform:
+
+- Filesystem path resolution.
+- Symbolic-link resolution.
+- URL canonicalization.
+- DNS lookup.
+- Database collation.
+- Tenant inference.
+- Case folding.
+- Unicode normalization.
+
+The appropriate trusted adapter performs canonicalization.
+
+## 4.3 Effect contract
+
+```typescript
+export interface EffectContract {
+  readonly version: 1;
+  readonly mode: EffectMode;
+  readonly accesses?: readonly ResourceAccess[];
+}
+```
+
+Rules:
+
+- `pure` must not declare resource accesses.
+- `resources` must declare at least one resource access.
+- `exclusive` may declare known resources for diagnostic purposes.
+- `unknown` may declare partial known resources but remains globally exclusive.
+- Missing effect contract is `unknown`.
+- Unknown effect policy defaults to `serialize`.
+- Strict policy may use `reject`.
+
+## 4.4 Resource access normalization
+
+When one operation declares both read and write access to the same resource, the effective access is write.
+
+Duplicate access declarations must not generate incorrect self-dependencies.
+
+The TypeScript boundary normalizes duplicate accesses before encoding.
+
+The Rust engine independently validates the packed contract structure.
+
+## 4.5 Conflict matrix
+
+| Earlier operation | Later operation | Dependency |
+|---|---|---|
+| Read R | Read R | No |
+| Read R | Write R | Yes |
+| Write R | Read R | Yes |
+| Write R | Write R | Yes |
+| Read R1 | Write R2 | No, if R1 and R2 are different |
+| Write R1 | Write R2 | No, if R1 and R2 are different |
+| Unknown | Any other operation | Yes |
+| Exclusive | Any other operation | Yes |
+
+All dependencies between operations in a batch point from an earlier input operation to a later one.
+
+---
+
+# 5. FORMAL SCHEDULING MODEL
+
+## 5.1 Operation
+
+Each operation contains:
+
+- Unique call ID.
+- Input index.
+- Effect mode.
+- Zero or more resource accesses.
+
+## 5.2 Resource-indexed state
+
+For every resource, the engine tracks:
+
+```text
+last_writer
+readers_since_last_write
+```
+
+Internal state:
+
+```rust
+struct ResourceState {
+    last_writer: u32,
+    reader_head: u32,
+}
+```
+
+Use `u32::MAX` as the empty sentinel.
+
+## 5.3 Implicit global barrier
+
+Reserve resource index `0` for an internal global barrier.
+
+All ordinary operations acquire a read access to the barrier.
+
+`exclusive` and `unknown` operations acquire a write access.
+
+This guarantees:
+
+- Earlier ordinary operations finish before a global exclusive operation.
+- Later ordinary operations wait for the exclusive operation.
+- Multiple ordinary operations can still overlap.
+- Exclusive operations are ordered against one another.
+
+This internal barrier is not exposed as a user resource.
+
+## 5.4 Dependency rules
+
+For a read:
+
+1. If a previous writer exists, create a dependency on that writer.
+2. Add the current operation to the resource's reader set.
+
+For a write:
+
+1. Depend on the last writer, if present.
+2. Depend on all readers since the last write.
+3. Clear those readers.
+4. Set the current operation as the latest writer.
+
+Self-dependencies must never be emitted.
+
+## 5.5 Correctness properties
+
+The planner must guarantee, relative to declared effects:
+
+- No read/write conflict is omitted.
+- No write/read conflict is omitted.
+- No write/write conflict is omitted.
+- Read/read operations remain independent.
+- Distinct resource identities remain independent unless an explicit global barrier applies.
+- Conflicting operations preserve input order.
+- The dependency graph is acyclic.
+- Unknown effects cannot be silently scheduled as pure.
+- Identical input and configuration produce identical output.
+
+## 5.6 Algorithm complexity
+
+Let:
+
+- N = number of operations.
+- A = total explicit resource accesses.
+- T = N + A, including implicit barrier accesses.
+- E = emitted dependency records.
+
+Target expected complexity:
+
+`O(N + A + E)`
+
+Target memory:
+
+`O(N + A + E)`
+
+No all-pairs operation matrix is allowed in production.
+
+The implementation uses resource indexing, fixed-layout workspace and sparse dependency records.
+
+The reference implementation used in tests may use a slower pairwise algorithm.
+
+---
+
+# 6. PUBLIC API
+
+## 6.1 Package usage
+
+```typescript
+import { EffectPlan } from "@effectplan/core";
+
+const planner = await EffectPlan.create();
+
+const plan = planner.planBatch(calls);
+
+const cursor = planner.createCursor(plan, {
+  maxConcurrency: 8
+});
+
+const ready = cursor.takeReady();
+
+cursor.markCompleted(ready[0].id);
+```
+
+The WASM module is loaded once for each planner instance.
+
+After initialization, planning APIs are synchronous.
+
+## 6.2 Required public types
+
+```typescript
+export interface ToolCall {
+  readonly id: string;
+  readonly effect?: EffectContract;
+}
+
+export interface PlanOptions {
+  readonly unknownEffectPolicy?: "serialize" | "reject";
+}
+
+export interface CursorOptions {
+  readonly maxConcurrency: number;
+}
+
+export interface PlanStatistics {
+  readonly callCount: number;
+  readonly resourceAccessCount: number;
+  readonly dependencyCount: number;
+  readonly unknownEffectCount: number;
+  readonly exclusiveCount: number;
+}
+```
+
+## 6.3 Public class
+
+```typescript
+export class EffectPlan {
+  static create(
+    options?: InitializationOptions
+  ): Promise<EffectPlan>;
+
+  planBatch(
+    calls: readonly ToolCall[],
+    options?: PlanOptions
+  ): ExecutionPlan;
+
+  createCursor(
+    plan: ExecutionPlan,
+    options: CursorOptions
+  ): ExecutionCursor;
+
+  explainDependency(
+    plan: ExecutionPlan,
+    predecessorId: string,
+    operationId: string
+  ): DependencyExplanation | undefined;
+
+  validateEffectContract(
+    contract: EffectContract
+  ): ValidationResult;
+
+  getEngineInfo(): EngineInfo;
+}
+```
+
+## 6.4 Execution plan
+
+The plan is an immutable public handle backed by private compact graph data.
+
+```typescript
+export interface ExecutionPlan {
+  readonly version: 1;
+  readonly callCount: number;
+  readonly edgeCount: number;
+  readonly statistics: PlanStatistics;
+}
+```
+
+The internal typed arrays and resource mapping must not be exposed as mutable public state.
+
+Use a private `WeakMap` or equivalent private ownership mechanism.
+
+Version 0.1 plans are process-local objects. Portable plan serialization is deferred.
+
+## 6.5 Execution cursor
+
+```typescript
+export interface ReadyCall {
+  readonly id: string;
+  readonly index: number;
+}
+
+export interface ExecutionCursor {
+  takeReady(): readonly ReadyCall[];
+
+  markCompleted(callId: string): void;
+
+  markFailed(callId: string): void;
+
+  getStatus(callId: string): OperationStatus;
+}
+```
+
+The cursor manages scheduling state but does not execute operations.
+
+### Cursor behavior
+
+- `takeReady()` returns operations whose dependencies have completed.
+- It never exceeds `maxConcurrency`.
+- Ready calls use input order as a deterministic tie-breaker.
+- `markCompleted()` releases dependent operations.
+- `markFailed()` blocks dependent operations transitively.
+- Independent operations may continue after a failure.
+- The cursor never retries a failed operation automatically.
+- Cancellation and compensation remain host responsibilities.
+
+The host must call `markCompleted()` only after the actual operation has completed successfully.
+
+## 6.6 Stable error codes
+
+| Error | Meaning |
+|---|---|
+| `EP_INVALID_INPUT` | Invalid batch |
+| `EP_DUPLICATE_CALL_ID` | Duplicate call ID |
+| `EP_INVALID_EFFECT` | Invalid effect contract |
+| `EP_INVALID_RESOURCE` | Invalid resource |
+| `EP_UNKNOWN_EFFECT_REJECTED` | Strict policy rejected unknown effect |
+| `EP_LIMIT_EXCEEDED` | Configured limit exceeded |
+| `EP_INVALID_PLAN` | Invalid plan |
+| `EP_INVALID_CURSOR_STATE` | Invalid scheduling state |
+| `EP_ENGINE_UNAVAILABLE` | WASM could not initialize |
+| `EP_ENGINE_ERROR` | Engine reported an internal error |
+
+All errors must have stable machine-readable codes.
+
+Error messages must not include raw resource identifiers by default.
+
+---
+
+# 7. WASM ABI AND DATA TRANSFER
+
+## 7.1 Why a raw ABI
+
+Do not use JSON serialization between JavaScript and Rust.
+
+Do not use `serde` for the runtime boundary.
+
+Do not call Rust individually for every operation.
+
+Instead, prepare a compact batch and transfer it in one WebAssembly call.
+
+## 7.2 Resource interning
+
+The TypeScript wrapper assigns each distinct `(namespace, id)` pair a request-local integer resource ID.
+
+Example:
+
+```text
+filesystem:project-1:file-a -> 1
+filesystem:project-1:file-b -> 2
+database:tenant-1:order-2   -> 3
+```
+
+Index `0` is reserved for the engine's internal global barrier.
+
+The engine works with integer identifiers rather than repeatedly comparing strings.
+
+The TypeScript wrapper retains the resource lookup table for diagnostics.
+
+## 7.3 Input arrays
+
+The batch is encoded as separate typed arrays.
+
+| Array | Type | Meaning |
+|---|---|---|
+| `callModes` | Uint8Array | Effect mode for each call |
+| `accessOffsets` | Uint32Array | Start/end range of resource accesses per call |
+| `resourceIds` | Uint32Array | Interned resource IDs |
+| `accessModes` | Uint8Array | Read/write mode |
+
+The `accessOffsets` array has N+1 entries.
+
+All arrays are prepared in JavaScript and copied into one aligned region of WASM linear memory.
+
+## 7.4 Example packed input
+
+```text
+Call modes:
+[1, 1, 1]
+
+Access offsets:
+[0, 1, 2, 3]
+
+Resource IDs:
+[1, 2, 1]
+
+Access modes:
+[WRITE, WRITE, READ]
+```
+
+The first and third operations address the same resource and therefore require ordering.
+
+The second operation is independent.
+
+## 7.5 Raw WASM function
+
+The WASM engine exposes a single primary planning function.
+
+Conceptual ABI:
+
+```rust
+#[no_mangle]
+pub unsafe extern "C" fn effectplan_plan(
+    abi_version: u32,
+    call_count: u32,
+    access_count: u32,
+    resource_count: u32,
+
+    call_modes_ptr: u32,
+    access_offsets_ptr: u32,
+    resource_ids_ptr: u32,
+    access_modes_ptr: u32,
+
+    workspace_ptr: u32,
+    workspace_len: u32,
+
+    output_ptr: u32,
+    output_capacity: u32,
+) -> i32;
+```
+
+This is a raw internal ABI.
+
+It is not part of the public TypeScript API.
+
+All pointer arithmetic, lengths, alignment and capacity checks must be validated before any access.
+
+## 7.6 Workspace design
+
+The TypeScript loader owns allocation of the WASM memory regions.
+
+The Rust engine does not allocate memory dynamically.
+
+Required workspace arrays:
+
+- Last writer per resource.
+- Reader-head per resource.
+- Reader-next per access event.
+- Reader-operation index per event.
+- Temporary edge storage.
+- Compact output header.
+
+The engine receives the workspace pointer and length.
+
+It validates the entire workspace before processing.
+
+## 7.7 Output representation
+
+The WASM engine returns compact dependency records:
+
+```text
+predecessor index
+successor index
+resource index
+reason code
+```
+
+Dependency records must be sorted into a deterministic order.
+
+The TypeScript wrapper builds the private execution-plan representation.
+
+The public API returns only the immutable plan handle and statistics.
+
+## 7.8 Edge capacity
+
+Let T = N + A.
+
+The implementation must prove and test its maximum edge bound.
+
+For the proposed resource-state algorithm, each read event can create at most one dependency on its preceding writer and one dependency on a later write. Each write event can depend on the previous writer and the pending readers.
+
+The initial allocation bound is therefore:
+
+`maximum raw edge records <= 2 * T`
+
+This bound is an implementation invariant that must be verified against the reference oracle and property tests.
+
+If the algorithm changes, the bound must be recalculated.
+
+## 7.9 Memory safety
+
+Before executing the raw ABI:
+
+- Validate ABI version.
+- Validate call count.
+- Validate access count.
+- Validate resource count.
+- Validate every pointer range.
+- Validate integer overflow in size calculations.
+- Validate `accessOffsets`.
+- Validate mode values.
+- Validate resource indices.
+- Validate output capacity.
+- Validate workspace capacity.
+
+No unchecked pointer should be dereferenced before validation.
+
+---
+
+# 8. RUST IMPLEMENTATION
+
+## 8.1 Target
+
+Use:
+
+`wasm32-unknown-unknown`
+
+The Rust engine is a `no_std` implementation using the Rust core library.
+
+Official Rust documentation describes this target as a minimal WebAssembly target with few assumptions about host capabilities. It supports core functionality and can be used for bare-bones WebAssembly applications.
+
+## 8.2 No-runtime-allocation design
+
+The production WASM implementation must not require:
+
+- `HashMap`.
+- `Vec`.
+- `String`.
+- `serde`.
+- `wasm-bindgen`.
+- `wasm-pack`.
+- `tokio`.
+- Native operating-system APIs.
+
+Use caller-provided workspace and direct resource indexing.
+
+The Rust source repository can still use normal test tooling outside the deployed WASM artifact.
+
+## 8.3 Internal Rust structure
+
+```rust
+pub struct ResourceState {
+    pub last_writer: u32,
+    pub reader_head: u32,
+}
+
+pub struct Edge {
+    pub predecessor: u32,
+    pub successor: u32,
+    pub resource_id: u32,
+    pub reason: u32,
+}
+
+pub struct PlanStatistics {
+    pub calls: u32,
+    pub accesses: u32,
+    pub edges: u32,
+}
+```
+
+## 8.4 Function responsibilities
+
+| Function | Purpose |
+|---|---|
+| `validate_input()` | Validate packed ABI structures |
+| `validate_limits()` | Enforce maximum sizes |
+| `initialize_workspace()` | Initialize request-local arrays |
+| `process_barrier()` | Add implicit global effect |
+| `process_read()` | Process read access |
+| `process_write()` | Process write access |
+| `emit_edge()` | Create dependency record |
+| `build_plan()` | Process operations in input order |
+| `sort_edges()` | Establish deterministic dependency order |
+| `write_output()` | Write compact output |
+| `set_error()` | Return stable error status |
+
+All safety-critical operations must be covered by unit tests.
+
+---
+
+# 9. TYPESCRIPT IMPLEMENTATION
+
+## 9.1 Responsibilities
+
+The TypeScript wrapper is a thin API layer.
+
+It is responsible for:
+
+- Public API validation.
+- Resource interning.
+- Access normalization.
+- Typed-array construction.
+- WASM loading.
+- WASM memory management.
+- ABI invocation.
+- Error mapping.
+- Plan encapsulation.
+- Cursor state.
+- Dependency explanations.
+
+It is not a second independent scheduling engine.
+
+## 9.2 Function names and files
+
+| File | Functions |
+|---|---|
+| `index.ts` | `EffectPlan.create()`, public exports |
+| `loader.ts` | `loadWasm()`, `instantiateEngine()` |
+| `memory.ts` | `ensureMemory()`, `allocateRegions()`, `createViews()` |
+| `encode.ts` | `internResources()`, `encodeCalls()`, `normalizeAccesses()` |
+| `planner.ts` | `planBatch()`, `validatePlanHandle()` |
+| `cursor.ts` | `createCursor()`, `takeReady()`, `markCompleted()`, `markFailed()` |
+| `explain.ts` | `explainDependency()` |
+| `errors.ts` | `mapEngineError()`, `createPublicError()` |
+
+## 9.3 Loader behavior
+
+`EffectPlan.create()` is asynchronous because the WASM binary must be loaded and instantiated.
+
+After initialization, `planBatch()` is synchronous.
+
+The loader must:
+
+- Work in supported Node.js versions.
+- Work in supported browsers.
+- Load the single package-local WASM asset.
+- Validate ABI version.
+- Fail clearly if WebAssembly is unavailable.
+- Avoid network requests unless the consuming application explicitly provides a remote WASM source.
+- Avoid silently falling back to a different implementation.
+
+## 9.4 One package, two environments
+
+The initial package supports:
+
+- Node.js ESM.
+- Modern browser environments with WebAssembly and ES2022 support.
+
+CommonJS support is deferred.
+
+The package must use the same WASM binary for both environments.
+
+Node-specific file loading must not leak into the browser entry point.
+
+Browser loading must support WebAssembly MIME-type differences by falling back to ordinary ArrayBuffer instantiation where needed.
+
+## 9.5 Concurrency
+
+Each `EffectPlan` instance owns its WASM memory.
+
+Do not share mutable linear memory across concurrent planner instances.
+
+The initial public planner API is synchronous after initialization.
+
+Worker-thread and Web Worker offloading are deferred until benchmarks show that ordinary bounded batches block the event loop enough to justify the added code.
+
+---
+
+# 10. COMPLETE REPOSITORY STRUCTURE
+
+The source repository contains the engineering, verification and release machinery.
+
+The published npm package contains only the runtime artifacts.
+
+```text
+effectplan/
+│
+├── .github/
+│   ├── CODEOWNERS
+│   ├── PULL_REQUEST_TEMPLATE.md
+│   └── workflows/
+│       ├── ci.yml
+│       ├── wasm-build.yml
+│       ├── tests.yml
+│       ├── security.yml
+│       ├── size-gate.yml
+│       ├── benchmark.yml
+│       ├── compatibility.yml
+│       └── release.yml
+│
+├── rfcs/
+│   ├── 0001-effectplan-core.md
+│   ├── 0002-effect-contracts.md
+│   ├── 0003-resource-identity.md
+│   ├── 0004-wasm-abi.md
+│   └── 0005-execution-cursor.md
+│
+├── docs/
+│   ├── architecture.md
+│   ├── algorithm.md
+│   ├── public-api.md
+│   ├── wasm-abi.md
+│   ├── performance.md
+│   ├── memory-model.md
+│   ├── security.md
+│   ├── threat-model.md
+│   ├── compatibility.md
+│   ├── limitations.md
+│   ├── support-policy.md
+│   └── release-policy.md
+│
+├── packages/
+│   └── core/
+│       ├── src/
+│       │   ├── index.ts
+│       │   ├── loader.ts
+│       │   ├── memory.ts
+│       │   ├── encode.ts
+│       │   ├── planner.ts
+│       │   ├── cursor.ts
+│       │   ├── explain.ts
+│       │   └── errors.ts
+│       │
+│       ├── package.json
+│       └── README.md
+│
+├── engine/
+│   ├── Cargo.toml
+│   └── src/
+│       ├── lib.rs
+│       ├── abi.rs
+│       ├── validate.rs
+│       ├── limits.rs
+│       ├── resource_state.rs
+│       ├── planner.rs
+│       ├── conflict.rs
+│       ├── dependency.rs
+│       ├── edge_sort.rs
+│       ├── output.rs
+│       └── error.rs
+│
+├── tests/
+│   ├── fixtures/
+│   │   ├── basic/
+│   │   ├── read-write/
+│   │   ├── multi-resource/
+│   │   ├── global-barrier/
+│   │   ├── unknown-effects/
+│   │   ├── malformed-input/
+│   │   └── large-batches/
+│   │
+│   ├── unit/
+│   │   ├── input-validation.test.ts
+│   │   ├── resource-interning.test.ts
+│   │   ├── access-normalization.test.ts
+│   │   ├── planner.test.ts
+│   │   ├── cursor.test.ts
+│   │   └── explanations.test.ts
+│   │
+│   ├── property/
+│   │   ├── deterministic-plan.test.ts
+│   │   ├── acyclic-graph.test.ts
+│   │   ├── conflict-correctness.test.ts
+│   │   ├── ordering-preservation.test.ts
+│   │   ├── no-false-dependency.test.ts
+│   │   └── reference-oracle.test.ts
+│   │
+│   ├── integration/
+│   │   ├── wasm-loader.test.ts
+│   │   ├── packed-abi.test.ts
+│   │   ├── cursor-execution.test.ts
+│   │   └── failure-propagation.test.ts
+│   │
+│   ├── security/
+│   │   ├── bounds-validation.test.ts
+│   │   ├── integer-overflow.test.ts
+│   │   ├── malformed-resource.test.ts
+│   │   ├── prototype-pollution.test.ts
+│   │   ├── memory-limits.test.ts
+│   │   └── error-redaction.test.ts
+│   │
+│   ├── fuzz/
+│   │   ├── abi-input.fuzz.ts
+│   │   ├── resource-identities.fuzz.ts
+│   │   └── random-effect-graphs.fuzz.ts
+│   │
+│   ├── e2e/
+│   │   ├── node-filesystem-simulation.test.ts
+│   │   ├── database-resource-simulation.test.ts
+│   │   ├── multi-tool-batch.test.ts
+│   │   ├── unknown-effect-barrier.test.ts
+│   │   └── browser-runtime.test.ts
+│   │
+│   └── compatibility/
+│       ├── public-api.test.ts
+│       ├── esm-import.test.ts
+│       ├── node-runtime.test.ts
+│       └── browser-runtime.test.ts
+│
+├── benchmarks/
+│   ├── datasets/
+│   ├── reference-oracle.ts
+│   ├── typescript-baseline.ts
+│   ├── rust-native.rs
+│   ├── wasm-benchmark.ts
+│   └── end-to-end.ts
+│
+├── scripts/
+│   ├── build-wasm.sh
+│   ├── optimize-wasm.sh
+│   ├── package-build.ts
+│   ├── verify-size.ts
+│   ├── verify-abi.ts
+│   ├── generate-types.ts
+│   └── release-check.ts
+│
+├── Cargo.toml
+├── Cargo.lock
+├── rust-toolchain.toml
+├── package.json
+├── pnpm-lock.yaml
+├── tsconfig.json
+├── vitest.config.ts
+├── README.md
+├── LICENSE
+├── SECURITY.md
+├── CONTRIBUTING.md
+├── SUPPORT.md
+└── CHANGELOG.md
+```
+
+The published npm package must not include the repository's tests, Rust source, development dependencies or engineering documentation.
+
+---
+
+# 11. RUST FUNCTION MAP
+
+| File | Function | Responsibility |
+|---|---|---|
+| `abi.rs` | `effectplan_plan()` | Public WASM ABI |
+| `abi.rs` | `validate_ranges()` | Pointer and memory checks |
+| `abi.rs` | `validate_abi_version()` | ABI compatibility |
+| `validate.rs` | `validate_batch()` | Validate operation arrays |
+| `validate.rs` | `validate_offsets()` | Validate offset monotonicity |
+| `validate.rs` | `validate_accesses()` | Validate resource access modes |
+| `resource_state.rs` | `initialize_resource_state()` | Initialize resource index arrays |
+| `resource_state.rs` | `process_read()` | Process resource read |
+| `resource_state.rs` | `process_write()` | Process resource write |
+| `planner.rs` | `plan_batch()` | Main planning loop |
+| `conflict.rs` | `emit_conflict()` | Generate dependency record |
+| `dependency.rs` | `validate_dependencies()` | Verify graph constraints |
+| `edge_sort.rs` | `sort_edges()` | Deterministic result ordering |
+| `output.rs` | `write_plan_output()` | Write packed output |
+| `error.rs` | `status_code()` | Stable ABI errors |
+
+## Internal Rust rules
+
+- `#![no_std]`.
+- No heap allocation.
+- No global mutable scheduling state.
+- No network.
+- No filesystem access.
+- No threads.
+- No environment access.
+- All runtime buffers supplied by the host.
+- All unsafe code isolated at the WASM ABI boundary.
+- Core planning logic uses safe slices and indexed structures wherever possible.
+- All arithmetic involving input lengths must use checked operations.
+
+---
+
+# 12. TYPESCRIPT FUNCTION MAP
+
+| File | Function | Responsibility |
+|---|---|---|
+| `loader.ts` | `loadWasm()` | Locate and load the one WASM binary |
+| `loader.ts` | `instantiateEngine()` | Instantiate WASM |
+| `loader.ts` | `validateEngineVersion()` | Check ABI and engine version |
+| `memory.ts` | `ensureMemory()` | Grow linear memory safely |
+| `memory.ts` | `allocateRegions()` | Allocate aligned input/output areas |
+| `memory.ts` | `createTypedViews()` | Create memory views after growth |
+| `encode.ts` | `internResources()` | Map structured IDs to integers |
+| `encode.ts` | `normalizeAccesses()` | Normalize duplicate resource accesses |
+| `encode.ts` | `encodeCalls()` | Construct packed arrays |
+| `planner.ts` | `planBatch()` | Main public planning function |
+| `planner.ts` | `createPlanHandle()` | Encapsulate internal graph state |
+| `cursor.ts` | `createCursor()` | Initialize scheduler cursor |
+| `cursor.ts` | `takeReady()` | Return ready operations |
+| `cursor.ts` | `markCompleted()` | Release dependents |
+| `cursor.ts` | `markFailed()` | Block dependent operations |
+| `explain.ts` | `explainDependency()` | Explain dependency reasons |
+| `errors.ts` | `mapEngineError()` | Convert WASM status into stable public errors |
+| `errors.ts` | `createPublicError()` | Construct documented error shape |
+
+---
+
+# 13. BUILD AND COMPILATION STRATEGY
+
+## 13.1 Rust target
+
+Use:
+
+`wasm32-unknown-unknown`
+
+Install target:
+
+```bash
+rustup target add wasm32-unknown-unknown
+```
+
+No WASI runtime is required because the engine performs computation only and must not access host I/O.
+
+## 13.2 Compiler profile
+
+Initial release profile:
+
+```toml
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+```
+
+The build must compare multiple optimization configurations.
+
+## 13.3 WebAssembly post-processing
+
+Build the raw WASM and test:
+
+```bash
+wasm-opt input.wasm -Oz -o effectplan.wasm
+```
+
+Also benchmark `-O3`.
+
+Binaryen documents `-Oz` as focusing heavily on code-size reduction and `-O3` as focusing on more aggressive optimization. The smallest build must not be assumed to be the fastest.
+
+## 13.4 ABI
+
+Use raw exported functions and memory.
+
+Avoid:
+
+- `wasm-bindgen`.
+- `serde-wasm-bindgen`.
+- JSON parsing.
+- Reflection.
+- Dynamic imports in Rust.
+- Host callbacks.
+
+The JavaScript wrapper performs structured input processing.
+
+Rust receives packed numerical arrays.
+
+## 13.5 Reproducible build
+
+Record:
+
+- Rust compiler version.
+- LLVM/WebAssembly toolchain version.
+- Binaryen version.
+- Build flags.
+- Source commit.
+- WASM SHA-256.
+- Final file size.
+- Package unpacked size.
+- Benchmark results.
+
+Every released WASM artifact must be traceable to its source commit.
+
+---
+
+# 14. TESTING AND VERIFICATION STRATEGY
+
+## 14.1 Unit tests
+
+Required cases:
+
+- Empty batch.
+- Single pure call.
+- Single resource call.
+- Read/read.
+- Read/write.
+- Write/read.
+- Write/write.
+- Different resources.
+- Multiple resources per call.
+- Duplicate resource access.
+- Missing effect contract.
+- Unknown mode.
+- Exclusive mode.
+- Invalid resource.
+- Duplicate call ID.
+- Input limits.
+- Output capacity limits.
+- Dependency explanation.
+- Cursor completion.
+- Cursor failure.
+- Ready-call ordering.
+
+## 14.2 Reference-oracle testing
+
+Implement a deliberately simple pairwise planner in the test suite.
+
+It must compare each operation with every preceding operation using the conflict matrix.
+
+It is intentionally slower than production.
+
+The optimized Rust planner must match its semantic graph for generated inputs.
+
+Acceptance:
+
+- No false negatives.
+- No unexplained false positives.
+- Identical dependency semantics.
+- Identical global barrier behavior.
+
+## 14.3 Property testing
+
+Generate random batches with:
+
+- Repeated resources.
+- Read/write combinations.
+- Different namespaces.
+- Different tenant prefixes.
+- Unknown operations.
+- Exclusive operations.
+- Random input order.
+- Duplicate identifiers.
+- Varying resource access counts.
+
+Required properties:
+
+1. The graph is acyclic.
+2. Dependencies point forward in input order.
+3. Conflicting operations are ordered.
+4. Read/read operations remain independent.
+5. Distinct resources remain independent.
+6. Unknown/exclusive operations act as barriers.
+7. Resource access ordering does not change semantic results.
+8. The same valid input produces the same output.
+9. Cursor never dispatches an operation before its dependencies complete.
+10. Failed operations block dependent operations.
+11. Independent operations remain schedulable after unrelated failure.
+
+## 14.4 Integration tests
+
+Test:
+
+- WASM instantiation.
+- Memory growth.
+- Typed-array layout.
+- ABI version mismatch.
+- Invalid pointers.
+- Invalid offsets.
+- Input overflow.
+- Output overflow.
+- Engine errors.
+- Planner state isolation across instances.
+- Repeated planning batches.
+- Large-batch cleanup.
+
+## 14.5 Security tests
+
+Test:
+
+- Extremely large call counts.
+- Excessive resource access counts.
+- Very long identifiers.
+- Empty identifiers.
+- Unicode identifiers.
+- Control characters.
+- Malformed memory offsets.
+- Integer overflow.
+- Out-of-bounds pointer attempts.
+- Invalid ABI versions.
+- Malformed resource IDs.
+- Unexpected resource modes.
+- Large dependency counts.
+- Diagnostic leakage.
+- Repeated rejected inputs.
+
+The Rust ABI must validate all memory ranges before creating slices.
+
+The TypeScript wrapper must not accept untrusted arbitrary memory pointers.
+
+## 14.6 Fuzz testing
+
+Use two layers.
+
+**Rust layer**
+
+Fuzz the safe core validation and planning functions on native builds using a host-side fuzz harness.
+
+**WASM layer**
+
+Fuzz the packed ABI through the JavaScript wrapper and malformed buffer tests.
+
+Acceptance:
+
+- No panic for valid bounded input.
+- No out-of-bounds memory access.
+- No infinite loops.
+- No corrupted graph.
+- No uncontrolled allocation.
+- No crash from ordinary malformed input.
+- Stable error codes.
+
+## 14.7 End-to-end tests
+
+### Scenario A — Filesystem
+
+Two writes target different files; a third write targets the same file as the first.
+
+Expected: independent work overlaps; conflicting operations preserve order.
+
+### Scenario B — Database
+
+Different rows are modified concurrently; the same row is modified by two operations.
+
+Expected: dependencies use declared row identities.
+
+### Scenario C — Different tools, same resource
+
+Two different tool definitions modify the same declared resource.
+
+Expected: dependencies are detected across tool names.
+
+### Scenario D — Multiple tenants
+
+The same local resource ID occurs under two tenant namespaces.
+
+Expected: no accidental cross-tenant collision.
+
+### Scenario E — Unknown operation
+
+One operation has no effect declaration.
+
+Expected: global barrier or strict rejection.
+
+### Scenario F — Failure
+
+One operation fails while independent operations are running.
+
+Expected: dependents are blocked; unrelated operations may continue.
+
+The host remains responsible for cancellation of already-running work.
+
+## 14.8 Runtime compatibility
+
+Required testing:
+
+- Supported Node.js LTS versions.
+- Linux.
+- Windows.
+- macOS.
+- Supported Chromium-based browser.
+- Firefox.
+- Safari where supported by the published compatibility policy.
+
+Test ESM imports and WASM loading.
+
+The project must publish an explicit minimum runtime matrix.
+
+---
+
+# 15. PERFORMANCE ENGINEERING
+
+## 15.1 The correct benchmark comparison
+
+Benchmark four implementations:
+
+1. Rust native core.
+2. Rust WASM core only.
+3. Optimized TypeScript reference implementation.
+4. Complete npm API including TypeScript encoding and WASM conversion.
+
+The fourth number is the most important for customers.
+
+A small Rust-core benchmark is not evidence of a fast npm package if encoding and memory conversion dominate end-to-end latency.
+
+## 15.2 Workload matrix
+
+| Profile | Operations | Resource accesses |
+|---|---:|---:|
+| Tiny | 8 | 32 |
+| Small | 32 | 128 |
+| Typical | 64 | 256 |
+| Medium | 128 | 1,024 |
+| Large | 1,024 | 8,192 |
+| Stress | 4,096 | 32,768 |
+
+Also test:
+
+- High-conflict workload.
+- High-independence workload.
+- Many small resources.
+- One heavily shared resource.
+- Many operations with unknown effects.
+- Large dependency graphs.
+- Duplicate access normalization.
+
+## 15.3 Metrics
+
+Record:
+
+- Cold WASM initialization.
+- Warm planning time.
+- TypeScript encoding time.
+- Linear-memory preparation time.
+- Rust execution time.
+- Output-copy time.
+- Complete API latency.
+- p50.
+- p95.
+- p99.
+- Throughput.
+- Peak linear memory.
+- Peak JavaScript heap.
+- Event-loop delay.
+
+## 15.4 Initial performance gates
+
+These are proposed targets requiring measurement:
+
+| Workload | End-to-end p95 target |
+|---|---:|
+| Tiny | ≤ 0.5 ms |
+| Small | ≤ 0.75 ms |
+| Typical | ≤ 1.5 ms |
+| Medium | ≤ 4 ms |
+| Large | ≤ 30 ms |
+| Stress | ≤ 100 ms |
+
+Do not publish these as benchmark claims until measured on documented hardware.
+
+## 15.5 WASM versus native Rust
+
+The target is not to claim identical native performance.
+
+The target is:
+
+- The WASM core SHOULD remain within 1.5× the native Rust core for representative medium/large workloads.
+- End-to-end npm execution SHOULD outperform the optimized TypeScript baseline for representative medium/large workloads.
+- Tiny workloads must not suffer unacceptable latency.
+- The engine must retain correctness under every optimization configuration.
+
+If WASM is slower than TypeScript for small inputs, do not disguise the result. Consider a measured dispatch threshold only after both implementations have equivalent verified semantics. A second production implementation is not part of v0.1.
+
+---
+
+# 16. MEMORY AND BOUNDS
+
+## 16.1 WebAssembly memory
+
+WebAssembly linear memory is separate from the 50,000-byte package limit.
+
+WebAssembly memory grows in pages, conventionally 64 KiB per page.
+
+The TypeScript wrapper calculates required buffer space before growing memory.
+
+## 16.2 Memory policy
+
+- Fixed maximum input limits.
+- Fixed maximum workspace size.
+- No unbounded growth.
+- No retained references to views created before memory growth.
+- Recreate typed-array views after every memory growth.
+- Reuse the WASM instance between normal planning batches.
+- Clear request-local workspace before reuse where required.
+- Never return mutable raw WASM memory views to the public API.
+
+## 16.3 Buffer layout
+
+The wrapper calculates aligned regions for:
+
+1. Call modes.
+2. Access offsets.
+3. Resource IDs.
+4. Access modes.
+5. Resource state.
+6. Reader linked-list state.
+7. Dependency records.
+8. Output statistics.
+
+All size arithmetic must use checked integer operations.
+
+---
+
+# 17. ENTERPRISE ENGINEERING AND SUPPLY-CHAIN STANDARD
+
+Enterprise readiness is a set of verifiable practices, not a label.
+
+## 17.1 Repository governance
+
+Require:
+
+- Protected main branch.
+- Pull-request review.
+- Required CI checks.
+- CODEOWNERS.
+- Change history.
+- Security policy.
+- License.
+- Contribution policy.
+- Support policy.
+- Versioning rules.
+- Release checklist.
+
+A solo-maintained project must disclose that it is solo-maintained rather than falsely claim independent multi-reviewer approval.
+
+## 17.2 CI pipeline
+
+Every pull request:
+
+1. Rust formatting.
+2. Rust linting.
+3. TypeScript formatting.
+4. TypeScript linting.
+5. Type checking.
+6. Rust unit tests.
+7. TypeScript unit tests.
+8. Property tests.
+9. ABI tests.
+10. Security tests.
+11. Build WASM.
+12. Optimize WASM.
+13. Verify ABI exports.
+14. Verify npm package contents.
+15. Enforce 50,000-byte limit.
+16. Run package smoke tests.
+
+Scheduled jobs:
+
+- Fuzzing.
+- Cross-runtime tests.
+- Full benchmark.
+- Dependency/license checks.
+- Supply-chain checks.
+
+## 17.3 Supply-chain controls
+
+Required before public release:
+
+- Rust and JavaScript lockfiles.
+- Minimal GitHub Actions permissions.
+- Immutable CI action references where possible.
+- Reproducible build procedure.
+- WASM SHA-256 recorded.
+- SBOM.
+- Package provenance.
+- Trusted npm publishing where supported.
+- Vulnerability disclosure process.
+- Dependency policy.
+
+No runtime dependency does not mean no supply-chain risk. Build tooling, Rust compiler, Binaryen and CI still require review.
+
+## 17.4 Telemetry and privacy
+
+Default behavior:
+
+- No telemetry.
+- No analytics.
+- No network.
+- No tracking.
+- No storage.
+- No resource identifiers sent externally.
+- No customer data collection.
+
+Optional application-side instrumentation MAY be added by consumers.
+
+## 17.5 Enterprise claims
+
+Do not claim SOC 2, ISO 27001, FIPS or equivalent certification merely because the package has security tests.
+
+Publish an honest security posture and support policy.
+
+---
+
+# 18. PUBLISHED NPM PACKAGE STRUCTURE
+
+Exactly one public npm package.
+
+Proposed published contents:
+
+```text
+@effectplan/core/
+│
+├── index.js
+├── index.d.ts
+├── effectplan.wasm
+├── package.json
+├── README.md
+└── LICENSE
+```
+
+Everything else remains in the repository.
+
+## 18.1 Package manifest policy
+
+- ESM-first.
+- Node.js and browser entry compatibility.
+- One WASM asset.
+- Public TypeScript declarations.
+- No platform optional dependencies.
+- No runtime dependency.
+- Restricted package `files` list.
+- Explicit package exports.
+- Explicit supported engines.
+- License and repository metadata.
+
+## 18.2 Installation
+
+```bash
+npm install @effectplan/core
+```
+
+No Rust compiler is required by consumers.
+
+The Rust toolchain is needed only by contributors building from source.
+
+---
+
+# 19. RELEASE ACCEPTANCE CRITERIA
+
+Every criterion must have recorded evidence.
+
+| ID | Acceptance criterion | Pass condition |
+|---|---|---|
+| EP-001 | One-package distribution | One public npm package |
+| EP-002 | Package size | Unpacked size ≤ 50,000 bytes |
+| EP-003 | WASM count | Exactly one runtime WASM binary |
+| EP-004 | Runtime dependencies | Zero |
+| EP-005 | Native addon count | Zero |
+| EP-006 | ABI validation | All malformed inputs rejected safely |
+| EP-007 | Deterministic planning | Identical input yields identical graph |
+| EP-008 | Read/read correctness | No unnecessary dependencies |
+| EP-009 | Read/write correctness | Required dependencies emitted |
+| EP-010 | Write/read correctness | Required dependencies emitted |
+| EP-011 | Write/write correctness | Required dependencies emitted |
+| EP-012 | Unknown effects | Global barrier or explicit rejection |
+| EP-013 | Graph correctness | No cycles |
+| EP-014 | Ordering | Conflicting operations preserve input order |
+| EP-015 | Resource identity | No accidental identity collision |
+| EP-016 | Cursor correctness | No early dispatch |
+| EP-017 | Failure handling | Dependents blocked correctly |
+| EP-018 | Reference oracle | Optimized graph matches oracle |
+| EP-019 | Property tests | All mandatory properties pass |
+| EP-020 | Fuzz tests | No unresolved critical crash or memory defect |
+| EP-021 | Security | No unresolved critical/high release blocker |
+| EP-022 | Memory | Configured maximum respected |
+| EP-023 | Performance | Documented benchmark gates achieved or revised |
+| EP-024 | Node compatibility | Supported Node matrix passes |
+| EP-025 | Browser compatibility | Published browser matrix passes |
+| EP-026 | TypeScript API | Declarations match runtime behavior |
+| EP-027 | Supply chain | SBOM and provenance generated |
+| EP-028 | Reproducibility | Build instructions and hashes recorded |
+| EP-029 | Documentation | All mandatory documentation complete |
+| EP-030 | Limitations | All guarantees accurately documented |
+
+A failed critical criterion blocks public production release.
+
+---
+
+# 20. DEVELOPMENT PHASES
+
+## Phase 0 — Specification freeze
+
+Deliver:
+
+- RFC approval.
+- Final effect model.
+- Conflict matrix.
+- Resource identity rules.
+- Packed ABI definition.
+- Memory limits.
+- Package-size definition.
+- Reference oracle design.
+
+Exit gate: no unresolved critical semantic ambiguity.
+
+## Phase 1 — WASM feasibility prototype
+
+Build the smallest possible Rust engine:
+
+- `no_std`.
+- Raw WASM exports.
+- Caller-provided memory.
+- One read/write resource.
+- One conflict dependency.
+- One output edge.
+- Minimal TypeScript loader.
+
+Measure actual binary size.
+
+Exit gate:
+
+- WASM works in Node.
+- WASM works in browser.
+- Raw ABI validated.
+- Complete runtime package fits its allocated size budget.
+- Performance is measurable.
+
+If the 50,000-byte target fails, do not move directly into a larger implementation. Optimize the architecture first.
+
+## Phase 2 — Correct reference engine
+
+Implement a simple correctness-first resource planner.
+
+Build the independent pairwise oracle.
+
+Exit gate: hand-written and generated cases agree.
+
+## Phase 3 — Optimized Rust planner
+
+Implement:
+
+- Resource interning interface.
+- Direct-index resource state.
+- Read/write conflict processing.
+- Global barrier.
+- Sparse edge generation.
+- Output sorting.
+- Graph verification.
+
+Exit gate: optimized implementation matches reference oracle.
+
+## Phase 4 — Public TypeScript API
+
+Implement:
+
+- `EffectPlan.create()`.
+- `planBatch()`.
+- `createCursor()`.
+- `takeReady()`.
+- `markCompleted()`.
+- `markFailed()`.
+- `explainDependency()`.
+- `validateEffectContract()`.
+- Structured errors.
+
+Exit gate: API contract tests pass.
+
+## Phase 5 — Security and performance validation
+
+Complete:
+
+- Property testing.
+- ABI fuzzing.
+- Resource limit testing.
+- Memory safety validation.
+- Cross-platform runtime testing.
+- Native/TypeScript/WASM benchmark comparisons.
+- 50 KB package-size gate.
+
+Exit gate: all critical quality targets pass.
+
+## Phase 6 — Enterprise release preparation
+
+Complete:
+
+- Documentation.
+- Support policy.
+- License and registry checks.
+- SBOM.
+- Provenance.
+- Vulnerability disclosure policy.
+- Versioning.
+- Release checklist.
+- Reproducible package build.
+
+Exit gate: production release review approved.
+
+---
+
+# 21. DEFERRED CAPABILITIES
+
+These are explicitly out of version 0.1.
+
+| Capability | Why deferred |
+|---|---|
+| Rust native Node addon | Breaks single portable WASM distribution objective |
+| JavaScript fallback engine | Duplicates algorithm and increases package size |
+| CLI | Not required for core product |
+| MCP server | Adapter, not core |
+| Framework adapters | Add only after generic integration proof |
+| Distributed locking | Different consistency and failure model |
+| Transactions | Host/database responsibility |
+| Automatic rollback | Unsafe without application-specific compensation |
+| Commutative operations | Requires stronger semantic model |
+| Runtime side-effect verification | Requires instrumentation |
+| Worker-thread scheduler | Add only when measured event-loop blocking justifies it |
+| Plan serialization | Requires a separate compatibility and security design |
+| Dashboard | Not part of product objective |
+| Telemetry backend | Violates lightweight offline-first design |
+
+---
+
+# 22. ADVERSARIAL REVIEW
+
+## Hidden assumptions
+
+1. A 50 KB package can contain a sufficiently complete Rust WASM engine.
+2. WebAssembly performs better than optimized TypeScript for the actual batch sizes.
+3. Resource identities can be canonically supplied by host applications.
+4. Developers are willing to declare resource effects.
+5. The dependency graph produces better real-world concurrency than existing schedulers.
+
+All five require evidence.
+
+## Critical weaknesses
+
+- WASM is not native Rust execution.
+- Memory conversion can dominate small workloads.
+- Bad effect declarations can still cause conflicting side effects.
+- A tiny artifact does not imply tiny runtime memory.
+- Browser and Node loading behavior must both be tested.
+- A sophisticated planner can be slower than a simple serial strategy for tiny batches.
+
+## Failure modes
+
+- 50 KB target cannot be reached without removing necessary functionality.
+- Packed ABI contains an incorrect offset or length.
+- Dependency generation misses a conflict.
+- Excessive edge generation consumes memory.
+- Scheduler incorrectly releases a dependent operation.
+- WASM startup dominates useful work.
+- Browser bundlers fail to resolve the binary.
+- The package is fast in Rust benchmarks but slow in real npm workloads.
+
+## Stronger strategy
+
+Make the first milestone a proof of feasibility:
+
+- Single WASM binary.
+- Raw ABI.
+- No runtime allocation.
+- One resource model.
+- One correct conflict algorithm.
+- One independently tested TypeScript API.
+- One actual 50,000-byte npm artifact.
+
+Only expand the feature surface after this milestone passes.
+
+## Brutal verdict
+
+**Architecture: Strong, conditional.**
+
+**Product differentiation: Still requires external adoption evidence.**
+
+**50 KB target: Aggressive and unproven until a real build exists.**
+
+**Production readiness: Not yet.**
+
+---
+
+# 23. FINAL DECISION
+
+We are building:
+
+**EffectPlan — a single-package, Rust-powered WebAssembly library for deterministic, resource-aware AI tool execution planning.**
+
+The product will be distributed through one npm package.
+
+It will contain one WASM engine and one small TypeScript API.
+
+It will have no runtime dependencies or external service requirements.
+
+The hard release requirement is 50,000 bytes unpacked.
+
+The first engineering milestone is not a collection of features. It is a working minimal build that proves the size, correctness and performance architecture.
+
+**Do not build the full product before the minimal Rust/WASM feasibility prototype has passed.**
+
+
+# EffectPlan — Complete revised engineering plan
+
+
+
+Single-package architecture
+
+Rust + WebAssembly
+
+50,000-byte release gate
+
+
+
+We are replacing the previous NAPI-RS architecture entirely.
+
+The new design is:
+
+One npm package. One Rust implementation. One WebAssembly binary. One TypeScript API. No native platform packages. No runtime dependencies.
+
+The 50 KB requirement will be a hard CI-enforced limit on the entire unpacked npm package—not merely the compressed WASM file.
+
+There is one important engineering distinction: 50 KB is the installed artifact size, not the memory required to process a large dependency graph. Those need separate budgets.
+
+# EFFECTPLAN
+
+# RFC 0001 — Ultra-Lightweight Deterministic Tool-Effect Planner
+
+**Version:** 0.2.0\
+**Status:** Proposed — architecture revision\
+**Product:** EffectPlan\
+**Package:** `@effectplan/core` (provisional; registry and trademark clearance required)\
+**Category:** AI developer infrastructure / deterministic execution planning\
+**Implementation:** Rust compiled to WebAssembly\
+**Public interface:** TypeScript / JavaScript\
+**Distribution:** One npm package\
+**Maximum unpacked package size:** 50,000 bytes\
+**Runtime dependencies:** Zero\
+**Network requirement:** None\
+**Model requirement:** None
+
+---
+
+# 1. EXECUTIVE DECISION
+
+## 1.1 What we are building
+
+EffectPlan is a tiny, deterministic, high-performance library that analyzes the declared resource effects of AI tool calls and produces a dependency graph for safe concurrent execution.
+
+It allows an AI application or agent runtime to understand which operations can run independently and which must wait for other operations.
+
+Example:
+
+An agent requests:
+
+- Read `src/a.ts`.
+- Write `src/b.ts`.
+- Update `src/a.ts`.
+- Read `src/c.ts`.
+
+EffectPlan identifies the resource conflicts and returns the required dependencies.
+
+The host application remains responsible for executing operations.
+
+## 1.2 Product objective
+
+Build a reusable software primitive that:
+
+1. Identifies resource-level conflicts between tool invocations.
+2. Preserves the required ordering of conflicting operations.
+3. Allows independent operations to be scheduled concurrently.
+4. Uses argument-dependent resource identities rather than broad tool-level safety flags.
+5. Produces deterministic, explainable execution plans.
+6. Operates locally without models, network access or hosted services.
+7. Fits inside a single npm package of no more than 50,000 bytes unpacked.
+
+## 1.3 Product positioning
+
+**EffectPlan — Resource-aware execution planning for AI tools.**
+
+AI systems generate operation requests. EffectPlan calculates their dependencies using deterministic software.
+
+It does not decide what an agent should do. It helps the host runtime determine which requested operations may be scheduled together under their declared effect contracts.
+
+## 1.4 Architectural decision
+
+```
+Developer Application
+        |
+        v
+@effectplan/core
+        |
+        +-- TypeScript public API
+        |
+        +-- Typed-array input encoder
+        |
+        +-- WebAssembly loader
+        |
+        v
+Single Rust WASM Engine
+        |
+        +-- Input validation
+        +-- Resource indexing
+        +-- Conflict detection
+        +-- Dependency graph
+        +-- Graph verification
+        |
+        v
+Compact Execution Plan
+```
+
+## 1.5 Non-negotiable product constraints
+
+- Exactly one public npm package.
+- Exactly one WASM engine binary.
+- No NAPI-RS.
+- No platform-specific native addon packages.
+- No `wasm-bindgen` runtime dependency.
+- No `serde` in the WASM engine.
+- No runtime allocator in the Rust engine.
+- No runtime dependencies in the npm package.
+- No external services.
+- No mandatory telemetry.
+- No model-provider integration.
+- No framework requirement.
+- No hidden tool execution.
+- No unproven performance or security guarantees.
+
+---
+
+# 2. 50 KB DEFINITION AND PACKAGE BUDGET
+
+## 2.1 What 50 KB means
+
+For this RFC, the size limit is defined as:
+
+**The sum of all unpacked files included in the published npm package MUST NOT exceed 50,000 bytes.**
+
+This includes:
+
+- JavaScript wrapper.
+- WebAssembly binary.
+- TypeScript declarations.
+- Package metadata.
+- README.
+- License.
+
+It excludes:
+
+- Rust source code.
+- TypeScript source code.
+- Tests.
+- Fixtures.
+- Documentation source.
+- Benchmark tooling.
+- Development dependencies.
+- CI configurations.
+
+These remain in the source repository but are excluded from the published tarball.
+
+## 2.2 Release budget
+
+| Component                            | Maximum budget   |
+| ------------------------------------ | ---------------- |
+| `effectplan.wasm`                    | 40,000 bytes     |
+| JavaScript wrapper and loader        | 5,000 bytes      |
+| TypeScript declarations              | 1,500 bytes      |
+| Package metadata, README and license | 3,500 bytes      |
+| **Total**                            | **50,000 bytes** |
+
+These are allocation limits, not measured binary sizes.
+
+The WASM binary target must be demonstrated by an actual optimized build.
+
+If the WASM engine cannot fit within its allocation, the implementation must be optimized or reduced before release.
+
+The total package may not exceed the hard limit.
+
+## 2.3 Package size enforcement
+
+Every release candidate must run a package-size verification script.
+
+The build must:
+
+1. Produce the distributable WASM.
+2. Compile and minify the JavaScript wrapper.
+3. Generate declarations.
+4. Assemble the npm package.
+5. Run `npm pack --dry-run --json`.
+6. Calculate total unpacked file size.
+7. Fail if the size exceeds 50,000 bytes.
+
+The release must retain the file-by-file size report.
+
+Compressed tarball size is reported separately.
+
+## 2.4 Runtime memory is a separate budget
+
+The installed package may be under 50,000 bytes while using more memory during execution.
+
+This is expected.
+
+The package-size limit must never be confused with WASM linear memory, JavaScript heap allocation or input buffer size.
+
+Initial runtime limits:
+
+- Maximum operations: 4,096.
+- Maximum explicit resource accesses: 32,768.
+- Maximum resource namespace length: 256 bytes.
+- Maximum resource identifier length: 1,024 bytes.
+- Maximum total input identifier bytes: 1 MiB.
+- Maximum planning memory: 3 MiB for the default supported batch limits.
+
+These defaults must be validated by benchmark and memory tests.
+
+A host may configure lower limits.
+
+---
+
+# 3. FUNCTIONAL SCOPE
+
+## 3.1 Version 0.1 functionality
+
+EffectPlan must support:
+
+- Effect contract validation.
+- Resource identity validation.
+- Read/write resource declarations.
+- Argument-dependent resource identity extraction by the host.
+- Pure operations.
+- Resource-aware operations.
+- Exclusive operations.
+- Unknown operations.
+- Resource conflict detection.
+- Dependency graph construction.
+- Dependency explanations.
+- Ready-operation scheduling.
+- Completion and failure state tracking.
+- Deterministic output.
+- Strict input limits.
+- One compact WASM execution engine.
+
+## 3.2 Explicit non-goals
+
+EffectPlan is not:
+
+- An AI model.
+- An agent framework.
+- An agent orchestration platform.
+- An MCP server.
+- A tool execution runtime.
+- A distributed locking system.
+- A database transaction coordinator.
+- A workflow engine.
+- A retry framework.
+- An authorization system.
+- A filesystem sandbox.
+- An SSRF prevention utility.
+- A hosted observability platform.
+- A replacement for framework-native scheduling.
+
+## 3.3 Core responsibility boundary
+
+EffectPlan analyzes declared effects.
+
+The host is responsible for:
+
+- Tool authorization.
+- Effect declaration correctness.
+- Actual resource canonicalization.
+- Tool execution.
+- Cancellation.
+- Timeouts.
+- Transactions.
+- External API behavior.
+- Rollback or compensation.
+- Persistence.
+- Distributed coordination.
+
+EffectPlan must never imply that its plan proves the actual implementation behaves as declared.
+
+---
+
+# 4. EFFECT CONTRACT MODEL
+
+## 4.1 Effect classifications
+
+```
+export type EffectMode =
+  | "pure"
+  | "resources"
+  | "exclusive"
+  | "unknown";
+```
+
+| Mode        | Meaning                                                | Scheduling                                      |
+| ----------- | ------------------------------------------------------ | ----------------------------------------------- |
+| `pure`      | No externally observable resource effects are declared | May overlap subject to the global barrier model |
+| `resources` | Explicit reads and writes are declared                 | Resource-aware planning                         |
+| `exclusive` | Operation must not overlap another operation           | Global exclusive barrier                        |
+| `unknown`   | Actual effects cannot be established                   | Conservative global exclusive barrier           |
+
+Default behavior for missing effects is `unknown`.
+
+Strict policy may reject unknown effects instead of planning them.
+
+## 4.2 Resource model
+
+```
+export interface ResourceRef {
+  readonly namespace: string;
+  readonly id: string;
+}
+
+export type AccessMode = "read" | "write";
+
+export interface ResourceAccess {
+  readonly resource: ResourceRef;
+  readonly mode: AccessMode;
+}
+```
+
+Examples:
+
+```
+const fileResource: ResourceRef = {
+  namespace: "filesystem",
+  id: "project-42:/src/index.ts"
+};
+
+const orderResource: ResourceRef = {
+  namespace: "database",
+  id: "tenant-7:orders:order-123"
+};
+```
+
+Resource identity is the exact pair:
+
+`namespace + id`
+
+The engine MUST NOT independently interpret or normalize either field.
+
+Examples of transformations the engine must not perform:
+
+- Filesystem path resolution.
+- Symbolic-link resolution.
+- URL canonicalization.
+- DNS lookup.
+- Database collation.
+- Tenant inference.
+- Case folding.
+- Unicode normalization.
+
+The appropriate trusted adapter performs canonicalization.
+
+## 4.3 Effect contract
+
+```
+export interface EffectContract {
+  readonly version: 1;
+  readonly mode: EffectMode;
+  readonly accesses?: readonly ResourceAccess[];
+}
+```
+
+Rules:
+
+- `pure` must not declare resource accesses.
+- `resources` must declare at least one resource access.
+- `exclusive` may declare known resources for diagnostic purposes.
+- `unknown` may declare partial known resources but remains globally exclusive.
+- Missing effect contract is `unknown`.
+- Unknown effect policy defaults to `serialize`.
+- Strict policy may use `reject`.
+
+## 4.4 Resource access normalization
+
+When one operation declares both read and write access to the same resource, the effective access is write.
+
+Duplicate access declarations must not generate incorrect self-dependencies.
+
+The TypeScript boundary normalizes duplicate accesses before encoding.
+
+The Rust engine independently validates the packed contract structure.
+
+## 4.5 Conflict matrix
+
+| Earlier operation | Later operation     | Dependency                     |
+| ----------------- | ------------------- | ------------------------------ |
+| Read R            | Read R              | No                             |
+| Read R            | Write R             | Yes                            |
+| Write R           | Read R              | Yes                            |
+| Write R           | Write R             | Yes                            |
+| Read R1           | Write R2            | No, if R1 and R2 are different |
+| Write R1          | Write R2            | No, if R1 and R2 are different |
+| Unknown           | Any other operation | Yes                            |
+| Exclusive         | Any other operation | Yes                            |
+
+All dependencies between operations in a batch point from an earlier input operation to a later one.
+
+---
+
+# 5. FORMAL SCHEDULING MODEL
+
+## 5.1 Operation
+
+Each operation contains:
+
+- Unique call ID.
+- Input index.
+- Effect mode.
+- Zero or more resource accesses.
+
+## 5.2 Resource-indexed state
+
+For every resource, the engine tracks:
+
+```
+last_writer
+readers_since_last_write
+```
+
+Internal state:
+
+```
+struct ResourceState {
+    last_writer: u32,
+    reader_head: u32,
+}
+```
+
+Use `u32::MAX` as the empty sentinel.
+
+## 5.3 Implicit global barrier
+
+Reserve resource index `0` for an internal global barrier.
+
+All ordinary operations acquire a read access to the barrier.
+
+`exclusive` and `unknown` operations acquire a write access.
+
+This guarantees:
+
+- Earlier ordinary operations finish before a global exclusive operation.
+- Later ordinary operations wait for the exclusive operation.
+- Multiple ordinary operations can still overlap.
+- Exclusive operations are ordered against one another.
+
+This internal barrier is not exposed as a user resource.
+
+## 5.4 Dependency rules
+
+For a read:
+
+1. If a previous writer exists, create a dependency on that writer.
+2. Add the current operation to the resource's reader set.
+
+For a write:
+
+1. Depend on the last writer, if present.
+2. Depend on all readers since the last write.
+3. Clear those readers.
+4. Set the current operation as the latest writer.
+
+Self-dependencies must never be emitted.
+
+## 5.5 Correctness properties
+
+The planner must guarantee, relative to declared effects:
+
+- No read/write conflict is omitted.
+- No write/read conflict is omitted.
+- No write/write conflict is omitted.
+- Read/read operations remain independent.
+- Distinct resource identities remain independent unless an explicit global barrier applies.
+- Conflicting operations preserve input order.
+- The dependency graph is acyclic.
+- Unknown effects cannot be silently scheduled as pure.
+- Identical input and configuration produce identical output.
+
+## 5.6 Algorithm complexity
+
+Let:
+
+- N = number of operations.
+- A = total explicit resource accesses.
+- T = N + A, including implicit barrier accesses.
+- E = emitted dependency records.
+
+Target expected complexity:
+
+`O(N + A + E)`
+
+Target memory:
+
+`O(N + A + E)`
+
+No all-pairs operation matrix is allowed in production.
+
+The implementation uses resource indexing, fixed-layout workspace and sparse dependency records.
+
+The reference implementation used in tests may use a slower pairwise algorithm.
+
+---
+
+# 6. PUBLIC API
+
+## 6.1 Package usage
+
+```
+import { EffectPlan } from "@effectplan/core";
+
+const planner = await EffectPlan.create();
+
+const plan = planner.planBatch(calls);
+
+const cursor = planner.createCursor(plan, {
+  maxConcurrency: 8
+});
+
+const ready = cursor.takeReady();
+
+cursor.markCompleted(ready[0].id);
+```
+
+The WASM module is loaded once for each planner instance.
+
+After initialization, planning APIs are synchronous.
+
+## 6.2 Required public types
+
+```
+export interface ToolCall {
+  readonly id: string;
+  readonly effect?: EffectContract;
+}
+
+export interface PlanOptions {
+  readonly unknownEffectPolicy?: "serialize" | "reject";
+}
+
+export interface CursorOptions {
+  readonly maxConcurrency: number;
+}
+
+export interface PlanStatistics {
+  readonly callCount: number;
+  readonly resourceAccessCount: number;
+  readonly dependencyCount: number;
+  readonly unknownEffectCount: number;
+  readonly exclusiveCount: number;
+}
+```
+
+## 6.3 Public class
+
+```
+export class EffectPlan {
+  static create(
+    options?: InitializationOptions
+  ): Promise<EffectPlan>;
+
+  planBatch(
+    calls: readonly ToolCall[],
+    options?: PlanOptions
+  ): ExecutionPlan;
+
+  createCursor(
+    plan: ExecutionPlan,
+    options: CursorOptions
+  ): ExecutionCursor;
+
+  explainDependency(
+    plan: ExecutionPlan,
+    predecessorId: string,
+    operationId: string
+  ): DependencyExplanation | undefined;
+
+  validateEffectContract(
+    contract: EffectContract
+  ): ValidationResult;
+
+  getEngineInfo(): EngineInfo;
+}
+```
+
+## 6.4 Execution plan
+
+The plan is an immutable public handle backed by private compact graph data.
+
+```
+export interface ExecutionPlan {
+  readonly version: 1;
+  readonly callCount: number;
+  readonly edgeCount: number;
+  readonly statistics: PlanStatistics;
+}
+```
+
+The internal typed arrays and resource mapping must not be exposed as mutable public state.
+
+Use a private `WeakMap` or equivalent private ownership mechanism.
+
+Version 0.1 plans are process-local objects. Portable plan serialization is deferred.
+
+## 6.5 Execution cursor
+
+```
+export interface ReadyCall {
+  readonly id: string;
+  readonly index: number;
+}
+
+export interface ExecutionCursor {
+  takeReady(): readonly ReadyCall[];
+
+  markCompleted(callId: string): void;
+
+  markFailed(callId: string): void;
+
+  getStatus(callId: string): OperationStatus;
+}
+```
+
+The cursor manages scheduling state but does not execute operations.
+
+### Cursor behavior
+
+- `takeReady()` returns operations whose dependencies have completed.
+- It never exceeds `maxConcurrency`.
+- Ready calls use input order as a deterministic tie-breaker.
+- `markCompleted()` releases dependent operations.
+- `markFailed()` blocks dependent operations transitively.
+- Independent operations may continue after a failure.
+- The cursor never retries a failed operation automatically.
+- Cancellation and compensation remain host responsibilities.
+
+The host must call `markCompleted()` only after the actual operation has completed successfully.
+
+## 6.6 Stable error codes
+
+| Error                        | Meaning                               |
+| ---------------------------- | ------------------------------------- |
+| `EP_INVALID_INPUT`           | Invalid batch                         |
+| `EP_DUPLICATE_CALL_ID`       | Duplicate call ID                     |
+| `EP_INVALID_EFFECT`          | Invalid effect contract               |
+| `EP_INVALID_RESOURCE`        | Invalid resource                      |
+| `EP_UNKNOWN_EFFECT_REJECTED` | Strict policy rejected unknown effect |
+| `EP_LIMIT_EXCEEDED`          | Configured limit exceeded             |
+| `EP_INVALID_PLAN`            | Invalid plan                          |
+| `EP_INVALID_CURSOR_STATE`    | Invalid scheduling state              |
+| `EP_ENGINE_UNAVAILABLE`      | WASM could not initialize             |
+| `EP_ENGINE_ERROR`            | Engine reported an internal error     |
+
+All errors must have stable machine-readable codes.
+
+Error messages must not include raw resource identifiers by default.
+
+---
+
+# 7. WASM ABI AND DATA TRANSFER
+
+## 7.1 Why a raw ABI
+
+Do not use JSON serialization between JavaScript and Rust.
+
+Do not use `serde` for the runtime boundary.
+
+Do not call Rust individually for every operation.
+
+Instead, prepare a compact batch and transfer it in one WebAssembly call.
+
+## 7.2 Resource interning
+
+The TypeScript wrapper assigns each distinct `(namespace, id)` pair a request-local integer resource ID.
+
+Example:
+
+```
+filesystem:project-1:file-a -> 1
+filesystem:project-1:file-b -> 2
+database:tenant-1:order-2   -> 3
+```
+
+Index `0` is reserved for the engine's internal global barrier.
+
+The engine works with integer identifiers rather than repeatedly comparing strings.
+
+The TypeScript wrapper retains the resource lookup table for diagnostics.
+
+## 7.3 Input arrays
+
+The batch is encoded as separate typed arrays.
+
+| Array           | Type        | Meaning                                       |
+| --------------- | ----------- | --------------------------------------------- |
+| `callModes`     | Uint8Array  | Effect mode for each call                     |
+| `accessOffsets` | Uint32Array | Start/end range of resource accesses per call |
+| `resourceIds`   | Uint32Array | Interned resource IDs                         |
+| `accessModes`   | Uint8Array  | Read/write mode                               |
+
+The `accessOffsets` array has N+1 entries.
+
+All arrays are prepared in JavaScript and copied into one aligned region of WASM linear memory.
+
+## 7.4 Example packed input
+
+```
+Call modes:
+[1, 1, 1]
+
+Access offsets:
+[0, 1, 2, 3]
+
+Resource IDs:
+[1, 2, 1]
+
+Access modes:
+[WRITE, WRITE, READ]
+```
+
+The first and third operations address the same resource and therefore require ordering.
+
+The second operation is independent.
+
+## 7.5 Raw WASM function
+
+The WASM engine exposes a single primary planning function.
+
+Conceptual ABI:
+
+```
+#[no_mangle]
+pub unsafe extern "C" fn effectplan_plan(
+    abi_version: u32,
+    call_count: u32,
+    access_count: u32,
+    resource_count: u32,
+
+    call_modes_ptr: u32,
+    access_offsets_ptr: u32,
+    resource_ids_ptr: u32,
+    access_modes_ptr: u32,
+
+    workspace_ptr: u32,
+    workspace_len: u32,
+
+    output_ptr: u32,
+    output_capacity: u32,
+) -> i32;
+```
+
+This is a raw internal ABI.
+
+It is not part of the public TypeScript API.
+
+All pointer arithmetic, lengths, alignment and capacity checks must be validated before any access.
+
+## 7.6 Workspace design
+
+The TypeScript loader owns allocation of the WASM memory regions.
+
+The Rust engine does not allocate memory dynamically.
+
+Required workspace arrays:
+
+- Last writer per resource.
+- Reader-head per resource.
+- Reader-next per access event.
+- Reader-operation index per event.
+- Temporary edge storage.
+- Compact output header.
+
+The engine receives the workspace pointer and length.
+
+It validates the entire workspace before processing.
+
+## 7.7 Output representation
+
+The WASM engine returns compact dependency records:
+
+```
+predecessor index
+successor index
+resource index
+reason code
+```
+
+Dependency records must be sorted into a deterministic order.
+
+The TypeScript wrapper builds the private execution-plan representation.
+
+The public API returns only the immutable plan handle and statistics.
+
+## 7.8 Edge capacity
+
+Let T = N + A.
+
+The implementation must prove and test its maximum edge bound.
+
+For the proposed resource-state algorithm, each read event can create at most one dependency on its preceding writer and one dependency on a later write. Each write event can depend on the previous writer and the pending readers.
+
+The initial allocation bound is therefore:
+
+`maximum raw edge records <= 2 * T`
+
+This bound is an implementation invariant that must be verified against the reference oracle and property tests.
+
+If the algorithm changes, the bound must be recalculated.
+
+## 7.9 Memory safety
+
+Before executing the raw ABI:
+
+- Validate ABI version.
+- Validate call count.
+- Validate access count.
+- Validate resource count.
+- Validate every pointer range.
+- Validate integer overflow in size calculations.
+- Validate `accessOffsets`.
+- Validate mode values.
+- Validate resource indices.
+- Validate output capacity.
+- Validate workspace capacity.
+
+No unchecked pointer should be dereferenced before validation.
+
+---
+
+# 8. RUST IMPLEMENTATION
+
+## 8.1 Target
+
+Use:
+
+`wasm32-unknown-unknown`
+
+The Rust engine is a `no_std` implementation using the Rust core library.
+
+Official Rust documentation describes this target as a minimal WebAssembly target with few assumptions about host capabilities. It supports core functionality and can be used for bare-bones WebAssembly applications.
+
+## 8.2 No-runtime-allocation design
+
+The production WASM implementation must not require:
+
+- `HashMap`.
+- `Vec`.
+- `String`.
+- `serde`.
+- `wasm-bindgen`.
+- `wasm-pack`.
+- `tokio`.
+- Native operating-system APIs.
+
+Use caller-provided workspace and direct resource indexing.
+
+The Rust source repository can still use normal test tooling outside the deployed WASM artifact.
+
+## 8.3 Internal Rust structure
+
+```
+pub struct ResourceState {
+    pub last_writer: u32,
+    pub reader_head: u32,
+}
+
+pub struct Edge {
+    pub predecessor: u32,
+    pub successor: u32,
+    pub resource_id: u32,
+    pub reason: u32,
+}
+
+pub struct PlanStatistics {
+    pub calls: u32,
+    pub accesses: u32,
+    pub edges: u32,
+}
+```
+
+## 8.4 Function responsibilities
+
+| Function                 | Purpose                                  |
+| ------------------------ | ---------------------------------------- |
+| `validate_input()`       | Validate packed ABI structures           |
+| `validate_limits()`      | Enforce maximum sizes                    |
+| `initialize_workspace()` | Initialize request-local arrays          |
+| `process_barrier()`      | Add implicit global effect               |
+| `process_read()`         | Process read access                      |
+| `process_write()`        | Process write access                     |
+| `emit_edge()`            | Create dependency record                 |
+| `build_plan()`           | Process operations in input order        |
+| `sort_edges()`           | Establish deterministic dependency order |
+| `write_output()`         | Write compact output                     |
+| `set_error()`            | Return stable error status               |
+
+All safety-critical operations must be covered by unit tests.
+
+---
+
+# 9. TYPESCRIPT IMPLEMENTATION
+
+## 9.1 Responsibilities
+
+The TypeScript wrapper is a thin API layer.
+
+It is responsible for:
+
+- Public API validation.
+- Resource interning.
+- Access normalization.
+- Typed-array construction.
+- WASM loading.
+- WASM memory management.
+- ABI invocation.
+- Error mapping.
+- Plan encapsulation.
+- Cursor state.
+- Dependency explanations.
+
+It is not a second independent scheduling engine.
+
+## 9.2 Function names and files
+
+| File         | Functions                                                          |
+| ------------ | ------------------------------------------------------------------ |
+| `index.ts`   | `EffectPlan.create()`, public exports                              |
+| `loader.ts`  | `loadWasm()`, `instantiateEngine()`                                |
+| `memory.ts`  | `ensureMemory()`, `allocateRegions()`, `createViews()`             |
+| `encode.ts`  | `internResources()`, `encodeCalls()`, `normalizeAccesses()`        |
+| `planner.ts` | `planBatch()`, `validatePlanHandle()`                              |
+| `cursor.ts`  | `createCursor()`, `takeReady()`, `markCompleted()`, `markFailed()` |
+| `explain.ts` | `explainDependency()`                                              |
+| `errors.ts`  | `mapEngineError()`, `createPublicError()`                          |
+
+## 9.3 Loader behavior
+
+`EffectPlan.create()` is asynchronous because the WASM binary must be loaded and instantiated.
+
+After initialization, `planBatch()` is synchronous.
+
+The loader must:
+
+- Work in supported Node.js versions.
+- Work in supported browsers.
+- Load the single package-local WASM asset.
+- Validate ABI version.
+- Fail clearly if WebAssembly is unavailable.
+- Avoid network requests unless the consuming application explicitly provides a remote WASM source.
+- Avoid silently falling back to a different implementation.
+
+## 9.4 One package, two environments
+
+The initial package supports:
+
+- Node.js ESM.
+- Modern browser environments with WebAssembly and ES2022 support.
+
+CommonJS support is deferred.
+
+The package must use the same WASM binary for both environments.
+
+Node-specific file loading must not leak into the browser entry point.
+
+Browser loading must support WebAssembly MIME-type differences by falling back to ordinary ArrayBuffer instantiation where needed.
+
+## 9.5 Concurrency
+
+Each `EffectPlan` instance owns its WASM memory.
+
+Do not share mutable linear memory across concurrent planner instances.
+
+The initial public planner API is synchronous after initialization.
+
+Worker-thread and Web Worker offloading are deferred until benchmarks show that ordinary bounded batches block the event loop enough to justify the added code.
+
+---
+
+# 10. COMPLETE REPOSITORY STRUCTURE
+
+The source repository contains the engineering, verification and release machinery.
+
+The published npm package contains only the runtime artifacts.
+
+```
+effectplan/
+│
+├── .github/
+│   ├── CODEOWNERS
+│   ├── PULL_REQUEST_TEMPLATE.md
+│   └── workflows/
+│       ├── ci.yml
+│       ├── wasm-build.yml
+│       ├── tests.yml
+│       ├── security.yml
+│       ├── size-gate.yml
+│       ├── benchmark.yml
+│       ├── compatibility.yml
+│       └── release.yml
+│
+├── rfcs/
+│   ├── 0001-effectplan-core.md
+│   ├── 0002-effect-contracts.md
+│   ├── 0003-resource-identity.md
+│   ├── 0004-wasm-abi.md
+│   └── 0005-execution-cursor.md
+│
+├── docs/
+│   ├── architecture.md
+│   ├── algorithm.md
+│   ├── public-api.md
+│   ├── wasm-abi.md
+│   ├── performance.md
+│   ├── memory-model.md
+│   ├── security.md
+│   ├── threat-model.md
+│   ├── compatibility.md
+│   ├── limitations.md
+│   ├── support-policy.md
+│   └── release-policy.md
+│
+├── packages/
+│   └── core/
+│       ├── src/
+│       │   ├── index.ts
+│       │   ├── loader.ts
+│       │   ├── memory.ts
+│       │   ├── encode.ts
+│       │   ├── planner.ts
+│       │   ├── cursor.ts
+│       │   ├── explain.ts
+│       │   └── errors.ts
+│       │
+│       ├── package.json
+│       └── README.md
+│
+├── engine/
+│   ├── Cargo.toml
+│   └── src/
+│       ├── lib.rs
+│       ├── abi.rs
+│       ├── validate.rs
+│       ├── limits.rs
+│       ├── resource_state.rs
+│       ├── planner.rs
+│       ├── conflict.rs
+│       ├── dependency.rs
+│       ├── edge_sort.rs
+│       ├── output.rs
+│       └── error.rs
+│
+├── tests/
+│   ├── fixtures/
+│   │   ├── basic/
+│   │   ├── read-write/
+│   │   ├── multi-resource/
+│   │   ├── global-barrier/
+│   │   ├── unknown-effects/
+│   │   ├── malformed-input/
+│   │   └── large-batches/
+│   │
+│   ├── unit/
+│   │   ├── input-validation.test.ts
+│   │   ├── resource-interning.test.ts
+│   │   ├── access-normalization.test.ts
+│   │   ├── planner.test.ts
+│   │   ├── cursor.test.ts
+│   │   └── explanations.test.ts
+│   │
+│   ├── property/
+│   │   ├── deterministic-plan.test.ts
+│   │   ├── acyclic-graph.test.ts
+│   │   ├── conflict-correctness.test.ts
+│   │   ├── ordering-preservation.test.ts
+│   │   ├── no-false-dependency.test.ts
+│   │   └── reference-oracle.test.ts
+│   │
+│   ├── integration/
+│   │   ├── wasm-loader.test.ts
+│   │   ├── packed-abi.test.ts
+│   │   ├── cursor-execution.test.ts
+│   │   └── failure-propagation.test.ts
+│   │
+│   ├── security/
+│   │   ├── bounds-validation.test.ts
+│   │   ├── integer-overflow.test.ts
+│   │   ├── malformed-resource.test.ts
+│   │   ├── prototype-pollution.test.ts
+│   │   ├── memory-limits.test.ts
+│   │   └── error-redaction.test.ts
+│   │
+│   ├── fuzz/
+│   │   ├── abi-input.fuzz.ts
+│   │   ├── resource-identities.fuzz.ts
+│   │   └── random-effect-graphs.fuzz.ts
+│   │
+│   ├── e2e/
+│   │   ├── node-filesystem-simulation.test.ts
+│   │   ├── database-resource-simulation.test.ts
+│   │   ├── multi-tool-batch.test.ts
+│   │   ├── unknown-effect-barrier.test.ts
+│   │   └── browser-runtime.test.ts
+│   │
+│   └── compatibility/
+│       ├── public-api.test.ts
+│       ├── esm-import.test.ts
+│       ├── node-runtime.test.ts
+│       └── browser-runtime.test.ts
+│
+├── benchmarks/
+│   ├── datasets/
+│   ├── reference-oracle.ts
+│   ├── typescript-baseline.ts
+│   ├── rust-native.rs
+│   ├── wasm-benchmark.ts
+│   └── end-to-end.ts
+│
+├── scripts/
+│   ├── build-wasm.sh
+│   ├── optimize-wasm.sh
+│   ├── package-build.ts
+│   ├── verify-size.ts
+│   ├── verify-abi.ts
+│   ├── generate-types.ts
+│   └── release-check.ts
+│
+├── Cargo.toml
+├── Cargo.lock
+├── rust-toolchain.toml
+├── package.json
+├── pnpm-lock.yaml
+├── tsconfig.json
+├── vitest.config.ts
+├── README.md
+├── LICENSE
+├── SECURITY.md
+├── CONTRIBUTING.md
+├── SUPPORT.md
+└── CHANGELOG.md
+```
+
+The published npm package must not include the repository's tests, Rust source, development dependencies or engineering documentation.
+
+---
+
+# 11. RUST FUNCTION MAP
+
+| File                | Function                      | Responsibility                   |
+| ------------------- | ----------------------------- | -------------------------------- |
+| `abi.rs`            | `effectplan_plan()`           | Public WASM ABI                  |
+| `abi.rs`            | `validate_ranges()`           | Pointer and memory checks        |
+| `abi.rs`            | `validate_abi_version()`      | ABI compatibility                |
+| `validate.rs`       | `validate_batch()`            | Validate operation arrays        |
+| `validate.rs`       | `validate_offsets()`          | Validate offset monotonicity     |
+| `validate.rs`       | `validate_accesses()`         | Validate resource access modes   |
+| `resource_state.rs` | `initialize_resource_state()` | Initialize resource index arrays |
+| `resource_state.rs` | `process_read()`              | Process resource read            |
+| `resource_state.rs` | `process_write()`             | Process resource write           |
+| `planner.rs`        | `plan_batch()`                | Main planning loop               |
+| `conflict.rs`       | `emit_conflict()`             | Generate dependency record       |
+| `dependency.rs`     | `validate_dependencies()`     | Verify graph constraints         |
+| `edge_sort.rs`      | `sort_edges()`                | Deterministic result ordering    |
+| `output.rs`         | `write_plan_output()`         | Write packed output              |
+| `error.rs`          | `status_code()`               | Stable ABI errors                |
+
+## Internal Rust rules
+
+- `#![no_std]`.
+- No heap allocation.
+- No global mutable scheduling state.
+- No network.
+- No filesystem access.
+- No threads.
+- No environment access.
+- All runtime buffers supplied by the host.
+- All unsafe code isolated at the WASM ABI boundary.
+- Core planning logic uses safe slices and indexed structures wherever possible.
+- All arithmetic involving input lengths must use checked operations.
+
+---
+
+# 12. TYPESCRIPT FUNCTION MAP
+
+| File         | Function                  | Responsibility                                |
+| ------------ | ------------------------- | --------------------------------------------- |
+| `loader.ts`  | `loadWasm()`              | Locate and load the one WASM binary           |
+| `loader.ts`  | `instantiateEngine()`     | Instantiate WASM                              |
+| `loader.ts`  | `validateEngineVersion()` | Check ABI and engine version                  |
+| `memory.ts`  | `ensureMemory()`          | Grow linear memory safely                     |
+| `memory.ts`  | `allocateRegions()`       | Allocate aligned input/output areas           |
+| `memory.ts`  | `createTypedViews()`      | Create memory views after growth              |
+| `encode.ts`  | `internResources()`       | Map structured IDs to integers                |
+| `encode.ts`  | `normalizeAccesses()`     | Normalize duplicate resource accesses         |
+| `encode.ts`  | `encodeCalls()`           | Construct packed arrays                       |
+| `planner.ts` | `planBatch()`             | Main public planning function                 |
+| `planner.ts` | `createPlanHandle()`      | Encapsulate internal graph state              |
+| `cursor.ts`  | `createCursor()`          | Initialize scheduler cursor                   |
+| `cursor.ts`  | `takeReady()`             | Return ready operations                       |
+| `cursor.ts`  | `markCompleted()`         | Release dependents                            |
+| `cursor.ts`  | `markFailed()`            | Block dependent operations                    |
+| `explain.ts` | `explainDependency()`     | Explain dependency reasons                    |
+| `errors.ts`  | `mapEngineError()`        | Convert WASM status into stable public errors |
+| `errors.ts`  | `createPublicError()`     | Construct documented error shape              |
+
+---
+
+# 13. BUILD AND COMPILATION STRATEGY
+
+## 13.1 Rust target
+
+Use:
+
+`wasm32-unknown-unknown`
+
+Install target:
+
+```
+rustup target add wasm32-unknown-unknown
+```
+
+No WASI runtime is required because the engine performs computation only and must not access host I/O.
+
+## 13.2 Compiler profile
+
+Initial release profile:
+
+```
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+```
+
+The build must compare multiple optimization configurations.
+
+## 13.3 WebAssembly post-processing
+
+Build the raw WASM and test:
+
+```
+wasm-opt input.wasm -Oz -o effectplan.wasm
+```
+
+Also benchmark `-O3`.
+
+Binaryen documents `-Oz` as focusing heavily on code-size reduction and `-O3` as focusing on more aggressive optimization. The smallest build must not be assumed to be the fastest.
+
+## 13.4 ABI
+
+Use raw exported functions and memory.
+
+Avoid:
+
+- `wasm-bindgen`.
+- `serde-wasm-bindgen`.
+- JSON parsing.
+- Reflection.
+- Dynamic imports in Rust.
+- Host callbacks.
+
+The JavaScript wrapper performs structured input processing.
+
+Rust receives packed numerical arrays.
+
+## 13.5 Reproducible build
+
+Record:
+
+- Rust compiler version.
+- LLVM/WebAssembly toolchain version.
+- Binaryen version.
+- Build flags.
+- Source commit.
+- WASM SHA-256.
+- Final file size.
+- Package unpacked size.
+- Benchmark results.
+
+Every released WASM artifact must be traceable to its source commit.
+
+---
+
+# 14. TESTING AND VERIFICATION STRATEGY
+
+## 14.1 Unit tests
+
+Required cases:
+
+- Empty batch.
+- Single pure call.
+- Single resource call.
+- Read/read.
+- Read/write.
+- Write/read.
+- Write/write.
+- Different resources.
+- Multiple resources per call.
+- Duplicate resource access.
+- Missing effect contract.
+- Unknown mode.
+- Exclusive mode.
+- Invalid resource.
+- Duplicate call ID.
+- Input limits.
+- Output capacity limits.
+- Dependency explanation.
+- Cursor completion.
+- Cursor failure.
+- Ready-call ordering.
+
+## 14.2 Reference-oracle testing
+
+Implement a deliberately simple pairwise planner in the test suite.
+
+It must compare each operation with every preceding operation using the conflict matrix.
+
+It is intentionally slower than production.
+
+The optimized Rust planner must match its semantic graph for generated inputs.
+
+Acceptance:
+
+- No false negatives.
+- No unexplained false positives.
+- Identical dependency semantics.
+- Identical global barrier behavior.
+
+## 14.3 Property testing
+
+Generate random batches with:
+
+- Repeated resources.
+- Read/write combinations.
+- Different namespaces.
+- Different tenant prefixes.
+- Unknown operations.
+- Exclusive operations.
+- Random input order.
+- Duplicate identifiers.
+- Varying resource access counts.
+
+Required properties:
+
+1. The graph is acyclic.
+2. Dependencies point forward in input order.
+3. Conflicting operations are ordered.
+4. Read/read operations remain independent.
+5. Distinct resources remain independent.
+6. Unknown/exclusive operations act as barriers.
+7. Resource access ordering does not change semantic results.
+8. The same valid input produces the same output.
+9. Cursor never dispatches an operation before its dependencies complete.
+10. Failed operations block dependent operations.
+11. Independent operations remain schedulable after unrelated failure.
+
+## 14.4 Integration tests
+
+Test:
+
+- WASM instantiation.
+- Memory growth.
+- Typed-array layout.
+- ABI version mismatch.
+- Invalid pointers.
+- Invalid offsets.
+- Input overflow.
+- Output overflow.
+- Engine errors.
+- Planner state isolation across instances.
+- Repeated planning batches.
+- Large-batch cleanup.
+
+## 14.5 Security tests
+
+Test:
+
+- Extremely large call counts.
+- Excessive resource access counts.
+- Very long identifiers.
+- Empty identifiers.
+- Unicode identifiers.
+- Control characters.
+- Malformed memory offsets.
+- Integer overflow.
+- Out-of-bounds pointer attempts.
+- Invalid ABI versions.
+- Malformed resource IDs.
+- Unexpected resource modes.
+- Large dependency counts.
+- Diagnostic leakage.
+- Repeated rejected inputs.
+
+The Rust ABI must validate all memory ranges before creating slices.
+
+The TypeScript wrapper must not accept untrusted arbitrary memory pointers.
+
+## 14.6 Fuzz testing
+
+Use two layers.
+
+**Rust layer**
+
+Fuzz the safe core validation and planning functions on native builds using a host-side fuzz harness.
+
+**WASM layer**
+
+Fuzz the packed ABI through the JavaScript wrapper and malformed buffer tests.
+
+Acceptance:
+
+- No panic for valid bounded input.
+- No out-of-bounds memory access.
+- No infinite loops.
+- No corrupted graph.
+- No uncontrolled allocation.
+- No crash from ordinary malformed input.
+- Stable error codes.
+
+## 14.7 End-to-end tests
+
+### Scenario A — Filesystem
+
+Two writes target different files; a third write targets the same file as the first.
+
+Expected: independent work overlaps; conflicting operations preserve order.
+
+### Scenario B — Database
+
+Different rows are modified concurrently; the same row is modified by two operations.
+
+Expected: dependencies use declared row identities.
+
+### Scenario C — Different tools, same resource
+
+Two different tool definitions modify the same declared resource.
+
+Expected: dependencies are detected across tool names.
+
+### Scenario D — Multiple tenants
+
+The same local resource ID occurs under two tenant namespaces.
+
+Expected: no accidental cross-tenant collision.
+
+### Scenario E — Unknown operation
+
+One operation has no effect declaration.
+
+Expected: global barrier or strict rejection.
+
+### Scenario F — Failure
+
+One operation fails while independent operations are running.
+
+Expected: dependents are blocked; unrelated operations may continue.
+
+The host remains responsible for cancellation of already-running work.
+
+## 14.8 Runtime compatibility
+
+Required testing:
+
+- Supported Node.js LTS versions.
+- Linux.
+- Windows.
+- macOS.
+- Supported Chromium-based browser.
+- Firefox.
+- Safari where supported by the published compatibility policy.
+
+Test ESM imports and WASM loading.
+
+The project must publish an explicit minimum runtime matrix.
+
+---
+
+# 15. PERFORMANCE ENGINEERING
+
+## 15.1 The correct benchmark comparison
+
+Benchmark four implementations:
+
+1. Rust native core.
+2. Rust WASM core only.
+3. Optimized TypeScript reference implementation.
+4. Complete npm API including TypeScript encoding and WASM conversion.
+
+The fourth number is the most important for customers.
+
+A small Rust-core benchmark is not evidence of a fast npm package if encoding and memory conversion dominate end-to-end latency.
+
+## 15.2 Workload matrix
+
+| Profile | Operations | Resource accesses |
+| ------- | ---------- | ----------------- |
+| Tiny    | 8          | 32                |
+| Small   | 32         | 128               |
+| Typical | 64         | 256               |
+| Medium  | 128        | 1,024             |
+| Large   | 1,024      | 8,192             |
+| Stress  | 4,096      | 32,768            |
+
+Also test:
+
+- High-conflict workload.
+- High-independence workload.
+- Many small resources.
+- One heavily shared resource.
+- Many operations with unknown effects.
+- Large dependency graphs.
+- Duplicate access normalization.
+
+## 15.3 Metrics
+
+Record:
+
+- Cold WASM initialization.
+- Warm planning time.
+- TypeScript encoding time.
+- Linear-memory preparation time.
+- Rust execution time.
+- Output-copy time.
+- Complete API latency.
+- p50.
+- p95.
+- p99.
+- Throughput.
+- Peak linear memory.
+- Peak JavaScript heap.
+- Event-loop delay.
+
+## 15.4 Initial performance gates
+
+These are proposed targets requiring measurement:
+
+| Workload | End-to-end p95 target |
+| -------- | --------------------- |
+| Tiny     | ≤ 0.5 ms              |
+| Small    | ≤ 0.75 ms             |
+| Typical  | ≤ 1.5 ms              |
+| Medium   | ≤ 4 ms                |
+| Large    | ≤ 30 ms               |
+| Stress   | ≤ 100 ms              |
+
+Do not publish these as benchmark claims until measured on documented hardware.
+
+## 15.5 WASM versus native Rust
+
+The target is not to claim identical native performance.
+
+The target is:
+
+- The WASM core SHOULD remain within 1.5× the native Rust core for representative medium/large workloads.
+- End-to-end npm execution SHOULD outperform the optimized TypeScript baseline for representative medium/large workloads.
+- Tiny workloads must not suffer unacceptable latency.
+- The engine must retain correctness under every optimization configuration.
+
+If WASM is slower than TypeScript for small inputs, do not disguise the result. Consider a measured dispatch threshold only after both implementations have equivalent verified semantics. A second production implementation is not part of v0.1.
+
+---
+
+# 16. MEMORY AND BOUNDS
+
+## 16.1 WebAssembly memory
+
+WebAssembly linear memory is separate from the 50,000-byte package limit.
+
+WebAssembly memory grows in pages, conventionally 64 KiB per page.
+
+The TypeScript wrapper calculates required buffer space before growing memory.
+
+## 16.2 Memory policy
+
+- Fixed maximum input limits.
+- Fixed maximum workspace size.
+- No unbounded growth.
+- No retained references to views created before memory growth.
+- Recreate typed-array views after every memory growth.
+- Reuse the WASM instance between normal planning batches.
+- Clear request-local workspace before reuse where required.
+- Never return mutable raw WASM memory views to the public API.
+
+## 16.3 Buffer layout
+
+The wrapper calculates aligned regions for:
+
+1. Call modes.
+2. Access offsets.
+3. Resource IDs.
+4. Access modes.
+5. Resource state.
+6. Reader linked-list state.
+7. Dependency records.
+8. Output statistics.
+
+All size arithmetic must use checked integer operations.
+
+---
+
+# 17. ENTERPRISE ENGINEERING AND SUPPLY-CHAIN STANDARD
+
+Enterprise readiness is a set of verifiable practices, not a label.
+
+## 17.1 Repository governance
+
+Require:
+
+- Protected main branch.
+- Pull-request review.
+- Required CI checks.
+- CODEOWNERS.
+- Change history.
+- Security policy.
+- License.
+- Contribution policy.
+- Support policy.
+- Versioning rules.
+- Release checklist.
+
+A solo-maintained project must disclose that it is solo-maintained rather than falsely claim independent multi-reviewer approval.
+
+## 17.2 CI pipeline
+
+Every pull request:
+
+1. Rust formatting.
+2. Rust linting.
+3. TypeScript formatting.
+4. TypeScript linting.
+5. Type checking.
+6. Rust unit tests.
+7. TypeScript unit tests.
+8. Property tests.
+9. ABI tests.
+10. Security tests.
+11. Build WASM.
+12. Optimize WASM.
+13. Verify ABI exports.
+14. Verify npm package contents.
+15. Enforce 50,000-byte limit.
+16. Run package smoke tests.
+
+Scheduled jobs:
+
+- Fuzzing.
+- Cross-runtime tests.
+- Full benchmark.
+- Dependency/license checks.
+- Supply-chain checks.
+
+## 17.3 Supply-chain controls
+
+Required before public release:
+
+- Rust and JavaScript lockfiles.
+- Minimal GitHub Actions permissions.
+- Immutable CI action references where possible.
+- Reproducible build procedure.
+- WASM SHA-256 recorded.
+- SBOM.
+- Package provenance.
+- Trusted npm publishing where supported.
+- Vulnerability disclosure process.
+- Dependency policy.
+
+No runtime dependency does not mean no supply-chain risk. Build tooling, Rust compiler, Binaryen and CI still require review.
+
+## 17.4 Telemetry and privacy
+
+Default behavior:
+
+- No telemetry.
+- No analytics.
+- No network.
+- No tracking.
+- No storage.
+- No resource identifiers sent externally.
+- No customer data collection.
+
+Optional application-side instrumentation MAY be added by consumers.
+
+## 17.5 Enterprise claims
+
+Do not claim SOC 2, ISO 27001, FIPS or equivalent certification merely because the package has security tests.
+
+Publish an honest security posture and support policy.
+
+---
+
+# 18. PUBLISHED NPM PACKAGE STRUCTURE
+
+Exactly one public npm package.
+
+Proposed published contents:
+
+```
+@effectplan/core/
+│
+├── index.js
+├── index.d.ts
+├── effectplan.wasm
+├── package.json
+├── README.md
+└── LICENSE
+```
+
+Everything else remains in the repository.
+
+## 18.1 Package manifest policy
+
+- ESM-first.
+- Node.js and browser entry compatibility.
+- One WASM asset.
+- Public TypeScript declarations.
+- No platform optional dependencies.
+- No runtime dependency.
+- Restricted package `files` list.
+- Explicit package exports.
+- Explicit supported engines.
+- License and repository metadata.
+
+## 18.2 Installation
+
+```
+npm install @effectplan/core
+```
+
+No Rust compiler is required by consumers.
+
+The Rust toolchain is needed only by contributors building from source.
+
+---
+
+# 19. RELEASE ACCEPTANCE CRITERIA
+
+Every criterion must have recorded evidence.
+
+| ID     | Acceptance criterion     | Pass condition                                 |
+| ------ | ------------------------ | ---------------------------------------------- |
+| EP-001 | One-package distribution | One public npm package                         |
+| EP-002 | Package size             | Unpacked size ≤ 50,000 bytes                   |
+| EP-003 | WASM count               | Exactly one runtime WASM binary                |
+| EP-004 | Runtime dependencies     | Zero                                           |
+| EP-005 | Native addon count       | Zero                                           |
+| EP-006 | ABI validation           | All malformed inputs rejected safely           |
+| EP-007 | Deterministic planning   | Identical input yields identical graph         |
+| EP-008 | Read/read correctness    | No unnecessary dependencies                    |
+| EP-009 | Read/write correctness   | Required dependencies emitted                  |
+| EP-010 | Write/read correctness   | Required dependencies emitted                  |
+| EP-011 | Write/write correctness  | Required dependencies emitted                  |
+| EP-012 | Unknown effects          | Global barrier or explicit rejection           |
+| EP-013 | Graph correctness        | No cycles                                      |
+| EP-014 | Ordering                 | Conflicting operations preserve input order    |
+| EP-015 | Resource identity        | No accidental identity collision               |
+| EP-016 | Cursor correctness       | No early dispatch                              |
+| EP-017 | Failure handling         | Dependents blocked correctly                   |
+| EP-018 | Reference oracle         | Optimized graph matches oracle                 |
+| EP-019 | Property tests           | All mandatory properties pass                  |
+| EP-020 | Fuzz tests               | No unresolved critical crash or memory defect  |
+| EP-021 | Security                 | No unresolved critical/high release blocker    |
+| EP-022 | Memory                   | Configured maximum respected                   |
+| EP-023 | Performance              | Documented benchmark gates achieved or revised |
+| EP-024 | Node compatibility       | Supported Node matrix passes                   |
+| EP-025 | Browser compatibility    | Published browser matrix passes                |
+| EP-026 | TypeScript API           | Declarations match runtime behavior            |
+| EP-027 | Supply chain             | SBOM and provenance generated                  |
+| EP-028 | Reproducibility          | Build instructions and hashes recorded         |
+| EP-029 | Documentation            | All mandatory documentation complete           |
+| EP-030 | Limitations              | All guarantees accurately documented           |
+
+A failed critical criterion blocks public production release.
+
+---
+
+# 20. DEVELOPMENT PHASES
+
+## Phase 0 — Specification freeze
+
+Deliver:
+
+- RFC approval.
+- Final effect model.
+- Conflict matrix.
+- Resource identity rules.
+- Packed ABI definition.
+- Memory limits.
+- Package-size definition.
+- Reference oracle design.
+
+Exit gate: no unresolved critical semantic ambiguity.
+
+## Phase 1 — WASM feasibility prototype
+
+Build the smallest possible Rust engine:
+
+- `no_std`.
+- Raw WASM exports.
+- Caller-provided memory.
+- One read/write resource.
+- One conflict dependency.
+- One output edge.
+- Minimal TypeScript loader.
+
+Measure actual binary size.
+
+Exit gate:
+
+- WASM works in Node.
+- WASM works in browser.
+- Raw ABI validated.
+- Complete runtime package fits its allocated size budget.
+- Performance is measurable.
+
+If the 50,000-byte target fails, do not move directly into a larger implementation. Optimize the architecture first.
+
+## Phase 2 — Correct reference engine
+
+Implement a simple correctness-first resource planner.
+
+Build the independent pairwise oracle.
+
+Exit gate: hand-written and generated cases agree.
+
+## Phase 3 — Optimized Rust planner
+
+Implement:
+
+- Resource interning interface.
+- Direct-index resource state.
+- Read/write conflict processing.
+- Global barrier.
+- Sparse edge generation.
+- Output sorting.
+- Graph verification.
+
+Exit gate: optimized implementation matches reference oracle.
+
+## Phase 4 — Public TypeScript API
+
+Implement:
+
+- `EffectPlan.create()`.
+- `planBatch()`.
+- `createCursor()`.
+- `takeReady()`.
+- `markCompleted()`.
+- `markFailed()`.
+- `explainDependency()`.
+- `validateEffectContract()`.
+- Structured errors.
+
+Exit gate: API contract tests pass.
+
+## Phase 5 — Security and performance validation
+
+Complete:
+
+- Property testing.
+- ABI fuzzing.
+- Resource limit testing.
+- Memory safety validation.
+- Cross-platform runtime testing.
+- Native/TypeScript/WASM benchmark comparisons.
+- 50 KB package-size gate.
+
+Exit gate: all critical quality targets pass.
+
+## Phase 6 — Enterprise release preparation
+
+Complete:
+
+- Documentation.
+- Support policy.
+- License and registry checks.
+- SBOM.
+- Provenance.
+- Vulnerability disclosure policy.
+- Versioning.
+- Release checklist.
+- Reproducible package build.
+
+Exit gate: production release review approved.
+
+---
+
+# 21. DEFERRED CAPABILITIES
+
+These are explicitly out of version 0.1.
+
+| Capability                       | Why deferred                                            |
+| -------------------------------- | ------------------------------------------------------- |
+| Rust native Node addon           | Breaks single portable WASM distribution objective      |
+| JavaScript fallback engine       | Duplicates algorithm and increases package size         |
+| CLI                              | Not required for core product                           |
+| MCP server                       | Adapter, not core                                       |
+| Framework adapters               | Add only after generic integration proof                |
+| Distributed locking              | Different consistency and failure model                 |
+| Transactions                     | Host/database responsibility                            |
+| Automatic rollback               | Unsafe without application-specific compensation        |
+| Commutative operations           | Requires stronger semantic model                        |
+| Runtime side-effect verification | Requires instrumentation                                |
+| Worker-thread scheduler          | Add only when measured event-loop blocking justifies it |
+| Plan serialization               | Requires a separate compatibility and security design   |
+| Dashboard                        | Not part of product objective                           |
+| Telemetry backend                | Violates lightweight offline-first design               |
+
+---
+
+# 22. ADVERSARIAL REVIEW
+
+## Hidden assumptions
+
+1. A 50 KB package can contain a sufficiently complete Rust WASM engine.
+2. WebAssembly performs better than optimized TypeScript for the actual batch sizes.
+3. Resource identities can be canonically supplied by host applications.
+4. Developers are willing to declare resource effects.
+5. The dependency graph produces better real-world concurrency than existing schedulers.
+
+All five require evidence.
+
+## Critical weaknesses
+
+- WASM is not native Rust execution.
+- Memory conversion can dominate small workloads.
+- Bad effect declarations can still cause conflicting side effects.
+- A tiny artifact does not imply tiny runtime memory.
+- Browser and Node loading behavior must both be tested.
+- A sophisticated planner can be slower than a simple serial strategy for tiny batches.
+
+## Failure modes
+
+- 50 KB target cannot be reached without removing necessary functionality.
+- Packed ABI contains an incorrect offset or length.
+- Dependency generation misses a conflict.
+- Excessive edge generation consumes memory.
+- Scheduler incorrectly releases a dependent operation.
+- WASM startup dominates useful work.
+- Browser bundlers fail to resolve the binary.
+- The package is fast in Rust benchmarks but slow in real npm workloads.
+
+## Stronger strategy
+
+Make the first milestone a proof of feasibility:
+
+- Single WASM binary.
+- Raw ABI.
+- No runtime allocation.
+- One resource model.
+- One correct conflict algorithm.
+- One independently tested TypeScript API.
+- One actual 50,000-byte npm artifact.
+
+Only expand the feature surface after this milestone passes.
+
+## Brutal verdict
+
+**Architecture: Strong, conditional.**
+
+**Product differentiation: Still requires external adoption evidence.**
+
+**50 KB target: Aggressive and unproven until a real build exists.**
+
+**Production readiness: Not yet.**
+
+---
+
+# 23. FINAL DECISION
+
+We are building:
+
+**EffectPlan — a single-package, Rust-powered WebAssembly library for deterministic, resource-aware AI tool execution planning.**
+
+The product will be distributed through one npm package.
+
+It will contain one WASM engine and one small TypeScript API.
+
+It will have no runtime dependencies or external service requirements.
+
+The hard release requirement is 50,000 bytes unpacked.
+
+The first engineering milestone is not a collection of features. It is a working minimal build that proves the size, correctness and performance architecture.
+
+**Do not build the full product before the minimal Rust/WASM feasibility prototype has passed.**
+
+## Critical architecture decisions
+
+1. One npm package: `@effectplan/core`.
+2. One Rust WASM binary: no NAPI-RS or platform-specific packages.
+3. Raw WASM ABI: packed typed arrays, one batch call, no JSON serialization.
+4. No Rust runtime allocator: caller-provided memory and bounded workspace.
+5. One implementation: Rust owns scheduling logic; TypeScript handles the public API and cursor.
+6. Hard size limit: 50,000 bytes for the complete unpacked published package.
+
+The technical basis is sound: Rust's `wasm32-unknown-unknown` target supports minimal, host-independent WASM builds, while Binaryen offers separate size-focused (`-Oz`) and performance-focused (`-O3`) optimization strategies.&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://doc.rust-lang.org\&sz=32)
+
+The rustc book+1
+
+
+
+## Three things we must prove before full implementation
+
+Gate 1 — Size
+
+Unverified
+
+Produce an actual npm package under 50,000 bytes.
+
+Gate 2 — Correctness
+
+Unverified
+
+Rust's optimized planner must match an independent reference algorithm across generated conflict cases.
+
+Gate 3 — Performance
+
+Unverified
+
+Measure complete npm API latency against native Rust and optimized TypeScript—not just the WASM engine in isolation.
+
+My recommendation: Start with Phase 1, the WASM feasibility prototype. Do not build the full API until the actual binary size, raw memory interface and benchmark results validate the architecture.
+
+The 50 KB limit is a release requirement, not a number we should claim before measuring it.
+
+Understood. We will redesign EffectPlan around one npm package, one Rust engine, one installation command and a strict 50 KB package-size limit.
+
+This changes my previous NAPI-RS recommendation.
+
+# 1. Final architecture
+
+Recommended architecture
+
+Rust → WebAssembly → TypeScript → npm
+
+We compile the Rust engine into one portable WebAssembly binary instead of distributing separate native binaries for Windows, Linux and macOS.
+
+Why? NAPI-RS normally distributes native addons through a root npm package and separate platform-specific packages. That conflicts with your single-package, tiny-footprint objective.&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://napi.rs\&sz=32)
+
+NAPI-RS+1
+
+
+
+@effectplan/core
+
+One npm package · One dependency-free install
+
+Tiny TypeScript API
+
+Input preparation · Resource ID mapping · Typed-array interface
+
+# Rust WebAssembly Core
+
+Conflict engine · Sparse graph · Dependency planner · Readiness
+
+One Rust implementation. No platform-specific binary packages. No Node native addon.
+
+Rust's `wasm32-unknown-unknown` target is designed for minimal assumptions about the host environment, making it suitable for a portable computational engine.&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://doc.rust-lang.org\&sz=32)
+
+The rustc book
+
+
+
+# 2. Strict 50 KB budget
+
+Maximum published package
+
+# 50 KiB
+
+| Component                      | Target |
+| ------------------------------ | ------ |
+| Rust WASM binary               | 40 KiB |
+| TypeScript/JavaScript wrapper  | 6 KiB  |
+| Type declarations and metadata | 2 KiB  |
+| README and license             | 2 KiB  |
+| Total                          | 50 KiB |
+
+Proposed size allocation, not measured build output.
+
+I would enforce the 50 KiB limit against the unpacked published runtime package, not just its compressed download. The compressed npm tarball must also be reported.
+
+CI must reject a package exceeding the limit.
+
+We have not yet compiled the engine, so the 40 KiB WASM target is an engineering target—not a guaranteed binary size.
+
+# 3. Single package structure
+
+```
+effectplan/
+│
+├── src/
+│   ├── index.ts
+│   ├── planner.ts
+│   ├── loader.ts
+│   ├── resources.ts
+│   └── errors.ts
+│
+├── rust/
+│   ├── Cargo.toml
+│   └── src/
+│       ├── lib.rs
+│       ├── conflict.rs
+│       ├── resource.rs
+│       ├── dependency.rs
+│       └── planner.rs
+│
+├── tests/
+│   ├── unit/
+│   ├── property/
+│   ├── integration/
+│   ├── security/
+│   └── performance/
+│
+├── benchmarks/
+├── docs/
+├── package.json
+├── Cargo.toml
+├── tsconfig.json
+├── README.md
+└── LICENSE
+```
+
+Only production runtime files go into the npm tarball:
+
+```
+@effectplan/core/
+├── index.js
+├── index.d.ts
+└── effectplan.wasm
+```
+
+Tests, Rust source, benchmark data, source maps and development tools stay outside the published package.
+
+# 4. How we make it fast
+
+The important optimization is not simply using Rust. It is reducing the cost of transferring data between TypeScript and WebAssembly.
+
+Use a packed integer interface.
+
+Instead of passing thousands of nested JSON objects into Rust, TypeScript maps resource identities to integer IDs and sends compact typed arrays.
+
+Example:
+
+```
+const operations = new Uint32Array([
+  0, 1, 1, // operation, resource, write
+  1, 2, 0, // operation, resource, read
+  2, 1, 0  // operation, resource, read
+]);
+```
+
+The Rust engine receives the entire batch in one call.
+
+It constructs the dependency graph and returns compact arrays.
+
+No JSON serialization. No individual native calls per operation. No repeated allocation of nested objects.
+
+### Rust optimization
+
+Build and compare several configurations:
+
+```
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+```
+
+Then test WebAssembly optimization with:
+
+```
+wasm-opt -Oz input.wasm -o effectplan.wasm
+```
+
+Binaryen also offers `-O3` for aggressive speed optimization. We must measure the speed/size trade-off rather than assume the smallest binary is the fastest.&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://rustwasm.github.io\&sz=32)
+
+Rust and WebAssembly+1
+
+
+
+# 5. All functionality inside the same package
+
+There will be no separately installable planner, validator or diagnostics packages.
+
+```
+import { EffectPlan } from "@effectplan/core";
+
+const planner = await EffectPlan.create();
+
+const plan = planner.planBatch(calls);
+
+const ready = planner.getReadyCalls(plan, state, 8);
+
+const explanation = planner.explainDependency(
+  plan,
+  "call-1",
+  "call-3"
+);
+
+const validation = planner.validateEffectContract(contract);
+```
+
+The package contains:
+
+- Effect contract validation.
+- Resource indexing.
+- Conflict detection.
+- Dependency graph construction.
+- Parallel execution planning.
+- Ready-call discovery.
+- Dependency explanations.
+- Bounded input validation.
+- Structured diagnostics.
+- Backend information.
+
+All are part of one public API.
+
+# 6. Performance and quality gates
+
+| Requirement              | Acceptance target                                                     |
+| ------------------------ | --------------------------------------------------------------------- |
+| Published package size   | ≤ 50 KiB unpacked                                                     |
+| Runtime dependencies     | Zero                                                                  |
+| Native platform packages | Zero                                                                  |
+| WASM binaries            | One                                                                   |
+| Core implementation      | Rust                                                                  |
+| Data transfer            | Packed typed arrays                                                   |
+| Planning                 | Deterministic                                                         |
+| Correctness              | Matches reference planner                                             |
+| Graph validity           | Always acyclic                                                        |
+| Unknown effects          | Fail closed                                                           |
+| Native/WASM comparison   | ≤ 1.5× native Rust baseline for representative medium/large workloads |
+| Test coverage            | Critical scheduling logic fully covered                               |
+| Platform support         | Node.js and supported browser runtimes                                |
+
+The 1.5× performance figure is a proposed target, not a measured result. Cold-start and warm-execution performance must be measured separately.
+
+One important distinction: a 50 KiB package does not imply a 50 KiB memory footprint while processing large graphs. Runtime memory needs its own limits.
+
+# 7. What we deliberately remove
+
+To protect the footprint, we will not include:
+
+- NAPI-RS.
+- Serde JSON in the WASM boundary.
+- Tokio.
+- External runtime dependencies.
+- A JavaScript fallback engine.
+- A CLI.
+- MCP server implementation.
+- Telemetry SDKs.
+- Dashboard functionality.
+- Native binaries for each platform.
+
+This does not mean those integrations can never exist. They can be independent future adapters, but they are not part of this 50 KiB package.
+
+## Final architecture decision
+
+# EffectPlan 0.1
+
+Architecture selected
+
+One package. One Rust core. One portable WASM binary.
+
+- Distribution: `npm install @effectplan/core`
+- Implementation: Rust compiled to WASM.
+- API: TypeScript.
+- Footprint: Maximum 50 KiB unpacked.
+- Runtime dependencies: Zero.
+- Execution: Offline, deterministic.
+- Platforms: Portable JavaScript/WASM environments.
+
+My one non-negotiable rule: If the first compiled WASM version cannot meet the 50 KiB budget and correctness requirements, we optimize the implementation before weakening the budget. We will not advertise 50 KB until `npm pack` proves it.

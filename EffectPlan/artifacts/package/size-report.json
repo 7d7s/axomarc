@@ -1,0 +1,91 @@
+{
+  "measuredAt": "2026-11-01T11:07:25.269Z",
+  "package": {
+    "name": "@effectplan/core",
+    "version": "0.3.0",
+    "tarball": "artifacts/package/effectplan-core-0.3.0.tgz"
+  },
+  "unpackedBytes": 51791,
+  "unpackedBytesReportedByNpm": 51791,
+  "tarballBytes": 18679,
+  "wasmBytes": 13247,
+  "fileCount": 18,
+  "limits": {
+    "maxUnpackedBytes": 60000,
+    "maxWasmBytes": 40000
+  },
+  "files": [
+    {
+      "path": "dist/effectplan.wasm",
+      "bytes": 13247
+    },
+    {
+      "path": "dist/encode.d.ts",
+      "bytes": 1729
+    },
+    {
+      "path": "dist/encode.js",
+      "bytes": 5265
+    },
+    {
+      "path": "dist/errors.d.ts",
+      "bytes": 895
+    },
+    {
+      "path": "dist/errors.js",
+      "bytes": 797
+    },
+    {
+      "path": "dist/execution-levels.d.ts",
+      "bytes": 318
+    },
+    {
+      "path": "dist/execution-levels.js",
+      "bytes": 1125
+    },
+    {
+      "path": "dist/index.d.ts",
+      "bytes": 632
+    },
+    {
+      "path": "dist/index.js",
+      "bytes": 90
+    },
+    {
+      "path": "dist/loader.d.ts",
+      "bytes": 2229
+    },
+    {
+      "path": "dist/loader.js",
+      "bytes": 6243
+    },
+    {
+      "path": "dist/planner.d.ts",
+      "bytes": 1295
+    },
+    {
+      "path": "dist/planner.js",
+      "bytes": 4806
+    },
+    {
+      "path": "dist/timing.d.ts",
+      "bytes": 1095
+    },
+    {
+      "path": "dist/timing.js",
+      "bytes": 6098
+    },
+    {
+      "path": "LICENSE",
+      "bytes": 1068
+    },
+    {
+      "path": "package.json",
+      "bytes": 722
+    },
+    {
+      "path": "README.md",
+      "bytes": 4137
+    }
+  ]
+}

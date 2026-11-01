@@ -1,0 +1,1879 @@
+{
+  "measuredAt": "2026-11-01T11:08:26.624Z",
+  "node": "v20.15.0",
+  "platform": "win32-x64",
+  "cpuModel": "Intel(R) Core(TM) i5-10300H CPU @ 2.50GHz",
+  "coldRuns": 20,
+  "warmup": 200,
+  "baseline": {
+    "source": "artifacts\\benchmarks-phase2.json",
+    "measuredAt": "2026-11-01T05:27:43.010Z",
+    "node": "v20.15.0"
+  },
+  "native": {
+    "source": "cargo bench -p effectplan-engine --bench native",
+    "datasets": [
+      {
+        "name": "tiny",
+        "calls": 8,
+        "accesses": 32,
+        "resources": 4,
+        "edges": 36,
+        "waves": 8,
+        "makespan": 66,
+        "peakConcurrency": 1,
+        "criticalEvents": 8,
+        "iterations": 2000,
+        "encodeP50Micros": 1.2,
+        "execP50Micros": 1.9,
+        "execP95Micros": 2,
+        "execP99Micros": 2,
+        "execMinMicros": 1.9,
+        "execV2P50Micros": 2.5,
+        "execV2P95Micros": 2.5,
+        "execV2P99Micros": 2.6,
+        "execV3P50Micros": 2.8,
+        "execV3P95Micros": 2.9,
+        "execV3P99Micros": 3.4,
+        "levelsOnlyP50Micros": 0.5,
+        "scheduleOnlyP50Micros": 0.3,
+        "decodeP50Micros": 0
+      },
+      {
+        "name": "small",
+        "calls": 32,
+        "accesses": 128,
+        "resources": 16,
+        "edges": 144,
+        "waves": 8,
+        "makespan": 108,
+        "peakConcurrency": 4,
+        "criticalEvents": 8,
+        "iterations": 1000,
+        "encodeP50Micros": 4.7,
+        "execP50Micros": 7,
+        "execP95Micros": 7.1,
+        "execP99Micros": 7.2,
+        "execMinMicros": 7,
+        "execV2P50Micros": 9.1,
+        "execV2P95Micros": 9.4,
+        "execV2P99Micros": 11.2,
+        "execV3P50Micros": 10.2,
+        "execV3P95Micros": 10.3,
+        "execV3P99Micros": 13.8,
+        "levelsOnlyP50Micros": 2.1,
+        "scheduleOnlyP50Micros": 1,
+        "decodeP50Micros": 0
+      },
+      {
+        "name": "normal",
+        "calls": 64,
+        "accesses": 256,
+        "resources": 32,
+        "edges": 288,
+        "waves": 8,
+        "makespan": 78,
+        "peakConcurrency": 8,
+        "criticalEvents": 8,
+        "iterations": 500,
+        "encodeP50Micros": 8.9,
+        "execP50Micros": 13.8,
+        "execP95Micros": 13.9,
+        "execP99Micros": 14,
+        "execMinMicros": 13.8,
+        "execV2P50Micros": 17.9,
+        "execV2P95Micros": 18.3,
+        "execV2P99Micros": 37.6,
+        "execV3P50Micros": 20.1,
+        "execV3P95Micros": 20.5,
+        "execV3P99Micros": 25.7,
+        "levelsOnlyP50Micros": 4.1,
+        "scheduleOnlyP50Micros": 2.1,
+        "decodeP50Micros": 0
+      },
+      {
+        "name": "medium",
+        "calls": 128,
+        "accesses": 1024,
+        "resources": 64,
+        "edges": 1259,
+        "waves": 16,
+        "makespan": 149,
+        "peakConcurrency": 8,
+        "criticalEvents": 16,
+        "iterations": 200,
+        "encodeP50Micros": 26.7,
+        "execP50Micros": 82.4,
+        "execP95Micros": 164,
+        "execP99Micros": 184.8,
+        "execMinMicros": 81.7,
+        "execV2P50Micros": 99.5,
+        "execV2P95Micros": 108.5,
+        "execV2P99Micros": 138.1,
+        "execV3P50Micros": 103.4,
+        "execV3P95Micros": 108.2,
+        "execV3P99Micros": 141.5,
+        "levelsOnlyP50Micros": 18,
+        "scheduleOnlyP50Micros": 6.3,
+        "decodeP50Micros": 0
+      },
+      {
+        "name": "wide",
+        "calls": 64,
+        "accesses": 128,
+        "resources": 128,
+        "edges": 0,
+        "waves": 1,
+        "makespan": 17,
+        "peakConcurrency": 64,
+        "criticalEvents": 3,
+        "iterations": 500,
+        "encodeP50Micros": 9,
+        "execP50Micros": 1.1,
+        "execP95Micros": 1.2,
+        "execP99Micros": 1.2,
+        "execMinMicros": 1.1,
+        "execV2P50Micros": 1.2,
+        "execV2P95Micros": 2,
+        "execV2P99Micros": 2.3,
+        "execV3P50Micros": 2.2,
+        "execV3P95Micros": 2.3,
+        "execV3P99Micros": 3.6,
+        "levelsOnlyP50Micros": 0.1,
+        "scheduleOnlyP50Micros": 1,
+        "decodeP50Micros": 0
+      },
+      {
+        "name": "deep",
+        "calls": 64,
+        "accesses": 64,
+        "resources": 1,
+        "edges": 94,
+        "waves": 64,
+        "makespan": 568,
+        "peakConcurrency": 1,
+        "criticalEvents": 64,
+        "iterations": 500,
+        "encodeP50Micros": 4,
+        "execP50Micros": 2.9,
+        "execP95Micros": 5.4,
+        "execP99Micros": 17.2,
+        "execMinMicros": 2.8,
+        "execV2P50Micros": 4.3,
+        "execV2P95Micros": 7.8,
+        "execV2P99Micros": 24.4,
+        "execV3P50Micros": 6.1,
+        "execV3P95Micros": 10.1,
+        "execV3P99Micros": 27.1,
+        "levelsOnlyP50Micros": 1.4,
+        "scheduleOnlyP50Micros": 1.6,
+        "decodeP50Micros": 0
+      },
+      {
+        "name": "diamond",
+        "calls": 64,
+        "accesses": 128,
+        "resources": 16,
+        "edges": 56,
+        "waves": 8,
+        "makespan": 76,
+        "peakConcurrency": 36,
+        "criticalEvents": 8,
+        "iterations": 500,
+        "encodeP50Micros": 6,
+        "execP50Micros": 2.6,
+        "execP95Micros": 2.6,
+        "execP99Micros": 2.7,
+        "execMinMicros": 2.5,
+        "execV2P50Micros": 3.4,
+        "execV2P95Micros": 3.9,
+        "execV2P99Micros": 6.7,
+        "execV3P50Micros": 4.8,
+        "execV3P95Micros": 4.9,
+        "execV3P99Micros": 5.6,
+        "levelsOnlyP50Micros": 0.8,
+        "scheduleOnlyP50Micros": 1.3,
+        "decodeP50Micros": 0
+      },
+      {
+        "name": "barrier",
+        "calls": 64,
+        "accesses": 86,
+        "resources": 8,
+        "edges": 198,
+        "waves": 43,
+        "makespan": 445,
+        "peakConcurrency": 2,
+        "criticalEvents": 43,
+        "iterations": 500,
+        "encodeP50Micros": 4.9,
+        "execP50Micros": 10.2,
+        "execP95Micros": 30.6,
+        "execP99Micros": 41.2,
+        "execMinMicros": 9.8,
+        "execV2P50Micros": 12.7,
+        "execV2P95Micros": 13,
+        "execV2P99Micros": 16,
+        "execV3P50Micros": 14.8,
+        "execV3P95Micros": 29.4,
+        "execV3P99Micros": 51.9,
+        "levelsOnlyP50Micros": 2.8,
+        "scheduleOnlyP50Micros": 1.8,
+        "decodeP50Micros": 0
+      },
+      {
+        "name": "conflict",
+        "calls": 64,
+        "accesses": 256,
+        "resources": 4,
+        "edges": 334,
+        "waves": 64,
+        "makespan": 568,
+        "peakConcurrency": 1,
+        "criticalEvents": 64,
+        "iterations": 500,
+        "encodeP50Micros": 7.5,
+        "execP50Micros": 15.7,
+        "execP95Micros": 15.9,
+        "execP99Micros": 31.2,
+        "execMinMicros": 15.6,
+        "execV2P50Micros": 20.3,
+        "execV2P95Micros": 35.1,
+        "execV2P99Micros": 55.8,
+        "execV3P50Micros": 22.7,
+        "execV3P95Micros": 23.4,
+        "execV3P99Micros": 43.3,
+        "levelsOnlyP50Micros": 4.6,
+        "scheduleOnlyP50Micros": 2.2,
+        "decodeP50Micros": 0
+      },
+      {
+        "name": "maxbound",
+        "calls": 128,
+        "accesses": 1024,
+        "resources": 128,
+        "edges": 1152,
+        "waves": 8,
+        "makespan": 82,
+        "peakConcurrency": 16,
+        "criticalEvents": 8,
+        "iterations": 200,
+        "encodeP50Micros": 27.7,
+        "execP50Micros": 72.5,
+        "execP95Micros": 77.2,
+        "execP99Micros": 97.1,
+        "execMinMicros": 72.2,
+        "execV2P50Micros": 88.1,
+        "execV2P95Micros": 91.5,
+        "execV2P99Micros": 108.1,
+        "execV3P50Micros": 97.2,
+        "execV3P95Micros": 204.1,
+        "execV3P99Micros": 285.7,
+        "levelsOnlyP50Micros": 15.7,
+        "scheduleOnlyP50Micros": 5.7,
+        "decodeP50Micros": 0
+      },
+      {
+        "name": "mixed",
+        "calls": 96,
+        "accesses": 276,
+        "resources": 24,
+        "edges": 333,
+        "waves": 49,
+        "makespan": 550,
+        "peakConcurrency": 4,
+        "criticalEvents": 49,
+        "iterations": 300,
+        "encodeP50Micros": 10.1,
+        "execP50Micros": 19.3,
+        "execP95Micros": 19.9,
+        "execP99Micros": 43.6,
+        "execMinMicros": 19.2,
+        "execV2P50Micros": 23.9,
+        "execV2P95Micros": 24,
+        "execV2P99Micros": 38.8,
+        "execV3P50Micros": 27.1,
+        "execV3P95Micros": 38.8,
+        "execV3P99Micros": 49.9,
+        "levelsOnlyP50Micros": 4.7,
+        "scheduleOnlyP50Micros": 2.9,
+        "decodeP50Micros": 0
+      }
+    ]
+  },
+  "datasets": [
+    {
+      "name": "tiny",
+      "calls": 8,
+      "accesses": 32,
+      "resources": 4,
+      "edges": 36,
+      "waves": 8,
+      "oraclePairs": 28,
+      "closureMatchesOracle": true,
+      "levelsMatchReference": true,
+      "timingMatchesReference": true,
+      "matchesNativeEngine": true,
+      "timing": {
+        "unit": "ticks",
+        "makespan": 66,
+        "totalWork": 66,
+        "peakConcurrency": 1,
+        "averageParallelism": 1,
+        "criticalEvents": 8,
+        "durationSum": 66
+      },
+      "iterations": 2000,
+      "coldInitMicros": {
+        "p50": 503.5000000000025,
+        "p95": 2746.399999999994,
+        "p99": 21400.5,
+        "min": 428.8999999999987,
+        "mean": 1730.9099999999992,
+        "max": 21400.5
+      },
+      "wasmExecMicros": {
+        "p50": 13.10000000000855,
+        "p95": 13.300000000015189,
+        "p99": 18.900000000002137,
+        "min": 12.69999999999527,
+        "mean": 13.950600000000136,
+        "max": 883.0999999999847
+      },
+      "wasmExecV2Micros": {
+        "p50": 14.400000000023283,
+        "p95": 21.500000000003183,
+        "p99": 27.29999999999677,
+        "min": 14.000000000010004,
+        "mean": 15.74420000000038,
+        "max": 894.0999999999804
+      },
+      "wasmExecV3Micros": {
+        "p50": 15.700000000009595,
+        "p95": 27.40000000000009,
+        "p99": 31.599999999997408,
+        "min": 15.099999999989677,
+        "mean": 17.49000000000018,
+        "max": 924.4000000000199
+      },
+      "wasmEncodeMicros": {
+        "p50": 7.400000000018281,
+        "p95": 9.399999999999409,
+        "p99": 35.899999999998045,
+        "min": 7.000000000005002,
+        "mean": 8.709899999999799,
+        "max": 387.69999999999527
+      },
+      "wasmDecodeMicros": {
+        "p50": 2.200000000016189,
+        "p95": 11.40000000003738,
+        "p99": 25.899999999978718,
+        "min": 1.8999999999778083,
+        "mean": 5.523800000000477,
+        "max": 279.8000000000229
+      },
+      "waveGroupingMicros": {
+        "p50": 1.0000000000331966,
+        "p95": 1.8999999999778083,
+        "p99": 2.900000000011005,
+        "min": 0.7999999999697138,
+        "mean": 1.5037499999995703,
+        "max": 199.40000000002556
+      },
+      "timingDecodeMicros": {
+        "p50": 1.1000000000080945,
+        "p95": 2.299999999991087,
+        "p99": 2.900000000011005,
+        "min": 0.8999999999446118,
+        "mean": 1.6117499999999154,
+        "max": 231.20000000000118
+      },
+      "npmApiE2eMicros": {
+        "p50": 25.000000000034106,
+        "p95": 59.69999999996389,
+        "p99": 114.39999999998918,
+        "min": 23.899999999969168,
+        "mean": 32.355050000000574,
+        "max": 1025.700000000029
+      },
+      "npmApiE2eTimingMicros": {
+        "p50": 28.900000000021464,
+        "p95": 53.69999999999209,
+        "p99": 148.19999999997435,
+        "min": 27.09999999996171,
+        "mean": 35.00725000000001,
+        "max": 1042.8999999999746
+      },
+      "tsReferenceMicros": {
+        "p50": 15.399999999999636,
+        "p95": 37.3000000000161,
+        "p99": 114.40000000004602,
+        "min": 6.700000000023465,
+        "mean": 20.708750000000418,
+        "max": 274.0000000000009
+      },
+      "tsReferenceLevelsMicros": {
+        "p50": 29.699999999991178,
+        "p95": 67.29999999998881,
+        "p99": 177.80000000004748,
+        "min": 15.399999999999636,
+        "mean": 34.31949999999984,
+        "max": 602.1000000000072
+      },
+      "tsReferenceCpmMicros": {
+        "p50": 43.200000000013006,
+        "p95": 92.10000000001628,
+        "p99": 307.7999999999861,
+        "min": 21.400000000028285,
+        "mean": 52.79574999999892,
+        "max": 1403.2000000000266
+      },
+      "overhead": {
+        "gatePercent": 20,
+        "gated": false,
+        "execV3VersusV2Percent": 9.027777777668122,
+        "apiTimingVersusPlainPercent": 15.59999999992816,
+        "apiPlainVersusBaselinePercent": 3.7344398341482066,
+        "apiTimingVersusBaselinePercent": 19.917012448200786,
+        "baselineEdgesMatched": true
+      },
+      "memory": {
+        "wasmLinearMemoryBytes": 1114112,
+        "engineArenaBytes": 61920,
+        "rssDeltaBytes": 1880064,
+        "heapUsedDeltaBytes": 2584024,
+        "externalDeltaBytes": -21239780
+      }
+    },
+    {
+      "name": "small",
+      "calls": 32,
+      "accesses": 128,
+      "resources": 16,
+      "edges": 144,
+      "waves": 8,
+      "oraclePairs": 112,
+      "closureMatchesOracle": true,
+      "levelsMatchReference": true,
+      "timingMatchesReference": true,
+      "matchesNativeEngine": true,
+      "timing": {
+        "unit": "ticks",
+        "makespan": 108,
+        "totalWork": 292,
+        "peakConcurrency": 4,
+        "averageParallelism": 2.7037037037037037,
+        "criticalEvents": 8,
+        "durationSum": 292
+      },
+      "iterations": 1000,
+      "coldInitMicros": {
+        "p50": 533.0999999999904,
+        "p95": 6133.800000000008,
+        "p99": 7358.200000000011,
+        "min": 402.19999999999345,
+        "mean": 1166.1049999999989,
+        "max": 7358.200000000011
+      },
+      "wasmExecMicros": {
+        "p50": 36.2999999999829,
+        "p95": 52.4000000000342,
+        "p99": 63.50000000009004,
+        "min": 35.70000000001983,
+        "mean": 38.63170000000144,
+        "max": 737.00000000008
+      },
+      "wasmExecV2Micros": {
+        "p50": 41.600000000016735,
+        "p95": 62.19999999996162,
+        "p99": 84.00000000006003,
+        "min": 38.70000000006257,
+        "mean": 44.78120000000039,
+        "max": 744.4000000000415
+      },
+      "wasmExecV3Micros": {
+        "p50": 45.79999999998563,
+        "p95": 81.90000000001874,
+        "p99": 102.09999999995034,
+        "min": 43.30000000004475,
+        "mean": 53.13239999999988,
+        "max": 937.0000000000118
+      },
+      "wasmEncodeMicros": {
+        "p50": 30.399999999985994,
+        "p95": 63.800000000014734,
+        "p99": 110.99999999999,
+        "min": 28.199999999969805,
+        "mean": 36.428800000000436,
+        "max": 406.59999999991214
+      },
+      "wasmDecodeMicros": {
+        "p50": 3.29999999996744,
+        "p95": 4.30000000005748,
+        "p99": 25.200000000040745,
+        "min": 3.0999999999039574,
+        "mean": 4.258800000000292,
+        "max": 148.09999999999945
+      },
+      "waveGroupingMicros": {
+        "p50": 0.9999999999763531,
+        "p95": 1.7000000000280124,
+        "p99": 2.200000000016189,
+        "min": 0.8999999998877684,
+        "mean": 1.3645999999992,
+        "max": 106.20000000005803
+      },
+      "timingDecodeMicros": {
+        "p50": 3.199999999992542,
+        "p95": 3.9999999999054126,
+        "p99": 6.399999999985084,
+        "min": 2.9999999999290594,
+        "mean": 3.632799999999179,
+        "max": 179.80000000000018
+      },
+      "npmApiE2eMicros": {
+        "p50": 78.39999999998781,
+        "p95": 142.29999999997744,
+        "p99": 235.50000000000182,
+        "min": 76.50000000001,
+        "mean": 88.71580000000013,
+        "max": 1308.5000000000946
+      },
+      "npmApiE2eTimingMicros": {
+        "p50": 88.49999999995362,
+        "p95": 161.4000000000715,
+        "p99": 271.29999999999654,
+        "min": 86.09999999998763,
+        "mean": 101.6871999999986,
+        "max": 1124.7999999999365
+      },
+      "tsReferenceMicros": {
+        "p50": 53.09999999997217,
+        "p95": 124.19999999997344,
+        "p99": 152.49999999991815,
+        "min": 51.000000000044565,
+        "mean": 61.39149999999687,
+        "max": 208.60000000004675
+      },
+      "tsReferenceLevelsMicros": {
+        "p50": 58.20000000005621,
+        "p95": 131.89999999997326,
+        "p99": 146.00000000007185,
+        "min": 56.60000000000309,
+        "mean": 67.2545000000002,
+        "max": 184.09999999994398
+      },
+      "tsReferenceCpmMicros": {
+        "p50": 120.00000000000455,
+        "p95": 299.60000000005493,
+        "p99": 450.0000000000455,
+        "min": 68.4999999999718,
+        "mean": 159.50800000000243,
+        "max": 840.8000000000584
+      },
+      "overhead": {
+        "gatePercent": 20,
+        "gated": false,
+        "execV3VersusV2Percent": 10.096153846075007,
+        "apiTimingVersusPlainPercent": 12.88265306118288,
+        "apiPlainVersusBaselinePercent": 3.293807641708524,
+        "apiTimingVersusBaselinePercent": 16.60079051387544,
+        "baselineEdgesMatched": true
+      },
+      "memory": {
+        "wasmLinearMemoryBytes": 1114112,
+        "engineArenaBytes": 61920,
+        "rssDeltaBytes": 4435968,
+        "heapUsedDeltaBytes": -91248,
+        "externalDeltaBytes": -9216
+      }
+    },
+    {
+      "name": "normal",
+      "calls": 64,
+      "accesses": 256,
+      "resources": 32,
+      "edges": 288,
+      "waves": 8,
+      "oraclePairs": 224,
+      "closureMatchesOracle": true,
+      "levelsMatchReference": true,
+      "timingMatchesReference": true,
+      "matchesNativeEngine": true,
+      "timing": {
+        "unit": "ticks",
+        "makespan": 78,
+        "totalWork": 568,
+        "peakConcurrency": 8,
+        "averageParallelism": 7.282051282051282,
+        "criticalEvents": 8,
+        "durationSum": 568
+      },
+      "iterations": 500,
+      "coldInitMicros": {
+        "p50": 438.40000000000146,
+        "p95": 869.5999999999913,
+        "p99": 1165.300000000002,
+        "min": 387.0999999999185,
+        "mean": 530.1949999999977,
+        "max": 1165.300000000002
+      },
+      "wasmExecMicros": {
+        "p50": 67.09999999998217,
+        "p95": 74.29999999999382,
+        "p99": 112.30000000000473,
+        "min": 66.59999999988031,
+        "mean": 68.84199999999845,
+        "max": 143.4999999999036
+      },
+      "wasmExecV2Micros": {
+        "p50": 77.80000000002474,
+        "p95": 134.59999999986394,
+        "p99": 155.0999999999476,
+        "min": 76.70000000007349,
+        "mean": 85.5523999999982,
+        "max": 241.6000000000622
+      },
+      "wasmExecV3Micros": {
+        "p50": 88.29999999989013,
+        "p95": 110.90000000012878,
+        "p99": 132.5000000001637,
+        "min": 87.49999999986358,
+        "mean": 91.38980000000129,
+        "max": 140.7000000001517
+      },
+      "wasmEncodeMicros": {
+        "p50": 65.29999999997926,
+        "p95": 105.49999999989268,
+        "p99": 186.20000000009895,
+        "min": 63.49999999997635,
+        "mean": 72.0772000000025,
+        "max": 352.00000000008913
+      },
+      "wasmDecodeMicros": {
+        "p50": 5.000000000109139,
+        "p95": 7.000000000061846,
+        "p99": 49.49999999985266,
+        "min": 4.79999999993197,
+        "mean": 6.567399999998543,
+        "max": 95.29999999995198
+      },
+      "waveGroupingMicros": {
+        "p50": 1.199999999926149,
+        "p95": 1.4000000001033186,
+        "p99": 1.8999999999778083,
+        "min": 1.099999999951251,
+        "mean": 1.2346000000025015,
+        "max": 8.699999999862484
+      },
+      "timingDecodeMicros": {
+        "p50": 5.9000000001105946,
+        "p95": 6.200000000035288,
+        "p99": 7.900000000063301,
+        "min": 5.799999999908323,
+        "mean": 6.246799999999439,
+        "max": 122.6000000001477
+      },
+      "npmApiE2eMicros": {
+        "p50": 149.4999999999891,
+        "p95": 210.29999999996107,
+        "p99": 310.0999999999203,
+        "min": 147.3999999998341,
+        "mean": 158.21780000000524,
+        "max": 535.1000000000568
+      },
+      "npmApiE2eTimingMicros": {
+        "p50": 169.4999999999709,
+        "p95": 316.3999999999305,
+        "p99": 399.1000000000895,
+        "min": 165.2999999998883,
+        "mean": 192.50420000000344,
+        "max": 598.7999999999829
+      },
+      "tsReferenceMicros": {
+        "p50": 215.19999999986794,
+        "p95": 354.29999999996653,
+        "p99": 394.19999999995525,
+        "min": 202.59999999984757,
+        "mean": 236.63500000000116,
+        "max": 530.9999999999491
+      },
+      "tsReferenceLevelsMicros": {
+        "p50": 228.59999999991487,
+        "p95": 396.39999999985776,
+        "p99": 455.2000000001044,
+        "min": 212.49999999986358,
+        "mean": 256.83599999999615,
+        "max": 539.299999999912
+      },
+      "tsReferenceCpmMicros": {
+        "p50": 253.60000000000582,
+        "p95": 422.00000000002547,
+        "p99": 461.8000000000393,
+        "min": 233.00000000017462,
+        "mean": 284.8930000000086,
+        "max": 772.3999999998341
+      },
+      "overhead": {
+        "gatePercent": 20,
+        "gated": true,
+        "execV3VersusV2Percent": 13.496143958691587,
+        "apiTimingVersusPlainPercent": 13.377926421393482,
+        "apiPlainVersusBaselinePercent": 2.6080988332679356,
+        "apiTimingVersusBaselinePercent": 16.33493479757324,
+        "baselineEdgesMatched": true
+      },
+      "memory": {
+        "wasmLinearMemoryBytes": 1114112,
+        "engineArenaBytes": 61920,
+        "rssDeltaBytes": -53248,
+        "heapUsedDeltaBytes": 905280,
+        "externalDeltaBytes": 4608
+      }
+    },
+    {
+      "name": "medium",
+      "calls": 128,
+      "accesses": 1024,
+      "resources": 64,
+      "edges": 1259,
+      "waves": 16,
+      "oraclePairs": 960,
+      "closureMatchesOracle": true,
+      "levelsMatchReference": true,
+      "timingMatchesReference": true,
+      "matchesNativeEngine": true,
+      "timing": {
+        "unit": "ticks",
+        "makespan": 149,
+        "totalWork": 1140,
+        "peakConcurrency": 8,
+        "averageParallelism": 7.651006711409396,
+        "criticalEvents": 16,
+        "durationSum": 1140
+      },
+      "iterations": 200,
+      "coldInitMicros": {
+        "p50": 428.00000000011096,
+        "p95": 4596.199999999953,
+        "p99": 5566.59999999988,
+        "min": 369.99999999989086,
+        "mean": 922.4799999999847,
+        "max": 5566.59999999988
+      },
+      "wasmExecMicros": {
+        "p50": 352.3000000000138,
+        "p95": 479.39999999971405,
+        "p99": 550.2999999998792,
+        "min": 347.0999999999549,
+        "mean": 370.92500000001127,
+        "max": 586.0999999999876
+      },
+      "wasmExecV2Micros": {
+        "p50": 394.49999999987995,
+        "p95": 463.0000000001928,
+        "p99": 502.80000000020664,
+        "min": 390.0000000003274,
+        "mean": 404.57499999999726,
+        "max": 570.9999999999127
+      },
+      "wasmExecV3Micros": {
+        "p50": 425.6000000000313,
+        "p95": 472.3999999996522,
+        "p99": 546.6000000001259,
+        "min": 422.9000000000269,
+        "mean": 436.5629999999894,
+        "max": 1151.4999999999418
+      },
+      "wasmEncodeMicros": {
+        "p50": 242.2999999998865,
+        "p95": 348.5000000000582,
+        "p99": 472.700000000259,
+        "min": 238.80000000008295,
+        "mean": 260.27849999999927,
+        "max": 626.8000000000029
+      },
+      "wasmDecodeMicros": {
+        "p50": 22.999999999683496,
+        "p95": 25.499999999738066,
+        "p99": 40.500000000065484,
+        "min": 16.000000000076398,
+        "mean": 23.52999999999838,
+        "max": 58.09999999974025
+      },
+      "waveGroupingMicros": {
+        "p50": 2.100000000154978,
+        "p95": 2.599999999802094,
+        "p99": 3.000000000156433,
+        "min": 1.9999999999527063,
+        "mean": 2.1649999999908687,
+        "max": 3.7999999999556167
+      },
+      "timingDecodeMicros": {
+        "p50": 15.199999999822467,
+        "p95": 26.299999999991996,
+        "p99": 35.90000000031068,
+        "min": 14.599999999973079,
+        "mean": 17.96150000002399,
+        "max": 179.80000000034124
+      },
+      "npmApiE2eMicros": {
+        "p50": 638.9000000003762,
+        "p95": 788.1999999999607,
+        "p99": 891.5999999999258,
+        "min": 632.799999999861,
+        "mean": 662.8830000000037,
+        "max": 968.8999999998487
+      },
+      "npmApiE2eTimingMicros": {
+        "p50": 687.3000000000502,
+        "p95": 819.7000000000116,
+        "p99": 915.7000000000153,
+        "min": 681.1999999999898,
+        "mean": 709.4874999999935,
+        "max": 1234.899999999925
+      },
+      "tsReferenceMicros": {
+        "p50": 1930.3999999997359,
+        "p95": 2578.1999999999243,
+        "p99": 3189.900000000307,
+        "min": 1503.2999999998538,
+        "mean": 1992.0000000000523,
+        "max": 3189.900000000307
+      },
+      "tsReferenceLevelsMicros": {
+        "p50": 2225.7999999997082,
+        "p95": 3292.4000000002707,
+        "p99": 3983.8999999997213,
+        "min": 1742.2999999998865,
+        "mean": 2339.604999999983,
+        "max": 3983.8999999997213
+      },
+      "tsReferenceCpmMicros": {
+        "p50": 3361.7000000003827,
+        "p95": 14385.999999999967,
+        "p99": 34433.100000000195,
+        "min": 1945.0000000001637,
+        "mean": 4896.917499999994,
+        "max": 34433.100000000195
+      },
+      "overhead": {
+        "gatePercent": 20,
+        "gated": true,
+        "execV3VersusV2Percent": 7.883396704730239,
+        "apiTimingVersusPlainPercent": 7.575520425676241,
+        "apiPlainVersusBaselinePercent": -2.144279368918356,
+        "apiTimingVersusBaselinePercent": 5.268800735181922,
+        "baselineEdgesMatched": true
+      },
+      "memory": {
+        "wasmLinearMemoryBytes": 1114112,
+        "engineArenaBytes": 61920,
+        "rssDeltaBytes": 8318976,
+        "heapUsedDeltaBytes": 7737600,
+        "externalDeltaBytes": 20144
+      }
+    },
+    {
+      "name": "wide",
+      "calls": 64,
+      "accesses": 128,
+      "resources": 128,
+      "edges": 0,
+      "waves": 1,
+      "oraclePairs": 0,
+      "closureMatchesOracle": true,
+      "levelsMatchReference": true,
+      "timingMatchesReference": true,
+      "matchesNativeEngine": true,
+      "timing": {
+        "unit": "ticks",
+        "makespan": 17,
+        "totalWork": 568,
+        "peakConcurrency": 64,
+        "averageParallelism": 33.411764705882355,
+        "criticalEvents": 3,
+        "durationSum": 568
+      },
+      "iterations": 500,
+      "coldInitMicros": {
+        "p50": 798.0000000002292,
+        "p95": 1302.5000000002365,
+        "p99": 1929.5999999999367,
+        "min": 632.5999999999112,
+        "mean": 898.6600000000408,
+        "max": 1929.5999999999367
+      },
+      "wasmExecMicros": {
+        "p50": 14.599999999973079,
+        "p95": 22.100000000136788,
+        "p99": 26.499999999941792,
+        "min": 14.200000000073487,
+        "mean": 16.595200000004297,
+        "max": 160.8000000001084
+      },
+      "wasmExecV2Micros": {
+        "p50": 15.300000000024738,
+        "p95": 27.999999999792635,
+        "p99": 42.50000000001819,
+        "min": 14.699999999720603,
+        "mean": 17.79439999999795,
+        "max": 159.90000000010696
+      },
+      "wasmExecV3Micros": {
+        "p50": 20.399999999881402,
+        "p95": 30.29999999989741,
+        "p99": 34.500000000207365,
+        "min": 19.99999999998181,
+        "mean": 22.140400000009322,
+        "max": 101.70000000016444
+      },
+      "wasmEncodeMicros": {
+        "p50": 47.09999999977299,
+        "p95": 97.89999999975407,
+        "p99": 202.29999999992287,
+        "min": 41.99999999991633,
+        "mean": 55.64200000001256,
+        "max": 450.29999999997017
+      },
+      "wasmDecodeMicros": {
+        "p50": 1.4000000001033186,
+        "p95": 2.4999999995998223,
+        "p99": 8.799999999610009,
+        "min": 1.299999999901047,
+        "mean": 1.815199999984543,
+        "max": 56.00000000004002
+      },
+      "waveGroupingMicros": {
+        "p50": 0.8000000002539309,
+        "p95": 1.6000000000531145,
+        "p99": 3.899999999703141,
+        "min": 0.699999999596912,
+        "mean": 1.548399999999674,
+        "max": 243.50000000004002
+      },
+      "timingDecodeMicros": {
+        "p50": 4.400000000259752,
+        "p95": 8.400000000165164,
+        "p99": 19.00000000023283,
+        "min": 4.099999999652937,
+        "mean": 5.1670000000085565,
+        "max": 65.90000000005602
+      },
+      "npmApiE2eMicros": {
+        "p50": 65.20000000000437,
+        "p95": 114.00000000003274,
+        "p99": 235.00000000012733,
+        "min": 57.69999999984066,
+        "mean": 72.8142000000098,
+        "max": 367.40000000008877
+      },
+      "npmApiE2eTimingMicros": {
+        "p50": 78.49999999962165,
+        "p95": 158.10000000010405,
+        "p99": 259.19999999996435,
+        "min": 69.59999999980937,
+        "mean": 93.33000000000177,
+        "max": 947.0000000001164
+      },
+      "tsReferenceMicros": {
+        "p50": 131.3000000000102,
+        "p95": 265.19999999982247,
+        "p99": 470.60000000010405,
+        "min": 107.39999999987049,
+        "mean": 165.60599999997976,
+        "max": 624.3999999996959
+      },
+      "tsReferenceLevelsMicros": {
+        "p50": 131.20000000026266,
+        "p95": 256.8999999998596,
+        "p99": 355.2999999997155,
+        "min": 113.90000000028522,
+        "mean": 152.89800000003652,
+        "max": 450.29999999997017
+      },
+      "tsReferenceCpmMicros": {
+        "p50": 135.90000000021973,
+        "p95": 251.00000000020373,
+        "p99": 319.70000000001164,
+        "min": 124.09999999999854,
+        "mean": 153.52200000000266,
+        "max": 397.5999999997839
+      },
+      "overhead": {
+        "gatePercent": 20,
+        "gated": false,
+        "execV3VersusV2Percent": 33.333333332342605,
+        "apiTimingVersusPlainPercent": 20.398773005546623,
+        "apiPlainVersusBaselinePercent": 7.06075533671795,
+        "apiTimingVersusBaselinePercent": 28.89983579587867,
+        "baselineEdgesMatched": true
+      },
+      "memory": {
+        "wasmLinearMemoryBytes": 1114112,
+        "engineArenaBytes": 61920,
+        "rssDeltaBytes": -12288,
+        "heapUsedDeltaBytes": -3783408,
+        "externalDeltaBytes": 0
+      }
+    },
+    {
+      "name": "deep",
+      "calls": 64,
+      "accesses": 64,
+      "resources": 1,
+      "edges": 94,
+      "waves": 64,
+      "oraclePairs": 1520,
+      "closureMatchesOracle": true,
+      "levelsMatchReference": true,
+      "timingMatchesReference": true,
+      "matchesNativeEngine": true,
+      "timing": {
+        "unit": "ticks",
+        "makespan": 568,
+        "totalWork": 568,
+        "peakConcurrency": 1,
+        "averageParallelism": 1,
+        "criticalEvents": 64,
+        "durationSum": 568
+      },
+      "iterations": 500,
+      "coldInitMicros": {
+        "p50": 609.4000000002779,
+        "p95": 1090.3000000002976,
+        "p99": 1142.1000000000276,
+        "min": 482.89999999997235,
+        "mean": 696.6850000000477,
+        "max": 1142.1000000000276
+      },
+      "wasmExecMicros": {
+        "p50": 19.099999999980355,
+        "p95": 34.99999999985448,
+        "p99": 40.899999999965075,
+        "min": 18.799999999828287,
+        "mean": 22.92979999999625,
+        "max": 110.29999999982465
+      },
+      "wasmExecV2Micros": {
+        "p50": 22.90000000039072,
+        "p95": 35.10000000005675,
+        "p99": 40.30000000011569,
+        "min": 22.7999999997337,
+        "mean": 24.6760000000113,
+        "max": 229.89999999981592
+      },
+      "wasmExecV3Micros": {
+        "p50": 30.99999999994907,
+        "p95": 33.19999999985157,
+        "p99": 39.99999999996362,
+        "min": 30.499999999847205,
+        "mean": 31.447199999993245,
+        "max": 43.89999999966676
+      },
+      "wasmEncodeMicros": {
+        "p50": 18.1999999999789,
+        "p95": 22.50000000003638,
+        "p99": 36.09999999980573,
+        "min": 17.299999999977445,
+        "mean": 20.34099999999671,
+        "max": 388.19999999986976
+      },
+      "wasmDecodeMicros": {
+        "p50": 7.700000000113505,
+        "p95": 11.700000000018917,
+        "p99": 21.199999999680585,
+        "min": 6.499999999959982,
+        "mean": 8.735000000009677,
+        "max": 249.39999999969586
+      },
+      "waveGroupingMicros": {
+        "p50": 5.400000000008731,
+        "p95": 8.800000000064756,
+        "p99": 20.10000000018408,
+        "min": 4.699999999957072,
+        "mean": 6.549399999994421,
+        "max": 233.9999999999236
+      },
+      "timingDecodeMicros": {
+        "p50": 5.099999999856664,
+        "p95": 8.200000000215368,
+        "p99": 22.90000000039072,
+        "min": 4.699999999957072,
+        "mean": 6.143799999998009,
+        "max": 250.79999999979918
+      },
+      "npmApiE2eMicros": {
+        "p50": 48.99999999997817,
+        "p95": 61.40000000004875,
+        "p99": 103.50000000016735,
+        "min": 47.50000000012733,
+        "mean": 52.56240000000162,
+        "max": 313.5000000002037
+      },
+      "npmApiE2eTimingMicros": {
+        "p50": 63.100000000304135,
+        "p95": 73.39999999976499,
+        "p99": 88.6000000000422,
+        "min": 61.49999999979627,
+        "mean": 66.02499999999782,
+        "max": 433.7999999997919
+      },
+      "tsReferenceMicros": {
+        "p50": 89.80000000019572,
+        "p95": 227.8000000001157,
+        "p99": 342.9999999998472,
+        "min": 74.39999999996871,
+        "mean": 112.90899999996327,
+        "max": 477.3000000000138
+      },
+      "tsReferenceLevelsMicros": {
+        "p50": 112.49999999972715,
+        "p95": 204.1999999996733,
+        "p99": 396.7000000002372,
+        "min": 100.50000000001091,
+        "mean": 137.00799999999617,
+        "max": 832.3999999997795
+      },
+      "tsReferenceCpmMicros": {
+        "p50": 170.99999999982174,
+        "p95": 849.0000000001601,
+        "p99": 1266.9999999998254,
+        "min": 158.10000000010405,
+        "mean": 391.9180000000189,
+        "max": 1302.0999999998821
+      },
+      "overhead": {
+        "gatePercent": 20,
+        "gated": false,
+        "execV3VersusV2Percent": 35.371179036769206,
+        "apiTimingVersusPlainPercent": 28.77551020475968,
+        "apiPlainVersusBaselinePercent": 0,
+        "apiTimingVersusBaselinePercent": 28.77551020475968,
+        "baselineEdgesMatched": true
+      },
+      "memory": {
+        "wasmLinearMemoryBytes": 1114112,
+        "engineArenaBytes": 61920,
+        "rssDeltaBytes": 16756736,
+        "heapUsedDeltaBytes": -2542056,
+        "externalDeltaBytes": -156416
+      }
+    },
+    {
+      "name": "diamond",
+      "calls": 64,
+      "accesses": 128,
+      "resources": 16,
+      "edges": 56,
+      "waves": 8,
+      "oraclePairs": 112,
+      "closureMatchesOracle": true,
+      "levelsMatchReference": true,
+      "timingMatchesReference": true,
+      "matchesNativeEngine": true,
+      "timing": {
+        "unit": "ticks",
+        "makespan": 76,
+        "totalWork": 568,
+        "peakConcurrency": 36,
+        "averageParallelism": 7.473684210526316,
+        "criticalEvents": 8,
+        "durationSum": 568
+      },
+      "iterations": 500,
+      "coldInitMicros": {
+        "p50": 504.89999999990687,
+        "p95": 4697.999999999865,
+        "p99": 5565.499999999702,
+        "min": 393.90000000003056,
+        "mean": 1012.2200000000021,
+        "max": 5565.499999999702
+      },
+      "wasmExecMicros": {
+        "p50": 19.29999999993015,
+        "p95": 19.499999999879947,
+        "p99": 34.0000000001055,
+        "min": 18.999999999778083,
+        "mean": 19.693599999998696,
+        "max": 74.49999999971624
+      },
+      "wasmExecV2Micros": {
+        "p50": 21.69999999978245,
+        "p95": 44.40000000022337,
+        "p99": 61.99999999989814,
+        "min": 21.299999999882857,
+        "mean": 24.911199999996825,
+        "max": 83.89999999963038
+      },
+      "wasmExecV3Micros": {
+        "p50": 28.800000000046566,
+        "p95": 48.60000000007858,
+        "p99": 64.40000000020518,
+        "min": 27.90000000004511,
+        "mean": 31.002799999999297,
+        "max": 73.10000000006767
+      },
+      "wasmEncodeMicros": {
+        "p50": 38.60000000031505,
+        "p95": 60.899999999946886,
+        "p99": 106.19999999971697,
+        "min": 37.000000000261934,
+        "mean": 43.56320000000687,
+        "max": 380.7999999999083
+      },
+      "wasmDecodeMicros": {
+        "p50": 2.8999999999541615,
+        "p95": 6.80000000011205,
+        "p99": 25.900000000092405,
+        "min": 2.399999999852298,
+        "mean": 4.476000000005115,
+        "max": 136.50000000006912
+      },
+      "waveGroupingMicros": {
+        "p50": 1.2000000001535227,
+        "p95": 2.100000000154978,
+        "p99": 16.099999999823922,
+        "min": 1.099999999951251,
+        "mean": 1.6627999999982421,
+        "max": 55.10000000003856
+      },
+      "timingDecodeMicros": {
+        "p50": 4.699999999957072,
+        "p95": 5.099999999856664,
+        "p99": 5.999999999858119,
+        "min": 4.499999999552529,
+        "mean": 4.877800000013849,
+        "max": 23.700000000189902
+      },
+      "npmApiE2eMicros": {
+        "p50": 64.10000000005311,
+        "p95": 131.19999999980791,
+        "p99": 277.39999999994325,
+        "min": 62.10000000010041,
+        "mean": 75.21539999999094,
+        "max": 478.099999999813
+      },
+      "npmApiE2eTimingMicros": {
+        "p50": 76.59999999987122,
+        "p95": 100.30000000006112,
+        "p99": 170.39999999997235,
+        "min": 74.90000000007058,
+        "mean": 81.5032000000019,
+        "max": 426.89999999993233
+      },
+      "tsReferenceMicros": {
+        "p50": 107.70000000002256,
+        "p95": 154.19999999994616,
+        "p99": 261.000000000422,
+        "min": 103.6999999996624,
+        "mean": 116.9760000000224,
+        "max": 477.0000000003165
+      },
+      "tsReferenceLevelsMicros": {
+        "p50": 113.29999999998108,
+        "p95": 145.1999999999316,
+        "p99": 254.90000000036162,
+        "min": 110.79999999992651,
+        "mean": 119.3970000000445,
+        "max": 273.9000000001397
+      },
+      "tsReferenceCpmMicros": {
+        "p50": 129.70000000041182,
+        "p95": 180.10000000003856,
+        "p99": 340.7000000001972,
+        "min": 125.1999999999498,
+        "mean": 141.44899999999325,
+        "max": 361.3000000000284
+      },
+      "overhead": {
+        "gatePercent": 20,
+        "gated": false,
+        "execV3VersusV2Percent": 32.71889401076174,
+        "apiTimingVersusPlainPercent": 19.50078003090132,
+        "apiPlainVersusBaselinePercent": -2.4353120244300253,
+        "apiTimingVersusBaselinePercent": 16.5905631655211,
+        "baselineEdgesMatched": true
+      },
+      "memory": {
+        "wasmLinearMemoryBytes": 1114112,
+        "engineArenaBytes": 61920,
+        "rssDeltaBytes": -16384,
+        "heapUsedDeltaBytes": -10705352,
+        "externalDeltaBytes": -130816
+      }
+    },
+    {
+      "name": "barrier",
+      "calls": 64,
+      "accesses": 86,
+      "resources": 8,
+      "edges": 198,
+      "waves": 43,
+      "oraclePairs": 1323,
+      "closureMatchesOracle": true,
+      "levelsMatchReference": true,
+      "timingMatchesReference": true,
+      "matchesNativeEngine": true,
+      "timing": {
+        "unit": "ticks",
+        "makespan": 445,
+        "totalWork": 568,
+        "peakConcurrency": 2,
+        "averageParallelism": 1.2764044943820225,
+        "criticalEvents": 43,
+        "durationSum": 568
+      },
+      "iterations": 500,
+      "coldInitMicros": {
+        "p50": 425.0000000001819,
+        "p95": 588.3000000003449,
+        "p99": 1386.4000000003216,
+        "min": 391.2000000000262,
+        "mean": 498.57500000005075,
+        "max": 1386.4000000003216
+      },
+      "wasmExecMicros": {
+        "p50": 47.700000000077125,
+        "p95": 74.69999999966603,
+        "p99": 102.10000000006403,
+        "min": 47.30000000017753,
+        "mean": 50.72760000000835,
+        "max": 178.10000000008586
+      },
+      "wasmExecV2Micros": {
+        "p50": 54.70000000013897,
+        "p95": 58.89999999999418,
+        "p99": 90.9999999998945,
+        "min": 54.29999999978463,
+        "mean": 56.02839999999469,
+        "max": 124.8000000000502
+      },
+      "wasmExecV3Micros": {
+        "p50": 63.90000000010332,
+        "p95": 66.80000000005748,
+        "p99": 87.70000000004075,
+        "min": 63.49999999974898,
+        "mean": 64.67279999999391,
+        "max": 121.90000000009604
+      },
+      "wasmEncodeMicros": {
+        "p50": 29.299999999693682,
+        "p95": 37.19999999975698,
+        "p99": 58.89999999999418,
+        "min": 27.90000000004511,
+        "mean": 39.19239999999991,
+        "max": 3118.999999999687
+      },
+      "wasmDecodeMicros": {
+        "p50": 6.300000000010186,
+        "p95": 9.100000000216824,
+        "p99": 45.10000000027503,
+        "min": 5.999999999858119,
+        "mean": 7.689799999995557,
+        "max": 144.20000000018263
+      },
+      "waveGroupingMicros": {
+        "p50": 3.3000000003085006,
+        "p95": 3.800000000410364,
+        "p99": 4.100000000107684,
+        "min": 3.0999999999039574,
+        "mean": 3.4007999999903404,
+        "max": 8.799999999610009
+      },
+      "timingDecodeMicros": {
+        "p50": 5.400000000008731,
+        "p95": 6.5999999997075065,
+        "p99": 23.000000000138243,
+        "min": 5.199999999604188,
+        "mean": 7.054399999968155,
+        "max": 611.2999999995736
+      },
+      "npmApiE2eMicros": {
+        "p50": 92.09999999984575,
+        "p95": 115.29999999993379,
+        "p99": 188.79999999990105,
+        "min": 90.5999999999949,
+        "mean": 96.5334000000093,
+        "max": 310.5999999997948
+      },
+      "npmApiE2eTimingMicros": {
+        "p50": 106.20000000017171,
+        "p95": 130.29999999980646,
+        "p99": 206.6000000004351,
+        "min": 103.79999999986467,
+        "mean": 111.02800000001298,
+        "max": 366.5000000000873
+      },
+      "tsReferenceMicros": {
+        "p50": 81.79999999993015,
+        "p95": 114.99999999978172,
+        "p99": 367.50000000029104,
+        "min": 77.80000000002474,
+        "mean": 91.26900000000205,
+        "max": 436.0999999998967
+      },
+      "tsReferenceLevelsMicros": {
+        "p50": 103.2999999997628,
+        "p95": 165.7999999997628,
+        "p99": 539.3000000003667,
+        "min": 99.09999999945285,
+        "mean": 122.1520000000055,
+        "max": 539.7000000002663
+      },
+      "tsReferenceCpmMicros": {
+        "p50": 155.29999999944266,
+        "p95": 351.2000000000626,
+        "p99": 441.899999999805,
+        "min": 148.29999999983556,
+        "mean": 183.65900000001602,
+        "max": 516.299999999319
+      },
+      "overhead": {
+        "gatePercent": 20,
+        "gated": false,
+        "execV3VersusV2Percent": 16.819012796967048,
+        "apiTimingVersusPlainPercent": 15.309446254451231,
+        "apiPlainVersusBaselinePercent": -5.051546391669448,
+        "apiTimingVersusBaselinePercent": 9.484536082930472,
+        "baselineEdgesMatched": true
+      },
+      "memory": {
+        "wasmLinearMemoryBytes": 1114112,
+        "engineArenaBytes": 61920,
+        "rssDeltaBytes": -126976,
+        "heapUsedDeltaBytes": -1443464,
+        "externalDeltaBytes": -411840
+      }
+    },
+    {
+      "name": "conflict",
+      "calls": 64,
+      "accesses": 256,
+      "resources": 4,
+      "edges": 334,
+      "waves": 64,
+      "oraclePairs": 2016,
+      "closureMatchesOracle": true,
+      "levelsMatchReference": true,
+      "timingMatchesReference": true,
+      "matchesNativeEngine": true,
+      "timing": {
+        "unit": "ticks",
+        "makespan": 568,
+        "totalWork": 568,
+        "peakConcurrency": 1,
+        "averageParallelism": 1,
+        "criticalEvents": 64,
+        "durationSum": 568
+      },
+      "iterations": 500,
+      "coldInitMicros": {
+        "p50": 447.6999999997133,
+        "p95": 824.2000000000189,
+        "p99": 4183.700000000499,
+        "min": 391.8999999996231,
+        "mean": 708.3950000000186,
+        "max": 4183.700000000499
+      },
+      "wasmExecMicros": {
+        "p50": 72.29999999981374,
+        "p95": 82.50000000043656,
+        "p99": 129.8000000006141,
+        "min": 71.89999999991414,
+        "mean": 74.661199999995,
+        "max": 194.39999999940483
+      },
+      "wasmExecV2Micros": {
+        "p50": 83.99999999983265,
+        "p95": 133.29999999950815,
+        "p99": 178.40000000069267,
+        "min": 83.0999999998312,
+        "mean": 89.86439999998947,
+        "max": 230.99999999976717
+      },
+      "wasmExecV3Micros": {
+        "p50": 96.80000000025757,
+        "p95": 100.59999999975844,
+        "p99": 156.50000000005093,
+        "min": 96.39999999944848,
+        "mean": 98.34939999999187,
+        "max": 200.60000000012224
+      },
+      "wasmEncodeMicros": {
+        "p50": 62.60000000020227,
+        "p95": 110.70000000017899,
+        "p99": 175.19999999967695,
+        "min": 60.499999999592546,
+        "mean": 70.90580000000773,
+        "max": 782.7000000006592
+      },
+      "wasmDecodeMicros": {
+        "p50": 9.49999999920692,
+        "p95": 14.299999999821011,
+        "p99": 64.30000000000291,
+        "min": 8.799999999610009,
+        "mean": 11.50859999999011,
+        "max": 116.8999999999869
+      },
+      "waveGroupingMicros": {
+        "p50": 5.000000000109139,
+        "p95": 5.799999999908323,
+        "p99": 6.300000000010186,
+        "min": 4.599999999300053,
+        "mean": 5.12219999998706,
+        "max": 7.2000000000116415
+      },
+      "timingDecodeMicros": {
+        "p50": 6.100000000515138,
+        "p95": 6.600000000617001,
+        "p99": 7.499999999708962,
+        "min": 5.8999999992011,
+        "mean": 6.557599999992817,
+        "max": 168.49999999976717
+      },
+      "npmApiE2eMicros": {
+        "p50": 158.89999999944848,
+        "p95": 211.50000000034197,
+        "p99": 344.69999999964784,
+        "min": 156.39999999984866,
+        "mean": 168.84099999995664,
+        "max": 583.5999999999331
+      },
+      "npmApiE2eTimingMicros": {
+        "p50": 177.8999999996813,
+        "p95": 249.20000000020082,
+        "p99": 370.6999999994878,
+        "min": 175.0000000001819,
+        "mean": 188.80479999998155,
+        "max": 443.6999999998079
+      },
+      "tsReferenceMicros": {
+        "p50": 120.2000000002954,
+        "p95": 221.89999999955035,
+        "p99": 446.3999999998123,
+        "min": 113.80000000008295,
+        "mean": 140.56399999997666,
+        "max": 509.5000000001164
+      },
+      "tsReferenceLevelsMicros": {
+        "p50": 176.30000000008295,
+        "p95": 695.7000000002154,
+        "p99": 1133.9000000007218,
+        "min": 143.69999999962602,
+        "mean": 290.43100000003506,
+        "max": 1971.5000000005602
+      },
+      "tsReferenceCpmMicros": {
+        "p50": 470.10000000045693,
+        "p95": 1022.899999999936,
+        "p99": 1236.4999999999782,
+        "min": 234.5000000004802,
+        "mean": 473.94700000006196,
+        "max": 1446.100000000115
+      },
+      "overhead": {
+        "gatePercent": 20,
+        "gated": false,
+        "execV3VersusV2Percent": 15.238095238631445,
+        "apiTimingVersusPlainPercent": 11.95720578999293,
+        "apiPlainVersusBaselinePercent": -0.5009392615578534,
+        "apiTimingVersusBaselinePercent": 11.396368190047745,
+        "baselineEdgesMatched": true
+      },
+      "memory": {
+        "wasmLinearMemoryBytes": 1114112,
+        "engineArenaBytes": 61920,
+        "rssDeltaBytes": 57344,
+        "heapUsedDeltaBytes": 14696368,
+        "externalDeltaBytes": -21376
+      }
+    },
+    {
+      "name": "maxbound",
+      "calls": 128,
+      "accesses": 1024,
+      "resources": 128,
+      "edges": 1152,
+      "waves": 8,
+      "oraclePairs": 448,
+      "closureMatchesOracle": true,
+      "levelsMatchReference": true,
+      "timingMatchesReference": true,
+      "matchesNativeEngine": true,
+      "timing": {
+        "unit": "ticks",
+        "makespan": 82,
+        "totalWork": 1140,
+        "peakConcurrency": 16,
+        "averageParallelism": 13.902439024390244,
+        "criticalEvents": 8,
+        "durationSum": 1140
+      },
+      "iterations": 200,
+      "coldInitMicros": {
+        "p50": 443.19999999970605,
+        "p95": 1054.09999999938,
+        "p99": 1107.2999999996682,
+        "min": 405.5000000007567,
+        "mean": 555.4549999998926,
+        "max": 1107.2999999996682
+      },
+      "wasmExecMicros": {
+        "p50": 293.90000000057626,
+        "p95": 421.7999999991662,
+        "p99": 505.9000000001106,
+        "min": 292.90000000037253,
+        "mean": 315.63249999998334,
+        "max": 629.0999999991982
+      },
+      "wasmExecV2Micros": {
+        "p50": 345.9999999995489,
+        "p95": 525.9999999998399,
+        "p99": 677.7000000001863,
+        "min": 329.8000000004322,
+        "mean": 371.4199999999935,
+        "max": 697.0999999994092
+      },
+      "wasmExecV3Micros": {
+        "p50": 376.30000000081054,
+        "p95": 426.1000000005879,
+        "p99": 664.0999999999622,
+        "min": 375.60000000030414,
+        "mean": 388.03249999999485,
+        "max": 713.9999999999418
+      },
+      "wasmEncodeMicros": {
+        "p50": 253.39999999960128,
+        "p95": 340.60000000044965,
+        "p99": 456.5999999995256,
+        "min": 250.6999999995969,
+        "mean": 270.9424999999874,
+        "max": 789.400000000569
+      },
+      "wasmDecodeMicros": {
+        "p50": 20.40000000033615,
+        "p95": 23.599999999532884,
+        "p99": 29.4000000003507,
+        "min": 13.89999999992142,
+        "mean": 20.580500000028223,
+        "max": 35.10000000005675
+      },
+      "waveGroupingMicros": {
+        "p50": 1.5999999995983671,
+        "p95": 1.7000000007101335,
+        "p99": 2.199999999902502,
+        "min": 1.4999999993960955,
+        "mean": 1.6169999999920037,
+        "max": 3.200000000106229
+      },
+      "timingDecodeMicros": {
+        "p50": 14.299999999821011,
+        "p95": 15.399999999317515,
+        "p99": 19.00000000023283,
+        "min": 14.099999999416468,
+        "mean": 14.942000000010012,
+        "max": 102.60000000016589
+      },
+      "npmApiE2eMicros": {
+        "p50": 631.9999999996071,
+        "p95": 828.9999999997235,
+        "p99": 1007.2000000000116,
+        "min": 618.5999999997875,
+        "mean": 662.3800000000211,
+        "max": 1191.500000000815
+      },
+      "npmApiE2eTimingMicros": {
+        "p50": 682.7000000002954,
+        "p95": 851.8999999996595,
+        "p99": 1058.100000000195,
+        "min": 669.2000000002736,
+        "mean": 706.1815000000107,
+        "max": 1153.1999999997424
+      },
+      "tsReferenceMicros": {
+        "p50": 1592.200000000048,
+        "p95": 1939.300000000003,
+        "p99": 2179.9999999993815,
+        "min": 1529.7999999993408,
+        "mean": 1691.1874999999327,
+        "max": 2179.9999999993815
+      },
+      "tsReferenceLevelsMicros": {
+        "p50": 1713.49999999984,
+        "p95": 2304.0000000000873,
+        "p99": 3392.899999999827,
+        "min": 1563.9000000001033,
+        "mean": 1800.944999999956,
+        "max": 3392.899999999827
+      },
+      "tsReferenceCpmMicros": {
+        "p50": 1819.3999999994048,
+        "p95": 3051.100000000588,
+        "p99": 4947.300000000723,
+        "min": 1609.6999999999753,
+        "mean": 1936.9875000000095,
+        "max": 4947.300000000723
+      },
+      "overhead": {
+        "gatePercent": 20,
+        "gated": false,
+        "execV3VersusV2Percent": 8.757225433902072,
+        "apiTimingVersusPlainPercent": 8.022151898848072,
+        "apiPlainVersusBaselinePercent": 0.7492427864660423,
+        "apiTimingVersusBaselinePercent": 8.831500079735587,
+        "baselineEdgesMatched": true
+      },
+      "memory": {
+        "wasmLinearMemoryBytes": 1114112,
+        "engineArenaBytes": 61920,
+        "rssDeltaBytes": 81920,
+        "heapUsedDeltaBytes": 2554424,
+        "externalDeltaBytes": -1179648
+      }
+    },
+    {
+      "name": "mixed",
+      "calls": 96,
+      "accesses": 276,
+      "resources": 24,
+      "edges": 333,
+      "waves": 49,
+      "oraclePairs": 2577,
+      "closureMatchesOracle": true,
+      "levelsMatchReference": true,
+      "timingMatchesReference": true,
+      "matchesNativeEngine": true,
+      "timing": {
+        "unit": "ticks",
+        "makespan": 550,
+        "totalWork": 862,
+        "peakConcurrency": 4,
+        "averageParallelism": 1.5672727272727274,
+        "criticalEvents": 49,
+        "durationSum": 862
+      },
+      "iterations": 300,
+      "coldInitMicros": {
+        "p50": 421.50000000037835,
+        "p95": 787.5999999996566,
+        "p99": 836.0999999995329,
+        "min": 374.50000000080763,
+        "mean": 470.85500000007414,
+        "max": 836.0999999995329
+      },
+      "wasmExecMicros": {
+        "p50": 92.20000000004802,
+        "p95": 128.3000000003085,
+        "p99": 189.09999999959837,
+        "min": 91.69999999994616,
+        "mean": 97.8916666666646,
+        "max": 252.99999999970169
+      },
+      "wasmExecV2Micros": {
+        "p50": 103.90000000006694,
+        "p95": 108.8000000008833,
+        "p99": 160.40000000066357,
+        "min": 103.50000000016735,
+        "mean": 105.79233333335651,
+        "max": 177.599999999984
+      },
+      "wasmExecV3Micros": {
+        "p50": 118.30000000009022,
+        "p95": 126.90000000020518,
+        "p99": 216.1999999998443,
+        "min": 117.79999999998836,
+        "mean": 121.9249999999829,
+        "max": 284.80000000035943
+      },
+      "wasmEncodeMicros": {
+        "p50": 72.7999999999156,
+        "p95": 116.50000000008731,
+        "p99": 177.29999999937718,
+        "min": 70.79999999950815,
+        "mean": 80.83766666663905,
+        "max": 564.1999999998006
+      },
+      "wasmDecodeMicros": {
+        "p50": 8.499999999912689,
+        "p95": 11.000000000422006,
+        "p99": 36.90000000005966,
+        "min": 7.999999999810825,
+        "mean": 9.530666666666244,
+        "max": 79.70000000022992
+      },
+      "waveGroupingMicros": {
+        "p50": 4.100000000107684,
+        "p95": 4.799999999704596,
+        "p99": 6.199999999807915,
+        "min": 3.899999999703141,
+        "mean": 4.3406666666517895,
+        "max": 26.39999999973952
+      },
+      "timingDecodeMicros": {
+        "p50": 8.499999999912689,
+        "p95": 9.000000000014552,
+        "p99": 13.6000000002241,
+        "min": 8.299999999508145,
+        "mean": 8.707000000007005,
+        "max": 27.699999999640568
+      },
+      "npmApiE2eMicros": {
+        "p50": 187.69999999949505,
+        "p95": 265.400000000227,
+        "p99": 403.9999999995416,
+        "min": 184.50000000029831,
+        "mean": 201.2979999999819,
+        "max": 444.8000000002139
+      },
+      "npmApiE2eTimingMicros": {
+        "p50": 213.79999999953725,
+        "p95": 336.2999999999374,
+        "p99": 503.9999999999054,
+        "min": 208.99999999983265,
+        "mean": 235.96766666670194,
+        "max": 1201.0000000000218
+      },
+      "tsReferenceMicros": {
+        "p50": 299.8999999999796,
+        "p95": 542.3000000000684,
+        "p99": 728.0000000000655,
+        "min": 278.0000000002474,
+        "mean": 339.80333333333874,
+        "max": 754.8999999999069
+      },
+      "tsReferenceLevelsMicros": {
+        "p50": 341.1999999998443,
+        "p95": 560.9999999996944,
+        "p99": 710.9000000000378,
+        "min": 324.49999999971624,
+        "mean": 369.88666666666177,
+        "max": 748.3000000001994
+      },
+      "tsReferenceCpmMicros": {
+        "p50": 471.09999999975116,
+        "p95": 976.8999999996595,
+        "p99": 1216.500000000451,
+        "min": 448.00000000032014,
+        "mean": 550.5516666666759,
+        "max": 1396.2000000001353
+      },
+      "overhead": {
+        "gatePercent": 20,
+        "gated": false,
+        "execV3VersusV2Percent": 13.859480269503365,
+        "apiTimingVersusPlainPercent": 13.905167821050824,
+        "apiPlainVersusBaselinePercent": -0.5826271188594134,
+        "apiTimingVersusBaselinePercent": 13.241525423543067,
+        "baselineEdgesMatched": true
+      },
+      "memory": {
+        "wasmLinearMemoryBytes": 1114112,
+        "engineArenaBytes": 61920,
+        "rssDeltaBytes": -200704,
+        "heapUsedDeltaBytes": -1851288,
+        "externalDeltaBytes": -458208
+      }
+    }
+  ]
+}

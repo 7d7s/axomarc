@@ -1,0 +1,49 @@
+{
+  "name": "effectplan-workspace",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "EffectPlan feasibility prototype: Rust/WASM planner core plus the @effectplan/core npm wrapper",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "build:js": "tsc -p tsconfig.build.json",
+    "build": "npm run build:wasm && npm run build:js && node scripts/build-package.mjs",
+    "verify:wasm": "node scripts/verify-wasm.mjs",
+    "verify:size": "node scripts/verify-size.mjs",
+    "verify:package": "node scripts/build-package.mjs && node scripts/verify-size.mjs && node scripts/verify-package.mjs",
+    "test": "tsc -p tsconfig.test.json && node --test .tsbuild/packages/core/test",
+    "test:unit": "tsc -p tsconfig.test.json && node --test .tsbuild/packages/core/test/api.test.js .tsbuild/packages/core/test/planner.test.js",
+    "test:property": "tsc -p tsconfig.test.json && node --test .tsbuild/packages/core/test/property.test.js",
+    "test:wasm": "tsc -p tsconfig.test.json && node --test .tsbuild/packages/core/test/wasm.test.js",
+    "test:levels": "tsc -p tsconfig.test.json && node --test .tsbuild/packages/core/test/execution-levels.test.js",
+    "test:timing": "tsc -p tsconfig.test.json && node scripts/run-tests.mjs --min 19 .tsbuild/packages/core/test/timing.test.js",
+    "test:timing-properties": "tsc -p tsconfig.test.json && node scripts/run-tests.mjs --min 7 --pattern \"critical path properties\" .tsbuild/packages/core/test/property.test.js",
+    "test:timing-oracle": "tsc -p tsconfig.test.json && node scripts/run-tests.mjs --min 4 --pattern \"reference parity\" .tsbuild/packages/core/test/parity.test.js",
+    "test:timing-abi": "tsc -p tsconfig.test.json && node scripts/run-tests.mjs --min 8 --pattern \"scheduling ABI\" .tsbuild/packages/core/test/wasm.test.js",
+    "test:timing-overflow": "tsc -p tsconfig.test.json && node scripts/run-tests.mjs --min 4 --pattern \"overflow|will not fit|cannot represent|zero duration\" .tsbuild/packages/core/test/timing.test.js .tsbuild/packages/core/test/wasm.test.js",
+    "test:timing-memory": "tsc -p tsconfig.test.json && node scripts/run-tests.mjs --min 7 --pattern \"arena|memory\" .tsbuild/packages/core/test/api.test.js .tsbuild/packages/core/test/timing.test.js .tsbuild/packages/core/test/wasm.test.js",
+    "test:api-compatibility": "tsc -p tsconfig.test.json && node --test .tsbuild/packages/core/test/api.test.js .tsbuild/packages/core/test/planner.test.js .tsbuild/packages/core/test/execution-levels.test.js",
+    "test:browser": "node scripts/browser-test.mjs",
+    "test:rust": "cargo test -p effectplan-engine",
+    "benchmark": "npm run build && npm run benchmark:native && npm run benchmark:ts",
+    "benchmark:native": "cargo bench -p effectplan-engine --bench native",
+    "benchmark:ts": "tsc -p tsconfig.test.json && node .tsbuild/benchmarks/initial-benchmark.js",
+    "measure:profiles": "node scripts/measure-profiles.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "ci:sync": "node scripts/sync-ci.mjs",
+    "ci:check": "node scripts/sync-ci.mjs --check"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "binaryen": "^132.0.0",
+    "fast-check": "^3.19.0",
+    "typescript": "^5.5.0"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "@effectplan/core",
+  "version": "0.3.0",
+  "description": "Deterministic resource-aware dependency planning for AI tool operations. Rust core, compiled to WebAssembly, zero runtime dependencies.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "wasm",
+    "rust",
+    "scheduler",
+    "dependency-graph",
+    "ai-tools",
+    "deterministic",
+    "resource-conflicts"
+  ]
+}

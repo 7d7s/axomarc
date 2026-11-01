@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": ".tsbuild",
+    "rootDir": ".",
+    "declaration": false,
+    "removeComments": false,
+    "sourceMap": false
+  },
+  "include": ["packages/core/src", "packages/core/test", "benchmarks"]
+}
