@@ -25,8 +25,8 @@ use crate::{rd_u32, wr_u32, EDGE_BYTES, MAX_CALLS, MAX_EDGES, MAX_EVENTS, RES_SL
 /// Revision of the checkpoint record. `0` means "no checkpoint": the engine
 /// plans the whole batch from an empty frontier and writes a fresh record.
 pub const CHECKPOINT_REVISION: u32 = 1;
-/// Eight `u32` words: revision, calls processed, events, edges, digest, and
-/// three reserved words that must be zero on both read and write.
+/// Eight `u32` words: revision, calls processed, events, edges, digest, flags,
+/// and two reserved words that must be zero on both read and write.
 pub const CHECKPOINT_RECORD_BYTES: usize = 32;
 
 pub const CP_REVISION: usize = 0;
@@ -34,7 +34,13 @@ pub const CP_CALLS: usize = 4;
 pub const CP_EVENTS: usize = 8;
 pub const CP_EDGES: usize = 12;
 pub const CP_DIGEST: usize = 16;
-pub const CP_RESERVED: usize = 20;
+pub const CP_FLAGS: usize = 20;
+pub const CP_RESERVED: usize = 24;
+
+/// The session wants the Phase 3 analysis too, so durations must be valid.
+pub const FLAG_WITHOUT_TIMING: u32 = 1;
+/// Everything the flags word may currently hold.
+pub const FLAGS_MASK: u32 = FLAG_WITHOUT_TIMING;
 
 const FNV_OFFSET: u32 = 0x811c_9dc5;
 const FNV_PRIME: u32 = 0x0100_0193;
@@ -76,6 +82,8 @@ pub struct Resume {
     pub edges: usize,
     /// The digest the engine committed for that state.
     pub digest: u32,
+    /// The flags the host asked this run to carry.
+    pub flags: u32,
 }
 
 /// One word of the record, or `None` when the region is too short.
@@ -87,27 +95,52 @@ fn word(record: &[u8], at: usize) -> Option<u32> {
     Some(rd_u32(record, at))
 }
 
+/// What the host pushed into the record: whether to resume, and what this run
+/// should skip. The two are independent — a whole-batch run can still decline
+/// the scheduling pass.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Pushed {
+    pub resume: Option<Resume>,
+    pub flags: u32,
+}
+
 /// Reads a pushed record. A revision of `0` is not an error: it means the host
-/// asked for a whole-batch run and there is nothing to resume.
-pub fn parse(record: &[u8]) -> Option<Option<Resume>> {
+/// asked for a whole-batch run and there is nothing to resume. `None` is a
+/// record the engine could not have published.
+pub fn parse(record: &[u8]) -> Option<Pushed> {
     let revision = word(record, CP_REVISION)?;
+    let flags = word(record, CP_FLAGS)?;
+    if flags & !FLAGS_MASK != 0 {
+        return None;
+    }
+    // The two words after flags are padding: readable as zero or nothing.
+    if word(record, CP_RESERVED)? != 0 || word(record, CP_RESERVED + 4)? != 0 {
+        return None;
+    }
     if revision == 0 {
         for offset in [CP_CALLS, CP_EVENTS, CP_EDGES, CP_DIGEST] {
             if word(record, offset)? != 0 {
                 return None;
             }
         }
-        return Some(None);
+        return Some(Pushed {
+            resume: None,
+            flags,
+        });
     }
     if revision != CHECKPOINT_REVISION {
         return None;
     }
-    Some(Some(Resume {
-        calls: word(record, CP_CALLS)? as usize,
-        events: word(record, CP_EVENTS)? as usize,
-        edges: word(record, CP_EDGES)? as usize,
-        digest: word(record, CP_DIGEST)?,
-    }))
+    Some(Pushed {
+        resume: Some(Resume {
+            calls: word(record, CP_CALLS)? as usize,
+            events: word(record, CP_EVENTS)? as usize,
+            edges: word(record, CP_EDGES)? as usize,
+            digest: word(record, CP_DIGEST)?,
+            flags,
+        }),
+        flags,
+    })
 }
 
 /// Writes the record for a finished run. The digest is the caller's, because
@@ -118,7 +151,7 @@ pub fn commit(record: &mut [u8], resume: &Resume) -> bool {
     }
     let mut ok = wr_u32(record, CP_RESERVED, 0)
         && wr_u32(record, CP_RESERVED + 4, 0)
-        && wr_u32(record, CP_RESERVED + 8, 0)
+        && wr_u32(record, CP_FLAGS, resume.flags)
         && wr_u32(record, CP_CALLS, resume.calls as u32)
         && wr_u32(record, CP_EVENTS, resume.events as u32)
         && wr_u32(record, CP_EDGES, resume.edges as u32)
@@ -196,6 +229,11 @@ pub fn digest(
 /// here is a ceiling the planner can otherwise walk past: `last_writer` slots
 /// name calls, event links name nodes, and a chain that did not decrease would
 /// turn the drain in `process_write` into a loop over host-chosen memory.
+///
+/// `prefix_accesses` is the number of access entries belonging to the first
+/// `calls` calls. The prefix can hold at most one event node per call plus one
+/// per access, and at most two records per such event — the same bound the
+/// planner applies to a whole batch, applied to the part it is resuming.
 #[allow(clippy::too_many_arguments)]
 pub fn validate(
     resume: &Resume,
@@ -210,6 +248,7 @@ pub fn validate(
     call_count: usize,
     resource_count: usize,
     access_count: usize,
+    prefix_accesses: usize,
 ) -> i32 {
     if resume.calls > call_count
         || resume.calls > MAX_CALLS
@@ -218,10 +257,8 @@ pub fn validate(
     {
         return crate::ERR_CHECKPOINT_RANGE;
     }
-    // Events are one barrier node per call plus one per read access, so the
-    // resumed count cannot exceed what the prefix could have produced.
-    let ceiling = resume.calls.saturating_mul(2).saturating_add(access_count);
-    if resume.events > ceiling || resume.edges > 2 * resume.events {
+    let potential = prefix_accesses.saturating_add(resume.calls);
+    if resume.events > potential || resume.edges > 2usize.saturating_mul(potential) {
         return crate::ERR_CHECKPOINT_RANGE;
     }
     if call_modes.len() < call_count
@@ -263,4 +300,4 @@ pub fn validate(
 }
 
 const _: () = assert!(CHECKPOINT_RECORD_BYTES == 32);
-const _: () = assert!(CP_RESERVED + 12 == CHECKPOINT_RECORD_BYTES);
+const _: () = assert!(CP_RESERVED + 8 == CHECKPOINT_RECORD_BYTES);

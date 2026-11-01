@@ -316,3 +316,170 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run test:api-compatibility
+
+  # --------------------------------------------------------------------------
+  # Phase 4: incremental planning.
+  # --------------------------------------------------------------------------
+
+  incremental-rust:
+    name: Rust scheduling and checkpoint tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: The checkpoint engine
+        run: |
+          out=$(cargo test -p effectplan-engine checkpoint_tests 2>&1)
+          echo "$out"
+          echo "$out" | grep -qE 'test result: ok\. [0-9]+ passed'
+          echo "$out" | grep -q 'checkpoint_tests::'
+      - name: The scheduling engine
+        run: |
+          out=$(cargo test -p effectplan-engine schedule_tests 2>&1)
+          echo "$out"
+          echo "$out" | grep -qE 'test result: ok\. [0-9]+ passed'
+          echo "$out" | grep -q 'schedule_tests::'
+
+  checkpoint-tests:
+    name: Checkpoint restore and boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npm run build:wasm
+      - run: npm run verify:wasm
+
+  incremental-parity:
+    name: Incremental equals a fresh rebuild
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:session-properties
+
+  version-integrity:
+    name: Versions and stale updates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:session
+
+  transaction-safety:
+    name: Atomic updates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:session
+
+  change-validation:
+    name: Changeset validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:session
+
+  memory-validation:
+    name: Static arena capacity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npm run build:wasm
+      - run: npm run verify:wasm
+
+  incremental-wasm:
+    name: Incremental planning over the raw ABI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npm run build:wasm
+      - run: npm run test:wasm
+
+  incremental-browser:
+    name: Browser incremental smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npm run build
+      - name: Plan and time a batch in headless Chrome
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: npm run test:browser
+
+  incremental-benchmark:
+    name: Incremental against a full rebuild
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npm run build
+      - run: npm run benchmark:incremental
+      - name: Upload the measured report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: incremental-benchmarks
+          path: artifacts/incremental-benchmarks.json

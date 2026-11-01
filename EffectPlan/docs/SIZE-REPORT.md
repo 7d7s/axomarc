@@ -3,27 +3,31 @@
 The limits are release constraints, and a limit that moves needs a record of why
 it moved. One has moved: the unpacked package ceiling went from 50,000 to 60,000
 bytes for Phase 4, by owner review on 2026-11-01, **before** any of the
-incremental-planning TypeScript existed. It was set from a projection (51,791 bytes
-with the resumable engine and no session layer, plus an estimated session module),
-not from a measurement it had to catch up with. Everything else below is still the
-Phase 1 brief: the 40,000-byte artifact, zero runtime dependencies, zero Rust heap
-allocation, and 17 pages of linear memory — Phase 4 was designed around that page
-count rather than against it, which is why session state lives in the host.
+incremental-planning TypeScript existed. It was set from a projection (51,791
+bytes with the resumable engine and no session layer, plus an estimated session
+module), not from a measurement it had to catch up with. Everything else below is
+still the Phase 1 brief: the 40,000-byte artifact, zero runtime dependencies,
+zero Rust heap allocation, and 17 pages of linear memory — Phase 4 was designed
+around that page count rather than against it, which is why session state lives in
+the host.
 
 | Constraint                        | Limit    | Measured | Headroom |
 | --------------------------------- | -------- | -------- | -------- |
-| npm package, unpacked             | 60,000 B | 51,791 B | 8,209 B  |
-| WebAssembly artifact              | 40,000 B | 13,247 B | 26,753 B |
+| npm package, unpacked             | 60,000 B | 68,506 B | **over by 8,506 B** |
+| WebAssembly artifact              | 40,000 B | 13,499 B | 26,501 B |
 | WebAssembly linear memory         | 17 pages | 17 pages | 2,328 B of spare address space |
 
-Neither limit was relaxed, and the package limit was nearly breached: the same
-sources measure **54,038 bytes unpacked** with the packer's staged transform
-disabled — 4,038 bytes over. The first Phase 3 build was larger still, 58,764,
-before the package README was cut back. What closed the gap is recorded below, and
-the gates in the last section fail the build rather than warn.
+**The package is over its ceiling and the size gate is red.** The projection that
+informed the review estimated the session layer at roughly 5,000 bytes; it is
+12,813. The measured total is 68,506: the session module and its declarations are
+12,813 bytes of it, the resumable engine is 3,286, and the loader, encoder and
+planner grew by 1,900 between them. The packager fails closed, so
+`npm run verify:size` and the package-size test fail until the ceiling is
+reviewed against the measurement rather than against the estimate.
 
-Phase 1 shipped at 36,891 / 7,948 and Phase 2 at 43,543 / 10,190; the 5,223-byte
-increase since is the scheduling layer, measured from the same packer.
+Phase 1 shipped at 36,891 / 7,948, Phase 2 at 43,543 / 10,190 and Phase 3 at
+51,791 / 13,247; the 16,715-byte increase since is the incremental-planning
+layer, measured from the same packer.
 
 ## How the package was measured
 
@@ -49,9 +53,10 @@ number in this document is derived from source file sizes.
 
 | File                         | Bytes  |                             |
 | ---------------------------- | ------ | --------------------------- |
-| `dist/effectplan.wasm`       | 13,247 | the engine                  |
-| `dist/loader.js`             |  6,243 | layout audit, three plans   |
+| `dist/effectplan.wasm`       | 13,499 | the engine                  |
+| `dist/loader.js`             |  7,068 | layout audit, four plans    |
 | `dist/timing.js`             |  6,098 | new in Phase 3              |
+| `dist/session.js`             | 10,764 | new in Phase 4              |
 | `dist/encode.js`             |  5,265 |                             |
 | `dist/planner.js`            |  4,806 |                             |
 | `README.md`                  |  4,137 | package documentation       |
@@ -60,6 +65,7 @@ number in this document is derived from source file sizes.
 | `dist/planner.d.ts`          |  1,295 |                             |
 | `dist/execution-levels.js`   |  1,125 |                             |
 | `dist/timing.d.ts`           |  1,095 | new in Phase 3              |
+| `dist/session.d.ts`           |  2,049 | new in Phase 4              |
 | `LICENSE`                    |  1,068 |                             |
 | `dist/errors.d.ts`           |    895 |                             |
 | `dist/errors.js`             |    797 |                             |
@@ -67,9 +73,9 @@ number in this document is derived from source file sizes.
 | `dist/index.d.ts`            |    632 |                             |
 | `dist/execution-levels.d.ts` |    318 |                             |
 | `dist/index.js`              |     90 | re-export only              |
-| **total**                    | **51,791** | 18 files                |
+| **total**                    | **68,506** | 20 files                |
 
-The tarball is 18,679 bytes. The package declares no runtime dependencies, and
+The tarball is 22,463 bytes. The package declares no runtime dependencies, and
 the installation smoke test confirms that installing it produces a tree with
 exactly one package in it.
 

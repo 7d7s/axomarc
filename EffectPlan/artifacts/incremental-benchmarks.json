@@ -1,0 +1,787 @@
+{
+  "measuredAt": "2026-11-01T13:08:07.981Z",
+  "node": "v20.15.0",
+  "workloads": [
+    {
+      "name": "tiny",
+      "calls": 8,
+      "rebuildP50Micros": 150.99999999999625,
+      "cases": [
+        {
+          "name": "append one",
+          "strategy": "append",
+          "reason": "",
+          "reusedPrefixCalls": 8,
+          "updateP50Micros": 138.00000000000523,
+          "updateP95Micros": 322.4000000000018,
+          "rebuildP50Micros": 150.99999999999625,
+          "ratioPercent": 91.39072847682692,
+          "gated": false,
+          "passed": true
+        },
+        {
+          "name": "replace last",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 95.40000000001214,
+          "updateP95Micros": 226.99999999997544,
+          "rebuildP50Micros": 150.99999999999625,
+          "ratioPercent": 63.17880794702948,
+          "gated": false,
+          "passed": true
+        },
+        {
+          "name": "remove last",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 95.59999999999036,
+          "updateP95Micros": 353.4999999999968,
+          "rebuildP50Micros": 150.99999999999625,
+          "ratioPercent": 63.31125827814088,
+          "gated": false,
+          "passed": true
+        },
+        {
+          "name": "replace middle",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 102.10000000000719,
+          "updateP95Micros": 127.60000000000105,
+          "rebuildP50Micros": 150.99999999999625,
+          "ratioPercent": 67.61589403974155,
+          "gated": false,
+          "passed": true
+        }
+      ],
+      "intervals": []
+    },
+    {
+      "name": "small",
+      "calls": 32,
+      "rebuildP50Micros": 266.3000000000011,
+      "cases": [
+        {
+          "name": "append one",
+          "strategy": "append",
+          "reason": "",
+          "reusedPrefixCalls": 32,
+          "updateP50Micros": 221.19999999998186,
+          "updateP95Micros": 269.59999999999695,
+          "rebuildP50Micros": 266.3000000000011,
+          "ratioPercent": 83.06421329327111,
+          "gated": true,
+          "passed": true
+        },
+        {
+          "name": "replace last",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 190.30000000000769,
+          "updateP95Micros": 327.7999999999963,
+          "rebuildP50Micros": 266.3000000000011,
+          "ratioPercent": 71.46075854299922,
+          "gated": true,
+          "passed": true
+        },
+        {
+          "name": "remove last",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 167.79999999999973,
+          "updateP95Micros": 202.79999999999632,
+          "rebuildP50Micros": 266.3000000000011,
+          "ratioPercent": 63.011641006383414,
+          "gated": true,
+          "passed": true
+        },
+        {
+          "name": "replace middle",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 184.599999999989,
+          "updateP95Micros": 13849.799999999988,
+          "rebuildP50Micros": 266.3000000000011,
+          "ratioPercent": 69.32031543371696,
+          "gated": false,
+          "passed": true
+        }
+      ],
+      "intervals": []
+    },
+    {
+      "name": "normal",
+      "calls": 64,
+      "rebuildP50Micros": 334.1000000000349,
+      "cases": [
+        {
+          "name": "append one",
+          "strategy": "append",
+          "reason": "",
+          "reusedPrefixCalls": 64,
+          "updateP50Micros": 208.39999999998327,
+          "updateP95Micros": 885.6999999999857,
+          "rebuildP50Micros": 334.1000000000349,
+          "ratioPercent": 62.37653397185318,
+          "gated": true,
+          "passed": true
+        },
+        {
+          "name": "replace last",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 294.29999999996426,
+          "updateP95Micros": 397.199999999998,
+          "rebuildP50Micros": 334.1000000000349,
+          "ratioPercent": 88.0873989823207,
+          "gated": true,
+          "passed": true
+        },
+        {
+          "name": "remove last",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 237.59999999998627,
+          "updateP95Micros": 984.3000000000188,
+          "rebuildP50Micros": 334.1000000000349,
+          "ratioPercent": 71.11643220591482,
+          "gated": true,
+          "passed": true
+        },
+        {
+          "name": "replace middle",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 249.69999999996162,
+          "updateP95Micros": 268.39999999998554,
+          "rebuildP50Micros": 334.1000000000349,
+          "ratioPercent": 74.7381023645422,
+          "gated": false,
+          "passed": true
+        }
+      ],
+      "intervals": [
+        {
+          "interval": 16,
+          "reusedPrefixCalls": 32,
+          "micros": 336.5000000000009
+        },
+        {
+          "interval": 32,
+          "reusedPrefixCalls": 32,
+          "micros": 235.8000000000402
+        },
+        {
+          "interval": 64,
+          "reusedPrefixCalls": 0,
+          "micros": 259.2000000000212
+        },
+        {
+          "interval": 128,
+          "reusedPrefixCalls": 0,
+          "micros": 254.40000000003238
+        }
+      ]
+    },
+    {
+      "name": "medium",
+      "calls": 128,
+      "rebuildP50Micros": 4380.800000000022,
+      "cases": [
+        {
+          "name": "replace last",
+          "strategy": "suffix-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 64,
+          "updateP50Micros": 882.199999999898,
+          "updateP95Micros": 4439.700000000016,
+          "rebuildP50Micros": 4380.800000000022,
+          "ratioPercent": 20.137874360844904,
+          "gated": true,
+          "passed": true
+        },
+        {
+          "name": "remove last",
+          "strategy": "suffix-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 64,
+          "updateP50Micros": 760.1999999999407,
+          "updateP95Micros": 939.899999999966,
+          "rebuildP50Micros": 4380.800000000022,
+          "ratioPercent": 17.35299488677723,
+          "gated": true,
+          "passed": true
+        },
+        {
+          "name": "replace middle",
+          "strategy": "suffix-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 64,
+          "updateP50Micros": 857.7000000000226,
+          "updateP95Micros": 51300.89999999996,
+          "rebuildP50Micros": 4380.800000000022,
+          "ratioPercent": 19.57861577794052,
+          "gated": false,
+          "passed": true
+        }
+      ],
+      "intervals": [
+        {
+          "interval": 16,
+          "reusedPrefixCalls": 64,
+          "micros": 1503.8999999999305
+        },
+        {
+          "interval": 32,
+          "reusedPrefixCalls": 64,
+          "micros": 4002.6999999998907
+        },
+        {
+          "interval": 64,
+          "reusedPrefixCalls": 64,
+          "micros": 2402.400000000057
+        },
+        {
+          "interval": 128,
+          "reusedPrefixCalls": 0,
+          "micros": 1009.900000000016
+        }
+      ]
+    },
+    {
+      "name": "wide",
+      "calls": 64,
+      "rebuildP50Micros": 138.40000000004693,
+      "cases": [
+        {
+          "name": "append one",
+          "strategy": "append",
+          "reason": "",
+          "reusedPrefixCalls": 64,
+          "updateP50Micros": 136.19999999991705,
+          "updateP95Micros": 254.89999999990687,
+          "rebuildP50Micros": 138.40000000004693,
+          "ratioPercent": 98.41040462418415,
+          "gated": false,
+          "passed": true
+        },
+        {
+          "name": "replace last",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 162.00000000003456,
+          "updateP95Micros": 301.69999999998254,
+          "rebuildP50Micros": 138.40000000004693,
+          "ratioPercent": 117.05202312137257,
+          "gated": false,
+          "passed": true
+        },
+        {
+          "name": "remove last",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 112.19999999980246,
+          "updateP95Micros": 4663.900000000012,
+          "rebuildP50Micros": 138.40000000004693,
+          "ratioPercent": 81.06936416167949,
+          "gated": false,
+          "passed": true
+        },
+        {
+          "name": "replace middle",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 163.6999999998352,
+          "updateP95Micros": 205.09999999990214,
+          "rebuildP50Micros": 138.40000000004693,
+          "ratioPercent": 118.28034682065007,
+          "gated": false,
+          "passed": true
+        }
+      ],
+      "intervals": [
+        {
+          "interval": 16,
+          "reusedPrefixCalls": 32,
+          "micros": 206.90000000013242
+        },
+        {
+          "interval": 32,
+          "reusedPrefixCalls": 32,
+          "micros": 148.9000000001397
+        },
+        {
+          "interval": 64,
+          "reusedPrefixCalls": 0,
+          "micros": 110.80000000015389
+        },
+        {
+          "interval": 128,
+          "reusedPrefixCalls": 0,
+          "micros": 128.89999999993051
+        }
+      ]
+    },
+    {
+      "name": "deep",
+      "calls": 64,
+      "rebuildP50Micros": 160.39999999998145,
+      "cases": [
+        {
+          "name": "append one",
+          "strategy": "append",
+          "reason": "",
+          "reusedPrefixCalls": 64,
+          "updateP50Micros": 155.3999999998723,
+          "updateP95Micros": 189.40000000020518,
+          "rebuildP50Micros": 160.39999999998145,
+          "ratioPercent": 96.88279301738795,
+          "gated": false,
+          "passed": true
+        },
+        {
+          "name": "replace last",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 136.40000000009422,
+          "updateP95Micros": 885.9999999999673,
+          "rebuildP50Micros": 160.39999999998145,
+          "ratioPercent": 85.0374064838591,
+          "gated": false,
+          "passed": true
+        },
+        {
+          "name": "remove last",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 145.99999999995816,
+          "updateP95Micros": 166.89999999994143,
+          "rebuildP50Micros": 160.39999999998145,
+          "ratioPercent": 91.02244389025877,
+          "gated": false,
+          "passed": true
+        },
+        {
+          "name": "replace middle",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 152.19999999999345,
+          "updateP95Micros": 168.39999999979227,
+          "rebuildP50Micros": 160.39999999998145,
+          "ratioPercent": 94.88778054863532,
+          "gated": false,
+          "passed": true
+        }
+      ],
+      "intervals": [
+        {
+          "interval": 16,
+          "reusedPrefixCalls": 32,
+          "micros": 225.30000000006112
+        },
+        {
+          "interval": 32,
+          "reusedPrefixCalls": 32,
+          "micros": 158.10000000010405
+        },
+        {
+          "interval": 64,
+          "reusedPrefixCalls": 0,
+          "micros": 133.69999999986248
+        },
+        {
+          "interval": 128,
+          "reusedPrefixCalls": 0,
+          "micros": 140.39999999999964
+        }
+      ]
+    },
+    {
+      "name": "diamond",
+      "calls": 64,
+      "rebuildP50Micros": 130.19999999983156,
+      "cases": [
+        {
+          "name": "append one",
+          "strategy": "append",
+          "reason": "",
+          "reusedPrefixCalls": 64,
+          "updateP50Micros": 156.00000000017644,
+          "updateP95Micros": 19252.099999999926,
+          "rebuildP50Micros": 130.19999999983156,
+          "ratioPercent": 119.8156682030555,
+          "gated": false,
+          "passed": true
+        },
+        {
+          "name": "replace last",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 126.20000000015352,
+          "updateP95Micros": 336.4999999998872,
+          "rebuildP50Micros": 130.19999999983156,
+          "ratioPercent": 96.9278033796596,
+          "gated": false,
+          "passed": true
+        },
+        {
+          "name": "remove last",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 160.9000000000833,
+          "updateP95Micros": 259.29999999993925,
+          "rebuildP50Micros": 130.19999999983156,
+          "ratioPercent": 123.57910906320389,
+          "gated": false,
+          "passed": true
+        },
+        {
+          "name": "replace middle",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 138.00000000014734,
+          "updateP95Micros": 180.90000000006512,
+          "rebuildP50Micros": 130.19999999983156,
+          "ratioPercent": 105.99078341038852,
+          "gated": false,
+          "passed": true
+        }
+      ],
+      "intervals": [
+        {
+          "interval": 16,
+          "reusedPrefixCalls": 32,
+          "micros": 229.39999999994143
+        },
+        {
+          "interval": 32,
+          "reusedPrefixCalls": 32,
+          "micros": 220.39999999992688
+        },
+        {
+          "interval": 64,
+          "reusedPrefixCalls": 0,
+          "micros": 136.70000000001892
+        },
+        {
+          "interval": 128,
+          "reusedPrefixCalls": 0,
+          "micros": 145.50000000008367
+        }
+      ]
+    },
+    {
+      "name": "barrier",
+      "calls": 64,
+      "rebuildP50Micros": 299.60000000005493,
+      "cases": [
+        {
+          "name": "append one",
+          "strategy": "append",
+          "reason": "",
+          "reusedPrefixCalls": 64,
+          "updateP50Micros": 204.20000000012806,
+          "updateP95Micros": 312.5,
+          "rebuildP50Micros": 299.60000000005493,
+          "ratioPercent": 68.1575433912185,
+          "gated": true,
+          "passed": true
+        },
+        {
+          "name": "replace last",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 214.30000000009386,
+          "updateP95Micros": 330.6999999999789,
+          "rebuildP50Micros": 299.60000000005493,
+          "ratioPercent": 71.52870493993811,
+          "gated": true,
+          "passed": true
+        },
+        {
+          "name": "remove last",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 215.4000000000451,
+          "updateP95Micros": 249.00000000002365,
+          "rebuildP50Micros": 299.60000000005493,
+          "ratioPercent": 71.89586114819947,
+          "gated": true,
+          "passed": true
+        },
+        {
+          "name": "replace middle",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 228.40000000019245,
+          "updateP95Micros": 369.69999999996617,
+          "rebuildP50Micros": 299.60000000005493,
+          "ratioPercent": 76.23497997334798,
+          "gated": false,
+          "passed": true
+        }
+      ],
+      "intervals": [
+        {
+          "interval": 16,
+          "reusedPrefixCalls": 32,
+          "micros": 330.600000000004
+        },
+        {
+          "interval": 32,
+          "reusedPrefixCalls": 32,
+          "micros": 198.10000000006767
+        },
+        {
+          "interval": 64,
+          "reusedPrefixCalls": 0,
+          "micros": 234.40000000005057
+        },
+        {
+          "interval": 128,
+          "reusedPrefixCalls": 0,
+          "micros": 364.9000000000342
+        }
+      ]
+    },
+    {
+      "name": "conflict",
+      "calls": 64,
+      "rebuildP50Micros": 363.399999999956,
+      "cases": [
+        {
+          "name": "append one",
+          "strategy": "append",
+          "reason": "",
+          "reusedPrefixCalls": 64,
+          "updateP50Micros": 184.79999999999563,
+          "updateP95Micros": 200.29999999997017,
+          "rebuildP50Micros": 363.399999999956,
+          "ratioPercent": 50.85305448542048,
+          "gated": true,
+          "passed": true
+        },
+        {
+          "name": "replace last",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 345.1999999999771,
+          "updateP95Micros": 705.7999999999538,
+          "rebuildP50Micros": 363.399999999956,
+          "ratioPercent": 94.99174463401731,
+          "gated": true,
+          "passed": true
+        },
+        {
+          "name": "remove last",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 339.10000000014406,
+          "updateP95Micros": 573.0999999998403,
+          "rebuildP50Micros": 363.399999999956,
+          "ratioPercent": 93.31315354985831,
+          "gated": true,
+          "passed": true
+        },
+        {
+          "name": "replace middle",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 301.50000000003274,
+          "updateP95Micros": 345.0000000000273,
+          "rebuildP50Micros": 363.399999999956,
+          "ratioPercent": 82.96642817833497,
+          "gated": false,
+          "passed": true
+        }
+      ],
+      "intervals": [
+        {
+          "interval": 16,
+          "reusedPrefixCalls": 32,
+          "micros": 362.5999999999294
+        },
+        {
+          "interval": 32,
+          "reusedPrefixCalls": 32,
+          "micros": 243.30000000009022
+        },
+        {
+          "interval": 64,
+          "reusedPrefixCalls": 0,
+          "micros": 287.8000000000611
+        },
+        {
+          "interval": 128,
+          "reusedPrefixCalls": 0,
+          "micros": 305.7000000001153
+        }
+      ]
+    },
+    {
+      "name": "maxbound",
+      "calls": 128,
+      "rebuildP50Micros": 1396.2999999998829,
+      "cases": [
+        {
+          "name": "replace last",
+          "strategy": "suffix-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 64,
+          "updateP50Micros": 855.9000000000196,
+          "updateP95Micros": 1035.5999999999312,
+          "rebuildP50Micros": 1396.2999999998829,
+          "ratioPercent": 61.29771539068191,
+          "gated": true,
+          "passed": true
+        },
+        {
+          "name": "remove last",
+          "strategy": "suffix-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 64,
+          "updateP50Micros": 810.6999999999971,
+          "updateP95Micros": 1383.0000000000382,
+          "rebuildP50Micros": 1396.2999999998829,
+          "ratioPercent": 58.06058869870838,
+          "gated": true,
+          "passed": true
+        },
+        {
+          "name": "replace middle",
+          "strategy": "suffix-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 64,
+          "updateP50Micros": 867.2999999998865,
+          "updateP95Micros": 6664.700000000039,
+          "rebuildP50Micros": 1396.2999999998829,
+          "ratioPercent": 62.1141588483821,
+          "gated": false,
+          "passed": true
+        }
+      ],
+      "intervals": [
+        {
+          "interval": 16,
+          "reusedPrefixCalls": 64,
+          "micros": 1358.600000000024
+        },
+        {
+          "interval": 32,
+          "reusedPrefixCalls": 64,
+          "micros": 1007.3999999999614
+        },
+        {
+          "interval": 64,
+          "reusedPrefixCalls": 64,
+          "micros": 755.7999999999083
+        },
+        {
+          "interval": 128,
+          "reusedPrefixCalls": 0,
+          "micros": 956.1000000001059
+        }
+      ]
+    },
+    {
+      "name": "mixed",
+      "calls": 96,
+      "rebuildP50Micros": 640.1000000000749,
+      "cases": [
+        {
+          "name": "append one",
+          "strategy": "append",
+          "reason": "",
+          "reusedPrefixCalls": 96,
+          "updateP50Micros": 236.89999999987776,
+          "updateP95Micros": 256.90000000008695,
+          "rebuildP50Micros": 640.1000000000749,
+          "ratioPercent": 37.00984221213092,
+          "gated": true,
+          "passed": true
+        },
+        {
+          "name": "replace last",
+          "strategy": "suffix-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 64,
+          "updateP50Micros": 271.8999999999596,
+          "updateP95Micros": 334.2999999999847,
+          "rebuildP50Micros": 640.1000000000749,
+          "ratioPercent": 42.47773785344911,
+          "gated": true,
+          "passed": true
+        },
+        {
+          "name": "remove last",
+          "strategy": "suffix-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 64,
+          "updateP50Micros": 279.6000000000731,
+          "updateP95Micros": 335.70000000008804,
+          "rebuildP50Micros": 640.1000000000749,
+          "ratioPercent": 43.68067489455404,
+          "gated": true,
+          "passed": true
+        },
+        {
+          "name": "replace middle",
+          "strategy": "full-rebuild",
+          "reason": "",
+          "reusedPrefixCalls": 0,
+          "updateP50Micros": 456.2999999998283,
+          "updateP95Micros": 16064.1999999998,
+          "rebuildP50Micros": 640.1000000000749,
+          "ratioPercent": 71.2857366036205,
+          "gated": false,
+          "passed": true
+        }
+      ],
+      "intervals": [
+        {
+          "interval": 16,
+          "reusedPrefixCalls": 48,
+          "micros": 827.8999999999996
+        },
+        {
+          "interval": 32,
+          "reusedPrefixCalls": 32,
+          "micros": 541.7999999999665
+        },
+        {
+          "interval": 64,
+          "reusedPrefixCalls": 0,
+          "micros": 361.69999999992797
+        },
+        {
+          "interval": 128,
+          "reusedPrefixCalls": 0,
+          "micros": 413.0000000000109
+        }
+      ]
+    }
+  ]
+}

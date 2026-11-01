@@ -12,6 +12,8 @@ import { decodeTiming, encodeDurations } from "./timing.js";
 import type { TimingAnalysis } from "./timing.js";
 import { loadEngine } from "./loader.js";
 import type { EngineInfo, InitializationOptions, LoadedEngine } from "./loader.js";
+import { createSession } from "./session.js";
+import type { IncrementalCall, PlanSession, SessionOptions } from "./session.js";
 
 export interface PlanStatistics {
   readonly callCount: number;
@@ -112,6 +114,25 @@ export class EffectPlan {
     const info = this.#engine.info;
     const bytes = this.#engine.memory.buffer.byteLength;
     return bytes === info.memoryBytes ? info : Object.freeze({ ...info, memoryBytes: bytes });
+  }
+
+  /**
+   * Opens a session that keeps a plan alive as its workload changes.
+   *
+   * The session is bound to this engine instance: it restores state into the
+   * engine's own regions, so a session and a stateless `planBatch` on the same
+   * instance would fight over them. Use one engine per session, or let the
+   * session finish before planning a batch here.
+   */
+  createSession(calls: readonly IncrementalCall[], options: SessionOptions = {}): PlanSession {
+    let input = this.#input;
+    const buffer = this.#engine.memory.buffer;
+    if (input.buffer !== buffer) input = this.#input = packInput(buffer, this.#engine.info);
+    return createSession(
+      { engine: this.#engine, input, decode: decodePlan },
+      calls,
+      options,
+    );
   }
 
   planBatch(calls: readonly ToolCall[], options: PlanOptions = {}): ExecutionPlan {

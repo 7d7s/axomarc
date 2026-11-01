@@ -96,7 +96,7 @@ function sleb(value: number): number[] {
 export const FAKE_INFO: Readonly<Record<number, number>> = Object.freeze({
   0: 1, // abi revision
   1: 1024, // arena base
-  2: 248, // arena length: every region below, end to end
+  2: 280, // arena length: every region below, end to end
   3: 1024, // input pointer: the arena base
   4: 44, // input bytes: 4 calls + 5 offsets + 4 ids + 4 modes
   5: 1068, // workspace pointer
@@ -123,6 +123,9 @@ export const FAKE_INFO: Readonly<Record<number, number>> = Object.freeze({
   29: 1208, // timing pointer: durations pointer + durations bytes
   30: 64, // timing bytes: 32-byte header + 4 records of 8 bytes
   31: 4, // timing entries: one per call slot
+  32: 1, // checkpoint revision
+  33: 1272, // checkpoint pointer: timing pointer + timing bytes
+  34: 32, // checkpoint bytes: eight words
 });
 
 export interface FakeEngineOptions {
@@ -132,6 +135,8 @@ export interface FakeEngineOptions {
   readonly levelsRevision?: number;
   /** The value `effectplan_info(25)` answers. */
   readonly timingRevision?: number;
+  /** The value `effectplan_info(32)` answers. */
+  readonly checkpointRevision?: number;
   /** Export names to leave out of the module. */
   readonly omit?: readonly string[];
   /** Hostile values for individual info selectors, applied last. */
@@ -152,6 +157,7 @@ export function fakeEngineBytes(options: FakeEngineOptions = {}): Uint8Array<Arr
   if (options.abi !== undefined) info[0] = options.abi;
   if (options.levelsRevision !== undefined) info[21] = options.levelsRevision;
   if (options.timingRevision !== undefined) info[25] = options.timingRevision;
+  if (options.checkpointRevision !== undefined) info[32] = options.checkpointRevision;
   if (options.overrides) Object.assign(info, options.overrides);
 
   const section = (id: number, payload: readonly number[]): number[] => [id, ...uleb(payload.length), ...payload];
@@ -181,7 +187,7 @@ export function fakeEngineBytes(options: FakeEngineOptions = {}): Uint8Array<Arr
   for (let depth = 0; depth <= kinds.length; depth++) infoBody.push(0x0b);
 
   const types = vec([[0x60, 0x01, 0x7f, 0x01, 0x7f], [0x60, 0x00, 0x01, 0x7f]]);
-  const functions = vec([[0x00], [0x01], [0x01], [0x01]]);
+  const functions = vec([[0x00], [0x01], [0x01], [0x01], [0x01]]);
   const memory = vec([[0x00, 0x01]]);
   const omit = options.omit ?? [];
   const wanted: Array<readonly [string, number, number]> = [
@@ -189,6 +195,7 @@ export function fakeEngineBytes(options: FakeEngineOptions = {}): Uint8Array<Arr
     ["effectplan_plan", 0x00, 1],
     ["effectplan_plan_v2", 0x00, 2],
     ["effectplan_plan_v3", 0x00, 3],
+    ["effectplan_plan_v4", 0x00, 4],
     ["memory", 0x02, 0],
   ];
   const exports = vec(
@@ -199,6 +206,7 @@ export function fakeEngineBytes(options: FakeEngineOptions = {}): Uint8Array<Arr
   const zeroBody = [0x00, 0x41, 0x00, 0x0b];
   const code = vec([
     codeEntry(infoBody),
+    codeEntry(zeroBody),
     codeEntry(zeroBody),
     codeEntry(zeroBody),
     codeEntry(zeroBody),

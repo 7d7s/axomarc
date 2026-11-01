@@ -17,9 +17,11 @@ its own CPM.
   `serde`, no allocator, no imports.
 - One npm package, `@effectplan/core`, zero runtime dependencies, no network,
   no filesystem access, no telemetry.
-- 51,791 bytes unpacked (limit: 60,000, reviewed and raised for Phase 4;
-  it was 50,000 through Phase 3). The wasm artifact is 13,247 bytes (budget:
-  40,000). Both measured from the packed tarball, not from source.
+- 68,506 bytes unpacked, against a 60,000-byte ceiling that was set on a
+  projection before Phase 4 existed: the package is over its limit and the size
+  gate is red pending a review of the ceiling against the measurement. The wasm
+  artifact is 13,499 bytes (budget: 40,000). Both measured from the packed
+  tarball, not from source.
 
 ## Quick start
 
@@ -151,10 +153,11 @@ including reading the binary: 402–618 µs at the median.
 
 Phase 4 (incremental planning) is **in progress**: the engine can stop at a call
 boundary, commit a checkpoint of the state it stopped in, and continue from that
-checkpoint or refuse it — 108 Rust tests and 110 ABI checks say so, and linear
-memory is still 17 pages because the session state lives in the host. The
-`PlanSession` API, its differential tests against a full rebuild, and the
-incremental-versus-rebuild benchmarks are the remaining work.
+checkpoint or refuse it; `planner.createSession()` keeps a plan alive through
+appends, replacements and removals, and an incremental plan is proved equal to a
+fresh rebuild by a randomised differential test. Linear memory is still 17 pages
+because the session state lives in the host, and the package is over its size
+ceiling — see `docs/SIZE-REPORT.md`.
 
 Phase 1 (the dependency planner), Phase 2 (execution levels) and Phase 3 (the
 critical path) are complete and measured: the engine, the package, the tests, the

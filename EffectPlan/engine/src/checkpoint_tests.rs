@@ -8,7 +8,7 @@
 use super::*;
 use crate::checkpoint::{
     CHECKPOINT_RECORD_BYTES, CHECKPOINT_REVISION, CP_CALLS, CP_DIGEST, CP_EDGES, CP_EVENTS,
-    CP_RESERVED, CP_REVISION,
+    CP_FLAGS, CP_RESERVED, CP_REVISION,
 };
 use crate::ARENA_LOCK as LOCK;
 use crate::{CHECKPOINT_BASE_OFF, CHECKPOINT_REGION_LEN};
@@ -62,6 +62,7 @@ fn u32_at(at: usize) -> u32 {
 /// The state that has to travel with a checkpoint: the conflict frontier and the
 /// event nodes (the workspace region), the records emitted so far, and the
 /// engine's own commitment about what they mean.
+#[derive(Clone)]
 struct Snapshot {
     workspace: Vec<u8>,
     records: Vec<u8>,
@@ -324,6 +325,129 @@ fn an_empty_record_plans_the_batch_and_commits_a_checkpoint() {
     let mut comparable = plan;
     comparable.checkpoint = v3.checkpoint;
     assert_eq!(v3, comparable);
+}
+
+#[test]
+fn a_run_may_decline_the_scheduling_pass_and_still_commit() {
+    let calls = workload();
+    // Zero durations would be refused by the scheduling pass; asked for no
+    // scheduling, they are simply not read.
+    let (status, graph, levels, timing_revision) = run_without_timing(&calls, None);
+    assert_eq!(status, OK, "an unscheduled run must not need durations");
+    assert!(!graph.is_empty());
+    assert_eq!(levels.len(), calls.len());
+    assert_eq!(
+        timing_revision, 0xdead_beef,
+        "the timing region was touched"
+    );
+
+    // The flag survives the commit, so a resume inherits the mode it was given.
+    // Read it before any other run overwrites the record.
+    let kept = u32_at(CHECKPOINT_BASE_OFF + CP_FLAGS);
+    assert_eq!(kept, crate::checkpoint::FLAG_WITHOUT_TIMING);
+
+    // And the graph it produces is the graph a normal run produces.
+    let (status, plan) = run(&calls, &ticks(calls.len()), None);
+    assert_eq!(status, OK);
+    assert_eq!(graph, plan.edges);
+    assert_eq!(levels, plan.levels);
+
+    // Resuming without timing keeps working from that checkpoint.
+    let snapshot = capture();
+    let (status, _, _, _) = run_without_timing(&calls, Some(&snapshot));
+    assert_eq!(status, OK);
+}
+
+#[test]
+fn an_unknown_flag_is_refused() {
+    let calls = workload();
+    let durations = ticks(calls.len());
+    run(&calls[..4], &durations[..4], None);
+    let snapshot = capture();
+    let mut unknown = snapshot.clone();
+    unknown.record[CP_FLAGS..CP_FLAGS + 4].copy_from_slice(&2u32.to_le_bytes());
+    let (status, _) = run(&calls, &durations, Some(&unknown));
+    assert_eq!(status, ERR_CHECKPOINT_INVALID, "flags are not a free field");
+}
+
+/// The same batch with the scheduling pass declined. A sentinel in the timing
+/// region proves the engine left it alone.
+fn run_without_timing(
+    calls: &[Call],
+    restore: Option<&Snapshot>,
+) -> (i32, Vec<(u32, u32, u32, u32)>, Vec<u16>, u32) {
+    let _guard = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let (modes, offsets, rids, amodes) = pack(calls);
+    let resource_count = rids.iter().copied().max().unwrap_or(0) as usize + 1;
+    unsafe {
+        let a = arena_bytes();
+        for b in a.iter_mut() {
+            *b = 0;
+        }
+        a[IN_CALL_MODES_OFF..IN_CALL_MODES_OFF + modes.len()].copy_from_slice(&modes);
+        for (i, v) in offsets.iter().enumerate() {
+            a[IN_ACCESS_OFFSETS_OFF + i * 4..IN_ACCESS_OFFSETS_OFF + i * 4 + 4]
+                .copy_from_slice(&v.to_le_bytes());
+        }
+        for (i, v) in rids.iter().enumerate() {
+            a[IN_RESOURCE_IDS_OFF + i * 4..IN_RESOURCE_IDS_OFF + i * 4 + 4]
+                .copy_from_slice(&v.to_le_bytes());
+        }
+        a[IN_ACCESS_MODES_OFF..IN_ACCESS_MODES_OFF + amodes.len()].copy_from_slice(&amodes);
+        if let Some(snap) = restore {
+            a[WS_BASE_OFF..WS_BASE_OFF + snap.workspace.len()].copy_from_slice(&snap.workspace);
+            let at = OUT_BASE_OFF + OUT_RECORDS_OFF;
+            a[at..at + snap.records.len()].copy_from_slice(&snap.records);
+            a[CHECKPOINT_BASE_OFF..CHECKPOINT_BASE_OFF + snap.record.len()]
+                .copy_from_slice(&snap.record);
+        }
+        a[TIMING_BASE_OFF..TIMING_BASE_OFF + 4].copy_from_slice(&0xdead_beefu32.to_le_bytes());
+        a[CHECKPOINT_BASE_OFF + CP_FLAGS..CHECKPOINT_BASE_OFF + CP_FLAGS + 4]
+            .copy_from_slice(&crate::checkpoint::FLAG_WITHOUT_TIMING.to_le_bytes());
+        let base = arena_base() as u32;
+        let status = effectplan_plan_v4(
+            ABI_VERSION,
+            modes.len() as u32,
+            rids.len() as u32,
+            resource_count as u32,
+            base + IN_CALL_MODES_OFF as u32,
+            base + IN_ACCESS_OFFSETS_OFF as u32,
+            base + IN_RESOURCE_IDS_OFF as u32,
+            base + IN_ACCESS_MODES_OFF as u32,
+            base + WS_BASE_OFF as u32,
+            WORKSPACE_REGION_LEN as u32,
+            base + OUT_BASE_OFF as u32,
+            (OUT_RECORDS_OFF + OUT_RECORDS_LEN) as u32,
+            base + LEVELS_BASE_OFF as u32,
+            LEVELS_REGION_LEN as u32,
+            base + DURATIONS_BASE_OFF as u32,
+            DURATIONS_REGION_LEN as u32,
+            base + TIMING_BASE_OFF as u32,
+            TIMING_REGION_LEN as u32,
+            base + CHECKPOINT_BASE_OFF as u32,
+            CHECKPOINT_REGION_LEN as u32,
+        );
+        let u32_here = |at: usize| u32::from_le_bytes(a[at..at + 4].try_into().unwrap());
+        let emitted = u32_here(OUT_BASE_OFF + 8) as usize;
+        let mut graph = Vec::with_capacity(emitted);
+        for i in 0..emitted {
+            let at = OUT_BASE_OFF + OUT_RECORDS_OFF + i * EDGE_BYTES;
+            graph.push((
+                u32_here(at),
+                u32_here(at + 4),
+                u32_here(at + 8),
+                u32_here(at + 12),
+            ));
+        }
+        let count = u32_here(LEVELS_BASE_OFF) as usize;
+        let mut levels = Vec::with_capacity(count);
+        for i in 0..count {
+            let at = LEVELS_BASE_OFF + LEVELS_HEADER_BYTES + i * 2;
+            levels.push(u16::from_le_bytes([a[at], a[at + 1]]));
+        }
+        let timing_revision = u32_here(TIMING_BASE_OFF);
+        (status, graph, levels, timing_revision)
+    }
 }
 
 #[test]
@@ -600,7 +724,7 @@ fn reserved_checkpoint_words_must_be_zero_on_commit() {
     let durations = ticks(calls.len());
     let (status, _) = run(&calls, &durations, None);
     assert_eq!(status, OK);
-    for offset in [CP_RESERVED, CP_RESERVED + 4, CP_RESERVED + 8] {
+    for offset in [CP_RESERVED, CP_RESERVED + 4] {
         assert_eq!(u32_at(CHECKPOINT_BASE_OFF + offset), 0);
     }
 }

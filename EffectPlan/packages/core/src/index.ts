@@ -32,3 +32,12 @@ export type {
 export type { ExecutionLevels } from "./execution-levels.js";
 export type { EventTiming, TimingAnalysis, TimingOptions } from "./timing.js";
 export type { DependencyEdge, ExecutionPlan, PlanStatistics } from "./planner.js";
+export type {
+  ApplyChangesOptions,
+  IncrementalCall,
+  PlanChange,
+  PlanSession,
+  PlanSnapshot,
+  SessionOptions,
+  UpdateDiagnostics,
+} from "./session.js";

@@ -12,6 +12,8 @@ import {
   EXPECTED_ABI,
   EXPECTED_LEVELS_ABI,
   EXPECTED_TIMING_ABI,
+  EXPECTED_CHECKPOINT_ABI,
+  CHECKPOINT_RECORD_BYTES,
   HEADER_BYTES,
   LEVELS_HEADER_BYTES,
   TIMING_HEADER_BYTES,
@@ -49,6 +51,8 @@ export interface EngineLayout {
   readonly durations: EngineRegion;
   /** Scheduling output: header plus two `u32` per call. */
   readonly timing: EngineRegion;
+  /** Resumable-planning record: eight words the engine commits and reads back. */
+  readonly checkpoint: EngineRegion;
 }
 
 export interface EngineInfo {
@@ -59,6 +63,8 @@ export interface EngineInfo {
   readonly levelsRevision: number;
   /** Revision of the scheduling contract. */
   readonly timingRevision: number;
+  /** Revision of the resumable-planning contract. */
+  readonly checkpointRevision: number;
   readonly wasmActive: boolean;
   readonly memoryBytes: number;
   readonly limits: EngineLimits;
@@ -72,7 +78,8 @@ const I_ABI = 0, I_BASE = 1, I_ARENA_LEN = 2, I_IN_PTR = 3, I_IN_LEN = 4,
   I_EDGE_BYTES = 14, I_MAX_NS = 15, I_MAX_ID = 16, I_HDR_BYTES = 17,
   I_LEVELS_REV = 21, I_LEVELS_PTR = 22, I_LEVELS_LEN = 23, I_LEVELS_MAX = 24,
   I_TIMING_REV = 25, I_DUR_PTR = 26, I_DUR_LEN = 27, I_DUR_MAX = 28,
-  I_TIMING_PTR = 29, I_TIMING_LEN = 30, I_TIMING_MAX = 31;
+  I_TIMING_PTR = 29, I_TIMING_LEN = 30, I_TIMING_MAX = 31,
+  I_CKPT_REV = 32, I_CKPT_PTR = 33, I_CKPT_LEN = 34;
 
 /** The raw engine entry point as exported by the wasm module. */
 export type PlanFn = (
@@ -98,12 +105,27 @@ export type PlanV3Fn = (
   durations: number, durationsBytes: number, timing: number, timingBytes: number,
 ) => number;
 
+/**
+ * The resumable entry point: the same pipeline as version three, plus the
+ * checkpoint region. A host that leaves the record empty plans the whole batch;
+ * a host that writes one back resumes from it.
+ */
+export type PlanV4Fn = (
+  abi: number, calls: number, accesses: number, resources: number,
+  callModes: number, accessOffsets: number, resourceIds: number, accessModes: number,
+  workspace: number, workspaceBytes: number, output: number, outputBytes: number,
+  levels: number, levelsBytes: number,
+  durations: number, durationsBytes: number, timing: number, timingBytes: number,
+  checkpoint: number, checkpointBytes: number,
+) => number;
+
 /** An instantiated engine that has passed every host-side layout check. */
 export interface LoadedEngine {
   readonly memory: WebAssembly.Memory;
   readonly plan: PlanFn;
   readonly planV2: PlanV2Fn;
   readonly planV3: PlanV3Fn;
+  readonly planV4: PlanV4Fn;
   readonly info: EngineInfo;
 }
 
@@ -131,6 +153,10 @@ export async function loadEngine(options: InitializationOptions = {}): Promise<L
   if (typeof planV3Fn !== "function") {
     unavailable("engine does not support scheduling analysis");
   }
+  const planV4Fn = exports["effectplan_plan_v4"];
+  if (typeof planV4Fn !== "function") {
+    unavailable("engine does not support resumable planning");
+  }
   const read = infoFn as InfoReader;
   const abi = read(I_ABI);
   if (abi !== EXPECTED_ABI) unavailable(`abi ${abi} incompatible with ${EXPECTED_ABI}`);
@@ -145,6 +171,12 @@ export async function loadEngine(options: InitializationOptions = {}): Promise<L
   if (timingRevision !== EXPECTED_TIMING_ABI) {
     unavailable(`timing revision ${timingRevision} incompatible with ${EXPECTED_TIMING_ABI}`);
   }
+  const checkpointRevision = read(I_CKPT_REV);
+  if (checkpointRevision !== EXPECTED_CHECKPOINT_ABI) {
+    unavailable(
+      `checkpoint revision ${checkpointRevision} incompatible with ${EXPECTED_CHECKPOINT_ABI}`,
+    );
+  }
 
   const base = read(I_BASE);
   const arenaBytes = read(I_ARENA_LEN);
@@ -155,6 +187,10 @@ export async function loadEngine(options: InitializationOptions = {}): Promise<L
   const levelsMax = read(I_LEVELS_MAX);
   const durationsPtr = read(I_DUR_PTR), durationsBytes = read(I_DUR_LEN), durationsMax = read(I_DUR_MAX);
   const timingPtr = read(I_TIMING_PTR), timingBytes = read(I_TIMING_LEN), timingMax = read(I_TIMING_MAX);
+  const ckptPtr = read(I_CKPT_PTR), ckptBytes = read(I_CKPT_LEN);
+  if (ckptBytes !== CHECKPOINT_RECORD_BYTES) {
+    unavailable(`checkpoint region is ${ckptBytes} bytes, expected ${CHECKPOINT_RECORD_BYTES}`);
+  }
   const limits: EngineLimits = Object.freeze({
     maxCalls: read(I_MAX_CALLS),
     maxAccesses: read(I_MAX_ACCESS),
@@ -180,12 +216,13 @@ export async function loadEngine(options: InitializationOptions = {}): Promise<L
     ["levels", levelsPtr, levelsBytes, read(I_LEVELS_MAX)],
     ["durations", durationsPtr, durationsBytes, read(I_DUR_MAX)],
     ["timing", timingPtr, timingBytes, read(I_TIMING_MAX)],
+    ["checkpoint", ckptPtr, ckptBytes, -1], // fixed-size record, audited by position
   ];
   // Each region's size is derived from a ceiling the engine also publishes, so
   // a binary that disagrees with itself is refused rather than trusted.
   // Per entry: input packs one byte plus one id and one mode per access, the
   // rest are the plain arrays their names describe.
-  const widths = [5, 0, EDGE_BYTES, 2, 4, 8];
+  const widths = [5, 0, EDGE_BYTES, 2, 4, 8, 0];
   const headers = [
     maxCalls + (maxCalls + 1) * 4, // call modes plus the CSR offsets
     wsBytes,
@@ -193,6 +230,7 @@ export async function loadEngine(options: InitializationOptions = {}): Promise<L
     LEVELS_HEADER_BYTES,
     0,
     TIMING_HEADER_BYTES,
+    CHECKPOINT_RECORD_BYTES,
   ];
   let cursor = base;
   for (let index = 0; index < regions.length; index++) {
@@ -217,6 +255,7 @@ export async function loadEngine(options: InitializationOptions = {}): Promise<L
     levels: Object.freeze({ ptr: levelsPtr, bytes: levelsBytes }),
     durations: Object.freeze({ ptr: durationsPtr, bytes: durationsBytes }),
     timing: Object.freeze({ ptr: timingPtr, bytes: timingBytes }),
+    checkpoint: Object.freeze({ ptr: ckptPtr, bytes: ckptBytes }),
   });
   const info: EngineInfo = Object.freeze({
     engineName: ENGINE_NAME,
@@ -224,6 +263,7 @@ export async function loadEngine(options: InitializationOptions = {}): Promise<L
     abiVersion: abi,
     levelsRevision,
     timingRevision,
+    checkpointRevision,
     wasmActive: true,
     memoryBytes: memory.buffer.byteLength,
     limits,
@@ -234,6 +274,7 @@ export async function loadEngine(options: InitializationOptions = {}): Promise<L
     plan: planFn as unknown as PlanFn,
     planV2: planV2Fn as unknown as PlanV2Fn,
     planV3: planV3Fn as unknown as PlanV3Fn,
+    planV4: planV4Fn as unknown as PlanV4Fn,
     info,
   };
 }

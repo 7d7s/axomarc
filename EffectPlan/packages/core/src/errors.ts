@@ -7,6 +7,11 @@
 export type EffectPlanErrorCode =
   | "EP_INVALID_INPUT"
   | "EP_DUPLICATE_CALL_ID"
+  | "EP_DUPLICATE_KEY"
+  | "EP_UNKNOWN_KEY"
+  | "EP_INVALID_CHANGESET"
+  | "EP_STALE_VERSION"
+  | "EP_SESSION_DISPOSED"
   | "EP_INVALID_EFFECT"
   | "EP_INVALID_RESOURCE"
   | "EP_UNKNOWN_EFFECT_REJECTED"
@@ -31,6 +36,8 @@ export const EXPECTED_ABI = 1;
 export const EXPECTED_LEVELS_ABI = 1;
 /** Revision of the scheduling contract this wrapper was compiled against. */
 export const EXPECTED_TIMING_ABI = 1;
+/** Revision of the resumable-planning contract this wrapper was compiled against. */
+export const EXPECTED_CHECKPOINT_ABI = 1;
 export const ENGINE_VERSION = "0.3.0";
 export const ENGINE_NAME = "effectplan-engine";
 /** Output header and record framing, cross-checked against the engine. */
@@ -40,6 +47,8 @@ export const EDGE_BYTES = 16;
 export const LEVELS_HEADER_BYTES = 4;
 /** Timing header: revision, count, makespan, peak, u64 work, critical count, reserved. */
 export const TIMING_HEADER_BYTES = 32;
+/** The checkpoint record: eight words, the last of which is the digest. */
+export const CHECKPOINT_RECORD_BYTES = 32;
 
 /** Maps a stable engine status onto a stable public error. */
 export function engineError(status: number): EffectPlanError {

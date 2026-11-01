@@ -923,6 +923,9 @@ unsafe fn plan_arena_resuming(
     }
 
     if let Some(record) = resume {
+        // The accesses that belong to the prefix: the CSR offset at the
+        // boundary says how many there are.
+        let prefix_accesses = rd_u32(planner.offsets, record.calls.saturating_mul(4)) as usize;
         let status = checkpoint::validate(
             &record,
             planner.call_modes,
@@ -936,6 +939,7 @@ unsafe fn plan_arena_resuming(
             calls,
             resources,
             accesses,
+            prefix_accesses,
         );
         if status != OK {
             return status;
@@ -944,7 +948,6 @@ unsafe fn plan_arena_resuming(
         // the prefix that is here. A removed call shifts the sequence, an edited
         // call changes it, and either one makes the restored frontier a lie about
         // the graph it is about to extend.
-        let prefix_accesses = rd_u32(planner.offsets, record.calls.saturating_mul(4)) as usize;
         let expected = checkpoint::digest(
             planner.call_modes,
             planner.offsets,
@@ -1275,12 +1278,13 @@ pub unsafe fn plan_arena_v4(
     }
 
     let (head, record) = arena.split_at_mut(CHECKPOINT_BASE_OFF);
-    let resume = match checkpoint::parse(record) {
-        Some(parsed) => parsed,
+    let pushed = match checkpoint::parse(record) {
+        Some(pushed) => pushed,
         // A record whose shape is not readable is not "no checkpoint": it is a
         // host that has written something the engine never published.
         None => return ERR_CHECKPOINT_INVALID,
     };
+    let resume = pushed.resume;
     checkpoint::clear(record);
 
     let mut published = checkpoint::Resume {
@@ -1288,30 +1292,57 @@ pub unsafe fn plan_arena_v4(
         events: 0,
         edges: 0,
         digest: 0,
+        flags: pushed.flags,
     };
-    let status = plan_arena_v3_resuming(
-        head,
-        abi_version,
-        call_count,
-        access_count,
-        resource_count,
-        call_modes_ptr,
-        access_offsets_ptr,
-        resource_ids_ptr,
-        access_modes_ptr,
-        workspace_ptr,
-        workspace_len,
-        output_ptr,
-        output_capacity,
-        levels_ptr,
-        levels_len,
-        durations_ptr,
-        durations_len,
-        timing_ptr,
-        timing_len,
-        resume,
-        Some(&mut published),
-    );
+    let without_timing = pushed.flags & checkpoint::FLAG_WITHOUT_TIMING != 0;
+    let status = if without_timing {
+        // The session wants a graph and waves only. Skipping the scheduling
+        // pass also means the timing region is left exactly as the lower entry
+        // points leave it, which is the Phase 2 contract, not a new one.
+        plan_arena_v2_resuming(
+            head,
+            abi_version,
+            call_count,
+            access_count,
+            resource_count,
+            call_modes_ptr,
+            access_offsets_ptr,
+            resource_ids_ptr,
+            access_modes_ptr,
+            workspace_ptr,
+            workspace_len,
+            output_ptr,
+            output_capacity,
+            levels_ptr,
+            levels_len,
+            resume,
+            Some(&mut published),
+        )
+    } else {
+        plan_arena_v3_resuming(
+            head,
+            abi_version,
+            call_count,
+            access_count,
+            resource_count,
+            call_modes_ptr,
+            access_offsets_ptr,
+            resource_ids_ptr,
+            access_modes_ptr,
+            workspace_ptr,
+            workspace_len,
+            output_ptr,
+            output_capacity,
+            levels_ptr,
+            levels_len,
+            durations_ptr,
+            durations_len,
+            timing_ptr,
+            timing_len,
+            resume,
+            Some(&mut published),
+        )
+    };
     if status != OK {
         return status;
     }
