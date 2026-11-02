@@ -84,8 +84,9 @@ says what the engine still checks in that case.
 
 In the **host**, as plain byte arrays. Not in the arena.
 
-The arena is 61,920 bytes and holds the engine's regions; linear memory is 17
-pages and the last 2,264 bytes of the address space are the only slack. A single
+The arena is 75,336 bytes and holds the engine's regions; linear memory is 18
+pages and the last 54,352 bytes of the address space are the slack Phase 5's
+resource regions left behind. A single
 full snapshot of the frontier is 8,200 bytes and a journal of every frontier
 mutation would be 9,216 more — neither fits, and a checkpoint every 32 calls
 would need hundreds of kilobytes.

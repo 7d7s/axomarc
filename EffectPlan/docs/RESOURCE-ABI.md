@@ -2,16 +2,20 @@
 
 The memory and byte-level budget for Phase 5, measured before any of it is built.
 
-This is the M2 artifact: what the resource regions cost, how many resources fit in
-what space, and where the arithmetic can overflow. Nothing here is implemented
-yet; the numbers come from the shipped engine and from a build that was made only
-to measure it and then reverted.
+This is the M2 artifact, and as of M3 it is the layout the engine ships: the
+regions below are in `engine/src/lib.rs`, the total is pinned by a compile-time
+assert, and `verify:wasm` checks the published offsets against the artifact. Its
+numbers come from the shipped engine and from a build that was made to measure the
+page cost before the decision was taken.
 
 ## 1. Pages are a consequence, not a setting
 
 The engine's arena is a static `no_std` array. LLD sizes linear memory as
 `data + stack` rounded up to a page, so the only way to change the page count is
-to change the arena. Measured on the shipped artifact:
+to change the arena. The engine puts its arena at the top of the data segment, so any host that needs
+absolute addresses asks `info(1)` rather than assuming them — which is why adding a
+region moved the base (1,049,928 before Phase 5, 1,049,960 after) and why no
+document or test should hardcode it. Before Phase 5 landed:
 
 | Quantity | Value |
 | --- | --- |
@@ -24,10 +28,22 @@ to change the arena. Measured on the shipped artifact:
 To test what Phase 5 would cost, the arena was temporarily extended by 26,216
 bytes — the largest candidate configuration in §3 — and the module was rebuilt.
 The declared minimum memory moved to **18 pages (1,179,648 B)** and the artifact
-size did not change at all (13,499 B, because the arena is BSS, not code). The
-extension was then reverted; the engine in this repository is still 17 pages and
-`verify:wasm` still asserts that, reading the expected count from
-`scripts/limits.mjs`.
+size did not change at all (13,499 B, because the arena is BSS, not code). That
+measurement is what the 18th page was approved on; the regions then landed for
+real, and the artifact now reports:
+
+| Quantity | Value |
+| --- | --- |
+| arena base | 1,049,960 |
+| arena length | 75,336 |
+| arena end | 1,125,296 |
+| linear memory | 1,179,648 B = 18 pages |
+| spare address space | 54,352 B |
+| wasm code | 15,421 B, 24,579 under budget |
+
+`verify:wasm` reads the expected page count from `scripts/limits.mjs`, and
+`EXPECTED_PAGES` moved in the same commit that grew the arena — a gate that permits
+growth in advance is not a gate.
 
 The consequence worth stating plainly: **Phase 5 does not fit in 2,264 bytes at
 any useful size.** The smallest configuration that can express the specification's
@@ -75,9 +91,9 @@ page buys:
 
 So within one page the engine can support up to 256 capacity resources and 7,246
 demand records — more than 56 demands per call at the maximum batch size. **Memory stops being the binding constraint
-anywhere near the sizes Phase 5 needs.** The proposal is therefore to take limits
-from function and not from byte pressure, and to spend the headroom on the things
-that actually constrain a caller:
+anywhere near the sizes Phase 5 needs.** The limits are therefore taken from
+function and not from byte pressure, and these are the values the engine now
+publishes:
 
 | Limit | Proposed | Why this number |
 | --- | --- | --- |
@@ -126,21 +142,24 @@ ERR_RESOURCE_UNDECLARED` for a requirement naming a resource that was never
 declared. Diagnostics carry numeric indexes only, never a caller's resource key —
 the same rule the error surface has followed since Phase 1.
 
-## 6. What is still a decision, not a measurement
+## 6. What is settled, and what is still a decision
 
-Two things in this budget are settled. Two are not, and they are architecture
-rather than arithmetic:
+The budget is settled and in force. So are two architectural choices, adopted when
+the owner said to proceed and implemented in M3:
 
-1. **Whether resource scheduling is one more parameter list on the planning entry
-   point or its own call.** A v5 export would take the current twenty parameters
-   plus capacities, demands and offsets — and it would make the specification's
-   §13.1 requirement (a scheduling-only change must not rebuild the dependency
-   graph) impossible to express, because one call always does both.
-2. **How a session carries resource declarations across versions**, and which
-   invalidation domain a change belongs to — dependency invalidation, scheduling
-   invalidation, or both.
+- **the resource check is its own export, not a twenty-first parameter on `v4`** —
+  chosen because one call that always validates, plans, layers, times and schedules
+  cannot express the specification's own §13.1 rule that a scheduling-only change
+  leave the dependency graph alone. A Rust test asserts the graph, levels,
+  durations, timing and checkpoint regions are all still zero after a resource call.
+- **capacity keys are interned by the host into `0..R`**, so no caller string
+  crosses the ABI boundary and a diagnostic cannot leak one.
 
-Those are recorded in `docs/RESOURCE-MODEL.md` as open, and are the M1 gate.
+Two remain genuinely open, and neither should be settled by whoever writes the next
+module: how a session carries resource declarations across versions and tracks the
+two invalidation domains (D2), and whether the engine computes longest-remaining-
+path priority, which it does not have today (D3). Both are written up in
+`docs/RESOURCE-MODEL.md` §9, which is the M1 gate.
 
 ## 7. Related documents
 

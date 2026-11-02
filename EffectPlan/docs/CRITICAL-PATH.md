@@ -149,12 +149,16 @@ files.
 The specification asked for an explicit decision about growing from 17 to 18
 pages, and made the exact layout a build-time acceptance gate.
 
-Decision: **stay at 17 pages.** `durations` is 512 bytes (`128 × u32`) and
+Decision at Phase 3: **stay at 17 pages.** `durations` is 512 bytes (`128 × u32`) and
 `timing` is 1,056 bytes (32-byte header + `128 × (u32 ES, u32 slack)`), 1,568
 bytes more than Phase 2. The arena was 61,888 bytes as the layout arithmetic of
 Phase 3 produced it; Phase 4's checkpoint record added the 32 bytes that make it
-61,920 today, and linear memory is 1,114,112 bytes = 17 pages with 2,264 bytes to
-spare.
+61,920, and linear memory 1,114,112 bytes = 17 pages with 2,264 bytes to spare.
+Phase 5's capacity regions needed 13,416 of them, so that page was taken: the arena
+is 75,336 bytes and linear memory 1,179,648 = 18 pages (`docs/RESOURCE-ABI.md` §1
+is the measurement the expansion was approved on). The Phase 3 decision still holds
+in the form that mattered — the scheduling feature cost one region pair and no
+page — it was the *next* feature that changed the arithmetic.
 
 What is *not* stored, and why:
 
@@ -168,7 +172,8 @@ What is *not* stored, and why:
 
 `verify:wasm` asserts each region's base, length, contiguity and published
 capacity, that the regions tile the arena exactly, that the u64 total-work field
-sits at offset 16, and that the memory is still 17 pages. A layout change fails
+sits at offset 16, and that linear memory is the page count stated in
+`scripts/limits.mjs`. A layout change fails
 the build. `const _: () = assert!(…)` lines in `engine/src/lib.rs` say the same
 thing at compile time, before anything runs.
 
@@ -325,7 +330,7 @@ Two numbers to keep honest about run-to-run variation, from three runs of identi
 
 The gated pair is measured the same way in every run and the harness fails closed on a breach, so a shape whose blocks happen to tier badly cannot hide behind the average.
 
-Sizes, measured from the artifact the packager writes: wasm 10,222 bytes against 40,000; unpacked package 48,766 bytes against 50,000; 18 files; 17 pages of linear memory. Cold `EffectPlan.create()` in Node, p50 401.6–618.4 µs across the shapes. The specification's report list asks for memory consumption: it is 1,114,112 bytes of linear memory (constant, never grown by planning) plus the host's per-plan rows — `128 × 8` bytes of timing region and one frozen object per call in `plan.timing.events`. The RSS and heap deltas in `artifacts/benchmarks.json` swing around zero, which is what a fixed arena should look like; the per-batch host allocation is the visible cost of the API, not of the engine.
+Sizes, measured from the artifact the packager writes *at Phase 3*: wasm 10,222 bytes against 40,000; unpacked package 48,766 bytes against 50,000; 18 files; 17 pages of linear memory. All four are superseded — see `docs/SIZE-REPORT.md` for the current artifact. Cold `EffectPlan.create()` in Node, p50 401.6–618.4 µs across the shapes. The specification's report list asks for memory consumption: it is 1,114,112 bytes of linear memory (constant, never grown by planning) plus the host's per-plan rows — `128 × 8` bytes of timing region and one frozen object per call in `plan.timing.events`. The RSS and heap deltas in `artifacts/benchmarks.json` swing around zero, which is what a fixed arena should look like; the per-batch host allocation is the visible cost of the API, not of the engine.
 
 ## 14. Limitations
 
@@ -357,7 +362,7 @@ Sizes, measured from the artifact the packager writes: wasm 10,222 bytes against
 | `latest_finish[pred] ≤ latest_finish[succ] − d` checked in the engine | checked on the host instead | in the engine it is a tautology over a min-fold; on the host it is an independent check that can name the edge |
 | "never scan every edge for every vertex" | honoured | neither pass does; each record is read exactly twice, once per direction |
 | durations may be stored as `u32` per call | `u32` region written by the host and read in place | no copy, no second buffer |
-| 17 → 18 pages acceptable | 17 pages | §6; the layout is a build-time gate either way |
+| 17 → 18 pages acceptable | 17 pages at Phase 3, 18 from Phase 5 | §6; the layout is a build-time gate either way, and the page was taken on a measurement rather than a guess |
 | the specification's example has makespan 10 | both readings implemented as tests | the prose fixes the durations and the critical path but not `E`'s edges; SCHEDULING-MODEL.md §7 |
 
 ## 16. What is next

@@ -21,16 +21,17 @@ now".
 Everything else below is still the Phase 1 brief: the 40,000-byte artifact, zero
 runtime dependencies, zero Rust heap allocation, and 17 pages of linear memory —
 Phase 4 was designed around that page count rather than against it, which is why
-session state lives in the host. Phase 5 cannot: the 18th page is approved on
-measurement (`docs/RESOURCE-ABI.md` §1), and `EXPECTED_PAGES` in
-`scripts/limits.mjs` stays at 17 until the resource regions actually land, so the
-gate fails at the moment memory grows rather than permitting it in advance.
+session state lives in the host. Phase 5 could not: its capacity regions need
+13,416 bytes and 2,264 were spare, so the 18th page was approved on measurement
+(`docs/RESOURCE-ABI.md` §1) and taken when the regions landed. `EXPECTED_PAGES` in
+`scripts/limits.mjs` moved in the same commit that grew the arena, so the gate
+failed at the moment memory grew rather than permitting it in advance.
 
 | Constraint                        | Limit    | Measured | Headroom |
 | --------------------------------- | -------- | -------- | -------- |
 | npm package, unpacked             | 82,042 B | 70,042 B | 12,000 B (the Phase 5 envelope) |
-| WebAssembly artifact              | 40,000 B | 13,499 B | 26,501 B |
-| WebAssembly linear memory         | 17 pages (18 approved for Phase 5) | 17 pages | 2,264 B of spare address space |
+| WebAssembly artifact              | 40,000 B | 15,421 B | 24,579 B |
+| WebAssembly linear memory         | 18 pages (17 through Phase 4) | 18 pages | 54,352 B of spare address space |
 
 Where the 18,251 bytes since Phase 3 went: the session module and its
 declarations are 13,778 of them, the resumable engine is 3,286, and the loader,
@@ -84,7 +85,7 @@ number in this document is derived from source file sizes.
 
 | File                         | Bytes   | Notes                     |
 | ---------------------------- | ------- | ------------------------- |
-| `dist/effectplan.wasm`       |  13,499 | the engine                |
+| `dist/effectplan.wasm`       |  15,421 | the engine                |
 | `dist/session.js`            |  11,687 | new in Phase 4            |
 | `dist/loader.js`             |   7,068 | layout audit, five plans  |
 | `dist/timing.js`             |   6,098 | new in Phase 3            |
@@ -104,9 +105,9 @@ number in this document is derived from source file sizes.
 | `package.json`               |     722 |                           |
 | `dist/execution-levels.d.ts` |     318 |                           |
 | `dist/index.js`              |     136 | re-export only            |
-| **total**                    | **70,042** | 20 files               |
+| **total**                    | **71,964** | 20 files               |
 
-The tarball is 22,910 bytes. The package declares no runtime dependencies, and
+The tarball is 23,957 bytes. The package declares no runtime dependencies, and
 the installation smoke test confirms that installing it produces a tree with
 exactly one package in it.
 
@@ -176,7 +177,7 @@ optimised artifact from `npm ci`. On a machine without it the build still ships,
 - The arena — including the new 512-byte durations region and the 1,056-byte
   timing region — is a statically reserved zero-initialised array, so it is
   emitted as BSS and costs nothing in the file. Linear memory at run time is
-  1,114,112 bytes: 17 pages. That is measured from the artifact *and* from a live
+  1,179,648 bytes: 18 pages. That is measured from the artifact *and* from a live
   instantiation (`npm run verify:wasm` asserts both), not inferred from the arena
   arithmetic, which is the step the planning document warned about.
 - The 3,025 bytes of file growth between Phase 3 and Phase 4 are the resumable
@@ -216,7 +217,7 @@ in this file because the second one flatters the phase more than the first.
 - `packages/core/test/package-size.test.ts` — the same limits as a test, and a
   check that every module the entry point imports is actually published.
 - `npm run verify:wasm` — 110 checks, including the arena tiling, each region's
-  published capacity and that linear memory is still 17 pages. This is the
+  published capacity and that linear memory is still 18 pages. This is the
   build-time memory-layout acceptance gate the Phase 3 planning document asked
   for: a layout change fails the build instead of surfacing later as a wrong plan.
 - `scripts/build-package.mjs --dry-run` — enforces both limits before writing a

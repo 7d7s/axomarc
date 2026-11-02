@@ -151,20 +151,33 @@ kernel, and pretending otherwise would be the one way to make this library
 untrustworthy. EffectPlan hands a plan to something else; that something else owns
 the infrastructure.
 
-## 9. Open decisions — the M1 gate
+## 9. Decisions
 
-**D1. A new export, or a new parameter list on the existing one.**
-A `effectplan_plan_v5` would take the current twenty parameters plus capacities,
-offsets and demands, in one call that validates, plans the graph, layers, times and
-schedules. The alternative is a separate entry point that takes a graph the engine
-has already built and produces a schedule. The reason to prefer separate is not
-tidiness: §13.1 of the specification requires that a **scheduling-only** change
-(new durations, new capacities, new demands, no change to any operation's access
-declarations) must not rebuild the dependency graph. One call that always does both
-cannot express that rule at all. Recommendation: separate call, with the stateless
-API calling both in sequence so ordinary callers see one method.
+D1 and D4 were adopted when the owner said to proceed, and are implemented in M3.
+D2 and D3 remain genuinely open: they are not measurements, and each changes what
+a later module has to be. Recording an adopted decision is not the same as a
+reviewed one — if D1 or D4 is wrong, the correction belongs here, and the engine
+change that follows it.
 
-**D2. How a session carries resource declarations across versions.**
+**D1 — a new export, adopted and implemented.**
+A `effectplan_plan_v5` would have taken the current twenty parameters plus
+capacities, offsets and demands, in one call that always validates, plans the
+graph, layers, times and schedules. The reason that is wrong is not tidiness:
+§13.1 requires that a **scheduling-only** change — new durations, new capacities,
+new demands, no change to any operation's access declarations — must not rebuild
+the dependency graph, and one call that always does both cannot express that rule
+at all. `effectplan_resource_check` therefore takes twelve parameters, none of them
+a planning region, and a test asserts it leaves the graph, levels, durations,
+timing and checkpoint bytes untouched. The stateless API will call both in sequence
+so ordinary callers still see one method (M6).
+
+**D4 — capacity keys interned by the host, adopted.**
+Keys never enter the arena; the host maps them to `0..R`, the same discipline
+`encode.ts` has applied to dependency resources since Phase 1. Requirements are
+positional per call for `planBatch` — exactly like `durations` — and keyed by
+caller key inside a session.
+
+**D2 — open. How a session carries resource declarations across versions.**
 A Phase 4 snapshot is immutable and self-contained. Resource declarations belong to
 the session, not the snapshot, but the schedule inside the snapshot was computed
 from them. Two invalidation domains then have to be tracked independently —
@@ -175,7 +188,7 @@ session-level resource table with its own version, scheduling-only transactions
 skipping the dependency pass entirely, and the differential test extended so
 scheduling-only edits are compared against a full rebuild like everything else.
 
-**D3. Does the engine compute longest remaining path (rule 1 of §6)?**
+**D3 — open. Does the engine compute longest remaining path (rule 1 of §6)?**
 Cost: one reverse pass and 512 bytes. Benefit: unknown until measured — it is the
 difference between "prioritise what the critical path needs" and "prioritise what
 has the least slack", which are not the same ranking, and the specification's own
@@ -184,16 +197,10 @@ ranking first (the data already exists), benchmark it against FIFO and against t
 path-based variant, and let the measurement decide — the same way the Phase 4
 interval default got settled.
 
-**D4. Are capacity resources interned by the host or addressed by position?**
-Recommendation: interned by the host into `0..R`, so keys never cross the ABI
-boundary and the engine's validation stays numeric. The alternative — passing keys
-in — would put caller strings into the arena for no benefit, and would break the
-rule that diagnostics cannot leak an identifier.
-
-Each of these has an answer that follows from the source and the constraints above;
-none of them should be settled by whoever happens to write the code first. Once
-approved they belong in this document as decisions, and `docs/RESOURCE-ABI.md`
-becomes the budget they are sized against.
+D2 has to be answered before M7, because it decides whether the session grows a
+second table or reuses the checkpoint machinery. D3 can wait for the benchmark that
+answers it, which is the right order: the ranking rule is a performance question
+and should be settled by a measurement, not by an opinion about schedulers.
 
 ## 10. Related documents
 

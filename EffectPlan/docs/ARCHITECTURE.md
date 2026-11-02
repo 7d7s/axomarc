@@ -100,16 +100,23 @@ reads them from `effectplan_info`, it does not assume them.
 | Region    | Offset    | Bytes  | Contents                                   |
 | --------- | --------- | ------ | ------------------------------------------ |
 | below     | 0         | ~1 MiB | data segment and shadow stack, unused by us |
-| arena     | 1,049,928 | 61,920 | everything below                            |
-| ├ input   | 1,049,928 | 5,764  | call modes, offsets, resource ids, modes    |
-| ├ work    | 1,055,692 | 17,416 | last writers, reader lists, event lists     |
-| ├ output  | 1,073,108 | 36,880 | header + 2,304 edge records × 16 bytes      |
-| ├ levels  | 1,109,988 |    260 | `u32` count + 128 `u16` execution levels    |
-| ├ durations | 1,110,248 |  512  | 128 `u32` tick counts, written by the host  |
-| ├ timing  | 1,110,760 |  1,056 | 32-byte header + 128 × (`u32` ES, `u32` slack) |
-| └ checkpoint | 1,111,816 | 32 | the resumable-planning record (Phase 4) |
+| arena     | 1,049,960 | 75,336 | everything below                            |
+| ├ input   | 1,049,960 | 5,764  | call modes, offsets, resource ids, modes    |
+| ├ work    | 1,055,724 | 17,416 | last writers, reader lists, event lists     |
+| ├ output  | 1,073,140 | 36,880 | header + 2,304 edge records × 16 bytes      |
+| ├ levels  | 1,110,020 |    260 | `u32` count + 128 `u16` execution levels    |
+| ├ durations | 1,110,280 |  512  | 128 `u32` tick counts, written by the host  |
+| ├ timing  | 1,110,792 |  1,056 | 32-byte header + 128 × (`u32` ES, `u32` slack) |
+| ├ checkpoint | 1,111,848 | 32 | the resumable-planning record (Phase 4) |
+| ├ capacities | 1,111,880 | 256 | declared capacity per resource (Phase 5) |
+| ├ demand offs | 1,112,136 | 516 | bounds of each call's demands |
+| ├ demand recs | 1,112,652 | 8,192 | `(resource, amount)` pairs, flattened |
+| ├ scratch | 1,120,844 | 1,536 | usage, in-degree, finish — engine-private |
+| ├ schedule | 1,122,124 | 1,056 | `(start, finish)` per call (Phase 5) |
+| ├ res stats | 1,123,180 | 1,056 | capacity, peak, busy time per resource |
+| └ res diags | 1,124,236 | 1,056 | why a demand cannot be met, by index |
 
-Linear memory is 1,114,112 bytes (17 pages) and never grows on its own. The
+Linear memory is 1,179,648 bytes (18 pages) and never grows on its own. The
 timing region is the tail of the arena: a version one or version two call never
 touches it, and `v3` invalidates its header before it starts, so a refused
 schedule cannot be mistaken for the previous batch's result.

@@ -33,11 +33,21 @@ constants).
 | `effectplan_plan` | 12 | Phase 1 | dependency graph in the output region |
 | `effectplan_plan_v2` | 14 | Phase 2 | the same, plus execution levels |
 | `effectplan_plan_v3` | 18 | Phase 3 | the same, plus the critical path |
+| `effectplan_plan_v4` | 20 | Phase 4 | the same, resumable from a checkpoint |
+| `effectplan_resource_check` | 12 | Phase 5 | feasibility of declared capacities, no schedule |
 
 `v2` is `plan` plus `levels_ptr`, `levels_len`. `v3` is `v2` plus `durations_ptr`,
 `durations_len`, `timing_ptr`, `timing_len`. The `v3` entry point runs the `v2`
 body — the same code, not a copy — and then the scheduling pass, so a graph cannot
-differ between entry points by construction.
+differ between entry points by construction. `v4` is `v3` plus `checkpoint_ptr`,
+`checkpoint_len`, and it commits the record a later call resumes from.
+
+`effectplan_resource_check` is deliberately *not* a twenty-first parameter on `v4`.
+It takes the capacity table, the demand offsets, the demand records and the
+diagnostic region — twelve parameters, none of them a planning region — and writes
+none of the graph, levels, timing or checkpoint bytes. A single call that always
+validates, plans, layers, times and schedules could not express the requirement
+that a scheduling-only change leave the dependency graph alone.
 
 The `plan`/`v2`/`v3` argument order:
 
@@ -53,9 +63,9 @@ workspace_ptr, workspace_len, output_ptr, output_capacity,
 
 ## 3. Memory layout
 
-Linear memory is 17 pages (1,114,112 bytes) and never grows during a plan. The
+Linear memory is 18 pages (1,179,648 bytes) and never grows during a plan. The
 engine's arena sits at the top of the data segment; the base is reported by
-`info(1)`, and in this build it is 1,049,928.
+`info(1)`, and in this build it is 1,049,960.
 
 | Region | Offset from arena base | Bytes | Written by | Read by |
 | --- | --- | --- | --- | --- |
@@ -66,9 +76,18 @@ engine's arena sits at the top of the data segment; the base is reported by
 | `durations` | 60,320 | 512 | host | engine |
 | `timing` | 60,832 | 1,056 | engine | host |
 | `checkpoint` | 61,888 | 32 | engine | host and engine |
+| `capacities` | 61,920 | 256 | host | engine |
+| `demand offsets` | 62,176 | 516 | host | engine |
+| `demand records` | 62,692 | 8,192 | host | engine |
+| *(usage, in-degree, finish)* | 70,884 | 1,536 | engine | engine |
+| `schedule` | 72,164 | 1,056 | engine | host |
+| `resource stats` | 73,220 | 1,056 | engine | host |
+| `resource diagnostics` | 74,276 | 1,056 | engine | host |
 
-Total 61,920 bytes, contiguous, four-byte aligned at every region boundary, with
-2,264 bytes of address space to spare. `verify:wasm` asserts the tiling (`region N+1 base
+Total 75,336 bytes, contiguous, four-byte aligned at every region boundary, with
+54,352 bytes of address space left after the eight-byte rounding. The three
+engine-private scratch regions are not published through `info`: a host has no
+business naming them, and an argument that cannot name them cannot alias them. `verify:wasm` asserts the tiling (`region N+1 base
 == region N base + region N length`), the alignment, each region's published
 capacity and the exact page count. This is a build-time acceptance gate: a layout
 drift fails the build rather than surfacing as a wrong plan.
@@ -167,6 +186,10 @@ at all unless it was asked for.
 | 21–24 | levels revision, levels base, levels length, levels capacity |
 | 25–28 | timing revision, durations base, durations length, durations capacity |
 | 29–31 | timing base, timing length, timing capacity |
+| 32–34 | checkpoint revision, checkpoint base, checkpoint length |
+| 35 | resource revision |
+| 36–47 | capacities base/length, demand offsets base/length, demand records base/length, schedule base/length, resource stats base/length, resource diagnostics base/length |
+| 48–51 | max capacity resources, max demand records, max diagnostics, max capacity |
 
 An unknown kind returns `u32::MAX`, which reaches the host as `-1` and fails the
 loader's audit. That is how an older host notices a newer engine, and how a newer

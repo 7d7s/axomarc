@@ -20,7 +20,7 @@ its own CPM.
 - 70,042 bytes unpacked. From Phase 5 the package budget is a frozen baseline
   (the Phase 4 artifact) plus a per-phase envelope agreed in advance, rather than
   a ceiling raised each time the work outgrew it — see `docs/SIZE-REPORT.md`. The
-  wasm artifact is 13,499 bytes (budget: 40,000). Both measured from the packed
+  wasm artifact is 15,421 bytes (budget: 40,000). Both measured from the packed
   tarball, not from source.
 
 ## Quick start
@@ -155,10 +155,12 @@ Phase 4 (incremental planning) is **in progress**: the engine can stop at a call
 boundary, commit a checkpoint of the state it stopped in, and continue from that
 checkpoint or refuse it; `planner.createSession()` keeps a plan alive through
 appends, replacements and removals, and an incremental plan is proved equal to a
-fresh rebuild by a randomised differential test. Linear memory is still 17 pages
-because the session state lives in the host, and the package sits at its
-baseline (70,042 bytes unpacked — `docs/SIZE-REPORT.md` records the three Phase 4
-reviews and the envelope policy that replaced them). What is outstanding is the CI evidence: every job has passed
+fresh rebuild by a randomised differential test. Phase 4 kept linear memory at
+17 pages because the session state lives in the host; Phase 5's capacity regions
+took the 18th page, approved on measurement (`docs/RESOURCE-ABI.md` §1). The
+package sits at 71,964 bytes unpacked against an 82,042-byte ceiling —
+`docs/SIZE-REPORT.md` records the three Phase 4 reviews and the envelope policy
+that replaced them. What is outstanding is the CI evidence: every job has passed
 locally and the branch is pushed, but no GitHub Actions run exists until a pull
 request opens.
 
@@ -173,7 +175,7 @@ suite that grew from 122 to 156 — 20 timing tests, 7 critical-path properties 
 8 raw-ABI scheduling checks — without touching the twelve- and fourteen-parameter
 contracts, the 40,000-byte artifact budget or the 50,000-byte package limit that
 was in force until the Phase 4 review.
-Linear memory is still 17 pages, and that is a build-time gate rather than a hope.
+Linear memory is 18 pages, and that is a build-time gate rather than a hope.
 
 - the model and the arithmetic contract: [`docs/SCHEDULING-MODEL.md`](docs/SCHEDULING-MODEL.md)
 - the byte-level ABI for all three phases: [`docs/ABI.md`](docs/ABI.md)

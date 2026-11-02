@@ -119,8 +119,9 @@ contiguous, four-byte aligned, and the assertions fail at compile time if that
 ever stops being true. `effectplan_info` publishes the layout so the host
 cannot drift from it. Phase 2 appended one region — `levels`, 260 bytes; Phase 3
 appended two — `durations`, 512 bytes, and `timing`, 1,056 bytes — and Phase 4
-appended the 32-byte checkpoint record: the arena is still contiguous, at 61,920
-bytes, with linear memory at 17 pages. The timing
+appended the 32-byte checkpoint record, and Phase 5 appended the capacity
+regions: the arena is still contiguous, at 75,336 bytes, with linear memory at 18
+pages. The timing
 region is the tail; `verify:wasm` asserts every base, length, alignment and the
 page count, so a layout change fails the build.
 
@@ -189,12 +190,13 @@ Two details that were measured rather than assumed:
 
 ## Testing
 
-### Rust — 110 tests, all through the real ABI
+### Rust — 132 tests, all through the real ABI
 
-`cargo test -p effectplan-engine` — 110 passed, 0 failed: the 50 Phase 1 tests,
+`cargo test -p effectplan-engine` — 132 passed, 0 failed: the 50 Phase 1 tests,
 21 execution-level tests in `levels_tests.rs`, 20 scheduling tests in
-`schedule_tests.rs` and 19 checkpoint tests in `checkpoint_tests.rs`, all driven
-through `effectplan_plan_v2`, `effectplan_plan_v3` and `effectplan_plan_v4`.
+`schedule_tests.rs`, 19 checkpoint tests in `checkpoint_tests.rs` and 22 resource
+feasibility tests in `resources_tests.rs`, all driven through the real exports —
+`effectplan_plan_v2`, `_v3`, `_v4` and `effectplan_resource_check`.
 
 The categories the brief asks for: input validation, offset validation, access
 validation, workspace initialisation, read processing, write processing, edge
@@ -217,9 +219,9 @@ determinism, non-canonical and wrong-length scheduling regions (108, 119), and t
 guarantee that `v1` and `v2` never write the timing region. The tests share one
 static arena, so all three test modules serialise on one shared mutex.
 
-### TypeScript — 182 tests, all passing
+### TypeScript — 183 tests, all passing
 
-`npm test` — 182 declared tests, 0 failed. The runner's tally reads `# pass 183`
+`npm test` — 183 declared tests, 0 failed. The runner's tally reads `# pass 184`
 because it also loads `test/support.ts`'s compiled module as a file, which
 declares no tests. The package-size suite is green against the ceiling that
 `scripts/limits.mjs` states (a frozen Phase 4 baseline of 70,042 bytes plus a
@@ -232,7 +234,7 @@ declares no tests. The package-size suite is green against the ceiling that
 | `planner.test.ts`   | 22    | conflict matrix, effect modes, encoding, decoding, determinism  |
 | `parity.test.ts`    | 4     | exhaustive parity with the independent oracles                    |
 | `property.test.ts`  | 22    | fast-check properties: 8 graph, 7 level, 7 critical path          |
-| `wasm.test.ts`      | 40    | the raw ABI, hostile arguments, memory growth, the scheduling and checkpoint ABI |
+| `wasm.test.ts`      | 41    | the raw ABI, hostile arguments, memory growth, the scheduling, checkpoint and resource ABI |
 | `execution-levels.test.ts` | 17 | decoding, grouping, oracle parity, immutability             |
 | `timing.test.ts`    | 20    | duration validation, the worked examples, oracle agreement, overflow, half-open boundaries, growth, no timing when not asked |
 | `session.test.ts`       | 17    | the incremental session: parity, versions, atomicity, the key contract, reuse that survives a history |
