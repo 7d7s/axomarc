@@ -216,6 +216,11 @@ Linear memory is 18 pages, and that is a build-time gate rather than a hope.
   [`docs/RESOURCE-MODEL.md`](docs/RESOURCE-MODEL.md),
   [`docs/RESOURCE-ABI.md`](docs/RESOURCE-ABI.md),
   [`docs/RESOURCE-SCHEDULING.md`](docs/RESOURCE-SCHEDULING.md)
+- Phase 6, before any of it is built — what could be won, the objective that would
+  judge it, and the memory it would cost:
+  [`docs/OPTIMIZATION-BENCHMARKS.md`](docs/OPTIMIZATION-BENCHMARKS.md),
+  [`docs/OPTIMIZATION-RFC.md`](docs/OPTIMIZATION-RFC.md),
+  [`docs/OPTIMIZATION-BUDGETS.md`](docs/OPTIMIZATION-BUDGETS.md)
 - the rest: [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md),
   [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md),
   [`docs/SIZE-REPORT.md`](docs/SIZE-REPORT.md)
