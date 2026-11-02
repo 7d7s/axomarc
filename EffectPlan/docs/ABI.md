@@ -55,7 +55,7 @@ workspace_ptr, workspace_len, output_ptr, output_capacity,
 
 Linear memory is 17 pages (1,114,112 bytes) and never grows during a plan. The
 engine's arena sits at the top of the data segment; the base is reported by
-`info(1)`, and in this build it is 1,049,864.
+`info(1)`, and in this build it is 1,049,928.
 
 | Region | Offset from arena base | Bytes | Written by | Read by |
 | --- | --- | --- | --- | --- |
@@ -65,9 +65,10 @@ engine's arena sits at the top of the data segment; the base is reported by
 | `levels` | 60,060 | 260 | engine | host |
 | `durations` | 60,320 | 512 | host | engine |
 | `timing` | 60,832 | 1,056 | engine | host |
+| `checkpoint` | 61,888 | 32 | engine | host and engine |
 
-Total 61,888 bytes, contiguous, four-byte aligned at every region boundary, with
-2,360 bytes of memory to spare. `verify:wasm` asserts the tiling (`region N+1 base
+Total 61,920 bytes, contiguous, four-byte aligned at every region boundary, with
+2,264 bytes of address space to spare. `verify:wasm` asserts the tiling (`region N+1 base
 == region N base + region N length`), the alignment, each region's published
 capacity and the exact page count. This is a build-time acceptance gate: a layout
 drift fails the build rather than surfacing as a wrong plan.

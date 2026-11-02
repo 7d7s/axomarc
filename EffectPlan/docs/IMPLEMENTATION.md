@@ -118,8 +118,9 @@ The arena layout is owned by Rust and const-asserted: the regions are
 contiguous, four-byte aligned, and the assertions fail at compile time if that
 ever stops being true. `effectplan_info` publishes the layout so the host
 cannot drift from it. Phase 2 appended one region — `levels`, 260 bytes; Phase 3
-appended two — `durations`, 512 bytes, and `timing`, 1,056 bytes — and the arena
-is still contiguous at 61,888 bytes with linear memory at 17 pages. The timing
+appended two — `durations`, 512 bytes, and `timing`, 1,056 bytes — and Phase 4
+appended the 32-byte checkpoint record: the arena is still contiguous, at 61,920
+bytes, with linear memory at 17 pages. The timing
 region is the tail; `verify:wasm` asserts every base, length, alignment and the
 page count, so a layout change fails the build.
 

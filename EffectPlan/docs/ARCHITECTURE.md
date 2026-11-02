@@ -100,13 +100,14 @@ reads them from `effectplan_info`, it does not assume them.
 | Region    | Offset    | Bytes  | Contents                                   |
 | --------- | --------- | ------ | ------------------------------------------ |
 | below     | 0         | ~1 MiB | data segment and shadow stack, unused by us |
-| arena     | 1,049,864 | 61,888 | everything below                            |
-| ├ input   | 1,049,864 | 5,764  | call modes, offsets, resource ids, modes    |
-| ├ work    | 1,055,628 | 17,416 | last writers, reader lists, event lists     |
-| ├ output  | 1,073,044 | 36,880 | header + 2,304 edge records × 16 bytes      |
-| ├ levels  | 1,109,924 |    260 | `u32` count + 128 `u16` execution levels    |
-| ├ durations | 1,110,184 |  512  | 128 `u32` tick counts, written by the host  |
-| └ timing  | 1,110,696 |  1,056 | 32-byte header + 128 × (`u32` ES, `u32` slack) |
+| arena     | 1,049,928 | 61,920 | everything below                            |
+| ├ input   | 1,049,928 | 5,764  | call modes, offsets, resource ids, modes    |
+| ├ work    | 1,055,692 | 17,416 | last writers, reader lists, event lists     |
+| ├ output  | 1,073,108 | 36,880 | header + 2,304 edge records × 16 bytes      |
+| ├ levels  | 1,109,988 |    260 | `u32` count + 128 `u16` execution levels    |
+| ├ durations | 1,110,248 |  512  | 128 `u32` tick counts, written by the host  |
+| ├ timing  | 1,110,760 |  1,056 | 32-byte header + 128 × (`u32` ES, `u32` slack) |
+| └ checkpoint | 1,111,816 | 32 | the resumable-planning record (Phase 4) |
 
 Linear memory is 1,114,112 bytes (17 pages) and never grows on its own. The
 timing region is the tail of the arena: a version one or version two call never

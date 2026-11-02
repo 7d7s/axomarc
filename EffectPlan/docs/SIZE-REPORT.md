@@ -24,7 +24,7 @@ session state lives in the host.
 | --------------------------------- | -------- | -------- | -------- |
 | npm package, unpacked             | 72,000 B | 70,042 B | 1,958 B  |
 | WebAssembly artifact              | 40,000 B | 13,499 B | 26,501 B |
-| WebAssembly linear memory         | 17 pages | 17 pages | 2,328 B of spare address space |
+| WebAssembly linear memory         | 17 pages | 17 pages | 2,264 B of spare address space |
 
 Where the 18,251 bytes since Phase 3 went: the session module and its
 declarations are 13,778 of them, the resumable engine is 3,286, and the loader,

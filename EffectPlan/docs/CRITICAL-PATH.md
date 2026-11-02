@@ -151,9 +151,10 @@ pages, and made the exact layout a build-time acceptance gate.
 
 Decision: **stay at 17 pages.** `durations` is 512 bytes (`128 × u32`) and
 `timing` is 1,056 bytes (32-byte header + `128 × (u32 ES, u32 slack)`), 1,568
-bytes more than Phase 2. The arena is now 61,888 bytes against the 61,888 the
-layout arithmetic produces, and linear memory is 1,114,112 bytes = 17 pages with
-2,360 bytes to spare.
+bytes more than Phase 2. The arena was 61,888 bytes as the layout arithmetic of
+Phase 3 produced it; Phase 4's checkpoint record added the 32 bytes that make it
+61,920 today, and linear memory is 1,114,112 bytes = 17 pages with 2,264 bytes to
+spare.
 
 What is *not* stored, and why:
 
