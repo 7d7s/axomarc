@@ -43,6 +43,8 @@ pub mod schedule;
 
 pub mod checkpoint;
 
+pub mod resources;
+
 /// The engine works on one statically reserved arena, so the test modules
 /// that drive it through the real ABI must exclude each other.
 #[cfg(test)]
@@ -56,6 +58,9 @@ mod schedule_tests;
 
 #[cfg(test)]
 mod checkpoint_tests;
+
+#[cfg(test)]
+mod resources_tests;
 
 // ---------------------------------------------------------------------------
 // Limits. These are the conservative Phase-1 prototype ceilings.
@@ -133,6 +138,19 @@ pub const ERR_OUTPUT_INVALID: i32 = 130;
 pub const ERR_CHECKPOINT_INVALID: i32 = 131;
 /// A checkpoint's counters exceed what its prefix could have generated.
 pub const ERR_CHECKPOINT_RANGE: i32 = 132;
+/// A demand exceeds the capacity of the resource it names: the declaration can
+/// never be satisfied, which is not the same fact as a schedule being slow.
+pub const ERR_RESOURCE_CAPACITY: i32 = 133;
+/// A capacity, demand or accumulated total is outside the integer range the
+/// resource model supports. Refused rather than saturated.
+pub const ERR_RESOURCE_RANGE: i32 = 134;
+/// A requirement names a resource that was never declared.
+pub const ERR_RESOURCE_UNDECLARED: i32 = 135;
+/// The resource declarations are malformed: counts over ceilings, a zero
+/// capacity or demand, a duplicated resource in one call, an offset vector that
+/// does not describe its records. Nothing after this can be trusted, so the scan
+/// stops instead of continuing on guessed boundaries.
+pub const ERR_RESOURCE_REGION: i32 = 136;
 pub const ERR_INTERNAL: i32 = 140;
 
 // ---------------------------------------------------------------------------
@@ -218,7 +236,58 @@ pub const TIMING_BASE_OFF: usize = DURATIONS_BASE_OFF + DURATIONS_REGION_LEN;
 pub const CHECKPOINT_BASE_OFF: usize = TIMING_BASE_OFF + TIMING_REGION_LEN;
 pub const CHECKPOINT_REGION_LEN: usize = checkpoint::CHECKPOINT_RECORD_BYTES;
 
-pub const ARENA_BYTES: usize = align8(CHECKPOINT_BASE_OFF + CHECKPOINT_REGION_LEN);
+// ---------------------------------------------------------------------------
+// Capacity resources (Phase 5).
+//
+// A separate index space from the dependency resources: those are interned by
+// the host and indexed by `RES_SLOTS` lanes in the workspace, these are numbered
+// `0..R` against their own capacity table, and no mapping between the two exists
+// or should. Sized from `MAX_CAPACITY_RESOURCES` and `MAX_DEMAND_RECORDS`, both
+// computed against the memory budget in `docs/RESOURCE-ABI.md` rather than picked
+// for comfort — one page of address space covers every configuration the
+// specification asked to benchmark, so the limits are chosen from function.
+// ---------------------------------------------------------------------------
+
+/// Capacities, one `u32` per declared resource. Written by the host.
+pub const CAPACITIES_BASE_OFF: usize = CHECKPOINT_BASE_OFF + CHECKPOINT_REGION_LEN;
+pub const CAPACITIES_REGION_LEN: usize = resources::CAPACITIES_REGION_LEN;
+
+/// Demand bounds, one `u32` per call slot plus the terminal bound. Host-written.
+pub const DEMAND_OFFSETS_BASE_OFF: usize = CAPACITIES_BASE_OFF + CAPACITIES_REGION_LEN;
+pub const DEMAND_OFFSETS_REGION_LEN: usize = resources::DEMAND_OFFSETS_REGION_LEN;
+
+/// `(resource, amount)` pairs, flattened: no per-call collection exists anywhere.
+pub const DEMAND_RECORDS_BASE_OFF: usize = DEMAND_OFFSETS_BASE_OFF + DEMAND_OFFSETS_REGION_LEN;
+pub const DEMAND_RECORDS_REGION_LEN: usize = resources::DEMAND_RECORDS_REGION_LEN;
+
+/// Live usage while placing. Engine-private, never read by the host.
+pub const RESOURCE_USAGE_BASE_OFF: usize = DEMAND_RECORDS_BASE_OFF + DEMAND_RECORDS_REGION_LEN;
+pub const RESOURCE_USAGE_REGION_LEN: usize = resources::USAGE_REGION_LEN;
+
+/// Working in-degree per call. Engine-private.
+pub const RESOURCE_INDEGREE_BASE_OFF: usize = RESOURCE_USAGE_BASE_OFF + RESOURCE_USAGE_REGION_LEN;
+pub const RESOURCE_INDEGREE_REGION_LEN: usize = resources::INDEGREE_REGION_LEN;
+
+/// Finish time per running slot. Engine-private.
+pub const RESOURCE_FINISH_BASE_OFF: usize =
+    RESOURCE_INDEGREE_BASE_OFF + RESOURCE_INDEGREE_REGION_LEN;
+pub const RESOURCE_FINISH_REGION_LEN: usize = resources::FINISH_REGION_LEN;
+
+/// The resource schedule: `(start, finish)` per call. Engine-written, host-read.
+pub const SCHEDULE_BASE_OFF: usize = RESOURCE_FINISH_BASE_OFF + RESOURCE_FINISH_REGION_LEN;
+pub const SCHEDULE_REGION_LEN: usize = resources::SCHEDULE_REGION_LEN;
+
+/// Per-resource capacity, peak and busy time. Engine-written, host-read.
+pub const RESOURCE_STATS_BASE_OFF: usize = SCHEDULE_BASE_OFF + SCHEDULE_REGION_LEN;
+pub const RESOURCE_STATS_REGION_LEN: usize = resources::STATS_REGION_LEN;
+
+/// Why something could not be scheduled, by index and never by caller identifier.
+pub const RESOURCE_DIAGNOSTICS_BASE_OFF: usize =
+    RESOURCE_STATS_BASE_OFF + RESOURCE_STATS_REGION_LEN;
+pub const RESOURCE_DIAGNOSTICS_REGION_LEN: usize = resources::DIAGNOSTICS_REGION_LEN;
+
+pub const ARENA_BYTES: usize =
+    align8(RESOURCE_DIAGNOSTICS_BASE_OFF + RESOURCE_DIAGNOSTICS_REGION_LEN);
 
 const fn align8(n: usize) -> usize {
     (n + 7) / 8 * 8
@@ -250,6 +319,35 @@ const _: () = assert!(ARENA_BYTES >= TIMING_BASE_OFF + TIMING_REGION_LEN);
 const _: () = assert!(CHECKPOINT_BASE_OFF == TIMING_BASE_OFF + TIMING_REGION_LEN);
 const _: () = assert!(CHECKPOINT_BASE_OFF % 4 == 0);
 const _: () = assert!(ARENA_BYTES >= CHECKPOINT_BASE_OFF + CHECKPOINT_REGION_LEN);
+
+// Phase 5 tiles the resource regions after the checkpoint record, and the total
+// is pinned to the figure `docs/RESOURCE-ABI.md` derives: 24R + 8K + 3,684 bytes
+// of new arena at R=64 resources and K=1,024 demand records, on top of the 61,920
+// the first four phases needed. A layout change moves this number, and the budget
+// document has to move with it rather than drift.
+const _: () = assert!(CAPACITIES_BASE_OFF == CHECKPOINT_BASE_OFF + CHECKPOINT_REGION_LEN);
+const _: () = assert!(CAPACITIES_BASE_OFF % 4 == 0);
+const _: () = assert!(DEMAND_OFFSETS_BASE_OFF == CAPACITIES_BASE_OFF + CAPACITIES_REGION_LEN);
+const _: () = assert!(DEMAND_OFFSETS_BASE_OFF % 4 == 0);
+const _: () =
+    assert!(DEMAND_RECORDS_BASE_OFF == DEMAND_OFFSETS_BASE_OFF + DEMAND_OFFSETS_REGION_LEN);
+const _: () = assert!(DEMAND_RECORDS_BASE_OFF % 4 == 0);
+const _: () =
+    assert!(RESOURCE_USAGE_BASE_OFF == DEMAND_RECORDS_BASE_OFF + DEMAND_RECORDS_REGION_LEN);
+const _: () =
+    assert!(RESOURCE_INDEGREE_BASE_OFF == RESOURCE_USAGE_BASE_OFF + RESOURCE_USAGE_REGION_LEN);
+const _: () =
+    assert!(RESOURCE_FINISH_BASE_OFF == RESOURCE_INDEGREE_BASE_OFF + RESOURCE_INDEGREE_REGION_LEN);
+const _: () = assert!(SCHEDULE_BASE_OFF == RESOURCE_FINISH_BASE_OFF + RESOURCE_FINISH_REGION_LEN);
+const _: () = assert!(RESOURCE_STATS_BASE_OFF == SCHEDULE_BASE_OFF + SCHEDULE_REGION_LEN);
+const _: () =
+    assert!(RESOURCE_DIAGNOSTICS_BASE_OFF == RESOURCE_STATS_BASE_OFF + RESOURCE_STATS_REGION_LEN);
+const _: () =
+    assert!(ARENA_BYTES == align8(RESOURCE_DIAGNOSTICS_BASE_OFF + RESOURCE_DIAGNOSTICS_REGION_LEN));
+const _: () = assert!(ARENA_BYTES == 75_336);
+const _: () = assert!(
+    DEMAND_RECORDS_REGION_LEN / resources::DEMAND_RECORD_BYTES == resources::MAX_DEMAND_RECORDS
+);
 const _: () = assert!(ARENA_BYTES < 256 * 1024);
 
 /// The single statically reserved linear-memory region. It is zero-initialised,
@@ -1458,6 +1556,23 @@ pub extern "C" fn effectplan_info(kind: u32) -> u32 {
         32 => checkpoint::CHECKPOINT_REVISION,
         33 => base + CHECKPOINT_BASE_OFF as u32,
         34 => CHECKPOINT_REGION_LEN as u32,
+        35 => resources::RESOURCE_REVISION,
+        36 => base + CAPACITIES_BASE_OFF as u32,
+        37 => CAPACITIES_REGION_LEN as u32,
+        38 => base + DEMAND_OFFSETS_BASE_OFF as u32,
+        39 => DEMAND_OFFSETS_REGION_LEN as u32,
+        40 => base + DEMAND_RECORDS_BASE_OFF as u32,
+        41 => DEMAND_RECORDS_REGION_LEN as u32,
+        42 => base + SCHEDULE_BASE_OFF as u32,
+        43 => SCHEDULE_REGION_LEN as u32,
+        44 => base + RESOURCE_STATS_BASE_OFF as u32,
+        45 => RESOURCE_STATS_REGION_LEN as u32,
+        46 => base + RESOURCE_DIAGNOSTICS_BASE_OFF as u32,
+        47 => RESOURCE_DIAGNOSTICS_REGION_LEN as u32,
+        48 => resources::MAX_CAPACITY_RESOURCES as u32,
+        49 => resources::MAX_DEMAND_RECORDS as u32,
+        50 => resources::MAX_RESOURCE_DIAGNOSTICS as u32,
+        51 => resources::MAX_CAPACITY,
         _ => SENTINEL,
     }
 }
@@ -1759,4 +1874,94 @@ pub unsafe extern "C" fn effectplan_plan_v4(
         offs[9],
         checkpoint_len,
     )
+}
+
+/// The Phase 5 feasibility entry point: validate a declared capacity table and
+/// its per-call demands, and report why the declarations cannot be satisfied —
+/// by index, never by a caller's identifier.
+///
+/// This call schedules nothing. It answers the question that comes before any
+/// schedule: is what the caller asked for possible at all. Separating it from the
+/// planner also keeps the two resource models apart: nothing here reads or writes
+/// the dependency frontier, and no capacity constraint can become a fake edge.
+///
+/// # Safety
+/// Intended to be called from WebAssembly with host-supplied addresses. Every
+/// pointer must name its canonical region exactly; every count is checked before
+/// a byte is read. A malformed call returns a status code.
+#[no_mangle]
+pub unsafe extern "C" fn effectplan_resource_check(
+    abi_version: u32,
+    call_count: u32,
+    resource_count: u32,
+    demand_count: u32,
+    capacities_ptr: u32,
+    capacities_len: u32,
+    offsets_ptr: u32,
+    offsets_len: u32,
+    records_ptr: u32,
+    records_len: u32,
+    diagnostics_ptr: u32,
+    diagnostics_len: u32,
+) -> i32 {
+    if abi_version != ABI_VERSION {
+        return ERR_ABI_VERSION;
+    }
+    if call_count as usize > MAX_CALLS {
+        return ERR_CALL_LIMIT;
+    }
+    let base = arena_base();
+    let given = [
+        (capacities_ptr, capacities_len),
+        (offsets_ptr, offsets_len),
+        (records_ptr, records_len),
+        (diagnostics_ptr, diagnostics_len),
+    ];
+    let expected = [
+        (CAPACITIES_BASE_OFF, CAPACITIES_REGION_LEN),
+        (DEMAND_OFFSETS_BASE_OFF, DEMAND_OFFSETS_REGION_LEN),
+        (DEMAND_RECORDS_BASE_OFF, DEMAND_RECORDS_REGION_LEN),
+        (
+            RESOURCE_DIAGNOSTICS_BASE_OFF,
+            RESOURCE_DIAGNOSTICS_REGION_LEN,
+        ),
+    ];
+    let mut region_offs = [0u32; 4];
+    for (slot, (given_pair, want)) in region_offs
+        .iter_mut()
+        .zip(given.iter().zip(expected.iter()))
+    {
+        let relative = match (given_pair.0 as usize)
+            .checked_sub(base)
+            .and_then(|delta| u32::try_from(delta).ok())
+        {
+            Some(delta) => delta,
+            None => return ERR_RANGE,
+        };
+        // A pointer that merely lands inside the arena could alias another
+        // region, so each argument must name its own region's base exactly.
+        if relative as usize != want.0 || given_pair.1 as usize != want.1 {
+            return ERR_LAYOUT;
+        }
+        *slot = relative;
+    }
+
+    let arena = arena_slice();
+    let diag_at = region_offs[3] as usize;
+    if !resources::clear(arena, diag_at) {
+        return ERR_RANGE;
+    }
+    let report = resources::check(
+        arena,
+        &resources::Request {
+            capacities: region_offs[0] as usize,
+            offsets: region_offs[1] as usize,
+            records: region_offs[2] as usize,
+            diagnostics: diag_at,
+            call_count: call_count as usize,
+            resource_count: resource_count as usize,
+            demand_count: demand_count as usize,
+        },
+    );
+    report.status
 }

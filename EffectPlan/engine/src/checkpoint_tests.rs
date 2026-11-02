@@ -691,7 +691,12 @@ fn the_checkpoint_region_publishes_itself_through_info() {
     assert_eq!(effectplan_info(32), CHECKPOINT_REVISION);
     assert_eq!(effectplan_info(33), base + CHECKPOINT_BASE_OFF as u32);
     assert_eq!(effectplan_info(34), CHECKPOINT_REGION_LEN as u32);
-    assert_eq!(effectplan_info(35), SENTINEL);
+    // Phase 5 appended the resource table after this one. The sentinel guard
+    // belonged to the Phase 4 boundary; it moves to the new end of the table so
+    // that the next extension still fails a test rather than passing quietly.
+    assert_eq!(effectplan_info(35), crate::resources::RESOURCE_REVISION);
+    assert_eq!(effectplan_info(52), SENTINEL);
+    assert_eq!(effectplan_info(u32::MAX), SENTINEL);
 }
 
 #[test]

@@ -25,6 +25,9 @@ const SELECTOR = {
   maxNs: 15, maxId: 16, hdrBytes: 17, levelsRev: 21, levelsPtr: 22, levelsLen: 23, levelsMax: 24,
   timingRev: 25, durPtr: 26, durLen: 27, durMax: 28, timingPtr: 29, timingLen: 30, timingMax: 31,
   ckptRev: 32, ckptPtr: 33, ckptLen: 34,
+  resRev: 35, capPtr: 36, capLen: 37, offsPtr: 38, offsLen: 39, recPtr: 40, recLen: 41,
+  schedPtr: 42, schedLen: 43, statsPtr: 44, statsLen: 45, diagPtr: 46, diagLen: 47,
+  maxCapRes: 48, maxDemands: 49, maxDiags: 50, maxCapacity: 51,
 } as const;
 
 /** The staged artifact plus the region map it publishes. */
@@ -63,6 +66,23 @@ function fixture() {
     ckptRev: info(SELECTOR.ckptRev),
     ckpt: info(SELECTOR.ckptPtr),
     ckptLen: info(SELECTOR.ckptLen),
+    resRev: info(SELECTOR.resRev),
+    capacities: info(SELECTOR.capPtr),
+    capacitiesLen: info(SELECTOR.capLen),
+    demandOffsets: info(SELECTOR.offsPtr),
+    demandOffsetsLen: info(SELECTOR.offsLen),
+    demandRecords: info(SELECTOR.recPtr),
+    demandRecordsLen: info(SELECTOR.recLen),
+    schedule: info(SELECTOR.schedPtr),
+    scheduleLen: info(SELECTOR.schedLen),
+    stats: info(SELECTOR.statsPtr),
+    statsLen: info(SELECTOR.statsLen),
+    diagnostics: info(SELECTOR.diagPtr),
+    diagnosticsLen: info(SELECTOR.diagLen),
+    maxCapacityResources: info(SELECTOR.maxCapRes),
+    maxDemandRecords: info(SELECTOR.maxDemands),
+    maxDiagnostics: info(SELECTOR.maxDiags),
+    maxCapacity: info(SELECTOR.maxCapacity),
     maxEdges: info(SELECTOR.maxEdges),
     abi: info(SELECTOR.abi),
   };
@@ -299,6 +319,7 @@ describe("wasm artifact", () => {
       "effectplan_plan_v2",
       "effectplan_plan_v3",
       "effectplan_plan_v4",
+      "effectplan_resource_check",
     ]);
     assert.equal(WebAssembly.Module.exports(module).filter((e) => e.kind === "memory").length, 1);
   });
@@ -738,8 +759,12 @@ describe("scheduling ABI", () => {
     assert.equal(f.layout.durations, f.layout.levels + f.layout.levelsLen, "durations follow levels");
     assert.equal(f.layout.timing, f.layout.durations + f.layout.durationsLen, "timing follows durations");
     assert.ok(f.layout.timing + f.layout.timingLen <= f.layout.base + f.layout.arena);
-    assert.equal(f.layout.arena, 61920, "the arena grew by exactly the new regions");
-    assert.equal(f.memory.buffer.byteLength, 1114112, "linear memory stays at 17 pages");
+    assert.equal(
+      f.layout.arena,
+      75336,
+      "the arena is the Phase 4 layout plus the resource regions, exactly as docs/RESOURCE-ABI.md derives",
+    );
+    assert.equal(f.memory.buffer.byteLength, 1179648, "linear memory stays at 18 pages");
   });
 
   it("publishes the checkpoint contract through the info export", () => {
@@ -748,7 +773,39 @@ describe("scheduling ABI", () => {
     assert.equal(f.layout.ckptLen, 32, "eight words, nothing more");
     assert.equal(f.layout.ckpt, f.layout.timing + f.layout.timingLen, "checkpoint follows timing");
     assert.ok(f.layout.ckpt + f.layout.ckptLen <= f.layout.base + f.layout.arena);
-    assert.equal(f.info(35), -1, "an unknown selector still fails closed");
+  });
+
+  it("publishes the resource contract and tiles the arena to its end", () => {
+    const f = fixture();
+    assert.equal(f.layout.resRev, 1, "resource revision");
+    assert.equal(f.layout.maxCapacityResources, 64);
+    assert.equal(f.layout.maxDemandRecords, 1024);
+    assert.equal(f.layout.maxDiagnostics, 64);
+    assert.equal(f.layout.maxCapacity, 0x7fff_ffff);
+
+    // The published chain must be contiguous, in the order the budget document
+    // derives it, and the last region must end exactly at the arena's end: a
+    // layout that drifts fails here rather than producing a wrong schedule.
+    assert.equal(f.layout.capacities, f.layout.ckpt + f.layout.ckptLen, "capacities follow checkpoint");
+    assert.equal(f.layout.demandOffsets, f.layout.capacities + f.layout.capacitiesLen);
+    assert.equal(
+      f.layout.demandRecords,
+      f.layout.demandOffsets + f.layout.demandOffsetsLen,
+      "records follow the offset vector",
+    );
+    assert.equal(f.layout.demandOffsetsLen, 4 * (f.layout.maxCalls + 1));
+    assert.equal(f.layout.demandRecordsLen, 8 * f.layout.maxDemandRecords);
+    assert.ok(f.layout.schedule > f.layout.demandRecords, "the schedule sits after the input regions");
+    assert.equal(f.layout.stats + f.layout.statsLen, f.layout.diagnostics, "stats precede diagnostics");
+    assert.ok(
+      f.layout.base + f.layout.arena - (f.layout.diagnostics + f.layout.diagnosticsLen) < 8,
+      "the arena ends at the diagnostics region, plus at most the eight-byte rounding",
+    );
+
+    // The sentinel boundary moved with the table; the next extension has to fail
+    // a test rather than silently reuse a selector.
+    assert.equal(f.info(52), -1, "an unknown selector still fails closed");
+    assert.equal(f.info(0xffff_ffff), -1);
   });
 
   it("writes no timing through the lower entry points", () => {

@@ -2,8 +2,8 @@
   "name": "@effectplan/core",
   "version": "0.3.0",
   "tarball": "artifacts/package/effectplan-core-0.3.0.tgz",
-  "tarballBytes": 22910,
-  "unpackedBytes": 70042,
+  "tarballBytes": 23957,
+  "unpackedBytes": 71964,
   "entryCount": 20,
   "limits": {
     "maxUnpackedBytes": 82042,
@@ -20,7 +20,7 @@
     },
     {
       "path": "dist/effectplan.wasm",
-      "bytes": 13499
+      "bytes": 15421
     },
     {
       "path": "dist/encode.d.ts",
@@ -92,10 +92,10 @@
     }
   ],
   "npm": {
-    "size": 22910,
-    "shasum": "51624b82754d1e9b7150d360967a429816e7afd9",
-    "integrity": "sha512-C2/DDNxEqE78pIVd9WIh+KFUshdw0u8//OmP6OFk/2fUEp3ehD2WXM1kBGEx16cJm6negMEXVsqP68VhA+SxgQ=="
+    "size": 23957,
+    "shasum": "478ddf784118da10f0e84fc176c931af92b2cbf0",
+    "integrity": "sha512-iCLw+LIiAxfiBxgvBP0K0j4Z5VjgLfBETh3/Pp3B9ZApgnwwBOuAELrrhQNstLpT7ljGPkw8eYSXlQ8g/emhgw=="
   },
-  "stagedBytes": 63627,
+  "stagedBytes": 65549,
   "whitespaceRemovedBytes": 8972
 }

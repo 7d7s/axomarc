@@ -31,10 +31,16 @@ export const PHASE_5_ENVELOPE_BYTES = 12_000;
 export const MAX_UNPACKED_BYTES = PHASE_4_BASELINE_BYTES + PHASE_5_ENVELOPE_BYTES;
 /** The published WebAssembly artifact. */
 export const MAX_WASM_BYTES = 40_000;
-/** Linear memory the shipped engine demands today. Bump only with the change that causes it. */
-export const EXPECTED_PAGES = 17;
-/** Approved for Phase 5 on the measurement above; not yet in force. */
-export const PHASE_5_PAGES_APPROVED = 18;
+/**
+ * Linear memory the shipped engine demands. Phase 5's resource regions landed on
+ * 2026-11-02 and took the 18th page approved in §1 of `docs/RESOURCE-ABI.md`:
+ * the arena grew from 61,920 to 75,336 bytes, which is 13,416 bytes more than the
+ * 2,264 that were spare. The wasm artifact cost 1,790 bytes (13,499 to 15,289) and
+ * is still 24,711 under its budget.
+ */
+export const EXPECTED_PAGES = 18;
+/** The page count before Phase 5, kept so the change stays visible. */
+export const PREVIOUS_EXPECTED_PAGES = 17;
 /** The limits before the Phase 4 reviews, kept so the changes stay visible. */
 export const PREVIOUS_MAX_UNPACKED_BYTES = 50_000;
 export const PREVIOUS_PHASE_4_MAX_UNPACKED_BYTES = 60_000;

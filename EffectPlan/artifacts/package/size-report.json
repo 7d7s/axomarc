@@ -1,14 +1,14 @@
 {
-  "measuredAt": "2026-11-02T05:23:52.604Z",
+  "measuredAt": "2026-11-02T12:08:30.947Z",
   "package": {
     "name": "@effectplan/core",
     "version": "0.3.0",
     "tarball": "artifacts/package/effectplan-core-0.3.0.tgz"
   },
-  "unpackedBytes": 70042,
-  "unpackedBytesReportedByNpm": 70042,
-  "tarballBytes": 22910,
-  "wasmBytes": 13499,
+  "unpackedBytes": 71964,
+  "unpackedBytesReportedByNpm": 71964,
+  "tarballBytes": 23957,
+  "wasmBytes": 15421,
   "fileCount": 20,
   "limits": {
     "maxUnpackedBytes": 82042,
@@ -17,7 +17,7 @@
   "files": [
     {
       "path": "dist/effectplan.wasm",
-      "bytes": 13499
+      "bytes": 15421
     },
     {
       "path": "dist/encode.d.ts",

@@ -34,11 +34,12 @@ check("zero imports (no env, fs, network or host glue)", imported.length === 0, 
 const functions = exported.filter((e) => e.kind === "function").map((e) => e.name).sort();
 check(
   "exports exactly the ABI functions",
-  functions.length === 5 &&
+  functions.length === 6 &&
     functions.includes("effectplan_plan") &&
     functions.includes("effectplan_plan_v2") &&
     functions.includes("effectplan_plan_v3") &&
     functions.includes("effectplan_plan_v4") &&
+    functions.includes("effectplan_resource_check") &&
     functions.includes("effectplan_info"),
   functions.join(","),
 );
@@ -60,6 +61,7 @@ const plan = instance.exports.effectplan_plan;
 const planV3 = instance.exports.effectplan_plan_v3;
 const planV2 = instance.exports.effectplan_plan_v2;
 const planV4 = instance.exports.effectplan_plan_v4;
+const resourceCheck = instance.exports.effectplan_resource_check;
 const memory = instance.exports.memory;
 
 const K = {
@@ -68,6 +70,9 @@ const K = {
   maxNs: 15, maxId: 16, hdrBytes: 17, levelsRev: 21, levelsPtr: 22, levelsLen: 23, levelsMax: 24,
   timingRev: 25, durPtr: 26, durLen: 27, durMax: 28, timingPtr: 29, timingLen: 30, timingMax: 31,
   ckptRev: 32, ckptPtr: 33, ckptLen: 34,
+  resRev: 35, capPtr: 36, capLen: 37, offsPtr: 38, offsLen: 39, recPtr: 40, recLen: 41,
+  schedPtr: 42, schedLen: 43, statsPtr: 44, statsLen: 45, diagPtr: 46, diagLen: 47,
+  maxCapRes: 48, maxDemands: 49, maxDiags: 50, maxCapacity: 51,
 };
 const v = {};
 for (const [name, kind] of Object.entries(K)) v[name] = info(kind);
@@ -105,7 +110,29 @@ check("checkpoint contract is revision 1", v.ckptRev === 1, String(v.ckptRev));
 check("checkpoint region follows the timing region", v.ckptPtr === v.timingPtr + v.timingLen, `${v.ckptPtr}`);
 check("checkpoint region is eight words", v.ckptLen === 32, String(v.ckptLen));
 check("the arena holds the checkpoint region too", v.arenaLen >= v.ckptPtr - v.base + v.ckptLen, `${v.arenaLen}`);
-check("a selector past the last known one fails closed", (info(35) >>> 0) === 0xffffffff, String(info(35)));
+check("a selector past the last known one fails closed", (info(52) >>> 0) === 0xffffffff, String(info(52)));
+check("resource contract is revision 1", v.resRev === 1, String(v.resRev));
+check("resource ceilings are the published ones", v.maxCapRes === 64 && v.maxDemands === 1024 && v.maxDiags === 64, `${v.maxCapRes}/${v.maxDemands}/${v.maxDiags}`);
+check("capacity ceiling keeps the arithmetic inside a u64", v.maxCapacity === 0x7fffffff, String(v.maxCapacity));
+check("capacities follow the checkpoint record", v.capPtr === v.ckptPtr + v.ckptLen, `${v.capPtr}`);
+check("capacity region is one word per resource", v.capLen === 4 * v.maxCapRes, String(v.capLen));
+check("demand offsets follow the capacities", v.offsPtr === v.capPtr + v.capLen, `${v.offsPtr}`);
+check("demand offsets bound every call plus a terminal", v.offsLen === 4 * (v.maxCalls + 1), String(v.offsLen));
+check("demand records follow the offsets", v.recPtr === v.offsPtr + v.offsLen, `${v.recPtr}`);
+check("a demand record is an index and an amount", v.recLen === 8 * v.maxDemands, String(v.recLen));
+check("the schedule sits past the input regions", v.schedPtr > v.recPtr + v.recLen, `${v.schedPtr}`);
+check("the schedule is a header plus two words per call", v.schedLen === 32 + 8 * v.maxCalls, String(v.schedLen));
+check("stats follow the schedule", v.statsPtr === v.schedPtr + v.schedLen, `${v.statsPtr}`);
+check("diagnostics follow the stats", v.diagPtr === v.statsPtr + v.statsLen, `${v.diagPtr}`);
+// The arena is the last region's end rounded up to eight bytes, so a few bytes
+// of alignment padding may follow it — but nothing else. A gap wider than that
+// would mean a region the layout never accounted for.
+check(
+  "the arena is tiled to its last region, allowing only the eight-byte rounding",
+  v.base + v.arenaLen - (v.diagPtr + v.diagLen) < 8,
+  `${v.base + v.arenaLen - (v.diagPtr + v.diagLen)} bytes of padding after diagnostics`,
+);
+check("the resource regions grew the arena past one page", v.arenaLen === 75336, String(v.arenaLen));
 check(
   `linear memory stays at ${EXPECTED_PAGES} pages`,
   memory.buffer.byteLength === EXPECTED_PAGES * 65536,
@@ -560,6 +587,46 @@ try {
   trap = cause;
   check("maximum batch must not trap", false, String(cause));
 }
+
+// --- Phase 5: the resource feasibility entry point on the shipped artifact ---
+// Written and read through the same canonical regions the host will use, so an
+// ABI that works in Rust but not in wasm cannot pass the gate.
+const writeDemands = (capacities, perCall) => {
+  for (let i = 0; i < v.maxCapRes; i++) words.setUint32(v.capPtr + i * 4, capacities[i] ?? 0, true);
+  let cursor = 0;
+  words.setUint32(v.offsPtr, 0, true);
+  for (let call = 0; call < perCall.length; call++) {
+    for (const [resource, amount] of perCall[call]) {
+      words.setUint32(v.recPtr + cursor * 8, resource, true);
+      words.setUint32(v.recPtr + cursor * 8 + 4, amount, true);
+      cursor += 1;
+    }
+    words.setUint32(v.offsPtr + (call + 1) * 4, cursor, true);
+  }
+  return cursor;
+};
+const runResourceCheck = (calls, resources, demands, capPtr = v.capPtr) =>
+  resourceCheck(
+    v.abi, calls, resources, demands,
+    capPtr, v.capLen,
+    v.offsPtr, v.offsLen,
+    v.recPtr, v.recLen,
+    v.diagPtr, v.diagLen,
+  );
+const diagCount = () => words.getUint32(v.diagPtr + 4, true);
+const diagStatus = () => words.getUint32(v.diagPtr + 8, true) | 0;
+const diagKind = (index) => words.getUint32(v.diagPtr + 32 + index * 16, true);
+
+check("demands within capacity are feasible", runResourceCheck(2, 2, writeDemands([10, 4], [[ [0, 6] ], [ [1, 4] ]])) === 0);
+check("a demand over capacity is refused before scheduling", runResourceCheck(1, 1, writeDemands([2], [[ [0, 3] ]])) === 133);
+check("the refusal names the problem", diagKind(0) === 1 && diagCount() === 1, `kind ${diagKind(0)} count ${diagCount()}`);
+check("the published status echoes the returned one", diagStatus() === 133, String(diagStatus()));
+check("a feasible run clears the previous refusal", runResourceCheck(1, 1, writeDemands([4], [[ [0, 4] ]])) === 0 && diagCount() === 0);
+check("a zero capacity is malformed, not merely infeasible", runResourceCheck(1, 1, writeDemands([0], [[]])) === 136);
+check("an undeclared resource index is refused", runResourceCheck(1, 1, writeDemands([4], [[ [7, 1] ]])) === 135);
+check("a pointer into the middle of a region is refused", runResourceCheck(1, 1, writeDemands([4], [[ [0, 1] ]]), v.capPtr + 4) === 108);
+check("a count over the ceiling is refused without reading", runResourceCheck(1, v.maxCapRes + 1, writeDemands([4], [[ [0, 1] ]])) === 136);
+check("the entry point leaves the diagnostic revision published", words.getUint32(v.diagPtr, true) === 1, String(words.getUint32(v.diagPtr, true)));
 
 for (const c of checks) console.log(`${c.ok ? "PASS" : "FAIL"}  ${c.name}${c.detail ? `  [${c.detail}]` : ""}`);
 console.log(`\n${checks.length - failures.length}/${checks.length} ABI checks passed`);
