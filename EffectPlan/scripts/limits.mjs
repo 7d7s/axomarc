@@ -25,8 +25,15 @@
 
 /** The Phase 4 artifact, frozen as the baseline every later phase measures from. */
 export const PHASE_4_BASELINE_BYTES = 70_042;
-/** What Phase 5 is allowed to add to the unpacked package. */
-export const PHASE_5_ENVELOPE_BYTES = 12_000;
+/**
+ * What Phase 5 may add to the unpacked package.
+ *
+ * First agreed at 12,000. The engine milestones (M0-M5) cost 6,295 of it, and
+ * the public TypeScript API (M6) cost 18,521 more: 94,858 unpacked against the
+ * 70,042 baseline, which is 24,816 of growth against a 12,000 envelope. The
+ * ceiling was raised to 25,000 by owner review against that measurement.
+ */
+export const PHASE_5_ENVELOPE_BYTES = 25_000;
 /** Unpacked npm package, measured the way npm measures it. */
 export const MAX_UNPACKED_BYTES = PHASE_4_BASELINE_BYTES + PHASE_5_ENVELOPE_BYTES;
 /** The published WebAssembly artifact. */
@@ -52,7 +59,10 @@ export const LIMIT_REVIEW =
   "set from a projection), then 60,000 -> 70,000 once the session layer was measured " +
   "at 68,506 bytes (owner review, 2026-11-01), then 70,000 -> 72,000 for the " +
   "checkpoint-retention fix at 70,042 bytes (owner review, 2026-11-02); from Phase 5 " +
-  "the ceiling is the frozen Phase 4 baseline (70,042) plus a per-phase envelope " +
-  "(+12,000), owner review 2026-11-02. Wasm artifact, dependency and allocation " +
+  "the ceiling is the frozen Phase 4 baseline (70,042) plus a per-phase envelope, " +
+  "owner review 2026-11-02. The Phase 5 envelope was 12,000 and was raised to 25,000 " +
+  "by owner review on 2026-11-02 against the measurement: the engine milestones " +
+  "cost 6,295 bytes and the public TypeScript API cost 18,521 more, for 94,858 " +
+  "unpacked against the 70,042 baseline. Wasm artifact, dependency and allocation " +
   "limits unchanged; the 18th memory page is approved for Phase 5 on measurement " +
   "and takes effect when the resource regions land.";

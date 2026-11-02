@@ -96,7 +96,7 @@ function sleb(value: number): number[] {
 export const FAKE_INFO: Readonly<Record<number, number>> = Object.freeze({
   0: 1, // abi revision
   1: 1024, // arena base
-  2: 280, // arena length: every region below, end to end
+  2: 612, // arena length: every region below, end to end
   3: 1024, // input pointer: the arena base
   4: 44, // input bytes: 4 calls + 5 offsets + 4 ids + 4 modes
   5: 1068, // workspace pointer
@@ -126,6 +126,23 @@ export const FAKE_INFO: Readonly<Record<number, number>> = Object.freeze({
   32: 1, // checkpoint revision
   33: 1272, // checkpoint pointer: timing pointer + timing bytes
   34: 32, // checkpoint bytes: eight words
+  35: 1, // resource revision
+  36: 1304, // capacities pointer: checkpoint pointer + checkpoint bytes
+  37: 16, // capacities bytes: 4 resources of 4 bytes
+  38: 1320, // demand offsets pointer
+  39: 20, // demand offsets bytes: 5 offsets of 4 bytes
+  40: 1340, // demand records pointer
+  41: 32, // demand records bytes: 4 records of 8 bytes
+  42: 1380, // schedule pointer: after 8 bytes of engine-private scratch
+  43: 64, // schedule bytes: 32-byte header + 4 records of 8 bytes
+  44: 1444, // resource stats pointer
+  45: 96, // resource stats bytes: 32-byte header + 4 rows of 16 bytes
+  46: 1540, // resource diagnostics pointer
+  47: 96, // resource diagnostics bytes: 32-byte header + 4 records of 16 bytes
+  48: 4, // max capacity resources
+  49: 4, // max demand records
+  50: 4, // max resource diagnostics
+  51: 100, // max capacity
 });
 
 export interface FakeEngineOptions {
@@ -187,7 +204,7 @@ export function fakeEngineBytes(options: FakeEngineOptions = {}): Uint8Array<Arr
   for (let depth = 0; depth <= kinds.length; depth++) infoBody.push(0x0b);
 
   const types = vec([[0x60, 0x01, 0x7f, 0x01, 0x7f], [0x60, 0x00, 0x01, 0x7f]]);
-  const functions = vec([[0x00], [0x01], [0x01], [0x01], [0x01]]);
+  const functions = vec([[0x00], [0x01], [0x01], [0x01], [0x01], [0x01], [0x01]]);
   const memory = vec([[0x00, 0x01]]);
   const omit = options.omit ?? [];
   const wanted: Array<readonly [string, number, number]> = [
@@ -196,6 +213,8 @@ export function fakeEngineBytes(options: FakeEngineOptions = {}): Uint8Array<Arr
     ["effectplan_plan_v2", 0x00, 2],
     ["effectplan_plan_v3", 0x00, 3],
     ["effectplan_plan_v4", 0x00, 4],
+    ["effectplan_resource_check", 0x00, 5],
+    ["effectplan_resource_schedule", 0x00, 6],
     ["memory", 0x02, 0],
   ];
   const exports = vec(
@@ -203,9 +222,13 @@ export function fakeEngineBytes(options: FakeEngineOptions = {}): Uint8Array<Arr
       .filter(([text]) => !omit.includes(text))
       .map(([text, kind, index]) => [...name(text), kind, index]),
   );
+  // `unreachable` first: the body never runs, and the rest of it needs no
+  // locals, so one shape fits every export here.
   const zeroBody = [0x00, 0x41, 0x00, 0x0b];
   const code = vec([
     codeEntry(infoBody),
+    codeEntry(zeroBody),
+    codeEntry(zeroBody),
     codeEntry(zeroBody),
     codeEntry(zeroBody),
     codeEntry(zeroBody),

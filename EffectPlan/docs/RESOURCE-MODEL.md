@@ -232,6 +232,6 @@ and should be settled by a measurement, not by an opinion about schedulers.
 ## 10. Related documents
 
 * `docs/RESOURCE-ABI.md` — the measured memory budget and region layout.
-* `docs/RESOURCE-SCHEDULING.md` — the scheduler once it exists.
+* `docs/RESOURCE-SCHEDULING.md` — the scheduler and the public API that calls it.
 * `docs/INCREMENTAL-PLANNING.md` — the session the resource table joins.
 * `docs/CRITICAL-PATH.md` — where slack and the half-open interval convention come from.

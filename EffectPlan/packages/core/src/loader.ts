@@ -13,6 +13,7 @@ import {
   EXPECTED_LEVELS_ABI,
   EXPECTED_TIMING_ABI,
   EXPECTED_CHECKPOINT_ABI,
+  EXPECTED_RESOURCE_ABI,
   CHECKPOINT_RECORD_BYTES,
   HEADER_BYTES,
   LEVELS_HEADER_BYTES,
@@ -34,6 +35,14 @@ export interface EngineLimits {
   readonly maxEdges: number;
   readonly maxNamespaceBytes: number;
   readonly maxResourceIdBytes: number;
+  /** Capacity resources one batch may declare. */
+  readonly maxCapacityResources: number;
+  /** Demand records one batch may carry. */
+  readonly maxDemandRecords: number;
+  /** Diagnostics one run may record. */
+  readonly maxResourceDiagnostics: number;
+  /** The largest capacity or demand the engine can represent. */
+  readonly maxCapacity: number;
 }
 
 export interface EngineRegion {
@@ -53,6 +62,18 @@ export interface EngineLayout {
   readonly timing: EngineRegion;
   /** Resumable-planning record: eight words the engine commits and reads back. */
   readonly checkpoint: EngineRegion;
+  /** Declared capacity per capacity resource, one `u32` each. */
+  readonly capacities: EngineRegion;
+  /** Demand offsets: one `u32` per call, plus the terminator. */
+  readonly demandOffsets: EngineRegion;
+  /** Demand records: `(resource, amount)` pairs, flattened. */
+  readonly demandRecords: EngineRegion;
+  /** Placement output: a header plus `(start, finish)` per call. */
+  readonly schedule: EngineRegion;
+  /** Per-resource capacity, peak and busy time. */
+  readonly resourceStats: EngineRegion;
+  /** Why a demand could not be met, by index. */
+  readonly resourceDiagnostics: EngineRegion;
 }
 
 export interface EngineInfo {
@@ -79,7 +100,12 @@ const I_ABI = 0, I_BASE = 1, I_ARENA_LEN = 2, I_IN_PTR = 3, I_IN_LEN = 4,
   I_LEVELS_REV = 21, I_LEVELS_PTR = 22, I_LEVELS_LEN = 23, I_LEVELS_MAX = 24,
   I_TIMING_REV = 25, I_DUR_PTR = 26, I_DUR_LEN = 27, I_DUR_MAX = 28,
   I_TIMING_PTR = 29, I_TIMING_LEN = 30, I_TIMING_MAX = 31,
-  I_CKPT_REV = 32, I_CKPT_PTR = 33, I_CKPT_LEN = 34;
+  I_CKPT_REV = 32, I_CKPT_PTR = 33, I_CKPT_LEN = 34,
+  I_RES_REV = 35, I_CAPS_PTR = 36, I_CAPS_LEN = 37,
+  I_OFFS_PTR = 38, I_OFFS_LEN = 39, I_RECS_PTR = 40, I_RECS_LEN = 41,
+  I_SCHED_PTR = 42, I_SCHED_LEN = 43, I_STATS_PTR = 44, I_STATS_LEN = 45,
+  I_DIAG_PTR = 46, I_DIAG_LEN = 47,
+  I_MAX_CAPS = 48, I_MAX_RECORDS = 49, I_MAX_DIAGS = 50, I_MAX_CAPACITY = 51;
 
 /** The raw engine entry point as exported by the wasm module. */
 export type PlanFn = (
@@ -119,6 +145,35 @@ export type PlanV4Fn = (
   checkpoint: number, checkpointBytes: number,
 ) => number;
 
+/**
+ * The capacity check: declarations only. No planning region appears among its
+ * arguments, so a check cannot disturb the graph.
+ */
+export type ResourceCheckFn = (
+  abi: number, calls: number, resources: number, demands: number,
+  capacities: number, capacitiesBytes: number,
+  offsets: number, offsetsBytes: number,
+  records: number, recordsBytes: number,
+  diagnostics: number, diagnosticsBytes: number,
+) => number;
+
+/**
+ * The placement: the same declarations, plus the graph and the timings it
+ * schedules against, and the two regions it writes.
+ */
+export type ResourceScheduleFn = (
+  abi: number, calls: number, resources: number, demands: number,
+  capacities: number, capacitiesBytes: number,
+  offsets: number, offsetsBytes: number,
+  records: number, recordsBytes: number,
+  durations: number, durationsBytes: number,
+  graph: number, graphBytes: number,
+  timing: number, timingBytes: number,
+  schedule: number, scheduleBytes: number,
+  stats: number, statsBytes: number,
+  diagnostics: number, diagnosticsBytes: number,
+) => number;
+
 /** An instantiated engine that has passed every host-side layout check. */
 export interface LoadedEngine {
   readonly memory: WebAssembly.Memory;
@@ -126,6 +181,8 @@ export interface LoadedEngine {
   readonly planV2: PlanV2Fn;
   readonly planV3: PlanV3Fn;
   readonly planV4: PlanV4Fn;
+  readonly resourceCheck: ResourceCheckFn;
+  readonly resourceSchedule: ResourceScheduleFn;
   readonly info: EngineInfo;
 }
 
@@ -156,6 +213,14 @@ export async function loadEngine(options: InitializationOptions = {}): Promise<L
   const planV4Fn = exports["effectplan_plan_v4"];
   if (typeof planV4Fn !== "function") {
     unavailable("engine does not support resumable planning");
+  }
+  const resourceCheckFn = exports["effectplan_resource_check"];
+  if (typeof resourceCheckFn !== "function") {
+    unavailable("engine does not support capacity resources");
+  }
+  const resourceScheduleFn = exports["effectplan_resource_schedule"];
+  if (typeof resourceScheduleFn !== "function") {
+    unavailable("engine cannot schedule against capacity resources");
   }
   const read = infoFn as InfoReader;
   const abi = read(I_ABI);
@@ -191,6 +256,20 @@ export async function loadEngine(options: InitializationOptions = {}): Promise<L
   if (ckptBytes !== CHECKPOINT_RECORD_BYTES) {
     unavailable(`checkpoint region is ${ckptBytes} bytes, expected ${CHECKPOINT_RECORD_BYTES}`);
   }
+  const resourceRevision = read(I_RES_REV);
+  if (resourceRevision !== EXPECTED_RESOURCE_ABI) {
+    unavailable(`resource revision ${resourceRevision} incompatible with ${EXPECTED_RESOURCE_ABI}`);
+  }
+  const capsPtr = read(I_CAPS_PTR), capsBytes = read(I_CAPS_LEN);
+  const offsPtr = read(I_OFFS_PTR), offsBytes = read(I_OFFS_LEN);
+  const recsPtr = read(I_RECS_PTR), recsBytes = read(I_RECS_LEN);
+  const schedPtr = read(I_SCHED_PTR), schedBytes = read(I_SCHED_LEN);
+  const statsPtr = read(I_STATS_PTR), statsBytes = read(I_STATS_LEN);
+  const diagPtr = read(I_DIAG_PTR), diagBytes = read(I_DIAG_LEN);
+  const maxCapacityResources = read(I_MAX_CAPS);
+  const maxDemandRecords = read(I_MAX_RECORDS);
+  const maxResourceDiagnostics = read(I_MAX_DIAGS);
+  const maxCapacity = read(I_MAX_CAPACITY);
   const limits: EngineLimits = Object.freeze({
     maxCalls: read(I_MAX_CALLS),
     maxAccesses: read(I_MAX_ACCESS),
@@ -199,6 +278,10 @@ export async function loadEngine(options: InitializationOptions = {}): Promise<L
     maxEdges: read(I_MAX_EDGES),
     maxNamespaceBytes: read(I_MAX_NS),
     maxResourceIdBytes: read(I_MAX_ID),
+    maxCapacityResources,
+    maxDemandRecords,
+    maxResourceDiagnostics,
+    maxCapacity,
   });
   // The host is about to hand the engine absolute addresses, so every region
   // must sit exactly where the engine said it does: four-byte aligned,
@@ -208,42 +291,43 @@ export async function loadEngine(options: InitializationOptions = {}): Promise<L
   if (memory.buffer.byteLength < base + arenaBytes) unavailable("arena outside linear memory");
   const maxEdges = limits.maxEdges;
   const maxCalls = limits.maxCalls;
-  // name, pointer, length, and the entry count the engine publishes for it.
-  const regions: readonly (readonly [string, number, number, number])[] = [
-    ["input", inputPtr, inputBytes, limits.maxAccesses],
-    ["workspace", wsPtr, wsBytes, -1], // engine-private state, length audited only by position
-    ["output", outPtr, outBytes, maxEdges],
-    ["levels", levelsPtr, levelsBytes, read(I_LEVELS_MAX)],
-    ["durations", durationsPtr, durationsBytes, read(I_DUR_MAX)],
-    ["timing", timingPtr, timingBytes, read(I_TIMING_MAX)],
-    ["checkpoint", ckptPtr, ckptBytes, -1], // fixed-size record, audited by position
-  ];
-  // Each region's size is derived from a ceiling the engine also publishes, so
-  // a binary that disagrees with itself is refused rather than trusted.
-  // Per entry: input packs one byte plus one id and one mode per access, the
-  // rest are the plain arrays their names describe.
-  const widths = [5, 0, EDGE_BYTES, 2, 4, 8, 0];
-  const headers = [
-    maxCalls + (maxCalls + 1) * 4, // call modes plus the CSR offsets
-    wsBytes,
-    HEADER_BYTES,
-    LEVELS_HEADER_BYTES,
-    0,
-    TIMING_HEADER_BYTES,
-    CHECKPOINT_RECORD_BYTES,
+  // name, pointer, length, entry count, header bytes, entry width. A count of
+  // -1 means the region is audited by position only. The last field marks the
+  // one place where the engine keeps scratch of its own between two published
+  // regions: it is not published, so the host neither names it nor writes it.
+  const regions: readonly (readonly [string, number, number, number, number, number, number])[] = [
+    ["input", inputPtr, inputBytes, limits.maxAccesses, maxCalls + (maxCalls + 1) * 4, 5, 0],
+    ["workspace", wsPtr, wsBytes, -1, wsBytes, 0, 0],
+    ["output", outPtr, outBytes, maxEdges, HEADER_BYTES, EDGE_BYTES, 0],
+    ["levels", levelsPtr, levelsBytes, levelsMax, LEVELS_HEADER_BYTES, 2, 0],
+    ["durations", durationsPtr, durationsBytes, durationsMax, 0, 4, 0],
+    ["timing", timingPtr, timingBytes, timingMax, TIMING_HEADER_BYTES, 8, 0],
+    ["checkpoint", ckptPtr, ckptBytes, -1, CHECKPOINT_RECORD_BYTES, 0, 0],
+    ["capacities", capsPtr, capsBytes, maxCapacityResources, 0, 4, 0],
+    ["demand offsets", offsPtr, offsBytes, maxCalls + 1, 0, 4, 0],
+    ["demand records", recsPtr, recsBytes, maxDemandRecords, 0, 8, 0],
+    ["schedule", schedPtr, schedBytes, maxCalls, 32, 8, 1],
+    ["resource stats", statsPtr, statsBytes, maxCapacityResources, 32, 16, 0],
+    ["resource diagnostics", diagPtr, diagBytes, maxResourceDiagnostics, 32, 16, 0],
   ];
   let cursor = base;
-  for (let index = 0; index < regions.length; index++) {
-    const [name, ptr, bytes, entries] = regions[index]!;
+  // The three regions that publish their own capacity must publish the one the
+  // limits describe, or the host would size its writes from a number the engine
+  // and the host disagree about.
+  if (levelsMax !== maxCalls) unavailable("levels region publishes the wrong capacity");
+  if (durationsMax !== maxCalls) unavailable("durations region publishes the wrong capacity");
+  if (timingMax !== maxCalls) unavailable("timing region publishes the wrong capacity");
+  for (const [name, ptr, bytes, entries, header, width, gap] of regions) {
     if (ptr % 4 !== 0) unavailable(`unaligned ${name} region base`);
-    if (ptr !== cursor) unavailable(`non-contiguous ${name} region`);
-    if (entries !== -1) {
-      const capacity = name === "input" ? limits.maxAccesses : name === "levels" || name === "durations" || name === "timing" ? maxCalls : maxEdges;
-      if (entries !== capacity) unavailable(`${name} region publishes the wrong capacity`);
-      if (bytes !== headers[index]! + entries * widths[index]!) {
-        unavailable(`${name} region does not match its declared capacity`);
-      }
+    if (gap === 1) {
+      if (ptr < cursor) unavailable(`overlapping ${name} region`);
+    } else if (ptr !== cursor) {
+      unavailable(`non-contiguous ${name} region`);
     }
+    if (entries !== -1 && bytes !== header + entries * width) {
+      unavailable(`${name} region does not match its declared capacity`);
+    }
+    if (ptr + bytes > base + arenaBytes) unavailable(`${name} region runs past the arena`);
     cursor = ptr + bytes;
   }
 
@@ -256,6 +340,12 @@ export async function loadEngine(options: InitializationOptions = {}): Promise<L
     durations: Object.freeze({ ptr: durationsPtr, bytes: durationsBytes }),
     timing: Object.freeze({ ptr: timingPtr, bytes: timingBytes }),
     checkpoint: Object.freeze({ ptr: ckptPtr, bytes: ckptBytes }),
+    capacities: Object.freeze({ ptr: capsPtr, bytes: capsBytes }),
+    demandOffsets: Object.freeze({ ptr: offsPtr, bytes: offsBytes }),
+    demandRecords: Object.freeze({ ptr: recsPtr, bytes: recsBytes }),
+    schedule: Object.freeze({ ptr: schedPtr, bytes: schedBytes }),
+    resourceStats: Object.freeze({ ptr: statsPtr, bytes: statsBytes }),
+    resourceDiagnostics: Object.freeze({ ptr: diagPtr, bytes: diagBytes }),
   });
   const info: EngineInfo = Object.freeze({
     engineName: ENGINE_NAME,
@@ -275,6 +365,8 @@ export async function loadEngine(options: InitializationOptions = {}): Promise<L
     planV2: planV2Fn as unknown as PlanV2Fn,
     planV3: planV3Fn as unknown as PlanV3Fn,
     planV4: planV4Fn as unknown as PlanV4Fn,
+    resourceCheck: resourceCheckFn as unknown as ResourceCheckFn,
+    resourceSchedule: resourceScheduleFn as unknown as ResourceScheduleFn,
     info,
   };
 }

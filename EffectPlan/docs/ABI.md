@@ -220,6 +220,12 @@ mapping in `packages/core/src/errors.ts` is exactly this:
 | 121 | ticks would overflow `u32` | `EP_LIMIT_EXCEEDED` |
 | 122 | the schedule contradicts itself | `EP_ENGINE_ERROR` |
 | 130 | output framing invalid | `EP_ENGINE_ERROR` |
+| 131, 132 | the checkpoint record is invalid or out of range | `EP_ENGINE_ERROR` |
+| 133 | a demand cannot be met by the declared capacity | — a verdict: `infeasible` |
+| 134 | a capacity, demand or tick is outside the supported range | `EP_LIMIT_EXCEEDED` |
+| 135 | a demand names a capacity resource that was never declared | `EP_INVALID_INPUT` |
+| 136 | a resource region pointer is not canonical | `EP_ENGINE_ERROR` |
+| 137 | the batch cannot be sequenced | — a verdict: `infeasible` |
 | 140 | internal invariant violated | `EP_ENGINE_ERROR` |
 
 Two other families never come from a status code. The host refuses bad *input*

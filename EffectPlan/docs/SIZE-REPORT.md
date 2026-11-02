@@ -29,8 +29,8 @@ failed at the moment memory grew rather than permitting it in advance.
 
 | Constraint                        | Limit    | Measured | Headroom |
 | --------------------------------- | -------- | -------- | -------- |
-| npm package, unpacked             | 82,042 B | 76,337 B | 5,705 B of the Phase 5 envelope |
-| WebAssembly artifact              | 40,000 B | 19,794 B | 20,206 B |
+| npm package, unpacked             | 95,042 B | 94,613 B | 429 B of the Phase 5 envelope |
+| WebAssembly artifact              | 40,000 B | 19,809 B | 20,191 B |
 | WebAssembly linear memory         | 18 pages (17 through Phase 4) | 18 pages | 53,784 B of spare address space |
 
 Where the 18,251 bytes since Phase 3 went: the session module and its
@@ -47,8 +47,8 @@ ceiling was no longer a constraint but an apology. From Phase 5 the budget is
 | Term | Value | Meaning |
 | --- | --- | --- |
 | `PHASE_4_BASELINE_BYTES` | 70,042 | the Phase 4 artifact, frozen |
-| `PHASE_5_ENVELOPE_BYTES` | 12,000 | what Phase 5 may add, agreed before it starts |
-| `MAX_UNPACKED_BYTES` | 82,042 | their sum — deliberately not a round number |
+| `PHASE_5_ENVELOPE_BYTES` | 25,000 | what Phase 5 may add, agreed before it starts |
+| `MAX_UNPACKED_BYTES` | 95,042 | their sum — deliberately not a round number |
 
 A breach is a scope conversation, not an edit to `scripts/limits.mjs`. The history
 does the rest of the arguing: Phase 1 shipped 36,891, Phase 2 43,543, Phase 3
@@ -60,6 +60,19 @@ envelope exists rather than a hope that the next guess is better.
 Phase 1 shipped at 36,891 / 7,948, Phase 2 at 43,543 / 10,190 and Phase 3 at
 51,791 / 13,247; the 18,251-byte increase since is the incremental-planning
 layer, measured from the same packer.
+
+**The Phase 5 envelope was raised once, and the measurement is the reason.** It
+was agreed at 12,000. The engine milestones (M0–M5) cost 6,295 of it and left
+5,706; the public TypeScript API (M6) then cost 18,521 more, for 94,858
+unpacked — 24,816 of growth against a 12,000 envelope, more than double. No
+trim brought it back: the leanest version measured 93,685, still 11,643 over the
+old ceiling, because the API is the deliverable rather than an ornament. Owner
+review on 2026-11-02 raised the envelope to 25,000 and the ceiling to 95,042.
+
+The shipped package then came in at 94,613 — 429 bytes under it. That headroom
+was found rather than spent twice: the resource status numbers moved out of the
+published declarations, the two decoders were merged into one, and the
+declarations the engine publishes are the only ones a consumer pays for.
 
 ## How the package was measured
 
@@ -85,29 +98,31 @@ number in this document is derived from source file sizes.
 
 | File                         | Bytes   | Notes                     |
 | ---------------------------- | ------- | ------------------------- |
-| `dist/effectplan.wasm`       |  19,794 | the engine                |
+| `dist/effectplan.wasm`       |  19,809 | the engine                |
 | `dist/session.js`            |  11,687 | new in Phase 4            |
-| `dist/loader.js`             |   7,068 | layout audit, five plans  |
+| `dist/loader.js`             |   9,586 | layout audit, five plans  |
+| `dist/planner.js`            |   9,547 |                           |
+| `dist/resources.js`          |   6,312 | new in Phase 5            |
 | `dist/timing.js`             |   6,098 | new in Phase 3            |
 | `dist/encode.js`             |   6,007 | shared with the session   |
-| `dist/planner.js`            |   5,139 |                           |
-| `README.md`                  |   4,625 | package documentation     |
-| `dist/loader.d.ts`           |   2,754 |                           |
+| `README.md`                  |   5,098 | package documentation     |
+| `dist/loader.d.ts`           |   3,959 |                           |
+| `dist/resources.d.ts`        |   2,647 | new in Phase 5            |
 | `dist/encode.d.ts`           |   2,329 |                           |
 | `dist/session.d.ts`          |   2,091 | new in Phase 4            |
-| `dist/planner.d.ts`          |   1,466 |                           |
+| `dist/planner.d.ts`          |   1,793 |                           |
+| `dist/errors.d.ts`           |   1,154 |                           |
 | `dist/execution-levels.js`   |   1,125 |                           |
-| `dist/errors.d.ts`           |   1,106 |                           |
 | `dist/timing.d.ts`           |   1,095 | new in Phase 3            |
 | `LICENSE`                    |   1,068 |                           |
-| `dist/errors.js`             |     882 |                           |
-| `dist/index.d.ts`            |     827 |                           |
+| `dist/index.d.ts`            |   1,056 |                           |
+| `dist/errors.js`             |     922 |                           |
 | `package.json`               |     722 |                           |
 | `dist/execution-levels.d.ts` |     318 |                           |
-| `dist/index.js`              |     136 | re-export only            |
-| **total**                    | **76,337** | 20 files               |
+| `dist/index.js`              |     190 | re-export only            |
+| **total**                    | **94,613** | 22 files               |
 
-The tarball is 25,966 bytes. The package declares no runtime dependencies, and
+The tarball is 29,436 bytes. The package declares no runtime dependencies, and
 the installation smoke test confirms that installing it produces a tree with
 exactly one package in it.
 

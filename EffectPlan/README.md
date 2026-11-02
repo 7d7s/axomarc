@@ -152,22 +152,39 @@ including reading the binary: 402–618 µs at the median.
 
 ## Status
 
+Phase 5 (resource intelligence) is **in progress**. The engine understands
+capacity resources as a model separate from dependency resources: typed
+declarations with an integer capacity, demands that a call holds for the whole
+of its execution, atomic reservation, and a deterministic list scheduler that
+places a batch against the capacities it was given. `planner.planResources()`
+and `planner.checkResources()` are the public surface; the check is its own
+export so that a scheduling-only change cannot rebuild the dependency graph.
+The schedules are verified against an independent reference — a tick-by-tick
+capacity checker and an exhaustive search over precedence-feasible sequences
+whose makespan is a true lower bound — and the heuristic is second-best on two
+of 32 seeded instances, by at most three ticks, which is stated rather than
+implied (`docs/RESOURCE-MODEL.md` §6). Two decisions remain open and are not
+mine to make: how a session carries resource declarations across versions (D2)
+and whether the engine computes longest remaining path (D3).
+
+Phase 5's memory cost is measured, not estimated: the capacity regions needed
+13,416 bytes and 2,264 were spare, so the 18th page was approved on measurement
+(`docs/RESOURCE-ABI.md` §1) and linear memory is 18 pages. The package sits at
+94,613 bytes unpacked against a 95,042-byte ceiling — the frozen Phase 4
+baseline of 70,042 plus a 25,000-byte Phase 5 envelope, raised once by owner
+review against the measurement; `docs/SIZE-REPORT.md` records the review
+history and the policy that replaced the ad-hoc raises.
+
 Phase 4 (incremental planning) is **in progress**: the engine can stop at a call
 boundary, commit a checkpoint of the state it stopped in, and continue from that
 checkpoint or refuse it; `planner.createSession()` keeps a plan alive through
 appends, replacements and removals, and an incremental plan is proved equal to a
 fresh rebuild by a randomised differential test. Phase 4 kept linear memory at
-17 pages because the session state lives in the host; Phase 5's capacity regions
-took the 18th page, approved on measurement (`docs/RESOURCE-ABI.md` §1). The
-package sits at 71,964 bytes unpacked against an 82,042-byte ceiling —
-`docs/SIZE-REPORT.md` records the three Phase 4 reviews and the envelope policy
-that replaced them. What is outstanding is the CI evidence: every job has passed
-locally and the branch is pushed, but no GitHub Actions run exists until a pull
-request opens.
+17 pages because the session state lives in the host.
 
 Phase 1 (the dependency planner), Phase 2 (execution levels) and Phase 3 (the
-critical path) are complete and measured: the engine, the package, the tests, the
-gates and the benchmarks all exist and run.
+critical path) are complete and measured: the engine, the package, the tests,
+the gates and the benchmarks all exist and run.
 
 Phase 3 added one versioned ABI export (`effectplan_plan_v3`, 18 parameters), two
 output regions (512 bytes of durations in, 1,056 bytes of schedule out), the
@@ -182,6 +199,10 @@ Linear memory is 18 pages, and that is a build-time gate rather than a hope.
 - the byte-level ABI for all three phases: [`docs/ABI.md`](docs/ABI.md)
 - the Phase 3 report, the memory decision and the cost analysis: [`docs/CRITICAL-PATH.md`](docs/CRITICAL-PATH.md)
 - the Phase 2 specification, the ordering-invariant proof and its measured cost: [`docs/EXECUTION-LEVELS.md`](docs/EXECUTION-LEVELS.md)
+- the Phase 5 model, the memory budget and the scheduler:
+  [`docs/RESOURCE-MODEL.md`](docs/RESOURCE-MODEL.md),
+  [`docs/RESOURCE-ABI.md`](docs/RESOURCE-ABI.md),
+  [`docs/RESOURCE-SCHEDULING.md`](docs/RESOURCE-SCHEDULING.md)
 - the rest: [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md),
   [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md),
   [`docs/SIZE-REPORT.md`](docs/SIZE-REPORT.md)

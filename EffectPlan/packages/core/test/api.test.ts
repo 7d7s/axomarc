@@ -51,6 +51,10 @@ describe("EffectPlan.create", () => {
       maxEdges: 2304,
       maxNamespaceBytes: 256,
       maxResourceIdBytes: 1024,
+      maxCapacityResources: 64,
+      maxDemandRecords: 1024,
+      maxResourceDiagnostics: 64,
+      maxCapacity: 2147483647,
     });
   });
 
@@ -68,6 +72,25 @@ describe("EffectPlan.create", () => {
     }
     assert.equal(layout.output.bytes, 16 + 2304 * 16);
     assert.equal(layout.levels.bytes, 4 + limits.maxCalls * 2);
+  });
+
+  it("publishes the capacity-resource regions and sizes them from the ceilings", async () => {
+    const plan = await open();
+    const { layout, limits } = plan.getEngineInfo();
+    assert.equal(layout.capacities.ptr, layout.checkpoint.ptr + layout.checkpoint.bytes);
+    assert.equal(layout.demandOffsets.ptr, layout.capacities.ptr + layout.capacities.bytes);
+    assert.equal(layout.demandRecords.ptr, layout.demandOffsets.ptr + layout.demandOffsets.bytes);
+    // The engine's private scratch sits between the demand records and the
+    // schedule; the host never names it.
+    assert.ok(layout.schedule.ptr > layout.demandRecords.ptr + layout.demandRecords.bytes);
+    assert.equal(layout.resourceStats.ptr, layout.schedule.ptr + layout.schedule.bytes);
+    assert.equal(layout.resourceDiagnostics.ptr, layout.resourceStats.ptr + layout.resourceStats.bytes);
+    assert.equal(layout.capacities.bytes, limits.maxCapacityResources * 4);
+    assert.equal(layout.demandOffsets.bytes, (limits.maxCalls + 1) * 4);
+    assert.equal(layout.demandRecords.bytes, limits.maxDemandRecords * 8);
+    assert.equal(layout.schedule.bytes, 32 + limits.maxCalls * 8);
+    assert.equal(layout.resourceStats.bytes, 32 + limits.maxCapacityResources * 16);
+    assert.equal(layout.resourceDiagnostics.bytes, 32 + limits.maxResourceDiagnostics * 16);
   });
 
   it("hands out frozen metadata", async () => {
@@ -159,6 +182,52 @@ describe("EffectPlan.create", () => {
       () => EffectPlan.create({ wasmBytes: fakeEngineBytes({ overrides: { 24: 8 } }) }),
       "EP_ENGINE_UNAVAILABLE",
       /levels region (does not match its declared capacity|publishes the wrong capacity)/,
+    );
+  });
+
+  it("refuses an engine without the capacity-resource entry points", async () => {
+    await rejectsCode(
+      () => EffectPlan.create({ wasmBytes: fakeEngineBytes({ omit: ["effectplan_resource_check"] }) }),
+      "EP_ENGINE_UNAVAILABLE",
+      /does not support capacity resources/,
+    );
+    await rejectsCode(
+      () => EffectPlan.create({ wasmBytes: fakeEngineBytes({ omit: ["effectplan_resource_schedule"] }) }),
+      "EP_ENGINE_UNAVAILABLE",
+      /cannot schedule against capacity resources/,
+    );
+  });
+
+  it("refuses an incompatible capacity-resource revision", async () => {
+    await rejectsCode(
+      () => EffectPlan.create({ wasmBytes: fakeEngineBytes({ overrides: { 35: 2 } }) }),
+      "EP_ENGINE_UNAVAILABLE",
+      /resource revision 2 incompatible with 1/,
+    );
+  });
+
+  it("refuses a capacity-resource region it cannot audit", async () => {
+    await rejectsCode(
+      () => EffectPlan.create({ wasmBytes: fakeEngineBytes({ overrides: { 36: 1308 } }) }),
+      "EP_ENGINE_UNAVAILABLE",
+      /non-contiguous capacities region/,
+    );
+    await rejectsCode(
+      () => EffectPlan.create({ wasmBytes: fakeEngineBytes({ overrides: { 37: 12 } }) }),
+      "EP_ENGINE_UNAVAILABLE",
+      /capacities region does not match/,
+    );
+    await rejectsCode(
+      () => EffectPlan.create({ wasmBytes: fakeEngineBytes({ overrides: { 46: 1544 } }) }),
+      "EP_ENGINE_UNAVAILABLE",
+      /non-contiguous resource diagnostics region/,
+    );
+    // A schedule region that starts inside the demand records would overlap
+    // them; the audit refuses an overlapping region as well as a misplaced one.
+    await rejectsCode(
+      () => EffectPlan.create({ wasmBytes: fakeEngineBytes({ overrides: { 42: 1344 } }) }),
+      "EP_ENGINE_UNAVAILABLE",
+      /overlapping schedule region/,
     );
   });
 

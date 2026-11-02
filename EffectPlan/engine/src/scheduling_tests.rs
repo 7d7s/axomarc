@@ -13,7 +13,10 @@
 //! drift from what the planner actually produced.
 
 use super::*;
-use crate::resources::{DEMAND_RECORD_BYTES, D_CALL, D_KIND, D_RESOURCE, D_VALUE, H_COUNT};
+use crate::resources::{
+    DEMAND_RECORD_BYTES, D_CALL, D_KIND, D_RESOURCE, D_VALUE, H_COUNT, H_REVISION,
+    RESOURCE_REVISION,
+};
 use crate::scheduling::{
     ST_BUSY, ST_CAPACITY, ST_COUNT, ST_ENTRIES, ST_PEAK, S_DEFERRALS, S_ENTRIES, S_MAKESPAN,
     S_PLACED, S_REVISION, S_ROUNDS, S_STATUS,
@@ -715,5 +718,21 @@ fn a_scheduled_batch_leaves_the_dependency_regions_alone() {
     assert!(
         placed.timing_intact,
         "the placement wrote the timing region"
+    );
+}
+
+#[test]
+fn a_placement_publishes_the_diagnostics_revision() {
+    // The diagnostics region has to describe itself: a host that reads a
+    // revision there must never find a stale one from an earlier run, and a
+    // placement that leaves the region blank has not published anything it can
+    // be trusted to have written.
+    let ops = [op(&[], &[(0, 1)], 3)];
+    let placed = place(&ops, &[2]);
+    assert_eq!(placed.status, OK);
+    assert_eq!(
+        word(RESOURCE_DIAGNOSTICS_BASE_OFF + H_REVISION),
+        RESOURCE_REVISION,
+        "the diagnostics region must carry its revision after a placement",
     );
 }

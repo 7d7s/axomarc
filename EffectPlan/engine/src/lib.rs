@@ -2078,6 +2078,13 @@ pub unsafe extern "C" fn effectplan_resource_schedule(
     }
 
     let arena = arena_slice();
+    // The diagnostics region is published before anything is written into it,
+    // exactly as the check entry point does: the host reads a revision there
+    // and must never find a stale one from an earlier run.
+    let diag_at = at[8] as usize;
+    if !resources::clear(arena, diag_at) {
+        return ERR_RANGE;
+    }
     // Feasibility first, and only its verdict is allowed to reach placement: a
     // demand that can never be met is reported before a schedule is pretended.
     let report = resources::check(
@@ -2086,7 +2093,7 @@ pub unsafe extern "C" fn effectplan_resource_schedule(
             capacities: at[0] as usize,
             offsets: at[1] as usize,
             records: at[2] as usize,
-            diagnostics: at[8] as usize,
+            diagnostics: diag_at,
             call_count: call_count as usize,
             resource_count: resource_count as usize,
             demand_count: demand_count as usize,

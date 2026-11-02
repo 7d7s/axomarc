@@ -31,7 +31,17 @@ export type {
 } from "./loader.js";
 export type { ExecutionLevels } from "./execution-levels.js";
 export type { EventTiming, TimingAnalysis, TimingOptions } from "./timing.js";
-export type { DependencyEdge, ExecutionPlan, PlanStatistics } from "./planner.js";
+export type { DependencyEdge, ExecutionPlan, PlanStatistics, ResourcePlan } from "./planner.js";
+export type {
+  CapacityDemand,
+  CapacityResource,
+  ResourceDiagnostic,
+  ResourceOptions,
+  ResourceResult,
+  ResourceStatistic,
+  ResourceWindow,
+} from "./resources.js";
+export { RESOURCE_DIAGNOSTIC } from "./resources.js";
 export type {
   ApplyChangesOptions,
   IncrementalCall,

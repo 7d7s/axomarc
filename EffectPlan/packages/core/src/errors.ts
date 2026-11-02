@@ -38,6 +38,8 @@ export const EXPECTED_LEVELS_ABI = 1;
 export const EXPECTED_TIMING_ABI = 1;
 /** Revision of the resumable-planning contract this wrapper was compiled against. */
 export const EXPECTED_CHECKPOINT_ABI = 1;
+/** Revision of the capacity-resource contract this wrapper was compiled against. */
+export const EXPECTED_RESOURCE_ABI = 1;
 export const ENGINE_VERSION = "0.3.0";
 export const ENGINE_NAME = "effectplan-engine";
 /** Output header and record framing, cross-checked against the engine. */

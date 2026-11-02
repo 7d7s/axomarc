@@ -43,6 +43,8 @@ Indices are positions in the array you passed, not call ids.
 | --- | --- |
 | `EffectPlan.create(options?)` | instantiate the engine; `wasmBytes`/`wasmUrl` override the bundled binary |
 | `planBatch(calls, options?)` | validate, plan, layer and (with `options.timing`) analyse one batch |
+| `planResources(calls, options)` | place a batch against declared capacity |
+| `checkResources(calls, options)` | ask whether the demands can be met |
 | `getEngineInfo()` | ABI revisions, limits and the memory layout the engine published |
 | `planner.createSession(calls, options?)` | keep one plan alive through appends, replacements and removals |
 
@@ -84,8 +86,14 @@ is, which is what `peakConcurrency` is there to warn you about.
 `EP_ENGINE_UNAVAILABLE`, `EP_ENGINE_ERROR`. Messages carry the call's index,
 never your resource or call identifiers.
 
+**Capacity resources** declare how many units of a lane may be held:
+`capacities` are `{ key, capacity }` pairs, `demands` one list per call. The
+result carries the `schedule`, per-resource `statistics` and `diagnostics`; an
+impossible demand is `outcome: "infeasible"`.
+
 **Limits per batch** 128 calls · 1,024 accesses · 1,024 resources · 256-byte
-namespace · 1,024-byte resource id · 128 durations.
+namespace · 1,024-byte resource id · 128 durations · 64 capacity resources ·
+1,024 demand records.
 
 ## Documentation
 

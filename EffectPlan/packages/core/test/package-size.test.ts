@@ -23,13 +23,15 @@ const PACKAGE_DIR = path.join(ROOT, "packages", "core");
  * if a script's number moves, this test fails. Through Phase 4 the unpacked limit
  * was a single ceiling raised three times by owner review (50,000 -> 60,000 ->
  * 70,000 -> 72,000). From Phase 5 it is a frozen baseline (the Phase 4 artifact,
- * 70,042) plus a per-phase envelope agreed in advance (12,000), so 82,042 —
- * deliberately not a round number: the ceiling is derived from a measurement and
- * a decision, not fitted to whatever the build happens to need. The artifact
- * budget, the dependency rule and the memory-page demand are unchanged from the
- * Phase 1 brief; the 18th page is approved for Phase 5 on measurement.
+ * 70,042) plus a per-phase envelope agreed in advance, so 95,042 — deliberately
+ * not a round number: the ceiling is derived from a measurement and a decision,
+ * not fitted to whatever the build happens to need. The Phase 5 envelope was
+ * agreed at 12,000 and raised to 25,000 by owner review against the measured
+ * cost of the public API. The artifact budget, the dependency rule and the
+ * memory-page demand are unchanged from the Phase 1 brief; the 18th page is
+ * approved for Phase 5 on measurement.
  */
-const MAX_UNPACKED_BYTES = 82_042;
+const MAX_UNPACKED_BYTES = 95_042;
 const MAX_WASM_BYTES = 40_000;
 
 /**
