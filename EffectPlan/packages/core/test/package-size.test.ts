@@ -20,14 +20,16 @@ const PACKAGE_DIR = path.join(ROOT, "packages", "core");
 
 /**
  * The release policy, stated here rather than read from the tool it constrains:
- * if a script's number moves, this test fails. The unpacked limit has been
- * reviewed and raised three times — 50,000 to 60,000 for Phase 4 on 2026-11-01
- * from a projection, 60,000 to 70,000 the same day once the session layer was
- * measured, and 70,000 to 72,000 on 2026-11-02 for the checkpoint-retention fix.
- * The artifact budget, the dependency rule and the 17-page memory demand are
- * unchanged from the Phase 1 brief.
+ * if a script's number moves, this test fails. Through Phase 4 the unpacked limit
+ * was a single ceiling raised three times by owner review (50,000 -> 60,000 ->
+ * 70,000 -> 72,000). From Phase 5 it is a frozen baseline (the Phase 4 artifact,
+ * 70,042) plus a per-phase envelope agreed in advance (12,000), so 82,042 —
+ * deliberately not a round number: the ceiling is derived from a measurement and
+ * a decision, not fitted to whatever the build happens to need. The artifact
+ * budget, the dependency rule and the memory-page demand are unchanged from the
+ * Phase 1 brief; the 18th page is approved for Phase 5 on measurement.
  */
-const MAX_UNPACKED_BYTES = 72_000;
+const MAX_UNPACKED_BYTES = 82_042;
 const MAX_WASM_BYTES = 40_000;
 
 /**

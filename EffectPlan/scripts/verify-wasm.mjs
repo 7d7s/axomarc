@@ -5,6 +5,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { EXPECTED_PAGES, MAX_WASM_BYTES } from "./limits.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const arg = (name, fallback) => {
@@ -12,7 +13,7 @@ const arg = (name, fallback) => {
   return i === -1 ? fallback : process.argv[i + 1];
 };
 const file = resolve(root, arg("file", join("packages/core/dist/effectplan.wasm")));
-const maxBytes = Number(arg("max-bytes", 40000));
+const maxBytes = Number(arg("max-bytes", MAX_WASM_BYTES));
 
 const failures = [];
 const checks = [];
@@ -105,7 +106,11 @@ check("checkpoint region follows the timing region", v.ckptPtr === v.timingPtr +
 check("checkpoint region is eight words", v.ckptLen === 32, String(v.ckptLen));
 check("the arena holds the checkpoint region too", v.arenaLen >= v.ckptPtr - v.base + v.ckptLen, `${v.arenaLen}`);
 check("a selector past the last known one fails closed", (info(35) >>> 0) === 0xffffffff, String(info(35)));
-check("linear memory stays at 17 pages", memory.buffer.byteLength === 1114112, `${memory.buffer.byteLength}`);
+check(
+  `linear memory stays at ${EXPECTED_PAGES} pages`,
+  memory.buffer.byteLength === EXPECTED_PAGES * 65536,
+  `${memory.buffer.byteLength} bytes, ${EXPECTED_PAGES} pages, limit from scripts/limits.mjs`,
+);
 check("memory demand stays modest", memory.buffer.byteLength <= 2 * 1024 * 1024, `${memory.buffer.byteLength}B`);
 
 // ---- Functional smoke over the raw ABI -------------------------------------

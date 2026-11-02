@@ -17,10 +17,11 @@ its own CPM.
   `serde`, no allocator, no imports.
 - One npm package, `@effectplan/core`, zero runtime dependencies, no network,
   no filesystem access, no telemetry.
-- 70,042 bytes unpacked (limit: 72,000, reviewed three times for Phase 4, each
-  time against a measurement rather than a projection). The wasm artifact is
-  13,499 bytes (budget: 40,000). Both measured from the packed tarball, not from
-  source.
+- 70,042 bytes unpacked. From Phase 5 the package budget is a frozen baseline
+  (the Phase 4 artifact) plus a per-phase envelope agreed in advance, rather than
+  a ceiling raised each time the work outgrew it — see `docs/SIZE-REPORT.md`. The
+  wasm artifact is 13,499 bytes (budget: 40,000). Both measured from the packed
+  tarball, not from source.
 
 ## Quick start
 
@@ -155,9 +156,9 @@ boundary, commit a checkpoint of the state it stopped in, and continue from that
 checkpoint or refuse it; `planner.createSession()` keeps a plan alive through
 appends, replacements and removals, and an incremental plan is proved equal to a
 fresh rebuild by a randomised differential test. Linear memory is still 17 pages
-because the session state lives in the host, and the package fits its reviewed
-ceiling (70,042 bytes unpacked against 72,000 — `docs/SIZE-REPORT.md` records all
-three reviews). What is outstanding is the CI evidence: every job has passed
+because the session state lives in the host, and the package sits at its
+baseline (70,042 bytes unpacked — `docs/SIZE-REPORT.md` records the three Phase 4
+reviews and the envelope policy that replaced them). What is outstanding is the CI evidence: every job has passed
 locally and the branch is pushed, but no GitHub Actions run exists until a pull
 request opens.
 

@@ -222,8 +222,9 @@ static arena, so all three test modules serialise on one shared mutex.
 `npm test` — 182 declared tests, 0 failed. The runner's tally reads `# pass 183`
 because it also loads `test/support.ts`'s compiled module as a file, which
 declares no tests. The package-size suite is green against the ceiling that
-`scripts/limits.mjs` states (72,000 bytes unpacked, the third owner review,
-recorded in `docs/SIZE-REPORT.md`).
+`scripts/limits.mjs` states (a frozen Phase 4 baseline of 70,042 bytes plus a
+12,000-byte Phase 5 envelope; the review history and the policy are in
+`docs/SIZE-REPORT.md`).
 
 | File                         | Tests | Covers                                                       |
 | ---------------------------- | ----- | ------------------------------------------------------------ |
@@ -354,8 +355,9 @@ checkpoint jobs through their test-filter guards, and every
 `--test-name-pattern` job through `scripts/run-tests.mjs` — fail when they match
 fewer tests than they claim, so a renamed test breaks a job instead of quietly
 emptying it. The wasm-build job still enforces the 40,000-byte artifact budget and
-the size job the package ceiling, both read from `scripts/limits.mjs` (72,000
-bytes unpacked as reviewed in `docs/SIZE-REPORT.md`).
+the size job the package ceiling, both read from `scripts/limits.mjs` (the
+Phase 4 baseline plus the Phase 5 envelope), as is the page count the wasm
+verifier asserts.
 
 Every one of those commands has run and passed locally (2026-11-02: Rust format,
 110 Rust tests, the checkpoint and scheduling filters, typecheck, 179 TypeScript

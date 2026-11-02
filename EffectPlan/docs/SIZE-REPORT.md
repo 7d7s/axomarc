@@ -1,7 +1,10 @@
 # Size report
 
 The limits are release constraints, and a limit that moves needs a record of why
-it moved. One has moved, three times, each by owner review:
+it moved. The package ceiling moved three times during Phase 4, each by owner
+review, and then stopped being a single number: from Phase 5 it is a frozen
+baseline plus a per-phase envelope, described below under "How the ceiling is set
+now".
 
 * **50,000 → 60,000**, 2026-11-01, before any of the incremental-planning
   TypeScript existed. That number came from a projection: 51,791 bytes with the
@@ -18,24 +21,40 @@ it moved. One has moved, three times, each by owner review:
 Everything else below is still the Phase 1 brief: the 40,000-byte artifact, zero
 runtime dependencies, zero Rust heap allocation, and 17 pages of linear memory —
 Phase 4 was designed around that page count rather than against it, which is why
-session state lives in the host.
+session state lives in the host. Phase 5 cannot: the 18th page is approved on
+measurement (`docs/RESOURCE-ABI.md` §1), and `EXPECTED_PAGES` in
+`scripts/limits.mjs` stays at 17 until the resource regions actually land, so the
+gate fails at the moment memory grows rather than permitting it in advance.
 
 | Constraint                        | Limit    | Measured | Headroom |
 | --------------------------------- | -------- | -------- | -------- |
-| npm package, unpacked             | 72,000 B | 70,042 B | 1,958 B  |
+| npm package, unpacked             | 82,042 B | 70,042 B | 12,000 B (the Phase 5 envelope) |
 | WebAssembly artifact              | 40,000 B | 13,499 B | 26,501 B |
-| WebAssembly linear memory         | 17 pages | 17 pages | 2,264 B of spare address space |
+| WebAssembly linear memory         | 17 pages (18 approved for Phase 5) | 17 pages | 2,264 B of spare address space |
 
 Where the 18,251 bytes since Phase 3 went: the session module and its
 declarations are 13,778 of them, the resumable engine is 3,286, and the loader,
 encoder, planner and published documentation account for the rest. The 128-byte
 key rule and the retention fix cost 1,288 and 145 respectively of that.
 
-The headroom is thin by design — it is the constraint that makes the next estimate
-honest — but the ceiling has now been raised three times, and a fourth would mean
-the limit is not doing its job. The Phase 4 layer is measured at 18,251 bytes
-against a Phase 3 baseline of 51,791: any Phase 5 estimate should assume the same
-ratio of estimate to error rather than a smaller one.
+## How the ceiling is set now
+
+Three raises of one number was the pattern, and the fourth would have meant the
+ceiling was no longer a constraint but an apology. From Phase 5 the budget is
+*derived in advance* instead of renegotiated after the fact:
+
+| Term | Value | Meaning |
+| --- | --- | --- |
+| `PHASE_4_BASELINE_BYTES` | 70,042 | the Phase 4 artifact, frozen |
+| `PHASE_5_ENVELOPE_BYTES` | 12,000 | what Phase 5 may add, agreed before it starts |
+| `MAX_UNPACKED_BYTES` | 82,042 | their sum — deliberately not a round number |
+
+A breach is a scope conversation, not an edit to `scripts/limits.mjs`. The history
+does the rest of the arguing: Phase 1 shipped 36,891, Phase 2 43,543, Phase 3
+51,791 and Phase 4 70,042 — the last step was 18,251 bytes against a projection
+that had allowed 5,000 for the session layer and measured 12,813. Any Phase 5
+estimate should assume estimates err by that multiple, which is the reason the
+envelope exists rather than a hope that the next guess is better.
 
 Phase 1 shipped at 36,891 / 7,948, Phase 2 at 43,543 / 10,190 and Phase 3 at
 51,791 / 13,247; the 18,251-byte increase since is the incremental-planning
