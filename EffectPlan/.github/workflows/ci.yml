@@ -258,7 +258,7 @@ jobs:
           node-version: "20"
       - run: npm ci
       - run: npm run build
-      - name: The arena tiles exactly and the memory stays at 17 pages
+      - name: The arena tiles exactly and the memory stays at 18 pages
         run: npm run verify:wasm
       - run: npm run test:timing-memory
 
@@ -483,3 +483,88 @@ jobs:
         with:
           name: incremental-benchmarks
           path: artifacts/incremental-benchmarks.json
+
+  # --------------------------------------------------------------------------
+  # Phase 5: Resource Intelligence. Each job is one claim about the capacity
+  # layer, and each insists on having run something. The session-level claims —
+  # a resource table that survives version changes, and the two invalidation
+  # domains — wait on decision D2 and are deliberately absent rather than
+  # green on nothing.
+  # --------------------------------------------------------------------------
+
+  rust-resources:
+    name: Rust capacity validation tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: The feasibility tests, and a guard against matching none
+        run: |
+          out=$(cargo test -p effectplan-engine resources_tests 2>&1)
+          echo "$out"
+          count=$(echo "$out" | grep -c '^test resources_tests::')
+          echo "resources_tests ran ${count} tests"
+          test "${count}" -ge 23
+
+  rust-resource-scheduling:
+    name: Rust resource placement tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: The placement tests, and a guard against matching none
+        run: |
+          out=$(cargo test -p effectplan-engine scheduling_tests 2>&1)
+          echo "$out"
+          count=$(echo "$out" | grep -c '^test scheduling_tests::')
+          echo "scheduling_tests ran ${count} tests"
+          test "${count}" -ge 20
+
+  resource-oracle:
+    name: Independent resource reference
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npm run build
+      - name: Schedules checked against a tick-by-tick capacity walker and an exhaustive optimum
+        run: npm run test:resource-oracle
+
+  resource-api:
+    name: Capacity resource public API
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npm run build
+      - name: The four outcomes, the validation matrix and determinism
+        run: npm run test:resource-api
+
+  resource-layout:
+    name: Capacity resource memory layout
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npm run build
+      - name: The arena tiles exactly and the memory stays at 18 pages
+        run: npm run verify:wasm
+      - run: npm run test:resource-layout

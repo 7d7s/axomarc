@@ -470,7 +470,10 @@ fn a_later_call_that_fits_does_not_excuse_an_earlier_one_that_cannot() {
     let out = fixture.run();
     assert_eq!(out.status, ERR_RESOURCE_CAPACITY);
     assert_eq!(out.count, 1, "only the impossible demand is reported");
-    assert_eq!(out.records[0][0], crate::resources::DIAG_INSUFFICIENT_CAPACITY);
+    assert_eq!(
+        out.records[0][0],
+        crate::resources::DIAG_INSUFFICIENT_CAPACITY
+    );
     assert_eq!(out.records[0][2], 0, "the offending call is the first");
     assert_eq!(out.published, ERR_RESOURCE_CAPACITY);
 }

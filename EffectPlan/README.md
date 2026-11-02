@@ -98,6 +98,9 @@ npm run build              # wasm + JavaScript + the packed npm artifact
 npm test                   # the TypeScript suite
 npm run test:rust          # the Rust suite
 npm run test:wasm          # the WebAssembly integration suite
+npm run test:resource-oracle # placements against an independent reference
+npm run test:resource-api    # the capacity-resource public surface
+npm run test:resource-layout # the resource regions and the arena contract
 npm run test:browser       # the browser smoke test (needs Chrome or Chromium)
 npm run test:levels        # the execution-levels suite
 npm run test:timing        # the scheduling suite

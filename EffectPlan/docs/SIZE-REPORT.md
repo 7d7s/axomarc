@@ -231,7 +231,7 @@ in this file because the second one flatters the phase more than the first.
   dependencies.
 - `packages/core/test/package-size.test.ts` — the same limits as a test, and a
   check that every module the entry point imports is actually published.
-- `npm run verify:wasm` — 110 checks, including the arena tiling, each region's
+- `npm run verify:wasm` — 135 checks, including the arena tiling, each region's
   published capacity and that linear memory is still 18 pages. This is the
   build-time memory-layout acceptance gate the Phase 3 planning document asked
   for: a layout change fails the build instead of surfacing later as a wrong plan.
@@ -239,6 +239,10 @@ in this file because the second one flatters the phase more than the first.
   manifest, so the packer itself cannot produce an oversized artifact.
 - `npm run test:timing-memory` — the arena, view re-mapping and memory-growth
   behaviour as tests.
+- `npm run test:resource-layout` — the six capacity-resource regions, their sizes
+  derived from the published ceilings, and the property that makes clearing the
+  arena safe: the arena starts empty and the module's read-only data does not
+  live in it.
 - CI jobs "Package size enforcement" and "Timing memory layout" run the gates on
   every pull request.
 

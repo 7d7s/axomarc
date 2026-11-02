@@ -53,7 +53,7 @@ baseline the overhead gate reads), and the size reports.
 | `npm run build:wasm`       | `cargo build --target wasm32-unknown-unknown --profile release`, then `wasm-opt --enable-bulk-memory -Oz`, staging `packages/core/dist/effectplan.wasm` |
 | `npm run build:js`         | `tsc -p tsconfig.build.json` → `packages/core/dist`             |
 | `npm run build`            | both, then `scripts/build-package.mjs`                          |
-| `npm run verify:wasm`      | 93 ABI, level, scheduling and memory-safety checks against the built artifact |
+| `npm run verify:wasm`      | 135 ABI, level, scheduling, memory-safety and capacity-resource checks against the built artifact |
 | `npm run verify:size`      | extracts the packed tarball and enforces the size limits        |
 | `npm run verify:package`   | installs the tarball into a throwaway project and plans a batch |
 | `npm test`                 | compiles the test build and runs every TypeScript test          |
@@ -63,6 +63,9 @@ baseline the overhead gate reads), and the size reports.
 | `npm run test:timing-abi`  | the raw `v3` ABI suite                                         |
 | `npm run test:timing-overflow` | zero, missing and overflowing durations                    |
 | `npm run test:timing-memory` | arena tiling, view re-mapping, growth behaviour              |
+| `npm run test:resource-oracle` | placements against an independent reference            |
+| `npm run test:resource-api`    | the capacity-resource public surface                     |
+| `npm run test:resource-layout` | the resource regions, their sizes and the arena contract |
 | `npm run test:api-compatibility` | Phase 1 and Phase 2 surfaces, unchanged behaviour        |
 | `npm run test:browser`     | serves the page and drives it in headless Chrome                |
 | `npm run benchmark`        | native benchmark, then the WebAssembly/TypeScript benchmark     |
@@ -221,9 +224,9 @@ determinism, non-canonical and wrong-length scheduling regions (108, 119), and t
 guarantee that `v1` and `v2` never write the timing region. The tests share one
 static arena, so all three test modules serialise on one shared mutex.
 
-### TypeScript — 183 tests, all passing
+### TypeScript — 204 tests, all passing
 
-`npm test` — 183 declared tests, 0 failed. The runner's tally reads `# pass 184`
+`npm test` — 204 declared tests, 0 failed. The runner's tally reads `# pass 205`
 because it also loads `test/support.ts`'s compiled module as a file, which
 declares no tests. The package-size suite is green against the ceiling that
 `scripts/limits.mjs` states (a frozen Phase 4 baseline of 70,042 bytes plus a
@@ -232,16 +235,18 @@ declares no tests. The package-size suite is green against the ceiling that
 
 | File                         | Tests | Covers                                                       |
 | ---------------------------- | ----- | ------------------------------------------------------------ |
-| `api.test.ts`                | 34    | metadata, limits, layout, the error matrix, loader refusals  |
+| `api.test.ts`                | 38    | metadata, limits, the layout of every published region, the error matrix, loader refusals  |
 | `planner.test.ts`   | 22    | conflict matrix, effect modes, encoding, decoding, determinism  |
 | `parity.test.ts`    | 4     | exhaustive parity with the independent oracles                    |
 | `property.test.ts`  | 22    | fast-check properties: 8 graph, 7 level, 7 critical path          |
-| `wasm.test.ts`      | 41    | the raw ABI, hostile arguments, memory growth, the scheduling, checkpoint and resource ABI |
+| `wasm.test.ts`      | 42    | the raw ABI, hostile arguments, memory growth, the scheduling, checkpoint and resource ABI, the arena-is-scratch property |
 | `execution-levels.test.ts` | 17 | decoding, grouping, oracle parity, immutability             |
 | `timing.test.ts`    | 20    | duration validation, the worked examples, oracle agreement, overflow, half-open boundaries, growth, no timing when not asked |
 | `session.test.ts`       | 17    | the incremental session: parity, versions, atomicity, the key contract, reuse that survives a history |
 | `session-property.test.ts` | 2   | randomised edits against a fresh rebuild                     |
 | `package-size.test.ts`   | 4     | the packed artifact against the release limits               |
+| `resource-schedule.test.ts` | 5   | every placement against an independent tick walker and an exhaustive optimum |
+| `resource-api.test.ts`   | 11    | the public capacity-resource surface: the four outcomes, validation, determinism |
 
 The loader refusals are tested against hand-assembled wasm modules (the bytes
 are built in the test, so the layout is auditable): a wrong ABI revision, a
@@ -307,8 +312,8 @@ workload shape which repeated a resource inside one call.
 
 ### WebAssembly integration
 
-`npm run test:wasm` — 33 passed. The artifact loads through the published
-entry point with no options; it has no imports and exactly four function
+`npm run test:wasm` — 42 passed. The artifact loads through the published
+entry point with no options; it has no imports and exactly seven function
 exports; it contains no allocator or binding-framework strings; the raw ABI
 executes; the packed typed arrays the wrapper writes are the ones the engine
 reads (the raw ABI and the public API agree record for record); a wrong ABI
@@ -342,20 +347,25 @@ installed, because a silently skipped browser test is not a test.
 
 ## CI
 
-`.github/workflows/ci.yml` runs thirty jobs: the ten Phase 1 and Phase 2 jobs
+`.github/workflows/ci.yml` runs thirty-five jobs: the ten Phase 1 and Phase 2 jobs
 (Rust formatting, Rust tests, TypeScript type check, TypeScript tests,
 WebAssembly build, ABI verification, WebAssembly integration tests, package-size
 enforcement, package installation smoke test, browser smoke test), the nine Phase 3
 jobs — Rust scheduling tests, scheduling properties, the independent CPM oracle,
 the scheduling ABI, duration and tick overflow, the timing memory layout, the
 benchmark gates, the browser scheduling smoke test and Phase 1/2 API
-compatibility — and eleven Phase 4 jobs: the definition check that the
+compatibility — eleven Phase 4 jobs: the definition check that the
 repository-root workflow mirror matches this file, the Rust checkpoint tests, the
 checkpoint ABI against the shipped artifact, incremental parity, version
 integrity, transaction safety, change validation, memory validation, the
 incremental WebAssembly integration and browser runs, and the incremental
-benchmark gate. Jobs that select a subset by name — the Rust scheduling and
-checkpoint jobs through their test-filter guards, and every
+benchmark gate; and five Phase 5 jobs: the Rust capacity validation tests, the
+Rust resource placement tests, the independent resource reference, the capacity
+resource public API and the capacity resource memory layout. The session-level
+Phase 5 claims are deliberately absent — a resource table that survives version
+changes cannot be gated before decision D2 says what it is.
+Jobs that select a subset by name — the Rust scheduling, checkpoint, capacity and
+placement jobs through their test-filter guards, and every
 `--test-name-pattern` job through `scripts/run-tests.mjs` — fail when they match
 fewer tests than they claim, so a renamed test breaks a job instead of quietly
 emptying it. The wasm-build job still enforces the 40,000-byte artifact budget and
@@ -363,10 +373,28 @@ the size job the package ceiling, both read from `scripts/limits.mjs` (the
 Phase 4 baseline plus the Phase 5 envelope), as is the page count the wasm
 verifier asserts.
 
-Every one of those commands has run and passed locally (2026-11-02: Rust format,
-110 Rust tests, the checkpoint and scheduling filters, typecheck, 179 TypeScript
-tests, the wasm build and its 110 ABI checks, size, package install, browser, the
-session and timing subsets — 20 invocations, all exit 0). What has not happened is
+Every command the workflow runs has been run locally, in workflow order, with the
+exit code of each recorded (2026-11-02, 27 invocations): 26 exited 0 — Rust
+clippy, 153 Rust tests, the schedule/checkpoint/resources/scheduling filters,
+typecheck, the build, `verify:wasm` with its 135 checks, `verify:size`,
+`verify:package`, 205 TypeScript tests, the wasm, session, timing and resource
+subsets (each through its count guard), API compatibility, the browser smoke test
+and the CI mirror check. **One did not: `cargo fmt --all -- --check` exited 1**,
+on a line the resources test suite had added without asking rustfmt. That is a
+real failure of a real gate, and it had been sitting in two commits — the format
+job would have failed the branch in CI. It was fixed with the tool itself, the
+diff is four lines of one assert wrapped, the artifact is byte-identical
+(19,809 B, whitespace only), the Rust suite still reports 153 passing and the
+check is now clean.
+
+The three benchmark jobs were deliberately left out of that local set: they write
+`artifacts/benchmarks.json` and `artifacts/incremental-benchmarks.json`, and
+letting a machine that was busy with other work overwrite the committed
+measurements would destroy the evidence rather than add to it. Their numbers are
+recorded in `docs/CRITICAL-PATH.md` and `docs/INCREMENTAL-BENCHMARKS.md` from the
+runs that were measured for the purpose.
+
+What has not happened is
 a GitHub runner: the branch is pushed, but the mirror workflow triggers on
 `pull_request` and on pushes to `main`, so no Actions run exists until a pull
 request is opened against it. That is the one piece of Phase 4 evidence this

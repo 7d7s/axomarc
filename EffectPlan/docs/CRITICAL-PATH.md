@@ -5,9 +5,12 @@ decided along the way. The maths is in
 [SCHEDULING-MODEL.md](SCHEDULING-MODEL.md), the byte contract in
 [ABI.md](ABI.md).
 
-Status: complete and measured. Rust 91 tests, TypeScript 156 tests, 93 ABI
-checks, browser smoke test, both benchmark layers, all gates passed on the
-published artifact.
+Status: complete and measured. As at Phase 3: Rust 91 tests, TypeScript 156
+tests, 93 ABI checks, browser smoke test, both benchmark layers, all gates
+passed on the published artifact. Those three counts have grown since — Phase 5
+stands at Rust 153, TypeScript 204 and 135 ABI checks (`docs/IMPLEMENTATION.md`),
+and the numbers in this document's own tables are the current ones, not the
+Phase 3 ones.
 
 ## 1. What Phase 3 added
 
@@ -269,12 +272,12 @@ No message contains a caller identifier. The engine returns numbers.
 | Layer | Count | What it covers |
 | --- | --- | --- |
 | Rust `schedule_tests` | 20 | empty, single, chain, independent, the worked diamond, permuted durations, several critical paths, disconnected components, half-open adjacency vs overlap, maximum batch, large exact durations, overflow, zero and missing duration, refused writes no header, determinism, non-canonical pointers, wrong lengths, `v1`/`v2` never touch the region, stale graph |
-| Rust total | 91 | the above plus Phase 1 and Phase 2 suites |
+| Rust total | 153 | the above plus Phase 1, Phase 2 and the Phase 5 resource suites |
 | `timing.test.ts` | 20 | host validation, both readings of the specification's example, levels-vs-timing consistency, oracle agreement, overflow, half-open boundary, frozen and independent results, memory growth, no timing when not asked |
 | `property.test.ts` | 22 (7 CPM) | edge precedence in both passes, roots at zero, makespan is the last finish, non-negative slack and the derived fields, the concurrency envelope, determinism, and per-call agreement with the independent oracle |
 | `parity.test.ts` | 4 | 7,381 exhaustive batches, comparing every timing number against `benchmarks/reference-cpm.ts` |
-| `wasm.test.ts` | 33 (8 scheduling) | raw `v3` through the real ABI: layout publication, lower entry points, the diamond, `118`, `121`, non-canonical regions, 20,000 hostile invocations |
-| `verify-wasm.mjs` | 93 | structural, functional and refusal checks against the shipped `.wasm` bytes |
+| `wasm.test.ts` | 42 (8 scheduling) | raw `v3` through the real ABI: layout publication, lower entry points, the diamond, `118`, `121`, non-canonical regions, 20,000 hostile invocations |
+| `verify-wasm.mjs` | 135 | structural, functional and refusal checks against the shipped `.wasm` bytes |
 | `benchmarks/reference-cpm.ts` | — | an *independent* implementation: explicit adjacency, Kahn order, reverse-topological backward pass, counted-overlap peak |
 | browser | 10 checks | Phase 1 edges, Phase 2 waves, Phase 3 timing in headless Chrome |
 
