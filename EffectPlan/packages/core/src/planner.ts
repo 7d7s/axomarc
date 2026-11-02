@@ -344,7 +344,12 @@ export class EffectPlan {
       : { durations: options.durations, unit: options.unit };
     const durations = encodeDurations(input, encoded.callCount, timingOptions);
     const p = encoded.pointers;
-    const planStatus = engine.planV4(
+    // Version three, not four: a stateless call must not inherit the checkpoint
+    // the previous call committed. v4 resumes from the checkpoint region, and a
+    // record left by a different batch is correctly refused as stale (131/132) —
+    // which would make the second of two unrelated batches fail. Placement needs
+    // the graph, the durations and the timing, and v3 publishes all three.
+    const planStatus = engine.planV3(
       info.abiVersion,
       encoded.callCount,
       encoded.accessCount,
@@ -363,8 +368,6 @@ export class EffectPlan {
       layout.durations.bytes,
       layout.timing.ptr,
       layout.timing.bytes,
-      layout.checkpoint.ptr,
-      layout.checkpoint.bytes,
     );
     if (planStatus !== 0) throw engineError(planStatus);
 

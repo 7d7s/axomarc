@@ -224,9 +224,9 @@ determinism, non-canonical and wrong-length scheduling regions (108, 119), and t
 guarantee that `v1` and `v2` never write the timing region. The tests share one
 static arena, so all three test modules serialise on one shared mutex.
 
-### TypeScript — 204 tests, all passing
+### TypeScript — 206 tests, all passing
 
-`npm test` — 204 declared tests, 0 failed. The runner's tally reads `# pass 205`
+`npm test` — 206 declared tests, 0 failed. The runner's tally reads `# pass 207`
 because it also loads `test/support.ts`'s compiled module as a file, which
 declares no tests. The package-size suite is green against the ceiling that
 `scripts/limits.mjs` states (a frozen Phase 4 baseline of 70,042 bytes plus a
@@ -246,7 +246,7 @@ declares no tests. The package-size suite is green against the ceiling that
 | `session-property.test.ts` | 2   | randomised edits against a fresh rebuild                     |
 | `package-size.test.ts`   | 4     | the packed artifact against the release limits               |
 | `resource-schedule.test.ts` | 5   | every placement against an independent tick walker and an exhaustive optimum |
-| `resource-api.test.ts`   | 11    | the public capacity-resource surface: the four outcomes, validation, determinism |
+| `resource-api.test.ts`   | 13    | the public capacity-resource surface: the four outcomes, validation, determinism, back-to-back batches |
 
 The loader refusals are tested against hand-assembled wasm modules (the bytes
 are built in the test, so the layout is auditable): a wrong ABI revision, a
@@ -377,7 +377,7 @@ Every command the workflow runs has been run locally, in workflow order, with th
 exit code of each recorded (2026-11-02, 27 invocations): 26 exited 0 — Rust
 clippy, 153 Rust tests, the schedule/checkpoint/resources/scheduling filters,
 typecheck, the build, `verify:wasm` with its 135 checks, `verify:size`,
-`verify:package`, 205 TypeScript tests, the wasm, session, timing and resource
+`verify:package`, 207 TypeScript tests, the wasm, session, timing and resource
 subsets (each through its count guard), API compatibility, the browser smoke test
 and the CI mirror check. **One did not: `cargo fmt --all -- --check` exited 1**,
 on a line the resources test suite had added without asking rustfmt. That is a

@@ -132,6 +132,53 @@ describe("planResources", () => {
     assert.equal(result.plan.timing?.criticalPathDuration, 1);
   });
 
+  it("plans two unrelated batches back to back on one planner", async () => {
+    // The regression this pins: the stateless path used to plan through the
+    // resumable entry point, so the second batch inherited the first one's
+    // checkpoint and was refused as stale. Two calls with the *same* batch
+    // passed, which is why the determinism test never noticed.
+    const plan = await open();
+    const first = plan.planResources(calls("a", "b", "c"), {
+      capacities: lane(2),
+      demands: [[{ resource: "lane", amount: 1 }], [], [{ resource: "lane", amount: 2 }]],
+      durations: [3, 2, 4],
+    });
+    const second = plan.planResources(calls("x", "y"), {
+      capacities: lane(1),
+      demands: [[{ resource: "lane", amount: 1 }], [{ resource: "lane", amount: 1 }]],
+      durations: [2, 5],
+    });
+    assert.equal(first.outcome, "feasible");
+    assert.equal(second.outcome, "feasible");
+    assert.equal(second.makespan, 7, "the second batch is planned whole, not resumed");
+    assert.deepEqual(
+      // Batch order, not placement order: y (duration 5, slack 0) goes first and
+      // x waits for the lane. The rows stay where the calls were declared.
+      second.schedule.map((entry) => [entry.callId, entry.start, entry.finish]),
+      [["x", 5, 7], ["y", 0, 5]],
+      "the longer call goes first and the shorter one waits for the lane",
+    );
+  });
+
+  it("interleaves checks and placements without disturbing either", async () => {
+    const plan = await open();
+    const options: ResourceOptions = {
+      capacities: lane(1),
+      demands: [[{ resource: "lane", amount: 1 }], [{ resource: "lane", amount: 1 }]],
+      durations: [2, 2],
+    };
+    assert.equal(plan.checkResources(calls("a", "b"), options).outcome, "feasible");
+    assert.equal(plan.planResources(calls("a", "b"), options).outcome, "feasible");
+    assert.equal(plan.checkResources(calls("a", "b"), options).outcome, "feasible");
+    const refused = plan.planResources(calls("a", "b"), {
+      ...options,
+      demands: [[{ resource: "lane", amount: 4 }], []],
+      durations: [2, 2],
+    });
+    assert.equal(refused.outcome, "infeasible");
+    assert.equal(refused.diagnostics[0]?.kind, RESOURCE_DIAGNOSTIC.insufficientCapacity);
+  });
+
   it("gives the same answer every time", async () => {
     const plan = await open();
     const options: ResourceOptions = {

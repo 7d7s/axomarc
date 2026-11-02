@@ -2,8 +2,8 @@
   "name": "@effectplan/core",
   "version": "0.3.0",
   "tarball": "artifacts/package/effectplan-core-0.3.0.tgz",
-  "tarballBytes": 29436,
-  "unpackedBytes": 94613,
+  "tarballBytes": 29433,
+  "unpackedBytes": 94565,
   "entryCount": 22,
   "limits": {
     "maxUnpackedBytes": 95042,
@@ -68,7 +68,7 @@
     },
     {
       "path": "dist/planner.js",
-      "bytes": 9547
+      "bytes": 9499
     },
     {
       "path": "dist/resources.d.ts",
@@ -100,10 +100,10 @@
     }
   ],
   "npm": {
-    "size": 29436,
-    "shasum": "9951774907c9e3fa39528554003fd52ce4198cc6",
-    "integrity": "sha512-0Hh3smY7BZD9ka6PPEZDyARQXN1aOj1bsWMBvqYi1fUx3ihkpNAonSXTtMn2h37+im+V2IVu66AmjKrVX0KHbA=="
+    "size": 29433,
+    "shasum": "193c0fce8635b080e30dd8f9105c7ea2ea0b4100",
+    "integrity": "sha512-zZ8SPsIZe54uzx24kjuoXWG/xtvXUSdMacVPUE/7Qnou+SI/gXQ2QqQu4440W6cYTA+2pvPvSSma1vLGvCJrxw=="
   },
-  "stagedBytes": 87725,
+  "stagedBytes": 87677,
   "whitespaceRemovedBytes": 11564
 }

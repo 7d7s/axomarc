@@ -1,13 +1,13 @@
 {
-  "measuredAt": "2026-11-02T17:57:54.682Z",
+  "measuredAt": "2026-11-02T18:26:53.657Z",
   "package": {
     "name": "@effectplan/core",
     "version": "0.3.0",
     "tarball": "artifacts/package/effectplan-core-0.3.0.tgz"
   },
-  "unpackedBytes": 94613,
-  "unpackedBytesReportedByNpm": 94613,
-  "tarballBytes": 29436,
+  "unpackedBytes": 94565,
+  "unpackedBytesReportedByNpm": 94565,
+  "tarballBytes": 29433,
   "wasmBytes": 19809,
   "fileCount": 22,
   "limits": {
@@ -65,7 +65,7 @@
     },
     {
       "path": "dist/planner.js",
-      "bytes": 9547
+      "bytes": 9499
     },
     {
       "path": "dist/resources.d.ts",
