@@ -65,7 +65,7 @@ workspace_ptr, workspace_len, output_ptr, output_capacity,
 
 Linear memory is 18 pages (1,179,648 bytes) and never grows during a plan. The
 engine's arena sits at the top of the data segment; the base is reported by
-`info(1)`, and in this build it is 1,049,960.
+`info(1)`, and in this build it is 1,050,016.
 
 | Region | Offset from arena base | Bytes | Written by | Read by |
 | --- | --- | --- | --- | --- |
@@ -79,18 +79,21 @@ engine's arena sits at the top of the data segment; the base is reported by
 | `capacities` | 61,920 | 256 | host | engine |
 | `demand offsets` | 62,176 | 516 | host | engine |
 | `demand records` | 62,692 | 8,192 | host | engine |
-| *(usage, in-degree, ready, out-degree)* | 70,884 | 2,048 | engine | engine |
+| *(usage, in-degree, ready, out-degree)* | 70,884 | 1,792 | engine | engine |
 | `schedule` | 72,676 | 1,056 | engine | host |
 | `resource stats` | 73,732 | 1,056 | engine | host |
 | `resource diagnostics` | 74,788 | 1,056 | engine | host |
 
 Total 75,848 bytes, contiguous, four-byte aligned at every region boundary, with
-53,784 bytes of address space left after the eight-byte rounding. The three
+53,784 bytes of address space left after the eight-byte rounding. The four
 engine-private scratch regions are not published through `info`: a host has no
 business naming them, and an argument that cannot name them cannot alias them. `verify:wasm` asserts the tiling (`region N+1 base
 == region N base + region N length`), the alignment, each region's published
 capacity and the exact page count. This is a build-time acceptance gate: a layout
 drift fails the build rather than surfacing as a wrong plan.
+
+`node scripts/dump-layout.mjs` prints this table from the shipped artifact, so
+the numbers in this section are measured rather than transcribed.
 
 Why the two new regions are so small: the graph's nodes are **calls**, not the
 engine's internal events. `durations` is `128 × u32` and `timing` is a 32-byte

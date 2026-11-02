@@ -461,3 +461,16 @@ fn a_single_demand_does_not_disturb_the_planning_regions_it_does_not_use() {
         }
     }
 }
+
+#[test]
+fn a_later_call_that_fits_does_not_excuse_an_earlier_one_that_cannot() {
+    // Two calls, one impossible lane demand: the well-formed second call must not
+    // hide the first. This is the ordering the single-call case cannot catch.
+    let fixture = Fixture::new(&[2], &[&[(0, 5)], &[(0, 1)]]);
+    let out = fixture.run();
+    assert_eq!(out.status, ERR_RESOURCE_CAPACITY);
+    assert_eq!(out.count, 1, "only the impossible demand is reported");
+    assert_eq!(out.records[0][0], crate::resources::DIAG_INSUFFICIENT_CAPACITY);
+    assert_eq!(out.records[0][2], 0, "the offending call is the first");
+    assert_eq!(out.published, ERR_RESOURCE_CAPACITY);
+}

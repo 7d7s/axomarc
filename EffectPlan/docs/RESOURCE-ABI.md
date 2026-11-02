@@ -14,7 +14,7 @@ The engine's arena is a static `no_std` array. LLD sizes linear memory as
 `data + stack` rounded up to a page, so the only way to change the page count is
 to change the arena. The engine puts its arena at the top of the data segment, so any host that needs
 absolute addresses asks `info(1)` rather than assuming them — which is why adding a
-region moved the base (1,049,928 before Phase 5, 1,049,960 after) and why no
+region moved the base (1,049,928 before Phase 5, 1,050,016 now) and why no
 document or test should hardcode it. Before Phase 5 landed:
 
 | Quantity | Value |
@@ -48,6 +48,26 @@ literal address. The numbers in this table are this artifact's.
 `verify:wasm` reads the expected page count from `scripts/limits.mjs`, and
 `EXPECTED_PAGES` moved in the same commit that grew the arena — a gate that permits
 growth in advance is not a gate.
+
+### 1.1 The arena is the host's; the space below it is not
+
+The address space below the arena base is the module's own: the data segment
+holds the engine's read-only tables and panic strings, ending three bytes below
+the base in this build. A host that writes there is not corrupting scratch
+space, it is overwriting the module's program, and the failure is silent rather
+than loud. Measured on this artifact: erasing the data segment turns a demand
+over capacity from a refusal (`133`) into a reported success (`0`), because the
+lookup that ranks the verdict is a table down there; erasing an unrelated page
+below it changes nothing.
+
+So the rule a host must follow is narrow and cheap: write only inside published
+regions, and clear only `[arena base, arena base + arena length)`. The arena is
+empty when the module is instantiated, so clearing it is always safe. This was
+found the hard way — a test harness that zeroed the whole linear memory produced
+a "the engine disagrees with itself" report that no amount of engine reading
+would have explained — and it is now pinned by
+`packages/core/test/wasm.test.ts`, which asserts both halves: the arena starts
+empty, and read-only data exists below it.
 
 The consequence worth stating plainly: **Phase 5 does not fit in 2,264 bytes at
 any useful size.** The smallest configuration that can express the specification's

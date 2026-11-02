@@ -95,31 +95,47 @@ apart. Unknown selectors return the sentinel, which reaches JavaScript as -1.
 The engine owns one contiguous arena. Its base address is the address of a
 statically reserved Rust array; what sits below it is the linker's data segment
 and shadow stack. The numbers below are the current measured layout — the host
-reads them from `effectplan_info`, it does not assume them.
+reads them from `effectplan_info`, it does not assume them, and
+`node scripts/dump-layout.mjs` regenerates the table from the shipped artifact.
 
 | Region    | Offset    | Bytes  | Contents                                   |
 | --------- | --------- | ------ | ------------------------------------------ |
 | below     | 0         | ~1 MiB | data segment and shadow stack, unused by us |
-| arena     | 1,049,960 | 75,336 | everything below                            |
-| ├ input   | 1,049,960 | 5,764  | call modes, offsets, resource ids, modes    |
-| ├ work    | 1,055,724 | 17,416 | last writers, reader lists, event lists     |
-| ├ output  | 1,073,140 | 36,880 | header + 2,304 edge records × 16 bytes      |
-| ├ levels  | 1,110,020 |    260 | `u32` count + 128 `u16` execution levels    |
-| ├ durations | 1,110,280 |  512  | 128 `u32` tick counts, written by the host  |
-| ├ timing  | 1,110,792 |  1,056 | 32-byte header + 128 × (`u32` ES, `u32` slack) |
-| ├ checkpoint | 1,111,848 | 32 | the resumable-planning record (Phase 4) |
-| ├ capacities | 1,111,880 | 256 | declared capacity per resource (Phase 5) |
-| ├ demand offs | 1,112,136 | 516 | bounds of each call's demands |
-| ├ demand recs | 1,112,652 | 8,192 | `(resource, amount)` pairs, flattened |
-| ├ scratch | 1,120,844 | 1,536 | usage, in-degree, finish — engine-private |
-| ├ schedule | 1,122,124 | 1,056 | `(start, finish)` per call (Phase 5) |
-| ├ res stats | 1,123,180 | 1,056 | capacity, peak, busy time per resource |
-| └ res diags | 1,124,236 | 1,056 | why a demand cannot be met, by index |
+| arena     | 1,050,016 | 75,848 | everything below                            |
+| ├ input   | 1,050,016 | 5,764  | call modes, offsets, resource ids, modes    |
+| ├ work    | 1,055,780 | 17,416 | last writers, reader lists, event lists     |
+| ├ output  | 1,073,196 | 36,880 | header + 2,304 edge records × 16 bytes      |
+| ├ levels  | 1,110,076 |    260 | `u32` count + 128 `u16` execution levels    |
+| ├ durations | 1,110,336 |  512  | 128 `u32` tick counts, written by the host  |
+| ├ timing  | 1,110,848 |  1,056 | 32-byte header + 128 × (`u32` ES, `u32` slack) |
+| ├ checkpoint | 1,111,904 | 32 | the resumable-planning record (Phase 4) |
+| ├ capacities | 1,111,936 | 256 | declared capacity per resource (Phase 5) |
+| ├ demand offs | 1,112,192 | 516 | bounds of each call's demands |
+| ├ demand recs | 1,112,708 | 8,192 | `(resource, amount)` pairs, flattened |
+| ├ scratch | 1,120,900 | 1,792 | usage, in-degree, ready, out-degree — engine-private |
+| ├ schedule | 1,122,692 | 1,056 | `(start, finish)` per call (Phase 5) |
+| ├ res stats | 1,123,748 | 1,056 | capacity, peak, busy time per resource |
+| └ res diags | 1,124,804 | 1,056 | why a demand cannot be met, by index |
 
 Linear memory is 1,179,648 bytes (18 pages) and never grows on its own. The
 timing region is the tail of the arena: a version one or version two call never
 touches it, and `v3` invalidates its header before it starts, so a refused
 schedule cannot be mistaken for the previous batch's result.
+
+**Only the arena belongs to the host.** Everything below the arena base belongs
+to the module: the data segment holds the engine's read-only tables and its
+panic strings, and in the shipped build it occupies 1,048,576–1,050,012 — the
+four bytes below the base are the last of it. The arena itself is empty when
+the module is instantiated, so a host may clear it between calls freely; that
+is the only clearing a host should do. Writing below the base is not inert and
+does not trap: measured on this artifact, erasing the data segment turns a
+refused demand (`133 ERR_RESOURCE_CAPACITY`) into a reported success (`0`)
+without any error, because the lookup that decides the verdict lives in a
+table down there. Erasing an unrelated page below the data segment changes
+nothing, so the effect is confined to the module's own tables. A host that
+zeroes the whole linear memory therefore gets a silently wrong answer rather
+than an error, and `packages/core/test/wasm.test.ts` pins the two properties
+this rests on: the arena starts empty, and read-only data exists below it.
 
 **Pointers are never trusted.** The ABI accepts absolute addresses — including
 the four scheduling pointers a version three caller supplies — converts each one

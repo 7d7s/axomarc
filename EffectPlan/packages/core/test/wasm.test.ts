@@ -583,6 +583,20 @@ describe("wasm artifact", () => {
     assert.equal(f.memory.buffer.byteLength % 65536, 0);
     assert.equal(readFileSync(wasmFileUrl).length, bytes.length);
   });
+
+  it("keeps its read-only data below the arena, so a host may clear the arena freely", () => {
+    const f = fixture();
+    const bytes = new Uint8Array(f.memory.buffer);
+    // The arena is scratch space: nothing in it is initialised, so clearing it
+    // between calls cannot destroy anything the engine relies on.
+    const arena = bytes.subarray(f.layout.base, f.layout.base + f.layout.arena);
+    assert.ok(arena.every((byte) => byte === 0), "the arena must start empty");
+    // The module's own read-only data — jump tables and panic strings — sits
+    // *below* the arena base. Writing there is not inert: erasing it changes
+    // what the engine computes, and does so silently.
+    const below = bytes.subarray(0, f.layout.base);
+    assert.ok(below.some((byte) => byte !== 0), "the module keeps read-only data below the arena base");
+  });
 });
 
 describe("execution levels through the raw ABI", () => {

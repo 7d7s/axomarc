@@ -618,8 +618,10 @@ const diagCount = () => words.getUint32(v.diagPtr + 4, true);
 const diagStatus = () => words.getUint32(v.diagPtr + 8, true) | 0;
 const diagKind = (index) => words.getUint32(v.diagPtr + 32 + index * 16, true);
 
-check("demands within capacity are feasible", runResourceCheck(2, 2, writeDemands([10, 4], [[ [0, 6] ], [ [1, 4] ]])) === 0);
-check("a demand over capacity is refused before scheduling", runResourceCheck(1, 1, writeDemands([2], [[ [0, 3] ]])) === 133);
+const feasibleStatus = runResourceCheck(2, 2, writeDemands([10, 4], [[ [0, 6] ], [ [1, 4] ]]));
+check("demands within capacity are feasible", feasibleStatus === 0, `status ${feasibleStatus}`);
+const infeasibleStatus = runResourceCheck(1, 1, writeDemands([2], [[ [0, 3] ]]));
+check("a demand over capacity is refused before scheduling", infeasibleStatus === 133, `status ${infeasibleStatus}`);
 check("the refusal names the problem", diagKind(0) === 1 && diagCount() === 1, `kind ${diagKind(0)} count ${diagCount()}`);
 check("the published status echoes the returned one", diagStatus() === 133, String(diagStatus()));
 check("a feasible run clears the previous refusal", runResourceCheck(1, 1, writeDemands([4], [[ [0, 4] ]])) === 0 && diagCount() === 0);
