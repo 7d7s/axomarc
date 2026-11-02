@@ -26,7 +26,9 @@ import {
   optimalMakespan,
   seeded,
   verifySchedule,
+  verifyStats,
   type ResourceInstance,
+  type ResourceStats,
   type Schedule,
 } from "../../../benchmarks/reference-resource-scheduler.js";
 
@@ -149,6 +151,7 @@ interface Outcome {
   readonly edges: readonly (readonly [number, number])[];
   readonly makespan: number;
   readonly deferrals: number;
+  readonly stats: readonly ResourceStats[];
 }
 
 /** Plan the batch, then place it. The graph is read back, never assumed. */
@@ -257,12 +260,27 @@ function planAndPlace(f: Fixture, ops: readonly Op[], capacities: readonly numbe
     const at = f.scheduleOut + 32 + index * 8;
     windows.push([view.getUint32(at, true), view.getUint32(at + 4, true)]);
   }
+
+  // The statistics region: a 32-byte header, then one 16-byte row per
+  // resource — declared capacity, peak demand, busy time.
+  const statCount = view.getUint32(f.stats + 4, true);
+  const stats: ResourceStats[] = [];
+  for (let index = 0; index < statCount; index++) {
+    const at = f.stats + 32 + index * 16;
+    stats.push({
+      capacity: view.getUint32(at, true),
+      peak: view.getUint32(at + 4, true),
+      busy: view.getBigUint64(at + 8, true),
+    });
+  }
+
   return {
     status,
     windows,
     edges,
     makespan: view.getUint32(f.scheduleOut + 8, true),
     deferrals: view.getUint32(f.scheduleOut + 16, true),
+    stats,
   };
 }
 
@@ -291,6 +309,8 @@ function assertSound(
   const schedule: Schedule = { windows: outcome.windows, makespan: outcome.makespan };
   const problems = verifySchedule(instance, schedule);
   assert.deepEqual(problems, [], `${label}: the reference found violations`);
+  const statProblems = verifyStats(instance, schedule, outcome.stats);
+  assert.deepEqual(statProblems, [], `${label}: the published statistics disagree with the declarations`);
 
   const optimum = optimalMakespan(instance);
   const totalWork = ops.reduce((sum, entry) => sum + entry.duration, 0);
@@ -318,6 +338,12 @@ describe("resource schedules against an independent reference", () => {
     const { gap } = assertSound("chain", ops, [1], outcome);
     assert.equal(gap, 0);
     assert.deepEqual(outcome.windows, [[0, 3], [3, 7]]);
+    // The numbers themselves, not only their agreement with the reference: the
+    // lane holds one unit, so the peak is one and the busy time is 3 + 4 ticks.
+    assert.equal(outcome.stats.length, 1);
+    assert.equal(outcome.stats[0]?.capacity, 1);
+    assert.equal(outcome.stats[0]?.peak, 1);
+    assert.equal(outcome.stats[0]?.busy, 7n);
   });
 
   it("contention alone serialises calls that have no dependency between them", () => {
@@ -335,6 +361,20 @@ describe("resource schedules against an independent reference", () => {
     assert.ok(outcome.deferrals >= 2, "the waits were real deferrals");
   });
 
+  it("a call that needs two resources at once holds both for its whole length", () => {
+    const f = fixture();
+    // Call 0 takes one unit of lane A and two of lane B for 3 ticks. Call 1
+    // takes one unit of lane B for 2 ticks. Lane B's capacity is 2, so call 1
+    // cannot start until call 0 releases.
+    const ops = [op([], [[0, 1], [1, 2]], 3), op([], [[1, 1]], 2)];
+    const outcome = planAndPlace(f, ops, [4, 2]);
+    assertSound("two lanes", ops, [4, 2], outcome);
+    assert.deepEqual(outcome.windows, [[0, 3], [3, 5]]);
+    assert.equal(outcome.stats[0]?.busy, 3n, "lane A is held for 3 ticks by one unit");
+    assert.equal(outcome.stats[1]?.busy, 8n, "lane B is held 2 units for 3 ticks, then 1 for 2");
+    assert.equal(outcome.stats[1]?.peak, 2);
+  });
+
   it("refuses to publish a schedule when a demand cannot be met", () => {
     const f = fixture();
     const ops = [op([], [[0, 5]], 3), op([], [[0, 1]], 3)];
@@ -350,10 +390,11 @@ describe("resource schedules against an independent reference", () => {
     let worstGap = 0;
     let worstLabel = "";
     let checked = 0;
+    let suboptimal = 0;
 
-    for (let caseNumber = 0; caseNumber < 24; caseNumber++) {
-      const callCount = 3 + Math.floor(random() * 4); // 3..6, small enough to solve exactly
-      const capacityCount = 1 + Math.floor(random() * 2);
+    for (let caseNumber = 0; caseNumber < 32; caseNumber++) {
+      const callCount = 3 + Math.floor(random() * 6); // 3..8, small enough to solve exactly
+      const capacityCount = 1 + Math.floor(random() * 3);
       const capacities = Array.from(
         { length: capacityCount },
         () => 1 + Math.floor(random() * 3),
@@ -369,12 +410,13 @@ describe("resource schedules against an independent reference", () => {
         for (let resource = 0; resource < capacityCount; resource++) {
           if (random() < 0.5) demands.push([resource, 1 + Math.floor(random() * capacities[resource]!)]);
         }
-        ops.push(op(accesses, demands, 1 + Math.floor(random() * 4)));
+        ops.push(op(accesses, demands, 1 + Math.floor(random() * 5)));
       }
 
       const outcome = planAndPlace(f, ops, capacities);
       const { gap } = assertSound(`case ${caseNumber}`, ops, capacities, outcome);
       checked += 1;
+      if (gap > 0) suboptimal += 1;
       if (gap > worstGap) {
         worstGap = gap;
         worstLabel = `case ${caseNumber} (${callCount} calls, ${capacities.join("/")})`;
@@ -386,10 +428,10 @@ describe("resource schedules against an independent reference", () => {
       assert.equal(again.makespan, outcome.makespan);
     }
 
-    assert.equal(checked, 24);
+    assert.equal(checked, 32);
     process.stdout.write(
       `      ${checked} randomised placements verified against the exhaustive optimum; ` +
-        `worst gap ${worstGap} ticks (${worstLabel})\n`,
+        `${suboptimal} were second-best, worst gap ${worstGap} ticks (${worstLabel})\n`,
     );
   });
 });

@@ -34,7 +34,7 @@ export interface Schedule {
 }
 
 export interface Violation {
-  readonly kind: "duration" | "edge" | "capacity" | "shape" | "unplaced" | "negative";
+  readonly kind: "duration" | "edge" | "capacity" | "shape" | "unplaced" | "negative" | "stats";
   readonly detail: string;
 }
 
@@ -113,6 +113,87 @@ export function verifySchedule(instance: ResourceInstance, schedule: Schedule): 
       kind: "shape",
       detail: `makespan ${schedule.makespan} but the last call ends at ${observedSpan}`,
     });
+  }
+  return problems;
+}
+
+/**
+ * Per-resource statistics as the engine publishes them: the declared capacity,
+ * the highest simultaneous demand observed, and the busy time.
+ */
+export interface ResourceStats {
+  readonly capacity: number;
+  readonly peak: number;
+  readonly busy: bigint;
+}
+
+/**
+ * Check the published statistics against the instance and the schedule.
+ *
+ * The peak is recomputed by walking the ticks and counting what is alive, and
+ * the busy time by summing `amount × duration` over the calls that hold the
+ * resource — the same two definitions the engine documents, derived here from
+ * the declarations rather than from anything the engine computed. Busy time is
+ * compared as a `bigint` because the engine stores it as `u64` and a `number`
+ * would quietly lose precision above 2^53.
+ */
+export function verifyStats(
+  instance: ResourceInstance,
+  schedule: Schedule,
+  published: readonly ResourceStats[],
+): Violation[] {
+  const problems: Violation[] = [];
+  if (published.length !== instance.capacities.length) {
+    problems.push({
+      kind: "shape",
+      detail: `${published.length} stat rows for ${instance.capacities.length} resources`,
+    });
+    return problems;
+  }
+
+  for (let resource = 0; resource < instance.capacities.length; resource++) {
+    const row = published[resource]!;
+    const capacity = instance.capacities[resource]!;
+    if (row.capacity !== capacity) {
+      problems.push({
+        kind: "stats",
+        detail: `resource ${resource}: capacity published ${row.capacity}, declared ${capacity}`,
+      });
+    }
+
+    let peak = 0;
+    for (let tick = 0; tick < schedule.makespan; tick++) {
+      let live = 0;
+      for (let index = 0; index < instance.calls.length; index++) {
+        const window = schedule.windows[index]!;
+        if (window[0] <= tick && tick < window[1]) {
+          for (const [held, amount] of instance.calls[index]!.demands) {
+            if (held === resource) live += amount;
+          }
+        }
+      }
+      if (live > peak) peak = live;
+    }
+    if (row.peak !== peak) {
+      problems.push({
+        kind: "stats",
+        detail: `resource ${resource}: peak published ${row.peak}, observed ${peak}`,
+      });
+    }
+
+    let busy = 0n;
+    for (let index = 0; index < instance.calls.length; index++) {
+      const entry = instance.calls[index]!;
+      for (const [held, amount] of entry.demands) {
+        if (held === resource) busy += BigInt(amount) * BigInt(entry.duration);
+      }
+    }
+    if (row.busy !== busy) {
+      problems.push({
+        kind: "stats",
+        detail: `resource ${resource}: busy published ${row.busy}, expected ${busy}`,
+      });
+    }
   }
   return problems;
 }

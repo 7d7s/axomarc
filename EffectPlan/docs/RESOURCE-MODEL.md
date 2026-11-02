@@ -126,6 +126,33 @@ critical-path priority than FIFO?") can only be answered by measuring both.
 Tie-breaking by original call index is what makes the whole thing reproducible
 byte-for-byte, which is the property every phase has shipped with since Phase 1.
 
+### What the heuristic costs, measured
+
+The ranking that ships today is rules 2, 3 and 4; rule 1 is D3 and is not
+implemented. To say anything at all about its quality, an independent reference
+computes the optimal makespan by exhaustive search over precedence-feasible
+permutations. That is the standard result — an optimal RCPSP schedule is
+reachable by some serial schedule generation sequence — so the number is a lower
+bound on what any heuristic can reach rather than a second guess to compare
+guesses against. The reference shares nothing with the engine: it recomputes
+usage tick by tick from the declarations, and it walks the graph itself.
+
+Over 32 seeded instances of 3–8 calls and 1–3 capacity resources, every
+schedule the engine produced was feasible, every dependency edge held, no
+capacity was exceeded, and the same declarations always produced the same
+bytes. 30 of the 32 matched the optimum exactly. Two were longer: by one tick,
+and by three on an eight-call instance whose second lane had capacity one.
+
+That is a bounded claim and it is worth stating precisely: *over that family,
+the current ranking costs at most three ticks.* It is not a claim about larger
+or differently shaped instances, and it is emphatically not a claim of
+optimality. The gap is the thing to watch — it is the number that would move
+first if the ranking changed.
+
+The reference lives in `benchmarks/reference-resource-scheduler.ts` and the
+comparison in `packages/core/test/resource-schedule.test.ts`. Neither is
+shipped.
+
 ## 7. Requirements mapping
 
 Requirements are given **per call, in the caller's own call order** — positional,
