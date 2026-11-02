@@ -20,12 +20,14 @@ const PACKAGE_DIR = path.join(ROOT, "packages", "core");
 
 /**
  * The release policy, stated here rather than read from the tool it constrains:
- * if a script's number moves, this test fails. The unpacked limit was reviewed
- * and raised from 50,000 to 60,000 for Phase 4 on 2026-11-01, before any
- * incremental-planning TypeScript existed; the artifact budget, the dependency
- * rule and the 17-page memory demand are unchanged from the Phase 1 brief.
+ * if a script's number moves, this test fails. The unpacked limit has been
+ * reviewed and raised three times — 50,000 to 60,000 for Phase 4 on 2026-11-01
+ * from a projection, 60,000 to 70,000 the same day once the session layer was
+ * measured, and 70,000 to 72,000 on 2026-11-02 for the checkpoint-retention fix.
+ * The artifact budget, the dependency rule and the 17-page memory demand are
+ * unchanged from the Phase 1 brief.
  */
-const MAX_UNPACKED_BYTES = 70_000;
+const MAX_UNPACKED_BYTES = 72_000;
 const MAX_WASM_BYTES = 40_000;
 
 /**

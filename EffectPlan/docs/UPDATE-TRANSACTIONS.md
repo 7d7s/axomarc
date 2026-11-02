@@ -15,9 +15,9 @@ committed plan and the arena disagree about what was planned.
 An update is built in four steps, and only the last one is visible:
 
 1. **Validate the transaction.** The version, the shape of the changeset, the
-   keys, and the calls themselves — all of it before anything is planned. A
-   duplicate key, an unknown key or an invalid call fails here, with the
-   session untouched.
+   keys — empty, duplicated, or over 128 UTF-8 bytes — and the calls themselves,
+   all of it before anything is planned. A duplicate key, an unknown key, an
+   over-long key or an invalid call fails here, with the session untouched.
 2. **Build a candidate.** A copy of the session's entries with the changes
    applied. The session's own list is not touched.
 3. **Plan the candidate.** The engine plans it into the arena. The engine may
@@ -49,6 +49,7 @@ resumable.
 | stale version | before anything is built | the previous snapshot, version and keys, exactly |
 | duplicate key | while validating the changeset | as above |
 | unknown key | while validating the changeset | as above |
+| a key over 128 UTF-8 bytes | while validating the changeset, before the key is compared with any other | as above |
 | an invalid call, effect or duration | while normalising the candidate | as above |
 | the batch would exceed a ceiling | while packing the candidate | as above |
 | the engine refuses the batch | while planning | as above, and the arena holds a refused plan that the next update overwrites |

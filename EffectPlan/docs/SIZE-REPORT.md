@@ -1,14 +1,19 @@
 # Size report
 
 The limits are release constraints, and a limit that moves needs a record of why
-it moved. One has moved, twice, both times by owner review on 2026-11-01:
+it moved. One has moved, three times, each by owner review:
 
-* **50,000 → 60,000**, before any of the incremental-planning TypeScript existed.
-  That number came from a projection: 51,791 bytes with the resumable engine and
-  no session layer, plus an estimated session module.
-* **60,000 → 70,000**, once the session layer existed and had been measured. It
-  came to 12,813 bytes rather than the ~5,000 the projection had allowed for, and
-  the measured total was 68,645. The second review was against the measurement.
+* **50,000 → 60,000**, 2026-11-01, before any of the incremental-planning
+  TypeScript existed. That number came from a projection: 51,791 bytes with the
+  resumable engine and no session layer, plus an estimated session module.
+* **60,000 → 70,000**, 2026-11-01, once the session layer existed and had been
+  measured. It came to 12,813 bytes rather than the ~5,000 the projection had
+  allowed for, and the measured total was 68,645. The second review was against
+  the measurement.
+* **70,000 → 72,000**, 2026-11-02, for the checkpoint-retention fix
+  (`docs/INCREMENTAL-BENCHMARKS.md` §6): 145 bytes of code that makes reuse survive
+  a second update. The measured total was 70,042 against the ceiling then in force,
+  and trimming shipped prose was offered and declined in favour of a review.
 
 Everything else below is still the Phase 1 brief: the 40,000-byte artifact, zero
 runtime dependencies, zero Rust heap allocation, and 17 pages of linear memory —
@@ -17,15 +22,20 @@ session state lives in the host.
 
 | Constraint                        | Limit    | Measured | Headroom |
 | --------------------------------- | -------- | -------- | -------- |
-| npm package, unpacked             | 70,000 B | 68,645 B | 1,355 B  |
+| npm package, unpacked             | 72,000 B | 70,042 B | 1,958 B  |
 | WebAssembly artifact              | 40,000 B | 13,499 B | 26,501 B |
 | WebAssembly linear memory         | 17 pages | 17 pages | 2,328 B of spare address space |
 
-Where the 16,854 bytes since Phase 3 went: the session module and its
-declarations are 12,813 of them, the resumable engine is 3,286, and the loader,
-encoder and planner grew by 1,900 between them. The headroom is deliberately
-thin — the next feature that needs room will need another review, against a
-measurement.
+Where the 18,251 bytes since Phase 3 went: the session module and its
+declarations are 12,813 of them, the resumable engine is 3,286, the loader,
+encoder and planner grew by 1,900 between them, the 128-byte key rule and the
+session section of the published README cost 1,288, and the retention fix 145.
+
+The headroom is thin by design — it is the constraint that makes the next estimate
+honest — but the ceiling has now been raised three times, and a fourth would mean
+the limit is not doing its job. The Phase 4 layer is measured at 18,251 bytes
+against a Phase 3 baseline of 51,791: any Phase 5 estimate should assume the same
+ratio of estimate to error rather than a smaller one.
 
 Phase 1 shipped at 36,891 / 7,948, Phase 2 at 43,543 / 10,190 and Phase 3 at
 51,791 / 13,247; the 16,715-byte increase since is the incremental-planning

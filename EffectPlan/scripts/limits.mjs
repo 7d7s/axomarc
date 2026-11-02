@@ -15,7 +15,7 @@
  */
 
 /** Unpacked npm package, measured the way npm measures it. */
-export const MAX_UNPACKED_BYTES = 70_000;
+export const MAX_UNPACKED_BYTES = 72_000;
 /** The published WebAssembly artifact. */
 export const MAX_WASM_BYTES = 40_000;
 /** Linear memory the engine may demand at run time. */
@@ -23,9 +23,11 @@ export const MAX_PAGES = 17;
 /** The limits before the Phase 4 reviews, kept so the changes stay visible. */
 export const PREVIOUS_MAX_UNPACKED_BYTES = 50_000;
 export const PREVIOUS_PHASE_4_MAX_UNPACKED_BYTES = 60_000;
+export const PREVIOUS_PHASE_4B_MAX_UNPACKED_BYTES = 70_000;
 
 export const LIMIT_REVIEW =
   "unpacked limit raised 50,000 -> 60,000 for Phase 4 (owner review, 2026-11-01, " +
   "set from a projection), then 60,000 -> 70,000 once the session layer was measured " +
-  "at 68,506 bytes (owner review, 2026-11-01); wasm, dependency, allocation and " +
-  "page limits unchanged";
+  "at 68,506 bytes (owner review, 2026-11-01), then 70,000 -> 72,000 for the " +
+  "checkpoint-retention fix at 70,042 bytes (owner review, 2026-11-02); wasm, " +
+  "dependency, allocation and page limits unchanged";

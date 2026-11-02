@@ -55,6 +55,26 @@ property `planBatch()` has had since Phase 1. A snapshot stays valid whatever
 happens to the session afterwards: the plan it holds was true when it was
 committed, and the session's later versions do not change it.
 
+### The key contract
+
+A key is the caller's name for a call, and the session's handle on it across
+transactions. Three rules, all enforced while the transaction is still
+hypothetical:
+
+* **at most 128 UTF-8 bytes**, counted in bytes rather than code units, so a key
+  of 65 two-byte characters is refused where 64 are allowed. A key never reaches
+  the engine, so this bound is the host's own: it keeps the session's per-update
+  bookkeeping from becoming the expensive part of an update;
+* **unique within the session**, and unique within one changeset — two changes
+  naming the same key is refused rather than resolved by order;
+* **never echoed**. A refusal about a key names its position and the rule, never
+  the key, and a snapshot's `keys` are only ever the caller's own strings.
+
+A replacement keeps the key and changes the call; the key is the identity, the
+call is the content. That is why `remove` then `append` of the same key is a
+different transaction from `replace`, and why a resource id that a call reuses
+across a replacement cannot renumber the prefix it shares.
+
 The session's diagnostics are part of the snapshot, so a caller can always ask
 "how much of this was reused?" without keeping a log.
 
@@ -101,7 +121,7 @@ enough (about half a millisecond) for that to be the default.
 | `EP_STALE_VERSION` | the transaction names a version the session has passed |
 | `EP_DUPLICATE_KEY` | two changes name the same key, or an append reuses a key |
 | `EP_UNKNOWN_KEY` | a replacement or removal names a key the session does not have |
-| `EP_INVALID_CHANGESET` | the changeset is not an array of known changes |
+| `EP_INVALID_CHANGESET` | the changeset is not an array of known changes, a key is empty, or a key is over 128 UTF-8 bytes |
 | `EP_SESSION_DISPOSED` | the session has been disposed |
 | `EP_INVALID_INPUT` | a call, a duration or a mode violates the public contract |
 | `EP_LIMIT_EXCEEDED` | the batch would exceed the engine's call, access or resource ceilings |

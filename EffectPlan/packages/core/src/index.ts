@@ -41,3 +41,4 @@ export type {
   SessionOptions,
   UpdateDiagnostics,
 } from "./session.js";
+export { MAX_KEY_BYTES } from "./session.js";

@@ -44,6 +44,13 @@ Indices are positions in the array you passed, not call ids.
 | `EffectPlan.create(options?)` | instantiate the engine; `wasmBytes`/`wasmUrl` override the bundled binary |
 | `planBatch(calls, options?)` | validate, plan, layer and (with `options.timing`) analyse one batch |
 | `getEngineInfo()` | ABI revisions, limits and the memory layout the engine published |
+| `planner.createSession(calls, options?)` | keep one plan alive through appends, replacements and removals |
+
+**Sessions.** `applyChanges({ expectedVersion, changes })` validates the whole
+transaction before anything moves; `current()` is an immutable snapshot. Keys are
+unique, at most 128 UTF-8 bytes, never echoed in an error. Each update reports its
+`strategy` and `reusedPrefixCalls`; a checkpoint that cannot be trusted plans the
+batch whole, and the graph is the same either way.
 
 **Effect modes** `pure` (no accesses) · `resources` (the accesses you declare) ·
 `exclusive` and `unknown` (global barriers). `options.unknownEffectPolicy`

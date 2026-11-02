@@ -37,9 +37,30 @@ import type { EncodedBatch } from "./encode.js";
 import type { EngineInfo } from "./loader.js";
 import type { ExecutionPlan } from "./planner.js";
 
+/**
+ * A caller key never reaches the engine, so this bound is the host's own. See
+ * `docs/PLAN-VERSIONING.md` §3 for why it is counted in bytes.
+ */
+export const MAX_KEY_BYTES = 128;
+
+/** Bytes a string takes in UTF-8, without allocating it. */
+function utf8Bytes(text: string): number {
+  let bytes = 0;
+  for (let index = 0; index < text.length; index++) {
+    const unit = text.charCodeAt(index);
+    if (unit < 0x80) bytes += 1;
+    else if (unit < 0x800) bytes += 2;
+    else if (unit >= 0xd800 && unit < 0xdc00) {
+      bytes += 4;
+      index++; // a well-formed pair is one 4-byte scalar
+    } else bytes += 3; // three-byte scalar, or a lone surrogate as U+FFFD
+  }
+  return bytes;
+}
+
 /** A call with the stable identity the session keeps for it. */
 export interface IncrementalCall {
-  /** Unique within the session, and never changed by a replacement. */
+  /** Unique within the session, unchanged by a replacement, at most MAX_KEY_BYTES UTF-8 bytes. */
   readonly key: string;
   readonly call: ToolCall;
   /** Ticks, required when the session plans with timing. */
@@ -250,6 +271,12 @@ class Session implements PlanSession {
       if (typeof key !== "string" || key.length === 0) {
         throw new EffectPlanError("EP_INVALID_CHANGESET", `call ${index} needs a non-empty key`);
       }
+      if (utf8Bytes(key) > MAX_KEY_BYTES) {
+        throw new EffectPlanError(
+          "EP_INVALID_CHANGESET",
+          `call ${index} has a key over ${MAX_KEY_BYTES} UTF-8 bytes`,
+        );
+      }
       if (seen.has(key)) {
         throw new EffectPlanError("EP_DUPLICATE_KEY", `key at position ${index} is already used`);
       }
@@ -300,6 +327,12 @@ class Session implements PlanSession {
       const key = change.key;
       if (typeof key !== "string" || key.length === 0) {
         throw new EffectPlanError("EP_INVALID_CHANGESET", "a change needs a non-empty key");
+      }
+      if (utf8Bytes(key) > MAX_KEY_BYTES) {
+        throw new EffectPlanError(
+          "EP_INVALID_CHANGESET",
+          `a change has a key over ${MAX_KEY_BYTES} UTF-8 bytes`,
+        );
       }
       if (touched.has(key)) {
         throw new EffectPlanError("EP_DUPLICATE_KEY", "two changes name the same key");
@@ -506,7 +539,17 @@ class Session implements PlanSession {
       this.#timing ? { durations, unit: this.#unit } : undefined,
     );
 
-    // The checkpoints this run produced are the ones worth keeping.
+    // A run that resumed from a boundary left everything at or before it exactly
+    // as it found it, so those checkpoints still describe the prefix and are kept
+    // — dropping them is what made the *second* update on a session fall back to a
+    // rebuild, because nothing was left to resume from. Past the resume point the
+    // state was replanned, so this run's captures replace what was there, and after
+    // a fallback nothing old can be trusted at all.
+    if (!fellBack) {
+      for (const [keptBoundary, stored] of this.#checkpoints) {
+        if (keptBoundary <= boundary) captured.set(keptBoundary, stored);
+      }
+    }
     this.#checkpoints.clear();
     for (const [atBoundary, stored] of captured) this.#checkpoints.set(atBoundary, stored);
 

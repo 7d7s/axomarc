@@ -221,6 +221,33 @@ describe("plan sessions", () => {
     assert.deepEqual(shape(next.plan).edges, expected.edges);
   });
 
+  it("reuses the prefix again on the update after the update", async () => {
+    const planner = await open();
+    const calls = batch(96);
+    const session = planner.createSession(
+      calls.map((c, index) => ({ key: `k${index}`, call: c })),
+      { checkpointInterval: 64 },
+    );
+    const seen: Array<[string, number]> = [];
+    for (let round = 0; round < 3; round++) {
+      session.applyChanges({
+        expectedVersion: session.current().version,
+        changes: [{ type: "replace", key: "k95", call: call(`late${round}`, "zz", "write") }],
+      });
+      const update = session.current().update;
+      seen.push([update.strategy, update.reusedPrefixCalls]);
+    }
+    // What this pins: a replanned run used to replace the whole checkpoint set
+    // with only what it captured, so the second update found nothing to resume
+    // from and rebuilt the batch - correctly, but at full cost, every time after
+    // the first. Reuse has to survive a history of updates, not just one.
+    assert.deepEqual(seen, [
+      ["suffix-rebuild", 64],
+      ["suffix-rebuild", 64],
+      ["suffix-rebuild", 64],
+    ]);
+  });
+
   it("refuses a stale version and leaves the plan alone", async () => {
     const planner = await open();
     const calls = batch(4);
@@ -268,6 +295,35 @@ describe("plan sessions", () => {
     );
   });
 
+  it("caps a caller key at 128 UTF-8 bytes and never quotes one", async () => {
+    const planner = await open();
+    const ascii = "a".repeat(128);
+    const twoByte = "é".repeat(64); // 128 bytes, 64 code units
+    const over = "é".repeat(65); // 130 bytes
+    const calls = batch(2);
+    const session = planner.createSession([
+      { key: ascii, call: calls[0]! },
+      { key: twoByte, call: calls[1]! },
+    ]);
+    assert.deepEqual(session.current().keys, [ascii, twoByte]);
+
+    // The same rule at both doors: the first plan and every changeset.
+    assert.throws(
+      () => planner.createSession([{ key: over, call: calls[0]! }]),
+      /EP_INVALID_CHANGESET/,
+    );
+    let message = "";
+    try {
+      session.applyChanges({ expectedVersion: 1, changes: [{ type: "remove", key: over }] });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    assert.match(message, /EP_INVALID_CHANGESET/);
+    assert.ok(!message.includes(over), `the refusal quoted the key: ${message}`);
+    assert.ok(!message.includes(twoByte), "the refusal quoted an accepted key either");
+    assert.equal(session.current().version, 1);
+  });
+
   it("leaves the previous snapshot untouched when a change is refused", async () => {
     const planner = await open();
     const calls = batch(4);
@@ -288,6 +344,42 @@ describe("plan sessions", () => {
     assert.equal(session.current().version, before.version);
     assert.deepEqual(session.current().keys, before.keys);
     assert.deepEqual(shape(session.current().plan).edges, shape(before.plan).edges);
+  });
+
+  it("refuses a change that would pass the access ceiling and keeps the plan", async () => {
+    const planner = await open();
+    const limits = planner.getEngineInfo().limits;
+    const perCall = Math.floor(limits.maxAccesses / limits.maxCalls);
+    const wide = (index: number) => ({
+      id: `c${index}`,
+      effect: {
+        version: 1 as const,
+        mode: "resources" as const,
+        accesses: Array.from({ length: perCall }, (_, slot) => ({
+          resource: { namespace: "fs", id: `f${index}-${slot}` },
+          mode: "read" as const,
+        })),
+      },
+    });
+    // Exactly at both ceilings: 128 calls, 1,024 accesses, 1,024 resources.
+    const session = planner.createSession(
+      Array.from({ length: limits.maxCalls }, (_, index) => ({ key: `k${index}`, call: wide(index) })),
+    );
+    const before = session.current();
+    assert.equal(before.callCount, limits.maxCalls);
+    assert.equal(before.keys.length, limits.maxCalls);
+    assert.throws(
+      () =>
+        session.applyChanges({
+          expectedVersion: before.version,
+          changes: [{ type: "append", key: "extra", call: call("extra", "f", "read") }],
+        }),
+      /EP_LIMIT_EXCEEDED/,
+    );
+    // Refused before anything was planned, so the session is exactly as it was.
+    assert.equal(session.current().version, before.version);
+    assert.deepEqual(session.current().keys, before.keys);
+    assert.deepEqual(session.current().plan.edges.length, before.plan.edges.length);
   });
 
   it("treats an empty transaction as a no-op and keeps the version", async () => {

@@ -216,13 +216,13 @@ determinism, non-canonical and wrong-length scheduling regions (108, 119), and t
 guarantee that `v1` and `v2` never write the timing region. The tests share one
 static arena, so all three test modules serialise on one shared mutex.
 
-### TypeScript — 179 tests, all passing
+### TypeScript — 182 tests, all passing
 
-`npm test` — 179 declared tests, 0 failed. The runner's tally reads `# pass 180`
+`npm test` — 182 declared tests, 0 failed. The runner's tally reads `# pass 183`
 because it also loads `test/support.ts`'s compiled module as a file, which
 declares no tests. The package-size suite is green against the ceiling that
-`scripts/limits.mjs` states (70,000 bytes unpacked, reviewed in
-`docs/SIZE-REPORT.md`).
+`scripts/limits.mjs` states (72,000 bytes unpacked, the third owner review,
+recorded in `docs/SIZE-REPORT.md`).
 
 | File                         | Tests | Covers                                                       |
 | ---------------------------- | ----- | ------------------------------------------------------------ |
@@ -233,7 +233,7 @@ declares no tests. The package-size suite is green against the ceiling that
 | `wasm.test.ts`      | 40    | the raw ABI, hostile arguments, memory growth, the scheduling and checkpoint ABI |
 | `execution-levels.test.ts` | 17 | decoding, grouping, oracle parity, immutability             |
 | `timing.test.ts`    | 20    | duration validation, the worked examples, oracle agreement, overflow, half-open boundaries, growth, no timing when not asked |
-| `session.test.ts`       | 14    | the incremental session: parity, versions, atomicity         |
+| `session.test.ts`       | 17    | the incremental session: parity, versions, atomicity, the key contract, reuse that survives a history |
 | `session-property.test.ts` | 2   | randomised edits against a fresh rebuild                     |
 | `package-size.test.ts`   | 4     | the packed artifact against the release limits               |
 
@@ -353,7 +353,7 @@ checkpoint jobs through their test-filter guards, and every
 `--test-name-pattern` job through `scripts/run-tests.mjs` — fail when they match
 fewer tests than they claim, so a renamed test breaks a job instead of quietly
 emptying it. The wasm-build job still enforces the 40,000-byte artifact budget and
-the size job the package ceiling, both read from `scripts/limits.mjs` (70,000
+the size job the package ceiling, both read from `scripts/limits.mjs` (72,000
 bytes unpacked as reviewed in `docs/SIZE-REPORT.md`).
 
 Every one of those commands has run and passed locally (2026-11-02: Rust format,

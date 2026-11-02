@@ -120,6 +120,20 @@ calls:   0        32        64        96       128
 snapshot in the host: the workspace region, the records emitted so far, and the
 record.
 
+**Which snapshots survive an update.** A run that resumes from boundary *b* leaves
+everything at or below *b* exactly as it found it, so the snapshots at or below *b*
+stay valid and are kept; those above *b* describe state that was just replanned and
+are dropped. Getting this wrong is the difference between a session that can reuse
+a prefix and one that can only ever do it once: if a replanning run replaces the
+whole snapshot set with only what it captured itself, the next update finds nothing
+to resume from and rebuilds — correctly, and slowly, with no error to show for it.
+That is what the first implementation did, and the 100-successive-update stress in
+`docs/INCREMENTAL-BENCHMARKS.md` §6 is what found it.
+
+After a fallback, when a restored snapshot failed the engine's check, nothing old
+is trusted: the rejected snapshot is dropped and only what the whole-batch run
+captured is kept.
+
 ## 7. Restoring
 
 Restoring is three writes and one call:

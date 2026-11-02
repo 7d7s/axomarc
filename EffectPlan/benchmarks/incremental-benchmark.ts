@@ -63,70 +63,73 @@ function one(body: () => unknown): number {
 
 interface Case {
   readonly name: string;
-  readonly change: (calls: readonly ToolCall[]) => PlanChange;
-  /** Which end of the batch the change lands on. */
-  readonly where: "end" | "middle";
+  readonly changes: (calls: readonly ToolCall[]) => readonly PlanChange[];
+  /** How many calls the transaction adds, if any - what the ceilings are checked against. */
+  readonly adds?: number;
+  /** Where the transaction lands: `end` is gateable, `middle` and `mixed` are reported. */
+  readonly where: "end" | "middle" | "mixed";
+}
+
+function write(id: string, resource: string): ToolCall {
+  return {
+    id,
+    effect: {
+      version: 1,
+      mode: "resources",
+      accesses: [{ resource: { namespace: "fs", id: resource }, mode: "write" }],
+    },
+  };
+}
+
+function appended(count: number): PlanChange[] {
+  return Array.from({ length: count }, (_, index) => ({
+    type: "append" as const,
+    key: `extra${index}`,
+    call: write(`extra${index}`, `f${index % 8}`),
+  }));
 }
 
 const CASES: readonly Case[] = [
-  {
-    name: "append one",
-    where: "end",
-    change: (calls) => ({
-      type: "append",
-      key: "extra",
-      call: {
-        id: "extra",
-        effect: {
-          version: 1,
-          mode: "resources",
-          accesses: [{ resource: { namespace: "fs", id: "f9" }, mode: "read" }],
-        },
-      },
-    }),
-  },
-  {
-    name: "replace last",
-    where: "end",
-    change: (calls) => ({
-      type: "replace",
-      key: `k${calls.length - 1}`,
-      call: {
-        id: "replaced",
-        effect: {
-          version: 1,
-          mode: "resources",
-          accesses: [{ resource: { namespace: "fs", id: "f0" }, mode: "write" }],
-        },
-      },
-    }),
-  },
-  {
-    name: "remove last",
-    where: "end",
-    change: (calls) => ({ type: "remove", key: `k${calls.length - 1}` }),
-  },
+  { name: "append one", where: "end", adds: 1, changes: () => appended(1) },
+  { name: "append ten", where: "end", adds: 10, changes: () => appended(10) },
+  { name: "append one hundred", where: "end", adds: 100, changes: () => appended(100) },
+  { name: "replace last", where: "end", changes: (calls) => [{ type: "replace", key: `k${calls.length - 1}`, call: write("replaced", "f0") }] },
+  { name: "remove last", where: "end", changes: (calls) => [{ type: "remove", key: `k${calls.length - 1}` }] },
   {
     name: "replace middle",
     where: "middle",
-    change: (calls) => ({
-      type: "replace",
-      key: `k${Math.floor(calls.length / 2)}`,
-      call: {
-        id: "replaced",
-        effect: {
-          version: 1,
-          mode: "resources",
-          accesses: [{ resource: { namespace: "fs", id: "f1" }, mode: "write" }],
-        },
-      },
-    }),
+    changes: (calls) => [{ type: "replace", key: `k${Math.floor(calls.length / 2)}`, call: write("replaced", "f1") }],
+  },
+  {
+    name: "remove middle",
+    where: "middle",
+    changes: (calls) => [{ type: "remove", key: `k${Math.floor(calls.length / 2)}` }],
+  },
+  {
+    name: "replace first",
+    where: "middle",
+    // The shape that cannot reuse anything: the boundary is the very first call.
+    changes: (calls) => [{ type: "replace", key: "k0", call: write("replaced", "f2") }],
+  },
+  {
+    // One transaction, three kinds of edit, the earliest touched call in the
+    // middle - what a caller batching a small refactor actually sends.
+    name: "multi-update",
+    where: "mixed",
+    adds: 2,
+    changes: (calls) => [
+      { type: "replace", key: `k${Math.floor(calls.length / 2)}`, call: write("replaced", "f3") },
+      { type: "remove", key: `k${calls.length - 1}` },
+      ...appended(2),
+    ],
   },
 ];
 
 const report: Record<string, unknown>[] = [];
 let failures = 0;
 let gatedCases = 0;
+/** How a no-reuse update costs against the rebuild it fell back to, per case. */
+const fallbackParity: number[] = [];
 
 // What counts as "big enough to gate on" cannot be a number of microseconds: a
 // busy machine inflates every absolute measurement, and a gate that quietly
@@ -138,17 +141,36 @@ const MIN_GATED_CASES = 6;
 
 interface Prepared {
   readonly testCase: Case;
-  readonly change: PlanChange;
+  readonly changes: readonly PlanChange[];
   readonly samples: number[];
+  /** The batch this transaction produces - what a rebuild has to plan from scratch. */
+  readonly after: ToolCall[];
+  readonly rebuildSamples: number[];
   /** The diagnostics of the first measured update, for the report. */
   observed?: UpdateDiagnostics;
+}
+
+/** The list of calls a transaction leaves behind, computed on the host. */
+function applyToCalls(calls: readonly ToolCall[], changes: readonly PlanChange[]): ToolCall[] {
+  const after = [...calls];
+  for (const change of changes) {
+    if (change.type === "append") {
+      after.push(change.call);
+      continue;
+    }
+    const at = Number(change.key.slice(1)); // entries are keyed k0, k1, ... in batch order
+    if (change.type === "remove") after.splice(at, 1);
+    else after[at] = change.call;
+  }
+  return after;
 }
 
 for (const workload of DATASETS) {
   const calls = buildCalls(workload);
   const planner = await EffectPlan.create();
   const entries = calls.map((call, index) => ({ key: `k${index}`, call }));
-  const maxCalls = planner.getEngineInfo().limits.maxCalls;
+  const limits = planner.getEngineInfo().limits;
+  const maxCalls = limits.maxCalls;
 
   // One session per timed update: an update mutates the session it lands on, so
   // a second update on the same session would measure a different transaction.
@@ -156,16 +178,26 @@ for (const workload of DATASETS) {
   // after, because sessions left alive hold their checkpoint copies across the
   // whole run and slow the very rebuild they are being compared against.
   const prepared: Prepared[] = [];
+  const accessCount = calls.reduce((total, call) => total + (call.effect?.accesses?.length ?? 0), 0);
   for (const testCase of CASES) {
-    // An append would push the batch past the engine's call ceiling.
-    if (testCase.name === "append one" && calls.length >= maxCalls) {
+    // The same preflight the session itself makes, run here so an inapplicable
+    // case is reported rather than thrown: a batch at either ceiling cannot grow.
+    const adds = testCase.adds ?? 0;
+    if (calls.length + adds > maxCalls || accessCount + adds > limits.maxAccesses) {
       process.stdout.write(
-        `${workload.name.padEnd(9)} ${testCase.name.padEnd(15)} skipped: the batch is already at the call ceiling
+        `${workload.name.padEnd(9)} ${testCase.name.padEnd(20)} skipped: the batch is already at a ceiling
 `,
       );
       continue;
     }
-    prepared.push({ testCase, change: testCase.change(calls), samples: [] });
+    const changes = testCase.changes(calls);
+    prepared.push({
+      testCase,
+      changes,
+      after: applyToCalls(calls, changes),
+      samples: [],
+      rebuildSamples: [],
+    });
   }
 
   const freshSession = (): PlanSession => planner.createSession(entries, { checkpointInterval: 64 });
@@ -173,21 +205,24 @@ for (const workload of DATASETS) {
   for (let i = 0; i < WARMUP; i++) {
     planner.planBatch(calls);
     for (const p of prepared) {
+      planner.planBatch(p.after);
       const warm = freshSession();
-      warm.applyChanges({ expectedVersion: 1, changes: [p.change] });
+      warm.applyChanges({ expectedVersion: 1, changes: p.changes });
       warm.dispose();
     }
   }
 
-  // The rebuild and the update alternate. Sampled back to back, drift in the
-  // machine lands on one side only and the ratio inherits it. Creating the
-  // session is not part of either measurement.
+  // The rebuild and the update alternate, and the rebuild is of the batch the
+  // transaction *produces*: a caller choosing a rebuild over an update plans the
+  // new batch, not the old one, so comparing an append against a rebuild of the
+  // pre-append list compares two different amounts of work.
   const rebuildSamples: number[] = [];
   for (let round = 0; round < ITERATIONS; round++) {
     rebuildSamples.push(one(() => planner.planBatch(calls)));
     for (const p of prepared) {
+      p.rebuildSamples.push(one(() => planner.planBatch(p.after)));
       const session = freshSession();
-      p.samples.push(one(() => session.applyChanges({ expectedVersion: 1, changes: [p.change] })));
+      p.samples.push(one(() => session.applyChanges({ expectedVersion: 1, changes: p.changes })));
       p.observed ??= session.current().update;
       session.dispose();
     }
@@ -199,42 +234,52 @@ for (const workload of DATASETS) {
   for (const p of prepared) {
     const testCase = p.testCase;
     const update = stats(p.samples);
+    const rebuilt = stats(p.rebuildSamples);
     const observed = p.observed!;
     const strategy = observed.strategy;
     const reason = observed.reason ?? "";
     const reused = observed.reusedPrefixCalls;
-    const ratio = (update.p50 / rebuild.p50) * 100;
+    const ratio = (update.p50 / rebuilt.p50) * 100;
 
-    // The gate: an update near the end of the batch, or an append, must be
-    // cheaper than rebuilding the whole thing - on a workload that carries
-    // enough dependency work for the claim to mean anything. A batch of 96 calls
-    // or more always qualifies. A 64-call batch qualifies only while it costs at
-    // least three times this run's eight-call rebuild: below that the fixed
-    // bookkeeping of an update is the same order as the whole rebuild, and
+    // The gate: when a session *does* reuse a prefix, the update must be cheaper
+    // than planning the resulting batch from scratch. A batch of 96 calls or more
+    // always qualifies; a 64-call batch qualifies only while it costs at least
+    // three times this run's eight-call rebuild, because below that the fixed
+    // bookkeeping of an update is the same order as the whole rebuild and
     // asserting either direction would be asserting the harness's own overhead.
+    //
+    // Cases that reused nothing are excluded on principle, not to make the gate
+    // pass: a transaction that falls back to a full rebuild *is* a rebuild, plus
+    // the cost of discovering that, so "cheaper than a rebuild" is false for it by
+    // construction. Their parity is measured and reported instead.
     const dense = calls.length >= 96 || rebuild.p50 >= floorMicros;
-    const gated = testCase.where === "end" && calls.length >= 64 && dense;
+    const reusedSomething = reused > 0;
+    const gated = testCase.where === "end" && calls.length >= 64 && dense && reusedSomething;
     const passed = gated ? ratio <= 100 : true;
     if (gated) gatedCases++;
     if (!passed) failures++;
+    if (!reusedSomething && rebuilt.p50 > 0) fallbackParity.push(ratio);
 
     rows.push({
       name: testCase.name,
       strategy,
       reason,
       reusedPrefixCalls: reused,
+      recomputedCalls: observed.recomputedCalls,
+      callsAfter: p.after.length,
       updateP50Micros: update.p50,
       updateP95Micros: update.p95,
       updateMinMicros: update.min,
-      rebuildP50Micros: rebuild.p50,
-      rebuildMinMicros: rebuild.min,
+      rebuildBeforeP50Micros: rebuild.p50,
+      rebuildP50Micros: rebuilt.p50,
+      rebuildMinMicros: rebuilt.min,
       ratioPercent: ratio,
       gated,
       passed,
     });
     process.stdout.write(
-      `${workload.name.padEnd(9)} ${testCase.name.padEnd(15)} ${strategy.padEnd(14)} ` +
-        `update ${update.p50.toFixed(1).padStart(8)} us  rebuild ${rebuild.p50.toFixed(1).padStart(8)} us  ` +
+      `${workload.name.padEnd(9)} ${testCase.name.padEnd(20)} ${strategy.padEnd(14)} ` +
+        `update ${update.p50.toFixed(1).padStart(8)} us  rebuild ${rebuilt.p50.toFixed(1).padStart(8)} us  ` +
         `${ratio.toFixed(0).padStart(4)}%${gated ? (passed ? "  within the gate" : "  OVER THE GATE") : "  (not gated)"}\n`,
     );
   }
@@ -285,7 +330,54 @@ for (const workload of DATASETS) {
       );
     }
   }
-  report.push({ name: workload.name, calls: workload.calls, rebuildP50Micros: rebuild.p50, cases: rows, intervals });
+  // A hundred updates in a row on one session - the repeated-update stress the
+  // specification asks for, measured and checked in the same breath. Each
+  // transaction replaces the last call with a write to a rotating resource, so
+  // the graph really is different every time, and the plan the session ends on
+  // has to equal a fresh rebuild of the same batch.
+  let successive: Record<string, unknown> | undefined;
+  {
+    const session = planner.createSession(entries, { checkpointInterval: 64 });
+    const model: ToolCall[] = [...calls];
+    const perUpdate: number[] = [];
+    for (let i = 0; i < 100; i++) {
+      const call = write(`replaced${i}`, `f${i % 8}`);
+      perUpdate.push(
+        one(() =>
+          session.applyChanges({
+            expectedVersion: i + 1,
+            changes: [{ type: "replace", key: `k${model.length - 1}`, call }],
+          }),
+        ),
+      );
+      model[model.length - 1] = call;
+    }
+    const reference = planner.planBatch(model);
+    const snapshot = session.current();
+    const matches =
+      JSON.stringify(snapshot.plan.edges) === JSON.stringify(reference.edges) &&
+      JSON.stringify(snapshot.plan.execution.waves) === JSON.stringify(reference.execution.waves);
+    const updateStats = stats(perUpdate);
+    successive = {
+      updates: perUpdate.length,
+      strategy: snapshot.update.strategy,
+      perUpdateP50Micros: updateStats.p50,
+      perUpdateMinMicros: updateStats.min,
+      totalMicros: perUpdate.reduce((total, sample) => total + sample, 0),
+      matchesRebuild: matches,
+    };
+    session.dispose();
+    if (!matches) {
+      failures++;
+      process.stdout.write(`${workload.name} 100 successive updates DID NOT match a fresh rebuild\n`);
+    } else {
+      process.stdout.write(
+        `${workload.name.padEnd(9)} 100 successive    ${String(snapshot.update.strategy).padEnd(14)} ` +
+          `per update ${updateStats.p50.toFixed(1).padStart(8)} us  equal to a rebuild\n`,
+      );
+    }
+  }
+  report.push({ name: workload.name, calls: workload.calls, rebuildP50Micros: rebuild.p50, cases: rows, intervals, successive });
 }
 
 mkdirSync(ARTIFACTS, { recursive: true });
@@ -300,6 +392,7 @@ writeFileSync(
       sweepIterations: SWEEP_ITERATIONS,
       gateFloorMicros: floorMicros,
       gatedCases,
+      fallbackParityPercent: stats(fallbackParity),
       workloads: report,
     },
     null,
@@ -310,6 +403,11 @@ writeFileSync(
 process.stdout.write(
   `gate floor ${floorMicros.toFixed(1)} us (three times the eight-call rebuild); ` +
     `${gatedCases} case(s) gated, ${failures} over the gate\n`,
+);
+process.stdout.write(
+  `an update that reuses nothing costs ${stats(fallbackParity).p50.toFixed(0)}% of the rebuild it fell back to ` +
+    `(min ${stats(fallbackParity).min.toFixed(0)}%, p95 ${stats(fallbackParity).p95.toFixed(0)}%, ` +
+    `${fallbackParity.length} cases)\n`,
 );
 
 // A gate that fired on nothing has proved nothing. If the machine was too busy
