@@ -1,6 +1,6 @@
 {
-  "measuredAt": "2026-11-02T18:53:11.093Z",
-  "elapsedMs": 1972,
+  "measuredAt": "2026-11-02T19:03:37.326Z",
+  "elapsedMs": 2062,
   "node": "v20.15.0",
   "oracle": "optimalMakespan: exhaustive serial SGS over precedence-feasible permutations",
   "oracleLimit": "instances capped at 4..7 calls because the oracle is factorial; NOT evidence about larger batches",

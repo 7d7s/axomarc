@@ -71,6 +71,7 @@ baseline the overhead gate reads), and the size reports.
 | `npm run benchmark`        | native benchmark, then the WebAssembly/TypeScript benchmark     |
 | `npm run benchmark:incremental` | an update against a full rebuild, with a gate          |
 | `npm run benchmark:headroom` | how much a Phase 6 optimizer could win, per workload family |
+| `npm run prototype:strategies` | priority rules vs the engine and the exhaustive optimum (dev-only) |
 | `npm run test:session`      | the incremental session suite                                 |
 | `npm run test:session-properties` | the randomised differential test                        |
 | `npm run ci:check`          | the repository-root workflow matches the project's            |
@@ -349,7 +350,7 @@ installed, because a silently skipped browser test is not a test.
 
 ## CI
 
-`.github/workflows/ci.yml` runs thirty-six jobs: the ten Phase 1 and Phase 2 jobs
+`.github/workflows/ci.yml` runs thirty-seven jobs: the ten Phase 1 and Phase 2 jobs
 (Rust formatting, Rust tests, TypeScript type check, TypeScript tests,
 WebAssembly build, ABI verification, WebAssembly integration tests, package-size
 enforcement, package installation smoke test, browser smoke test), the nine Phase 3

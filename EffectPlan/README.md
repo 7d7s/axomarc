@@ -220,6 +220,7 @@ Linear memory is 18 pages, and that is a build-time gate rather than a hope.
   judge it, and the memory it would cost:
   [`docs/OPTIMIZATION-BENCHMARKS.md`](docs/OPTIMIZATION-BENCHMARKS.md),
   [`docs/OPTIMIZATION-RFC.md`](docs/OPTIMIZATION-RFC.md),
+  [`docs/OPTIMIZATION-STRATEGIES.md`](docs/OPTIMIZATION-STRATEGIES.md),
   [`docs/OPTIMIZATION-BUDGETS.md`](docs/OPTIMIZATION-BUDGETS.md)
 - the rest: [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md),
   [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md),

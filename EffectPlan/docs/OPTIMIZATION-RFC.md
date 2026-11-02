@@ -196,20 +196,24 @@ Phase 5: a production verifier that is exponential is not a verifier, it is an o
 
 ## 6. Strategies in scope
 
-| Name | Priority rule | Status |
+| Name | Priority rule | Measured on the 1,200-instance corpus |
 | --- | --- | --- |
 | `baseline` | Phase 5: slack, then dependents, then index | **always in the candidate set** |
-| `critical-path` | remaining path `CP_i`, then slack, then dependents, then index | the D3 question, 512 bytes |
-| `slack` | equals `baseline` today | **proposed for deletion** — see below |
-| `resource-aware` | bottleneck pressure over scarce lanes | the only one M0 says has room |
-| `hybrid` | combination | only if `resource-aware` alone shows something |
+| `critical-path` | remaining path `CP_i`, then slack, then dependents, then index | 4 wins, **9 regressions** |
+| `slack` | equals the baseline rule today | **duplicate — delete** (a serial-GS run of it wins 1 and loses 11) |
+| `resource-aware` | bottleneck pressure over scarce lanes | 2 wins, **15 regressions** |
+| `hybrid` | `CP_i`, then bottleneck, then slack | **0 wins in 1,200 — delete** |
 
-`slack` as a separate strategy is the same ranking the baseline already uses, so
-listing it as a distinct multi-start entry would produce a duplicate candidate and a
-diagnostics counter that counts nothing — a five-strategy portfolio that is really
-four. It stays on the list only if a definition is given that differs from the
-existing policy; otherwise it is dropped, and the fact that the planning document's
-portfolio contained a duplicate is worth recording rather than quietly fixing.
+Wins and regressions are counted against the **engine's** makespan, and the
+portfolio that keeps the baseline closes 6 of the 13 improvable instances for 17
+of the 28 recoverable ticks. Full table and reasoning:
+`docs/OPTIMIZATION-STRATEGIES.md`.
+
+The measured result sharpens the rule this section started from. **No priority
+studied here beats the baseline more often than it loses to it** — every rule
+regresses more instances than it wins. So a Phase 6 that *switched* ranking would
+be a net loss, and generate-then-select with the baseline retained is not a
+precaution but the only construction with a positive measured value.
 
 The baseline's permanent presence is what makes "optimized output is never worse than
 the retained baseline" a structural guarantee: the worst possible Phase 6 outcome is

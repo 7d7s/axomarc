@@ -597,3 +597,25 @@ jobs:
         with:
           name: optimization-headroom
           path: artifacts/optimization-headroom.json
+
+  optimization-strategies:
+    name: Optimization strategy prototype
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npm run build
+      - name: Priority rules against the engine and the exhaustive optimum
+        run: npm run prototype:strategies
+      - name: Upload the measured comparison
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy-prototype
+          path: artifacts/strategy-prototype.json
