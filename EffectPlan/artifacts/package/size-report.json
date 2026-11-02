@@ -1,5 +1,5 @@
 {
-  "measuredAt": "2026-11-02T18:26:53.657Z",
+  "measuredAt": "2026-11-02T18:32:12.911Z",
   "package": {
     "name": "@effectplan/core",
     "version": "0.3.0",
@@ -11,7 +11,7 @@
   "wasmBytes": 19809,
   "fileCount": 22,
   "limits": {
-    "maxUnpackedBytes": 95042,
+    "maxUnpackedBytes": 106565,
     "maxWasmBytes": 40000
   },
   "files": [

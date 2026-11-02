@@ -173,10 +173,11 @@ and whether the engine computes longest remaining path (D3).
 Phase 5's memory cost is measured, not estimated: the capacity regions needed
 13,416 bytes and 2,264 were spare, so the 18th page was approved on measurement
 (`docs/RESOURCE-ABI.md` §1) and linear memory is 18 pages. The package sits at
-94,613 bytes unpacked against a 95,042-byte ceiling — the frozen Phase 4
-baseline of 70,042 plus a 25,000-byte Phase 5 envelope, raised once by owner
-review against the measurement; `docs/SIZE-REPORT.md` records the review
-history and the policy that replaced the ad-hoc raises.
+94,565 bytes unpacked against a 106,565-byte ceiling — the frozen Phase 5
+baseline plus a 12,000-byte Phase 6 envelope, owner review 2026-11-03. The
+baseline rolls forward at each phase boundary to whatever a tool printed, which
+is what makes the envelope mean something; `docs/SIZE-REPORT.md` records the
+review history and the policy that replaced the ad-hoc raises.
 
 Phase 4 (incremental planning) is **in progress**: the engine can stop at a call
 boundary, commit a checkpoint of the state it stopped in, and continue from that

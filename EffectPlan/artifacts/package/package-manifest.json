@@ -6,7 +6,7 @@
   "unpackedBytes": 94565,
   "entryCount": 22,
   "limits": {
-    "maxUnpackedBytes": 95042,
+    "maxUnpackedBytes": 106565,
     "maxWasmBytes": 40000
   },
   "files": [

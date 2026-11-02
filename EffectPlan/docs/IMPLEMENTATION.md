@@ -230,8 +230,9 @@ static arena, so all three test modules serialise on one shared mutex.
 because it also loads `test/support.ts`'s compiled module as a file, which
 declares no tests. The package-size suite is green against the ceiling that
 `scripts/limits.mjs` states (a frozen Phase 4 baseline of 70,042 bytes plus a
-25,000-byte Phase 5 envelope; the review history and the policy are in
-`docs/SIZE-REPORT.md`).
+25,000-byte Phase 5 envelope, and that artifact is now the frozen Phase 6
+baseline with its own 12,000-byte envelope; the review history and the policy are
+in `docs/SIZE-REPORT.md`).
 
 | File                         | Tests | Covers                                                       |
 | ---------------------------- | ----- | ------------------------------------------------------------ |

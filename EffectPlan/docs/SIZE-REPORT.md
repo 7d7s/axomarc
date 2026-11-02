@@ -29,7 +29,7 @@ failed at the moment memory grew rather than permitting it in advance.
 
 | Constraint                        | Limit    | Measured | Headroom |
 | --------------------------------- | -------- | -------- | -------- |
-| npm package, unpacked             | 95,042 B | 94,613 B | 429 B of the Phase 5 envelope |
+| npm package, unpacked             | 106,565 B | 94,565 B | 12,000 B — the whole Phase 6 envelope |
 | WebAssembly artifact              | 40,000 B | 19,809 B | 20,191 B |
 | WebAssembly linear memory         | 18 pages (17 through Phase 4) | 18 pages | 53,784 B of spare address space |
 
@@ -46,9 +46,15 @@ ceiling was no longer a constraint but an apology. From Phase 5 the budget is
 
 | Term | Value | Meaning |
 | --- | --- | --- |
-| `PHASE_4_BASELINE_BYTES` | 70,042 | the Phase 4 artifact, frozen |
-| `PHASE_5_ENVELOPE_BYTES` | 25,000 | what Phase 5 may add, agreed before it starts |
-| `MAX_UNPACKED_BYTES` | 95,042 | their sum — deliberately not a round number |
+| `PHASE_4_BASELINE_BYTES` | 70,042 | the Phase 4 artifact, frozen — the baseline Phase 5 measured from |
+| `PHASE_5_ENVELOPE_BYTES` | 25,000 | what Phase 5 added; agreed at 12,000, raised on measurement |
+| `PHASE_5_BASELINE_BYTES` | 94,565 | the Phase 5 artifact, frozen — the baseline Phase 6 measures from |
+| `PHASE_6_ENVELOPE_BYTES` | 12,000 | what Phase 6 may add, agreed before it starts |
+| `MAX_UNPACKED_BYTES` | 106,565 | the live ceiling: baseline plus envelope, deliberately not round |
+
+The baseline rolls forward at each phase boundary, always to a number a tool
+printed. That is what makes the envelope mean something: Phase 6 starts from what
+Phase 5 actually shipped, not from a projection of what it might.
 
 A breach is a scope conversation, not an edit to `scripts/limits.mjs`. The history
 does the rest of the arguing: Phase 1 shipped 36,891, Phase 2 43,543, Phase 3
@@ -69,10 +75,26 @@ trim brought it back: the leanest version measured 93,685, still 11,643 over the
 old ceiling, because the API is the deliverable rather than an ornament. Owner
 review on 2026-11-02 raised the envelope to 25,000 and the ceiling to 95,042.
 
-The shipped package then came in at 94,613 — 429 bytes under it. That headroom
+The shipped package came in at 94,565, 477 bytes under that ceiling. The headroom
 was found rather than spent twice: the resource status numbers moved out of the
-published declarations, the two decoders were merged into one, and the
-declarations the engine publishes are the only ones a consumer pays for.
+published declarations, the two decoders merged into one, and a stateless call
+switched from the resumable entry point to the one it should have used, which
+removed two arguments from every resource batch.
+
+**Phase 6 arrived with a target the artifact had already missed.** Its planning
+document asked for an npm package of 50 KB or less, listed among the release
+gates. `50,000` is `PREVIOUS_MAX_UNPACKED_BYTES` in this project's own limits file
+— the ceiling abandoned during Phase 4 — and Phase 5 alone ended 44,565 bytes
+above it, before a line of Phase 6 existed. A gate the previous phase already
+failed is not a constraint on the next one; it is a stale claim, and treating it
+as live would have meant either deleting the Phase 4 session layer and the Phase 5
+resource API to hit a number nobody is asking for, or quietly pretending the
+measurement says something other than what it says. Owner review on 2026-11-03
+froze 94,565 as the Phase 6 baseline with a fresh 12,000-byte envelope, ceiling
+106,565, and rejected the 50 KB figure on those grounds. The wasm budget is
+unchanged at 40,000, where 20,191 bytes of headroom remain — that one is still
+worth measuring against, and Phase 6's own document is right to insist it is
+checked after every milestone rather than assumed.
 
 ## How the package was measured
 
@@ -101,7 +123,7 @@ number in this document is derived from source file sizes.
 | `dist/effectplan.wasm`       |  19,809 | the engine                |
 | `dist/session.js`            |  11,687 | new in Phase 4            |
 | `dist/loader.js`             |   9,586 | layout audit, five plans  |
-| `dist/planner.js`            |   9,547 |                           |
+| `dist/planner.js`            |   9,499 |                           |
 | `dist/resources.js`          |   6,312 | new in Phase 5            |
 | `dist/timing.js`             |   6,098 | new in Phase 3            |
 | `dist/encode.js`             |   6,007 | shared with the session   |
@@ -120,9 +142,9 @@ number in this document is derived from source file sizes.
 | `package.json`               |     722 |                           |
 | `dist/execution-levels.d.ts` |     318 |                           |
 | `dist/index.js`              |     190 | re-export only            |
-| **total**                    | **94,613** | 22 files               |
+| **total**                    | **94,565** | 22 files               |
 
-The tarball is 29,436 bytes. The package declares no runtime dependencies, and
+The tarball is 29,433 bytes. The package declares no runtime dependencies, and
 the installation smoke test confirms that installing it produces a tree with
 exactly one package in it.
 

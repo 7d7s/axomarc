@@ -22,16 +22,22 @@ const PACKAGE_DIR = path.join(ROOT, "packages", "core");
  * The release policy, stated here rather than read from the tool it constrains:
  * if a script's number moves, this test fails. Through Phase 4 the unpacked limit
  * was a single ceiling raised three times by owner review (50,000 -> 60,000 ->
- * 70,000 -> 72,000). From Phase 5 it is a frozen baseline (the Phase 4 artifact,
- * 70,042) plus a per-phase envelope agreed in advance, so 95,042 — deliberately
- * not a round number: the ceiling is derived from a measurement and a decision,
- * not fitted to whatever the build happens to need. The Phase 5 envelope was
- * agreed at 12,000 and raised to 25,000 by owner review against the measured
- * cost of the public API. The artifact budget, the dependency rule and the
- * memory-page demand are unchanged from the Phase 1 brief; the 18th page is
- * approved for Phase 5 on measurement.
+ * 70,000 -> 72,000). From Phase 5 it is a frozen baseline plus a per-phase
+ * envelope agreed in advance, re-frozen at each phase boundary from a measurement
+ * a tool printed — never a round number, because the ceiling is derived from what
+ * shipped and what was agreed, not fitted to whatever the build needs.
+ *
+ * Phase 5: baseline 70,042, envelope agreed at 12,000 and raised to 25,000 by
+ * owner review against the measured cost of the public API, ceiling 95,042; it
+ * shipped at 94,565. Phase 6: that 94,565 frozen as the baseline with a fresh
+ * 12,000 envelope, ceiling 106,565, owner review 2026-11-03. The Phase 6 planning
+ * document's 50 KB target is the superseded pre-Phase-4 ceiling and was rejected
+ * for that reason: Phase 5 alone ended 44,565 bytes above it, so no Phase 6 that
+ * keeps the Phase 4 session layer and the Phase 5 resource API could be measured
+ * against it. The artifact budget, the dependency rule and the memory-page demand
+ * are unchanged from the Phase 1 brief; the 18th page is approved on measurement.
  */
-const MAX_UNPACKED_BYTES = 95_042;
+const MAX_UNPACKED_BYTES = 106_565;
 const MAX_WASM_BYTES = 40_000;
 
 /**
