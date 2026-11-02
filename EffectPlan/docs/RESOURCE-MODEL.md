@@ -215,14 +215,20 @@ session-level resource table with its own version, scheduling-only transactions
 skipping the dependency pass entirely, and the differential test extended so
 scheduling-only edits are compared against a full rebuild like everything else.
 
-**D3 — open. Does the engine compute longest remaining path (rule 1 of §6)?**
-Cost: one reverse pass and 512 bytes. Benefit: unknown until measured — it is the
-difference between "prioritise what the critical path needs" and "prioritise what
-has the least slack", which are not the same ranking, and the specification's own
-benchmark question depends on which is better. Recommendation: implement slack-based
-ranking first (the data already exists), benchmark it against FIFO and against the
-path-based variant, and let the measurement decide — the same way the Phase 4
-interval default got settled.
+**D3 — open, and now measurable rather than debatable.**
+Does the engine compute longest remaining path (rule 1 of §6)? Cost: one reverse
+pass and 512 bytes, which `docs/OPTIMIZATION-BUDGETS.md` isolates as the entire
+memory price of the decision. Benefit: measurable, because the slack-based ranking
+this replaces is now benchmarked. `docs/OPTIMIZATION-BENCHMARKS.md` solved 1,200
+generated batches against an exhaustive oracle and found the shipped ranking already
+optimal in 1,187 of them; every improvable instance sits in three families, and the
+largest gap — 5 ticks on a 13-tick optimum — is in `multiresource`, exactly the
+shape a path-aware priority is meant to help. The recommendation from this document
+was to implement slack ranking first and let measurement decide; that recommendation
+was right, the slack ranking shipped, and the measurement now exists. What is left
+is the decision, not the data: does a 512-byte reverse pass earn its place on those
+13 fixtures, tested in `benchmarks/optimization-headroom.ts` before it is added to
+the engine.
 
 D2 has to be answered before M7, because it decides whether the session grows a
 second table or reuses the checkpoint machinery. D3 can wait for the benchmark that
