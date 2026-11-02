@@ -34,12 +34,13 @@ check("zero imports (no env, fs, network or host glue)", imported.length === 0, 
 const functions = exported.filter((e) => e.kind === "function").map((e) => e.name).sort();
 check(
   "exports exactly the ABI functions",
-  functions.length === 6 &&
+  functions.length === 7 &&
     functions.includes("effectplan_plan") &&
     functions.includes("effectplan_plan_v2") &&
     functions.includes("effectplan_plan_v3") &&
     functions.includes("effectplan_plan_v4") &&
     functions.includes("effectplan_resource_check") &&
+    functions.includes("effectplan_resource_schedule") &&
     functions.includes("effectplan_info"),
   functions.join(","),
 );
@@ -132,7 +133,7 @@ check(
   v.base + v.arenaLen - (v.diagPtr + v.diagLen) < 8,
   `${v.base + v.arenaLen - (v.diagPtr + v.diagLen)} bytes of padding after diagnostics`,
 );
-check("the resource regions grew the arena past one page", v.arenaLen === 75336, String(v.arenaLen));
+check("the resource regions grew the arena past one page", v.arenaLen === 75848, String(v.arenaLen));
 check(
   `linear memory stays at ${EXPECTED_PAGES} pages`,
   memory.buffer.byteLength === EXPECTED_PAGES * 65536,

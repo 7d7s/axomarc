@@ -54,7 +54,7 @@ fn le32(row: &[u8], at: usize) -> u32 {
 }
 
 #[inline]
-fn wr_u64(buf: &mut [u8], at: usize, value: u64) -> bool {
+pub(crate) fn wr_u64(buf: &mut [u8], at: usize, value: u64) -> bool {
     if buf.len() < at.saturating_add(8) {
         return false;
     }
@@ -86,7 +86,7 @@ fn endpoint(time: u32, is_start: bool) -> u64 {
 
 /// In-place heap sort over a fixed window: O(n log n), no allocation, total
 /// order on `(time, kind)` so the sweep never depends on input order.
-fn heap_sort(endpoints: &mut [u64]) {
+pub(crate) fn heap_sort(endpoints: &mut [u64]) {
     let len = endpoints.len();
     if len < 2 {
         return;

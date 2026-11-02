@@ -320,6 +320,7 @@ describe("wasm artifact", () => {
       "effectplan_plan_v3",
       "effectplan_plan_v4",
       "effectplan_resource_check",
+      "effectplan_resource_schedule",
     ]);
     assert.equal(WebAssembly.Module.exports(module).filter((e) => e.kind === "memory").length, 1);
   });
@@ -761,7 +762,7 @@ describe("scheduling ABI", () => {
     assert.ok(f.layout.timing + f.layout.timingLen <= f.layout.base + f.layout.arena);
     assert.equal(
       f.layout.arena,
-      75336,
+      75848,
       "the arena is the Phase 4 layout plus the resource regions, exactly as docs/RESOURCE-ABI.md derives",
     );
     assert.equal(f.memory.buffer.byteLength, 1179648, "linear memory stays at 18 pages");

@@ -29,9 +29,9 @@ failed at the moment memory grew rather than permitting it in advance.
 
 | Constraint                        | Limit    | Measured | Headroom |
 | --------------------------------- | -------- | -------- | -------- |
-| npm package, unpacked             | 82,042 B | 70,042 B | 12,000 B (the Phase 5 envelope) |
-| WebAssembly artifact              | 40,000 B | 15,421 B | 24,579 B |
-| WebAssembly linear memory         | 18 pages (17 through Phase 4) | 18 pages | 54,352 B of spare address space |
+| npm package, unpacked             | 82,042 B | 76,337 B | 5,705 B of the Phase 5 envelope |
+| WebAssembly artifact              | 40,000 B | 19,794 B | 20,206 B |
+| WebAssembly linear memory         | 18 pages (17 through Phase 4) | 18 pages | 53,784 B of spare address space |
 
 Where the 18,251 bytes since Phase 3 went: the session module and its
 declarations are 13,778 of them, the resumable engine is 3,286, and the loader,
@@ -85,7 +85,7 @@ number in this document is derived from source file sizes.
 
 | File                         | Bytes   | Notes                     |
 | ---------------------------- | ------- | ------------------------- |
-| `dist/effectplan.wasm`       |  15,421 | the engine                |
+| `dist/effectplan.wasm`       |  19,794 | the engine                |
 | `dist/session.js`            |  11,687 | new in Phase 4            |
 | `dist/loader.js`             |   7,068 | layout audit, five plans  |
 | `dist/timing.js`             |   6,098 | new in Phase 3            |
@@ -105,9 +105,9 @@ number in this document is derived from source file sizes.
 | `package.json`               |     722 |                           |
 | `dist/execution-levels.d.ts` |     318 |                           |
 | `dist/index.js`              |     136 | re-export only            |
-| **total**                    | **71,964** | 20 files               |
+| **total**                    | **76,337** | 20 files               |
 
-The tarball is 23,957 bytes. The package declares no runtime dependencies, and
+The tarball is 25,966 bytes. The package declares no runtime dependencies, and
 the installation smoke test confirms that installing it produces a tree with
 exactly one package in it.
 

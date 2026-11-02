@@ -17,10 +17,11 @@ its own CPM.
   `serde`, no allocator, no imports.
 - One npm package, `@effectplan/core`, zero runtime dependencies, no network,
   no filesystem access, no telemetry.
-- 70,042 bytes unpacked. From Phase 5 the package budget is a frozen baseline
+- 76,337 bytes unpacked against an 82,042 ceiling. From Phase 5 the package budget
+  is a frozen baseline
   (the Phase 4 artifact) plus a per-phase envelope agreed in advance, rather than
   a ceiling raised each time the work outgrew it — see `docs/SIZE-REPORT.md`. The
-  wasm artifact is 15,421 bytes (budget: 40,000). Both measured from the packed
+  wasm artifact is 19,794 bytes (budget: 40,000). Both measured from the packed
   tarball, not from source.
 
 ## Quick start

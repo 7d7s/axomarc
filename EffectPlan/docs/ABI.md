@@ -79,13 +79,13 @@ engine's arena sits at the top of the data segment; the base is reported by
 | `capacities` | 61,920 | 256 | host | engine |
 | `demand offsets` | 62,176 | 516 | host | engine |
 | `demand records` | 62,692 | 8,192 | host | engine |
-| *(usage, in-degree, finish)* | 70,884 | 1,536 | engine | engine |
-| `schedule` | 72,164 | 1,056 | engine | host |
-| `resource stats` | 73,220 | 1,056 | engine | host |
-| `resource diagnostics` | 74,276 | 1,056 | engine | host |
+| *(usage, in-degree, ready, out-degree)* | 70,884 | 2,048 | engine | engine |
+| `schedule` | 72,676 | 1,056 | engine | host |
+| `resource stats` | 73,732 | 1,056 | engine | host |
+| `resource diagnostics` | 74,788 | 1,056 | engine | host |
 
-Total 75,336 bytes, contiguous, four-byte aligned at every region boundary, with
-54,352 bytes of address space left after the eight-byte rounding. The three
+Total 75,848 bytes, contiguous, four-byte aligned at every region boundary, with
+53,784 bytes of address space left after the eight-byte rounding. The three
 engine-private scratch regions are not published through `info`: a host has no
 business naming them, and an argument that cannot name them cannot alias them. `verify:wasm` asserts the tiling (`region N+1 base
 == region N base + region N length`), the alignment, each region's published

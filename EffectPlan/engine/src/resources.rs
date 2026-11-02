@@ -53,10 +53,13 @@ pub const DEMAND_OFFSETS_REGION_LEN: usize = (MAX_CALLS + 1) * DEMAND_OFFSET_BYT
 pub const DEMAND_RECORDS_REGION_LEN: usize = MAX_DEMAND_RECORDS * DEMAND_RECORD_BYTES;
 /// Live usage during placement. Engine-private.
 pub const USAGE_REGION_LEN: usize = MAX_CAPACITY_RESOURCES * CAPACITY_BYTES;
-/// Working in-degree per call. Engine-private.
+/// Predecessors each call still waits on. Engine-private.
 pub const INDEGREE_REGION_LEN: usize = MAX_CALLS * CAPACITY_BYTES;
-/// Finish time of the call holding each running slot. Engine-private.
-pub const FINISH_REGION_LEN: usize = MAX_CALLS * CAPACITY_BYTES;
+/// Earliest tick each call may start, from the predecessors already finished.
+/// Engine-private.
+pub const READY_REGION_LEN: usize = MAX_CALLS * CAPACITY_BYTES;
+/// Downstream dependents per call — the third ranking rule. Engine-private.
+pub const OUTDEGREE_REGION_LEN: usize = MAX_CALLS * CAPACITY_BYTES;
 
 /// Schedule header: revision, count, makespan, then the scheduling status.
 pub const SCHEDULE_HEADER_BYTES: usize = 32;
@@ -85,6 +88,10 @@ pub const DIAG_ZERO_CAPACITY: u32 = 3;
 pub const DIAG_ZERO_DEMAND: u32 = 4;
 pub const DIAG_DUPLICATE_DEMAND: u32 = 5;
 pub const DIAG_RANGE: u32 = 6;
+/// A ready call was deferred because something else held the capacity.
+pub const DIAG_CONTENTION: u32 = 7;
+/// A call can never be placed: the graph waits on something that will not finish.
+pub const DIAG_UNSCHEDULABLE: u32 = 8;
 
 // Diagnostic record fields, relative to the record start. Public because the host
 // decoder reads exactly these lanes; they are part of the contract, not layout

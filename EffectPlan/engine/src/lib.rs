@@ -45,6 +45,8 @@ pub mod checkpoint;
 
 pub mod resources;
 
+pub mod scheduling;
+
 /// The engine works on one statically reserved arena, so the test modules
 /// that drive it through the real ABI must exclude each other.
 #[cfg(test)]
@@ -61,6 +63,9 @@ mod checkpoint_tests;
 
 #[cfg(test)]
 mod resources_tests;
+
+#[cfg(test)]
+mod scheduling_tests;
 
 // ---------------------------------------------------------------------------
 // Limits. These are the conservative Phase-1 prototype ceilings.
@@ -151,6 +156,10 @@ pub const ERR_RESOURCE_UNDECLARED: i32 = 135;
 /// does not describe its records. Nothing after this can be trusted, so the scan
 /// stops instead of continuing on guessed boundaries.
 pub const ERR_RESOURCE_REGION: i32 = 136;
+/// A call could never be placed: nothing is running, nothing fits, and the
+/// graph waits on something that will not finish. A forged or cyclic graph reaches
+/// this; a genuine plan from this planner cannot.
+pub const ERR_UNSCHEDULABLE: i32 = 137;
 pub const ERR_INTERNAL: i32 = 140;
 
 // ---------------------------------------------------------------------------
@@ -268,13 +277,18 @@ pub const RESOURCE_USAGE_REGION_LEN: usize = resources::USAGE_REGION_LEN;
 pub const RESOURCE_INDEGREE_BASE_OFF: usize = RESOURCE_USAGE_BASE_OFF + RESOURCE_USAGE_REGION_LEN;
 pub const RESOURCE_INDEGREE_REGION_LEN: usize = resources::INDEGREE_REGION_LEN;
 
-/// Finish time per running slot. Engine-private.
-pub const RESOURCE_FINISH_BASE_OFF: usize =
+/// Earliest tick each call may start, from the predecessors already finished.
+/// Engine-private.
+pub const RESOURCE_READY_BASE_OFF: usize =
     RESOURCE_INDEGREE_BASE_OFF + RESOURCE_INDEGREE_REGION_LEN;
-pub const RESOURCE_FINISH_REGION_LEN: usize = resources::FINISH_REGION_LEN;
+pub const RESOURCE_READY_REGION_LEN: usize = resources::READY_REGION_LEN;
+
+/// Downstream dependents per call — the third ranking rule. Engine-private.
+pub const RESOURCE_OUTDEGREE_BASE_OFF: usize = RESOURCE_READY_BASE_OFF + RESOURCE_READY_REGION_LEN;
+pub const RESOURCE_OUTDEGREE_REGION_LEN: usize = resources::OUTDEGREE_REGION_LEN;
 
 /// The resource schedule: `(start, finish)` per call. Engine-written, host-read.
-pub const SCHEDULE_BASE_OFF: usize = RESOURCE_FINISH_BASE_OFF + RESOURCE_FINISH_REGION_LEN;
+pub const SCHEDULE_BASE_OFF: usize = RESOURCE_OUTDEGREE_BASE_OFF + RESOURCE_OUTDEGREE_REGION_LEN;
 pub const SCHEDULE_REGION_LEN: usize = resources::SCHEDULE_REGION_LEN;
 
 /// Per-resource capacity, peak and busy time. Engine-written, host-read.
@@ -321,10 +335,11 @@ const _: () = assert!(CHECKPOINT_BASE_OFF % 4 == 0);
 const _: () = assert!(ARENA_BYTES >= CHECKPOINT_BASE_OFF + CHECKPOINT_REGION_LEN);
 
 // Phase 5 tiles the resource regions after the checkpoint record, and the total
-// is pinned to the figure `docs/RESOURCE-ABI.md` derives: 24R + 8K + 3,684 bytes
-// of new arena at R=64 resources and K=1,024 demand records, on top of the 61,920
-// the first four phases needed. A layout change moves this number, and the budget
-// document has to move with it rather than drift.
+// is pinned to the figure `docs/RESOURCE-ABI.md` derives: capacities 4R, demand
+// offsets 4(V+1), demand records 8K, four engine-private arrays, then schedule,
+// stats and diagnostics — 13,928 bytes new at R=64 and K=1,024, on top of the
+// 61,920 the first four phases needed. A layout change moves this number, and the
+// budget document has to move with it rather than drift.
 const _: () = assert!(CAPACITIES_BASE_OFF == CHECKPOINT_BASE_OFF + CHECKPOINT_REGION_LEN);
 const _: () = assert!(CAPACITIES_BASE_OFF % 4 == 0);
 const _: () = assert!(DEMAND_OFFSETS_BASE_OFF == CAPACITIES_BASE_OFF + CAPACITIES_REGION_LEN);
@@ -337,14 +352,17 @@ const _: () =
 const _: () =
     assert!(RESOURCE_INDEGREE_BASE_OFF == RESOURCE_USAGE_BASE_OFF + RESOURCE_USAGE_REGION_LEN);
 const _: () =
-    assert!(RESOURCE_FINISH_BASE_OFF == RESOURCE_INDEGREE_BASE_OFF + RESOURCE_INDEGREE_REGION_LEN);
-const _: () = assert!(SCHEDULE_BASE_OFF == RESOURCE_FINISH_BASE_OFF + RESOURCE_FINISH_REGION_LEN);
+    assert!(RESOURCE_READY_BASE_OFF == RESOURCE_INDEGREE_BASE_OFF + RESOURCE_INDEGREE_REGION_LEN);
+const _: () =
+    assert!(RESOURCE_OUTDEGREE_BASE_OFF == RESOURCE_READY_BASE_OFF + RESOURCE_READY_REGION_LEN);
+const _: () =
+    assert!(SCHEDULE_BASE_OFF == RESOURCE_OUTDEGREE_BASE_OFF + RESOURCE_OUTDEGREE_REGION_LEN);
 const _: () = assert!(RESOURCE_STATS_BASE_OFF == SCHEDULE_BASE_OFF + SCHEDULE_REGION_LEN);
 const _: () =
     assert!(RESOURCE_DIAGNOSTICS_BASE_OFF == RESOURCE_STATS_BASE_OFF + RESOURCE_STATS_REGION_LEN);
 const _: () =
     assert!(ARENA_BYTES == align8(RESOURCE_DIAGNOSTICS_BASE_OFF + RESOURCE_DIAGNOSTICS_REGION_LEN));
-const _: () = assert!(ARENA_BYTES == 75_336);
+const _: () = assert!(ARENA_BYTES == 75_848);
 const _: () = assert!(
     DEMAND_RECORDS_REGION_LEN / resources::DEMAND_RECORD_BYTES == resources::MAX_DEMAND_RECORDS
 );
@@ -1964,4 +1982,134 @@ pub unsafe extern "C" fn effectplan_resource_check(
         },
     );
     report.status
+}
+
+/// The Phase 5 placement entry point: given a graph the planner already emitted,
+/// the durations it was given and a declared capacity table, produce a schedule
+/// that respects every dependency and never exceeds any capacity.
+///
+/// It reads the planner's regions and writes only the resource ones. That
+/// separation is the point: a change to a duration or a demand can be re-placed
+/// without rebuilding the dependency graph, which is what the specification's
+/// scheduling-invalidation rule requires and what a single all-in-one call cannot
+/// express. The output is a proposed schedule under the declared model, never an
+/// executed one, and it makes no claim of optimality.
+///
+/// # Safety
+/// Intended to be called from WebAssembly with host-supplied addresses. Every
+/// pointer must name its canonical region; every count is checked before a byte is
+/// read. A malformed call returns a status code.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn effectplan_resource_schedule(
+    abi_version: u32,
+    call_count: u32,
+    resource_count: u32,
+    demand_count: u32,
+    capacities_ptr: u32,
+    capacities_len: u32,
+    offsets_ptr: u32,
+    offsets_len: u32,
+    records_ptr: u32,
+    records_len: u32,
+    durations_ptr: u32,
+    durations_len: u32,
+    graph_ptr: u32,
+    graph_len: u32,
+    timing_ptr: u32,
+    timing_len: u32,
+    schedule_ptr: u32,
+    schedule_len: u32,
+    stats_ptr: u32,
+    stats_len: u32,
+    diagnostics_ptr: u32,
+    diagnostics_len: u32,
+) -> i32 {
+    if abi_version != ABI_VERSION {
+        return ERR_ABI_VERSION;
+    }
+    if call_count as usize > MAX_CALLS {
+        return ERR_CALL_LIMIT;
+    }
+    if resource_count as usize > resources::MAX_CAPACITY_RESOURCES
+        || demand_count as usize > resources::MAX_DEMAND_RECORDS
+    {
+        return ERR_RESOURCE_REGION;
+    }
+    let base = arena_base();
+    let given = [
+        (capacities_ptr, capacities_len),
+        (offsets_ptr, offsets_len),
+        (records_ptr, records_len),
+        (durations_ptr, durations_len),
+        (graph_ptr, graph_len),
+        (timing_ptr, timing_len),
+        (schedule_ptr, schedule_len),
+        (stats_ptr, stats_len),
+        (diagnostics_ptr, diagnostics_len),
+    ];
+    let expected = [
+        (CAPACITIES_BASE_OFF, CAPACITIES_REGION_LEN),
+        (DEMAND_OFFSETS_BASE_OFF, DEMAND_OFFSETS_REGION_LEN),
+        (DEMAND_RECORDS_BASE_OFF, DEMAND_RECORDS_REGION_LEN),
+        (DURATIONS_BASE_OFF, DURATIONS_REGION_LEN),
+        (OUT_BASE_OFF, OUTPUT_REGION_LEN),
+        (TIMING_BASE_OFF, TIMING_REGION_LEN),
+        (SCHEDULE_BASE_OFF, SCHEDULE_REGION_LEN),
+        (RESOURCE_STATS_BASE_OFF, RESOURCE_STATS_REGION_LEN),
+        (
+            RESOURCE_DIAGNOSTICS_BASE_OFF,
+            RESOURCE_DIAGNOSTICS_REGION_LEN,
+        ),
+    ];
+    let mut at = [0u32; 9];
+    for (slot, (given_pair, want)) in at.iter_mut().zip(given.iter().zip(expected.iter())) {
+        let relative = match (given_pair.0 as usize)
+            .checked_sub(base)
+            .and_then(|delta| u32::try_from(delta).ok())
+        {
+            Some(delta) => delta,
+            None => return ERR_RANGE,
+        };
+        if relative as usize != want.0 || given_pair.1 as usize != want.1 {
+            return ERR_LAYOUT;
+        }
+        *slot = relative;
+    }
+
+    let arena = arena_slice();
+    // Feasibility first, and only its verdict is allowed to reach placement: a
+    // demand that can never be met is reported before a schedule is pretended.
+    let report = resources::check(
+        arena,
+        &resources::Request {
+            capacities: at[0] as usize,
+            offsets: at[1] as usize,
+            records: at[2] as usize,
+            diagnostics: at[8] as usize,
+            call_count: call_count as usize,
+            resource_count: resource_count as usize,
+            demand_count: demand_count as usize,
+        },
+    );
+    if report.status != OK {
+        return report.status;
+    }
+    scheduling::place(
+        arena,
+        &scheduling::Request {
+            call_count: call_count as usize,
+            resource_count: resource_count as usize,
+            demand_count: demand_count as usize,
+            capacities: at[0] as usize,
+            demand_offsets: at[1] as usize,
+            demand_records: at[2] as usize,
+            durations: at[3] as usize,
+            graph: at[4] as usize,
+            timing: at[5] as usize,
+            schedule: at[6] as usize,
+            stats: at[7] as usize,
+            diagnostics: at[8] as usize,
+        },
+    )
 }

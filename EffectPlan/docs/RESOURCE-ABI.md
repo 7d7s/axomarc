@@ -34,12 +34,16 @@ real, and the artifact now reports:
 
 | Quantity | Value |
 | --- | --- |
-| arena base | 1,049,960 |
-| arena length | 75,336 |
-| arena end | 1,125,296 |
+| arena base | 1,050,016 |
+| arena length | 75,848 |
+| arena end | 1,125,864 |
 | linear memory | 1,179,648 B = 18 pages |
-| spare address space | 54,352 B |
-| wasm code | 15,421 B, 24,579 under budget |
+| spare address space | 53,784 B |
+| wasm code | 19,794 B, 20,206 under budget |
+
+The base is not fixed either: it has moved twice as the data segment grew, which is
+why nothing in the host, the tests or these documents addresses the arena by a
+literal address. The numbers in this table are this artifact's.
 
 `verify:wasm` reads the expected page count from `scripts/limits.mjs`, and
 `EXPECTED_PAGES` moved in the same commit that grew the arena — a gate that permits
@@ -48,10 +52,10 @@ growth in advance is not a gate.
 The consequence worth stating plainly: **Phase 5 does not fit in 2,264 bytes at
 any useful size.** The smallest configuration that can express the specification's
 own examples — 8 capacity resources, 64 demand records, a diagnostics buffer —
-needs 4,392 bytes, and before a single resource is declared the per-call
-structures alone (demand offsets 516 B, schedule output 1,056 B, in-degree and
-finish-time working arrays 1,024 B) cost 2,596. So the 18th page is not a
-performance convenience, it is a precondition. With one page the arena gains
+needs 4,904 bytes, and before a single resource is declared the per-call
+structures alone (demand offsets 516 B, schedule output 1,056 B, and the three
+per-call working arrays 1,536 B) cost 3,076 — already more than the 2,264 spare. So
+the 18th page is not a performance convenience, it is a precondition. With one page the arena gains
 65,536 B, of which 2,264 was already spare: **67,800 bytes of new address
 space.**
 
@@ -66,13 +70,21 @@ demand records and `N` diagnostics, the new regions cost:
 | demand offsets, `4(V+1)` | 516 | host | engine |
 | demand records, `8K` (resource index `u32`, amount `u32`) | 8K | host | engine |
 | live usage during placement, `4R` | 4R | engine | engine |
-| in-degree working copy, `4V` | 512 | engine | engine |
-| finish-time slots for running calls, `4V` | 512 | engine | engine |
+| predecessors each call waits on, `4V` | 512 | engine | engine |
+| earliest tick each call may start, `4V` | 512 | engine | engine |
+| downstream dependents per call, `4V` | 512 | engine | engine |
 | schedule, `32 + 8V` (start, finish per call) | 1,056 | engine | host |
 | per-resource stats, `32 + 16R` (capacity, peak `u32`; busy time `u64`) | 32 + 16R | engine | host |
 | diagnostics, `32 + 16N` | 32 + 16N | engine | host |
 
-Total: **24R + 8K + 3,684 bytes**, eight-byte aligned.
+Total: **24R + 8K + 4,196 bytes**, eight-byte aligned — 13,924 rounded to 13,928
+at the shipped configuration.
+
+Three working arrays were budgeted at M2 and the scheduler needed a fourth. Ranking by
+"more downstream dependents" — rule 3 of the priority the specification proposes —
+has nowhere to live otherwise; the per-call finish time does not need one, because
+it is already in the published schedule region. The extra 512 bytes came out of the
+same page, which is the point of measuring it first.
 
 ## 3. Candidate configurations
 
@@ -80,17 +92,21 @@ The specification asked for 64, 128 and 256 capacity resources to be benchmarked
 before choosing a production limit. Measured against the 67,800 bytes that one
 page buys:
 
-| R | K | new arena bytes | arena end | pages | spare left |
+| R | K | new arena bytes | arena length | pages | address space left |
 | --- | --- | --- | --- | --- | --- |
-| 8 | 64 | 4,392 | 1,116,240 | 18 | 63,408 |
-| 64 | 1,024 | 13,416 | 1,125,264 | 18 | 54,384 |
-| 128 | 1,024 | 14,952 | 1,126,800 | 18 | 52,848 |
-| 256 | 1,024 | 18,024 | 1,129,872 | 18 | 49,776 |
-| 256 | 2,048 | 26,216 | 1,138,064 | 18 | 41,584 |
-| 256 | 8,000 | 73,832 | 1,185,680 | **19** | — |
+| 8 | 64 | 4,904 | 66,824 | 18 | 62,808 |
+| **64** | **1,024** | **13,928** | **75,848** | **18** | **53,784** |
+| 128 | 1,024 | 15,464 | 77,384 | 18 | 52,248 |
+| 256 | 1,024 | 18,536 | 80,456 | 18 | 49,176 |
+| 256 | 2,048 | 26,728 | 88,648 | 18 | 40,984 |
+| 256 | 8,000 | 74,344 | 136,264 | **19** | — |
 
-So within one page the engine can support up to 256 capacity resources and 7,246
-demand records — more than 56 demands per call at the maximum batch size. **Memory stops being the binding constraint
+The last column uses the base this build reports (1,050,016), so the rows other than
+the shipped one are computed rather than measured — enough to show that the page
+holds, not a figure to gate on.
+
+So within one page the engine can support up to 256 capacity resources and 7,171
+demand records — more than 55 demands per call at the maximum batch size. **Memory stops being the binding constraint
 anywhere near the sizes Phase 5 needs.** The limits are therefore taken from
 function and not from byte pressure, and these are the values the engine now
 publishes:

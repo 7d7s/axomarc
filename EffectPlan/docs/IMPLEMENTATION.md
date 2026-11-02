@@ -190,13 +190,15 @@ Two details that were measured rather than assumed:
 
 ## Testing
 
-### Rust — 132 tests, all through the real ABI
+### Rust — 151 tests, all through the real ABI
 
-`cargo test -p effectplan-engine` — 132 passed, 0 failed: the 50 Phase 1 tests,
+`cargo test -p effectplan-engine` — 151 passed, 0 failed: the 50 Phase 1 tests,
 21 execution-level tests in `levels_tests.rs`, 20 scheduling tests in
-`schedule_tests.rs`, 19 checkpoint tests in `checkpoint_tests.rs` and 22 resource
-feasibility tests in `resources_tests.rs`, all driven through the real exports —
-`effectplan_plan_v2`, `_v3`, `_v4` and `effectplan_resource_check`.
+`schedule_tests.rs`, 19 checkpoint tests in `checkpoint_tests.rs`, 22 resource
+feasibility tests in `resources_tests.rs` and 19 placement tests in
+`scheduling_tests.rs`, all driven through the real exports —
+`effectplan_plan_v2`, `_v3`, `_v4`, `effectplan_resource_check` and
+`effectplan_resource_schedule`.
 
 The categories the brief asks for: input validation, offset validation, access
 validation, workspace initialisation, read processing, write processing, edge
