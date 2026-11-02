@@ -60,7 +60,9 @@ if (process.argv.includes("--markdown")) {
     console.log(`| ${label} | ${number(row.address)} | ${number(row.bytes)} | ${row.note} |`);
   }
 } else {
+  const linear = instance.exports.memory.buffer.byteLength;
   console.log(`arena base ${base}, arena length ${arenaLen}, arena end ${base + arenaLen}`);
+  console.log(`linear memory ${linear} B = ${linear / 65536} pages, spare ${linear - (base + arenaLen)} B`);
   for (const row of rows) {
     console.log(`${row.name.padEnd(14)} ${String(row.address).padStart(9)} ${String(row.bytes).padStart(7)}  ${row.note}`);
   }
