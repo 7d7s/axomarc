@@ -27,9 +27,9 @@ session state lives in the host.
 | WebAssembly linear memory         | 17 pages | 17 pages | 2,328 B of spare address space |
 
 Where the 18,251 bytes since Phase 3 went: the session module and its
-declarations are 12,813 of them, the resumable engine is 3,286, the loader,
-encoder and planner grew by 1,900 between them, the 128-byte key rule and the
-session section of the published README cost 1,288, and the retention fix 145.
+declarations are 13,778 of them, the resumable engine is 3,286, and the loader,
+encoder, planner and published documentation account for the rest. The 128-byte
+key rule and the retention fix cost 1,288 and 145 respectively of that.
 
 The headroom is thin by design — it is the constraint that makes the next estimate
 honest — but the ceiling has now been raised three times, and a fourth would mean
@@ -38,7 +38,7 @@ against a Phase 3 baseline of 51,791: any Phase 5 estimate should assume the sam
 ratio of estimate to error rather than a smaller one.
 
 Phase 1 shipped at 36,891 / 7,948, Phase 2 at 43,543 / 10,190 and Phase 3 at
-51,791 / 13,247; the 16,715-byte increase since is the incremental-planning
+51,791 / 13,247; the 18,251-byte increase since is the incremental-planning
 layer, measured from the same packer.
 
 ## How the package was measured
@@ -63,31 +63,31 @@ number in this document is derived from source file sizes.
 
 ## What is in the package
 
-| File                         | Bytes  |                             |
-| ---------------------------- | ------ | --------------------------- |
-| `dist/effectplan.wasm`       | 13,499 | the engine                  |
-| `dist/loader.js`             |  7,068 | layout audit, four plans    |
-| `dist/timing.js`             |  6,098 | new in Phase 3              |
-| `dist/session.js`             | 10,764 | new in Phase 4              |
-| `dist/encode.js`             |  5,265 |                             |
-| `dist/planner.js`            |  4,806 |                             |
-| `README.md`                  |  4,137 | package documentation       |
-| `dist/loader.d.ts`           |  2,229 |                             |
-| `dist/encode.d.ts`           |  1,729 |                             |
-| `dist/planner.d.ts`          |  1,295 |                             |
-| `dist/execution-levels.js`   |  1,125 |                             |
-| `dist/timing.d.ts`           |  1,095 | new in Phase 3              |
-| `dist/session.d.ts`           |  2,049 | new in Phase 4              |
-| `LICENSE`                    |  1,068 |                             |
-| `dist/errors.d.ts`           |    895 |                             |
-| `dist/errors.js`             |    797 |                             |
-| `package.json`               |    722 |                             |
-| `dist/index.d.ts`            |    632 |                             |
-| `dist/execution-levels.d.ts` |    318 |                             |
-| `dist/index.js`              |     90 | re-export only              |
-| **total**                    | **68,645** | 20 files                |
+| File                         | Bytes   | Notes                     |
+| ---------------------------- | ------- | ------------------------- |
+| `dist/effectplan.wasm`       |  13,499 | the engine                |
+| `dist/session.js`            |  11,687 | new in Phase 4            |
+| `dist/loader.js`             |   7,068 | layout audit, five plans  |
+| `dist/timing.js`             |   6,098 | new in Phase 3            |
+| `dist/encode.js`             |   6,007 | shared with the session   |
+| `dist/planner.js`            |   5,139 |                           |
+| `README.md`                  |   4,625 | package documentation     |
+| `dist/loader.d.ts`           |   2,754 |                           |
+| `dist/encode.d.ts`           |   2,329 |                           |
+| `dist/session.d.ts`          |   2,091 | new in Phase 4            |
+| `dist/planner.d.ts`          |   1,466 |                           |
+| `dist/execution-levels.js`   |   1,125 |                           |
+| `dist/errors.d.ts`           |   1,106 |                           |
+| `dist/timing.d.ts`           |   1,095 | new in Phase 3            |
+| `LICENSE`                    |   1,068 |                           |
+| `dist/errors.js`             |     882 |                           |
+| `dist/index.d.ts`            |     827 |                           |
+| `package.json`               |     722 |                           |
+| `dist/execution-levels.d.ts` |     318 |                           |
+| `dist/index.js`              |     136 | re-export only            |
+| **total**                    | **70,042** | 20 files               |
 
-The tarball is 22,463 bytes. The package declares no runtime dependencies, and
+The tarball is 22,910 bytes. The package declares no runtime dependencies, and
 the installation smoke test confirms that installing it produces a tree with
 exactly one package in it.
 
