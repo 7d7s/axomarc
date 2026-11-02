@@ -25,7 +25,7 @@ const PACKAGE_DIR = path.join(ROOT, "packages", "core");
  * incremental-planning TypeScript existed; the artifact budget, the dependency
  * rule and the 17-page memory demand are unchanged from the Phase 1 brief.
  */
-const MAX_UNPACKED_BYTES = 60_000;
+const MAX_UNPACKED_BYTES = 70_000;
 const MAX_WASM_BYTES = 40_000;
 
 /**

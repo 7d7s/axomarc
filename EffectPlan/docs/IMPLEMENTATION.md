@@ -216,12 +216,13 @@ determinism, non-canonical and wrong-length scheduling regions (108, 119), and t
 guarantee that `v1` and `v2` never write the timing region. The tests share one
 static arena, so all three test modules serialise on one shared mutex.
 
-### TypeScript — 180 tests, all passing but the size gate
+### TypeScript — 179 tests, all passing
 
-`npm test` — 177 passed, 3 failed: the three failures are the package-size
-suite, which is red because the package is over its ceiling (see
-`docs/SIZE-REPORT.md`). (`npm test` prints `# pass 180`: the runner also loads
-`test/support.ts`'s compiled module as a file, which declares no tests.)
+`npm test` — 179 declared tests, 0 failed. The runner's tally reads `# pass 180`
+because it also loads `test/support.ts`'s compiled module as a file, which
+declares no tests. The package-size suite is green against the ceiling that
+`scripts/limits.mjs` states (70,000 bytes unpacked, reviewed in
+`docs/SIZE-REPORT.md`).
 
 | File                         | Tests | Covers                                                       |
 | ---------------------------- | ----- | ------------------------------------------------------------ |
@@ -229,7 +230,7 @@ suite, which is red because the package is over its ceiling (see
 | `planner.test.ts`   | 22    | conflict matrix, effect modes, encoding, decoding, determinism  |
 | `parity.test.ts`    | 4     | exhaustive parity with the independent oracles                    |
 | `property.test.ts`  | 22    | fast-check properties: 8 graph, 7 level, 7 critical path          |
-| `wasm.test.ts`      | 33    | the raw ABI, hostile arguments, memory growth, the scheduling ABI |
+| `wasm.test.ts`      | 40    | the raw ABI, hostile arguments, memory growth, the scheduling and checkpoint ABI |
 | `execution-levels.test.ts` | 17 | decoding, grouping, oracle parity, immutability             |
 | `timing.test.ts`    | 20    | duration validation, the worked examples, oracle agreement, overflow, half-open boundaries, growth, no timing when not asked |
 | `session.test.ts`       | 14    | the incremental session: parity, versions, atomicity         |
@@ -335,22 +336,34 @@ installed, because a silently skipped browser test is not a test.
 
 ## CI
 
-`.github/workflows/ci.yml` runs nineteen jobs: the ten Phase 1 and Phase 2 jobs
+`.github/workflows/ci.yml` runs thirty jobs: the ten Phase 1 and Phase 2 jobs
 (Rust formatting, Rust tests, TypeScript type check, TypeScript tests,
 WebAssembly build, ABI verification, WebAssembly integration tests, package-size
-enforcement, package installation smoke test, browser smoke test) and nine Phase 3
+enforcement, package installation smoke test, browser smoke test), the nine Phase 3
 jobs — Rust scheduling tests, scheduling properties, the independent CPM oracle,
 the scheduling ABI, duration and tick overflow, the timing memory layout, the
 benchmark gates, the browser scheduling smoke test and Phase 1/2 API
-compatibility. Jobs that select a subset by name — the Rust scheduling job through
-its test-filter guard, and every `--test-name-pattern` job through
-`scripts/run-tests.mjs` — fail when they match fewer tests than they claim, so a
-renamed test breaks a job instead of quietly emptying it. The wasm-build job still
-enforces the 40,000-byte artifact budget and the size job the 50,000-byte package
-limit.
+compatibility — and eleven Phase 4 jobs: the definition check that the
+repository-root workflow mirror matches this file, the Rust checkpoint tests, the
+checkpoint ABI against the shipped artifact, incremental parity, version
+integrity, transaction safety, change validation, memory validation, the
+incremental WebAssembly integration and browser runs, and the incremental
+benchmark gate. Jobs that select a subset by name — the Rust scheduling and
+checkpoint jobs through their test-filter guards, and every
+`--test-name-pattern` job through `scripts/run-tests.mjs` — fail when they match
+fewer tests than they claim, so a renamed test breaks a job instead of quietly
+emptying it. The wasm-build job still enforces the 40,000-byte artifact budget and
+the size job the package ceiling, both read from `scripts/limits.mjs` (70,000
+bytes unpacked as reviewed in `docs/SIZE-REPORT.md`).
 
-None of this has executed on a GitHub runner yet: the branch has not been pushed,
-which needs an explicit decision from whoever owns the remote.
+Every one of those commands has run and passed locally (2026-11-02: Rust format,
+110 Rust tests, the checkpoint and scheduling filters, typecheck, 179 TypeScript
+tests, the wasm build and its 110 ABI checks, size, package install, browser, the
+session and timing subsets — 20 invocations, all exit 0). What has not happened is
+a GitHub runner: the branch is pushed, but the mirror workflow triggers on
+`pull_request` and on pushes to `main`, so no Actions run exists until a pull
+request is opened against it. That is the one piece of Phase 4 evidence this
+repository cannot produce on its own.
 
 ## Level-pass cost and the 10% target
 

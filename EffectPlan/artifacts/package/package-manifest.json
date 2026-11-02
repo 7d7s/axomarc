@@ -2,11 +2,11 @@
   "name": "@effectplan/core",
   "version": "0.3.0",
   "tarball": "artifacts/package/effectplan-core-0.3.0.tgz",
-  "tarballBytes": 18679,
-  "unpackedBytes": 51791,
-  "entryCount": 18,
+  "tarballBytes": 22517,
+  "unpackedBytes": 68645,
+  "entryCount": 20,
   "limits": {
-    "maxUnpackedBytes": 60000,
+    "maxUnpackedBytes": 70000,
     "maxWasmBytes": 40000
   },
   "files": [
@@ -20,23 +20,23 @@
     },
     {
       "path": "dist/effectplan.wasm",
-      "bytes": 13247
+      "bytes": 13499
     },
     {
       "path": "dist/encode.d.ts",
-      "bytes": 1729
+      "bytes": 2329
     },
     {
       "path": "dist/encode.js",
-      "bytes": 5265
+      "bytes": 6007
     },
     {
       "path": "dist/errors.d.ts",
-      "bytes": 895
+      "bytes": 1106
     },
     {
       "path": "dist/errors.js",
-      "bytes": 797
+      "bytes": 882
     },
     {
       "path": "dist/execution-levels.d.ts",
@@ -48,7 +48,7 @@
     },
     {
       "path": "dist/index.d.ts",
-      "bytes": 632
+      "bytes": 781
     },
     {
       "path": "dist/index.js",
@@ -56,19 +56,27 @@
     },
     {
       "path": "dist/loader.d.ts",
-      "bytes": 2229
+      "bytes": 2754
     },
     {
       "path": "dist/loader.js",
-      "bytes": 6243
+      "bytes": 7068
     },
     {
       "path": "dist/planner.d.ts",
-      "bytes": 1295
+      "bytes": 1466
     },
     {
       "path": "dist/planner.js",
-      "bytes": 4806
+      "bytes": 5139
+    },
+    {
+      "path": "dist/session.d.ts",
+      "bytes": 2049
+    },
+    {
+      "path": "dist/session.js",
+      "bytes": 10912
     },
     {
       "path": "dist/timing.d.ts",
@@ -84,10 +92,10 @@
     }
   ],
   "npm": {
-    "size": 18679,
-    "shasum": "bd9f038adef373ab5cf3e197a78108d601794f63",
-    "integrity": "sha512-vcxeG6J8UlUQuGX9s3IC7FO88NEeRCdDkwiR6dLCjB0oKQMyym+vE3/W+LDNxn1wBC06Q5ZJG9kpD3SAqYZNCg=="
+    "size": 22517,
+    "shasum": "8f9539ba115e5edafacdd240b0b622b09b46a64f",
+    "integrity": "sha512-eMS4Dy9T8L83i/KFGCjDGgaTj57FR1ZiA1ArQv/WXvSNd2C7oX1QMGr0sn5A+j+SlDcxow5OXzWyEn2JCR0T4w=="
   },
-  "stagedBytes": 45864,
-  "whitespaceRemovedBytes": 5272
+  "stagedBytes": 62718,
+  "whitespaceRemovedBytes": 8692
 }

@@ -17,9 +17,8 @@ its own CPM.
   `serde`, no allocator, no imports.
 - One npm package, `@effectplan/core`, zero runtime dependencies, no network,
   no filesystem access, no telemetry.
-- 68,506 bytes unpacked, against a 60,000-byte ceiling that was set on a
-  projection before Phase 4 existed: the package is over its limit and the size
-  gate is red pending a review of the ceiling against the measurement. The wasm
+- 68,645 bytes unpacked (limit: 70,000, reviewed twice for Phase 4 — the
+  second time against the measurement rather than the projection). The wasm
   artifact is 13,499 bytes (budget: 40,000). Both measured from the packed
   tarball, not from source.
 
@@ -156,8 +155,10 @@ boundary, commit a checkpoint of the state it stopped in, and continue from that
 checkpoint or refuse it; `planner.createSession()` keeps a plan alive through
 appends, replacements and removals, and an incremental plan is proved equal to a
 fresh rebuild by a randomised differential test. Linear memory is still 17 pages
-because the session state lives in the host, and the package is over its size
-ceiling — see `docs/SIZE-REPORT.md`.
+because the session state lives in the host, and the package fits its reviewed
+ceiling (68,645 bytes unpacked against 70,000 — `docs/SIZE-REPORT.md` records both
+reviews). What is outstanding is the CI evidence: every job has passed locally and
+the branch is pushed, but no GitHub Actions run exists until a pull request opens.
 
 Phase 1 (the dependency planner), Phase 2 (execution levels) and Phase 3 (the
 critical path) are complete and measured: the engine, the package, the tests, the

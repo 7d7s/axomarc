@@ -1,29 +1,31 @@
 # Size report
 
 The limits are release constraints, and a limit that moves needs a record of why
-it moved. One has moved: the unpacked package ceiling went from 50,000 to 60,000
-bytes for Phase 4, by owner review on 2026-11-01, **before** any of the
-incremental-planning TypeScript existed. It was set from a projection (51,791
-bytes with the resumable engine and no session layer, plus an estimated session
-module), not from a measurement it had to catch up with. Everything else below is
-still the Phase 1 brief: the 40,000-byte artifact, zero runtime dependencies,
-zero Rust heap allocation, and 17 pages of linear memory — Phase 4 was designed
-around that page count rather than against it, which is why session state lives in
-the host.
+it moved. One has moved, twice, both times by owner review on 2026-11-01:
+
+* **50,000 → 60,000**, before any of the incremental-planning TypeScript existed.
+  That number came from a projection: 51,791 bytes with the resumable engine and
+  no session layer, plus an estimated session module.
+* **60,000 → 70,000**, once the session layer existed and had been measured. It
+  came to 12,813 bytes rather than the ~5,000 the projection had allowed for, and
+  the measured total was 68,645. The second review was against the measurement.
+
+Everything else below is still the Phase 1 brief: the 40,000-byte artifact, zero
+runtime dependencies, zero Rust heap allocation, and 17 pages of linear memory —
+Phase 4 was designed around that page count rather than against it, which is why
+session state lives in the host.
 
 | Constraint                        | Limit    | Measured | Headroom |
 | --------------------------------- | -------- | -------- | -------- |
-| npm package, unpacked             | 60,000 B | 68,506 B | **over by 8,506 B** |
+| npm package, unpacked             | 70,000 B | 68,645 B | 1,355 B  |
 | WebAssembly artifact              | 40,000 B | 13,499 B | 26,501 B |
 | WebAssembly linear memory         | 17 pages | 17 pages | 2,328 B of spare address space |
 
-**The package is over its ceiling and the size gate is red.** The projection that
-informed the review estimated the session layer at roughly 5,000 bytes; it is
-12,813. The measured total is 68,506: the session module and its declarations are
-12,813 bytes of it, the resumable engine is 3,286, and the loader, encoder and
-planner grew by 1,900 between them. The packager fails closed, so
-`npm run verify:size` and the package-size test fail until the ceiling is
-reviewed against the measurement rather than against the estimate.
+Where the 16,854 bytes since Phase 3 went: the session module and its
+declarations are 12,813 of them, the resumable engine is 3,286, and the loader,
+encoder and planner grew by 1,900 between them. The headroom is deliberately
+thin — the next feature that needs room will need another review, against a
+measurement.
 
 Phase 1 shipped at 36,891 / 7,948, Phase 2 at 43,543 / 10,190 and Phase 3 at
 51,791 / 13,247; the 16,715-byte increase since is the incremental-planning
@@ -73,7 +75,7 @@ number in this document is derived from source file sizes.
 | `dist/index.d.ts`            |    632 |                             |
 | `dist/execution-levels.d.ts` |    318 |                             |
 | `dist/index.js`              |     90 | re-export only              |
-| **total**                    | **68,506** | 20 files                |
+| **total**                    | **68,645** | 20 files                |
 
 The tarball is 22,463 bytes. The package declares no runtime dependencies, and
 the installation smoke test confirms that installing it produces a tree with

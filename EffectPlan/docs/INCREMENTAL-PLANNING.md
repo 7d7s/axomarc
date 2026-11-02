@@ -60,9 +60,12 @@ batch, so `reset()` is the way to express it.
   what it did: `update.strategy` is `append`, `suffix-rebuild` or `full-rebuild`,
   and `update.reusedPrefixCalls` says how much was reused.
 * *Checkpoint density.* `checkpointInterval` (default 64) trades host memory for
-  the length of the suffix that has to be replanned. A denser interval means more
-  state and a shorter rebuild; `docs/INCREMENTAL-BENCHMARKS.md` has the
-  measurements.
+  the length of the suffix that has to be replanned. It is not a free knob in
+  either direction: an update that replans a suffix captures a checkpoint as it
+  goes, so a denser interval pays for more workspace copies. `medium` (128 calls)
+  measured 386 µs at interval 64, 775 at 16 and 518 at 128 — the default is the
+  best measured point on the shapes where the choice matters.
+  `docs/INCREMENTAL-BENCHMARKS.md` §4 has the sweep.
 
 **Full-rebuild fallback.**
 
