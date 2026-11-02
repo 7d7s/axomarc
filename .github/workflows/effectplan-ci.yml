@@ -585,3 +585,32 @@ jobs:
       - name: The arena tiles exactly and the memory stays at 18 pages
         run: npm run verify:wasm
       - run: npm run test:resource-layout
+
+  # --------------------------------------------------------------------------
+  # Phase 6 M0: the headroom corpus. This measures how much a Phase 6 optimizer
+  # could win against the exhaustive oracle, and fails closed if any premise
+  # breaks - a lower bound above a verified makespan, a baseline the independent
+  # checker rejects, or a corpus with nothing left to improve.
+  # --------------------------------------------------------------------------
+
+  optimization-benchmark:
+    name: Optimization headroom corpus
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npm run build
+      - name: Baseline against the exhaustive optimum, per workload family
+        run: npm run benchmark:headroom
+      - name: Upload the measured corpus
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: optimization-headroom
+          path: artifacts/optimization-headroom.json

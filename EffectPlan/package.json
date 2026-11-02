@@ -41,6 +41,7 @@
     "benchmark:native": "cargo bench -p effectplan-engine --bench native",
     "benchmark:ts": "tsc -p tsconfig.test.json && node .tsbuild/benchmarks/initial-benchmark.js",
     "benchmark:incremental": "tsc -p tsconfig.test.json && node .tsbuild/benchmarks/incremental-benchmark.js",
+    "benchmark:headroom": "tsc -p tsconfig.test.json && node .tsbuild/benchmarks/optimization-headroom.js",
     "measure:profiles": "node scripts/measure-profiles.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "ci:sync": "node scripts/sync-ci.mjs",

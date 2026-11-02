@@ -70,6 +70,7 @@ baseline the overhead gate reads), and the size reports.
 | `npm run test:browser`     | serves the page and drives it in headless Chrome                |
 | `npm run benchmark`        | native benchmark, then the WebAssembly/TypeScript benchmark     |
 | `npm run benchmark:incremental` | an update against a full rebuild, with a gate          |
+| `npm run benchmark:headroom` | how much a Phase 6 optimizer could win, per workload family |
 | `npm run test:session`      | the incremental session suite                                 |
 | `npm run test:session-properties` | the randomised differential test                        |
 | `npm run ci:check`          | the repository-root workflow matches the project's            |
@@ -348,7 +349,7 @@ installed, because a silently skipped browser test is not a test.
 
 ## CI
 
-`.github/workflows/ci.yml` runs thirty-five jobs: the ten Phase 1 and Phase 2 jobs
+`.github/workflows/ci.yml` runs thirty-six jobs: the ten Phase 1 and Phase 2 jobs
 (Rust formatting, Rust tests, TypeScript type check, TypeScript tests,
 WebAssembly build, ABI verification, WebAssembly integration tests, package-size
 enforcement, package installation smoke test, browser smoke test), the nine Phase 3
@@ -388,12 +389,16 @@ diff is four lines of one assert wrapped, the artifact is byte-identical
 (19,809 B, whitespace only), the Rust suite still reports 153 passing and the
 check is now clean.
 
-The three benchmark jobs were deliberately left out of that local set: they write
-`artifacts/benchmarks.json` and `artifacts/incremental-benchmarks.json`, and
-letting a machine that was busy with other work overwrite the committed
-measurements would destroy the evidence rather than add to it. Their numbers are
-recorded in `docs/CRITICAL-PATH.md` and `docs/INCREMENTAL-BENCHMARKS.md` from the
-runs that were measured for the purpose.
+The three timing benchmark jobs were deliberately left out of that local set:
+they write `artifacts/benchmarks.json`, `artifacts/native-bench.json` and
+`artifacts/incremental-benchmarks.json`, and letting a machine busy with other
+work overwrite the committed measurements would destroy the evidence rather than
+add to it. Their numbers are recorded in `docs/CRITICAL-PATH.md` and
+`docs/INCREMENTAL-BENCHMARKS.md` from runs measured for the purpose.
+`npm run benchmark:headroom` is different in kind and is committed: it measures
+exhaustive optima rather than wall-clock, so it is deterministic to the byte
+across runs (verified), and its artifact is the Phase 6 M0 evidence described in
+`docs/OPTIMIZATION-BENCHMARKS.md`.
 
 What has not happened is
 a GitHub runner: the branch is pushed, but the mirror workflow triggers on

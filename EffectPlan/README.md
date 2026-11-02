@@ -155,6 +155,15 @@ including reading the binary: 402–618 µs at the median.
 
 ## Status
 
+Phase 6 (schedule optimization) has **not started**, and its first act was a
+measurement rather than a feature: `npm run benchmark:headroom` solves 1,200
+generated batches twice — once with the shipped engine, once with an exhaustive
+oracle — and finds the baseline already optimal in 1,187 of them (98.9%), with all
+13 improvable instances in three families and seven families structurally incapable
+of improvement (`docs/OPTIMIZATION-BENCHMARKS.md`). That result narrows what Phase
+6 should be, and it is recorded before any optimizer code exists so the scope can
+be argued with evidence rather than asserted with enthusiasm.
+
 Phase 5 (resource intelligence) is **in progress**. The engine understands
 capacity resources as a model separate from dependency resources: typed
 declarations with an integer capacity, demands that a call holds for the whole
