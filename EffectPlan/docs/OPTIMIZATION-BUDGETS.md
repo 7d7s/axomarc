@@ -45,8 +45,8 @@ Against the address space that is actually free:
 | Quantity | Bytes |
 | --- | --- |
 | linear memory, 18 pages | 1,179,648 |
-| arena end | 1,125,864 |
-| **spare address space** | **53,784** |
+| arena end | 1,125,928 |
+| **spare address space** | **53,720** |
 | Phase 6 worst-case working set | 3,848 |
 | **share of spare used** | **7.2%** |
 
@@ -58,7 +58,7 @@ governed Phase 5's page, which is why that approval is recorded in
 ## The candidate-storage rule is load-bearing, not stylistic
 
 Storing all evaluated candidates — the obvious first implementation — costs
-`64 × 1,056 = 67,584` bytes against 53,784 of spare. **It does not fit.** The
+`64 × 1,056 = 67,584` bytes against 53,720 of spare. **It does not fit.** The
 incumbent-plus-one-working-buffer scheme is therefore not a performance
 preference; it is the difference between a design that can be shipped inside the
 memory the artifact already reserves and one that cannot be shipped at all. That
@@ -144,12 +144,38 @@ rather than debatable.
 ## What this document does not decide
 
 It budgets **arena bytes and overflow**, nothing else. It does not measure wasm code
-size, which the same planning document caps at 40 KB with 20,191 bytes currently
+size, which the same planning document caps at 40 KB with 18,705 bytes currently
 free — that has to be re-measured after every milestone, because unlike the arena
 it is not knowable from constants. It does not measure runtime, it does not
 establish that any strategy improves anything (M0 bounds how much improvement
 exists: 13 instances in 1,200), and it does not decide the objective's tie-break
 order, which is `OPTIMIZATION-RFC.md`.
+
+## Artifacts versus predictions, after M3
+
+The budget above is the optimization working set. The certificate that M3 actually
+shipped is a different thing, and the difference is worth recording:
+
+| Quantity | Predicted or budgeted | Measured | Note |
+| --- | --- | --- | --- |
+| certificate arena region | 64 B (the record) | 64 B | `QUALITY_BYTES`, asserted at compile time |
+| arena length | 75,848 B (Phase 5) | 75,912 B | +64 B, no page change |
+| spare address space | 53,784 B | 53,720 B | −64 B, still 7.2% of a 3,848 B working set |
+| wasm code | not budgeted here | **+1,486 B** (19,809 → 21,295) | the code, not the arena |
+| wasm headroom | 20,191 B free | 18,705 B free | still 47% of the 40 KB cap |
+
+The last two rows are the honest part of this table. M2 budgeted *arena* bytes
+and said so; it did not budget code, because code size is not knowable from the
+constants the arena is built from. The certificate's code cost 1,486 bytes —
+twenty-three times its arena cost — and it is the reason the wasm budget has to
+be re-measured after every milestone instead of derived once.
+
+The 19,809 is measured, not remembered: the engine at `HEAD` without the
+certificate was rebuilt and measured (24,746 B of Rust, 19,809 B after
+`wasm-opt`), then the certificate was restored and rebuilt (26,304 B of Rust,
+21,295 B after `wasm-opt`). The 19,809 is 15 bytes above the 19,794 quoted
+earlier in `docs/RESOURCE-ABI.md`, because the Phase 5 diagnostics-revision fix
+cost those 15 bytes and that document still carried the number from before it.
 
 ## Reproducing these numbers
 

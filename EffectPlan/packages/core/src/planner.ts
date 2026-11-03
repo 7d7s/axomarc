@@ -16,6 +16,7 @@ import type { EngineInfo, InitializationOptions, LoadedEngine } from "./loader.j
 import {
   decodeDiagnostics,
   decodePlacement,
+  decodeQuality,
   internCapacities,
   packResources,
   writeResources,
@@ -26,6 +27,7 @@ import type {
   ResourceOptions,
   ResourceResult,
   ResourceStatistic,
+  ScheduleQuality,
   ResourceWindow,
   ResourceViews,
 } from "./resources.js";
@@ -304,6 +306,7 @@ export class EffectPlan {
         makespan: 0,
         deferrals: 0,
         statistics: [],
+        quality: undefined,
       };
     }
     if (status === ERR_RESOURCE_CAPACITY || status === ERR_UNSCHEDULABLE) {
@@ -314,6 +317,7 @@ export class EffectPlan {
         makespan: 0,
         deferrals: 0,
         statistics: [],
+        quality: undefined,
       };
     }
     throw resourceError(status);
@@ -403,6 +407,7 @@ export class EffectPlan {
     const plan = decodePlan(input.view, info, encoded, { durations, unit: options.unit ?? "ticks" });
     if (placeStatus === 0) {
       const placed = decodePlacement(view, layout, table, callIds);
+      const quality = certifyPlacement(engine, encoded.callCount, table.count, placed.makespan);
       return {
         outcome: "feasible",
         diagnostics,
@@ -410,6 +415,7 @@ export class EffectPlan {
         makespan: placed.makespan,
         deferrals: placed.deferrals,
         statistics: placed.statistics,
+        quality,
         plan,
       };
     }
@@ -421,11 +427,65 @@ export class EffectPlan {
         makespan: 0,
         deferrals: 0,
         statistics: [],
+        quality: undefined,
         plan,
       };
     }
     throw resourceError(placeStatus);
   }
+}
+
+/**
+ * Ask the engine to certify the placement it just published.
+ *
+ * A refusal here is not a caller's problem: every region involved belongs to the
+ * batch that was placed moments ago, so the only way this fails is if the
+ * engine's own outputs disagree about the batch they describe. That is reported
+ * as an invalid plan rather than swallowed, because a schedule nobody can
+ * certify is a schedule nobody should be told is optimal.
+ */
+function certifyPlacement(
+  engine: LoadedEngine,
+  callCount: number,
+  resourceCount: number,
+  placedMakespan: number,
+): ScheduleQuality {
+  const layout = engine.info.layout;
+  const status = engine.resourceQuality(
+    engine.info.abiVersion,
+    callCount,
+    resourceCount,
+    layout.schedule.ptr,
+    layout.schedule.bytes,
+    layout.timing.ptr,
+    layout.timing.bytes,
+    layout.resourceStats.ptr,
+    layout.resourceStats.bytes,
+    layout.capacities.ptr,
+    layout.capacities.bytes,
+    layout.quality.ptr,
+    layout.quality.bytes,
+  );
+  if (status !== 0) {
+    throw new EffectPlanError(
+      "EP_INVALID_PLAN",
+      `the engine could not certify its own placement (status ${status})`,
+    );
+  }
+  const quality = decodeQuality(
+    new DataView(engine.memory.buffer),
+    layout.quality.ptr,
+  );
+  if (quality.makespan !== placedMakespan) {
+    // Two reads of the same placement, computed by two paths, disagreeing. The
+    // certificate recomputes the makespan from the windows rather than copying
+    // the header, so this is a real cross-check and not a tautology.
+    throw new EffectPlanError(
+      "EP_INVALID_PLAN",
+      `certificate makespan ${quality.makespan} disagrees with the placement ${placedMakespan}`,
+    );
+  }
+  return quality;
 }
 
 /**

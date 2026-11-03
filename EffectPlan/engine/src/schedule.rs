@@ -47,6 +47,11 @@ pub const T_TOTAL_WORK: usize = 16; // u64, little-endian
 pub const T_CRITICAL_COUNT: usize = 24;
 pub const T_RESERVED: usize = 28;
 pub const T_EVENTS: usize = TIMING_HEADER_BYTES;
+/// Field offsets inside one per-call timing record. Named where they are written
+/// so that a reader cannot guess a different layout, and so the certificate that
+/// reads them cannot drift from the pass that emits them.
+pub const T_EVENT_EARLIEST: usize = 0;
+pub const T_EVENT_SLACK: usize = 4;
 
 #[inline]
 fn le32(row: &[u8], at: usize) -> u32 {
@@ -276,8 +281,8 @@ pub fn compute_schedule(
     let mut ok = wr_u32(timing, T_RESERVED, 0);
     for call in 0..call_count {
         let at = T_EVENTS + call.saturating_mul(TIMING_EVENT_BYTES);
-        ok = ok && wr_u32(timing, at, earliest[call]);
-        ok = ok && wr_u32(timing, at.saturating_add(4), slack[call]);
+        ok = ok && wr_u32(timing, at + T_EVENT_EARLIEST, earliest[call]);
+        ok = ok && wr_u32(timing, at + T_EVENT_SLACK, slack[call]);
     }
     ok = ok
         && wr_u32(timing, T_MAKESPAN, makespan)

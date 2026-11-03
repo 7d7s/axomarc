@@ -96,7 +96,7 @@ function sleb(value: number): number[] {
 export const FAKE_INFO: Readonly<Record<number, number>> = Object.freeze({
   0: 1, // abi revision
   1: 1024, // arena base
-  2: 612, // arena length: every region below, end to end
+  2: 676, // arena length: every region below, end to end
   3: 1024, // input pointer: the arena base
   4: 44, // input bytes: 4 calls + 5 offsets + 4 ids + 4 modes
   5: 1068, // workspace pointer
@@ -139,6 +139,9 @@ export const FAKE_INFO: Readonly<Record<number, number>> = Object.freeze({
   45: 96, // resource stats bytes: 32-byte header + 4 rows of 16 bytes
   46: 1540, // resource diagnostics pointer
   47: 96, // resource diagnostics bytes: 32-byte header + 4 records of 16 bytes
+  52: 1, // quality revision
+  53: 1636, // quality pointer: diagnostics pointer + diagnostics bytes
+  54: 64, // quality bytes: the certificate record
   48: 4, // max capacity resources
   49: 4, // max demand records
   50: 4, // max resource diagnostics
@@ -204,7 +207,7 @@ export function fakeEngineBytes(options: FakeEngineOptions = {}): Uint8Array<Arr
   for (let depth = 0; depth <= kinds.length; depth++) infoBody.push(0x0b);
 
   const types = vec([[0x60, 0x01, 0x7f, 0x01, 0x7f], [0x60, 0x00, 0x01, 0x7f]]);
-  const functions = vec([[0x00], [0x01], [0x01], [0x01], [0x01], [0x01], [0x01]]);
+  const functions = vec([[0x00], [0x01], [0x01], [0x01], [0x01], [0x01], [0x01], [0x01]]);
   const memory = vec([[0x00, 0x01]]);
   const omit = options.omit ?? [];
   const wanted: Array<readonly [string, number, number]> = [
@@ -215,6 +218,7 @@ export function fakeEngineBytes(options: FakeEngineOptions = {}): Uint8Array<Arr
     ["effectplan_plan_v4", 0x00, 4],
     ["effectplan_resource_check", 0x00, 5],
     ["effectplan_resource_schedule", 0x00, 6],
+    ["effectplan_resource_quality", 0x00, 7],
     ["memory", 0x02, 0],
   ];
   const exports = vec(
@@ -227,6 +231,7 @@ export function fakeEngineBytes(options: FakeEngineOptions = {}): Uint8Array<Arr
   const zeroBody = [0x00, 0x41, 0x00, 0x0b];
   const code = vec([
     codeEntry(infoBody),
+    codeEntry(zeroBody),
     codeEntry(zeroBody),
     codeEntry(zeroBody),
     codeEntry(zeroBody),

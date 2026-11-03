@@ -1,12 +1,12 @@
 {
-  "measuredAt": "2026-11-02T19:03:37.326Z",
-  "elapsedMs": 2062,
+  "measuredAt": "2026-11-03T05:24:56.192Z",
+  "elapsedMs": 1952,
   "node": "v20.15.0",
   "oracle": "optimalMakespan: exhaustive serial SGS over precedence-feasible permutations",
   "oracleLimit": "instances capped at 4..7 calls because the oracle is factorial; NOT evidence about larger batches",
   "engine": "0.3.0",
   "abi": 1,
-  "wasmBytes": 19809,
+  "wasmBytes": 21295,
   "baselineRanking": "Phase 5 policy: slack, then downstream dependents, then call index",
   "totals": {
     "instances": 1200,

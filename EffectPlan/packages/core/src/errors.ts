@@ -40,6 +40,10 @@ export const EXPECTED_TIMING_ABI = 1;
 export const EXPECTED_CHECKPOINT_ABI = 1;
 /** Revision of the capacity-resource contract this wrapper was compiled against. */
 export const EXPECTED_RESOURCE_ABI = 1;
+/** Revision of the schedule-quality certificate this wrapper was compiled against. */
+export const EXPECTED_QUALITY_ABI = 1;
+/** The certificate record: nine words, the last two reserved. */
+export const QUALITY_RECORD_BYTES = 64;
 export const ENGINE_VERSION = "0.3.0";
 export const ENGINE_NAME = "effectplan-engine";
 /** Output header and record framing, cross-checked against the engine. */

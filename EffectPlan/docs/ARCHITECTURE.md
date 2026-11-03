@@ -101,7 +101,7 @@ reads them from `effectplan_info`, it does not assume them, and
 | Region    | Offset    | Bytes  | Contents                                   |
 | --------- | --------- | ------ | ------------------------------------------ |
 | below     | 0         | ~1 MiB | data segment and shadow stack, unused by us |
-| arena     | 1,050,016 | 75,848 | everything below                            |
+| arena     | 1,050,016 | 75,912 | everything below                            |
 | ├ input   | 1,050,016 | 5,764  | call modes, offsets, resource ids, modes    |
 | ├ work    | 1,055,780 | 17,416 | last writers, reader lists, event lists     |
 | ├ output  | 1,073,196 | 36,880 | header + 2,304 edge records × 16 bytes      |
@@ -115,12 +115,16 @@ reads them from `effectplan_info`, it does not assume them, and
 | ├ scratch | 1,120,900 | 1,792 | usage, in-degree, ready, out-degree — engine-private |
 | ├ schedule | 1,122,692 | 1,056 | `(start, finish)` per call (Phase 5) |
 | ├ res stats | 1,123,748 | 1,056 | capacity, peak, busy time per resource |
-| └ res diags | 1,124,804 | 1,056 | why a demand cannot be met, by index |
+| ├ res diags | 1,124,804 | 1,056 | why a demand cannot be met, by index |
+| └ quality | 1,125,860 | 64 | the schedule-quality certificate (Phase 6) |
 
 Linear memory is 1,179,648 bytes (18 pages) and never grows on its own. The
-timing region is the tail of the arena: a version one or version two call never
-touches it, and `v3` invalidates its header before it starts, so a refused
-schedule cannot be mistaken for the previous batch's result.
+quality certificate is the tail of the arena: a call that places nothing has
+nothing to certify, and `resource_quality` blanks the region before it reads, so
+a refused certificate cannot be mistaken for the previous placement's. The
+timing region is the last of the scheduler regions: a version one or version two
+call never touches it, and `v3` invalidates its header before it starts, so a
+refused schedule cannot be mistaken for the previous batch's result.
 
 **Only the arena belongs to the host.** Everything below the arena base belongs
 to the module: the data segment holds the engine's read-only tables and its

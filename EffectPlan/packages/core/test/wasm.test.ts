@@ -28,6 +28,7 @@ const SELECTOR = {
   resRev: 35, capPtr: 36, capLen: 37, offsPtr: 38, offsLen: 39, recPtr: 40, recLen: 41,
   schedPtr: 42, schedLen: 43, statsPtr: 44, statsLen: 45, diagPtr: 46, diagLen: 47,
   maxCapRes: 48, maxDemands: 49, maxDiags: 50, maxCapacity: 51,
+  qualityRev: 52, qualityPtr: 53, qualityLen: 54,
 } as const;
 
 /** The staged artifact plus the region map it publishes. */
@@ -79,6 +80,9 @@ function fixture() {
     statsLen: info(SELECTOR.statsLen),
     diagnostics: info(SELECTOR.diagPtr),
     diagnosticsLen: info(SELECTOR.diagLen),
+    quality: info(SELECTOR.qualityPtr),
+    qualityLen: info(SELECTOR.qualityLen),
+    qualityRevision: info(SELECTOR.qualityRev),
     maxCapacityResources: info(SELECTOR.maxCapRes),
     maxDemandRecords: info(SELECTOR.maxDemands),
     maxDiagnostics: info(SELECTOR.maxDiags),
@@ -320,6 +324,7 @@ describe("wasm artifact", () => {
       "effectplan_plan_v3",
       "effectplan_plan_v4",
       "effectplan_resource_check",
+      "effectplan_resource_quality",
       "effectplan_resource_schedule",
     ]);
     assert.equal(WebAssembly.Module.exports(module).filter((e) => e.kind === "memory").length, 1);
@@ -776,8 +781,9 @@ describe("scheduling ABI", () => {
     assert.ok(f.layout.timing + f.layout.timingLen <= f.layout.base + f.layout.arena);
     assert.equal(
       f.layout.arena,
-      75848,
-      "the arena is the Phase 4 layout plus the resource regions, exactly as docs/RESOURCE-ABI.md derives",
+      75912,
+      "the arena is the Phase 4 layout plus the resource regions and the certificate, " +
+        "exactly as docs/RESOURCE-ABI.md derives",
     );
     assert.equal(f.memory.buffer.byteLength, 1179648, "linear memory stays at 18 pages");
   });
@@ -813,13 +819,22 @@ describe("scheduling ABI", () => {
     assert.ok(f.layout.schedule > f.layout.demandRecords, "the schedule sits after the input regions");
     assert.equal(f.layout.stats + f.layout.statsLen, f.layout.diagnostics, "stats precede diagnostics");
     assert.ok(
-      f.layout.base + f.layout.arena - (f.layout.diagnostics + f.layout.diagnosticsLen) < 8,
-      "the arena ends at the diagnostics region, plus at most the eight-byte rounding",
+      f.layout.base + f.layout.arena - (f.layout.quality + f.layout.qualityLen) < 8,
+      "the arena ends at the certificate region, plus at most the eight-byte rounding",
+    );
+    // The Phase 6 certificate is published the same way every other region is:
+    // a revision, a base the host must name exactly, and a length.
+    assert.equal(f.layout.qualityRevision, 1, "certificate revision");
+    assert.equal(f.layout.qualityLen, 64, "one certificate record");
+    assert.equal(
+      f.layout.quality,
+      f.layout.diagnostics + f.layout.diagnosticsLen,
+      "the certificate sits immediately after the diagnostics region",
     );
 
     // The sentinel boundary moved with the table; the next extension has to fail
     // a test rather than silently reuse a selector.
-    assert.equal(f.info(52), -1, "an unknown selector still fails closed");
+    assert.equal(f.info(55), -1, "an unknown selector still fails closed");
     assert.equal(f.info(0xffff_ffff), -1);
   });
 

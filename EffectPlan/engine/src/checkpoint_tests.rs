@@ -56,6 +56,9 @@ unsafe fn arena_bytes() -> &'static mut [u8] {
 
 #[inline]
 fn u32_at(at: usize) -> u32 {
+    assert!(LOCK.is_held(),
+        "the arena is shared: read it only while this test holds the guard, or another thread may have rewritten it underneath"
+    );
     unsafe { u32::from_le_bytes(arena_bytes()[at..at + 4].try_into().unwrap()) }
 }
 
@@ -70,6 +73,9 @@ struct Snapshot {
 }
 
 fn capture() -> Snapshot {
+    assert!(LOCK.is_held(),
+        "the arena is shared: read it only while this test holds the guard, or another thread may have rewritten it underneath"
+    );
     let edges = u32_at(OUT_BASE_OFF + 8) as usize;
     unsafe {
         let a = arena_bytes();
@@ -97,6 +103,9 @@ struct Plan {
 }
 
 fn read_plan(durations: usize) -> Plan {
+    assert!(LOCK.is_held(),
+        "the arena is shared: read it only while this test holds the guard, or another thread may have rewritten it underneath"
+    );
     unsafe {
         let a = arena_bytes();
         let word = |at: usize| u32::from_le_bytes(a[at..at + 4].try_into().unwrap());
@@ -257,6 +266,7 @@ fn ticks(n: usize) -> Vec<u32> {
 
 #[test]
 fn an_empty_record_plans_the_batch_and_commits_a_checkpoint() {
+    let _arena = LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let calls = workload();
     let durations = ticks(calls.len());
     let (status, plan) = run(&calls, &durations, None);
@@ -329,6 +339,7 @@ fn an_empty_record_plans_the_batch_and_commits_a_checkpoint() {
 
 #[test]
 fn a_run_may_decline_the_scheduling_pass_and_still_commit() {
+    let _arena = LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let calls = workload();
     // Zero durations would be refused by the scheduling pass; asked for no
     // scheduling, they are simply not read.
@@ -360,6 +371,7 @@ fn a_run_may_decline_the_scheduling_pass_and_still_commit() {
 
 #[test]
 fn an_unknown_flag_is_refused() {
+    let _arena = LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let calls = workload();
     let durations = ticks(calls.len());
     run(&calls[..4], &durations[..4], None);
@@ -452,6 +464,7 @@ fn run_without_timing(
 
 #[test]
 fn resuming_at_every_boundary_reproduces_the_full_plan() {
+    let _arena = LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let calls = workload();
     let durations = ticks(calls.len());
     let (_, full) = run(&calls, &durations, None);
@@ -474,6 +487,7 @@ fn resuming_at_every_boundary_reproduces_the_full_plan() {
 
 #[test]
 fn appending_after_a_committed_batch_matches_a_fresh_batch() {
+    let _arena = LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let base = workload();
     let mut extended = base.clone();
     extended.push(call(MODE_RESOURCES, &[read(1), write(4)]));
@@ -495,6 +509,7 @@ fn appending_after_a_committed_batch_matches_a_fresh_batch() {
 
 #[test]
 fn removing_a_call_reuses_the_prefix_in_front_of_it() {
+    let _arena = LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let calls = workload();
     let drop_at = 3; // the exclusive barrier call
     let mut after = calls.clone();
@@ -512,6 +527,7 @@ fn removing_a_call_reuses_the_prefix_in_front_of_it() {
 
 #[test]
 fn editing_inside_the_prefix_refuses_the_checkpoint() {
+    let _arena = LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let calls = workload();
     let durations = ticks(calls.len());
     let (status, _) = run(&calls, &durations, None);
@@ -529,6 +545,7 @@ fn editing_inside_the_prefix_refuses_the_checkpoint() {
 
 #[test]
 fn a_frontier_that_names_a_call_that_has_not_run_is_refused() {
+    let _arena = LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let calls = workload();
     let durations = ticks(calls.len());
     run(&calls[..4], &durations[..4], None);
@@ -543,6 +560,7 @@ fn a_frontier_that_names_a_call_that_has_not_run_is_refused() {
 
 #[test]
 fn a_reader_chain_that_does_not_recede_is_refused() {
+    let _arena = LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let calls = workload();
     let durations = ticks(calls.len());
     run(&calls[..4], &durations[..4], None);
@@ -557,6 +575,7 @@ fn a_reader_chain_that_does_not_recede_is_refused() {
 
 #[test]
 fn counters_beyond_what_the_prefix_could_produce_are_refused() {
+    let _arena = LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let calls = workload();
     let durations = ticks(calls.len());
     run(&calls[..4], &durations[..4], None);
@@ -570,6 +589,7 @@ fn counters_beyond_what_the_prefix_could_produce_are_refused() {
 
 #[test]
 fn a_digest_that_does_not_match_the_state_is_refused() {
+    let _arena = LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let calls = workload();
     let durations = ticks(calls.len());
     run(&calls[..4], &durations[..4], None);
@@ -582,6 +602,7 @@ fn a_digest_that_does_not_match_the_state_is_refused() {
 
 #[test]
 fn an_unknown_checkpoint_revision_is_refused() {
+    let _arena = LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let calls = workload();
     let durations = ticks(calls.len());
     run(&calls[..4], &durations[..4], None);
@@ -594,6 +615,7 @@ fn an_unknown_checkpoint_revision_is_refused() {
 
 #[test]
 fn a_zero_revision_with_a_dirty_record_is_refused() {
+    let _arena = LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let calls = workload();
     let durations = ticks(calls.len());
     let mut tampered = vec![0u8; CHECKPOINT_RECORD_BYTES];
@@ -609,6 +631,7 @@ fn a_zero_revision_with_a_dirty_record_is_refused() {
 
 #[test]
 fn a_non_canonical_checkpoint_pointer_is_refused() {
+    let _arena = LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let calls = workload();
     let durations = ticks(calls.len());
     let _guard = LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -687,6 +710,7 @@ fn a_non_canonical_checkpoint_pointer_is_refused() {
 
 #[test]
 fn the_checkpoint_region_publishes_itself_through_info() {
+    let _arena = LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let base = arena_base() as u32;
     assert_eq!(effectplan_info(32), CHECKPOINT_REVISION);
     assert_eq!(effectplan_info(33), base + CHECKPOINT_BASE_OFF as u32);
@@ -695,12 +719,20 @@ fn the_checkpoint_region_publishes_itself_through_info() {
     // belonged to the Phase 4 boundary; it moves to the new end of the table so
     // that the next extension still fails a test rather than passing quietly.
     assert_eq!(effectplan_info(35), crate::resources::RESOURCE_REVISION);
-    assert_eq!(effectplan_info(52), SENTINEL);
+    // Phase 6 appended the quality certificate after the resource table, so the
+    // sentinel moved again with it: 52 is now a real selector, and the guard has
+    // to sit one past the last. An extension that forgets to move this line will
+    // find the guard asserting against a value that exists.
+    assert_eq!(effectplan_info(52), quality::QUALITY_REVISION);
+    assert_eq!(effectplan_info(53), base + QUALITY_BASE_OFF as u32);
+    assert_eq!(effectplan_info(54), QUALITY_REGION_LEN as u32);
+    assert_eq!(effectplan_info(55), SENTINEL);
     assert_eq!(effectplan_info(u32::MAX), SENTINEL);
 }
 
 #[test]
 fn a_checkpoint_survives_a_refused_suffix_and_can_be_retried() {
+    let _arena = LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let calls = workload();
     let durations = ticks(calls.len());
     run(&calls[..4], &durations[..4], None);
@@ -725,6 +757,7 @@ fn a_checkpoint_survives_a_refused_suffix_and_can_be_retried() {
 
 #[test]
 fn reserved_checkpoint_words_must_be_zero_on_commit() {
+    let _arena = LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let calls = workload();
     let durations = ticks(calls.len());
     let (status, _) = run(&calls, &durations, None);
@@ -736,6 +769,7 @@ fn reserved_checkpoint_words_must_be_zero_on_commit() {
 
 #[test]
 fn a_long_chain_resumes_from_every_checkpoint_of_a_dense_interval() {
+    let _arena = LOCK.lock().unwrap_or_else(|p| p.into_inner());
     // Sixty-four calls all on one resource: the deepest graph the workload has,
     // checked at every 8-call boundary rather than only the ones the host would
     // naturally take.
@@ -767,6 +801,7 @@ fn a_long_chain_resumes_from_every_checkpoint_of_a_dense_interval() {
 
 #[test]
 fn restoring_state_without_a_record_plans_the_whole_batch() {
+    let _arena = LOCK.lock().unwrap_or_else(|p| p.into_inner());
     // A host that pushes the frontier but forgets the commitment gets a full run,
     // not a resumed one: the prefix it restored is unproven, so it is discarded.
     let calls = workload();

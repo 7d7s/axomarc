@@ -47,10 +47,108 @@ pub mod resources;
 
 pub mod scheduling;
 
+/// Phase 6 M3: the quality certificate over a placement already made.
+pub mod quality;
+
 /// The engine works on one statically reserved arena, so the test modules
 /// that drive it through the real ABI must exclude each other.
+///
+/// This is deliberately **reentrant**, which a plain `Mutex` is not. Tests run
+/// sequences - plan, capture, tamper, replay - and the helper for each step
+/// takes the lock. With a non-reentrant mutex either the sequence is atomic per
+/// step and racy as a whole (one test reads the arena while another has just
+/// rewritten it, which is how the suite flaked before this comment was written),
+/// or a test that holds the lock across the sequence deadlocks against its own
+/// helper. Reentrancy makes both wrong: the sequence is one critical section,
+/// and a different thread still waits.
 #[cfg(test)]
-pub(crate) static ARENA_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static ARENA_LOCK: arena_lock::ArenaLock = arena_lock::ArenaLock::new();
+
+#[cfg(test)]
+pub(crate) mod arena_lock {
+    use std::sync::{Condvar, Mutex};
+    use std::thread::{current, ThreadId};
+
+    pub(crate) struct ArenaLock {
+        state: Mutex<(Option<ThreadId>, u32)>,
+        free: Condvar,
+    }
+
+    /// Held for as long as the sequence needs the arena. Dropping the outermost
+    /// guard releases it; nested guards only decrement a count.
+    pub(crate) struct ArenaGuard(&'static ArenaLock);
+
+    /// Stands in for `std::sync::Poisoned`, so the call sites keep the shape
+    /// `lock().unwrap_or_else(|p| p.into_inner())` they already use. Nothing here
+    /// is poisoned: a panic while held unwinds the guard and frees the arena.
+    pub(crate) struct Poisoned(ArenaGuard);
+
+    impl ArenaLock {
+        pub(crate) const fn new() -> Self {
+            Self {
+                state: Mutex::new((None, 0)),
+                free: Condvar::new(),
+            }
+        }
+
+        pub(crate) fn lock(&'static self) -> Result<ArenaGuard, Poisoned> {
+            let me = current().id();
+            let mut held = match self.state.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            while held.0.is_some() && held.0 != Some(me) {
+                held = match self.free.wait(held) {
+                    Ok(guard) => guard,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+            }
+            if held.0 == Some(me) {
+                held.1 += 1;
+            } else {
+                held.0 = Some(me);
+                held.1 = 1;
+            }
+            drop(held);
+            Ok(ArenaGuard(self))
+        }
+
+        /// True when the calling thread owns the arena. The bare arena readers in
+        /// `checkpoint_tests` assert this, so a sequence that forgets its guard
+        /// fails loudly instead of returning whatever another thread left behind.
+        pub(crate) fn is_held(&'static self) -> bool {
+            let held = match self.state.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            held.0 == Some(current().id())
+        }
+
+        fn release(&self) {
+            let mut held = match self.state.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            held.1 -= 1;
+            if held.1 == 0 {
+                held.0 = None;
+                self.free.notify_one();
+            }
+        }
+    }
+
+    impl Poisoned {
+        pub(crate) fn into_inner(self) -> ArenaGuard {
+            self.0
+        }
+    }
+
+    impl Drop for ArenaGuard {
+        fn drop(&mut self) {
+            self.0.release();
+        }
+    }
+}
 
 #[cfg(test)]
 mod levels_tests;
@@ -66,6 +164,9 @@ mod resources_tests;
 
 #[cfg(test)]
 mod scheduling_tests;
+
+#[cfg(test)]
+mod quality_tests;
 
 // ---------------------------------------------------------------------------
 // Limits. These are the conservative Phase-1 prototype ceilings.
@@ -160,6 +261,17 @@ pub const ERR_RESOURCE_REGION: i32 = 136;
 /// graph waits on something that will not finish. A forged or cyclic graph reaches
 /// this; a genuine plan from this planner cannot.
 pub const ERR_UNSCHEDULABLE: i32 = 137;
+
+/// Phase 6 status codes, deliberately starting a new band at 150 rather than
+/// continuing 138/139: the Phase 5 resource family stays a contiguous block, and
+/// `ERR_INTERNAL` at 140 keeps standing alone.
+///
+/// The certificate could not be computed because the regions handed to it do not
+/// describe this batch - a placement that never ran, or one for a different batch.
+pub const ERR_QUALITY_UNAVAILABLE: i32 = 150;
+/// A bound or total could not be represented, or a region offset overflowed the
+/// arena. Refused rather than saturated: a clipped bound is a wrong bound.
+pub const ERR_QUALITY_RANGE: i32 = 151;
 pub const ERR_INTERNAL: i32 = 140;
 
 // ---------------------------------------------------------------------------
@@ -300,8 +412,11 @@ pub const RESOURCE_DIAGNOSTICS_BASE_OFF: usize =
     RESOURCE_STATS_BASE_OFF + RESOURCE_STATS_REGION_LEN;
 pub const RESOURCE_DIAGNOSTICS_REGION_LEN: usize = resources::DIAGNOSTICS_REGION_LEN;
 
-pub const ARENA_BYTES: usize =
-    align8(RESOURCE_DIAGNOSTICS_BASE_OFF + RESOURCE_DIAGNOSTICS_REGION_LEN);
+/// The schedule quality certificate. Engine-written, host-read.
+pub const QUALITY_BASE_OFF: usize = RESOURCE_DIAGNOSTICS_BASE_OFF + RESOURCE_DIAGNOSTICS_REGION_LEN;
+pub const QUALITY_REGION_LEN: usize = quality::QUALITY_BYTES;
+
+pub const ARENA_BYTES: usize = align8(QUALITY_BASE_OFF + QUALITY_REGION_LEN);
 
 const fn align8(n: usize) -> usize {
     (n + 7) / 8 * 8
@@ -361,8 +476,12 @@ const _: () = assert!(RESOURCE_STATS_BASE_OFF == SCHEDULE_BASE_OFF + SCHEDULE_RE
 const _: () =
     assert!(RESOURCE_DIAGNOSTICS_BASE_OFF == RESOURCE_STATS_BASE_OFF + RESOURCE_STATS_REGION_LEN);
 const _: () =
-    assert!(ARENA_BYTES == align8(RESOURCE_DIAGNOSTICS_BASE_OFF + RESOURCE_DIAGNOSTICS_REGION_LEN));
-const _: () = assert!(ARENA_BYTES == 75_848);
+    assert!(ARENA_BYTES >= RESOURCE_DIAGNOSTICS_BASE_OFF + RESOURCE_DIAGNOSTICS_REGION_LEN);
+const _: () =
+    assert!(QUALITY_BASE_OFF == RESOURCE_DIAGNOSTICS_BASE_OFF + RESOURCE_DIAGNOSTICS_REGION_LEN);
+const _: () = assert!(QUALITY_BASE_OFF % 4 == 0);
+const _: () = assert!(ARENA_BYTES == align8(QUALITY_BASE_OFF + QUALITY_REGION_LEN));
+const _: () = assert!(ARENA_BYTES == 75_912);
 const _: () = assert!(
     DEMAND_RECORDS_REGION_LEN / resources::DEMAND_RECORD_BYTES == resources::MAX_DEMAND_RECORDS
 );
@@ -1591,6 +1710,9 @@ pub extern "C" fn effectplan_info(kind: u32) -> u32 {
         49 => resources::MAX_DEMAND_RECORDS as u32,
         50 => resources::MAX_RESOURCE_DIAGNOSTICS as u32,
         51 => resources::MAX_CAPACITY,
+        52 => quality::QUALITY_REVISION,
+        53 => base + QUALITY_BASE_OFF as u32,
+        54 => QUALITY_REGION_LEN as u32,
         _ => SENTINEL,
     }
 }
@@ -2117,6 +2239,88 @@ pub unsafe extern "C" fn effectplan_resource_schedule(
             schedule: at[6] as usize,
             stats: at[7] as usize,
             diagnostics: at[8] as usize,
+        },
+    )
+}
+
+/// The Phase 6 M3 certificate entry point: bounds, objective components and the
+/// one optimality claim the engine can make without searching.
+///
+/// It reads four regions a completed placement has already published and writes
+/// only the certificate. That separation is the point: a caller can re-run this
+/// over the same placement as often as it likes, and a second computation cannot
+/// disturb the schedule it is judging. A pointer that merely lands inside the
+/// arena is refused, because it could alias a region this call reads while
+/// writing another.
+///
+/// # Safety
+/// Intended to be called from WebAssembly with host-supplied addresses. Every
+/// pointer must name its canonical region exactly; every count is checked before
+/// a byte is read.
+#[no_mangle]
+pub unsafe extern "C" fn effectplan_resource_quality(
+    abi_version: u32,
+    call_count: u32,
+    resource_count: u32,
+    schedule_ptr: u32,
+    schedule_len: u32,
+    timing_ptr: u32,
+    timing_len: u32,
+    stats_ptr: u32,
+    stats_len: u32,
+    capacities_ptr: u32,
+    capacities_len: u32,
+    quality_ptr: u32,
+    quality_len: u32,
+) -> i32 {
+    if abi_version != ABI_VERSION {
+        return ERR_ABI_VERSION;
+    }
+    if call_count as usize > MAX_CALLS
+        || resource_count as usize > resources::MAX_CAPACITY_RESOURCES
+    {
+        return ERR_CALL_LIMIT;
+    }
+    let base = arena_base();
+    let given = [
+        (schedule_ptr, schedule_len),
+        (timing_ptr, timing_len),
+        (stats_ptr, stats_len),
+        (capacities_ptr, capacities_len),
+        (quality_ptr, quality_len),
+    ];
+    let expected = [
+        (SCHEDULE_BASE_OFF, SCHEDULE_REGION_LEN),
+        (TIMING_BASE_OFF, TIMING_REGION_LEN),
+        (RESOURCE_STATS_BASE_OFF, RESOURCE_STATS_REGION_LEN),
+        (CAPACITIES_BASE_OFF, CAPACITIES_REGION_LEN),
+        (QUALITY_BASE_OFF, QUALITY_REGION_LEN),
+    ];
+    let mut at = [0u32; 5];
+    for (slot, (given_pair, want)) in at.iter_mut().zip(given.iter().zip(expected.iter())) {
+        let relative = match (given_pair.0 as usize)
+            .checked_sub(base)
+            .and_then(|delta| u32::try_from(delta).ok())
+        {
+            Some(delta) => delta,
+            None => return ERR_RANGE,
+        };
+        if relative as usize != want.0 || given_pair.1 as usize != want.1 {
+            return ERR_LAYOUT;
+        }
+        *slot = relative;
+    }
+
+    quality::assess(
+        arena_slice(),
+        &quality::Request {
+            call_count: call_count as usize,
+            resource_count: resource_count as usize,
+            schedule: at[0] as usize,
+            timing: at[1] as usize,
+            stats: at[2] as usize,
+            capacities: at[3] as usize,
+            quality: at[4] as usize,
         },
     )
 }

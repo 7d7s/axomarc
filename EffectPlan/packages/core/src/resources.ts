@@ -15,7 +15,7 @@
  * diagnostics rather than as an exception.
  */
 
-import { EffectPlanError } from "./errors.js";
+import { EffectPlanError, EXPECTED_QUALITY_ABI } from "./errors.js";
 import type { UnknownEffectPolicy } from "./encode.js";
 import type { EngineInfo, EngineLayout, EngineLimits } from "./loader.js";
 
@@ -121,6 +121,12 @@ export interface ResourceResult {
   readonly deferrals: number;
   /** One row per declared resource, in declaration order. */
   readonly statistics: readonly ResourceStatistic[];
+  /**
+   * The quality certificate for this placement, or `undefined` when nothing was
+   * placed — a check asks whether a batch can run and has no schedule to
+   * measure. Computed by the engine over the regions the placement published.
+   */
+  readonly quality: ScheduleQuality | undefined;
 }
 
 /** Region header offsets; must match `engine/src/resources.rs`. */
@@ -298,6 +304,81 @@ export function writeResources(
     offsets[call + 1] = cursor;
   }
   return cursor;
+}
+
+/**
+ * The quality certificate for a completed placement.
+ *
+ * The bounds are integers the engine derived; the ratio is not among them,
+ * because a quotient is presentation and this project keeps presentation in the
+ * host. `lowerBoundGap` is therefore computed here, and it is a distance from a
+ * bound - never an optimality gap. `LB == 0` has no gap, and dividing by it
+ * would be an invention rather than a measurement.
+ */
+export interface ScheduleQuality {
+  /** `T`, the schedule's makespan, in the caller's unit. */
+  readonly makespan: number;
+  /** Critical-path duration at unlimited capacity: a lower bound on `T`. */
+  readonly dependencyLowerBound: number;
+  /** `max_r ceil(busy_r / capacity_r)`: another lower bound on `T`. */
+  readonly resourceLowerBound: number;
+  /** The stronger of the two bounds. */
+  readonly lowerBound: number;
+  /**
+   * `(makespan - lowerBound) / lowerBound`, or `null` when the bound is zero.
+   * A distance from a bound: a schedule can sit above this number and still be
+   * optimal, because the bound does not capture every dependency/capacity
+   * interaction.
+   */
+  readonly lowerBoundGap: number | null;
+  /**
+   * `true` only when the makespan equals the bound, which no valid schedule can
+   * beat. `false` means "not proven", not "suboptimal".
+   */
+  readonly provablyOptimal: boolean;
+  /** `Σ_i (start_i - earliestStart_i)`: aggregate time lost waiting for capacity. */
+  readonly totalResourceWaiting: number;
+  readonly callCount: number;
+  readonly resourceCount: number;
+}
+
+/** Certificate field offsets; must match `engine/src/quality.rs`. */
+const QUALITY = {
+  revision: 0,
+  callCount: 4,
+  makespan: 8,
+  lbDep: 12,
+  lbRes: 16,
+  lb: 20,
+  provablyOptimal: 24,
+  resourceCount: 28,
+  waiting: 32,
+} as const;
+
+/** Decodes the certificate the engine published for the placement just made. */
+export function decodeQuality(view: DataView, at: number): ScheduleQuality {
+  const revision = view.getUint32(at + QUALITY.revision, true);
+  if (revision !== EXPECTED_QUALITY_ABI) {
+    throw new EffectPlanError("EP_INVALID_PLAN", `quality certificate revision ${revision}`);
+  }
+  const makespan = view.getUint32(at + QUALITY.makespan, true);
+  const lowerBound = view.getUint32(at + QUALITY.lb, true);
+  if (lowerBound > makespan) {
+    // The engine refuses to publish this; if it ever slips through, the host
+    // refuses too rather than reporting a schedule that beats a bound.
+    throw new EffectPlanError("EP_INVALID_PLAN", `bound ${lowerBound} above makespan ${makespan}`);
+  }
+  return {
+    makespan,
+    dependencyLowerBound: view.getUint32(at + QUALITY.lbDep, true),
+    resourceLowerBound: view.getUint32(at + QUALITY.lbRes, true),
+    lowerBound,
+    lowerBoundGap: lowerBound === 0 ? null : (makespan - lowerBound) / lowerBound,
+    provablyOptimal: view.getUint32(at + QUALITY.provablyOptimal, true) === 1,
+    totalResourceWaiting: Number(view.getBigUint64(at + QUALITY.waiting, true)),
+    callCount: view.getUint32(at + QUALITY.callCount, true),
+    resourceCount: view.getUint32(at + QUALITY.resourceCount, true),
+  };
 }
 
 /** Decodes the diagnostics the engine recorded. */

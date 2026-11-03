@@ -35,11 +35,11 @@ real, and the artifact now reports:
 | Quantity | Value |
 | --- | --- |
 | arena base | 1,050,016 |
-| arena length | 75,848 |
-| arena end | 1,125,864 |
+| arena length | 75,912 |
+| arena end | 1,125,928 |
 | linear memory | 1,179,648 B = 18 pages |
-| spare address space | 53,784 B |
-| wasm code | 19,794 B, 20,206 under budget |
+| spare address space | 53,720 B |
+| wasm code | 21,295 B, 18,705 under budget |
 
 The base is not fixed either: it has moved twice as the data segment grew, which is
 why nothing in the host, the tests or these documents addresses the arena by a
@@ -115,7 +115,7 @@ page buys:
 | R | K | new arena bytes | arena length | pages | address space left |
 | --- | --- | --- | --- | --- | --- |
 | 8 | 64 | 4,904 | 66,824 | 18 | 62,808 |
-| **64** | **1,024** | **13,928** | **75,848** | **18** | **53,784** |
+| **64** | **1,024** | **13,928** | **75,912** | **18** | **53,720** |
 | 128 | 1,024 | 15,464 | 77,384 | 18 | 52,248 |
 | 256 | 1,024 | 18,536 | 80,456 | 18 | 49,176 |
 | 256 | 2,048 | 26,728 | 88,648 | 18 | 40,984 |
@@ -123,7 +123,8 @@ page buys:
 
 The last column uses the base this build reports (1,050,016), so the rows other than
 the shipped one are computed rather than measured — enough to show that the page
-holds, not a figure to gate on.
+holds, not a figure to gate on. Phase 6's quality certificate adds 64 bytes to
+every row, the shipped row already includes it, and no row changes page count.
 
 So within one page the engine can support up to 256 capacity resources and 7,171
 demand records — more than 55 demands per call at the maximum batch size. **Memory stops being the binding constraint
@@ -178,7 +179,57 @@ ERR_RESOURCE_UNDECLARED` for a requirement naming a resource that was never
 declared. Diagnostics carry numeric indexes only, never a caller's resource key —
 the same rule the error surface has followed since Phase 1.
 
-## 6. What is settled, and what is still a decision
+## 6. The quality certificate (Phase 6)
+
+`effectplan_resource_quality` is a reader. It is handed the schedule, timing and
+statistics regions that a placement published, the capacity table and the
+certificate region, and it writes only the certificate. It never re-plans, so it
+cannot disagree with the placement about what was placed; it recomputes the
+makespan from the published windows rather than copying the header, so a corrupt
+header is caught instead of propagated.
+
+The record is 64 bytes:
+
+| Offset | Field | Meaning |
+| --- | --- | --- |
+| 0 | `revision` | 1, written **last**, so a partial record has no revision |
+| 4 | `call_count` | the calls the certificate describes |
+| 8 | `makespan` | recomputed from the windows, not copied from the header |
+| 12 | `lb_dep` | the dependency bound: the critical-path length |
+| 16 | `lb_res` | the workload bound: `max over resources of ceil(busy / capacity)` |
+| 20 | `lower_bound` | the larger of the two bounds |
+| 24 | `provably_optimal` | 1 when `lower_bound == makespan` |
+| 28 | `resource_count` | the resources the certificate describes |
+| 32 | `total_waiting` | `u64`: the sum over calls of `start − earliest start` |
+| 40 | `reserved` | zero |
+| 44 | *padding* | zero |
+
+Two bounds, and only two. The dependency bound is the length of the longest
+chain of dependencies — the same number the timing region already publishes —
+so the certificate measures the schedule against a bound the engine had already
+computed rather than a second, weaker one. The workload bound comes from the
+busy time the placement published and the capacity the caller declared: a lane
+that is busy for `B` ticks with capacity `C` needs at least `ceil(B / C)` ticks,
+whatever order the calls take. The certificate reports the larger of the two.
+
+`provably_optimal` is the only claim the engine makes, and it is a weak one: the
+bound equals the makespan, so no schedule of this batch can be shorter. When the
+bound is below the makespan the certificate says so and stops — it does not
+publish a ratio and call it the optimality gap. The distance between a bound and
+a schedule is not a gap to a known optimum; it is how much slack one
+unreachable line of reasoning leaves. The host may present that distance as a
+ratio; the engine does no division at all.
+
+A certificate is refused rather than half-written. If the timing region does not
+describe this batch, if the schedule's revision or call count does not match, if
+a window ends before it starts, if a call starts before its dependencies allow,
+if the recomputed makespan disagrees with the header, if the statistics and the
+capacity table disagree about a capacity, or if a bound exceeds the makespan,
+the region is blanked and the call returns `150`. Overflow in the arithmetic
+returns `151`. Both are the *engine's* problem rather than the caller's, so the
+host reports them as `EP_INVALID_PLAN` rather than blaming the input.
+
+## 7. What is settled, and what is still a decision
 
 The budget is settled and in force. So are two architectural choices, adopted when
 the owner said to proceed and implemented in M3:
@@ -197,8 +248,9 @@ two invalidation domains (D2), and whether the engine computes longest-remaining
 path priority, which it does not have today (D3). Both are written up in
 `docs/RESOURCE-MODEL.md` §9, which is the M1 gate.
 
-## 7. Related documents
+## 8. Related documents
 
 * `docs/ABI.md` — the Phase 1–4 layout this extends.
 * `docs/RESOURCE-MODEL.md` — the semantics and the open decisions.
 * `docs/SIZE-REPORT.md` — the package and memory budgets, and how they are reviewed.
+* `docs/OPTIMIZATION-RFC.md` — what the certificate is for, and what it is not.

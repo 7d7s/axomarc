@@ -35,6 +35,8 @@ constants).
 | `effectplan_plan_v3` | 18 | Phase 3 | the same, plus the critical path |
 | `effectplan_plan_v4` | 20 | Phase 4 | the same, resumable from a checkpoint |
 | `effectplan_resource_check` | 12 | Phase 5 | feasibility of declared capacities, no schedule |
+| `effectplan_resource_schedule` | 22 | Phase 5 | the placement: windows, per-resource statistics, diagnostics |
+| `effectplan_resource_quality` | 13 | Phase 6 | a certificate over a placement the engine already committed |
 
 `v2` is `plan` plus `levels_ptr`, `levels_len`. `v3` is `v2` plus `durations_ptr`,
 `durations_len`, `timing_ptr`, `timing_len`. The `v3` entry point runs the `v2`
@@ -48,6 +50,16 @@ diagnostic region — twelve parameters, none of them a planning region — and 
 none of the graph, levels, timing or checkpoint bytes. A single call that always
 validates, plans, layers, times and schedules could not express the requirement
 that a scheduling-only change leave the dependency graph alone.
+
+`effectplan_resource_quality` reads. That is the whole of its contract: it is
+given the schedule, timing and statistics regions the placement published, plus
+the capacity table and the certificate region, and it writes only the
+certificate. It never re-plans, so it cannot disagree with the placement about
+what was placed; it recomputes the makespan from the published windows rather
+than copying the header, so a corrupt header is caught instead of propagated. If
+any input fails validation the region is blanked and the call returns `150`,
+because a certificate that cannot be issued is not the same thing as a schedule
+that is fine — see §10.
 
 The `plan`/`v2`/`v3` argument order:
 
@@ -83,9 +95,10 @@ engine's arena sits at the top of the data segment; the base is reported by
 | `schedule` | 72,676 | 1,056 | engine | host |
 | `resource stats` | 73,732 | 1,056 | engine | host |
 | `resource diagnostics` | 74,788 | 1,056 | engine | host |
+| `quality` | 75,844 | 64 | engine | host |
 
-Total 75,848 bytes, contiguous, four-byte aligned at every region boundary, with
-53,784 bytes of address space left after the eight-byte rounding. The four
+Total 75,912 bytes, contiguous, four-byte aligned at every region boundary, with
+53,720 bytes of address space left after the eight-byte rounding. The four
 engine-private scratch regions are not published through `info`: a host has no
 business naming them, and an argument that cannot name them cannot alias them. `verify:wasm` asserts the tiling (`region N+1 base
 == region N base + region N length`), the alignment, each region's published
@@ -193,6 +206,7 @@ at all unless it was asked for.
 | 35 | resource revision |
 | 36–47 | capacities base/length, demand offsets base/length, demand records base/length, schedule base/length, resource stats base/length, resource diagnostics base/length |
 | 48–51 | max capacity resources, max demand records, max diagnostics, max capacity |
+| 52–54 | quality revision, quality base, quality length |
 
 An unknown kind returns `u32::MAX`, which reaches the host as `-1` and fails the
 loader's audit. That is how an older host notices a newer engine, and how a newer
@@ -202,7 +216,13 @@ substituting a default.
 ## 10. Status codes
 
 The engine returns a number; the host turns it into one stable error code. The
-mapping in `packages/core/src/errors.ts` is exactly this:
+mapping lives in two places, and the split is deliberate: `engineError` in
+`packages/core/src/errors.ts` handles the planning statuses, while
+`resourceError` in `packages/core/src/planner.ts` handles the resource band,
+where two codes are verdicts about the batch rather than faults about the
+request. The certificate band is neither: a caller that asked for a certificate
+and did not get one is holding an unusable result, so `150` and `151` surface
+as `EP_INVALID_PLAN`.
 
 | Code | Meaning | Public error |
 | --- | --- | --- |
@@ -227,6 +247,8 @@ mapping in `packages/core/src/errors.ts` is exactly this:
 | 136 | a resource region pointer is not canonical | `EP_ENGINE_ERROR` |
 | 137 | the batch cannot be sequenced | — a verdict: `infeasible` |
 | 140 | internal invariant violated | `EP_ENGINE_ERROR` |
+| 150 | a certificate could not be issued over the placement | `EP_INVALID_PLAN` |
+| 151 | the certificate's own arithmetic overflowed | `EP_INVALID_PLAN` |
 
 Two other families never come from a status code. The host refuses bad *input*
 before the engine is called — a durations array of the wrong length, a non-integer

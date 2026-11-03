@@ -23,10 +23,12 @@ import { describe, it } from "node:test";
 
 import { wasmBytes } from "./support.js";
 import {
+  expectedQuality,
   optimalMakespan,
   seeded,
   verifySchedule,
   verifyStats,
+  type ExpectedQuality,
   type ResourceInstance,
   type ResourceStats,
   type Schedule,
@@ -65,8 +67,11 @@ interface Fixture {
   readonly statsLen: number;
   readonly diagnostics: number;
   readonly diagnosticsLen: number;
+  readonly quality: number;
+  readonly qualityLen: number;
   readonly planV4: (...args: number[]) => number;
   readonly place: (...args: number[]) => number;
+  readonly certify: (...args: number[]) => number;
 }
 
 function fixture(): Fixture {
@@ -108,8 +113,11 @@ function fixture(): Fixture {
     statsLen: info(45),
     diagnostics: info(46),
     diagnosticsLen: info(47),
+    quality: info(53),
+    qualityLen: info(54),
     planV4: instance.exports.effectplan_plan_v4 as (...args: number[]) => number,
     place: instance.exports.effectplan_resource_schedule as (...args: number[]) => number,
+    certify: instance.exports.effectplan_resource_quality as (...args: number[]) => number,
   };
 }
 
@@ -152,6 +160,7 @@ interface Outcome {
   readonly makespan: number;
   readonly deferrals: number;
   readonly stats: readonly ResourceStats[];
+  readonly quality: ExpectedQuality & { readonly status: number };
 }
 
 /** Plan the batch, then place it. The graph is read back, never assumed. */
@@ -274,6 +283,33 @@ function planAndPlace(f: Fixture, ops: readonly Op[], capacities: readonly numbe
     });
   }
 
+  // The certificate is a separate read of the same placement. The engine
+  // recomputes the makespan from the windows rather than copying the header, so
+  // comparing the two is a cross-check instead of a tautology.
+  const qualityStatus = f.certify(
+    f.abi,
+    ops.length,
+    capacities.length,
+    f.scheduleOut,
+    f.scheduleLen,
+    f.timing,
+    f.timingLen,
+    f.stats,
+    f.statsLen,
+    f.capacities,
+    f.capacitiesLen,
+    f.quality,
+    f.qualityLen,
+  );
+  const quality: ExpectedQuality = {
+    makespan: view.getUint32(f.quality + 8, true),
+    dependencyLowerBound: view.getUint32(f.quality + 12, true),
+    resourceLowerBound: view.getUint32(f.quality + 16, true),
+    lowerBound: view.getUint32(f.quality + 20, true),
+    provablyOptimal: view.getUint32(f.quality + 24, true) === 1,
+    totalResourceWaiting: Number(view.getBigUint64(f.quality + 32, true)),
+  };
+
   return {
     status,
     windows,
@@ -281,6 +317,7 @@ function planAndPlace(f: Fixture, ops: readonly Op[], capacities: readonly numbe
     makespan: view.getUint32(f.scheduleOut + 8, true),
     deferrals: view.getUint32(f.scheduleOut + 16, true),
     stats,
+    quality: { ...quality, status: qualityStatus },
   };
 }
 
@@ -311,6 +348,19 @@ function assertSound(
   assert.deepEqual(problems, [], `${label}: the reference found violations`);
   const statProblems = verifyStats(instance, schedule, outcome.stats);
   assert.deepEqual(statProblems, [], `${label}: the published statistics disagree with the declarations`);
+
+  // M3's exit gate on every placement this file checks: two independent
+  // computations of the same bounds, from the same declarations, must agree.
+  assert.equal(outcome.quality.status, 0, `${label}: the engine refused to certify its own placement`);
+  assert.deepEqual(
+    outcome.quality,
+    { ...expectedQuality(instance, schedule), status: 0 },
+    `${label}: the certificate disagrees with the independent bounds`,
+  );
+  assert.ok(
+    outcome.quality.lowerBound <= outcome.makespan,
+    `${label}: a bound above the schedule it certifies`,
+  );
 
   const optimum = optimalMakespan(instance);
   const totalWork = ops.reduce((sum, entry) => sum + entry.duration, 0);

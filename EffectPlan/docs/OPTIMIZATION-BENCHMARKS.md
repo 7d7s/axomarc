@@ -70,7 +70,10 @@ metadata rather than left for the reader to discover:
 
 Totals: **1,200 instances, 1,187 already optimal (98.9%), 13 with headroom, 28
 ticks of headroom all told, 0 bound defects, 0 unverified baselines**, measured in
-about 1.9 s against a 19,809-byte artifact on 18 pages of linear memory.
+about 1.9 s against a 21,295-byte artifact on 18 pages of linear memory. The
+measurement was re-taken after the Phase 6 certificate was added and the totals
+are unchanged to the byte: the certificate costs 1,486 bytes of wasm and moves
+no schedule.
 
 ## Seven families cannot show improvement, and that is a finding
 
@@ -137,9 +140,13 @@ lie by omission. The guards were negative-tested by doctored copies of the
 compiled output — a gate that has never failed is a decoration.
 
 Determinism is verified rather than asserted: two consecutive runs produce
-byte-identical `families`, `fixtures` and `totals` sections; only `measuredAt` and
-`elapsedMs` differ. Seeds are fixed per family and recorded implicitly by family
-index.
+byte-identical `families`, `fixtures` and `totals` sections; only `measuredAt`,
+`elapsedMs` and `wasmBytes` differ. Seeds are fixed per family and recorded
+implicitly by family index. `wasmBytes` is the size of the artifact the corpus
+was measured against, so it moves when the engine changes — the Phase 6
+certificate moved it from 19,809 to 21,295 and moved nothing else: the
+`families`, `fixtures` and `totals` sections are identical between the two
+measurements, which is the evidence that the certificate changed no schedule.
 
 ## What this does not measure
 

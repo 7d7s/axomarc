@@ -295,6 +295,81 @@ function usageAt(
 }
 
 /**
+ * What a schedule is worth, computed from the declarations alone.
+ *
+ * Deliberately a second implementation of the same three numbers the engine
+ * publishes: earliest starts derived by a longest-path pass over the edges, the
+ * workload bound derived by summing `amount x duration` per resource, and
+ * waiting derived by comparing the schedule against those earliest starts. The
+ * engine has its own versions in `engine/src/quality.rs`; the point of two
+ * independent computations is that agreement is evidence and a shared mistake is
+ * not.
+ */
+export interface ExpectedQuality {
+  readonly makespan: number;
+  readonly dependencyLowerBound: number;
+  readonly resourceLowerBound: number;
+  readonly lowerBound: number;
+  readonly provablyOptimal: boolean;
+  readonly totalResourceWaiting: number;
+}
+
+export function expectedQuality(
+  instance: ResourceInstance,
+  schedule: Schedule,
+): ExpectedQuality {
+  const count = instance.calls.length;
+  const predecessors: number[][] = Array.from({ length: count }, () => []);
+  for (const [from, to] of instance.edges) predecessors[to]!.push(from);
+
+  // Earliest start by longest path. Index order is a valid topological order for
+  // this corpus because every edge points forward; iterating `count` times makes
+  // that assumption unnecessary rather than merely true.
+  const es = new Array<number>(count).fill(0);
+  for (let pass = 0; pass < count; pass++) {
+    for (let i = 0; i < count; i++) {
+      for (const p of predecessors[i]!) {
+        es[i] = Math.max(es[i]!, es[p]! + instance.calls[p]!.duration);
+      }
+    }
+  }
+  const dependencyLowerBound = es.reduce(
+    (max, start, i) => Math.max(max, start + instance.calls[i]!.duration),
+    0,
+  );
+
+  const load = instance.capacities.map(() => 0);
+  for (let i = 0; i < count; i++) {
+    for (const [resource, amount] of instance.calls[i]!.demands) {
+      load[resource] = (load[resource] ?? 0) + amount * instance.calls[i]!.duration;
+    }
+  }
+  let resourceLowerBound = 0;
+  instance.capacities.forEach((capacity, resource) => {
+    if (capacity <= 0) return;
+    const needed = Math.ceil((load[resource] ?? 0) / capacity);
+    if (needed > resourceLowerBound) resourceLowerBound = needed;
+  });
+
+  let waiting = 0;
+  for (let i = 0; i < count; i++) {
+    const window = schedule.windows[i];
+    if (window === undefined) continue;
+    waiting += Math.max(0, window[0] - es[i]!);
+  }
+
+  const lowerBound = Math.max(dependencyLowerBound, resourceLowerBound);
+  return {
+    makespan: schedule.makespan,
+    dependencyLowerBound,
+    resourceLowerBound,
+    lowerBound,
+    provablyOptimal: schedule.makespan === lowerBound,
+    totalResourceWaiting: waiting,
+  };
+}
+
+/**
  * A small deterministic pseudo-random generator, so a randomised test is
  * reproducible from its seed rather than from the machine's entropy.
  */

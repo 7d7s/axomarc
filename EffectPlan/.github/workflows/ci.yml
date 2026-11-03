@@ -549,7 +549,7 @@ jobs:
           node-version: "20"
       - run: npm ci
       - run: npm run build
-      - name: The four outcomes, the validation matrix and determinism
+      - name: The four outcomes, the validation matrix, determinism and the certificate
         run: npm run test:resource-api
 
   resource-layout:
@@ -568,6 +568,27 @@ jobs:
       - name: The arena tiles exactly and the memory stays at 18 pages
         run: npm run verify:wasm
       - run: npm run test:resource-layout
+
+  # --------------------------------------------------------------------------
+  # Phase 6 M3: the schedule-quality certificate. This is the engine reading
+  # back its own placement and publishing the two lower bounds it can prove,
+  # so a job that empties the certificate's tests is a regression, not a
+  # rename.
+  # --------------------------------------------------------------------------
+
+  quality-certificate:
+    name: Schedule-quality certificate tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: The certificate tests, and a guard against matching none
+        run: |
+          out=$(cargo test -p effectplan-engine quality_tests 2>&1)
+          echo "$out"
+          count=$(echo "$out" | grep -c '^test quality_tests::')
+          echo "quality_tests ran ${count} tests"
+          test "${count}" -ge 11
 
   # --------------------------------------------------------------------------
   # Phase 6 M0: the headroom corpus. This measures how much a Phase 6 optimizer

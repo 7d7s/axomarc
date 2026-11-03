@@ -64,6 +64,45 @@ describe("planResources", () => {
     assert.equal(result.statistics[0]?.capacity, 1);
     assert.equal(result.statistics[0]?.peak, 1);
     assert.equal(result.statistics[0]?.busyTime, 7n, "4 ticks plus 3, each holding one unit");
+    // The certificate is the engine's own arithmetic over the placement it just
+    // made: one lane of capacity one, so the workload bound is the whole load and
+    // it is met exactly. Nothing here needs a solver to know it is optimal.
+    assert.ok(result.quality, "a placement always comes with a certificate");
+    assert.equal(result.quality.makespan, 7);
+    assert.equal(result.quality.dependencyLowerBound, 4, "the longer call, with no edges");
+    assert.equal(result.quality.resourceLowerBound, 7, "ceil(7 / 1)");
+    assert.equal(result.quality.lowerBound, 7);
+    assert.equal(result.quality.provablyOptimal, true);
+    assert.equal(result.quality.lowerBoundGap, 0);
+    assert.equal(result.quality.totalResourceWaiting, 4, "the waiting call lost four ticks");
+  });
+
+  it("reports a loose bound as a gap rather than pretending the schedule is optimal", async () => {
+    const plan = await open();
+    // Call 0 needs both units of a two-unit lane for 2 ticks; call 1 needs one
+    // unit of that lane plus a unit of a second lane for 3 ticks. The load bound
+    // is ceil(7/2) = 4, but lane 1 cannot be shared in halves, so the schedule
+    // runs 5 - and the certificate says so instead of claiming optimality.
+    const result = plan.planResources(calls("wide", "narrow"), {
+      capacities: [{ key: "lane", capacity: 2 }, { key: "spare", capacity: 1 }],
+      demands: [
+        [{ resource: "lane", amount: 2 }],
+        [{ resource: "lane", amount: 1 }, { resource: "spare", amount: 1 }],
+      ],
+      durations: [2, 3],
+    });
+    assert.equal(result.outcome, "feasible");
+    assert.ok(result.quality);
+    assert.equal(result.quality.makespan, 5);
+    assert.equal(result.quality.resourceLowerBound, 4);
+    assert.equal(result.quality.provablyOptimal, false);
+    assert.ok(
+      result.quality.lowerBoundGap !== null && result.quality.lowerBoundGap > 0,
+      "a schedule above its bound must report the distance",
+    );
+    // The bound is a distance from a number, not a claim about the optimum: an
+    // exhaustive search finds nothing better here, and the certificate still
+    // refuses to say "optimal". That restraint is the feature.
   });
 
   it("names the call that had to wait, and the tick it waited at", async () => {

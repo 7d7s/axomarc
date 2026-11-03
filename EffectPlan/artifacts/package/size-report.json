@@ -1,14 +1,14 @@
 {
-  "measuredAt": "2026-11-02T18:32:12.911Z",
+  "measuredAt": "2026-11-03T05:30:02.243Z",
   "package": {
     "name": "@effectplan/core",
     "version": "0.3.0",
     "tarball": "artifacts/package/effectplan-core-0.3.0.tgz"
   },
-  "unpackedBytes": 94565,
-  "unpackedBytesReportedByNpm": 94565,
-  "tarballBytes": 29433,
-  "wasmBytes": 19809,
+  "unpackedBytes": 100123,
+  "unpackedBytesReportedByNpm": 100123,
+  "tarballBytes": 30859,
+  "wasmBytes": 21295,
   "fileCount": 22,
   "limits": {
     "maxUnpackedBytes": 106565,
@@ -17,7 +17,7 @@
   "files": [
     {
       "path": "dist/effectplan.wasm",
-      "bytes": 19809
+      "bytes": 21295
     },
     {
       "path": "dist/encode.d.ts",
@@ -29,11 +29,11 @@
     },
     {
       "path": "dist/errors.d.ts",
-      "bytes": 1154
+      "bytes": 1249
     },
     {
       "path": "dist/errors.js",
-      "bytes": 922
+      "bytes": 1001
     },
     {
       "path": "dist/execution-levels.d.ts",
@@ -45,7 +45,7 @@
     },
     {
       "path": "dist/index.d.ts",
-      "bytes": 1056
+      "bytes": 1073
     },
     {
       "path": "dist/index.js",
@@ -53,11 +53,11 @@
     },
     {
       "path": "dist/loader.d.ts",
-      "bytes": 3959
+      "bytes": 4324
     },
     {
       "path": "dist/loader.js",
-      "bytes": 9586
+      "bytes": 10435
     },
     {
       "path": "dist/planner.d.ts",
@@ -65,15 +65,15 @@
     },
     {
       "path": "dist/planner.js",
-      "bytes": 9499
+      "bytes": 10528
     },
     {
       "path": "dist/resources.d.ts",
-      "bytes": 2647
+      "bytes": 3120
     },
     {
       "path": "dist/resources.js",
-      "bytes": 6312
+      "bytes": 7477
     },
     {
       "path": "dist/session.d.ts",

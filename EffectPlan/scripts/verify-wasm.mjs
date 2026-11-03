@@ -34,7 +34,8 @@ check("zero imports (no env, fs, network or host glue)", imported.length === 0, 
 const functions = exported.filter((e) => e.kind === "function").map((e) => e.name).sort();
 check(
   "exports exactly the ABI functions",
-  functions.length === 7 &&
+  functions.length === 8 &&
+    functions.includes("effectplan_resource_quality") &&
     functions.includes("effectplan_plan") &&
     functions.includes("effectplan_plan_v2") &&
     functions.includes("effectplan_plan_v3") &&
@@ -74,6 +75,7 @@ const K = {
   resRev: 35, capPtr: 36, capLen: 37, offsPtr: 38, offsLen: 39, recPtr: 40, recLen: 41,
   schedPtr: 42, schedLen: 43, statsPtr: 44, statsLen: 45, diagPtr: 46, diagLen: 47,
   maxCapRes: 48, maxDemands: 49, maxDiags: 50, maxCapacity: 51,
+  qualityRev: 52, qualityPtr: 53, qualityLen: 54,
 };
 const v = {};
 for (const [name, kind] of Object.entries(K)) v[name] = info(kind);
@@ -111,7 +113,7 @@ check("checkpoint contract is revision 1", v.ckptRev === 1, String(v.ckptRev));
 check("checkpoint region follows the timing region", v.ckptPtr === v.timingPtr + v.timingLen, `${v.ckptPtr}`);
 check("checkpoint region is eight words", v.ckptLen === 32, String(v.ckptLen));
 check("the arena holds the checkpoint region too", v.arenaLen >= v.ckptPtr - v.base + v.ckptLen, `${v.arenaLen}`);
-check("a selector past the last known one fails closed", (info(52) >>> 0) === 0xffffffff, String(info(52)));
+check("a selector past the last known one fails closed", (info(55) >>> 0) === 0xffffffff, String(info(55)));
 check("resource contract is revision 1", v.resRev === 1, String(v.resRev));
 check("resource ceilings are the published ones", v.maxCapRes === 64 && v.maxDemands === 1024 && v.maxDiags === 64, `${v.maxCapRes}/${v.maxDemands}/${v.maxDiags}`);
 check("capacity ceiling keeps the arithmetic inside a u64", v.maxCapacity === 0x7fffffff, String(v.maxCapacity));
@@ -130,10 +132,14 @@ check("diagnostics follow the stats", v.diagPtr === v.statsPtr + v.statsLen, `${
 // would mean a region the layout never accounted for.
 check(
   "the arena is tiled to its last region, allowing only the eight-byte rounding",
-  v.base + v.arenaLen - (v.diagPtr + v.diagLen) < 8,
-  `${v.base + v.arenaLen - (v.diagPtr + v.diagLen)} bytes of padding after diagnostics`,
+  v.base + v.arenaLen - (v.qualityPtr + v.qualityLen) < 8,
+  `${v.base + v.arenaLen - (v.qualityPtr + v.qualityLen)} bytes of padding after the certificate`,
 );
-check("the resource regions grew the arena past one page", v.arenaLen === 75848, String(v.arenaLen));
+// Phase 6 M2's budget, checked against the artifact rather than the document: the
+// certificate cost 64 bytes and the arena is still inside the eighteenth page.
+check("the resource regions grew the arena past one page", v.arenaLen === 75912, String(v.arenaLen));
+check("the quality certificate is published and four-byte aligned", v.qualityPtr % 4 === 0 && v.qualityLen === 64, `${v.qualityPtr}/${v.qualityLen}`);
+check("the quality certificate reports its own revision", v.qualityRev === 1, String(v.qualityRev));
 check(
   `linear memory stays at ${EXPECTED_PAGES} pages`,
   memory.buffer.byteLength === EXPECTED_PAGES * 65536,
@@ -629,6 +635,36 @@ check("a zero capacity is malformed, not merely infeasible", runResourceCheck(1,
 check("an undeclared resource index is refused", runResourceCheck(1, 1, writeDemands([4], [[ [7, 1] ]])) === 135);
 check("a pointer into the middle of a region is refused", runResourceCheck(1, 1, writeDemands([4], [[ [0, 1] ]]), v.capPtr + 4) === 108);
 check("a count over the ceiling is refused without reading", runResourceCheck(1, v.maxCapRes + 1, writeDemands([4], [[ [0, 1] ]])) === 136);
+const resourceQuality = instance.exports.effectplan_resource_quality;
+const qualityBlank = () =>
+  new Uint8Array(memory.buffer, v.qualityPtr, v.qualityLen).every((byte) => byte === 0);
+check("a fresh certificate region starts blank", qualityBlank());
+const qualityWithoutPlacement = resourceQuality(
+  v.abi, 1, 1,
+  v.schedPtr, v.schedLen,
+  v.timingPtr, v.timingLen,
+  v.statsPtr, v.statsLen,
+  v.capPtr, v.capLen,
+  v.qualityPtr, v.qualityLen,
+);
+check(
+  "a certificate over a placement that never ran is refused",
+  qualityWithoutPlacement !== 0,
+  `status ${qualityWithoutPlacement}`,
+);
+check("and leaves no readable certificate behind", qualityBlank());
+check(
+  "a mid-region pointer is refused by the certificate too",
+  resourceQuality(
+    v.abi, 1, 1,
+    v.schedPtr, v.schedLen,
+    v.timingPtr, v.timingLen,
+    v.statsPtr + 4, v.statsLen,
+    v.capPtr, v.capLen,
+    v.qualityPtr, v.qualityLen,
+  ) === 108,
+);
+
 check("the entry point leaves the diagnostic revision published", words.getUint32(v.diagPtr, true) === 1, String(words.getUint32(v.diagPtr, true)));
 
 for (const c of checks) console.log(`${c.ok ? "PASS" : "FAIL"}  ${c.name}${c.detail ? `  [${c.detail}]` : ""}`);

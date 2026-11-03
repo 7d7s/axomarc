@@ -2,8 +2,8 @@
   "name": "@effectplan/core",
   "version": "0.3.0",
   "tarball": "artifacts/package/effectplan-core-0.3.0.tgz",
-  "tarballBytes": 29433,
-  "unpackedBytes": 94565,
+  "tarballBytes": 30859,
+  "unpackedBytes": 100123,
   "entryCount": 22,
   "limits": {
     "maxUnpackedBytes": 106565,
@@ -20,7 +20,7 @@
     },
     {
       "path": "dist/effectplan.wasm",
-      "bytes": 19809
+      "bytes": 21295
     },
     {
       "path": "dist/encode.d.ts",
@@ -32,11 +32,11 @@
     },
     {
       "path": "dist/errors.d.ts",
-      "bytes": 1154
+      "bytes": 1249
     },
     {
       "path": "dist/errors.js",
-      "bytes": 922
+      "bytes": 1001
     },
     {
       "path": "dist/execution-levels.d.ts",
@@ -48,7 +48,7 @@
     },
     {
       "path": "dist/index.d.ts",
-      "bytes": 1056
+      "bytes": 1073
     },
     {
       "path": "dist/index.js",
@@ -56,11 +56,11 @@
     },
     {
       "path": "dist/loader.d.ts",
-      "bytes": 3959
+      "bytes": 4324
     },
     {
       "path": "dist/loader.js",
-      "bytes": 9586
+      "bytes": 10435
     },
     {
       "path": "dist/planner.d.ts",
@@ -68,15 +68,15 @@
     },
     {
       "path": "dist/planner.js",
-      "bytes": 9499
+      "bytes": 10528
     },
     {
       "path": "dist/resources.d.ts",
-      "bytes": 2647
+      "bytes": 3120
     },
     {
       "path": "dist/resources.js",
-      "bytes": 6312
+      "bytes": 7477
     },
     {
       "path": "dist/session.d.ts",
@@ -100,10 +100,10 @@
     }
   ],
   "npm": {
-    "size": 29433,
-    "shasum": "193c0fce8635b080e30dd8f9105c7ea2ea0b4100",
-    "integrity": "sha512-zZ8SPsIZe54uzx24kjuoXWG/xtvXUSdMacVPUE/7Qnou+SI/gXQ2QqQu4440W6cYTA+2pvPvSSma1vLGvCJrxw=="
+    "size": 30859,
+    "shasum": "5ceb3c78292a2e2f22a8c134f193cbbf96c83ae5",
+    "integrity": "sha512-/4we+PYCgGdg/CZsMNXDCQDPYJDCxuppdpqzS+JzOHTD+cAy4IJovJaXXYFKvIumgoLyINxItoaTCVkH0uIlUQ=="
   },
-  "stagedBytes": 87677,
-  "whitespaceRemovedBytes": 11564
+  "stagedBytes": 93235,
+  "whitespaceRemovedBytes": 11980
 }

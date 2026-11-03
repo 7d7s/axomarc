@@ -36,6 +36,7 @@ const scratchStart = info(40) + info(41);
 regions.push(["schedule", 42, 43, "`(start, finish)` per call (Phase 5)"]);
 regions.push(["res stats", 44, 45, "capacity, peak, busy time per resource"]);
 regions.push(["res diags", 46, 47, "why a demand cannot be met, by index"]);
+regions.push(["quality", 53, 54, "the schedule-quality certificate (Phase 6)"]);
 
 const number = (value) => value.toLocaleString("en-US");
 const rows = regions.map(([name, ptrSelector, lenSelector, note]) => {

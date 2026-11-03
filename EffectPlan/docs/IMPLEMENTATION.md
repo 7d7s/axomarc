@@ -53,7 +53,7 @@ baseline the overhead gate reads), and the size reports.
 | `npm run build:wasm`       | `cargo build --target wasm32-unknown-unknown --profile release`, then `wasm-opt --enable-bulk-memory -Oz`, staging `packages/core/dist/effectplan.wasm` |
 | `npm run build:js`         | `tsc -p tsconfig.build.json` → `packages/core/dist`             |
 | `npm run build`            | both, then `scripts/build-package.mjs`                          |
-| `npm run verify:wasm`      | 135 ABI, level, scheduling, memory-safety and capacity-resource checks against the built artifact |
+| `npm run verify:wasm`      | 141 ABI, level, scheduling, memory-safety, capacity-resource and certificate checks against the built artifact |
 | `npm run verify:size`      | extracts the packed tarball and enforces the size limits        |
 | `npm run verify:package`   | installs the tarball into a throwaway project and plans a batch |
 | `npm test`                 | compiles the test build and runs every TypeScript test          |
@@ -195,15 +195,16 @@ Two details that were measured rather than assumed:
 
 ## Testing
 
-### Rust — 151 tests, all through the real ABI
+### Rust — 164 tests, all through the real ABI
 
-`cargo test -p effectplan-engine` — 151 passed, 0 failed: the 50 Phase 1 tests,
+`cargo test -p effectplan-engine` — 164 passed, 0 failed: the 50 Phase 1 tests,
 21 execution-level tests in `levels_tests.rs`, 20 scheduling tests in
-`schedule_tests.rs`, 19 checkpoint tests in `checkpoint_tests.rs`, 22 resource
-feasibility tests in `resources_tests.rs` and 19 placement tests in
-`scheduling_tests.rs`, all driven through the real exports —
-`effectplan_plan_v2`, `_v3`, `_v4`, `effectplan_resource_check` and
-`effectplan_resource_schedule`.
+`schedule_tests.rs`, 19 checkpoint tests in `checkpoint_tests.rs`, 23 resource
+feasibility tests in `resources_tests.rs`, 20 placement tests in
+`scheduling_tests.rs` and 11 certificate tests in `quality_tests.rs`, all driven
+through the real exports — `effectplan_plan_v2`, `_v3`, `_v4`,
+`effectplan_resource_check`, `effectplan_resource_schedule` and
+`effectplan_resource_quality`.
 
 The categories the brief asks for: input validation, offset validation, access
 validation, workspace initialisation, read processing, write processing, edge
@@ -223,12 +224,20 @@ one makespan, adjacent (half-open) intervals versus overlapping ones, the maximu
 batch, large durations staying exact, tick overflow reported never wrapped, zero
 and missing durations refused, a refused schedule writing no header, byte-for-byte
 determinism, non-canonical and wrong-length scheduling regions (108, 119), and the
-guarantee that `v1` and `v2` never write the timing region. The tests share one
-static arena, so all three test modules serialise on one shared mutex.
+guarantee that `v1` and `v2` never write the timing region.
 
-### TypeScript — 206 tests, all passing
+The tests share one static arena, so every test module takes the same lock before
+it touches the arena. The lock is reentrant per thread, which is what lets a
+whole test *sequence* run as one critical section while its helpers still lock
+without deadlocking, and the bare arena readers assert they hold it — a test that
+forgets its guard now panics loudly instead of silently reading whatever another
+thread left behind. That assertion is not decoration: a capture helper that read
+the arena outside the lock made a resume-then-tamper-then-resume test fail
+intermittently, 2 runs in 7 before the lock was made reentrant and 0 in 25 after.
 
-`npm test` — 206 declared tests, 0 failed. The runner's tally reads `# pass 207`
+### TypeScript — 207 tests, all passing
+
+`npm test` — 207 declared tests, 0 failed. The runner's tally reads `# pass 208`
 because it also loads `test/support.ts`'s compiled module as a file, which
 declares no tests. The package-size suite is green against the ceiling that
 `scripts/limits.mjs` states (a frozen Phase 4 baseline of 70,042 bytes plus a
@@ -249,7 +258,7 @@ in `docs/SIZE-REPORT.md`).
 | `session-property.test.ts` | 2   | randomised edits against a fresh rebuild                     |
 | `package-size.test.ts`   | 4     | the packed artifact against the release limits               |
 | `resource-schedule.test.ts` | 5   | every placement against an independent tick walker and an exhaustive optimum |
-| `resource-api.test.ts`   | 13    | the public capacity-resource surface: the four outcomes, validation, determinism, back-to-back batches |
+| `resource-api.test.ts`   | 14    | the public capacity-resource surface: the four outcomes, validation, determinism, back-to-back batches, the quality certificate |
 
 The loader refusals are tested against hand-assembled wasm modules (the bytes
 are built in the test, so the layout is auditable): a wrong ABI revision, a
@@ -313,6 +322,24 @@ check also compares the native build against the wasm build on every dataset, fo
 edges, waves, makespan, peak and critical count; that guard is what caught a
 workload shape which repeated a resource inside one call.
 
+### Certificate parity with a fourth algorithm
+
+`benchmarks/reference-resource-scheduler.ts` computes the certificate's three
+numbers a second time, from the instance graph and the caller's own
+declarations, without reading the engine's certificate region at all: earliest
+starts by a longest-path pass over the predecessor edges, the workload bound by
+summing `amount × duration` per resource and dividing by its capacity, and
+waiting by comparing each scheduled window against those earliest starts. The
+engine has its own versions in `engine/src/quality.rs`; the point of two
+independent computations is that agreement is evidence and a shared mistake is
+not.
+
+Every placement the resource oracle checks is certified too, and the whole
+record is compared field by field — makespan, both bounds, the stronger of them,
+the optimality flag and the waiting total — against the reference. A placement
+that cannot be certified at all is a failure, and so is a bound above the
+schedule it certifies.
+
 ### WebAssembly integration
 
 `npm run test:wasm` — 42 passed. The artifact loads through the published
@@ -350,7 +377,7 @@ installed, because a silently skipped browser test is not a test.
 
 ## CI
 
-`.github/workflows/ci.yml` runs thirty-seven jobs: the ten Phase 1 and Phase 2 jobs
+`.github/workflows/ci.yml` runs thirty-eight jobs: the ten Phase 1 and Phase 2 jobs
 (Rust formatting, Rust tests, TypeScript type check, TypeScript tests,
 WebAssembly build, ABI verification, WebAssembly integration tests, package-size
 enforcement, package installation smoke test, browser smoke test), the nine Phase 3
@@ -362,9 +389,11 @@ repository-root workflow mirror matches this file, the Rust checkpoint tests, th
 checkpoint ABI against the shipped artifact, incremental parity, version
 integrity, transaction safety, change validation, memory validation, the
 incremental WebAssembly integration and browser runs, and the incremental
-benchmark gate; and five Phase 5 jobs: the Rust capacity validation tests, the
+benchmark gate; five Phase 5 jobs: the Rust capacity validation tests, the
 Rust resource placement tests, the independent resource reference, the capacity
-resource public API and the capacity resource memory layout. The session-level
+resource public API and the capacity resource memory layout; and three Phase 6
+jobs: the certificate's own Rust tests, the optimization headroom corpus and the
+strategy prototype. The session-level
 Phase 5 claims are deliberately absent — a resource table that survives version
 changes cannot be gated before decision D2 says what it is.
 Jobs that select a subset by name — the Rust scheduling, checkpoint, capacity and
@@ -379,7 +408,7 @@ verifier asserts.
 Every command the workflow runs has been run locally, in workflow order, with the
 exit code of each recorded (2026-11-02, 27 invocations): 26 exited 0 — Rust
 clippy, 153 Rust tests, the schedule/checkpoint/resources/scheduling filters,
-typecheck, the build, `verify:wasm` with its 135 checks, `verify:size`,
+typecheck, the build, `verify:wasm` with its 141 checks, `verify:size`,
 `verify:package`, 207 TypeScript tests, the wasm, session, timing and resource
 subsets (each through its count guard), API compatibility, the browser smoke test
 and the CI mirror check. **One did not: `cargo fmt --all -- --check` exited 1**,
@@ -397,9 +426,35 @@ work overwrite the committed measurements would destroy the evidence rather than
 add to it. Their numbers are recorded in `docs/CRITICAL-PATH.md` and
 `docs/INCREMENTAL-BENCHMARKS.md` from runs measured for the purpose.
 `npm run benchmark:headroom` is different in kind and is committed: it measures
-exhaustive optima rather than wall-clock, so it is deterministic to the byte
-across runs (verified), and its artifact is the Phase 6 M0 evidence described in
-`docs/OPTIMIZATION-BENCHMARKS.md`.
+exhaustive optima rather than wall-clock, so its `families`, `fixtures` and
+`totals` sections are byte-identical across runs — only `measuredAt`,
+`elapsedMs` and `wasmBytes` move — and its artifact is the Phase 6 M0 evidence
+described in `docs/OPTIMIZATION-BENCHMARKS.md`.
+
+The certificate was added after that run, and the whole set was run again on
+2026-11-03 with the certificate in place: **32 distinct commands, all exiting 0**
+— Rust formatting, Rust clippy, 164 Rust tests, the schedule, checkpoint, resource,
+placement and certificate filters, typecheck, the build, `verify:wasm` with its
+141 checks, `verify:size`, `verify:package`, 208 TypeScript tests, the wasm,
+session, timing and resource subsets (each through its count guard), API
+compatibility, the browser smoke test, the CI mirror check and the two Phase 6
+benchmark jobs. The three wall-clock benchmark jobs were still left out for the
+reason above. The Rust suite was also run ten times in a row after the change:
+ten passed, zero failed.
+
+Clippy was also run in a stricter form than CI uses — `-D warnings` rather than
+the workflow's plain `--all-targets` — and it failed with 35 errors. Every one of
+them is pre-existing: 39 warnings at `HEAD`, and the new `quality.rs` and
+`quality_tests.rs` produce none of them, so the certificate adds no lint debt.
+The workflow's own form exits 0, which is the gate that matters; the stricter
+form's output is recorded here rather than left out, because a lint count that
+was never compared to a baseline is not a measurement.
+
+The two benchmark artifacts were regenerated rather than left alone, and the
+comparison is the useful part: their `families`, `fixtures` and `totals` sections
+are **identical** to the pre-certificate measurement, and the only substantive
+field that moved is `wasmBytes`, 19,809 to 21,295. The certificate cost 1,486
+bytes of wasm and 64 bytes of arena and changed no schedule and won no headroom.
 
 What has not happened is
 a GitHub runner: the branch is pushed, but the mirror workflow triggers on

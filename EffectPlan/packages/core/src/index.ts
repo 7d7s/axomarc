@@ -40,6 +40,7 @@ export type {
   ResourceResult,
   ResourceStatistic,
   ResourceWindow,
+  ScheduleQuality,
 } from "./resources.js";
 export { RESOURCE_DIAGNOSTIC } from "./resources.js";
 export type {

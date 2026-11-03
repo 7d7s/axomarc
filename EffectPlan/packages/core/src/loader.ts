@@ -6,6 +6,8 @@
 
 import {
   EDGE_BYTES,
+  EXPECTED_QUALITY_ABI,
+  QUALITY_RECORD_BYTES,
   ENGINE_NAME,
   ENGINE_VERSION,
   EffectPlanError,
@@ -62,6 +64,8 @@ export interface EngineLayout {
   readonly timing: EngineRegion;
   /** Resumable-planning record: eight words the engine commits and reads back. */
   readonly checkpoint: EngineRegion;
+  /** The Phase 6 quality certificate: bounds, objective components, one claim. */
+  readonly quality: EngineRegion;
   /** Declared capacity per capacity resource, one `u32` each. */
   readonly capacities: EngineRegion;
   /** Demand offsets: one `u32` per call, plus the terminator. */
@@ -105,7 +109,8 @@ const I_ABI = 0, I_BASE = 1, I_ARENA_LEN = 2, I_IN_PTR = 3, I_IN_LEN = 4,
   I_OFFS_PTR = 38, I_OFFS_LEN = 39, I_RECS_PTR = 40, I_RECS_LEN = 41,
   I_SCHED_PTR = 42, I_SCHED_LEN = 43, I_STATS_PTR = 44, I_STATS_LEN = 45,
   I_DIAG_PTR = 46, I_DIAG_LEN = 47,
-  I_MAX_CAPS = 48, I_MAX_RECORDS = 49, I_MAX_DIAGS = 50, I_MAX_CAPACITY = 51;
+  I_MAX_CAPS = 48, I_MAX_RECORDS = 49, I_MAX_DIAGS = 50, I_MAX_CAPACITY = 51,
+  I_QUALITY_REV = 52, I_QUALITY_PTR = 53, I_QUALITY_LEN = 54;
 
 /** The raw engine entry point as exported by the wasm module. */
 export type PlanFn = (
@@ -174,6 +179,19 @@ export type ResourceScheduleFn = (
   diagnostics: number, diagnosticsBytes: number,
 ) => number;
 
+/**
+ * The Phase 6 certificate: reads a placement already made, writes only its own
+ * region, and can be re-run over the same placement without disturbing it.
+ */
+export type ResourceQualityFn = (
+  abi: number, calls: number, resources: number,
+  schedule: number, scheduleBytes: number,
+  timing: number, timingBytes: number,
+  stats: number, statsBytes: number,
+  capacities: number, capacitiesBytes: number,
+  quality: number, qualityBytes: number,
+) => number;
+
 /** An instantiated engine that has passed every host-side layout check. */
 export interface LoadedEngine {
   readonly memory: WebAssembly.Memory;
@@ -183,6 +201,7 @@ export interface LoadedEngine {
   readonly planV4: PlanV4Fn;
   readonly resourceCheck: ResourceCheckFn;
   readonly resourceSchedule: ResourceScheduleFn;
+  readonly resourceQuality: ResourceQualityFn;
   readonly info: EngineInfo;
 }
 
@@ -221,6 +240,10 @@ export async function loadEngine(options: InitializationOptions = {}): Promise<L
   const resourceScheduleFn = exports["effectplan_resource_schedule"];
   if (typeof resourceScheduleFn !== "function") {
     unavailable("engine cannot schedule against capacity resources");
+  }
+  const resourceQualityFn = exports["effectplan_resource_quality"];
+  if (typeof resourceQualityFn !== "function") {
+    unavailable("engine cannot certify schedule quality");
   }
   const read = infoFn as InfoReader;
   const abi = read(I_ABI);
@@ -266,6 +289,14 @@ export async function loadEngine(options: InitializationOptions = {}): Promise<L
   const schedPtr = read(I_SCHED_PTR), schedBytes = read(I_SCHED_LEN);
   const statsPtr = read(I_STATS_PTR), statsBytes = read(I_STATS_LEN);
   const diagPtr = read(I_DIAG_PTR), diagBytes = read(I_DIAG_LEN);
+  const qualityPtr = read(I_QUALITY_PTR), qualityBytes = read(I_QUALITY_LEN);
+  const qualityRevision = read(I_QUALITY_REV);
+  if (qualityRevision !== EXPECTED_QUALITY_ABI) {
+    unavailable(`quality revision ${qualityRevision} incompatible with ${EXPECTED_QUALITY_ABI}`);
+  }
+  if (qualityBytes !== QUALITY_RECORD_BYTES) {
+    unavailable(`quality region is ${qualityBytes} bytes, expected ${QUALITY_RECORD_BYTES}`);
+  }
   const maxCapacityResources = read(I_MAX_CAPS);
   const maxDemandRecords = read(I_MAX_RECORDS);
   const maxResourceDiagnostics = read(I_MAX_DIAGS);
@@ -309,6 +340,7 @@ export async function loadEngine(options: InitializationOptions = {}): Promise<L
     ["schedule", schedPtr, schedBytes, maxCalls, 32, 8, 1],
     ["resource stats", statsPtr, statsBytes, maxCapacityResources, 32, 16, 0],
     ["resource diagnostics", diagPtr, diagBytes, maxResourceDiagnostics, 32, 16, 0],
+    ["quality", qualityPtr, qualityBytes, -1, QUALITY_RECORD_BYTES, 0, 0],
   ];
   let cursor = base;
   // The three regions that publish their own capacity must publish the one the
@@ -346,6 +378,7 @@ export async function loadEngine(options: InitializationOptions = {}): Promise<L
     schedule: Object.freeze({ ptr: schedPtr, bytes: schedBytes }),
     resourceStats: Object.freeze({ ptr: statsPtr, bytes: statsBytes }),
     resourceDiagnostics: Object.freeze({ ptr: diagPtr, bytes: diagBytes }),
+    quality: Object.freeze({ ptr: qualityPtr, bytes: qualityBytes }),
   });
   const info: EngineInfo = Object.freeze({
     engineName: ENGINE_NAME,
@@ -367,6 +400,7 @@ export async function loadEngine(options: InitializationOptions = {}): Promise<L
     planV4: planV4Fn as unknown as PlanV4Fn,
     resourceCheck: resourceCheckFn as unknown as ResourceCheckFn,
     resourceSchedule: resourceScheduleFn as unknown as ResourceScheduleFn,
+    resourceQuality: resourceQualityFn as unknown as ResourceQualityFn,
     info,
   };
 }

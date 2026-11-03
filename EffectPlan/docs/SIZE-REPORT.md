@@ -29,9 +29,9 @@ failed at the moment memory grew rather than permitting it in advance.
 
 | Constraint                        | Limit    | Measured | Headroom |
 | --------------------------------- | -------- | -------- | -------- |
-| npm package, unpacked             | 106,565 B | 94,565 B | 12,000 B — the whole Phase 6 envelope |
-| WebAssembly artifact              | 40,000 B | 19,809 B | 20,191 B |
-| WebAssembly linear memory         | 18 pages (17 through Phase 4) | 18 pages | 53,784 B of spare address space |
+| npm package, unpacked             | 106,565 B | 100,123 B | 6,442 B of the 12,000-byte Phase 6 envelope |
+| WebAssembly artifact              | 40,000 B | 21,295 B | 18,705 B |
+| WebAssembly linear memory         | 18 pages (17 through Phase 4) | 18 pages | 53,720 B of spare address space |
 
 Where the 18,251 bytes since Phase 3 went: the session module and its
 declarations are 13,778 of them, the resumable engine is 3,286, and the loader,
@@ -120,33 +120,40 @@ number in this document is derived from source file sizes.
 
 | File                         | Bytes   | Notes                     |
 | ---------------------------- | ------- | ------------------------- |
-| `dist/effectplan.wasm`       |  19,809 | the engine                |
+| `dist/effectplan.wasm`       |  21,295 | the engine                |
 | `dist/session.js`            |  11,687 | new in Phase 4            |
-| `dist/loader.js`             |   9,586 | layout audit, five plans  |
-| `dist/planner.js`            |   9,499 |                           |
-| `dist/resources.js`          |   6,312 | new in Phase 5            |
+| `dist/planner.js`            |  10,528 | + the certificate call    |
+| `dist/loader.js`             |  10,435 | layout audit, five plans, + the certificate's selectors |
+| `dist/resources.js`          |   7,477 | new in Phase 5            |
 | `dist/timing.js`             |   6,098 | new in Phase 3            |
 | `dist/encode.js`             |   6,007 | shared with the session   |
 | `README.md`                  |   5,098 | package documentation     |
-| `dist/loader.d.ts`           |   3,959 |                           |
-| `dist/resources.d.ts`        |   2,647 | new in Phase 5            |
+| `dist/loader.d.ts`           |   4,324 |                           |
+| `dist/resources.d.ts`        |   3,120 | new in Phase 5            |
 | `dist/encode.d.ts`           |   2,329 |                           |
 | `dist/session.d.ts`          |   2,091 | new in Phase 4            |
 | `dist/planner.d.ts`          |   1,793 |                           |
-| `dist/errors.d.ts`           |   1,154 |                           |
+| `dist/errors.d.ts`           |   1,249 |                           |
 | `dist/execution-levels.js`   |   1,125 |                           |
 | `dist/timing.d.ts`           |   1,095 | new in Phase 3            |
+| `dist/index.d.ts`            |   1,073 |                           |
 | `LICENSE`                    |   1,068 |                           |
-| `dist/index.d.ts`            |   1,056 |                           |
-| `dist/errors.js`             |     922 |                           |
+| `dist/errors.js`             |   1,001 |                           |
 | `package.json`               |     722 |                           |
 | `dist/execution-levels.d.ts` |     318 |                           |
 | `dist/index.js`              |     190 | re-export only            |
-| **total**                    | **94,565** | 22 files               |
+| **total**                    | **100,123** | 22 files               |
 
-The tarball is 29,433 bytes. The package declares no runtime dependencies, and
+The tarball is 30,859 bytes. The package declares no runtime dependencies, and
 the installation smoke test confirms that installing it produces a tree with
 exactly one package in it.
+
+Phase 6's certificate has spent 5,558 of the 12,000-byte envelope so far:
+1,486 bytes of it are wasm code and 4,072 are the host-side decoder, the
+certificate's public type and the loader's selectors. The measurement that
+matters is in `docs/OPTIMIZATION-BUDGETS.md`: the certificate's *arena* cost
+was 64 bytes, predicted from the record's own layout, while its *code* cost
+was 1,486 bytes, which no layout could have told anyone.
 
 ## How the Phase 3 size was paid for
 
@@ -253,7 +260,7 @@ in this file because the second one flatters the phase more than the first.
   dependencies.
 - `packages/core/test/package-size.test.ts` — the same limits as a test, and a
   check that every module the entry point imports is actually published.
-- `npm run verify:wasm` — 135 checks, including the arena tiling, each region's
+- `npm run verify:wasm` — 141 checks, including the arena tiling, each region's
   published capacity and that linear memory is still 18 pages. This is the
   build-time memory-layout acceptance gate the Phase 3 planning document asked
   for: a layout change fails the build instead of surfacing later as a wrong plan.
