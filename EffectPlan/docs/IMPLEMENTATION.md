@@ -495,7 +495,7 @@ are **identical** to the pre-certificate measurement, and the only substantive
 field that moved is `wasmBytes`, 19,809 to 21,295. The certificate cost 1,486
 bytes of wasm and 64 bytes of arena and changed no schedule and won no headroom.
 
-## The first run on a real runner, and the four defects it found
+## The runs on a real runner, and the five defects they found
 
 For six phases the project lived in a subdirectory of a shared repository, and
 GitHub Actions only reads workflows from `.github/workflows` at the repository
@@ -551,14 +551,25 @@ testing could not. Every claim above about "all green" is a local claim; the
 runner's verdict is the one that counts, and it is recorded here whatever it
 says.
 
-**The verdict: 38 of 38 jobs passed.** Run
-[41595818305](https://github.com/7d7s/axomarc/actions/runs/41595818305), on
-commit `727c065`, triggered by `pull_request` on PR #1, 2026-11-03. Every job
+**The verdict: 39 of 39 jobs passed.** Run
+[41600261582](https://github.com/7d7s/axomarc/actions/runs/41600261582), on
+commit `ad8ebc5`, triggered by `pull_request` on PR #1, 2026-11-03. Every job
 that failed the first time — the type check, the TypeScript tests, the wasm
 integration suite and the raw-ABI suite — passed the second time, and the
 thirty-four that passed the first time still pass. The first run's four
 failures are in the history of the pull request, not hidden: they are the
 evidence that the runner was doing something the local machine could not.
+
+**And then the runner found it a second time.** The job added later to gate the
+session-level capacity claims ran `npm run build` without installing the
+`wasm32-unknown-unknown` target, and died with the same `E0463` as the
+TypeScript test job had. That was a defect already fixed once, repeated in a
+job written an hour later, which is the argument for a check rather than for
+another fix: `npm run ci:jobs` now refuses any job that builds the wasm without
+installing its target, and it is negative-tested against a doctored copy of the
+workflow. The runner has now found five defects in this pull request, four of
+them in the CI definition, and two of them are now checks that fail before the
+runner does.
 
 Two claims this document makes are therefore no longer local claims. The 164
 Rust tests, the 214 TypeScript tests, the 141 ABI checks, the 21,295-byte
