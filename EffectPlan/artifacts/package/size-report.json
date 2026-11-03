@@ -1,13 +1,13 @@
 {
-  "measuredAt": "2026-11-03T07:30:03.548Z",
+  "measuredAt": "2026-11-03T07:50:24.403Z",
   "package": {
     "name": "@effectplan/core",
     "version": "0.3.0",
     "tarball": "artifacts/package/effectplan-core-0.3.0.tgz"
   },
-  "unpackedBytes": 101283,
-  "unpackedBytesReportedByNpm": 101283,
-  "tarballBytes": 31254,
+  "unpackedBytes": 106406,
+  "unpackedBytesReportedByNpm": 106406,
+  "tarballBytes": 32204,
   "wasmBytes": 21295,
   "fileCount": 22,
   "limits": {
@@ -65,23 +65,23 @@
     },
     {
       "path": "dist/planner.js",
-      "bytes": 10528
+      "bytes": 8439
     },
     {
       "path": "dist/resources.d.ts",
-      "bytes": 3120
+      "bytes": 3511
     },
     {
       "path": "dist/resources.js",
-      "bytes": 7477
+      "bytes": 10119
     },
     {
       "path": "dist/session.d.ts",
-      "bytes": 2091
+      "bytes": 2659
     },
     {
       "path": "dist/session.js",
-      "bytes": 11687
+      "bytes": 14236
     },
     {
       "path": "dist/timing.d.ts",
@@ -101,7 +101,7 @@
     },
     {
       "path": "README.md",
-      "bytes": 6258
+      "bytes": 7320
     }
   ]
 }

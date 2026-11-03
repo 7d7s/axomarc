@@ -15,10 +15,9 @@ import { loadEngine } from "./loader.js";
 import type { EngineInfo, InitializationOptions, LoadedEngine } from "./loader.js";
 import {
   decodeDiagnostics,
-  decodePlacement,
-  decodeQuality,
   internCapacities,
   packResources,
+  placeResources,
   writeResources,
 } from "./resources.js";
 import type {
@@ -204,9 +203,9 @@ export class EffectPlan {
    * session finish before planning a batch here.
    */
   createSession(calls: readonly IncrementalCall[], options: SessionOptions = {}): PlanSession {
-    const { input } = this.#remap();
+    const { input, resources } = this.#remap();
     return createSession(
-      { engine: this.#engine, input, decode: decodePlan },
+      { engine: this.#engine, input, resources, decode: decodePlan },
       calls,
       options,
     );
@@ -376,116 +375,11 @@ export class EffectPlan {
     if (planStatus !== 0) throw engineError(planStatus);
 
     const table = internCapacities(options.capacities, info.limits);
-    const demandCount = writeResources(resources, info, table, options.demands, encoded.callCount);
-    const placeStatus = engine.resourceSchedule(
-      info.abiVersion,
-      encoded.callCount,
-      table.count,
-      demandCount,
-      layout.capacities.ptr,
-      layout.capacities.bytes,
-      layout.demandOffsets.ptr,
-      layout.demandOffsets.bytes,
-      layout.demandRecords.ptr,
-      layout.demandRecords.bytes,
-      layout.durations.ptr,
-      layout.durations.bytes,
-      layout.output.ptr,
-      layout.output.bytes,
-      layout.timing.ptr,
-      layout.timing.bytes,
-      layout.schedule.ptr,
-      layout.schedule.bytes,
-      layout.resourceStats.ptr,
-      layout.resourceStats.bytes,
-      layout.resourceDiagnostics.ptr,
-      layout.resourceDiagnostics.bytes,
-    );
-    const view = input.view;
     const callIds = calls.map((call) => call.id);
-    const diagnostics = decodeDiagnostics(view, layout.resourceDiagnostics.ptr, table, callIds);
+    const placed = placeResources(engine, resources, table, options.demands, encoded.callCount, callIds);
     const plan = decodePlan(input.view, info, encoded, { durations, unit: options.unit ?? "ticks" });
-    if (placeStatus === 0) {
-      const placed = decodePlacement(view, layout, table, callIds);
-      const quality = certifyPlacement(engine, encoded.callCount, table.count, placed.makespan);
-      return {
-        outcome: "feasible",
-        diagnostics,
-        schedule: placed.schedule,
-        makespan: placed.makespan,
-        deferrals: placed.deferrals,
-        statistics: placed.statistics,
-        quality,
-        plan,
-      };
-    }
-    if (placeStatus === ERR_RESOURCE_CAPACITY || placeStatus === ERR_UNSCHEDULABLE) {
-      return {
-        outcome: "infeasible",
-        diagnostics,
-        schedule: [],
-        makespan: 0,
-        deferrals: 0,
-        statistics: [],
-        quality: undefined,
-        plan,
-      };
-    }
-    throw resourceError(placeStatus);
+    return { ...placed, plan };
   }
-}
-
-/**
- * Ask the engine to certify the placement it just published.
- *
- * A refusal here is not a caller's problem: every region involved belongs to the
- * batch that was placed moments ago, so the only way this fails is if the
- * engine's own outputs disagree about the batch they describe. That is reported
- * as an invalid plan rather than swallowed, because a schedule nobody can
- * certify is a schedule nobody should be told is optimal.
- */
-function certifyPlacement(
-  engine: LoadedEngine,
-  callCount: number,
-  resourceCount: number,
-  placedMakespan: number,
-): ScheduleQuality {
-  const layout = engine.info.layout;
-  const status = engine.resourceQuality(
-    engine.info.abiVersion,
-    callCount,
-    resourceCount,
-    layout.schedule.ptr,
-    layout.schedule.bytes,
-    layout.timing.ptr,
-    layout.timing.bytes,
-    layout.resourceStats.ptr,
-    layout.resourceStats.bytes,
-    layout.capacities.ptr,
-    layout.capacities.bytes,
-    layout.quality.ptr,
-    layout.quality.bytes,
-  );
-  if (status !== 0) {
-    throw new EffectPlanError(
-      "EP_INVALID_PLAN",
-      `the engine could not certify its own placement (status ${status})`,
-    );
-  }
-  const quality = decodeQuality(
-    new DataView(engine.memory.buffer),
-    layout.quality.ptr,
-  );
-  if (quality.makespan !== placedMakespan) {
-    // Two reads of the same placement, computed by two paths, disagreeing. The
-    // certificate recomputes the makespan from the windows rather than copying
-    // the header, so this is a real cross-check and not a tautology.
-    throw new EffectPlanError(
-      "EP_INVALID_PLAN",
-      `certificate makespan ${quality.makespan} disagrees with the placement ${placedMakespan}`,
-    );
-  }
-  return quality;
 }
 
 /**

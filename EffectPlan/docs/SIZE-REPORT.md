@@ -29,7 +29,7 @@ failed at the moment memory grew rather than permitting it in advance.
 
 | Constraint                        | Limit    | Measured | Headroom |
 | --------------------------------- | -------- | -------- | -------- |
-| npm package, unpacked             | 106,565 B | 100,123 B | 6,442 B of the 12,000-byte Phase 6 envelope |
+| npm package, unpacked             | 106,565 B | 105,344 B | 1,221 B of the 12,000-byte Phase 6 envelope |
 | WebAssembly artifact              | 40,000 B | 21,295 B | 18,705 B |
 | WebAssembly linear memory         | 18 pages (17 through Phase 4) | 18 pages | 53,720 B of spare address space |
 
@@ -120,40 +120,59 @@ number in this document is derived from source file sizes.
 
 | File                         | Bytes   | Notes                     |
 | ---------------------------- | ------- | ------------------------- |
-| `dist/effectplan.wasm`       |  21,295 | the engine                |
-| `dist/session.js`            |  11,687 | new in Phase 4            |
-| `dist/planner.js`            |  10,528 | + the certificate call    |
-| `dist/loader.js`             |  10,435 | layout audit, five plans, + the certificate's selectors |
-| `dist/resources.js`          |   7,477 | new in Phase 5            |
-| `dist/timing.js`             |   6,098 | new in Phase 3            |
-| `dist/encode.js`             |   6,007 | shared with the session   |
-| `README.md`                  |   5,098 | package documentation     |
-| `dist/loader.d.ts`           |   4,324 |                           |
-| `dist/resources.d.ts`        |   3,120 | new in Phase 5            |
-| `dist/encode.d.ts`           |   2,329 |                           |
-| `dist/session.d.ts`          |   2,091 | new in Phase 4            |
-| `dist/planner.d.ts`          |   1,793 |                           |
-| `dist/errors.d.ts`           |   1,249 |                           |
-| `dist/execution-levels.js`   |   1,125 |                           |
-| `dist/timing.d.ts`           |   1,095 | new in Phase 3            |
-| `dist/index.d.ts`            |   1,073 |                           |
-| `LICENSE`                    |   1,068 |                           |
-| `dist/errors.js`             |   1,001 |                           |
-| `package.json`               |     722 |                           |
-| `dist/execution-levels.d.ts` |     318 |                           |
-| `dist/index.js`              |     190 | re-export only            |
-| **total**                    | **100,123** | 22 files               |
+| `dist/effectplan.wasm`       | 21,295 | the engine                |
+| `dist/session.js`            | 14,236 | new in Phase 4, + the session's resources |
+| `dist/loader.js`             | 10,435 | layout audit, five plans, + the certificate's selectors |
+| `dist/resources.js`          | 10,119 | new in Phase 5, + the shared placement path |
+| `dist/planner.js`            |  8,439 |                           |
+| `README.md`                  |  6,258 | package documentation     |
+| `dist/timing.js`             |  6,098 | new in Phase 3            |
+| `dist/encode.js`             |  6,007 | shared with the session   |
+| `dist/loader.d.ts`           |  4,324 |                           |
+| `dist/resources.d.ts`        |  3,511 | new in Phase 5            |
+| `dist/session.d.ts`          |  2,659 | new in Phase 4            |
+| `dist/encode.d.ts`           |  2,329 |                           |
+| `dist/planner.d.ts`          |  1,793 |                           |
+| `dist/errors.d.ts`           |  1,249 |                           |
+| `dist/execution-levels.js`   |  1,125 |                           |
+| `dist/timing.d.ts`           |  1,095 | new in Phase 3            |
+| `dist/index.d.ts`            |  1,073 |                           |
+| `LICENSE`                    |  1,068 |                           |
+| `dist/errors.js`             |  1,001 |                           |
+| `package.json`               |    722 |                           |
+| `dist/execution-levels.d.ts`  |    318 |                           |
+| `dist/index.js`              |    190 | re-export only            |
+| **total**                  | **105,344** | 22 files               |
 
-The tarball is 30,859 bytes. The package declares no runtime dependencies, and
+The tarball is 31,843 bytes. The package declares no runtime dependencies, and
 the installation smoke test confirms that installing it produces a tree with
 exactly one package in it.
 
-Phase 6's certificate has spent 5,558 of the 12,000-byte envelope so far:
-1,486 bytes of it are wasm code and 4,072 are the host-side decoder, the
-certificate's public type and the loader's selectors. The measurement that
-matters is in `docs/OPTIMIZATION-BUDGETS.md`: the certificate's *arena* cost
-was 64 bytes, predicted from the record's own layout, while its *code* cost
-was 1,486 bytes, which no layout could have told anyone.
+Phase 6 has spent 10,779 of the 12,000-byte envelope so far, in two parts:
+
+| What | Bytes |
+| --- | --- |
+| the quality certificate | 5,558 — 1,486 of wasm code and 4,072 of host-side decoder, public type and loader selectors |
+| D2, the session's resource table and its two invalidation domains | 5,221 — 4,061 of net new code and 1,160 of declarations |
+
+The D2 figure is worth reading closely, because it is the first time a feature
+*paid for itself by removing a duplication*. The session needed the placement
+path, and the stateless planner already had one; rather than write a second
+copy, the shared sequence moved from `dist/planner.js` into `dist/resources.js`
+and both call it. That removed **2,089 bytes** from `planner.js` — so the
+feature's own 6,310 bytes of new code and declarations cost **4,061 net**.
+
+The measurement that matters for the certificate is in
+`docs/OPTIMIZATION-BUDGETS.md`: its *arena* cost was 64 bytes, predicted from
+the record's own layout, while its *code* cost was 1,486 bytes, which no
+layout could have told anyone.
+
+**1,221 bytes of envelope remain.** That is enough for a host-side change and
+not for another feature of Phase 6's size. It is also why the Phase 6 scope
+recommendation in `docs/OPTIMIZATION-RFC.md` §11 is to ship the certificate and
+not build the optimizer: the optimizer's own budget, in
+`docs/OPTIMIZATION-BUDGETS.md`, was 3,848 bytes of *arena*, and its host-side
+cost would not have fitted in what is left.
 
 ## How the Phase 3 size was paid for
 

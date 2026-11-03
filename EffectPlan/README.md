@@ -17,7 +17,7 @@ its own CPM.
   `serde`, no allocator, no imports.
 - One npm package, `@effectplan/core`, zero runtime dependencies, no network,
   no filesystem access, no telemetry.
-- 100,123 bytes unpacked against a 106,565 ceiling. From Phase 5 the package budget
+- 105,344 bytes unpacked against a 106,565 ceiling. From Phase 5 the package budget
   is a frozen baseline
   (the Phase 4 artifact) plus a per-phase envelope agreed in advance, rather than
   a ceiling raised each time the work outgrew it — see `docs/SIZE-REPORT.md`. The
@@ -221,7 +221,7 @@ local search gets there — for 11 ticks across 1,200 instances
 therefore to ship the certificate and not to build the optimizer; that is the
 owner's call (`docs/OPTIMIZATION-RFC.md` §11).
 
-Phase 5 (resource intelligence) has its **stateless** surface complete. The
+Phase 5 (resource intelligence) is **complete**. The
 engine understands capacity resources as a model separate from dependency
 resources: typed declarations with an integer capacity, demands that a call
 holds for the whole of its execution, atomic reservation, and a deterministic
@@ -232,17 +232,22 @@ dependency graph. The schedules are verified against an independent reference �
 tick-by-tick capacity checker and an exhaustive search over precedence-feasible
 sequences whose makespan is a true lower bound — and the heuristic is second-best
 on two of 32 seeded instances, by at most three ticks, which is stated rather
-than implied (`docs/RESOURCE-MODEL.md` §6). One decision remains open and is not
-mine to make: how a session carries resource declarations across versions (D2).
-D3 — whether the engine computes longest remaining path — is answered by
-measurement now, and the answer is no.
+than implied (`docs/RESOURCE-MODEL.md` §6). A session can carry those
+declarations too: it owns the capacity table, places every batch it plans, and
+reports which of the two invalidation domains a transaction touched —
+`dependency` when the graph could have changed, `scheduling` when only the clock
+and the demands moved, in which case the dependency graph is reused whole. The
+engine has the last word either way: it checks every restored state against the
+input prefix that is supposed to have produced it, and refuses the restore if the
+two disagree. D3 — whether the engine computes longest remaining path — is
+answered by measurement now, and the answer is no.
 
 Phase 5's memory cost is measured, not estimated: the capacity regions needed
 13,416 bytes and 2,264 were spare, so the 18th page was approved on measurement
 (`docs/RESOURCE-ABI.md` §1) and linear memory is 18 pages. The certificate added
 64 bytes of arena, so the arena is 75,912 and 53,720 bytes of address space are
 still spare. The package sits at
-100,123 bytes unpacked against a 106,565-byte ceiling — the frozen Phase 5
+105,344 bytes unpacked against a 106,565-byte ceiling — the frozen Phase 5
 baseline plus a 12,000-byte Phase 6 envelope, owner review 2026-11-03. The
 baseline rolls forward at each phase boundary to whatever a tool printed, which
 is what makes the envelope mean something; `docs/SIZE-REPORT.md` records the

@@ -241,11 +241,175 @@ describe("plan sessions", () => {
     // with only what it captured, so the second update found nothing to resume
     // from and rebuilt the batch - correctly, but at full cost, every time after
     // the first. Reuse has to survive a history of updates, not just one.
+    //
+    // The first update rewrites the call's dependencies, so it invalidates the
+    // dependency domain and the prefix is reused only as far as the last
+    // checkpoint before it. The second and third rewrite the *same*
+    // dependencies - "zz", written - with a different id, so nothing the
+    // conflict rules can see has changed: the dependency graph is reused whole
+    // and only the clock and the demands are recomputed.
     assert.deepEqual(seen, [
       ["suffix-rebuild", 64],
-      ["suffix-rebuild", 64],
-      ["suffix-rebuild", 64],
+      ["suffix-rebuild", 96],
+      ["suffix-rebuild", 96],
     ]);
+  });
+
+  it("reuses the whole graph when only the clock moved, and equals a fresh rebuild", async () => {
+    const planner = await open();
+    const calls = batch(20);
+    const durations = calls.map((_, index) => index + 1);
+    const session = planner.createSession(
+      calls.map((c, index) => ({ key: `k${index}`, call: c, duration: durations[index] })),
+      { timing: { unit: "ms" }, checkpointInterval: 4 },
+    );
+    // The replacement declares exactly the dependencies the call already had -
+    // "f1", read - so the graph cannot have changed. Only the duration moved.
+    const replacement = call("c19", "f1", "read");
+    const next = session.applyChanges({
+      expectedVersion: 1,
+      changes: [{ type: "replace", key: "k19", call: replacement, duration: 99 }],
+    });
+    assert.equal(next.update.invalidated, "scheduling", "a duration change is not a dependency change");
+    assert.equal(
+      next.update.reusedPrefixCalls,
+      20,
+      "nothing about the graph moved, so the whole graph was reused",
+    );
+    assert.equal(next.update.recomputedCalls, 0);
+    // The reuse is only allowed if it produces the same answer as a rebuild.
+    const changed = [...calls];
+    changed[19] = replacement;
+    const changedDurations = [...durations];
+    changedDurations[19] = 99;
+    const expected = await fresh(changed, changedDurations);
+    assert.deepEqual(shape(next.plan).edges, expected.edges, "the reused graph differs from a rebuild");
+    assert.deepEqual(shape(next.plan).levels, expected.levels);
+    assert.equal(next.plan.timing!.criticalPathDuration, expected.makespan, "the clock differs");
+    assert.equal(next.plan.timing!.totalWork, expected.work);
+  });
+
+  it("places every batch against the capacity resources the session declares", async () => {
+    const planner = await open();
+    // A second engine for the stateless comparison: a session and a stateless
+    // batch on the same instance would fight over the arena.
+    const stateless = await open();
+    const calls = batch(6);
+    const durations = calls.map((_, index) => index + 1);
+    const session = planner.createSession(
+      calls.map((c, index) => ({
+        key: `k${index}`,
+        call: c,
+        duration: durations[index],
+        demands: [{ resource: "lane", amount: 1 }],
+      })),
+      {
+        timing: { unit: "ms" },
+        resources: { capacities: [{ key: "lane", capacity: 2 }] },
+      },
+    );
+    const snapshot = session.current();
+    assert.ok(snapshot.placement, "a session that declares resources places its batches");
+    assert.equal(snapshot.placement.outcome, "feasible");
+    assert.equal(snapshot.resourceVersion, 1);
+    // The placement has to be the same one the stateless API produces for the
+    // same batch: the session must not have its own idea of how to place.
+    const expected = stateless.planResources(calls, {
+      capacities: [{ key: "lane", capacity: 2 }],
+      demands: calls.map(() => [{ resource: "lane", amount: 1 }]),
+      durations,
+    });
+    assert.deepEqual(snapshot.placement.schedule, expected.schedule);
+    assert.equal(snapshot.placement.makespan, expected.makespan);
+    assert.deepEqual(snapshot.placement.statistics, expected.statistics);
+    assert.equal(snapshot.placement.quality?.provablyOptimal, expected.quality?.provablyOptimal);
+  });
+
+  it("moves the placement when a demand moves, and keeps the graph", async () => {
+    const planner = await open();
+    const calls = batch(4);
+    const session = planner.createSession(
+      calls.map((c, index) => ({
+        key: `k${index}`,
+        call: c,
+        duration: index + 1,
+        demands: [{ resource: "lane", amount: 1 }],
+      })),
+      {
+        timing: { unit: "ms" },
+        resources: { capacities: [{ key: "lane", capacity: 1 }] },
+      },
+    );
+    const before = session.current();
+    assert.ok(before.placement);
+    // The same dependencies, a different demand: the scheduling domain.
+    const next = session.applyChanges({
+      expectedVersion: before.version,
+      changes: [
+        {
+          type: "replace",
+          key: "k3",
+          call: calls[3]!,
+          duration: 4,
+          demands: [{ resource: "lane", amount: 1 }],
+        },
+      ],
+    });
+    assert.equal(next.update.invalidated, "scheduling");
+    assert.ok(next.placement, "the placement follows the change");
+    assert.equal(next.placement.makespan, before.placement.makespan);
+    // The graph did not move.
+    assert.deepEqual(shape(next.plan).edges, shape(before.plan).edges);
+  });
+
+  it("refuses a demand that names a resource the session did not declare", async () => {
+    const planner = await open();
+    const calls = batch(3);
+    assert.throws(
+      () =>
+        planner.createSession(
+          calls.map((c, index) => ({
+            key: `k${index}`,
+            call: c,
+            duration: index + 1,
+            demands: [{ resource: "nowhere", amount: 1 }],
+          })),
+          { timing: { unit: "ms" }, resources: { capacities: [{ key: "lane", capacity: 1 }] } },
+        ),
+      /EP_INVALID_CHANGESET/,
+    );
+  });
+
+  it("reports the dependency domain when the access declaration moved", async () => {
+    const planner = await open();
+    const calls = batch(20);
+    const session = planner.createSession(
+      calls.map((c, index) => ({ key: `k${index}`, call: c })),
+      { checkpointInterval: 4 },
+    );
+    const next = session.applyChanges({
+      expectedVersion: 1,
+      changes: [{ type: "replace", key: "k19", call: call("c19", "somewhere-else", "write") }],
+    });
+    assert.equal(next.update.invalidated, "dependency", "a different resource is a different dependency");
+    assert.ok(
+      next.update.reusedPrefixCalls < 20,
+      "a dependency change cannot reuse the whole graph",
+    );
+  });
+
+  it("reports the dependency domain when a call is removed", async () => {
+    const planner = await open();
+    const calls = batch(20);
+    const session = planner.createSession(
+      calls.map((c, index) => ({ key: `k${index}`, call: c })),
+      { checkpointInterval: 4 },
+    );
+    const next = session.applyChanges({
+      expectedVersion: 1,
+      changes: [{ type: "remove", key: "k19" }],
+    });
+    assert.equal(next.update.invalidated, "dependency", "a removal renumbers the calls after it");
   });
 
   it("refuses a stale version and leaves the plan alone", async () => {

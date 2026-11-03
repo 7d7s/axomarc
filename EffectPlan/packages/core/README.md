@@ -71,6 +71,22 @@ unique, at most 128 UTF-8 bytes, never echoed in an error. Each update reports i
 `strategy` and `reusedPrefixCalls`; a checkpoint that cannot be trusted plans the
 batch whole, and the graph is the same either way.
 
+**Sessions and capacity resources.** A session may declare the capacity
+resources it runs against (`options.resources.capacities`), and each call may
+declare what it holds (`demands`, named by the caller's own key). The table
+belongs to the session and holds until `reset()` installs a new one, because a
+capacity that changes under a running plan invalidates every placement the
+session published. Every batch the session then plans is placed against that
+table, and the snapshot carries the placement and its certificate.
+
+**Two invalidation domains.** An update reports which one it touched.
+`dependency` means the graph could have changed — an access declaration was
+rewritten, or a call was removed. `scheduling` means only the clock and the
+demands moved, so the dependency graph was reused whole and nothing about the
+conflict rules was recomputed. The session's word is an optimisation, not a
+guarantee: the engine checks every restored state against the input prefix that
+is supposed to have produced it, and refuses the restore if the two disagree.
+
 **Effect modes** `pure` (no accesses) · `resources` (the accesses you declare) ·
 `exclusive` and `unknown` (global barriers). `options.unknownEffectPolicy`
 accepts `"serialize"` (default) or `"reject"`.

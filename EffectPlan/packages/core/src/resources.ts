@@ -17,7 +17,7 @@
 
 import { EffectPlanError, EXPECTED_QUALITY_ABI } from "./errors.js";
 import type { UnknownEffectPolicy } from "./encode.js";
-import type { EngineInfo, EngineLayout, EngineLimits } from "./loader.js";
+import type { EngineInfo, EngineLayout, EngineLimits, LoadedEngine } from "./loader.js";
 
 /** A capacity resource: the caller's key and the number of units it holds. */
 export interface CapacityResource {
@@ -459,4 +459,137 @@ export function decodePlacement(
     });
   }
   return { schedule: Object.freeze(windows), makespan, deferrals, statistics: Object.freeze(statistics) };
+}
+
+/** The engine's "this batch does not fit" statuses, in its own numbering. */
+const ERR_RESOURCE_CAPACITY = 133;
+const ERR_UNSCHEDULABLE = 137;
+
+function resourceError(status: number): EffectPlanError {
+  const known = status === ERR_RESOURCE_CAPACITY ? "the demands exceed the capacity" : "the batch cannot be scheduled";
+  return new EffectPlanError("EP_ENGINE_ERROR", `the engine refused the placement with status ${status} (${known})`);
+}
+
+/**
+ * Asks the engine to certify the placement it just published.
+ *
+ * A refusal here is not a caller's problem: every region involved belongs to the
+ * batch that was placed moments ago, so the only way this fails is if the
+ * engine's own outputs disagree about the batch they describe. That is reported
+ * as an invalid plan rather than swallowed, because a schedule nobody can
+ * certify is a schedule nobody should be told is optimal.
+ */
+export function certifyPlacement(
+  engine: LoadedEngine,
+  callCount: number,
+  resourceCount: number,
+  placedMakespan: number,
+): ScheduleQuality {
+  const layout = engine.info.layout;
+  const status = engine.resourceQuality(
+    engine.info.abiVersion,
+    callCount,
+    resourceCount,
+    layout.schedule.ptr,
+    layout.schedule.bytes,
+    layout.timing.ptr,
+    layout.timing.bytes,
+    layout.resourceStats.ptr,
+    layout.resourceStats.bytes,
+    layout.capacities.ptr,
+    layout.capacities.bytes,
+    layout.quality.ptr,
+    layout.quality.bytes,
+  );
+  if (status !== 0) {
+    throw new EffectPlanError(
+      "EP_INVALID_PLAN",
+      `the engine could not certify its own placement (status ${status})`,
+    );
+  }
+  const quality = decodeQuality(new DataView(engine.memory.buffer), layout.quality.ptr);
+  if (quality.makespan !== placedMakespan) {
+    // Two reads of the same placement, computed by two paths, disagreeing. The
+    // certificate recomputes the makespan from the windows rather than copying
+    // the header, so this is a real cross-check and not a tautology.
+    throw new EffectPlanError(
+      "EP_INVALID_PLAN",
+      `certificate makespan ${quality.makespan} disagrees with the placement ${placedMakespan}`,
+    );
+  }
+  return quality;
+}
+
+/**
+ * Places a planned batch against a capacity table and decodes the result.
+ *
+ * The call sequence lives here so that a stateless plan and an incremental
+ * session place a batch the same way. There is one authoritative path from
+ * declarations to a placement; a second copy of it would be a second answer to
+ * the same question, and the two would drift.
+ *
+ * The batch must already have been planned: this reads the graph, the durations
+ * and the timing the planner published, and writes only the placement.
+ */
+export function placeResources(
+  engine: LoadedEngine,
+  views: ResourceViews,
+  table: CapacityTable,
+  demands: readonly (readonly CapacityDemand[])[] | undefined,
+  callCount: number,
+  callIds: readonly string[],
+): ResourceResult {
+  const info = engine.info;
+  const layout = info.layout;
+  const demandCount = writeResources(views, info, table, demands, callCount);
+  const status = engine.resourceSchedule(
+    info.abiVersion,
+    callCount,
+    table.count,
+    demandCount,
+    layout.capacities.ptr,
+    layout.capacities.bytes,
+    layout.demandOffsets.ptr,
+    layout.demandOffsets.bytes,
+    layout.demandRecords.ptr,
+    layout.demandRecords.bytes,
+    layout.durations.ptr,
+    layout.durations.bytes,
+    layout.output.ptr,
+    layout.output.bytes,
+    layout.timing.ptr,
+    layout.timing.bytes,
+    layout.schedule.ptr,
+    layout.schedule.bytes,
+    layout.resourceStats.ptr,
+    layout.resourceStats.bytes,
+    layout.resourceDiagnostics.ptr,
+    layout.resourceDiagnostics.bytes,
+  );
+  const view = new DataView(engine.memory.buffer);
+  const diagnostics = decodeDiagnostics(view, layout.resourceDiagnostics.ptr, table, callIds);
+  if (status === 0) {
+    const placed = decodePlacement(view, layout, table, callIds);
+    return {
+      outcome: "feasible",
+      diagnostics,
+      schedule: placed.schedule,
+      makespan: placed.makespan,
+      deferrals: placed.deferrals,
+      statistics: placed.statistics,
+      quality: certifyPlacement(engine, callCount, table.count, placed.makespan),
+    };
+  }
+  if (status === ERR_RESOURCE_CAPACITY || status === ERR_UNSCHEDULABLE) {
+    return {
+      outcome: "infeasible",
+      diagnostics,
+      schedule: [],
+      makespan: 0,
+      deferrals: 0,
+      statistics: [],
+      quality: undefined,
+    };
+  }
+  throw resourceError(status);
 }

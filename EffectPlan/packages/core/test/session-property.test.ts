@@ -22,7 +22,14 @@ const open = (): Promise<EffectPlan> => EffectPlan.create({ wasmBytes: wasmBytes
 const MODES = ["read", "write"] as const;
 const RESOURCES = ["f0", "f1", "f2"];
 
-/** One call: an id, one or two accesses, and a duration. */
+/**
+ * One call: an id, one or two accesses, and a duration.
+ *
+ * The id is deliberately not part of what the engine sees, so a call rebuilt
+ * with the same seed declares the same dependencies under a different name.
+ * That is what makes a "retime" edit possible: the same dependencies, a
+ * different clock, and therefore a change the dependency rules cannot see.
+ */
 function makeCall(id: string, seed: number): { call: ToolCall; duration: number } {
   const first = RESOURCES[seed % RESOURCES.length]!;
   const second = RESOURCES[(seed + 1) % RESOURCES.length]!;
@@ -91,7 +98,7 @@ describe("incremental planning properties", () => {
         fc.array(fc.integer({ min: 0, max: 64 }), { minLength: 1, maxLength: 8 }),
         fc.array(
           fc.record({
-            kind: fc.constantFrom("append", "replace", "remove"),
+            kind: fc.constantFrom("append", "replace", "remove", "retime"),
             at: fc.integer({ min: 0, max: 40 }),
             seed: fc.integer({ min: 0, max: 64 }),
           }),
@@ -124,6 +131,15 @@ describe("incremental planning properties", () => {
               if (!model.some((entry) => entry.key === key)) continue;
               const made = makeCall(`c${edit.at}-${counter}`, edit.seed);
               changes.push({ type: "replace", key, call: made.call, duration: made.duration });
+            } else if (edit.kind === "retime") {
+              // The same call, the same dependencies, a different duration. The
+              // dependency graph cannot have changed, so the session is allowed
+              // to reuse it whole - and the rebuild below is what says whether
+              // that was allowed for the right reason.
+              const existing = model.find((entry) => entry.key === key);
+              if (!existing) continue;
+              const duration = 1 + ((edit.seed % 7) + 1);
+              changes.push({ type: "replace", key, call: existing.call, duration });
             } else {
               // An appended key is always fresh: the session refuses to reuse one.
               const made = makeCall(`n${counter}`, edit.seed);
@@ -135,7 +151,17 @@ describe("incremental planning properties", () => {
               });
             }
             model = applyEdits(model, changes.slice(-1));
-            session.applyChanges({ expectedVersion: session.current().version, changes: changes.slice(-1) });
+            const applied = session.applyChanges({
+              expectedVersion: session.current().version,
+              changes: changes.slice(-1),
+            });
+            if (edit.kind === "retime") {
+              // The edit is only interesting if it really took the scheduling
+              // path: a test that silently stopped exercising the reuse rule
+              // would still pass.
+              assert.equal(applied.update.invalidated, "scheduling");
+              assert.equal(applied.update.reusedPrefixCalls, applied.callCount);
+            }
           }
 
           const fresh = freshPlanner.planBatch(

@@ -32,6 +32,14 @@ import {
   type UnknownEffectPolicy,
 } from "./encode.js";
 import { EffectPlanError } from "./errors.js";
+import { internCapacities, placeResources } from "./resources.js";
+import type {
+  CapacityDemand,
+  CapacityResource,
+  CapacityTable,
+  ResourceResult,
+  ResourceViews,
+} from "./resources.js";
 import type { LoadedEngine } from "./loader.js";
 import type { EncodedBatch } from "./encode.js";
 import type { EngineInfo } from "./loader.js";
@@ -65,12 +73,30 @@ export interface IncrementalCall {
   readonly call: ToolCall;
   /** Ticks, required when the session plans with timing. */
   readonly duration?: number | undefined;
+  /**
+   * What this call holds of the session's capacity resources, named by the
+   * caller's own key. A demand never reaches the engine as a key: the host
+   * interns the session's capacity table and passes an index.
+   */
+  readonly demands?: readonly CapacityDemand[] | undefined;
 }
 
 /** One edit to a plan. */
 export type PlanChange =
-  | { readonly type: "append"; readonly key: string; readonly call: ToolCall; readonly duration?: number | undefined }
-  | { readonly type: "replace"; readonly key: string; readonly call: ToolCall; readonly duration?: number | undefined }
+  | {
+      readonly type: "append";
+      readonly key: string;
+      readonly call: ToolCall;
+      readonly duration?: number | undefined;
+      readonly demands?: readonly CapacityDemand[] | undefined;
+    }
+  | {
+      readonly type: "replace";
+      readonly key: string;
+      readonly call: ToolCall;
+      readonly duration?: number | undefined;
+      readonly demands?: readonly CapacityDemand[] | undefined;
+    }
   | { readonly type: "remove"; readonly key: string };
 
 export interface ApplyChangesOptions {
@@ -93,6 +119,20 @@ export interface UpdateDiagnostics {
   readonly recomputedCalls: number;
   /** Why the strategy was chosen, when there is something to say. */
   readonly reason?: string | undefined;
+  /**
+   * Which of the two invalidation domains the transaction touched.
+   *
+   * `dependency` means the graph itself could have changed: an access
+   * declaration was rewritten, or a call was removed. `scheduling` means only
+   * the clock and the demands moved, so the dependency graph was reused whole
+   * and nothing about the conflict rules had to be recomputed. `none` means the
+   * transaction added calls without touching anything that was already there.
+   *
+   * The session's word is an optimisation, not a guarantee: the engine checks
+   * every restored state against the input prefix that is supposed to have
+   * produced it, and refuses the restore if the two disagree.
+   */
+  readonly invalidated: "dependency" | "scheduling" | "none";
 }
 
 /** An immutable result of one committed version. */
@@ -104,6 +144,15 @@ export interface PlanSnapshot {
   readonly edgeCount: number;
   /** The plan itself: the graph, the waves and, when asked for, the schedule. */
   readonly plan: ExecutionPlan;
+  /**
+   * The placement against the session's capacity resources, or `undefined`
+   * when the session declares none. A session that declares resources places
+   * every batch it plans, so the snapshot carries the placement and the
+   * certificate that goes with it.
+   */
+  readonly placement: ResourceResult | undefined;
+  /** The version of the session's capacity-resource table. */
+  readonly resourceVersion: number;
   readonly update: UpdateDiagnostics;
 }
 
@@ -116,12 +165,21 @@ export interface SessionOptions {
    * every this many calls, so a change late in the batch finds a nearby one.
    */
   readonly checkpointInterval?: number;
+  /**
+   * The capacity resources this session places against. The table belongs to
+   * the session, not to a batch: it is declared once and holds until the
+   * session is reset with a new one, because a capacity that changes under a
+   * running plan is a new generation, not an edit.
+   */
+  readonly resources?: { readonly capacities: readonly CapacityResource[] } | undefined;
 }
 
 /** The engine's view of the world, injected so this module never imports the planner. */
 export interface SessionDependencies {
   readonly engine: LoadedEngine;
   readonly input: PackedInput;
+  /** The capacity-resource regions, mapped like the input regions. */
+  readonly resources: ResourceViews;
   readonly decode: (
     view: DataView,
     info: EngineInfo,
@@ -135,7 +193,7 @@ export interface PlanSession {
   current(): PlanSnapshot;
   applyChanges(options: ApplyChangesOptions): PlanSnapshot;
   /** Start over with a different batch. The version keeps counting up. */
-  reset(calls: readonly IncrementalCall[]): PlanSnapshot;
+  reset(calls: readonly IncrementalCall[], options?: SessionOptions): PlanSnapshot;
   dispose(): void;
 }
 
@@ -143,6 +201,27 @@ interface Entry {
   readonly key: string;
   readonly normalized: NormalizedCall;
   readonly duration: number | undefined;
+  /** What this call holds of the session's capacity resources. */
+  readonly demands: readonly CapacityDemand[];
+}
+
+/**
+ * Whether two calls declare the same dependencies, in the engine's terms.
+ *
+ * The comparison is over the normalised form — the effect mode and the pairs
+ * of interned resource id and access mode — and not over the caller's text.
+ * Two calls that name the same resource differently are the same dependency,
+ * and two calls that name different resources are not, whatever the strings
+ * look like.
+ */
+function sameDependencies(a: NormalizedCall, b: NormalizedCall): boolean {
+  if (a.mode !== b.mode) return false;
+  if (a.rids.length !== b.rids.length) return false;
+  for (let i = 0; i < a.rids.length; i++) {
+    if (a.rids[i] !== b.rids[i]) return false;
+    if (a.accessModes[i] !== b.accessModes[i]) return false;
+  }
+  return true;
 }
 
 /** The state the engine committed at a call boundary, kept by the host. */
@@ -171,6 +250,10 @@ class Session implements PlanSession {
   #unit: string;
   #policy: UnknownEffectPolicy;
   #interval: number;
+  /** The session's capacity-resource table. Empty when it declares none. */
+  #table: CapacityTable;
+  /** How many times a capacity table has been installed. */
+  #resourceVersion = 0;
 
   constructor(deps: SessionDependencies, calls: readonly IncrementalCall[], options: SessionOptions) {
     this.#deps = deps;
@@ -179,10 +262,24 @@ class Session implements PlanSession {
     this.#unit = options.timing?.unit ?? "ticks";
     this.#policy = options.unknownEffectPolicy ?? "serialize";
     this.#interval = Math.max(1, options.checkpointInterval ?? DEFAULT_INTERVAL);
+    this.#table = this.#installTable(options.resources?.capacities);
     this.#entries = this.#normalize(calls);
     this.#publish(
       this.#plan(this.#entries, 0, "full-rebuild", "the first plan of a session has no prefix to reuse"),
     );
+  }
+
+  /**
+   * Interns a capacity table for the session.
+   *
+   * The table belongs to the session rather than to a batch: it is declared
+   * once, and a different set of capacities is a new generation rather than an
+   * edit, because a capacity that changes under a running plan invalidates
+   * every placement the session has published.
+   */
+  #installTable(capacities: readonly CapacityResource[] | undefined): CapacityTable {
+    this.#resourceVersion += 1;
+    return internCapacities(capacities ?? [], this.#deps.engine.info.limits);
   }
 
   current(): PlanSnapshot {
@@ -213,15 +310,16 @@ class Session implements PlanSession {
           reusedPrefixCalls: this.#entries.length,
           recomputedCalls: 0,
           reason: "the transaction carried no changes",
+          invalidated: "none" as const,
         }),
       });
     }
 
-    const candidate = this.#buildCandidate(changes);
+    const { entries: candidate, invalidated } = this.#buildCandidate(changes);
     const earliest = this.#earliestTouched(changes);
-    const boundary = this.#boundaryFor(earliest);
+    const boundary = this.#boundaryFor(earliest, invalidated);
     const strategy = this.#strategyFor(changes, boundary);
-    const snapshot = this.#plan(candidate, boundary, strategy);
+    const snapshot = this.#plan(candidate, boundary, strategy, undefined, invalidated);
     // Nothing above touched the published state: only now does the session
     // become the new plan.
     this.#entries = candidate;
@@ -229,15 +327,20 @@ class Session implements PlanSession {
     return snapshot;
   }
 
-  reset(calls: readonly IncrementalCall[]): PlanSnapshot {
+  reset(calls: readonly IncrementalCall[], options: SessionOptions = {}): PlanSnapshot {
     this.#alive();
     if (!Array.isArray(calls)) {
       throw new EffectPlanError("EP_INVALID_CHANGESET", "reset needs an array of calls");
     }
     // A new generation: the interning table and every checkpoint belong to the
-    // old batch and cannot be carried over.
+    // old batch and cannot be carried over. So does the capacity table, if the
+    // caller is installing a different one: a capacity that changes under a
+    // running plan invalidates every placement the session published.
     this.#intern = createInterner(this.#deps.engine.info.limits);
     this.#checkpoints.clear();
+    if (options.resources !== undefined) {
+      this.#table = this.#installTable(options.resources.capacities);
+    }
     this.#entries = this.#normalize(calls);
     const snapshot = this.#plan(this.#entries, 0, "full-rebuild", "a reset starts a new generation");
     this.#publish(snapshot);
@@ -282,7 +385,12 @@ class Session implements PlanSession {
       }
       seen.add(key);
       const normalized = normalizeCall(entry.call, index, limits, this.#policy, this.#intern);
-      entries.push({ key, normalized, duration: this.#duration(entry.duration, index) });
+      entries.push({
+        key,
+        normalized,
+        duration: this.#duration(entry.duration, index),
+        demands: this.#demands(entry.demands, index),
+      });
     }
     if (entries.length > limits.maxCalls) {
       throw new EffectPlanError(
@@ -313,11 +421,48 @@ class Session implements PlanSession {
   }
 
   /**
+   * Validates a call's demands against the session's capacity table.
+   *
+   * The table is the session's, so a demand that names a resource nobody
+   * declared is refused here rather than by the engine: the error would
+   * otherwise be about an index the caller never chose.
+   */
+  #demands(value: readonly CapacityDemand[] | undefined, index: number): readonly CapacityDemand[] {
+    if (value === undefined) return [];
+    if (!Array.isArray(value)) {
+      throw new EffectPlanError("EP_INVALID_CHANGESET", `call ${index} demands must be an array`);
+    }
+    for (const demand of value) {
+      if (typeof demand !== "object" || demand === null) {
+        throw new EffectPlanError("EP_INVALID_CHANGESET", `call ${index} demand must be an object`);
+      }
+      if (typeof demand.resource !== "string" || demand.resource.length === 0) {
+        throw new EffectPlanError("EP_INVALID_CHANGESET", `call ${index} demand needs a resource key`);
+      }
+      if (!this.#table.index.has(demand.resource)) {
+        throw new EffectPlanError(
+          "EP_INVALID_CHANGESET",
+          `call ${index} demands a resource this session did not declare`,
+        );
+      }
+      if (typeof demand.amount !== "number" || !Number.isInteger(demand.amount) || demand.amount <= 0) {
+        throw new EffectPlanError("EP_INVALID_CHANGESET", `call ${index} demand amount must be positive`);
+      }
+    }
+    return value;
+  }
+
+  /**
    * Applies the changes to a copy of the entries. The session's own list is
    * untouched until the candidate has been planned successfully.
+   *
+   * The transaction is classified as it is applied, because the classification
+   * decides how much of the previous plan can be reused: a change that leaves
+   * the dependencies alone leaves the graph alone too.
    */
-  #buildCandidate(changes: readonly PlanChange[]): Entry[] {
+  #buildCandidate(changes: readonly PlanChange[]): { readonly entries: Entry[]; readonly invalidated: UpdateDiagnostics["invalidated"] } {
     const candidate = [...this.#entries];
+    let invalidated: UpdateDiagnostics["invalidated"] = "none";
     const indexOf = new Map(this.#entries.map((entry, index) => [entry.key, index]));
     const touched = new Set<string>();
     for (const change of changes) {
@@ -353,6 +498,7 @@ class Session implements PlanSession {
           key,
           normalized,
           duration: this.#duration(change.duration, candidate.length),
+          demands: this.#demands(change.demands, candidate.length),
         });
         indexOf.set(key, candidate.length - 1);
         continue;
@@ -369,14 +515,27 @@ class Session implements PlanSession {
           this.#policy,
           this.#intern,
         );
+        // A replacement that declares the same dependencies changes nothing
+        // the conflict rules can see. Only the clock and the demands moved, so
+        // the graph is still the graph.
+        if (!sameDependencies(candidate[at]!.normalized, normalized)) {
+          invalidated = "dependency";
+        } else if (invalidated === "none") {
+          invalidated = "scheduling";
+        }
         candidate[at] = {
           key,
           normalized,
           duration: this.#duration(change.duration, at),
+          demands: this.#demands(change.demands, at),
         };
         continue;
       }
       if (change.type === "remove") {
+        // A removal renumbers the calls after it, so the edges that were
+        // published for them no longer describe them. The graph has to be
+        // recomputed from here.
+        invalidated = "dependency";
         candidate.splice(at, 1);
         indexOf.clear();
         candidate.forEach((entry, index) => indexOf.set(entry.key, index));
@@ -384,7 +543,7 @@ class Session implements PlanSession {
       }
       throw new EffectPlanError("EP_INVALID_CHANGESET", "a change has an unknown type");
     }
-    return candidate;
+    return { entries: candidate, invalidated };
   }
 
   /** The earliest call a change can reach: everything from there is replanned. */
@@ -402,8 +561,25 @@ class Session implements PlanSession {
     return earliest;
   }
 
-  /** The newest checkpoint that still describes the unchanged prefix. */
-  #boundaryFor(earliest: number): number {
+  /**
+   * The boundary the session resumes from.
+   *
+   * The usual rule is the newest checkpoint that still describes the unchanged
+   * prefix. The exception is a transaction that only moved the clock or the
+   * demands: the dependencies did not change, so the whole dependency pass
+   * is reusable and the checkpoint at the end of the batch still describes it.
+   * Resuming there means the engine plans no calls at all — it re-runs the
+   * level and timing passes over the graph it already has, which is where the
+   * new durations and the new demands take effect.
+   *
+   * The engine has the last word either way: it checks the restored state
+   * against the input prefix, and refuses it if the two disagree.
+   */
+  #boundaryFor(earliest: number, invalidated: UpdateDiagnostics["invalidated"]): number {
+    if (invalidated === "scheduling") {
+      const end = this.#entries.length;
+      if (this.#checkpoints.has(end)) return end;
+    }
     let best = 0;
     for (const boundary of this.#checkpoints.keys()) {
       if (boundary <= earliest && boundary > best) best = boundary;
@@ -430,6 +606,7 @@ class Session implements PlanSession {
     boundary: number,
     strategy: UpdateDiagnostics["strategy"],
     reason?: string,
+    invalidated: UpdateDiagnostics["invalidated"] = "none",
   ): PlanSnapshot {
     const { engine, input } = this.#deps;
     const info = engine.info;
@@ -553,17 +730,34 @@ class Session implements PlanSession {
     this.#checkpoints.clear();
     for (const [atBoundary, stored] of captured) this.#checkpoints.set(atBoundary, stored);
 
+    // The placement is a whole-batch pass: the capacities and the demands are
+    // the session's, and the schedule is computed from the graph and the
+    // durations this run published.
+    const placement = this.#table.count
+      ? placeResources(
+          this.#deps.engine,
+          this.#deps.resources,
+          this.#table,
+          entries.map((entry) => entry.demands),
+          total,
+          entries.map((entry) => entry.normalized.id),
+        )
+      : undefined;
+
     return Object.freeze({
       version: this.#version + 1,
       keys: Object.freeze(entries.map((entry) => entry.key)),
       callCount: total,
       edgeCount: plan.edgeCount,
       plan,
+      placement,
+      resourceVersion: this.#resourceVersion,
       update: Object.freeze({
         strategy: fallback ? "full-rebuild" : strategy,
         reusedPrefixCalls: fallback ? 0 : reused,
         recomputedCalls: fallback ? total : total - reused,
         reason: fallback || reason,
+        invalidated: fallback ? "dependency" : invalidated,
       }),
     });
   }

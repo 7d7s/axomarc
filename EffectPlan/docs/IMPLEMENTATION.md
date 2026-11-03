@@ -252,9 +252,9 @@ thread left behind. That assertion is not decoration: a capture helper that read
 the arena outside the lock made a resume-then-tamper-then-resume test fail
 intermittently, 2 runs in 7 before the lock was made reentrant and 0 in 25 after.
 
-### TypeScript — 207 tests, all passing
+### TypeScript — 214 tests, all passing
 
-`npm test` — 207 declared tests, 0 failed. The runner's tally reads `# pass 208`
+`npm test` — 214 declared tests, 0 failed. The runner's tally reads `# pass 215`
 because it also loads `test/support.ts`'s compiled module as a file, which
 declares no tests. The package-size suite is green against the ceiling that
 `scripts/limits.mjs` states (a frozen Phase 4 baseline of 70,042 bytes plus a
@@ -271,8 +271,8 @@ in `docs/SIZE-REPORT.md`).
 | `wasm.test.ts`      | 42    | the raw ABI, hostile arguments, memory growth, the scheduling, checkpoint and resource ABI, the arena-is-scratch property |
 | `execution-levels.test.ts` | 17 | decoding, grouping, oracle parity, immutability             |
 | `timing.test.ts`    | 20    | duration validation, the worked examples, oracle agreement, overflow, half-open boundaries, growth, no timing when not asked |
-| `session.test.ts`       | 17    | the incremental session: parity, versions, atomicity, the key contract, reuse that survives a history |
-| `session-property.test.ts` | 2   | randomised edits against a fresh rebuild                     |
+| `session.test.ts`       | 23    | the incremental session: parity, versions, atomicity, the key contract, reuse that survives a history, the two invalidation domains, the session's own placement |
+| `session-property.test.ts` | 2   | randomised edits — including scheduling-only ones — against a fresh rebuild |
 | `package-size.test.ts`   | 4     | the packed artifact against the release limits               |
 | `resource-schedule.test.ts` | 5   | every placement against an independent tick walker and an exhaustive optimum |
 | `resource-api.test.ts`   | 14    | the public capacity-resource surface: the four outcomes, validation, determinism, back-to-back batches, the quality certificate |
@@ -540,7 +540,7 @@ evidence that the runner was doing something the local machine could not.
 
 Two claims this document makes are therefore no longer local claims. The 164
 Rust tests, the 208 TypeScript tests, the 141 ABI checks, the 21,295-byte
-artifact, the 100,123-byte package and the 18 pages were all measured on the
+artifact, the 105,344-byte package and the 18 pages were all measured on the
 author's machine and have now been measured again on a runner; and the four CI
 defects above are the first bugs in this repository that no amount of local
 testing could have found, because each of them was only true on a clean

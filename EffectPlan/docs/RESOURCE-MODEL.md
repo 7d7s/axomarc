@@ -181,10 +181,10 @@ the infrastructure.
 ## 9. Decisions
 
 D1 and D4 were adopted when the owner said to proceed, and are implemented in M3.
-D2 and D3 remain genuinely open: they are not measurements, and each changes what
-a later module has to be. Recording an adopted decision is not the same as a
-reviewed one — if D1 or D4 is wrong, the correction belongs here, and the engine
-change that follows it.
+D3 was a measurement and is now answered. D2 was implemented on the
+recommendation this document had already written down. Recording an adopted
+decision is not the same as a reviewed one — if D1, D2 or D4 is wrong, the
+correction belongs here, and the change that follows it.
 
 **D1 — a new export, adopted and implemented.**
 A `effectplan_plan_v5` would have taken the current twenty parameters plus
@@ -215,6 +215,42 @@ session-level resource table with its own version, scheduling-only transactions
 skipping the dependency pass entirely, and the differential test extended so
 scheduling-only edits are compared against a full rebuild like everything else.
 
+**D2 — implemented on that recommendation.** The three parts are worth stating
+separately, because they turned out to rest on three different mechanisms.
+
+*The table belongs to the session, not to a batch.* `createSession` takes
+`resources.capacities` once, interns the caller's keys into the same `0..R` the
+stateless API uses, and every call then names what it holds by the caller's own
+key. The table has its own version, published as `resourceVersion`. A different
+set of capacities is a **new generation** rather than an edit — `reset()` takes
+them — because a capacity that changes under a running plan invalidates every
+placement the session has published, and pretending otherwise would be a lie
+about atomicity.
+
+*The two domains were already in the engine.* The checkpoint's digest covers the
+access declarations, the frontier and the emitted edges — and **not** the
+durations. So a duration change leaves the digest intact and the restored state
+valid, while an access change breaks it and the engine refuses the restore. The
+engine was already distinguishing the two domains; the session's *boundary rule*
+was what did not know about them. It now does: a replacement whose normalised
+declarations match the call it replaces is a scheduling change, and the session
+resumes from the checkpoint at the end of the batch, so the engine plans no calls
+at all and re-runs only the level and timing passes over the graph it already
+has.
+
+*The session's word is an optimisation, not a guarantee.* The classification
+compares the normalised form — the effect mode and the pairs of interned
+resource id and access mode — not the caller's text. If it is ever wrong, the
+engine's digest refuses the restore and the session falls back to planning the
+batch whole, exactly as it did before. The classification can therefore only
+make the session faster; it cannot make it wrong.
+
+The equivalence was established before the optimisation, as it has to be: the
+randomised differential test now includes *scheduling-only* edits and still
+matches a fresh rebuild on every run, and the session suite asserts that a
+scheduling change reuses the whole graph **and** produces the plan a rebuild
+would.
+
 **D3 — measured; the recommendation is not to spend the 512 bytes.**
 Does the engine compute longest remaining path (rule 1 of §6)? Cost: one reverse
 pass and 512 bytes, which `docs/OPTIMIZATION-BUDGETS.md` isolates as the entire
@@ -241,10 +277,12 @@ to capture the 17 ticks is a bounded local search that keeps the baseline, not a
 better priority key. That is the owner's call to ratify; the data it needed is now
 in hand, and this entry records the recommendation rather than the decision.
 
-D2 has to be answered before M7, because it decides whether the session grows a
-second table or reuses the checkpoint machinery. D3 can wait for the benchmark that
-answers it, which is the right order: the ranking rule is a performance question
-and should be settled by a measurement, not by an opinion about schedulers.
+D2 had to be answered before M7, because it decided whether the session grows a
+second table or reuses the checkpoint machinery. It reuses the checkpoint
+machinery: the two domains are the same two the checkpoint's digest already
+distinguishes, so the session needed no second mechanism and no new export.
+D3 was answered the right way round: the ranking rule was a performance
+question, so a measurement settled it rather than an opinion about schedulers.
 
 ## 10. Related documents
 
