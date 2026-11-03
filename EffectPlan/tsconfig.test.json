@@ -8,5 +8,5 @@
     "removeComments": false,
     "sourceMap": false
   },
-  "include": ["packages/core/src", "packages/core/test", "benchmarks"]
+  "include": ["packages/core/src", "packages/core/test"]
 }

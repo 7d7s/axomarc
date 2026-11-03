@@ -59,6 +59,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The test job runs the full build, and the build compiles the WebAssembly
+      # artifact - so this job needs the wasm target, not just cargo.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -114,6 +119,9 @@ jobs:
           node-version: "20"
       - run: npm ci
       - run: npm run build:wasm
+      # The integration suite loads the published package as well as the
+      # artifact, so the JavaScript build is a real prerequisite here.
+      - run: npm run build:js
       - run: npm run test:wasm
 
   package-size:
@@ -443,6 +451,9 @@ jobs:
           node-version: "20"
       - run: npm ci
       - run: npm run build:wasm
+      # The raw-ABI suite drives the published package too, so the JavaScript
+      # build is a prerequisite rather than a convenience.
+      - run: npm run build:js
       - run: npm run test:wasm
 
   incremental-browser:

@@ -215,7 +215,7 @@ session-level resource table with its own version, scheduling-only transactions
 skipping the dependency pass entirely, and the differential test extended so
 scheduling-only edits are compared against a full rebuild like everything else.
 
-**D3 — open, and now measurable rather than debatable.**
+**D3 — measured; the recommendation is not to spend the 512 bytes.**
 Does the engine compute longest remaining path (rule 1 of §6)? Cost: one reverse
 pass and 512 bytes, which `docs/OPTIMIZATION-BUDGETS.md` isolates as the entire
 memory price of the decision. Benefit: measurable, because the slack-based ranking
@@ -223,12 +223,23 @@ this replaces is now benchmarked. `docs/OPTIMIZATION-BENCHMARKS.md` solved 1,200
 generated batches against an exhaustive oracle and found the shipped ranking already
 optimal in 1,187 of them; every improvable instance sits in three families, and the
 largest gap — 5 ticks on a 13-tick optimum — is in `multiresource`, exactly the
-shape a path-aware priority is meant to help. The recommendation from this document
-was to implement slack ranking first and let measurement decide; that recommendation
-was right, the slack ranking shipped, and the measurement now exists. What is left
-is the decision, not the data: does a 512-byte reverse pass earn its place on those
-13 fixtures, tested in `benchmarks/optimization-headroom.ts` before it is added to
-the engine.
+shape a path-aware priority is meant to help.
+
+Phase 6 M4 then measured the rules themselves (`docs/OPTIMIZATION-STRATEGIES.md`),
+and the answer is negative in a way the corpus could not have predicted: **every
+rule studied regresses more instances than it wins**. `critical-path` wins 4 and
+loses 9, `resource-aware` wins 2 and loses 15. The 512 bytes would buy a rule
+that is a net loss on 1,200 instances. The only construction with a positive
+measured value is generate-then-select with the baseline permanently in the
+candidate set, which closes 6 of the 13 improvable instances and recovers 17 of
+the 28 recoverable ticks.
+
+So the recommendation is: **do not compute `CP_i` in the engine.** Not because the
+heuristic is wrong — it is sound, and on the 13 fixtures it helps — but because
+replacing the shipped ranking with it is a measured regression, and the honest way
+to capture the 17 ticks is a bounded local search that keeps the baseline, not a
+better priority key. That is the owner's call to ratify; the data it needed is now
+in hand, and this entry records the recommendation rather than the decision.
 
 D2 has to be answered before M7, because it decides whether the session grows a
 second table or reuses the checkpoint machinery. D3 can wait for the benchmark that

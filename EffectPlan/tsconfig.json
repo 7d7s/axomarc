@@ -14,5 +14,5 @@
     "forceConsistentCasingInFileNames": true,
     "noEmit": true
   },
-  "include": ["packages/core/src", "packages/core/test", "benchmarks"]
+  "include": ["packages/core/src", "packages/core/test"]
 }

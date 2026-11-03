@@ -53,6 +53,7 @@ baseline the overhead gate reads), and the size reports.
 | `npm run build:wasm`       | `cargo build --target wasm32-unknown-unknown --profile release`, then `wasm-opt --enable-bulk-memory -Oz`, staging `packages/core/dist/effectplan.wasm` |
 | `npm run build:js`         | `tsc -p tsconfig.build.json` → `packages/core/dist`             |
 | `npm run build`            | both, then `scripts/build-package.mjs`                          |
+| `npm run typecheck`        | builds the package, then type-checks both TypeScript programs   |
 | `npm run verify:wasm`      | 141 ABI, level, scheduling, memory-safety, capacity-resource and certificate checks against the built artifact |
 | `npm run verify:size`      | extracts the packed tarball and enforces the size limits        |
 | `npm run verify:package`   | installs the tarball into a throwaway project and plans a batch |
@@ -81,6 +82,22 @@ baseline the overhead gate reads), and the size reports.
 The filtered jobs go through `scripts/run-tests.mjs`, which fails when a pattern
 matches fewer tests than the job claims to cover: a filtered job that silently runs
 nothing is not a job.
+
+There are three TypeScript programs, and which one a file belongs to is a
+statement about what it depends on:
+
+| Program | Covers | Depends on a package build? |
+| --- | --- | --- |
+| `tsconfig.build.json` | `packages/core/src` → `packages/core/dist` | no — it *is* the build |
+| `tsconfig.json` / `tsconfig.test.json` | `packages/core/src`, `packages/core/test` | no |
+| `tsconfig.bench.json` | `benchmarks/` and the sources they import | **yes**, by design |
+
+The benchmark drivers import the *built* package — its declarations for their
+types, and its JavaScript at runtime — so that a benchmark can only use what the
+package actually publishes. That dependency used to sit inside the type-check
+and test programs, which meant a clean machine could not type-check at all; it
+now sits in the program that genuinely has it, and the benchmark scripts say so
+by building first.
 
 Cargo profiles live in the workspace root `Cargo.toml`: Cargo ignores profile
 sections in a member package, so a profile declared in `engine/Cargo.toml` would
@@ -456,11 +473,61 @@ are **identical** to the pre-certificate measurement, and the only substantive
 field that moved is `wasmBytes`, 19,809 to 21,295. The certificate cost 1,486
 bytes of wasm and 64 bytes of arena and changed no schedule and won no headroom.
 
-What has not happened is
-a GitHub runner: the branch is pushed, but the mirror workflow triggers on
-`pull_request` and on pushes to `main`, so no Actions run exists until a pull
-request is opened against it. That is the one piece of Phase 4 evidence this
-repository cannot produce on its own.
+## The first run on a real runner, and the four defects it found
+
+For six phases the project lived in a subdirectory of a shared repository, and
+GitHub Actions only reads workflows from `.github/workflows` at the repository
+root. Every job in `ci.yml` had therefore run locally and never on a runner.
+Pull request #1 (`main` ← `effectplan/phase5-phase6`) was the first attempt, and
+it **failed with 34 of 38 jobs green** — which is the point of running it.
+
+Four jobs failed, and all four were defects in the *CI definition*, not in the
+product. None of them could have been found locally, because each one was a
+statement about a clean machine that no local run ever made:
+
+1. **TypeScript type check** — `npm run typecheck` failed with 9 × `TS2307`
+   ("Cannot find module `../packages/core/dist/index.js`") and 11 × `TS7006`.
+   The cause: `tsconfig.json` included `benchmarks`, and the benchmark drivers
+   type-resolve against the **built** package's declarations. That is
+   deliberate — it is what stops a benchmark from using an export the package
+   does not publish — but it means a type check could not run without a package
+   build. Locally `packages/core/dist/` always existed, so the failure never
+   appeared.
+2. **TypeScript tests** — `npm run build` failed with `E0463: can't find crate
+   for core`. The job had **no Rust toolchain step at all**, so the
+   `wasm32-unknown-unknown` target was never installed and the wasm build could
+   not run.
+3. **WebAssembly integration tests** and 4. **Incremental planning over the raw
+   ABI** — both ran `npm run build:wasm`, which stages the artifact but does
+   not build the package, and then ran `npm run test:wasm`, whose suite loads
+   `packages/core/dist/index.js` at runtime.
+
+The fixes follow the causes rather than the symptoms:
+
+- **The TypeScript programs were split.** `tsconfig.json` and
+  `tsconfig.test.json` now cover the package and its tests only, and a new
+  `tsconfig.bench.json` covers `benchmarks/` and the sources they import. The
+  benchmark drivers keep their dependency on the built package — they still
+  typecheck against `dist/*.d.ts` and still load `dist/*.js` at runtime — but
+  that dependency is now visible in the program that has it, instead of leaking
+  into every type check. `npm run typecheck` builds the package first and then
+  checks both programs, so it still covers everything and still runs on a clean
+  checkout with nothing built.
+- **The `ts-tests` job got the Rust toolchain**, with the wasm target, because
+  the job runs the full build.
+- **The two wasm jobs build the package as well as the artifact**, because the
+  suite they run loads the published package.
+
+Verified locally by deleting `packages/core/dist/` and `.tsbuild/` and running
+the jobs' own command sequences from that state: `npm run typecheck` exits 0
+with no build present, and `build:wasm` → `build:js` → `test:wasm` exits 0. All
+26 npm gates then re-ran green.
+
+This is the first evidence in the repository that came from a machine that is
+not the author's, and it found four real defects that four phases of local
+testing could not. Every claim above about "all green" is a local claim; the
+runner's verdict is the one that counts, and it is recorded here whatever it
+says.
 
 ## Level-pass cost and the 10% target
 
