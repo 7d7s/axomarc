@@ -9,7 +9,7 @@
     "shortest-first"
   ],
   "rankingTail": "every rule shares the engine's tail: more dependents, then lower index",
-  "elapsedMs": 3528,
+  "elapsedMs": 1662,
   "totals": {
     "instances": 1200,
     "infeasibilityRefusals": 0,

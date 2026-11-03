@@ -291,27 +291,40 @@ no missing or duplicated operations, 100% determinism, 100% candidate verificati
 budget enforcement, zero heap allocation, zero runtime dependencies, 18 pages — stands
 exactly as written and is testable as written.
 
-## 11. Open decisions, for the owner
+## 11. Decisions, for the owner
+
+P6-D1, P6-D4 and D3 are settled by measurement or by adoption. P6-D2 and P6-D3
+had a stated gate, and the gate has now been evaluated — the recommendation
+column below has been updated with what the evidence says. The decisions
+themselves remain the owner's.
 
 | # | Decision | Recommendation | Cost of deciding wrong |
 | --- | --- | --- | --- |
-| P6-D1 | Drop idle capacity from the objective ordering | **Yes** — it is provably constant on the tie set and unrepresentable in aggregate | a tie-break that never fires, plus a silent precision loss |
-| P6-D2 | Proceed with evaluator + certificate + one strategy, not five | **Yes**, gated on whether `resource-aware` beats the fixtures | six algorithms and no measured win — the failure §20 of the planning document names |
-| P6-D3 | Is Phase 6 worth doing at all for makespan? | Decide after one strategy is measured against the 13 fixtures | 1.1% of instances can absorb a lot of engineering |
-| D3 (carried from Phase 5) | `CP_i` priority rule | Now **measurable**, not debatable: 512 bytes, testable on `multiresource` | deferred twice already; the corpus answers it |
-| P6-D4 | New export vs extending `resource_schedule` | New export | an existing contract changing meaning |
-| P6-D5 | Candidate/round limits | Keep 64/8 until M8 measures; then freeze from data | a budget that is a wish |
+| P6-D1 | Drop idle capacity from the objective ordering | **Adopted** — it is provably constant on the tie set and unrepresentable in aggregate; the certificate has no idle metric | a tie-break that never fires, plus a silent precision loss |
+| P6-D2 | Proceed with evaluator + certificate + one strategy, not five | **The gate is not met.** It was conditional on `resource-aware` beating the fixtures; it wins 2 and loses 15. **Ship the certificate, do not build the optimizer** | six algorithms and no measured win — the failure §20 of the planning document names |
+| P6-D3 | Is Phase 6 worth doing at all for makespan? | **For makespan, no** — the ceiling is 6 of 13 improvable instances and 17 of 28 recoverable ticks, and only via a bounded local search whose entire prize is 11 ticks. The certificate is worth shipping on its own terms | 1.1% of instances can absorb a lot of engineering |
+| D3 (carried from Phase 5) | `CP_i` priority rule | **No** — every rule studied regresses more instances than it wins, so the 512 bytes are not earned. `docs/RESOURCE-MODEL.md` §9 records it | deferred twice already; the corpus answers it |
+| P6-D4 | New export vs extending `resource_schedule` | **Adopted** — a new export | an existing contract changing meaning |
+| P6-D5 | Candidate/round limits | **Moot if P6-D2 is not** — keep 64/8 until M8 measures; then freeze from data | a budget that is a wish |
 | D2 (carried from Phase 5) | Session resource table and the two invalidation domains | Blocks **M7 only**; M1–M6 are independent of it | stale schedules presented as current |
+
+The Phase 6 scope question therefore has an answer with a number attached: the
+certificate ships, and the optimizer does not. That is not "Phase 6 failed" —
+the certificate is a real deliverable, it is what makes a schedule's quality
+*knowable* rather than asserted, and it cost 1,486 bytes of wasm and 64 bytes
+of arena. It is that the *makespan* half of Phase 6 has a ceiling too small to
+justify an export, a region, a verification contract, a CI job and a permanent
+compatibility obligation.
 
 ## 12. What this document does not decide
 
 It does not implement anything, does not fix the final region offsets (M6 will, and
-they must be read from the artifact rather than typed here), does not claim any
-strategy improves any schedule (unmeasured), and does not measure latency, wasm bytes
-or arena use at runtime — the first two are M8 work, the third is bounded by
-`OPTIMIZATION-BUDGETS.md` and needs no page. It also does not settle whether Phase 6
-ships at all, which is P6-D3 and is the owner's call, made easier by the fact that
-M0 has now put a number on what it would buy.
+they must be read from the artifact rather than typed here), and does not measure
+latency, wasm bytes or arena use at runtime — the first two are M8 work, the third
+is bounded by `OPTIMIZATION-BUDGETS.md` and needs no page. It does not settle
+whether Phase 6 ships at all, which is P6-D3 and is the owner's call — but the
+evidence for that call is now in `docs/OPTIMIZATION-STRATEGIES.md`, and the
+recommendation it supports is above.
 
 ## Related documents
 

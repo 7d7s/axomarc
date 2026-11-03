@@ -1,13 +1,13 @@
 {
-  "measuredAt": "2026-11-03T07:19:15.291Z",
+  "measuredAt": "2026-11-03T07:30:03.548Z",
   "package": {
     "name": "@effectplan/core",
     "version": "0.3.0",
     "tarball": "artifacts/package/effectplan-core-0.3.0.tgz"
   },
-  "unpackedBytes": 100123,
-  "unpackedBytesReportedByNpm": 100123,
-  "tarballBytes": 30859,
+  "unpackedBytes": 101283,
+  "unpackedBytesReportedByNpm": 101283,
+  "tarballBytes": 31254,
   "wasmBytes": 21295,
   "fileCount": 22,
   "limits": {
@@ -101,7 +101,7 @@
     },
     {
       "path": "README.md",
-      "bytes": 5098
+      "bytes": 6258
     }
   ]
 }

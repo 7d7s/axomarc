@@ -17,11 +17,11 @@ its own CPM.
   `serde`, no allocator, no imports.
 - One npm package, `@effectplan/core`, zero runtime dependencies, no network,
   no filesystem access, no telemetry.
-- 76,337 bytes unpacked against an 82,042 ceiling. From Phase 5 the package budget
+- 100,123 bytes unpacked against a 106,565 ceiling. From Phase 5 the package budget
   is a frozen baseline
   (the Phase 4 artifact) plus a per-phase envelope agreed in advance, rather than
   a ceiling raised each time the work outgrew it — see `docs/SIZE-REPORT.md`. The
-  wasm artifact is 19,794 bytes (budget: 40,000). Both measured from the packed
+  wasm artifact is 21,295 bytes (budget: 40,000). Both measured from the packed
   tarball, not from source.
 
 ## Quick start
@@ -76,6 +76,44 @@ work, and a plan whose ticks would overflow is refused rather than wrapped. Omit
 `timing` and `plan.timing` is `undefined` — the Phase 1 and Phase 2 calls still
 hit the same two entry points and cost what they always cost.
 
+### Capacity resources
+
+A dependency says two calls must not run at the same time. A *capacity
+resource* says how many of them may run at once, and each call declares how much
+it holds for the whole of its execution:
+
+```ts
+const placed = planner.planResources(calls, {
+  capacities: [{ key: "lane", capacity: 2 }],
+  demands: [
+    [{ resource: "lane", amount: 1 }],
+    [{ resource: "lane", amount: 1 }],
+  ],
+  durations: [4, 6],
+});
+
+placed.outcome;         // "feasible"
+placed.makespan;        // 10 — the two calls conflict on config.json, so they serialise
+placed.statistics[0];   // { key: "lane", capacity: 2, peak: 1, busyTime: 10n }
+placed.quality;         // { makespan: 10, dependencyLowerBound: 10,
+                        //   resourceLowerBound: 5, lowerBound: 10,
+                        //   lowerBoundGap: 0, provablyOptimal: true,
+                        //   totalResourceWaiting: 0 }
+```
+
+`planResources` places the batch; `checkResources` asks whether it *could* be
+placed, and is a separate call on purpose — a scheduling-only change must not
+rebuild the dependency graph.
+
+Every placement comes with a **quality certificate**: the makespan, the two
+lower bounds the engine can prove (dependency and workload), the stronger of
+them, the total waiting, and `provablyOptimal`, which is true only when the
+makespan equals the bound. In the example above the dependency bound (10) binds
+and the workload bound (5) does not: the two calls cannot overlap because they
+touch the same file, not because the lane is too narrow. The bound is a distance
+from a number, never an optimality gap — a schedule can sit above it and still
+be optimal, because the bound does not capture every interaction.
+
 The full API is documented in [`packages/core/README.md`](packages/core/README.md).
 
 ## Repository layout
@@ -110,6 +148,9 @@ npm run verify:wasm        # the ABI, scheduling and memory-layout gate
 npm run verify:size        # the release size gate
 npm run verify:package     # install the tarball and plan a batch with it
 npm run benchmark          # native, wasm, oracle and full-API measurements and gates
+npm run benchmark:headroom # how much a Phase 6 optimizer could win, per family
+npm run prototype:strategies # candidate priority rules against the exhaustive optimum
+npm run ci:check           # the repository-root workflow matches the project's
 ```
 
 The Rust toolchain needs the wasm target:
@@ -155,40 +196,59 @@ including reading the binary: 402–618 µs at the median.
 
 ## Status
 
-Phase 6 (schedule optimization) has **not started**, and its first act was a
-measurement rather than a feature: `npm run benchmark:headroom` solves 1,200
-generated batches twice — once with the shipped engine, once with an exhaustive
-oracle — and finds the baseline already optimal in 1,187 of them (98.9%), with all
-13 improvable instances in three families and seven families structurally incapable
-of improvement (`docs/OPTIMIZATION-BENCHMARKS.md`). That result narrows what Phase
-6 should be, and it is recorded before any optimizer code exists so the scope can
-be argued with evidence rather than asserted with enthusiasm.
+**Phase 6 (schedule optimization) has shipped its first deliverable: the quality
+certificate.** The engine can now read back a placement it made and publish the
+two lower bounds it can prove — the dependency bound and the workload bound —
+together with the total waiting and a single optimality claim that is true only
+when the makespan equals the bound. It is a reader, not a second planner: it
+writes only its own region, so re-running it cannot disturb the placement it
+judges, and it recomputes the makespan from the windows rather than copying the
+header, which makes the host's cross-check of the two a real check rather than a
+tautology (`docs/RESOURCE-ABI.md` §6).
 
-Phase 5 (resource intelligence) is **in progress**. The engine understands
-capacity resources as a model separate from dependency resources: typed
-declarations with an integer capacity, demands that a call holds for the whole
-of its execution, atomic reservation, and a deterministic list scheduler that
-places a batch against the capacities it was given. `planner.planResources()`
-and `planner.checkResources()` are the public surface; the check is its own
-export so that a scheduling-only change cannot rebuild the dependency graph.
-The schedules are verified against an independent reference — a tick-by-tick
-capacity checker and an exhaustive search over precedence-feasible sequences
-whose makespan is a true lower bound — and the heuristic is second-best on two
-of 32 seeded instances, by at most three ticks, which is stated rather than
-implied (`docs/RESOURCE-MODEL.md` §6). Two decisions remain open and are not
-mine to make: how a session carries resource declarations across versions (D2)
-and whether the engine computes longest remaining path (D3).
+Phase 6 began with a measurement rather than a feature, and the measurement is
+what bounds it. `npm run benchmark:headroom` solves 1,200 generated batches
+twice — once with the shipped engine, once with an exhaustive oracle — and finds
+the baseline already optimal in 1,187 of them (98.9%), with all 13 improvable
+instances in three families and seven families structurally incapable of
+improvement. Then `npm run prototype:strategies` ran five candidate priority
+rules over that same corpus and found that **every rule regresses more instances
+than it wins**: the longest-remaining-path rule wins 4 and loses 9, the
+resource-aware rule wins 2 and loses 15. The honest ceiling is 6 of the 13
+improvable instances and 17 of the 28 recoverable ticks, and only a bounded
+local search gets there — for 11 ticks across 1,200 instances
+(`docs/OPTIMIZATION-STRATEGIES.md`). The recommendation on the table is
+therefore to ship the certificate and not to build the optimizer; that is the
+owner's call (`docs/OPTIMIZATION-RFC.md` §11).
+
+Phase 5 (resource intelligence) has its **stateless** surface complete. The
+engine understands capacity resources as a model separate from dependency
+resources: typed declarations with an integer capacity, demands that a call
+holds for the whole of its execution, atomic reservation, and a deterministic
+list scheduler that places a batch against the capacities it was given.
+`planner.planResources()` and `planner.checkResources()` are the public surface;
+the check is its own export so that a scheduling-only change cannot rebuild the
+dependency graph. The schedules are verified against an independent reference — a
+tick-by-tick capacity checker and an exhaustive search over precedence-feasible
+sequences whose makespan is a true lower bound — and the heuristic is second-best
+on two of 32 seeded instances, by at most three ticks, which is stated rather
+than implied (`docs/RESOURCE-MODEL.md` §6). One decision remains open and is not
+mine to make: how a session carries resource declarations across versions (D2).
+D3 — whether the engine computes longest remaining path — is answered by
+measurement now, and the answer is no.
 
 Phase 5's memory cost is measured, not estimated: the capacity regions needed
 13,416 bytes and 2,264 were spare, so the 18th page was approved on measurement
-(`docs/RESOURCE-ABI.md` §1) and linear memory is 18 pages. The package sits at
-94,565 bytes unpacked against a 106,565-byte ceiling — the frozen Phase 5
+(`docs/RESOURCE-ABI.md` §1) and linear memory is 18 pages. The certificate added
+64 bytes of arena, so the arena is 75,912 and 53,720 bytes of address space are
+still spare. The package sits at
+100,123 bytes unpacked against a 106,565-byte ceiling — the frozen Phase 5
 baseline plus a 12,000-byte Phase 6 envelope, owner review 2026-11-03. The
 baseline rolls forward at each phase boundary to whatever a tool printed, which
 is what makes the envelope mean something; `docs/SIZE-REPORT.md` records the
 review history and the policy that replaced the ad-hoc raises.
 
-Phase 4 (incremental planning) is **in progress**: the engine can stop at a call
+Phase 4 (incremental planning) is **complete**: the engine can stop at a call
 boundary, commit a checkpoint of the state it stopped in, and continue from that
 checkpoint or refuse it; `planner.createSession()` keeps a plan alive through
 appends, replacements and removals, and an incremental plan is proved equal to a
@@ -208,6 +268,14 @@ contracts, the 40,000-byte artifact budget or the 50,000-byte package limit that
 was in force until the Phase 4 review.
 Linear memory is 18 pages, and that is a build-time gate rather than a hope.
 
+**The CI has run on a real GitHub runner.** Pull request #1 was the first
+attempt, and it failed with 34 of 38 jobs green — on four defects in the CI
+definition that no local run could have found, because each was only true on a
+clean checkout: a type check that could not run without a package build, a test
+job with no Rust toolchain, and two wasm jobs that staged the artifact without
+building the package. All four are fixed; the second run passed 38 of 38
+(`docs/IMPLEMENTATION.md`).
+
 - the model and the arithmetic contract: [`docs/SCHEDULING-MODEL.md`](docs/SCHEDULING-MODEL.md)
 - the byte-level ABI for all three phases: [`docs/ABI.md`](docs/ABI.md)
 - the Phase 3 report, the memory decision and the cost analysis: [`docs/CRITICAL-PATH.md`](docs/CRITICAL-PATH.md)
@@ -226,9 +294,8 @@ Linear memory is 18 pages, and that is a build-time gate rather than a hope.
   [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md),
   [`docs/SIZE-REPORT.md`](docs/SIZE-REPORT.md)
 
-Not yet evidenced: CI on a real GitHub runner. The workflow exists and every job
-runs locally; the branch has not been pushed, which is a decision for whoever owns
-the remote.
+Evidenced: CI on a real GitHub runner, 38 of 38 jobs green on
+[run 41595818305](https://github.com/7d7s/axomarc/actions/runs/41595818305).
 
 ## License
 

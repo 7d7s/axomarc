@@ -48,6 +48,23 @@ Indices are positions in the array you passed, not call ids.
 | `getEngineInfo()` | ABI revisions, limits and the memory layout the engine published |
 | `planner.createSession(calls, options?)` | keep one plan alive through appends, replacements and removals |
 
+**Capacity resources.** `planResources` takes `capacities` (each a `key` and an
+integer `capacity`), `demands` (one entry per call, in batch order, naming what
+that call holds for the whole of its execution) and `durations`, and returns the
+placement: `outcome`, `makespan`, `windows`, `deferrals`, `statistics` and
+`quality`. `checkResources` asks the same question without a clock, and is a
+separate export on purpose: a scheduling-only change must not rebuild the
+dependency graph. Resource keys never reach the engine — the host interns them
+into indices, and a diagnostic names an index, never your key.
+
+**The quality certificate.** Every placement comes with one: `makespan`, the
+dependency lower bound, the resource lower bound, the stronger of the two, the
+total waiting, and `provablyOptimal`, which is true only when the makespan equals
+the bound. `lowerBoundGap` is a distance from a bound and never an optimality
+gap — a schedule can sit above it and still be optimal, because the bound does
+not capture every interaction. A placement that cannot be certified is refused
+(`EP_INVALID_PLAN`) rather than reported with a number nobody checked.
+
 **Sessions.** `applyChanges({ expectedVersion, changes })` validates the whole
 transaction before anything moves; `current()` is an immutable snapshot. Keys are
 unique, at most 128 UTF-8 bytes, never echoed in an error. Each update reports its
