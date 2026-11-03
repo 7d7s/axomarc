@@ -1,0 +1,357 @@
+{
+  "purpose": "decision instrument: does an alternative priority beat the engine where headroom exists?",
+  "caveat": "TypeScript serial-GS prototypes. They measure a rule's potential, NOT a wasm implementation's cost, and they are not the production algorithm.",
+  "strategies": [
+    "baseline-rule",
+    "critical-path",
+    "resource-aware",
+    "hybrid",
+    "shortest-first"
+  ],
+  "rankingTail": "every rule shares the engine's tail: more dependents, then lower index",
+  "elapsedMs": 2250,
+  "totals": {
+    "instances": 1200,
+    "infeasibilityRefusals": 0,
+    "engineOptimal": 1187,
+    "headroomInstances": 13,
+    "closedByPortfolio": 6,
+    "ticksAvailable": 28,
+    "ticksSaved": 17,
+    "instancesWhereSomePrototypeIsWorseThanEngine": 203,
+    "unverifiedPrototypeCandidates": 0,
+    "cpmMismatchesAgainstEngine": 0
+  },
+  "regressionsByStrategy": {
+    "baseline-rule": 11,
+    "critical-path": 9,
+    "resource-aware": 15,
+    "hybrid": 9,
+    "shortest-first": 200
+  },
+  "winsByStrategy": {
+    "baseline-rule": 1,
+    "critical-path": 4,
+    "resource-aware": 2,
+    "hybrid": 0,
+    "shortest-first": 1
+  },
+  "families": [
+    {
+      "name": "independent",
+      "instances": 120,
+      "engineOptimal": 120,
+      "headroomInstances": 0,
+      "closedByPortfolio": 0,
+      "engineSum": 554,
+      "prototypeSum": 554,
+      "optimumSum": 554,
+      "instancesWherePrototypeWorseThanEngine": 0,
+      "winsByStrategy": {
+        "baseline-rule": 0,
+        "critical-path": 0,
+        "resource-aware": 0,
+        "hybrid": 0,
+        "shortest-first": 0
+      },
+      "regressionsByStrategy": {
+        "baseline-rule": 0,
+        "critical-path": 0,
+        "resource-aware": 0,
+        "hybrid": 0,
+        "shortest-first": 0
+      }
+    },
+    {
+      "name": "chain",
+      "instances": 120,
+      "engineOptimal": 120,
+      "headroomInstances": 0,
+      "closedByPortfolio": 0,
+      "engineSum": 1990,
+      "prototypeSum": 1990,
+      "optimumSum": 1990,
+      "instancesWherePrototypeWorseThanEngine": 0,
+      "winsByStrategy": {
+        "baseline-rule": 0,
+        "critical-path": 0,
+        "resource-aware": 0,
+        "hybrid": 0,
+        "shortest-first": 0
+      },
+      "regressionsByStrategy": {
+        "baseline-rule": 0,
+        "critical-path": 0,
+        "resource-aware": 0,
+        "hybrid": 0,
+        "shortest-first": 0
+      }
+    },
+    {
+      "name": "fanout",
+      "instances": 120,
+      "engineOptimal": 120,
+      "headroomInstances": 0,
+      "closedByPortfolio": 0,
+      "engineSum": 960,
+      "prototypeSum": 960,
+      "optimumSum": 960,
+      "instancesWherePrototypeWorseThanEngine": 56,
+      "winsByStrategy": {
+        "baseline-rule": 0,
+        "critical-path": 0,
+        "resource-aware": 0,
+        "hybrid": 0,
+        "shortest-first": 0
+      },
+      "regressionsByStrategy": {
+        "baseline-rule": 0,
+        "critical-path": 0,
+        "resource-aware": 0,
+        "hybrid": 0,
+        "shortest-first": 56
+      }
+    },
+    {
+      "name": "fanin",
+      "instances": 120,
+      "engineOptimal": 120,
+      "headroomInstances": 0,
+      "closedByPortfolio": 0,
+      "engineSum": 969,
+      "prototypeSum": 969,
+      "optimumSum": 969,
+      "instancesWherePrototypeWorseThanEngine": 52,
+      "winsByStrategy": {
+        "baseline-rule": 0,
+        "critical-path": 0,
+        "resource-aware": 0,
+        "hybrid": 0,
+        "shortest-first": 0
+      },
+      "regressionsByStrategy": {
+        "baseline-rule": 0,
+        "critical-path": 0,
+        "resource-aware": 0,
+        "hybrid": 0,
+        "shortest-first": 52
+      }
+    },
+    {
+      "name": "exclusive",
+      "instances": 120,
+      "engineOptimal": 120,
+      "headroomInstances": 0,
+      "closedByPortfolio": 0,
+      "engineSum": 2032,
+      "prototypeSum": 2032,
+      "optimumSum": 2032,
+      "instancesWherePrototypeWorseThanEngine": 0,
+      "winsByStrategy": {
+        "baseline-rule": 0,
+        "critical-path": 0,
+        "resource-aware": 0,
+        "hybrid": 0,
+        "shortest-first": 0
+      },
+      "regressionsByStrategy": {
+        "baseline-rule": 0,
+        "critical-path": 0,
+        "resource-aware": 0,
+        "hybrid": 0,
+        "shortest-first": 0
+      }
+    },
+    {
+      "name": "shared",
+      "instances": 120,
+      "engineOptimal": 119,
+      "headroomInstances": 1,
+      "closedByPortfolio": 0,
+      "engineSum": 1228,
+      "prototypeSum": 1227,
+      "optimumSum": 1226,
+      "instancesWherePrototypeWorseThanEngine": 34,
+      "winsByStrategy": {
+        "baseline-rule": 0,
+        "critical-path": 1,
+        "resource-aware": 0,
+        "hybrid": 0,
+        "shortest-first": 0
+      },
+      "regressionsByStrategy": {
+        "baseline-rule": 6,
+        "critical-path": 3,
+        "resource-aware": 6,
+        "hybrid": 3,
+        "shortest-first": 34
+      }
+    },
+    {
+      "name": "multiresource",
+      "instances": 120,
+      "engineOptimal": 111,
+      "headroomInstances": 9,
+      "closedByPortfolio": 5,
+      "engineSum": 1735,
+      "prototypeSum": 1721,
+      "optimumSum": 1713,
+      "instancesWherePrototypeWorseThanEngine": 37,
+      "winsByStrategy": {
+        "baseline-rule": 0,
+        "critical-path": 3,
+        "resource-aware": 2,
+        "hybrid": 0,
+        "shortest-first": 1
+      },
+      "regressionsByStrategy": {
+        "baseline-rule": 4,
+        "critical-path": 5,
+        "resource-aware": 8,
+        "hybrid": 5,
+        "shortest-first": 34
+      }
+    },
+    {
+      "name": "mixeddurations",
+      "instances": 120,
+      "engineOptimal": 117,
+      "headroomInstances": 3,
+      "closedByPortfolio": 1,
+      "engineSum": 1383,
+      "prototypeSum": 1381,
+      "optimumSum": 1379,
+      "instancesWherePrototypeWorseThanEngine": 24,
+      "winsByStrategy": {
+        "baseline-rule": 1,
+        "critical-path": 0,
+        "resource-aware": 0,
+        "hybrid": 0,
+        "shortest-first": 0
+      },
+      "regressionsByStrategy": {
+        "baseline-rule": 1,
+        "critical-path": 1,
+        "resource-aware": 1,
+        "hybrid": 1,
+        "shortest-first": 24
+      }
+    },
+    {
+      "name": "highutilization",
+      "instances": 120,
+      "engineOptimal": 120,
+      "headroomInstances": 0,
+      "closedByPortfolio": 0,
+      "engineSum": 1646,
+      "prototypeSum": 1646,
+      "optimumSum": 1646,
+      "instancesWherePrototypeWorseThanEngine": 0,
+      "winsByStrategy": {
+        "baseline-rule": 0,
+        "critical-path": 0,
+        "resource-aware": 0,
+        "hybrid": 0,
+        "shortest-first": 0
+      },
+      "regressionsByStrategy": {
+        "baseline-rule": 0,
+        "critical-path": 0,
+        "resource-aware": 0,
+        "hybrid": 0,
+        "shortest-first": 0
+      }
+    },
+    {
+      "name": "sparseuse",
+      "instances": 120,
+      "engineOptimal": 120,
+      "headroomInstances": 0,
+      "closedByPortfolio": 0,
+      "engineSum": 555,
+      "prototypeSum": 555,
+      "optimumSum": 555,
+      "instancesWherePrototypeWorseThanEngine": 0,
+      "winsByStrategy": {
+        "baseline-rule": 0,
+        "critical-path": 0,
+        "resource-aware": 0,
+        "hybrid": 0,
+        "shortest-first": 0
+      },
+      "regressionsByStrategy": {
+        "baseline-rule": 0,
+        "critical-path": 0,
+        "resource-aware": 0,
+        "hybrid": 0,
+        "shortest-first": 0
+      }
+    }
+  ],
+  "wins": [
+    {
+      "family": "shared",
+      "instance": 14,
+      "strategy": "critical-path",
+      "engine": 9,
+      "optimum": 7,
+      "achieved": 8
+    },
+    {
+      "family": "multiresource",
+      "instance": 8,
+      "strategy": "shortest-first",
+      "engine": 18,
+      "optimum": 13,
+      "achieved": 16
+    },
+    {
+      "family": "multiresource",
+      "instance": 11,
+      "strategy": "critical-path",
+      "engine": 28,
+      "optimum": 23,
+      "achieved": 23
+    },
+    {
+      "family": "multiresource",
+      "instance": 53,
+      "strategy": "resource-aware",
+      "engine": 12,
+      "optimum": 11,
+      "achieved": 11
+    },
+    {
+      "family": "multiresource",
+      "instance": 58,
+      "strategy": "critical-path",
+      "engine": 22,
+      "optimum": 19,
+      "achieved": 19
+    },
+    {
+      "family": "multiresource",
+      "instance": 68,
+      "strategy": "critical-path",
+      "engine": 15,
+      "optimum": 14,
+      "achieved": 14
+    },
+    {
+      "family": "multiresource",
+      "instance": 109,
+      "strategy": "resource-aware",
+      "engine": 14,
+      "optimum": 12,
+      "achieved": 12
+    },
+    {
+      "family": "mixeddurations",
+      "instance": 18,
+      "strategy": "baseline-rule",
+      "engine": 18,
+      "optimum": 16,
+      "achieved": 16
+    }
+  ]
+}

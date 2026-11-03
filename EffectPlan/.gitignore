@@ -1,0 +1,21 @@
+# Build outputs
+/target/
+/node_modules/
+/packages/core/dist/
+/.tsbuild/
+*.tgz
+
+# Measured profile artifacts; the JSON reports next to them are kept.
+/artifacts/profiles/
+/artifacts/staging/
+
+# Editor and OS noise
+.DS_Store
+*.swp
+
+# Local overrides
+/.npmrc
+/env.local
+
+# Local IDE settings
+/.qoder/

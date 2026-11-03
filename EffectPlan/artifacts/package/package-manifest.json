@@ -1,0 +1,109 @@
+{
+  "name": "@effectplan/core",
+  "version": "0.3.0",
+  "tarball": "artifacts/package/effectplan-core-0.3.0.tgz",
+  "tarballBytes": 32204,
+  "unpackedBytes": 106406,
+  "entryCount": 22,
+  "limits": {
+    "maxUnpackedBytes": 106565,
+    "maxWasmBytes": 40000
+  },
+  "files": [
+    {
+      "path": "LICENSE",
+      "bytes": 1068
+    },
+    {
+      "path": "README.md",
+      "bytes": 7320
+    },
+    {
+      "path": "dist/effectplan.wasm",
+      "bytes": 21295
+    },
+    {
+      "path": "dist/encode.d.ts",
+      "bytes": 2329
+    },
+    {
+      "path": "dist/encode.js",
+      "bytes": 6007
+    },
+    {
+      "path": "dist/errors.d.ts",
+      "bytes": 1249
+    },
+    {
+      "path": "dist/errors.js",
+      "bytes": 1001
+    },
+    {
+      "path": "dist/execution-levels.d.ts",
+      "bytes": 318
+    },
+    {
+      "path": "dist/execution-levels.js",
+      "bytes": 1125
+    },
+    {
+      "path": "dist/index.d.ts",
+      "bytes": 1073
+    },
+    {
+      "path": "dist/index.js",
+      "bytes": 190
+    },
+    {
+      "path": "dist/loader.d.ts",
+      "bytes": 4324
+    },
+    {
+      "path": "dist/loader.js",
+      "bytes": 10435
+    },
+    {
+      "path": "dist/planner.d.ts",
+      "bytes": 1793
+    },
+    {
+      "path": "dist/planner.js",
+      "bytes": 8439
+    },
+    {
+      "path": "dist/resources.d.ts",
+      "bytes": 3511
+    },
+    {
+      "path": "dist/resources.js",
+      "bytes": 10119
+    },
+    {
+      "path": "dist/session.d.ts",
+      "bytes": 2659
+    },
+    {
+      "path": "dist/session.js",
+      "bytes": 14236
+    },
+    {
+      "path": "dist/timing.d.ts",
+      "bytes": 1095
+    },
+    {
+      "path": "dist/timing.js",
+      "bytes": 6098
+    },
+    {
+      "path": "package.json",
+      "bytes": 722
+    }
+  ],
+  "npm": {
+    "size": 32204,
+    "shasum": "827961fe064a7c2213360e3a7d45e8ccbb23adce",
+    "integrity": "sha512-pjehNwLEKuctDKuG5w6ty5wOdx7wPjP7T7hOgXYf/7ZnnDjUxAzhYSQjsl0XXlM4wM1T2vQiEq8cdH+PGbGrfg=="
+  },
+  "stagedBytes": 97296,
+  "whitespaceRemovedBytes": 12676
+}

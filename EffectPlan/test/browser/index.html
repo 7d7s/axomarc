@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>EffectPlan browser smoke test</title>
+</head>
+<body>
+<pre id="result">pending</pre>
+<script type="module">
+import { EffectPlan } from "/packages/core/dist/index.js";
+
+const out = document.getElementById("result");
+const report = (status, detail) => {
+  out.dataset.status = status;
+  out.textContent = JSON.stringify(detail);
+  fetch("/result", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ status, detail }),
+  });
+};
+
+try {
+  const wasmUrl = new URL("/packages/core/dist/effectplan.wasm", location.href).href;
+  const planner = await EffectPlan.create({ wasmUrl });
+  const info = planner.getEngineInfo();
+
+  const calls = [
+    { id: "w", effect: { version: 1, mode: "resources", accesses: [{ resource: { namespace: "fs", id: "f1" }, mode: "write" }] } },
+    { id: "r", effect: { version: 1, mode: "resources", accesses: [{ resource: { namespace: "fs", id: "f1" }, mode: "read" }] } },
+    { id: "w2", effect: { version: 1, mode: "resources", accesses: [{ resource: { namespace: "fs", id: "f1" }, mode: "write" }] } },
+  ];
+  const shape = (plan) => plan.edges.map((edge) => [edge.from, edge.to, edge.resource, edge.reason]);
+  const first = shape(planner.planBatch(calls));
+  const second = shape(planner.planBatch(calls));
+  const expected = [[0, 1, 1, 1], [0, 2, 1, 3], [1, 2, 1, 2]];
+
+  const execution = planner.planBatch(calls).execution;
+  const expectedLevels = { levelByCall: [0, 1, 2], waves: [[0], [1], [2]], waveCount: 3 };
+
+  // The same three calls with durations: a chain, so every one of them is
+  // critical and only one runs at a time.
+  const shapeOf = (timed) => ({
+    unit: timed.unit,
+    makespan: timed.criticalPathDuration,
+    totalWork: timed.totalWork,
+    averageParallelism: timed.averageParallelism,
+    peakConcurrency: timed.peakConcurrency,
+    criticalEvents: timed.criticalEvents,
+    earliestStart: timed.events.map((event) => event.earliestStart),
+    earliestFinish: timed.events.map((event) => event.earliestFinish),
+    slack: timed.events.map((event) => event.slack),
+  });
+  const timed = planner.planBatch(calls, { timing: { durations: [2, 5, 3], unit: "ms" } }).timing;
+  const timingShape = shapeOf(timed);
+  const expectedTiming = {
+    unit: "ms",
+    makespan: 10,
+    totalWork: 10,
+    averageParallelism: 1,
+    peakConcurrency: 1,
+    criticalEvents: [0, 1, 2],
+    earliestStart: [0, 2, 7],
+    earliestFinish: [2, 7, 10],
+    slack: [0, 0, 0],
+  };
+
+  const checks = {
+    abi: info.abiVersion === 1,
+    levelsRevision: info.levelsRevision === 1,
+    timingRevision: info.timingRevision === 1,
+    edges: JSON.stringify(first) === JSON.stringify(expected),
+    deterministic: JSON.stringify(first) === JSON.stringify(second),
+    statistics: planner.planBatch(calls).statistics.dependencyCount === expected.length,
+    levels:
+      JSON.stringify(execution.levelByCall) === JSON.stringify(expectedLevels.levelByCall) &&
+      JSON.stringify(execution.waves) === JSON.stringify(expectedLevels.waves) &&
+      execution.waveCount === expectedLevels.waveCount,
+    timing: JSON.stringify(timingShape) === JSON.stringify(expectedTiming),
+    timingDeterministic:
+      JSON.stringify(
+        shapeOf(planner.planBatch(calls, { timing: { durations: [2, 5, 3], unit: "ms" } }).timing),
+      ) === JSON.stringify(timingShape),
+    plainHasNoTiming: planner.planBatch(calls).timing === undefined,
+  };
+  const failed = Object.entries(checks).filter(([, ok]) => !ok).map(([name]) => name);
+  report(failed.length === 0 ? "pass" : "fail", {
+    checks,
+    edges: first,
+    expected,
+    execution,
+    timing: timingShape,
+    expectedTiming,
+    wasmUrl,
+    abi: info.abiVersion,
+    levelsRevision: info.levelsRevision,
+    timingRevision: info.timingRevision,
+  });
+} catch (cause) {
+  report("fail", { error: String(cause && cause.stack ? cause.stack : cause) });
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+[package]
+name = "effectplan-engine"
+version = "0.1.0"
+edition = "2021"
+description = "Deterministic resource-conflict planner core for EffectPlan"
+license = "MIT"
+publish = false
+
+[lib]
+name = "effectplan_engine"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+# The native benchmark drives the exported planning entry point directly.
+[[bench]]
+name = "native"
+harness = false
+
+[dependencies]
+
+# Profiles are declared in the workspace root Cargo.toml: Cargo ignores them
+# here.

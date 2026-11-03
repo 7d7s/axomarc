@@ -1,0 +1,17 @@
+{
+  "measuredAt": "2026-11-01T11:09:52.404Z",
+  "profiles": [
+    {
+      "profile": "release",
+      "wasmBytes": 13247
+    },
+    {
+      "profile": "release-s",
+      "wasmBytes": 13072
+    },
+    {
+      "profile": "release-3",
+      "wasmBytes": 16680
+    }
+  ]
+}
