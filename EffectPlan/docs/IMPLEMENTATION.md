@@ -529,6 +529,23 @@ testing could not. Every claim above about "all green" is a local claim; the
 runner's verdict is the one that counts, and it is recorded here whatever it
 says.
 
+**The verdict: 38 of 38 jobs passed.** Run
+[41595818305](https://github.com/7d7s/axomarc/actions/runs/41595818305), on
+commit `727c065`, triggered by `pull_request` on PR #1, 2026-11-03. Every job
+that failed the first time — the type check, the TypeScript tests, the wasm
+integration suite and the raw-ABI suite — passed the second time, and the
+thirty-four that passed the first time still pass. The first run's four
+failures are in the history of the pull request, not hidden: they are the
+evidence that the runner was doing something the local machine could not.
+
+Two claims this document makes are therefore no longer local claims. The 164
+Rust tests, the 208 TypeScript tests, the 141 ABI checks, the 21,295-byte
+artifact, the 100,123-byte package and the 18 pages were all measured on the
+author's machine and have now been measured again on a runner; and the four CI
+defects above are the first bugs in this repository that no amount of local
+testing could have found, because each of them was only true on a clean
+checkout.
+
 ## Level-pass cost and the 10% target
 
 The planning document set a target of no more than 10% p50 regression on the
