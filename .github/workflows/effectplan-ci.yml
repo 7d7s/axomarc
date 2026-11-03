@@ -59,6 +59,8 @@ jobs:
           node-version: "20"
       - run: npm ci
       - run: npm run ci:check
+      - name: Every job that builds the wasm installs the target it builds for
+        run: npm run ci:jobs
 
   typecheck:
     name: TypeScript type check
@@ -586,6 +588,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The job runs the full build, and the build compiles the WebAssembly
+      # artifact - so this job needs the wasm target, not just cargo.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: actions/setup-node@v4
         with:
           node-version: "20"

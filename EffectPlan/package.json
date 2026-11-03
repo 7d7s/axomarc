@@ -47,7 +47,8 @@
     "measure:profiles": "node scripts/measure-profiles.mjs",
     "typecheck": "npm run build:js && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.bench.json --noEmit",
     "ci:sync": "node scripts/sync-ci.mjs",
-    "ci:check": "node scripts/sync-ci.mjs --check"
+    "ci:check": "node scripts/sync-ci.mjs --check",
+    "ci:jobs": "node scripts/check-ci-jobs.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

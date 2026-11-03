@@ -421,7 +421,17 @@ Jobs that select a subset by name — the Rust scheduling, checkpoint, capacity 
 placement jobs through their test-filter guards, and every
 `--test-name-pattern` job through `scripts/run-tests.mjs` — fail when they match
 fewer tests than they claim, so a renamed test breaks a job instead of quietly
-emptying it. The wasm-build job still enforces the 40,000-byte artifact budget and
+emptying it.
+
+`npm run ci:jobs` is a third guard, and it exists because the runner found the
+same class of defect twice: a job that runs the WebAssembly build without
+installing `wasm32-unknown-unknown` fails with `E0463: can't find crate for
+core`, which says nothing about the job that was wrong. The check reads the
+workflow and fails when any job that runs `npm run build` or
+`npm run build:wasm` does not install the target. It was negative-tested
+against a doctored copy of the workflow — the same standard the gates in
+`docs/OPTIMIZATION-BENCHMARKS.md` are held to — and it is wired into the
+`ci-definition` job, so it runs on every push. The wasm-build job still enforces the 40,000-byte artifact budget and
 the size job the package ceiling, both read from `scripts/limits.mjs` (the
 Phase 4 baseline plus the Phase 5 envelope), as is the page count the wasm
 verifier asserts.
@@ -462,6 +472,14 @@ compatibility, the browser smoke test, the CI mirror check and the two Phase 6
 benchmark jobs. The three wall-clock benchmark jobs were still left out for the
 reason above. The Rust suite was also run ten times in a row after the change:
 ten passed, zero failed.
+
+D2 then added the session's resource table and its two invalidation domains, and
+the set was run once more on the same day: **26 npm commands, all exiting 0**,
+plus Rust formatting, clippy and 164 Rust tests. The TypeScript suite is now 214
+tests, of which 23 are the session's, and the package is 105,344 bytes unpacked
+against the 106,565-byte ceiling. The Rust suite was not re-run ten times after
+D2, because D2 touched no Rust at all — the engine is byte-identical, and the
+wasm artifact is still 21,295 bytes.
 
 Clippy was also run in a stricter form than CI uses — `-D warnings` rather than
 the workflow's plain `--all-targets` — and it failed with 35 errors. Every one of
@@ -543,7 +561,7 @@ failures are in the history of the pull request, not hidden: they are the
 evidence that the runner was doing something the local machine could not.
 
 Two claims this document makes are therefore no longer local claims. The 164
-Rust tests, the 208 TypeScript tests, the 141 ABI checks, the 21,295-byte
+Rust tests, the 214 TypeScript tests, the 141 ABI checks, the 21,295-byte
 artifact, the 105,344-byte package and the 18 pages were all measured on the
 author's machine and have now been measured again on a runner; and the four CI
 defects above are the first bugs in this repository that no amount of local
