@@ -499,8 +499,9 @@ jobs:
   # Phase 5: Resource Intelligence. Each job is one claim about the capacity
   # layer, and each insists on having run something. The session-level claims —
   # a resource table that survives version changes, and the two invalidation
-  # domains — wait on decision D2 and are deliberately absent rather than
-  # green on nothing.
+  # domains — are gated by the session jobs below, which now cover them: D2 was
+  # answered and the session owns the table, so the claims are no longer
+  # waiting on a decision.
   # --------------------------------------------------------------------------
 
   rust-resources:
@@ -562,6 +563,19 @@ jobs:
       - run: npm run build
       - name: The four outcomes, the validation matrix, determinism and the certificate
         run: npm run test:resource-api
+
+  session-resources:
+    name: Session capacity resources
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npm run build
+      - name: The session's resource table, and the two invalidation domains
+        run: npm run test:session-resources
 
   resource-layout:
     name: Capacity resource memory layout

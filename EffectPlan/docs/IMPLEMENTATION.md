@@ -394,7 +394,7 @@ installed, because a silently skipped browser test is not a test.
 
 ## CI
 
-`.github/workflows/ci.yml` runs thirty-eight jobs: the ten Phase 1 and Phase 2 jobs
+`.github/workflows/ci.yml` runs thirty-nine jobs: the ten Phase 1 and Phase 2 jobs
 (Rust formatting, Rust tests, TypeScript type check, TypeScript tests,
 WebAssembly build, ABI verification, WebAssembly integration tests, package-size
 enforcement, package installation smoke test, browser smoke test), the nine Phase 3
@@ -406,13 +406,17 @@ repository-root workflow mirror matches this file, the Rust checkpoint tests, th
 checkpoint ABI against the shipped artifact, incremental parity, version
 integrity, transaction safety, change validation, memory validation, the
 incremental WebAssembly integration and browser runs, and the incremental
-benchmark gate; five Phase 5 jobs: the Rust capacity validation tests, the
+benchmark gate; six Phase 5 jobs: the Rust capacity validation tests, the
 Rust resource placement tests, the independent resource reference, the capacity
-resource public API and the capacity resource memory layout; and three Phase 6
+resource public API, the session's own capacity resources and the capacity
+resource memory layout; and three Phase 6
 jobs: the certificate's own Rust tests, the optimization headroom corpus and the
 strategy prototype. The session-level
-Phase 5 claims are deliberately absent — a resource table that survives version
-changes cannot be gated before decision D2 says what it is.
+Phase 5 claims used to be deliberately absent — a resource table that survives
+version changes could not be gated before decision D2 said what it is. D2 is
+answered and implemented, so they are gated now: six tests, filtered by name and
+counted by `scripts/run-tests.mjs`, covering the session's resource table, its
+placement and the two invalidation domains.
 Jobs that select a subset by name — the Rust scheduling, checkpoint, capacity and
 placement jobs through their test-filter guards, and every
 `--test-name-pattern` job through `scripts/run-tests.mjs` — fail when they match

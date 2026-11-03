@@ -33,6 +33,7 @@
     "test:resource-api": "tsc -p tsconfig.test.json && node scripts/run-tests.mjs --min 14 .tsbuild/packages/core/test/resource-api.test.js",
     "test:resource-layout": "tsc -p tsconfig.test.json && node scripts/run-tests.mjs --min 3 --pattern \"capacity-resource regions|read-only data below the arena|contiguous arena\" .tsbuild/packages/core/test/api.test.js .tsbuild/packages/core/test/wasm.test.js",
     "test:session": "tsc -p tsconfig.test.json && node scripts/run-tests.mjs --min 23 .tsbuild/packages/core/test/session.test.js",
+    "test:session-resources": "tsc -p tsconfig.test.json && node scripts/run-tests.mjs --min 6 --pattern \"capacity resources|demand|whole graph|domain\" .tsbuild/packages/core/test/session.test.js",
     "test:session-properties": "tsc -p tsconfig.test.json && node scripts/run-tests.mjs --min 2 .tsbuild/packages/core/test/session-property.test.js",
     "test:api-compatibility": "tsc -p tsconfig.test.json && node --test .tsbuild/packages/core/test/api.test.js .tsbuild/packages/core/test/planner.test.js .tsbuild/packages/core/test/execution-levels.test.js",
     "test:browser": "node scripts/browser-test.mjs",
